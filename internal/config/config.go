@@ -233,6 +233,7 @@ type Config struct {
 	// returns true — see managed.go.
 	Managed ManagedIPCConfig `mapstructure:"managed" yaml:"managed,omitempty"`
 	Routing               RoutingConfig               `mapstructure:"routing"          yaml:"routing,omitempty"`
+	Training              TrainingConfig              `mapstructure:"training"         yaml:"training,omitempty"`
 }
 
 // RoutingConfig mirrors routing.RoutingConfig for config.yaml parsing.
