@@ -6031,7 +6031,9 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
                 "    • Native OTel — optional; inactive until OTEL_* variables are exported for the OmniGent process"
             )
         elif connector == "codex":
-            click.echo("    • Native OTel — logs, metrics, and traces → scoped bearer + source header on /v1/<signal>")
+            click.echo(
+                "    • Native OTel — logs, metrics, and traces → scoped bearer + source header on /v1/<signal>"
+            )
         else:
             click.echo("    • Native OTel — documented agent telemetry → /v1/logs, /v1/metrics, and/or /v1/traces")
     if connector == "codex":
@@ -12450,3 +12452,61 @@ def _show_splunk_credentials(data_dir: str) -> None:
         click.echo("    Username:  admin")
         click.echo(f"    Password:  {password}")
     click.echo()
+
+
+# ---------------------------------------------------------------------------
+# setup training
+# ---------------------------------------------------------------------------
+
+
+@setup.command("training")
+@click.option("--enable", is_flag=True, help="Enable training pipeline.")
+@click.option("--disable", is_flag=True, help="Disable training pipeline.")
+@click.option("--status", is_flag=True, help="Show training status.")
+@pass_ctx
+def setup_training(app: AppContext, enable: bool, disable: bool, status: bool) -> None:
+    """Configure model training pipeline.
+
+    When enabled, DefenseClaw captures traces and trains local models
+    for continuous improvement.
+
+    \b
+    Examples:
+      defenseclaw setup training --enable
+      defenseclaw setup training --disable
+      defenseclaw setup training --status
+    """
+    if enable and disable:
+        raise click.UsageError("Cannot use --enable and --disable together.")
+
+    if status or (not enable and not disable):
+        click.echo()
+        click.echo("  Training Pipeline Status")
+        click.echo("  ════════════════════════")
+        if not app.cfg.training.enabled:
+            click.echo("    Status: disabled")
+            click.echo()
+            click.echo("    Enable with: defenseclaw setup training --enable")
+            return
+        click.echo("    Status:  enabled")
+        backend = app.cfg.training.backend or "not set"
+        click.echo(f"    Backend: {backend}")
+        click.echo()
+        return
+
+    if enable:
+        app.cfg.training.enabled = True
+        if not app.cfg.training.backend:
+            app.cfg.training.backend = "mlx-lm-lora"
+        app.cfg.save()
+        click.echo()
+        click.echo("  ✓ Training pipeline enabled")
+        click.echo(f"    Backend: {app.cfg.training.backend}")
+        click.echo()
+        click.echo("  The pipeline will start automatically with the gateway.")
+
+    if disable:
+        app.cfg.training.enabled = False
+        app.cfg.save()
+        click.echo()
+        click.echo("  ✓ Training pipeline disabled")
