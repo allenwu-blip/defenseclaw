@@ -68,6 +68,7 @@ jobs:
           HAS_MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
           HAS_WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 != '' }}
           HAS_WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD != '' }}
+          HAS_WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL != '' }}
         run: |
           set -euo pipefail
           APPLE_CREDENTIAL_COUNT=0
@@ -87,7 +88,7 @@ jobs:
             [[ "$configured" != "true" ]] ||
               WINDOWS_CREDENTIAL_COUNT=$((WINDOWS_CREDENTIAL_COUNT + 1))
           done
-          [[ "${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL != '' }}" != "true" ]] ||
+          [[ "$HAS_WINDOWS_SIGNING_TIMESTAMP_URL" != "true" ]] ||
             WINDOWS_CREDENTIAL_COUNT=$((WINDOWS_CREDENTIAL_COUNT + 1))
           if (( APPLE_CREDENTIAL_COUNT != 0 && APPLE_CREDENTIAL_COUNT != 5 )); then
             echo "::error title=Partial Apple release credentials::Apple signing/notarization credentials are partially configured; provide all five values or none."

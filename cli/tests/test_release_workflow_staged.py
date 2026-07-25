@@ -651,9 +651,9 @@ def test_release_requires_windows_signing_credentials_and_allows_optional_macos(
         "MACOS_NOTARY_ISSUER_ID",
         "WINDOWS_SIGNING_CERT_BASE64",
         "WINDOWS_SIGNING_CERT_PASSWORD",
+        "WINDOWS_SIGNING_TIMESTAMP_URL",
     ):
         assert f"${{{{ secrets.{name} != '' }}}}" in rendered
-    assert "${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL != '' }}" in credentials["run"]
     assert "APPLE_CREDENTIAL_COUNT" in credentials["run"]
     assert "WINDOWS_CREDENTIAL_COUNT" in credentials["run"]
     assert "WINDOWS_CREDENTIAL_COUNT != 3" in credentials["run"]
