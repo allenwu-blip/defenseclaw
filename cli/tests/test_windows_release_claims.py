@@ -196,4 +196,5 @@ def test_disposable_setup_workspace_includes_the_packaged_v8_validator() -> None
     ]
 
     assert "'windows-native-ci.ps1'" in harness_files
+    assert "'windows-authenticode.ps1'" in harness_files
     assert "'validate_packaged_v8_resources.py'" in harness_files
