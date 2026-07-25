@@ -13,6 +13,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 MODULE = runpy.run_path(str(ROOT / "scripts/verify-sigstore-blob.py"))
 VERIFY_WITH_RETRY = MODULE["verify_with_retry"]
+PARSER = MODULE["_parser"]
+VERIFICATION_COMMAND = MODULE["_verification_command"]
 WORKFLOW = ROOT / ".github/workflows/release.yaml"
 CERTIFICATION_WORKFLOW = ROOT / ".github/workflows/pre-release-certification.yml"
 
@@ -21,6 +23,7 @@ def test_release_workflow_routes_every_sigstore_verification_through_retry() -> 
     required_steps = {
         WORKFLOW: {
             ("assemble-release-candidate", "Resolve immutable published bridge provenance"),
+            ("assemble-release-candidate", "Verify release-owned Authenticode attestation"),
             ("assemble-release-candidate", "Sign and authenticate public checksum manifest"),
             ("publish-release", "Verify the exact tested candidate"),
         },
@@ -39,6 +42,32 @@ def test_release_workflow_routes_every_sigstore_verification_through_retry() -> 
             matching_steps = [step for step in jobs[job_name]["steps"] if step.get("name") == step_name]
             assert len(matching_steps) == 1, f"missing unique {job_name} / {step_name}"
             assert "scripts/verify-sigstore-blob.py" in matching_steps[0].get("run", "")
+
+
+def test_bundle_verification_builds_one_exact_fail_closed_command() -> None:
+    args = PARSER().parse_args(
+        [
+            "--bundle",
+            "certification.json.bundle",
+            "--certificate-identity",
+            "workflow-identity",
+            "--certificate-oidc-issuer",
+            "issuer",
+            "certification.json",
+        ]
+    )
+
+    assert VERIFICATION_COMMAND(args) == [
+        "cosign",
+        "verify-blob",
+        "--bundle",
+        "certification.json.bundle",
+        "--certificate-identity",
+        "workflow-identity",
+        "--certificate-oidc-issuer",
+        "issuer",
+        "certification.json",
+    ]
 
 
 def test_transient_tls_failure_retries_the_exact_mandatory_verification() -> None:

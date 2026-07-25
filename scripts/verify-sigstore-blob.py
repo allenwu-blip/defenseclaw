@@ -147,29 +147,54 @@ def verify_with_retry(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cosign", default="cosign")
-    parser.add_argument("--certificate", required=True)
-    parser.add_argument("--signature", required=True)
+    parser.add_argument("--certificate")
+    parser.add_argument("--signature")
+    parser.add_argument("--bundle")
     parser.add_argument("--certificate-identity", required=True)
     parser.add_argument("--certificate-oidc-issuer", required=True)
     parser.add_argument("blob")
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+def _verification_command(args: argparse.Namespace) -> list[str]:
     command = [
         args.cosign,
         "verify-blob",
-        "--certificate",
-        args.certificate,
-        "--signature",
-        args.signature,
-        "--certificate-identity",
-        args.certificate_identity,
-        "--certificate-oidc-issuer",
-        args.certificate_oidc_issuer,
-        args.blob,
     ]
+    if args.bundle is not None:
+        if args.certificate is not None or args.signature is not None:
+            raise ValueError("--bundle cannot be combined with --certificate or --signature")
+        command.extend(["--bundle", args.bundle])
+    else:
+        if args.certificate is None or args.signature is None:
+            raise ValueError("provide --bundle or both --certificate and --signature")
+        command.extend(
+            [
+                "--certificate",
+                args.certificate,
+                "--signature",
+                args.signature,
+            ]
+        )
+    command.extend(
+        [
+            "--certificate-identity",
+            args.certificate_identity,
+            "--certificate-oidc-issuer",
+            args.certificate_oidc_issuer,
+            args.blob,
+        ]
+    )
+    return command
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = _parser()
+    args = parser.parse_args(argv)
+    try:
+        command = _verification_command(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     return verify_with_retry(command)
 
 

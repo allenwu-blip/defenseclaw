@@ -835,7 +835,7 @@ jobs:
       - name: Verify release-owned Authenticode attestation
         run: |
           set -euo pipefail
-          cosign verify-blob \
+          python3 scripts/verify-sigstore-blob.py \
             --bundle candidate-input/windows/DefenseClawSetup-x64.exe.certification.json.bundle \
             --certificate-identity \
               "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yaml@refs/heads/main" \
