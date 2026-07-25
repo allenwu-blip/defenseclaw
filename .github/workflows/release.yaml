@@ -87,12 +87,14 @@ jobs:
             [[ "$configured" != "true" ]] ||
               WINDOWS_CREDENTIAL_COUNT=$((WINDOWS_CREDENTIAL_COUNT + 1))
           done
+          [[ "${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL != '' }}" != "true" ]] ||
+            WINDOWS_CREDENTIAL_COUNT=$((WINDOWS_CREDENTIAL_COUNT + 1))
           if (( APPLE_CREDENTIAL_COUNT != 0 && APPLE_CREDENTIAL_COUNT != 5 )); then
             echo "::error title=Partial Apple release credentials::Apple signing/notarization credentials are partially configured; provide all five values or none."
             exit 1
           fi
-          if (( WINDOWS_CREDENTIAL_COUNT != 2 )); then
-            echo "::error title=Windows release credentials required::Windows Authenticode signing credentials are required; provide both certificate and password values."
+          if (( WINDOWS_CREDENTIAL_COUNT != 3 )); then
+            echo "::error title=Windows release credentials required::Windows Authenticode signing credentials are required; provide certificate, password, and RFC 3161 timestamp URL values."
             exit 1
           fi
           [[ "$APPLE_CREDENTIAL_COUNT" == "5" ]] &&
@@ -578,16 +580,15 @@ jobs:
         env:
           WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
           WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: |
           $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_BASE64)
           $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_CERT_PASSWORD)
-          if ($hasCertificate -xor $hasPassword) {
-            throw 'Windows Authenticode signing is partially configured; provide both certificate and password.'
+          $hasTimestamp = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_TIMESTAMP_URL)
+          if (-not ($hasCertificate -and $hasPassword -and $hasTimestamp)) {
+            throw 'Authenticode certificate, password, and RFC 3161 timestamp URL are required for DefenseClawSetup-x64.exe.'
           }
-          if (-not $hasCertificate) {
-            throw 'Authenticode credentials are required for DefenseClawSetup-x64.exe.'
-          }
-          Write-Host 'Complete Authenticode credentials detected; signing is mandatory.'
+          Write-Host 'Complete Authenticode credentials and timestamp authority detected; signing is mandatory.'
 
       - name: Build and Authenticode-sign native Setup
         env:
@@ -653,6 +654,7 @@ jobs:
     environment: release
     permissions:
       contents: read
+      id-token: write
     outputs:
       artifact_id: ${{ steps.windows-certified-artifact.outputs.artifact-id }}
       artifact_digest: ${{ steps.windows-certified-artifact.outputs.artifact-digest }}
@@ -674,6 +676,10 @@ jobs:
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: "24"
+
+      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
+        with:
+          cosign-release: "v2.6.2"
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -713,6 +719,14 @@ jobs:
           }
           "artifact_digest=$($env:WINDOWS_RELEASE_ARTIFACT_DIGEST)" >> $env:GITHUB_OUTPUT
 
+      - name: Sign release-owned Authenticode attestation
+        run: |
+          cosign sign-blob `
+            --yes `
+            --bundle=windows-certified/DefenseClawSetup-x64.exe.certification.json.bundle `
+            windows-certified/DefenseClawSetup-x64.exe.certification.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload real-client diagnostics on failure
         if: ${{ failure() || cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -737,6 +751,7 @@ jobs:
             windows-certified/DefenseClawSetup-x64.exe.provenance.json
             windows-certified/DefenseClawSetup-x64.exe.sbom.json
             windows-certified/DefenseClawSetup-x64.exe.certification.json
+            windows-certified/DefenseClawSetup-x64.exe.certification.json.bundle
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
@@ -816,6 +831,16 @@ jobs:
       - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
         with:
           cosign-release: "v2.6.2"
+
+      - name: Verify release-owned Authenticode attestation
+        run: |
+          set -euo pipefail
+          cosign verify-blob \
+            --bundle candidate-input/windows/DefenseClawSetup-x64.exe.certification.json.bundle \
+            --certificate-identity \
+              "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yaml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            candidate-input/windows/DefenseClawSetup-x64.exe.certification.json
 
       - name: Resolve immutable published bridge provenance
         id: bridge

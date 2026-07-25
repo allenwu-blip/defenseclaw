@@ -121,6 +121,7 @@ def test_release_verifier_rejects_malformed_win_certificate_bytes(tmp_path: Path
     env["AUTHENTICODE_MALFORMED_PE"] = str(executable)
     result = subprocess.run(
         [pwsh, "-NoProfile", "-NonInteractive", "-Command", command],
+        check=False,
         capture_output=True,
         text=True,
         env=env,
@@ -145,6 +146,7 @@ def test_release_requires_signed_setup_and_release_owned_authenticode_attestatio
     assert windows["environment"] == "release"
     assert "WINDOWS_SIGNING_CERT_BASE64" in rendered
     assert "WINDOWS_SIGNING_CERT_PASSWORD" in rendered
+    assert "WINDOWS_SIGNING_TIMESTAMP_URL" in rendered
     assert "Require real Authenticode release credentials" in rendered
     assert "Build and Authenticode-sign native Setup" in rendered
     assert "Windows Setup provenance must be fully Authenticode signed for release" in rendered
@@ -181,6 +183,7 @@ def test_release_requires_signed_setup_and_release_owned_authenticode_attestatio
     assert certification["runs-on"] == "windows-latest"
     assert certification["environment"] == "release"
     assert certification["timeout-minutes"] == "180"
+    assert certification["permissions"]["id-token"] == "write"
     certified = str(certification)
     assert "OPENAI_API_KEY" in certified
     assert "ANTHROPIC_API_KEY" in certified
@@ -190,8 +193,10 @@ def test_release_requires_signed_setup_and_release_owned_authenticode_attestatio
         step for step in certification["steps"] if step.get("id") == "windows-certified-artifact"
     )
     assert certified_upload["with"]["path"].endswith(
-        "windows-certified/DefenseClawSetup-x64.exe.certification.json\n"
+        "windows-certified/DefenseClawSetup-x64.exe.certification.json.bundle\n"
     )
+    assert "Sign release-owned Authenticode attestation" in certified
+    assert "--bundle=windows-certified/DefenseClawSetup-x64.exe.certification.json.bundle" in certified
     assert "Get-DefenseClawAuthenticodeEvidence" in HARNESS
     assert "Assert-DefenseClawAuthenticodeEvidence" in HARNESS
     assert "schema_version = 2" in HARNESS
@@ -224,6 +229,16 @@ def test_certified_windows_setup_bytes_are_bound_into_the_single_sealed_candidat
     )
     assert "Missing Windows custody digest" in custody["run"]
     assert "staging_artifact_digest" in custody["run"]
+    verification_step = _step(assemble, "Verify release-owned Authenticode attestation")
+    verification = verification_step["run"]
+    assert "--bundle candidate-input/windows/DefenseClawSetup-x64.exe.certification.json.bundle" in (
+        verification
+    )
+    assert "release.yaml@refs/heads/main" in verification
+    assert "--certificate-identity-regexp" not in verification
+    assert assemble["steps"].index(verification_step) < assemble["steps"].index(
+        _step(assemble, "Assemble checksummed candidate")
+    )
     assert "--windows-dir candidate-input/windows" in str(assemble)
 
 
@@ -388,6 +403,8 @@ def test_release_documentation_matches_the_fresh_only_gate() -> None:
     assert "first native Windows release" in release
     assert "has no older native Windows baseline" in release
     assert "fresh-install only" in release
+    assert "independently verifiable Sigstore-signed certification receipt" in release
+    assert "Sigstore-signed receipt authenticates the exact provenance artifact" in release
 
 
 def test_native_wheel_stages_and_verifies_v8_runtime_assets() -> None:

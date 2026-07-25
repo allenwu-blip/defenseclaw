@@ -65,7 +65,9 @@ macOS, and Windows, upgrades the latest authenticated older release, the
 published `0.8.5` and `0.8.4` boundaries, and the newest authenticated
 `0.7.x`, `0.6.x`, and `0.5.x` releases on Linux and macOS, and publishes those
 exact bytes only after every smoke check passes.
-There is no separate certification operation or reusable receipt.
+Certification runs within that same release dispatch. Its release-owned job
+produces a Sigstore-signed schema-2 receipt bound to the exact candidate, signer,
+timestamp, and provenance, so it cannot be reused for another release.
 
 ```bash
 # Current platform, proving one old controller refuses the unsigned candidate.

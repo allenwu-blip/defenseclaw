@@ -512,7 +512,7 @@ def _windows_setup_dir(
     if signed:
         struct.pack_into("<II", payload, optional_offset + 112 + 4 * 8, 0x180, 16)
         struct.pack_into("<IHH", payload, 0x180, 16, 0x0200, 0x0002)
-        payload[0x188:0x190] = b"\x30\x06fixture"
+        payload[0x188:0x190] = b"\x30\x06fixtur"
     setup.write_bytes(payload)
     setup_hash = release_candidate._sha256(setup)
     (windows / f"{setup.name}.sha256").write_text(
@@ -833,6 +833,9 @@ def _windows_setup_dir(
     (windows / f"{setup.name}.certification.json").write_text(
         json.dumps(certification),
         encoding="utf-8",
+    )
+    (windows / f"{setup.name}.certification.json.bundle").write_bytes(
+        _legacy_cosign_bundle_bytes()
     )
     return windows
 
@@ -1211,6 +1214,7 @@ def test_windows_setup_custody_starts_at_086_and_survives_legacy_omission() -> N
     assert setup_assets == {
         "DefenseClawSetup-x64.exe",
         "DefenseClawSetup-x64.exe.certification.json",
+        "DefenseClawSetup-x64.exe.certification.json.bundle",
         "DefenseClawSetup-x64.exe.sha256",
         "DefenseClawSetup-x64.exe.provenance.json",
         "DefenseClawSetup-x64.exe.sbom.json",
@@ -1427,7 +1431,35 @@ def test_windows_setup_directory_rejects_extra_file(tmp_path: Path) -> None:
     windows = _windows_setup_dir(tmp_path)
     (windows / "unexpected.txt").write_text("not release-owned", encoding="utf-8")
 
-    with pytest.raises(release_candidate.CandidateError, match="exactly five"):
+    with pytest.raises(release_candidate.CandidateError, match="exactly six"):
+        release_candidate._validate_windows_installer_assets(
+            windows,
+            WINDOWS_SETUP_VERSION,
+            COMMIT,
+            exact_file_set=True,
+        )
+
+
+def test_windows_setup_directory_requires_signed_certification_proof(tmp_path: Path) -> None:
+    windows = _windows_setup_dir(tmp_path)
+    proof = windows / f"{release_candidate.WINDOWS_SETUP_ASSET}.certification.json.bundle"
+    proof.unlink()
+
+    with pytest.raises(release_candidate.CandidateError, match="certification.json.bundle"):
+        release_candidate._validate_windows_installer_assets(
+            windows,
+            WINDOWS_SETUP_VERSION,
+            COMMIT,
+            exact_file_set=True,
+        )
+
+
+def test_windows_setup_directory_rejects_malformed_certification_proof(tmp_path: Path) -> None:
+    windows = _windows_setup_dir(tmp_path)
+    proof = windows / f"{release_candidate.WINDOWS_SETUP_ASSET}.certification.json.bundle"
+    proof.write_bytes(b"synthetic signature bytes")
+
+    with pytest.raises(release_candidate.CandidateError, match="legacy Cosign bundle"):
         release_candidate._validate_windows_installer_assets(
             windows,
             WINDOWS_SETUP_VERSION,

@@ -1155,7 +1155,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'disposable acceptance revalidates the exact single-link Setup handle before and after the lifecycle'
     Assert-True ($releaseWorkflowText -match 'invoke-windows-setup-standard-user-ci\.ps1' -and
         $releaseWorkflowText -match '-Mode setup-acceptance' -and
-        $releaseWorkflowText -notmatch '(?s)Validate the exact installer lifecycle.*?-AllowCurrentUserSetupAcceptance') `
+        $releaseWorkflowText -notmatch '-AllowCurrentUserSetupAcceptance') `
         'Setup acceptance uses the same real standard-user boundary'
     Assert-True ($nativeWorkflowText -match 'Always clean isolated processes, listeners, and temp state') 'required jobs have cleanup safety nets'
     $pathSnapshotFunction = [regex]::Match(

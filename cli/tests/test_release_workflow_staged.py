@@ -269,7 +269,7 @@ def test_release_jobs_pin_the_bundle_verifier_binary() -> None:
         if step.get("uses", "").startswith("sigstore/cosign-installer@")
     ]
 
-    assert len(installers) == 6
+    assert len(installers) == 7
     assert all(step["uses"] == COSIGN_INSTALLER_ACTION for step in installers)
     assert all(step.get("with") == {"cosign-release": "v2.6.2"} for step in installers)
 
@@ -405,7 +405,9 @@ def test_build_once_candidate_is_reused_by_tests_and_publisher() -> None:
     assert text.count("make extensions") == 1
     assert text.count("scripts/release_candidate.py prepare-runtime") == 1
     assert text.count("scripts/release_candidate.py assemble") == 1
-    assert text.count("cosign sign-blob") == 1
+    assert text.count("cosign sign-blob") == 2
+    assert text.count("--bundle=release-candidate/dist/checksums.txt.bundle") == 1
+    assert text.count("--bundle=windows-certified/DefenseClawSetup-x64.exe.certification.json.bundle") == 1
     assert text.count("scripts/release_candidate.py seal") == 1
 
     jobs = _workflow()["jobs"]
@@ -651,8 +653,10 @@ def test_release_requires_windows_signing_credentials_and_allows_optional_macos(
         "WINDOWS_SIGNING_CERT_PASSWORD",
     ):
         assert f"${{{{ secrets.{name} != '' }}}}" in rendered
+    assert "${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL != '' }}" in credentials["run"]
     assert "APPLE_CREDENTIAL_COUNT" in credentials["run"]
     assert "WINDOWS_CREDENTIAL_COUNT" in credentials["run"]
+    assert "WINDOWS_CREDENTIAL_COUNT != 3" in credentials["run"]
     assert "Apple signing/notarization credentials are partially configured" in credentials["run"]
     assert "Windows Authenticode signing credentials are required" in credentials["run"]
     assert "no Apple credentials; macOS assets will be explicitly unverified" in credentials["run"]
@@ -702,6 +706,7 @@ def test_windows_release_requires_signed_setup_and_real_client_certification() -
     certification_text = str(certification)
     assert certification["runs-on"] == "windows-latest"
     assert certification["environment"] == "release"
+    assert certification["permissions"]["id-token"] == "write"
     assert "needs.windows-installer.outputs.artifact_id" in certification_text
     assert "needs.windows-installer.outputs.artifact_digest" in certification_text
     assert "OPENAI_API_KEY" in certification_text
@@ -711,6 +716,8 @@ def test_windows_release_requires_signed_setup_and_real_client_certification() -
         step for step in certification["steps"] if step.get("id") == "windows-certified-artifact"
     )
     assert "DefenseClawSetup-x64.exe.certification.json" in certified_upload["with"]["path"]
+    assert "DefenseClawSetup-x64.exe.certification.json.bundle" in certified_upload["with"]["path"]
+    assert "Sign release-owned Authenticode attestation" in certification_text
 
     assemble = jobs["assemble-release-candidate"]
     windows_download = next(
@@ -721,6 +728,8 @@ def test_windows_release_requires_signed_setup_and_real_client_certification() -
     )
     assert "needs.windows-real-client-certification.outputs.artifact_digest" in str(assemble)
     assert "needs.windows-real-client-certification.outputs.source_artifact_digest" in str(assemble)
+    assert "Verify release-owned Authenticode attestation" in str(assemble)
+    assert "release.yaml@refs/heads/main" in str(assemble)
 
     release_text = WORKFLOW.read_text(encoding="utf-8")
     smoke_text = CERTIFICATION_WORKFLOW.read_text(encoding="utf-8")

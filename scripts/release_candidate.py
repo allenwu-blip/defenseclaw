@@ -565,6 +565,7 @@ def windows_installer_asset_names(version: str) -> tuple[str, ...]:
     return (
         WINDOWS_SETUP_ASSET,
         f"{WINDOWS_SETUP_ASSET}.certification.json",
+        f"{WINDOWS_SETUP_ASSET}.certification.json.bundle",
         f"{WINDOWS_SETUP_ASSET}.provenance.json",
         f"{WINDOWS_SETUP_ASSET}.sbom.json",
         f"{WINDOWS_SETUP_ASSET}.sha256",
@@ -4302,7 +4303,10 @@ def _validate_windows_installer_assets(
         return
     _require_regular_files(directory, names, "Windows installer artifact")
     if exact_file_set and _strict_file_names(directory, "Windows installer artifact") != names:
-        raise CandidateError("Windows installer artifact directory must contain exactly five files")
+        raise CandidateError("Windows installer artifact directory must contain exactly six files")
+    _validate_legacy_cosign_bundle(
+        directory / f"{WINDOWS_SETUP_ASSET}.certification.json.bundle"
+    )
     setup_path = directory / WINDOWS_SETUP_ASSET
     setup_sha256 = _validate_windows_setup_pe(setup_path)
     sidecar = directory / f"{WINDOWS_SETUP_ASSET}.sha256"
