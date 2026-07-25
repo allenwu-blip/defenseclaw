@@ -573,90 +573,97 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         setup.append(StepResult("Config", "fail", str(exc), "defenseclaw config validate"))
 
     store = Store(cfg.audit_db)
+    logger = None
     try:
-        store.init()
-    except Exception as exc:  # broad: sqlite/file errors need to surface
-        setup.append(StepResult("Audit DB", "fail", str(exc), "defenseclaw doctor --fix"))
-    # A genuinely new/pre-v8 bootstrap has no canonical graph yet. Re-running
-    # first-run against v8 must use the live owner and must not silently drop
-    # ordinary v8 setup mutations.
-    logger = (
-        Logger.no_runtime()
-        if new_config or getattr(cfg, "_source_config_version", None) != 8
-        else Logger.from_config(cfg)
-    )
+        try:
+            store.init()
+        except Exception as exc:  # broad: sqlite/file errors need to surface
+            setup.append(StepResult("Audit DB", "fail", str(exc), "defenseclaw doctor --fix"))
+        # A genuinely new/pre-v8 bootstrap has no canonical graph yet. Re-running
+        # first-run against v8 must use the live owner and must not silently drop
+        # ordinary v8 setup mutations.
+        logger = (
+            Logger.no_runtime()
+            if new_config or getattr(cfg, "_source_config_version", None) != 8
+            else Logger.from_config(cfg)
+        )
 
-    try:
         bootstrap = bootstrap_env(cfg, logger)
         if bootstrap.errors:
             setup.extend(StepResult("Bootstrap", "fail", e, "defenseclaw doctor --fix") for e in bootstrap.errors)
         else:
             setup.append(StepResult("Bootstrap", "pass", cfg.data_dir))
-    finally:
-        pass
 
-    _persist_first_run_secrets(cfg, options, setup)
+        _persist_first_run_secrets(cfg, options, setup)
 
-    if options.skip_install:
-        setup.append(StepResult("Scanners", "skip", "--skip-install"))
-    else:
-        scanner_status = _scanner_availability(cfg)
-        setup.extend(scanner_status)
+        if options.skip_install:
+            setup.append(StepResult("Scanners", "skip", "--skip-install"))
+        else:
+            scanner_status = _scanner_availability(cfg)
+            setup.extend(scanner_status)
 
-    app = AppContext()
-    app.cfg = cfg
-    app.store = store
-    app.logger = logger
+        app = AppContext()
+        app.cfg = cfg
+        app.store = store
+        app.logger = logger
 
-    setup.append(_quiet_guardrail_setup(app, connector, verbose=options.verbose))
-    setup.extend(_connector_mode_warning_steps(connector_mode_warnings))
+        setup.append(_quiet_guardrail_setup(app, connector, verbose=options.verbose))
+        setup.extend(_connector_mode_warning_steps(connector_mode_warnings))
 
-    if options.sandbox:
-        setup.append(
-            StepResult(
-                "Sandbox",
-                "warn",
-                "sandbox setup is experimental, Linux-only, and OpenClaw/OpenShell-only",
-                "defenseclaw sandbox setup",
+        if options.sandbox:
+            setup.append(
+                StepResult(
+                    "Sandbox",
+                    "warn",
+                    "sandbox setup is experimental, Linux-only, and OpenClaw/OpenShell-only",
+                    "defenseclaw sandbox setup",
+                )
             )
+
+        if options.start_gateway:
+            setup.append(_start_gateway_structured(cfg))
+        else:
+            setup.append(
+                StepResult(
+                    "Sidecar",
+                    "skip",
+                    "not started (--no-start-gateway)",
+                    "defenseclaw-gateway start",
+                )
+            )
+
+        try:
+            finalize_first_run_config(cfg, was_config_absent=was_config_absent)
+        except FreshMigrationStateError as exc:
+            setup.append(StepResult("Migration State", "fail", str(exc), "defenseclaw init"))
+        except OSError as exc:
+            setup.append(StepResult("Config Save", "fail", str(exc), "defenseclaw config validate"))
+
+        readiness = (
+            targeted_readiness(cfg, options)
+            if options.verify
+            else [StepResult("Readiness", "skip", "--no-verify", "defenseclaw doctor")]
         )
 
-    if options.start_gateway:
-        setup.append(_start_gateway_structured(cfg))
-    else:
-        setup.append(StepResult("Sidecar", "skip", "not started (--no-start-gateway)", "defenseclaw-gateway start"))
-
-    try:
-        finalize_first_run_config(cfg, was_config_absent=was_config_absent)
-    except FreshMigrationStateError as exc:
-        setup.append(StepResult("Migration State", "fail", str(exc), "defenseclaw init"))
-    except OSError as exc:
-        setup.append(StepResult("Config Save", "fail", str(exc), "defenseclaw config validate"))
-
-    readiness = (
-        targeted_readiness(cfg, options)
-        if options.verify
-        else [StepResult("Readiness", "skip", "--no-verify", "defenseclaw doctor")]
-    )
-
-    try:
-        logger.close()
+        next_commands = _next_commands(setup, readiness, cfg, profile)
+        status = _rollup_status(setup, readiness)
+        return FirstRunReport(
+            status=status,
+            config_file=str(cfg_mod.config_path()),
+            data_dir=cfg.data_dir,
+            connector=connector,
+            profile=profile,
+            setup=setup,
+            readiness=readiness,
+            next_commands=next_commands,
+            connector_mode_warnings=connector_mode_warnings,
+        )
     finally:
-        store.close()
-
-    next_commands = _next_commands(setup, readiness, cfg, profile)
-    status = _rollup_status(setup, readiness)
-    return FirstRunReport(
-        status=status,
-        config_file=str(cfg_mod.config_path()),
-        data_dir=cfg.data_dir,
-        connector=connector,
-        profile=profile,
-        setup=setup,
-        readiness=readiness,
-        next_commands=next_commands,
-        connector_mode_warnings=connector_mode_warnings,
-    )
+        try:
+            if logger is not None:
+                logger.close()
+        finally:
+            store.close()
 
 
 def targeted_readiness(cfg: Config, options: FirstRunOptions) -> list[StepResult]:

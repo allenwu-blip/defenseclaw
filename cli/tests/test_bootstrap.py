@@ -323,12 +323,24 @@ class FreshMigrationCursorTests(unittest.TestCase):
         )
 
     def test_later_setup_exception_does_not_create_cursor(self):
+        import sqlite3
+
         from defenseclaw import migration_state
         from defenseclaw.bootstrap import FirstRunOptions, run_first_run
+        from defenseclaw.db import Store
 
         data_dir = os.path.join(self._tmp.name, "setup-failure")
+        stores = []
+
+        def track_store(path):
+            store = Store(path)
+            stores.append(store)
+            return store
+
         with (
             patch.dict(os.environ, {"DEFENSECLAW_HOME": data_dir}),
+            patch("defenseclaw.db.Store", side_effect=track_store),
+            patch("defenseclaw.logger.Logger.no_runtime") as no_runtime,
             patch(
                 "defenseclaw.bootstrap._quiet_guardrail_setup",
                 side_effect=RuntimeError("injected setup failure"),
@@ -347,6 +359,11 @@ class FreshMigrationCursorTests(unittest.TestCase):
 
         self.assertTrue(os.path.isfile(os.path.join(data_dir, "config.yaml")))
         self.assertFalse(os.path.lexists(migration_state.state_path(data_dir)))
+        no_runtime.return_value.close.assert_called_once_with()
+        self.assertTrue(stores)
+        for store in stores:
+            with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+                store.db.execute("SELECT 1")
 
     def test_cursor_publication_failure_is_repaired_on_rerun(self):
         from defenseclaw import migration_state
