@@ -407,9 +407,11 @@ gh workflow run release.yaml \
 ```
 
 Selecting **main**, the operation, and the version is the whole release
-request. Anything merged to `main` is source-certified, and GitHub
-automatically freezes the run's exact `github.sha`; operators do not copy a
-commit SHA or confirm repository settings.
+request. Anything merged to protected `main` is source-certified only while
+required checks and the reviewed release workflow and signing identity remain
+protected from administrator-level bypass. GitHub automatically freezes the
+run's exact `github.sha`; operators do not copy a commit SHA or confirm
+repository settings.
 
 Do not create or push the tag yourself. The workflow must retain exclusive
 ownership of that namespace until its tested candidate is approved and

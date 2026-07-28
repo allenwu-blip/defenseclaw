@@ -1834,8 +1834,11 @@ def test_release_docs_use_one_dispatch_and_never_precreate_tag() -> None:
     assert "operation: release" in install
     assert f"version: {RELEASE_DOC_EXAMPLE_VERSION}" in install
     assert "Selecting **main**, the operation, and the version is the whole release" in install
-    assert "automatically freezes the run's exact `github.sha`" in install
     normalized = " ".join(install.split())
+    assert "automatically freezes the run's exact `github.sha`" in normalized
+    assert "protected `main` is source-certified only while required checks" in normalized
+    assert "reviewed release workflow and signing identity remain protected" in normalized
+    assert "administrator-level bypass" in normalized
     assert "operators do not copy a commit SHA or confirm repository settings" in normalized
     assert r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$" in install
     assert "Do not create or push the tag yourself" in install
