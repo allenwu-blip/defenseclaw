@@ -92,8 +92,25 @@ func correlationContractSources(name string) []CorrelationContractSource {
 		return source("opencode-source-75cf4cc8",
 			"https://github.com/anomalyco/opencode", "75cf4cc8a83a5b5f99ba974f135f690a1f9b5a76")
 	case "omnigent":
-		return source("omnigent-source-35519fb",
-			"https://github.com/omnigent-ai/omnigent", "35519fb04743f66b30cac8a40695d5d72fa163ea")
+		return []CorrelationContractSource{{
+			ID: "omnigent-source-35519fb", URI: "https://github.com/omnigent-ai/omnigent",
+			Revision:    "35519fb04743f66b30cac8a40695d5d72fa163ea",
+			CheckedDate: "2026-07-30",
+			Fixtures: []CorrelationContractFixture{
+				{
+					ID: "omnigent-policy-event-35519fb", Surface: CorrelationSurfaceHook,
+					Path:         "internal/gateway/connector/testdata/omnigent-policy-event.json",
+					SHA256:       "sha256:dae13269b64c22c01870e94d401a33e1c9ee0866e5be23bb0629452824188cf8",
+					AgentVersion: "0.7.0", EvidenceKind: "provider-source-derived",
+				},
+				{
+					ID: "omnigent-otel-span-35519fb", Surface: CorrelationSurfaceNativeOTLP,
+					Path:         "internal/gateway/connector/testdata/omnigent-otel-span.json",
+					SHA256:       "sha256:4a801230dcb078821cdbde81269ac558532fc55de1525a67d29993b32e245ca7",
+					AgentVersion: "0.7.0", EvidenceKind: "provider-source-derived",
+				},
+			},
+		}}
 	default:
 		return nil
 	}

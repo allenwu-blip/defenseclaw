@@ -89,6 +89,39 @@ def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(
     ]
 
 
+def test_omnigent_version_probe_uses_bounded_slow_start_timeout(monkeypatch) -> None:
+    invocation: dict[str, object] = {}
+
+    def run(command, **kwargs):
+        invocation["command"] = command
+        invocation.update(kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"omnigent 0.7.0 (built 2026-07-27T22:01:50Z)\r\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(ad.subprocess, "run", run)
+
+    version, error = ad._version_for_agent_binary(
+        "omnigent",
+        r"C:\Users\tester\.local\bin\omnigent.exe",
+        ("--version",),
+        require_trusted_binary_paths=False,
+    )
+
+    assert (version, error) == ("omnigent 0.7.0 (built 2026-07-27T22:01:50Z)", "")
+    assert invocation["command"] == [
+        r"C:\Users\tester\.local\bin\omnigent.exe",
+        "--version",
+    ]
+    assert invocation["shell"] is False
+    assert invocation["timeout"] == 8.0
+    assert invocation["capture_output"] is True
+    assert invocation["text"] is False
+
+
 @pytest.fixture
 def windows_host_no_path(monkeypatch) -> None:
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)

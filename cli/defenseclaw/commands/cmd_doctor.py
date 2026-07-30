@@ -633,7 +633,8 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "pass",
             "Human approval",
-            "OmniGent supports native ASK on request, tool_call, and llm_request; post-action confirms use fallback",
+            "OmniGent native-degraded preview supports ASK on request, tool_call, and llm_request; "
+            "post-action confirms use fallback",
             r=r,
         )
     else:
@@ -2105,12 +2106,61 @@ def _omnigent_runtime_paths_from_backups(cfg) -> list[str]:
                 record = json.load(fh)
         except (OSError, UnicodeError, json.JSONDecodeError):
             continue
+        if not isinstance(record, dict):
+            continue
         if record.get("connector") != "omnigent" or record.get("logical_name") != logical:
             continue
         target = str(record.get("path") or "").strip()
         if target and target not in paths:
             paths.append(target)
     return paths
+
+
+def _omnigent_managed_artifact_drift(cfg, logical: str, path: str) -> str:
+    """Return an integrity/custody failure for one OmniGent-managed artifact."""
+    data_dir = str(getattr(cfg, "data_dir", "") or "")
+    backup_path = os.path.join(data_dir, "connector_backups", "omnigent", f"{logical}.json")
+    try:
+        if os.path.islink(backup_path):
+            return f"managed {logical} backup is a symbolic link: {backup_path}"
+        with open(backup_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return f"managed {logical} backup evidence is missing or unreadable: {backup_path}"
+    if not isinstance(record, dict):
+        return f"managed {logical} backup identity is invalid: {backup_path}"
+    if (
+        record.get("version") != 1
+        or record.get("connector") != "omnigent"
+        or record.get("logical_name") != logical
+    ):
+        return f"managed {logical} backup identity is invalid: {backup_path}"
+    recorded_path = str(record.get("path") or "")
+    if (
+        not recorded_path
+        or not os.path.isabs(recorded_path)
+        or os.path.normcase(os.path.abspath(recorded_path))
+        != os.path.normcase(os.path.abspath(path))
+    ):
+        return f"managed {logical} backup target does not match the active artifact: {backup_path}"
+    expected = str(record.get("post_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return f"managed {logical} backup digest is missing or invalid: {backup_path}"
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return f"managed {logical} artifact is not a regular file: {path}"
+        with open(path, "rb") as fh:
+            body = fh.read(2 * 1024 * 1024 + 1)
+    except OSError as exc:
+        return f"managed {logical} artifact cannot be read: {exc}"
+    if len(body) > 2 * 1024 * 1024:
+        return f"managed {logical} artifact exceeds the 2 MiB integrity limit: {path}"
+    if hashlib.sha256(body).hexdigest() != expected:
+        return (
+            f"managed OmniGent {logical} drift detected; run "
+            "`defenseclaw setup omnigent --yes --restart` to reconcile"
+        )
+    return ""
 
 
 def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
@@ -2149,7 +2199,16 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
     if not import_path or os.path.realpath(import_path) != os.path.realpath(os.path.dirname(module_path)):
         _emit("fail", "OmniGent policy", f".pth import shim is missing or points elsewhere: {pth_path}", r=r)
         return
-    _emit("pass", "OmniGent policy", f"config={config_path}; module={module_path}; import={pth_path}", r=r)
+    for logical, path in (("config", config_path), ("module", module_path), ("pth", pth_path)):
+        if drift := _omnigent_managed_artifact_drift(cfg, logical, path):
+            _emit("fail", "OmniGent policy", drift, r=r)
+            return
+    _emit(
+        "pass",
+        "OmniGent policy",
+        f"native-degraded preview; config={config_path}; module={module_path}; import={pth_path}",
+        r=r,
+    )
 
 
 def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
@@ -2548,8 +2607,14 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
         mode = modes.get(connectors[0], "observe")
         if connectors[0] == "omnigent":
             if mode == "action":
-                return "policy-enforced for omnigent (mode=action via ALLOW/ASK/DENY) — proxy port intentionally closed"
-            return "policy-driven for omnigent (mode=observe) — proxy port intentionally closed"
+                return (
+                    "policy-enforced for omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY) "
+                    "— proxy port intentionally closed"
+                )
+            return (
+                "policy-driven for omnigent (native-degraded preview; mode=observe) "
+                "— proxy port intentionally closed"
+            )
         if mode == "action":
             return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
@@ -2560,9 +2625,9 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
     parts = []
     for connector, mode in modes.items():
         if connector == "omnigent" and mode == "action":
-            parts.append("omnigent (mode=action via ALLOW/ASK/DENY)")
+            parts.append("omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)")
         elif connector == "omnigent":
-            parts.append("omnigent (mode=observe via custom policy API)")
+            parts.append("omnigent (native-degraded preview; mode=observe via custom policy API)")
         elif mode == "action":
             parts.append(f"{connector} (mode=action via PreToolUse deny)")
         else:

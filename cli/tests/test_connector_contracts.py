@@ -283,12 +283,23 @@ class TestConnectorContractManifest(unittest.TestCase):
         compat = resolve_connector_contract("omnigent", "")
         templates = compat.contract.hook_config_path_templates
 
+        self.assertEqual(compat.status, STATUS_UNVERSIONED)
+        self.assertEqual(compat.contract.min_agent_version, "0.7.0")
         self.assertIn("$OMNIGENT_CONFIG_HOME/config.yaml", templates)
         self.assertIn("~/.omnigent/config.yaml", templates)
         self.assertLess(
             templates.index("$OMNIGENT_CONFIG_HOME/config.yaml"),
             templates.index("~/.omnigent/config.yaml"),
         )
+
+        before_floor = resolve_connector_contract("omnigent", "omnigent 0.6.99")
+        self.assertFalse(before_floor.supported)
+        self.assertEqual(before_floor.status, STATUS_UNKNOWN)
+
+        proven = resolve_connector_contract("omnigent", "omnigent 0.7.0")
+        self.assertTrue(proven.supported)
+        self.assertEqual(proven.status, STATUS_KNOWN)
+        self.assertEqual(proven.contract.contract_id, "omnigent-custom-policy-v1")
 
     def test_hermes_contract_advertises_native_windows_path_precedence(self) -> None:
         compat = resolve_connector_contract("hermes", "")

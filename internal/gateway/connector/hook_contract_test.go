@@ -73,6 +73,9 @@ func TestHookContractResolution(t *testing.T) {
 		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_other_agent_build_unknown", "cursor", "cursor-agent 2026.07.23-deadbee", HookCompatibilityUnknown, "", "2026.7.23"},
 		{"cursor_desktop_version_not_agent_contract", "cursor", "cursor 3.13.21", HookCompatibilityUnknown, "", "3.13.21"},
+		{"omnigent_before_proven_floor", "omnigent", "omnigent 0.6.99", HookCompatibilityUnknown, "", "0.6.99"},
+		{"omnigent_proven_floor", "omnigent", "omnigent 0.7.0", HookCompatibilityKnown, "omnigent-custom-policy-v1", "0.7.0"},
+		{"omnigent_unversioned_requires_override", "omnigent", "", HookCompatibilityUnversioned, "omnigent-custom-policy-v1", ""},
 		{"unversioned_uses_default", "cursor", "", HookCompatibilityUnversioned, "cursor-hooks-v1", ""},
 		{"openclaw_proxy_not_gated", "openclaw", "", HookCompatibilityNotGated, "", ""},
 		{"zeptoclaw_proxy_not_gated", "zeptoclaw", "zeptoclaw 0.5.0", HookCompatibilityNotGated, "", "0.5.0"},
@@ -240,6 +243,30 @@ func TestHermesHookContractV019ClassifiesAllValidEventsWithoutInventingBlockSurf
 	}
 	if contract.Capabilities.CanAskNative || contract.Capabilities.SupportsFailClosed {
 		t.Fatalf("Hermes contract invented ask/fail-closed support: %+v", contract.Capabilities)
+	}
+}
+
+func TestOmniGentV070ContractPreservesPostPhaseDenyWithoutPostPhaseAsk(t *testing.T) {
+	resolution := ResolveHookContract("omnigent", "omnigent 0.7.0")
+	if resolution.Status != HookCompatibilityKnown {
+		t.Fatalf("OmniGent v0.7.0 compatibility = %q, want known", resolution.Status)
+	}
+	contract := resolution.Contract
+	if contract.MinAgentVersion != "0.7.0" {
+		t.Fatalf("OmniGent minimum version = %q, want 0.7.0", contract.MinAgentVersion)
+	}
+	if got, want := contract.Events, []string{
+		"UserPromptSubmit", "PreToolUse", "PostToolUse",
+		"AfterAgentResponse", "BeforeModel", "AfterModel",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("OmniGent events = %v, want %v", got, want)
+	}
+	wantPre := []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"}
+	if !reflect.DeepEqual(contract.Capabilities.AskEvents, wantPre) {
+		t.Fatalf("OmniGent ASK events = %v, want %v", contract.Capabilities.AskEvents, wantPre)
+	}
+	if !reflect.DeepEqual(contract.Capabilities.BlockEvents, contract.Events) {
+		t.Fatalf("OmniGent DENY events = %v, want all six %v", contract.Capabilities.BlockEvents, contract.Events)
 	}
 }
 

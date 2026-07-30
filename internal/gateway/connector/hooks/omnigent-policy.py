@@ -96,7 +96,10 @@ def _payload(event: dict[str, Any]) -> dict[str, Any]:
         "omnigent_event_type": event_type,
         "agent_name": "OmniGent",
         "agent_type": "omnigent",
-        "agent_id": str(actor.get("client_id") or ""),
+        # OmniGent documents this as the calling actor/client identity, not as
+        # an agent identity. Keep the exact meaning for audit without letting
+        # the generic correlation decoder reinterpret it as ``agent_id``.
+        "omnigent_actor_client_id": str(actor.get("client_id") or ""),
         "model": str(context.get("model") or ""),
         "tool_name": tool_name,
         "tool_input": _safe(tool_input),

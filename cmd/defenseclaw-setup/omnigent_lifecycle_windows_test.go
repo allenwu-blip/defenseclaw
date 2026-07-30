@@ -35,6 +35,16 @@ func TestOmnigentSetupSelectionAndLifecycleBinding(t *testing.T) {
 	if !requestedServices(opts, serviceState{}).Gateway {
 		t.Fatal("OmniGent Setup selection did not require the native gateway")
 	}
+	initArgs := initialConfigurationArgs(opts)
+	wantInitArgs := []string{
+		"init", "--skip-install", "--non-interactive", "--yes",
+		"--connector", "omnigent",
+		"--profile", "action",
+		"--no-start-gateway", "--no-verify",
+	}
+	if !slices.Equal(initArgs, wantInitArgs) {
+		t.Fatalf("OmniGent canonical initialization args = %q, want %q", initArgs, wantInitArgs)
+	}
 
 	dataRoot := filepath.Join(t.TempDir(), ".defenseclaw")
 	configHome := filepath.Join(t.TempDir(), ".omnigent")

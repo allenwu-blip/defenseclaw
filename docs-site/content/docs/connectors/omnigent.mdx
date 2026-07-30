@@ -73,12 +73,18 @@ All three managed files are backed up. Teardown restores unchanged files byte-fo
 | --- | --- | --- |
 | `request` | `UserPromptSubmit` | ALLOW, native ASK, or DENY |
 | `tool_call` | `PreToolUse` | ALLOW, native ASK, or DENY before execution |
-| `tool_result` | `PostToolUse` | attributed observation after execution; cannot replace or reverse the result |
-| `response` | `AfterAgentResponse` | attributed observation; cannot replace or reverse the response |
+| `tool_result` | `PostToolUse` | DENY suppresses the downstream result with OmniGent's denial text; execution is not rolled back |
+| `response` | `AfterAgentResponse` | DENY persists OmniGent's sentinel response; completed model work is not rolled back |
 | `llm_request` | `BeforeModel` | ALLOW, native ASK, or DENY |
-| `llm_response` | `AfterModel` | attributed observation; cannot replace or reverse the response |
+| `llm_response` | `AfterModel` | DENY can suppress onward-visible content; completed model work is not rolled back |
 
-OmniGent parks only its pre-action `request`, `tool_call`, and `llm_request` phases for approval. DefenseClaw therefore advertises native human approval only for those events. The bridge also honors fail-open or fail-closed behavior when the gateway is unavailable.
+OmniGent parks only its pre-action `request`, `tool_call`, and `llm_request`
+phases for approval. DefenseClaw therefore advertises native human approval
+only for those events. A post-phase confirm finding is audited and continues
+without an approval pause. A post-phase DENY uses OmniGent's built-in
+denial/sentinel behavior; the bridge does not supply custom replacement data
+and cannot undo a tool call or model request that already completed. The bridge
+also honors fail-open or fail-closed behavior when the gateway is unavailable.
 
 The official extension is an awaited in-process Python function. It does not
 read policy events from stdin, write verdicts to stdout, or communicate an
@@ -112,6 +118,12 @@ base/default dependency set; no separate tracing extra is required. The status
 API reports only channels configured by DefenseClaw, so it continues to show
 `hooks`; native OTLP remains a separately documented capability because setup
 cannot verify another process's environment.
+
+OmniGent 0.7.0 policy events do not publish stable session, turn, tool-call, or
+model-request IDs. Native spans can carry OmniGent's `session.id`, but there is
+no source-proven field that joins that native session to a policy event.
+DefenseClaw therefore records native session correlation as partial and does
+not infer missing cross-rail identities.
 
 ## Local surfaces
 

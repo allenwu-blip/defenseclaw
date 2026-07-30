@@ -310,6 +310,9 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		return setupTransaction{}, err
 	}
 	defaultOmnigentConfigHome, err := defaultConnectorConfigHome(".omnigent")
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	hermesDefaultHome, err := defaultHermesHome()
 	if err != nil {
 		return setupTransaction{}, err

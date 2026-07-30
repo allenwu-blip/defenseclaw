@@ -1637,7 +1637,7 @@ def _version_for_binary(
     binary_name = _binary_command_name(binary_path)
     env = None
     timeout = VERSION_TIMEOUT_SECONDS
-    if binary_name in {"claude", "hermes", "openhands"}:
+    if binary_name in {"claude", "hermes", "omnigent", "openhands"}:
         timeout = 8.0
     if binary_name == "openhands":
         env = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"}

@@ -715,7 +715,7 @@ var builtinHookContracts = map[string][]HookContract{
 			CanBlock:           true,
 			CanAskNative:       true,
 			AskEvents:          []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
-			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
+			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "AfterAgentResponse", "BeforeModel", "AfterModel"},
 			SupportsFailClosed: true,
 			Scope:              "user",
 		},
@@ -724,7 +724,8 @@ var builtinHookContracts = map[string][]HookContract{
 		Notes: []string{
 			"OmniGent invokes DefenseClaw through its documented custom Python policy API; the installed callable translates DefenseClaw allow, confirm, and block verdicts to ALLOW, ASK, and DENY.",
 			"The bridge covers request, tool_call, tool_result, response, llm_request, and llm_response phases exposed by OmniGent's PolicyEvent schema.",
-			"ASK and DENY are authoritative only for OmniGent's pre-action request, tool_call, and llm_request phases; post phases are attributed observation and cannot replace or reverse completed results.",
+			"DENY is authoritative on all six phases. Pre-action DENY prevents the action; post-phase DENY uses OmniGent's denial/sentinel behavior to suppress or replace onward-visible content but cannot roll back completed tool or model work. The bridge does not return custom replacement data.",
+			"ASK is native only for OmniGent's pre-action request, tool_call, and llm_request phases; post-phase confirm findings remain attributed audit and continue without an approval pause.",
 			"The in-process Python bridge forwards an active OpenTelemetry W3C trace context when present; otherwise DefenseClaw starts a new trace.",
 			"Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; the base/default dependency set includes the required OpenTelemetry packages.",
 		},

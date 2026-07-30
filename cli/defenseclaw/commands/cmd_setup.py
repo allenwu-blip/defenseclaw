@@ -3840,7 +3840,7 @@ def _hilt_support_note(connector: str) -> str:
     if connector == "omnigent":
         return (
             "OmniGent parks request, tool_call, and llm_request policy phases for native ASK approval; "
-            "post-action confirm verdicts use the configured fallback."
+            "post-phase confirm findings are audited and continue without an approval pause."
         )
     if connector in {"hermes", "windsurf", "geminicli", "openhands", "opencode"}:
         return (

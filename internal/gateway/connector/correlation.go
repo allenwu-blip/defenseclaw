@@ -760,26 +760,36 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		// session_state, llm_client, and request_data. It does not promise the
 		// conversation/response/item/call IDs previously attributed here.
 		// Accept only exact canonical DefenseClaw fields if a future explicit
-		// adapter adds them, and retain only standard OTel bindings on the
-		// separately authenticated native surface.
-		return makeSpec(
+		// adapter adds them. On the separately authenticated native surface,
+		// v0.7.0 proves only session.id as an identity. Its gen_ai.agent.name,
+		// gen_ai.request.model, and gen_ai.tool.name attributes are names, not
+		// occurrence IDs, and must not populate agent/model/tool ID targets.
+		spec, ok := makeSpec(
 			CorrelationProfileOmniGentV1,
 			"omnigent-custom-policy-v1",
 			[]CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP},
 			base,
-			nativeStandard(ns),
+			[]CorrelationFieldBinding{
+				reported(CorrelationTargetSession, ns, "session", "session.id"),
+			},
 			nil,
 			complete(
-				CorrelationCompletenessAbsent,
+				CorrelationCompletenessPartial,
 				CorrelationCompletenessAbsent,
 				CorrelationCompletenessAbsent,
 				CorrelationCompletenessAbsent,
 				CorrelationCompletenessAbsent,
 				CorrelationCompletenessPartial,
 				"OmniGent v0.7.0 PolicyEvent does not publish stable connector/session/turn/tool/model IDs",
-				"native OTel correlation is limited to standard authenticated resource and trace fields",
+				"native OTel proves session.id on session-scoped spans but no cross-rail mirror identity or stable turn/tool/model occurrence IDs",
 			),
 		)
+		if ok {
+			// v0.7.0 has no source-event occurrence ID on either reviewed
+			// surface, so the makeSpec default must not authorize receipts.
+			spec.ReceiptTargets = nil
+		}
+		return spec, ok
 	default:
 		return CorrelationSpec{}, false
 	}

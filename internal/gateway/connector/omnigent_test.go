@@ -656,8 +656,12 @@ with open(sys.argv[2], encoding="utf-8") as fh:
 	if err := json.Unmarshal(output, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["hook_event_name"] != "PostToolUse" || payload["tool_name"] != "shell" || payload["agent_id"] != "client-123" {
+	if payload["hook_event_name"] != "PostToolUse" || payload["tool_name"] != "shell" ||
+		payload["omnigent_actor_client_id"] != "client-123" {
 		t.Fatalf("normalized fixture = %#v", payload)
+	}
+	if _, invented := payload["agent_id"]; invented {
+		t.Fatalf("official actor client_id was reclassified as an agent identity: %#v", payload)
 	}
 	input, _ := payload["tool_input"].(map[string]interface{})
 	if input["command"] != "pwd" {

@@ -16,6 +16,7 @@
 
 """Tests for 'defenseclaw init' command."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -341,7 +342,28 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.selection_mock.assert_not_called()
 
     def test_windows_omnigent_init_records_required_executable_receipt(self):
-        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+        self.selection_patcher.stop()
+        trusted = Path(self.tmp_dir) / "trusted"
+        trusted.mkdir()
+        executable = trusted / "omnigent.exe"
+        executable.write_bytes(b"native omnigent fixture")
+
+        with (
+            patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"),
+            patch(
+                "defenseclaw.agent_selection._builtin_setup_trusted_prefixes",
+                return_value=(str(trusted),),
+            ),
+            patch(
+                "defenseclaw.agent_selection.agent_discovery._binary_candidates_for_agent",
+                return_value=(),
+            ),
+            patch("defenseclaw.agent_selection.is_setup_trusted_binary", return_value=True),
+            patch(
+                "defenseclaw.agent_selection.agent_discovery._version_for_agent_binary",
+                return_value=("omnigent 0.7.0", ""),
+            ),
+        ):
             result = self._invoke([
                 "--non-interactive",
                 "--yes",
@@ -356,7 +378,18 @@ class TestInitFirstRunBackend(unittest.TestCase):
             ])
 
         self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
-        self.selection_mock.assert_called_once_with(self.tmp_dir, ["omnigent"])
+        with open(os.path.join(self.tmp_dir, "agent_selection.json"), encoding="utf-8") as fh:
+            receipt = json.load(fh)
+        selection = receipt["selections"]["omnigent"]
+        self.assertEqual(selection["connector"], "omnigent")
+        self.assertEqual(selection["source"], "setup-selected")
+        self.assertEqual(selection["executable"], str(executable.resolve()))
+        self.assertEqual(selection["raw_version"], "omnigent 0.7.0")
+        self.assertEqual(selection["normalized_version"], "0.7.0")
+        self.assertEqual(
+            selection["sha256"],
+            hashlib.sha256(executable.read_bytes()).hexdigest(),
+        )
 
     def test_windows_copilot_remains_publicly_not_certified(self):
         with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):

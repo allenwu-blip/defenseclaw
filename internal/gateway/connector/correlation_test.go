@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -504,27 +505,52 @@ func TestAllBuiltinCorrelationProfilesUseConnectorExactIDs(t *testing.T) {
 }
 
 func TestOmniGentOfficialPolicyEventDoesNotInventCorrelationIDs(t *testing.T) {
-	payload := map[string]interface{}{
-		"type":   "tool_result",
-		"target": "shell",
-		"data": map[string]interface{}{
-			"result": map[string]interface{}{"stdout": "/workspace\n", "exit_code": 0},
-		},
-		"context":       map[string]interface{}{"model": "test-model"},
-		"session_state": map[string]interface{}{},
-		"llm_client":    map[string]interface{}{},
-		"request_data": map[string]interface{}{
-			"name": "shell", "arguments": map[string]interface{}{"command": "pwd"},
-		},
+	raw, err := os.ReadFile(filepath.Join("testdata", "omnigent-policy-event.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
 	}
 	spec := DefaultCorrelationSpec("omnigent")
 	if got := spec.HookValues(payload); len(got) != 0 {
 		t.Fatalf("official OmniGent PolicyEvent produced unsupported correlation IDs: %+v", got)
 	}
-	if spec.Completeness.Session != CorrelationCompletenessAbsent ||
+	if spec.Completeness.Session != CorrelationCompletenessPartial ||
 		spec.Completeness.Turn != CorrelationCompletenessAbsent ||
-		spec.Completeness.Tool != CorrelationCompletenessAbsent {
+		spec.Completeness.AgentLifecycle != CorrelationCompletenessAbsent ||
+		spec.Completeness.Tool != CorrelationCompletenessAbsent ||
+		spec.Completeness.Model != CorrelationCompletenessAbsent {
 		t.Fatalf("OmniGent correlation completeness is overstated: %+v", spec.Completeness)
+	}
+	if len(spec.AllowedInferenceRules) != 0 || len(spec.ReceiptTargets) != 0 ||
+		len(spec.MirrorIdentityTargets) != 0 {
+		t.Fatalf("OmniGent v0.7.0 invented correlation authority: %+v", spec)
+	}
+
+	nativeRaw, err := os.ReadFile(filepath.Join("testdata", "omnigent-otel-span.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nativeFixture struct {
+		Attributes map[string]interface{} `json:"attributes"`
+	}
+	if err := json.Unmarshal(nativeRaw, &nativeFixture); err != nil {
+		t.Fatal(err)
+	}
+	session, ok := spec.NativeOTLPValue(nativeFixture.Attributes, CorrelationTargetSession)
+	if !ok || session.Path != "session.id" || session.Value != "conv_0123456789abcdef" {
+		t.Fatalf("OmniGent native session correlation = %+v, present=%v", session, ok)
+	}
+	for _, unsupported := range []string{
+		"gen_ai.conversation.id", "gen_ai.agent.id", "gen_ai.response.id",
+		"gen_ai.tool.call.id", "defenseclaw.turn.id",
+	} {
+		attributes := map[string]interface{}{unsupported: "invented"}
+		if got := spec.NativeOTLPValues(attributes); len(got) != 0 {
+			t.Fatalf("unsupported OmniGent native ID %q was accepted: %+v", unsupported, got)
+		}
 	}
 }
 

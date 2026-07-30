@@ -625,6 +625,27 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertIn("PreToolUse ask", result.checks[0]["detail"])
         self.assertIn("no override", result.checks[0]["detail"])
 
+    def test_hilt_omnigent_preserves_preview_and_pre_action_ask_scope(self):
+        cfg = Config(
+            data_dir="/tmp/defenseclaw",
+            audit_db="/tmp/defenseclaw/audit.db",
+            quarantine_dir="/tmp/defenseclaw/quarantine",
+            plugin_dir="/tmp/defenseclaw/plugins",
+            policy_dir="/tmp/defenseclaw/policies",
+            guardrail=GuardrailConfig(enabled=True, mode="action", connector="omnigent"),
+            gateway=GatewayConfig(),
+            openshell=OpenShellConfig(),
+        )
+        cfg.guardrail.hilt.enabled = True
+
+        result = _DoctorResult()
+        _check_hilt_support(cfg, "omnigent", result)
+
+        self.assertEqual(result.passed, 1, result.checks)
+        self.assertEqual(result.warned, 0, result.checks)
+        self.assertIn("native-degraded preview", result.checks[0]["detail"])
+        self.assertIn("request, tool_call, and llm_request", result.checks[0]["detail"])
+
 
 class DoctorHookReachabilityTests(unittest.TestCase):
     def _cfg(self, tmp: str, connector: str) -> Config:
@@ -2161,7 +2182,23 @@ class GuardrailProxyMultiConnectorTests(unittest.TestCase):
 
         self.assertTrue(detail.startswith("enforced for"), detail)
         self.assertIn("codex (mode=action via PreToolUse deny)", detail)
-        self.assertIn("omnigent (mode=action via ALLOW/ASK/DENY)", detail)
+        self.assertIn(
+            "omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)",
+            detail,
+        )
+        self.assertIn("proxy port intentionally closed", detail)
+
+    def test_single_omnigent_status_preserves_native_degraded_preview(self):
+        from defenseclaw.commands.cmd_doctor import (
+            _guardrail_proxy_intentionally_closed,
+        )
+
+        detail = _guardrail_proxy_intentionally_closed(
+            self._cfg(["omnigent"], mode="action")
+        )
+
+        self.assertIn("native-degraded preview", detail)
+        self.assertIn("mode=action via ALLOW/ASK/DENY", detail)
         self.assertIn("proxy port intentionally closed", detail)
 
     def test_proxy_peer_forces_real_probe(self):
