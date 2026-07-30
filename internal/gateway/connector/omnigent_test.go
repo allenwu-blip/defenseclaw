@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -450,8 +451,8 @@ print(json.dumps(module.defenseclaw_policy({
 	if received["hook_event_name"] != "PreToolUse" || received["tool_name"] != "shell" || received["model"] != "test-model" {
 		t.Fatalf("normalized request = %#v", received)
 	}
-	if received["agent_id"] != "" {
-		t.Fatalf("agent_id leaked actor.run_as: %#v", received["agent_id"])
+	if _, invented := received["agent_id"]; invented {
+		t.Fatalf("actor identity was reclassified as agent_id: %#v", received)
 	}
 }
 
@@ -539,6 +540,70 @@ print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})
 				t.Fatalf("verdict = %v, want %s", verdict, tc.want)
 			}
 		})
+	}
+}
+
+func TestOmnigentPostPhaseAlertContinuesInFailClosedMode(t *testing.T) {
+	python := omnigentTestPython(t)
+	var received []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		received = append(received, fmt.Sprint(payload["hook_event_name"]))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"action":"alert","reason":"post-phase confirm was audited"}`))
+	}))
+	defer server.Close()
+
+	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
+	rendered := renderOmnigentPolicy(
+		string(templateBytes),
+		strings.TrimPrefix(server.URL, "http://"),
+		"",
+		"closed",
+	)
+	if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("defenseclaw_omnigent_policy", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+events = [
+    {"type": "tool_result", "target": "shell", "data": {"result": "done"},
+     "request_data": {"name": "shell", "arguments": {}}},
+    {"type": "response", "data": "assistant response"},
+    {"type": "llm_response", "data": {"text_preview": "model response"}},
+]
+print(json.dumps([module.defenseclaw_policy(event) for event in events]))
+`
+	output, err := exec.Command(python, "-c", script, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute post-phase policy: %v\n%s", err, output)
+	}
+	var verdicts []map[string]string
+	if err := json.Unmarshal(output, &verdicts); err != nil {
+		t.Fatalf("decode post-phase verdicts %q: %v", output, err)
+	}
+	if len(verdicts) != 3 {
+		t.Fatalf("post-phase verdicts = %v", verdicts)
+	}
+	for index, verdict := range verdicts {
+		if verdict["result"] != "ALLOW" {
+			t.Errorf("post-phase verdict %d = %v, want ALLOW", index, verdict)
+		}
+	}
+	wantEvents := []string{"PostToolUse", "AfterAgentResponse", "AfterModel"}
+	if !reflect.DeepEqual(received, wantEvents) {
+		t.Fatalf("post-phase gateway events = %v, want %v", received, wantEvents)
 	}
 }
 

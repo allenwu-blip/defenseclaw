@@ -162,9 +162,15 @@ def defenseclaw_policy(event: dict[str, Any]) -> dict[str, str]:
     if not isinstance(result, dict):
         return _failure("gateway response was not an object")
     action = str(result.get("action") or "").lower()
-    if action not in {"allow", "block", "confirm"}:
+    if action not in {"allow", "alert", "block", "confirm"}:
         return _failure("gateway response had no valid action")
     reason = str(result.get("reason") or "")
+    if action == "alert":
+        # DefenseClaw already recorded the finding and uses ``alert`` when a
+        # post-action confirm cannot pause safely. Continuing is intentional;
+        # treating this authenticated fallback as invalid would turn it into a
+        # DENY under fail-closed and contradict the post-phase contract.
+        return {"result": "ALLOW"}
     if action == "block":
         return {"result": "DENY", "reason": reason or "DefenseClaw blocked this action."}
     if action == "confirm":
