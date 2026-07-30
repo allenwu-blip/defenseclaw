@@ -131,7 +131,7 @@ represent DefenseClaw Windows support or release certification.
 | Claude Code | supported | supported | supported | Anthropic documents direct PowerShell/CMD installation and native command hooks. Git for Windows is recommended, not required; Claude Code uses its PowerShell tool when Git Bash is absent. |
 | Cursor | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. Cursor CLI remains WSL-only. |
 | Windsurf | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
-| Gemini CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
+| Gemini CLI | supported (continuing paid/enterprise product) | supported (continuing paid/enterprise product) | **not certified** | Native Windows and the DefenseClaw adapter exist, but credentialed official-client certification is still required. Gemini CLI now serves enterprise, Google Cloud, and paid API-key users only. |
 | Copilot CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Antigravity | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | OpenCode | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
@@ -161,7 +161,7 @@ is `not separately documented` rather than an inferred support promise.
 | Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | Cursor | Cursor CLI is supported on Windows through WSL; Cursor IDE hooks run on native Windows. | Native IDE hooks are not certified by DefenseClaw; the WSL-only CLI is not configured. |
 | Windsurf | Hook docs publish Linux/WSL configuration locations as well as native Windows locations. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
-| Gemini CLI | WSL is mentioned as a Unix-compatibility option, but the supported OS matrix already includes native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
+| Gemini CLI | The supported OS matrix includes native Windows 11 24H2+ with PowerShell and Node.js 20+; no compatibility layer is required. | Native adapter implemented but not certified by DefenseClaw; WSL and other compatibility layers are out of scope. |
 | Copilot CLI | Direct PowerShell execution and the version-1 `powershell` hook field are documented for Windows; official 1.0.76 Windows x64/ARM64 ZIP and MSI assets were current on 2026-07-30. | Upstream-eligible and implemented behind the platform gate, but not certified by DefenseClaw until packaged and real-client Windows evidence passes; no WSL support claim. Copilot 1.0.76 also documents that per-path sandbox denials cannot be enforced on Windows. |
 | OpenHands | The CLI explicitly requires WSL on Windows; native Windows is not officially supported. | Unsupported on Windows because WSL-only does not meet the native requirement. |
 | Antigravity | Native Windows CLI/app downloads and local hooks are documented; WSL is not a separate hook target. | Not certified by DefenseClaw on native Windows; no WSL support claim. |
@@ -179,7 +179,12 @@ Evidence checked 2026-07-30 against the current upstream documentation:
 [Cursor CLI installation](https://docs.cursor.com/en/cli/installation),
 [Cursor hooks](https://cursor.com/docs/hooks),
 [Windsurf Cascade hooks](https://docs.windsurf.com/windsurf/cascade/hooks),
+[Gemini CLI installation](https://geminicli.com/docs/get-started/installation/),
+[Gemini CLI authentication](https://geminicli.com/docs/get-started/authentication/),
+[Gemini CLI configuration](https://geminicli.com/docs/reference/configuration/),
 [Gemini CLI hooks](https://geminicli.com/docs/hooks/reference/),
+[Gemini CLI transition announcement](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/),
+[Gemini CLI to Antigravity migration](https://antigravity.google/docs/cli/gcli-migration),
 [Copilot CLI hooks](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks),
 [Copilot CLI hook reference](https://docs.github.com/en/copilot/reference/hooks-reference),
 [Copilot CLI Windows installation](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli),
@@ -229,7 +234,7 @@ with a warning. Action mode fails closed on that contract mismatch.
 | Hermes | hook contract | `>=0.11.0` | `hermes-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
 | Cursor | hook contract | `>=1.7.0` | `cursor-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Windsurf | hook contract | `>=1.12.41` | `windsurf-hooks-v1` / `v6` | prompt, tool_call, tool_result |
-| Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v6` | prompt, tool_call, tool_result |
+| Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v7` | prompt, tool_call, tool_result |
 | Copilot CLI | hook contract | `>=1.0.18` | `copilot-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | OpenHands | hook contract | unversioned / documented hooks; tested with `OpenHands CLI 1.16.0` | `openhands-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
 | Antigravity | hook contract | `>=1.0.0` | `antigravity-hooks-v2` / `v7` | prompt, tool_call, tool_result, event_content |
@@ -273,10 +278,30 @@ native-Windows evidence and hook contract were rechecked on 2026-07-30; see the
 | OpenCode | yes | no | none | `tool.execute.before` | yes | user | `~/.config/opencode/plugins/defenseclaw.js` (JS bridge plugin) |
 | OmniGent | yes | yes | `UserPromptSubmit`, `PreToolUse`, `BeforeModel` | all six mapped policy phases | yes | user | `$OMNIGENT_CONFIG_HOME/config.yaml` when set, otherwise `~/.omnigent/config.yaml`, plus installed Python policy |
 
+Gemini CLI and Antigravity share the `~/.gemini` parent directory but not
+DefenseClaw ownership. Gemini lifecycle custody is limited to marked fields in
+`~/.gemini/settings.json`, its connector-specific managed backup, and its
+scoped OTLP token. Antigravity content under `~/.gemini/config/` and
+`~/.gemini/antigravity-cli/`, plus unrelated Google credentials and agent
+assets, is excluded from Gemini reconciliation, deferred uninstall, teardown,
+and backup discovery. Native Setup passes the persisted `.gemini` directory
+only through DefenseClaw's hidden maintenance `--config-home` binding; it does
+not create a Gemini client environment override or delete the shared parent.
+
 `confirm` verdicts are rendered as native ask only when the event is listed in
 `ask_events`. Every other event takes its connector-specific alert, allow, or
 context fallback immediately while preserving `raw_action: "confirm"` for
 audit. The DefenseClaw TUI can review those records but cannot resume the call.
+
+Gemini CLI registers all 11 documented lifecycle events. `SessionEnd` is
+upstream best-effort and not awaited; `Notification` and `PreCompress` are
+observation-only. The five events listed above are the declared block surfaces.
+For policy decisions and DefenseClaw adapter failures, Gemini receives exit 0
+with JSON `decision=allow|deny`; alert fallback may add the documented
+`systemMessage` field to an allow response. This deliberately avoids the legacy
+nonzero path, whose description in the hook reference differs from v0.53.0 source.
+This guarantee begins after Gemini successfully spawns the adapter: host spawn
+failures and host-enforced timeouts remain Gemini CLI behavior.
 
 ## Local Surface Matrix
 
@@ -355,7 +380,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | --------- | ----- | ----- | ------- | ------------------------------- | ----- |
 | Codex | live | live | live\* (certified) | `codex exec --json --full-auto` | native OTLP asserted |
 | Claude Code | live | live | live\* (certified) | `claude -p` | native OTLP asserted; native-ask is Layer A only |
-| Gemini CLI | live | live | live\* (not certified) | `gemini -p -o json --approval-mode yolo` | advisory events cannot block |
+| Gemini CLI | live driver (credential-deferred) | live driver (credential-deferred) | staged live driver (not certified) | `gemini -p -o json --approval-mode yolo` | driver asserts `BeforeTool` exit-0 JSON allow/block and native OTLP; certification requires eligible paid/enterprise credentials. Failures before adapter start, host launch/timeout behavior, and collapsed nonzero exits remain live-certification boundaries. |
 | Cursor | live | live | live\* (not certified) | `cursor-agent -p --force` | gated on a one-time headless-hook validation |
 | Copilot CLI | live\* | live\* | live\* (not certified) | `copilot -p` | user-level hooks only; entitled token |
 | OpenHands | live | — | — | `openhands --headless --json` | Docker runtime, Linux-only |
@@ -374,8 +399,10 @@ intentionally absent from Layer B.
 > manual-dispatch-only and presently scoped to the connectors we can
 > authenticate with Azure OpenAI / Amazon Bedrock — **Codex, Claude Code, and
 > OpenHands**. **Gemini CLI, Cursor, and Copilot live cells are deferred** until
-> their native keys (`GOOGLE_API_KEY`, `CURSOR_API_KEY`, `COPILOT_CLI_TOKEN`)
-> are configured; all three still get full Layer A coverage in the meantime.
+> their native keys (`GEMINI_API_KEY` or `GOOGLE_API_KEY`, `CURSOR_API_KEY`,
+> `COPILOT_CLI_TOKEN`) are configured; Gemini credentials must belong to the
+> continuing paid/enterprise audience. All three still get Layer A coverage in
+> the meantime.
 
 ### Alternative LLM auth (Azure OpenAI / Amazon Bedrock)
 

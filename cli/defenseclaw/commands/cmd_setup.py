@@ -3183,7 +3183,10 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "geminicli": {
         "label": "Gemini CLI",
-        "description": "settings.json hooks + native OTLP + extensions",
+        "description": (
+            "enterprise/Google Cloud/paid API-key settings.json hooks + "
+            "native OTLP + extensions"
+        ),
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -3285,10 +3288,13 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "~/.defenseclaw/hooks/windsurf-hook.sh",
     ),
     "geminicli": (
-        "~/.gemini/settings.json hooks",
+        "~/.gemini/settings.json hooks (continuing enterprise/Google Cloud/paid API-key product only)",
         "~/.gemini/settings.json native OTLP telemetry and MCP entries",
         "<workspace>/.gemini/skills, extensions, and agents install surfaces",
-        "~/.defenseclaw/hooks/geminicli-hook.sh",
+        (
+            "Native Windows uses the installer-managed defenseclaw-hook.exe; "
+            "POSIX uses ~/.defenseclaw/hooks/geminicli-hook.sh"
+        ),
     ),
     "copilot": (
         "~/.copilot/hooks/defenseclaw.json hooks by default",
@@ -7012,7 +7018,18 @@ def _make_observability_setup_command(connector: str) -> click.Command:
             f"{platform.status} — {platform.reason}"
         )
     )
-    short_help = f"Configure DefenseClaw for {label}."
+    product_note = (
+        "\n\nGemini CLI scope: continuing enterprise, Google Cloud, and paid "
+        "API-key access only. Consumer/free/Google AI Pro/Ultra service ended "
+        "on June 18, 2026; this setup does not restore that access."
+        if connector == "geminicli"
+        else ""
+    )
+    short_help = (
+        "Configure continuing paid/enterprise Gemini CLI hooks."
+        if connector == "geminicli"
+        else f"Configure DefenseClaw for {label}."
+    )
     if platform.status != platform_support.SUPPORTED:
         short_help = f"{label}: {platform.status} on {platform_support.host_os()}."
 
@@ -7025,6 +7042,7 @@ def _make_observability_setup_command(connector: str) -> click.Command:
             "mode is observe; pass "
             "--mode action to enable agent-native blocking/approval verdicts "
             "on supported events. No proxy is involved in either mode."
+            f"{product_note}"
             f"{platform_note}"
         ),
         short_help=short_help,
@@ -7155,6 +7173,7 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         "scanners read that agent's documented local surfaces. Default "
         "mode is observe; pass "
         "--mode action to enable agent-native lifecycle verdicts on policy hits."
+        f"{product_note}"
     )
     return _cmd
 

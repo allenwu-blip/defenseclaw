@@ -39,7 +39,7 @@ Use `<binary> --help` for any command.
 | `setup guardrail` | Configure LLM guardrail (mode, model, port, API key) |
 | `setup codex` / `setup claude-code` | Configure observability-only connector aliases |
 | `setup hermes` / `setup cursor` / `setup windsurf` | Configure hook-first observability aliases |
-| `setup geminicli` / `setup copilot` | Configure observability aliases with native OTel where supported |
+| `setup geminicli` / `setup copilot` | Configure observability aliases with native OTel where supported; Gemini CLI is limited to its continuing enterprise/Google Cloud/paid API-key audience |
 | `setup splunk` | Configure Splunk O11y, local Splunk bridge, or remote Splunk Enterprise HEC |
 | `setup galileo [status\|test\|enable\|disable\|remove]` | Configure real-time Galileo Cloud/self-hosted OTLP traces; test uses the live gateway path by default |
 | `setup observability add\|list\|enable\|disable\|remove\|test` | Manage config-v8 OTLP, Galileo, Splunk HEC, JSONL, HTTP JSONL, console, and Prometheus destinations |

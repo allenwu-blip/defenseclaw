@@ -70,7 +70,7 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 	},
 	"geminicli": {
 		Status: PlatformNotCertified,
-		Reason: "The DefenseClaw Gemini CLI integration has not completed native Windows x64 certification.",
+		Reason: "Gemini CLI now serves enterprise, Google Cloud, and paid API-key users only; the DefenseClaw native Windows adapter has not completed credentialed official-client x64 certification.",
 	},
 	"copilot": {
 		Status: PlatformNotCertified,

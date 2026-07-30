@@ -179,7 +179,7 @@ func NewWindsurfConnector() *hookOnlyConnector {
 func NewGeminiCLIConnector() *hookOnlyConnector {
 	return &hookOnlyConnector{
 		name:        "geminicli",
-		description: "settings.json hooks with native OTLP, MCP, skills, extensions, and agents",
+		description: "enterprise/Cloud/paid-key settings.json hooks with native OTLP, MCP, skills, extensions, and agents",
 		apiPath:     "/api/v1/geminicli/hook",
 		scriptName:  "geminicli-hook.sh",
 		configPath:  geminiSettingsPath,
@@ -821,22 +821,35 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		return c.teardownPluginArtifact(opts)
 	}
 	var errs []string
+	configClean := false
 
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
 	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, "config", path)
 	switch {
 	case err != nil:
 		errs = append(errs, fmt.Sprintf("restore config backup: %v", err))
+	case restored:
+		configClean = true
 	case !restored:
 		if err := c.removeConfigEntries(path, c.hookCommand(opts)); err != nil {
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
 			discardManagedFileBackup(opts.DataDir, c.name, "config")
+			configClean = true
 		}
 	}
 
 	if err := writeDisabledHookTombstone(opts, c.scriptName, c.name); err != nil {
 		errs = append(errs, fmt.Sprintf("disabled hook tombstone: %v", err))
+	}
+	// Gemini's exporter cannot attach an Authorization header, so Setup mints
+	// a connector-scoped credential in its OTLP URL. Revoke it only after the
+	// corresponding settings reference is gone; otherwise teardown would
+	// strand Gemini on a configured endpoint that can no longer authenticate.
+	if c.name == "geminicli" && configClean {
+		if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); err != nil {
+			errs = append(errs, fmt.Sprintf("revoke scoped OTLP credential: %v", err))
+		}
 	}
 
 	if len(errs) > 0 {
@@ -873,12 +886,10 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		if !os.IsNotExist(err) {
+			return err
 		}
-		return err
-	}
-	if c.pluginArtifact {
+	} else if c.pluginArtifact {
 		// The bridge plugin is a standalone managed file; a clean
 		// teardown removes it entirely. Any residual DefenseClaw marker
 		// means the heal did not complete.
@@ -886,16 +897,22 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return fmt.Errorf("%s teardown incomplete: managed plugin still present at %s", c.name, path)
 		}
 		return nil
-	}
-	needle := c.hookCommand(opts)
-	if c.name == "antigravity" {
-		var cfg map[string]interface{}
-		if err := json.Unmarshal(data, &cfg); err == nil &&
-			structuredHookCommandReferences(cfg, []string{
-				needle,
-				legacyAntigravityWindowsHookCommand(),
-				legacyAntigravityNonWaitingWindowsHookCommand(),
-			}) {
+	} else {
+		needle := c.hookCommand(opts)
+		if c.name == "antigravity" {
+			var cfg map[string]interface{}
+			if err := json.Unmarshal(data, &cfg); err == nil &&
+				structuredHookCommandReferences(cfg, []string{
+					needle,
+					legacyAntigravityWindowsHookCommand(),
+					legacyAntigravityNonWaitingWindowsHookCommand(),
+				}) {
+				return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+			}
+		}
+		if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
+			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
+			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
 	}
@@ -909,6 +926,17 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
 		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
 		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+	}
+	if c.name == "geminicli" {
+		tokenPath, tokenPathErr := OTLPPathTokenFilePath(opts.DataDir, OTLPScopeGeminiCLI)
+		if tokenPathErr != nil {
+			return tokenPathErr
+		}
+		if _, tokenErr := os.Lstat(tokenPath); tokenErr == nil {
+			return fmt.Errorf("%s teardown incomplete: scoped OTLP credential still present at %s", c.name, tokenPath)
+		} else if !os.IsNotExist(tokenErr) {
+			return fmt.Errorf("%s inspect scoped OTLP credential: %w", c.name, tokenErr)
+		}
 	}
 	return nil
 }
@@ -937,11 +965,17 @@ func (c *hookOnlyConnector) SetCredentials(gatewayToken, masterKey string) {
 func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	caps := c.Capabilities(opts)
 	patched := uniqueNonEmptyStrings(append([]string{c.configPath(opts)}, caps.Telemetry.ConfigPaths...))
-	return AgentPaths{
+	paths := AgentPaths{
 		PatchedFiles: patched,
 		BackupFiles:  []string{managedFileBackupPath(opts.DataDir, c.name, "config")},
 		HookScripts:  hookScriptPathsForConnector(opts, c),
 	}
+	if c.name == "geminicli" && opts.DataDir != "" {
+		paths.GeneratedFiles = []string{
+			filepath.Join(opts.DataDir, "hooks", otlpPathTokenFileName(OTLPScopeGeminiCLI)),
+		}
+	}
+	return paths
 }
 
 func (c *hookOnlyConnector) HookScripts(opts SetupOpts) []string {

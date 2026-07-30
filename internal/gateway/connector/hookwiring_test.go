@@ -556,6 +556,23 @@ func TestHookInvocationCommand(t *testing.T) {
 		t.Errorf("isNativeHookCommand(%q) = false, want true", claude)
 	}
 
+	// Gemini CLI's Windows runner passes this command to PowerShell with
+	// shell:false, pipes the hook JSON to stdin, and waits for completion. Use
+	// the explicit call operator so an installer path containing spaces remains
+	// an executable invocation rather than a string expression.
+	gemini := hookInvocationCommandFor("windows", "geminicli", unix)
+	wantGemini := windowsGeminiCLIHookCommand()
+	if gemini != wantGemini {
+		t.Errorf("geminicli command = %q, want %q", gemini, wantGemini)
+	}
+	if strings.Contains(gemini, ".sh") || strings.Contains(gemini, ".cmd") ||
+		strings.Contains(strings.ToLower(gemini), "bash") {
+		t.Errorf("geminicli command = %q should not reference a compatibility shell or wrapper", gemini)
+	}
+	if !isNativeHookCommand(gemini) {
+		t.Errorf("isNativeHookCommand(%q) = false, want true", gemini)
+	}
+
 	// Antigravity's direct-exec parser does not dequote command paths. Keep the
 	// visible command tokenizer-safe and put the absolute managed hook path in a
 	// PowerShell encoded command so install roots containing spaces still work.
@@ -878,6 +895,86 @@ func main() {
 	}
 	if string(got) != "hook|--connector|claudecode" {
 		t.Fatalf("hook args = %q", got)
+	}
+}
+
+// TestGeminiCLIWindowsHookCommandRunsInPowerShell reproduces Gemini CLI's
+// official Windows command-hook boundary: PowerShell receives the configured
+// command, JSON is piped to the child process, stdout/stderr are captured, and
+// the host waits for close. The probe uses the GUI subsystem used by the
+// packaged launcher and an install path with spaces. DefenseClaw deliberately
+// exercises Gemini's documented exit-0 JSON decision path here; it does not
+// rely on the contradictory legacy nonzero converter.
+func TestGeminiCLIWindowsHookCommandRunsInPowerShell(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Gemini CLI PowerShell hook semantics are Windows-specific")
+	}
+
+	root := filepath.Join(t.TempDir(), "Gemini Install Root With Spaces")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	helper := filepath.Join(root, windowsHookBinaryName)
+	source := filepath.Join(root, "gemini-hook-probe.go")
+	body := `package main
+
+import (
+	"fmt"
+	"io"
+	"os"
+)
+
+func main() {
+	payload, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		os.Exit(10)
+	}
+	if len(os.Args) != 4 || os.Args[1] != "hook" || os.Args[2] != "--connector" || os.Args[3] != "geminicli" {
+		os.Exit(9)
+	}
+	if string(payload) != "{\"hook_event_name\":\"BeforeTool\",\"tool_name\":\"run_shell_command\"}" {
+		os.Exit(8)
+	}
+	fmt.Print("{\"decision\":\"deny\",\"reason\":\"focused Gemini boundary probe\"}")
+	fmt.Fprint(os.Stderr, "gemini probe stderr")
+}
+`
+	if err := os.WriteFile(source, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("go", "build", "-ldflags", "-H=windowsgui", "-o", helper, source).CombinedOutput(); err != nil {
+		t.Fatalf("build Gemini hook probe: %v\n%s", err, out)
+	}
+	setHookBinaryOverride(t, helper)
+	command := hookInvocationCommandFor("windows", "geminicli", "")
+	payload := `{"hook_event_name":"BeforeTool","tool_name":"run_shell_command"}`
+
+	// Gemini CLI's stable Windows shell helper appends this explicit exit. This
+	// adapter contract asserts only the documented exit-0 JSON path; arbitrary
+	// GUI-process nonzero behavior is an upstream/live-certification boundary,
+	// not a DefenseClaw fail-closed mechanism.
+	ps := exec.Command(
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		command+"; exit $LASTEXITCODE",
+	)
+	ps.Stdin = strings.NewReader(payload)
+	var stdout, stderr bytes.Buffer
+	ps.Stdout = &stdout
+	ps.Stderr = &stderr
+	err := ps.Run()
+	if got := windowsProcessExitCodeForTest(t, err); got != 0 {
+		t.Fatalf("Gemini CLI-style launch exit = %d, want documented JSON-path exit 0\ncommand: %s\nstdout: %s\nstderr: %s",
+			got, command, stdout.String(), stderr.String())
+	}
+	if got, want := stdout.String(), `{"decision":"deny","reason":"focused Gemini boundary probe"}`; got != want {
+		t.Fatalf("Gemini CLI-style launch stdout = %q, want %q", got, want)
+	}
+	if got, want := stderr.String(), "gemini probe stderr"; !strings.Contains(got, want) {
+		t.Fatalf("Gemini CLI-style launch stderr = %q, want marker %q", got, want)
 	}
 }
 

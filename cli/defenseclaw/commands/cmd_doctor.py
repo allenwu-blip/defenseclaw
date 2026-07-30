@@ -2021,6 +2021,16 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
         if _file_references_marker(path, markers):
             if connector == "cursor":
                 _check_cursor_configured_runtime(cfg, path, label, r)
+            elif connector == "geminicli" and os.name == "nt":
+                _check_windows_native_hooks(cfg, connector, label, r, config_path=path)
+            elif connector == "geminicli":
+                _emit(
+                    "pass",
+                    label,
+                    f"reachable at {path}; continuing enterprise/Google Cloud/paid API-key "
+                    "audience only; consumer/free/Google AI Pro/Ultra service ended 2026-06-18",
+                    r=r,
+                )
             else:
                 _emit("pass", label, f"reachable at {path}", r=r)
             return
@@ -2084,8 +2094,9 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "omnigent":
         _check_omnigent_policy_health(cfg, r)
     elif connector in _HOOK_HEALTH_FALLBACK:
-        # hermes / cursor / windsurf / geminicli / opencode — generic
-        # lock-file-driven hook-health row (D4).
+        # Hermes / Cursor / Windsurf / Gemini CLI / OpenCode use the
+        # lock-file-driven health row. Cursor and native-Windows Gemini CLI
+        # then perform connector-specific command/schema validation.
         _check_hook_health(cfg, connector, r)
         if connector == "hermes":
             _check_hermes_legacy_config(r)
@@ -4328,9 +4339,19 @@ def _check_hook_contract_lock(
         detail += f" normalized={normalized}"
     if script_version:
         detail += f" script={script_version}"
+    if connector == "geminicli":
+        detail += (
+            " audience=continuing-enterprise/Google-Cloud/paid-API-key-only"
+            " consumer-free-AI-Pro-Ultra-ended=2026-06-18"
+        )
     locations = entry.get("locations") or {}
     native_runtime = None
-    if (platform_name or os.name) == "nt" and connector in {"codex", "claudecode", "copilot"}:
+    if (platform_name or os.name) == "nt" and connector in {
+        "codex",
+        "claudecode",
+        "copilot",
+        "geminicli",
+    }:
         native_runtime = _windows_native_hook_check(
             cfg,
             connector,

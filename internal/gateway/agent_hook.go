@@ -2072,7 +2072,10 @@ func hookOutputFor(req agentHookRequest, action, rawAction, reason, additional s
 			return map[string]interface{}{"decision": "deny", "reason": reason}
 		}
 		if action == "alert" && additional != "" {
-			return map[string]interface{}{"systemMessage": additional}
+			return map[string]interface{}{
+				"decision":      "allow",
+				"systemMessage": additional,
+			}
 		}
 	case "copilot":
 		return copilotHookOutput(req.HookEventName, action, rawAction, reason, additional)

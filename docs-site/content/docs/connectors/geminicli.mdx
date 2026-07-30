@@ -1,6 +1,6 @@
 ---
 title: Gemini CLI
-description: Gemini CLI connector wires settings.json hooks (BeforeAgent, BeforeModel, BeforeTool, AfterTool, AfterAgent) plus the native OTLP exporter pointing at the gateway.
+description: Gemini CLI connector for the continuing enterprise, Google Cloud, and paid API-key product wires settings.json lifecycle hooks plus native OTLP.
 keywords:
   - DefenseClaw Gemini CLI connector
   - Gemini CLI hooks
@@ -8,7 +8,30 @@ keywords:
   - Gemini CLI observability
 ---
 
-The Gemini CLI connector wires DefenseClaw into [Google's Gemini CLI hooks](https://github.com/google/generative-ai-tools) and points the agent's native OTLP exporter at the gateway so traces, metrics, and logs land in one place.
+The Gemini CLI connector wires DefenseClaw into
+[Google's Gemini CLI hooks](https://geminicli.com/docs/hooks/) and points the
+agent's native OTLP exporter at the gateway so traces, metrics, and logs land
+in one place.
+
+<Callout type="warning" title="Continuing paid and enterprise product only">
+Google ended Gemini CLI service for consumer/free/Google AI Pro/Ultra users on
+June 18, 2026 and directs that audience to Antigravity CLI. This connector is
+only for the officially continuing Gemini Code Assist Standard/Enterprise,
+Google Cloud, and paid Gemini API or Gemini Enterprise Agent Platform API-key
+paths. It does not restore consumer Gemini CLI access. See
+[Google's transition announcement](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/)
+and the [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration).
+</Callout>
+
+<Callout type="warning" title="Native Windows is implemented but not certified">
+Gemini CLI itself documents native Windows 11 24H2+, Node.js 20+, and
+PowerShell. DefenseClaw keeps this connector `not_certified` on Windows until a
+credentialed official-client run proves hooks, enforcement, OTLP, Doctor, and
+teardown end to end. Native Setup labels the staged Gemini lifecycle choice as
+enterprise/Cloud/paid-key and certification-pending; that selection is not a
+support or certification claim, and runtime activation remains platform-gated.
+Do not use WSL, Git Bash, Docker, or another compatibility layer as a workaround.
+</Callout>
 
 ## Setup
 
@@ -16,7 +39,14 @@ The Gemini CLI connector wires DefenseClaw into [Google's Gemini CLI hooks](http
 defenseclaw setup geminicli
 ```
 
-`setup geminicli` is shorthand for `setup guardrail --connector geminicli`: it adds or reconfigures Gemini CLI, wires hooks against `~/.gemini/settings.json`, and points Gemini's native OTLP exporter at the gateway. **There is no proxy-enforcement path** for Gemini CLI — blocking happens hook-side via the documented `BeforeAgent`, `BeforeModel`, `BeforeTool`, `AfterTool`, and `AfterAgent` events. Gemini CLI has no native ask surface, so confirm verdicts use an immediate alert/context fallback with `raw_action` preserved for audit.
+`setup geminicli` is shorthand for `setup guardrail --connector geminicli`: it
+adds or reconfigures the continuing paid/enterprise Gemini CLI product, wires
+all 11 documented lifecycle events against `~/.gemini/settings.json`, and
+points Gemini's native OTLP exporter at the gateway. **There is no
+proxy-enforcement path** for Gemini CLI — blocking happens hook-side on
+`BeforeAgent`, `BeforeModel`, `BeforeTool`, `AfterTool`, and `AfterAgent`.
+Gemini CLI has no native ask surface, so confirm verdicts use an immediate
+alert/context fallback with `raw_action` preserved for audit.
 
 #### What `setup geminicli` actually does
 
@@ -115,10 +145,32 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
   </Folder>
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
-      <File name="geminicli-hook.sh" />
+      <File name="geminicli-hook.sh (POSIX runtime)" />
+      <File name=".otlp-geminicli.token (connector-scoped OTLP credential)" />
     </Folder>
   </Folder>
+  <Folder name="%LOCALAPPDATA%\DefenseClaw\HookRuntime" defaultOpen>
+    <File name="defenseclaw-hook.exe (native Windows runtime; staged, not yet certified)" />
+  </Folder>
 </Files>
+
+### Coexistence with Antigravity
+
+Gemini CLI and Antigravity share the `%USERPROFILE%\.gemini` parent directory,
+but they do not share DefenseClaw custody. The Gemini CLI connector owns only
+its marked entries in `.gemini\settings.json`, its
+`.defenseclaw\connector_backups\geminicli\config.json` restoration record, and
+its `.otlp-geminicli.token`. Antigravity hook and MCP state beneath
+`.gemini\config\`, Antigravity CLI state beneath `.gemini\antigravity-cli\`,
+credentials, extensions, agents, skills, and unrelated Google files are
+outside Gemini teardown authority.
+
+Setup, repair, deferred uninstall, and reconciliation persist the exact
+`.gemini` configuration directory only so the hidden DefenseClaw
+`--config-home` maintenance command can resolve `settings.json`. DefenseClaw
+does not define or export a Gemini client home variable. Teardown restores or
+removes only DefenseClaw-owned Gemini CLI fields and then revokes the Gemini
+OTLP path token; it never deletes the shared `.gemini` directory.
 
 ## Hook capabilities
 
@@ -128,6 +180,29 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
 Gemini CLI has no native human-approval surface. Confirm verdicts fall back to an alert/context response with `raw_action` preserved in the audit log; the TUI is review-only.
 </Callout>
 
+### Synchronous response and failure boundary
+
+For awaited events, Gemini CLI writes one JSON object to hook stdin, waits for
+the configured process, and parses JSON from stdout. `SessionEnd` is an
+upstream best-effort event and is not awaited; `Notification` and
+`PreCompress` are observation-only. DefenseClaw intentionally returns exit 0
+with `{"decision":"allow"}` or `{"decision":"deny","reason":"..."}`; an
+alert fallback may add Gemini's documented `systemMessage` field alongside
+`decision:"allow"`. This is the documented JSON decision path and avoids
+relying on a contradiction between Gemini's hook reference and the v0.53.0
+legacy nonzero-result conversion.
+
+The configured Gemini timeout is 30,000 ms. DefenseClaw fail-open/fail-closed
+handling covers adapter failures after the native launcher starts, including
+gateway authentication, transport, invalid responses, and oversized input. If
+Gemini itself cannot spawn the launcher, or kills it at the host timeout before
+it can reply, no adapter can manufacture stdout. Failures before adapter start,
+host launch failures, host-enforced timeouts, and host-side collapse of
+arbitrary nonzero process exits remain upstream/live-certification boundaries;
+they are not covered by DefenseClaw's fail-closed claim. Doctor therefore
+validates the exact launcher, every event, timeout, OTLP credential, and
+contract evidence before reporting a healthy native registration.
+
 ## Telemetry channels
 
 <Flow
@@ -136,7 +211,7 @@ Gemini CLI has no native human-approval surface. Confirm verdicts fall back to a
   caption="Hooks cover the lifecycle; native OTLP delivers traces and metrics out-of-band."
 >
   <Node id="gemini" kind="agent">Gemini CLI</Node>
-  <Node id="hooks" kind="connector">{`BeforeAgent / BeforeModel /\nBeforeTool / AfterTool / AfterAgent`}</Node>
+  <Node id="hooks" kind="connector">{`11 lifecycle hooks\n5 declared block surfaces`}</Node>
   <Node id="otlp" kind="connector">Native OTLP exporter</Node>
   <Node id="gateway" kind="gateway">defenseclaw-gateway</Node>
   <Edge from="gemini" to="hooks" />

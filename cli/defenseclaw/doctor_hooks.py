@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation for Windows-native Codex, Claude Code, and Copilot hooks.
+"""Validation for Windows-native Codex, Claude Code, Copilot, and Gemini CLI hooks.
 
 This module never starts a configured hook command. Agent hook configuration is
 untrusted input, so Doctor only parses those command lines and inspects their
@@ -49,6 +49,7 @@ _EXPECTED_CONTRACTS = {
     ),
     "claudecode": frozenset({"claudecode-hooks-v1"}),
     "copilot": frozenset({"copilot-hooks-v1"}),
+    "geminicli": frozenset({"geminicli-hooks-v1"}),
 }
 _CODEX_HOOK_SPECS = {
     "SessionStart": ("session_start", "startup|resume|clear", 30),
@@ -121,7 +122,12 @@ _REPAIR = {
     "codex": "defenseclaw setup codex --yes --restart",
     "claudecode": "defenseclaw setup claude-code --yes --restart",
     "copilot": "defenseclaw setup copilot --yes --restart",
+    "geminicli": "defenseclaw setup geminicli --yes --restart",
 }
+_GEMINI_AUDIENCE = (
+    "continuing enterprise/Google Cloud/paid API-key audience only; "
+    "consumer/free/Google AI Pro/Ultra service ended 2026-06-18"
+)
 
 _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
     "SessionStart": ("startup|resume|clear|compact", 30),
@@ -179,6 +185,19 @@ _COPILOT_POWERSHELL_COMMAND = re.compile(
     r"-NoNewWindow -Wait -PassThru; "
     r"exit \$hookProcess\.ExitCode$"
 )
+_GEMINI_REQUIRED_HOOKS: dict[str, tuple[str, int]] = {
+    "SessionStart": ("*", 30_000),
+    "SessionEnd": ("*", 30_000),
+    "BeforeAgent": ("*", 30_000),
+    "AfterAgent": ("*", 30_000),
+    "BeforeModel": ("*", 30_000),
+    "AfterModel": ("*", 30_000),
+    "BeforeToolSelection": ("*", 30_000),
+    "BeforeTool": ("*", 30_000),
+    "AfterTool": ("*", 30_000),
+    "PreCompress": ("*", 30_000),
+    "Notification": ("*", 30_000),
+}
 
 
 @dataclass(frozen=True)
@@ -501,7 +520,8 @@ def _validate_codex_effective_policy(data_dir: str, config_path: str) -> str:
 
 
 def _repair_detail(connector: str, detail: str) -> str:
-    return f"{detail}; run `{_REPAIR[connector]}` to repair the native registration"
+    audience = f"; {_GEMINI_AUDIENCE}" if connector == "geminicli" else ""
+    return f"{detail}; run `{_REPAIR[connector]}` to repair the native registration{audience}"
 
 
 def _windows_extensions(pathext: str) -> tuple[str, ...]:
@@ -2115,6 +2135,131 @@ def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise
     return count
 
 
+def _validate_gemini_hook_matrix(document: dict[str, Any]) -> int:
+    """Validate every DefenseClaw-owned Gemini lifecycle registration.
+
+    Gemini's timeout is expressed in milliseconds. Its Windows host starts the
+    configured command through PowerShell and waits for the child, so an
+    asynchronous or conditionally narrowed handler cannot satisfy the policy
+    contract.
+    """
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict):
+        raise _InspectionError("missing", "Gemini CLI hook registration has no hooks table")
+    commands: set[str] = set()
+    count = 0
+    for event, (expected_matcher, expected_timeout) in _GEMINI_REQUIRED_HOOKS.items():
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            raise _InspectionError("missing", f"Gemini CLI DefenseClaw hook event {event} is missing")
+        owned: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            handlers = group.get("hooks")
+            if not isinstance(handlers, list):
+                continue
+            for handler in handlers:
+                if _handler_targets_defenseclaw(handler, "geminicli"):
+                    owned.append((group, handler))
+        if len(owned) != 1:
+            raise _InspectionError(
+                "stale",
+                f"Gemini CLI event {event} has {len(owned)} DefenseClaw handlers; expected exactly one",
+            )
+        group, handler = owned[0]
+        if handler.get("type") != "command":
+            raise _InspectionError("malformed", f"Gemini CLI event {event} handler type is not command")
+        if group.get("matcher") != expected_matcher:
+            raise _InspectionError(
+                "stale",
+                f"Gemini CLI event {event} matcher is {group.get('matcher')!r}; expected {expected_matcher!r}",
+            )
+        timeout = handler.get("timeout")
+        if type(timeout) is not int or timeout != expected_timeout:
+            raise _InspectionError(
+                "stale",
+                f"Gemini CLI event {event} timeout is {timeout!r}; expected {expected_timeout}",
+            )
+        if handler.get("async", False) is not False:
+            raise _InspectionError("stale", f"Gemini CLI event {event} is asynchronous")
+        for container, label in ((group, "matcher group"), (handler, "handler")):
+            condition = container.get("if", "")
+            if not isinstance(condition, str) or condition:
+                raise _InspectionError(
+                    "stale",
+                    f"Gemini CLI event {event} {label} has a narrowing if condition",
+                )
+        command = _handler_command_line(handler, "geminicli", windows=True)
+        target, _args, _kind = _command_target(command, "geminicli")
+        if ntpath.basename(target).casefold() not in {
+            "defenseclaw-hook",
+            "defenseclaw-hook.exe",
+            "defenseclaw-hook.cmd",
+        }:
+            raise _InspectionError("stale", f"Gemini CLI event {event} does not use the native hook runtime")
+        commands.add(command)
+        count += 1
+    if len(commands) != 1:
+        raise _InspectionError("stale", "Gemini CLI DefenseClaw hook events use inconsistent commands")
+    for event, groups in hooks.items():
+        if event in _GEMINI_REQUIRED_HOOKS or not isinstance(groups, list):
+            continue
+        if any(
+            _handler_targets_defenseclaw(handler, "geminicli")
+            for group in groups
+            if isinstance(group, dict)
+            for handler in (group.get("hooks") if isinstance(group.get("hooks"), list) else [])
+        ):
+            raise _InspectionError("stale", f"unexpected Gemini CLI event {event} contains a DefenseClaw handler")
+    return count
+
+
+def _validate_gemini_telemetry(document: dict[str, Any], data_dir: str) -> str:
+    telemetry = document.get("telemetry")
+    if not isinstance(telemetry, dict):
+        raise _InspectionError("missing", "Gemini CLI native telemetry configuration is missing")
+    expected = {
+        "enabled": True,
+        "target": "local",
+        "useCollector": True,
+        "otlpProtocol": "http",
+        "logPrompts": True,
+    }
+    for field, value in expected.items():
+        if telemetry.get(field) != value:
+            raise _InspectionError(
+                "stale",
+                f"Gemini CLI telemetry {field} is {telemetry.get(field)!r}; expected {value!r}",
+            )
+    endpoint = telemetry.get("otlpEndpoint")
+    if not isinstance(endpoint, str) or not endpoint:
+        raise _InspectionError("missing", "Gemini CLI telemetry endpoint is missing")
+    match = re.fullmatch(
+        r"http://(?P<host>127\.0\.0\.1|\[::1\]|localhost):(?P<port>\d{1,5})"
+        r"/otlp/geminicli/(?P<token>[0-9a-f]{64})",
+        endpoint,
+        flags=re.IGNORECASE,
+    )
+    if not match or not 0 < int(match.group("port")) <= 65535:
+        raise _InspectionError(
+            "foreign",
+            "Gemini CLI telemetry endpoint is not the loopback, connector-scoped OTLP path",
+        )
+    token_path = os.path.join(data_dir, "hooks", ".otlp-geminicli.token")
+    token_bytes = _stable_regular_file(token_path, os.path.abspath(data_dir), read_limit=129)
+    try:
+        token = token_bytes.decode("ascii").strip()
+    except UnicodeError as exc:
+        raise _InspectionError("foreign", "Gemini CLI OTLP credential is not ASCII") from exc
+    if not re.fullmatch(r"[0-9a-f]{64}", token) or token != match.group("token"):
+        raise _InspectionError(
+            "stale",
+            "Gemini CLI OTLP endpoint credential does not match its protected sidecar",
+        )
+    return f"native_otlp=loopback/path-token endpoint={match.group('host')}:{match.group('port')}"
+
+
 def _split_windows(command: str) -> list[str]:
     try:
         parts = shlex.split(command, posix=False)
@@ -2480,8 +2625,13 @@ def validate_windows_hook_registration(
         if connector == "codex":
             if inspect_effective_policy:
                 policy_detail = _validate_codex_effective_hook_policy(data_dir, config_path)
-        else:
+        elif connector == "claudecode":
             matrix_entries = _validate_claude_hook_matrix(document, managed_enterprise=managed_enterprise)
+        elif connector == "geminicli":
+            matrix_entries = _validate_gemini_hook_matrix(document)
+            policy_detail = _validate_gemini_telemetry(document, data_dir)
+        else:
+            raise _InspectionError("foreign", f"unsupported Windows hook connector: {connector}")
         raw_target, _args, kind = _command_target(
             command,
             connector,
@@ -2541,7 +2691,8 @@ def validate_windows_hook_registration(
         return WindowsHookCheck(
             "healthy",
             f"healthy Windows-native {runtime} registration; entries={matrix_entries}; target={resolved}; {evidence}"
-            + (f"; policy={policy_detail}" if policy_detail else ""),
+            + (f"; policy={policy_detail}" if policy_detail else "")
+            + (f"; audience={_GEMINI_AUDIENCE}" if connector == "geminicli" else ""),
             command,
             resolved,
             raw_target,

@@ -1,4 +1,4 @@
-"""Windows-native Codex/Claude Doctor hook validation regressions."""
+"""Windows-native Codex, Claude Code, and Gemini CLI Doctor regressions."""
 
 from __future__ import annotations
 
@@ -33,6 +33,8 @@ from defenseclaw.commands.cmd_doctor import (
 )
 from defenseclaw.doctor_hooks import (
     _CLAUDE_REQUIRED_HOOKS,
+    _CODEX_HOOK_SPECS,
+    _GEMINI_REQUIRED_HOOKS,
     _codex_command_hook_hash,
     _codex_hook_state_key_source,
     _codex_policy_executable,
@@ -149,13 +151,18 @@ class WindowsHookDoctorTests(unittest.TestCase):
         runtime_paths: list[str] | None = None,
     ) -> None:
         if contract is None:
-            contract = "codex-hooks-v1" if connector == "codex" else "claudecode-hooks-v1"
+            contract = {
+                "codex": "codex-hooks-v1",
+                "claudecode": "claudecode-hooks-v1",
+                "geminicli": "geminicli-hooks-v1",
+            }[connector]
         normalized_agent_version = {
             "codex-hooks-v1": "0.124.0",
             "codex-hooks-v2": "0.129.0",
             "codex-hooks-v3": "0.133.0",
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.152",
+            "geminicli-hooks-v1": "0.53.0",
         }[contract]
         locations = {"hook_config_paths": [str(config)]}
         if runtime_paths is not None:
@@ -232,7 +239,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 (("[features]\nhooks = true\n\n" if codex_features else "") + "[hooks]\n") + "\n".join(rows) + "\n",
                 encoding="utf-8",
             )
-        else:
+        elif connector == "claudecode":
             path = self.profile / ".claude" / "settings.json"
             path.parent.mkdir(exist_ok=True)
             bare_exec = not any(token in command for token in (" hook ", "-File ", "-EncodedCommand "))
@@ -251,10 +258,50 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 assert isinstance(events["PostToolUse"], list)
                 events["PostToolUse"].append({"hooks": [{"type": "command", "command": extra_command, "timeout": 30}]})
             path.write_text(json.dumps({"hooks": events}), encoding="utf-8")
+        elif connector == "geminicli":
+            path = self.profile / ".gemini" / "settings.json"
+            path.parent.mkdir(exist_ok=True)
+            events = {}
+            for event, (matcher, timeout) in _GEMINI_REQUIRED_HOOKS.items():
+                events[event] = [
+                    {
+                        "matcher": matcher,
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": command,
+                                "timeout": timeout,
+                            }
+                        ],
+                    }
+                ]
+            token = "ab" * 32
+            token_path = self.data / "hooks" / ".otlp-geminicli.token"
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(token + "\n", encoding="ascii")
+            path.write_text(
+                json.dumps(
+                    {
+                        "hooks": events,
+                        "telemetry": {
+                            "enabled": True,
+                            "target": "local",
+                            "useCollector": True,
+                            "otlpEndpoint": f"http://127.0.0.1:18970/otlp/geminicli/{token}",
+                            "otlpProtocol": "http",
+                            "logPrompts": True,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+        else:
+            raise ValueError(f"unsupported test connector: {connector}")
         self._lock(
             connector,
             path,
             contract=codex_contract if connector == "codex" else None,
+            version="v7" if connector == "geminicli" else "v6",
         )
         return path
 
@@ -329,6 +376,46 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertEqual(check.state, "healthy", check.detail)
         self.assertIn("Windows-native executable", check.detail)
         self.assertIn("entries=28", check.detail)
+
+    def test_healthy_native_gemini_registration_and_scoped_telemetry(self) -> None:
+        runtime = self._runtime()
+        config = self._config("geminicli", f"& '{runtime}' hook --connector geminicli")
+        with patch("defenseclaw.inventory.agent_discovery._windows_acl_write_error", return_value=None):
+            check = self._validate("geminicli", config)
+        self.assertEqual(check.state, "healthy", check.detail)
+        self.assertIn("Windows-native executable", check.detail)
+        self.assertIn("entries=11", check.detail)
+        self.assertIn("native_otlp=loopback/path-token", check.detail)
+        self.assertIn("enterprise/Google Cloud/paid API-key audience only", check.detail)
+
+    def test_gemini_requires_complete_synchronous_hook_matrix(self) -> None:
+        runtime = self._runtime()
+        config = self._config("geminicli", f"& '{runtime}' hook --connector geminicli")
+        document = json.loads(config.read_text(encoding="utf-8"))
+
+        document["hooks"]["BeforeTool"][0]["hooks"][0]["timeout"] = 1
+        config.write_text(json.dumps(document), encoding="utf-8")
+        with patch("defenseclaw.inventory.agent_discovery._windows_acl_write_error", return_value=None):
+            check = self._validate("geminicli", config)
+        self.assertEqual(check.state, "stale")
+        self.assertIn("BeforeTool timeout", check.detail)
+
+        document["hooks"]["BeforeTool"][0]["hooks"][0]["timeout"] = 30_000
+        del document["hooks"]["AfterAgent"]
+        config.write_text(json.dumps(document), encoding="utf-8")
+        with patch("defenseclaw.inventory.agent_discovery._windows_acl_write_error", return_value=None):
+            check = self._validate("geminicli", config)
+        self.assertEqual(check.state, "missing")
+        self.assertIn("AfterAgent", check.detail)
+
+    def test_gemini_rejects_tampered_scoped_telemetry_credential(self) -> None:
+        runtime = self._runtime()
+        config = self._config("geminicli", f"& '{runtime}' hook --connector geminicli")
+        (self.data / "hooks" / ".otlp-geminicli.token").write_text("cd" * 32 + "\n", encoding="ascii")
+        with patch("defenseclaw.inventory.agent_discovery._windows_acl_write_error", return_value=None):
+            check = self._validate("geminicli", config)
+        self.assertEqual(check.state, "stale")
+        self.assertIn("credential does not match", check.detail)
 
     def test_native_stable_hook_runtime_is_accepted_for_codex_and_claude(self) -> None:
         local_app_data = self.root / "Local AppData"
@@ -1388,6 +1475,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
         for connector, filename, repair in (
             ("codex", "missing.toml", "setup codex --yes --restart"),
             ("claudecode", "missing.json", "setup claude-code --yes --restart"),
+            ("geminicli", "missing-gemini.json", "setup geminicli --yes --restart"),
         ):
             with self.subTest(connector=connector):
                 check = self._validate(connector, self.root / filename)

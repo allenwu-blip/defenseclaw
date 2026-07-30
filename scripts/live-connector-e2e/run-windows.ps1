@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'copilot')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -32,6 +32,7 @@ function Get-SecretValues {
         'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN', 'LLM_API_KEY', 'DC_E2E_TEST_SECRET',
         'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN',
+        'GEMINI_API_KEY', 'GOOGLE_API_KEY',
         'COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_CLI_TOKEN'
     )
     @($names | ForEach-Object { [Environment]::GetEnvironmentVariable($_) } |
@@ -48,35 +49,41 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'copilot')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$ConnectorName
 ) {
     $environmentName = switch ($ConnectorName) {
         'codex' { 'CODEX_HOME' }
         'claudecode' { 'CLAUDE_CONFIG_DIR' }
         'copilot' { 'COPILOT_HOME' }
+        default { '' }
     }
-    $configured = [Environment]::GetEnvironmentVariable($environmentName)
-    if (-not [string]::IsNullOrWhiteSpace($configured)) {
-        return [IO.Path]::GetFullPath($configured).TrimEnd('\')
+    if (-not [string]::IsNullOrWhiteSpace($environmentName)) {
+        $configured = [Environment]::GetEnvironmentVariable($environmentName)
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            return [IO.Path]::GetFullPath($configured).TrimEnd('\')
+        }
     }
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-        throw "$environmentName is unset and USERPROFILE is unavailable"
+        $prefix = if ($environmentName) { "$environmentName is unset and " } else { '' }
+        throw "${prefix}USERPROFILE is unavailable"
     }
     $defaultLeaf = switch ($ConnectorName) {
         'codex' { '.codex' }
         'claudecode' { '.claude' }
         'copilot' { '.copilot' }
+        default { '.gemini' }
     }
     return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $defaultLeaf)).TrimEnd('\')
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'copilot')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$ConnectorName
 ) {
     $fileName = switch ($ConnectorName) {
         'codex' { 'managed_config.toml' }
         'claudecode' { 'settings.json' }
         'copilot' { 'hooks\defenseclaw.json' }
+        'geminicli' { 'settings.json' }
     }
     return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) $fileName
 }
@@ -713,8 +720,9 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
             agent_name = "$Connector Windows readiness"
             agent_type = "$Connector-cli"
         }
+        $toolEvent = if ($Connector -eq 'geminicli') { 'BeforeTool' } else { 'PreToolUse' }
         $toolPayload = [ordered]@{
-            hook_event_name = 'PreToolUse'
+            hook_event_name = $toolEvent
             session_id = $probeID
             turn_id = "$probeID-turn"
             agent_id = "$Connector-readiness"
@@ -751,26 +759,32 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
                 $sessionDecision.would_block) {
                 throw "SessionStart readiness did not produce a canonical allow decision (exit=$($sessionResult.ExitCode))"
             }
+            if ($Connector -eq 'geminicli') {
+                Assert-GeminiHookResponse $sessionResult.StdOut 'allow' 'SessionStart readiness'
+            }
 
             $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
             $probeTimeout = [Math]::Min(15, $remaining)
             $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
             $toolResult = Invoke-NativeProcess -FilePath $hookExecutable `
-                -ArgumentList @('hook', '--connector', $Connector, '--event', 'PreToolUse') `
+                -ArgumentList @('hook', '--connector', $Connector, '--event', $toolEvent) `
                 -InputPath $toolPath -TimeoutSeconds $probeTimeout -AllowedExitCodes @(0, 2) `
                 -LogPath (Join-Path $script:LogRoot "gateway-readiness-$attempt-tool.log")
             $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
             if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
             $toolDecision = Wait-HookDecisionAfter `
-                $beforeTool $decisionDeadline $probeID 'PreToolUse'
+                $beforeTool $decisionDeadline $probeID $toolEvent
             if ($toolResult.ExitCode -ne 0 -or $null -eq $toolDecision -or
                 $toolDecision.action -cne 'allow' -or $toolDecision.raw_action -cne 'allow' -or
                 $toolDecision.would_block) {
-                throw "PreToolUse readiness did not produce a canonical allow decision (exit=$($toolResult.ExitCode))"
+                throw "$toolEvent readiness did not produce a canonical allow decision (exit=$($toolResult.ExitCode))"
+            }
+            if ($Connector -eq 'geminicli') {
+                Assert-GeminiHookResponse $toolResult.StdOut 'allow' "$toolEvent readiness"
             }
 
             Write-Result 'gateway-hook-readiness' pass `
-                "stable native SessionStart -> PreToolUse allow after $attempt probe(s)"
+                "stable native SessionStart -> $toolEvent allow after $attempt probe(s)"
             return
         } catch {
             $lastError = Protect-LogText $_.Exception.Message
@@ -890,6 +904,7 @@ function Invoke-Setup([string]$Mode) {
     $subcommand = switch ($Connector) {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
+        'geminicli' { 'geminicli' }
     }
     Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
     Wait-Gateway
@@ -900,6 +915,7 @@ function Get-ConnectorHookLabel {
         'codex' { 'Codex hooks' }
         'claudecode' { 'Claude Code hooks' }
         'copilot' { 'Copilot hooks' }
+        'geminicli' { 'Gemini CLI hooks' }
     }
 }
 
@@ -908,6 +924,7 @@ function Get-ConnectorRepairSubcommand {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
         'copilot' { 'copilot' }
+        'geminicli' { 'geminicli' }
     }
 }
 
@@ -915,6 +932,7 @@ function Get-ConnectorToolName {
     switch ($Connector) {
         'claudecode' { 'Bash' }
         'copilot' { 'powershell' }
+        'geminicli' { 'RunShellCommand' }
         default { 'shell' }
     }
 }
@@ -1042,12 +1060,16 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\codex'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\claudecode'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\geminicli'),
         (Join-Path $env:DEFENSECLAW_HOME 'hooks')
     )
     foreach ($directory in $privateDirectories) { Protect-TestDirectory $directory }
     $envPath = Join-Path $env:DEFENSECLAW_HOME '.env'
     $lines = [Collections.Generic.List[string]]::new()
-    foreach ($name in @('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LLM_API_KEY')) {
+    foreach ($name in @(
+        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY',
+        'GOOGLE_API_KEY', 'LLM_API_KEY'
+    )) {
         $value = [Environment]::GetEnvironmentVariable($name)
         if (-not [string]::IsNullOrWhiteSpace($value)) { $lines.Add("$name=$value") }
     }
@@ -1067,27 +1089,62 @@ function Invoke-Teardown {
     $config = Get-EffectiveConnectorConfigPath $Connector
     if (Test-Path -LiteralPath $config) {
         $content = [IO.File]::ReadAllText($config)
-        if ($content -match '(?i)defenseclaw') { throw "teardown left managed state in $config" }
+        if ($content -match '(?i)defenseclaw|/otlp/geminicli/') {
+            throw "teardown left managed state in $config"
+        }
+    }
+    if ($Connector -eq 'geminicli') {
+        $tokenPath = Join-Path $env:DEFENSECLAW_HOME 'hooks\.otlp-geminicli.token'
+        if (Test-Path -LiteralPath $tokenPath) {
+            throw "teardown left the scoped Gemini OTLP credential at $tokenPath"
+        }
     }
 }
 
 function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow', 'block')][string]$Expected, [bool]$RequireGatewayBlock = $false) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $EventName) @(0, 2) -InputPath $Payload
+    $allowedExitCodes = if ($Connector -eq 'geminicli') { @(0) } else { @(0, 2) }
+    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $EventName) $allowedExitCodes -InputPath $Payload
     Start-Sleep -Milliseconds 800
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw "$EventName did not reach the gateway" }
     if ($Expected -eq 'allow' -and $result.ExitCode -ne 0) { throw "$EventName should allow but exited $($result.ExitCode)" }
     if ($Expected -eq 'block' -and $result.ExitCode -ne 2 -and $result.StdOut -notmatch '(?i)block|deny') { throw "$EventName did not shape a block decision" }
+    if ($Connector -eq 'geminicli') {
+        Assert-GeminiHookResponse $result.StdOut $Expected $EventName
+    }
     if ($Expected -eq 'block' -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no gateway block verdict" }
     if ($RequireGatewayBlock -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no observe-mode would-block verdict" }
     Write-Result "$EventName`:fires" pass "jsonl line $before"
     Write-Result "$EventName`:verdict" pass "exit=$($result.ExitCode) expected=$Expected"
 }
 
+function Assert-GeminiHookResponse(
+    [string]$StdOut,
+    [ValidateSet('allow', 'block')][string]$Expected,
+    [string]$Context
+) {
+    try { $response = $StdOut | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context did not emit Gemini JSON: $($_.Exception.Message)" }
+    $propertyNames = @($response.PSObject.Properties.Name | Sort-Object)
+    if ($Expected -eq 'allow') {
+        if ($propertyNames.Count -ne 1 -or $propertyNames[0] -cne 'decision' -or
+            [string]$response.decision -cne 'allow') {
+            throw "$Context response is not the exact Gemini allow schema"
+        }
+        return
+    }
+    if ($propertyNames.Count -ne 2 -or $propertyNames[0] -cne 'decision' -or
+        $propertyNames[1] -cne 'reason' -or [string]$response.decision -cne 'deny' -or
+        [string]::IsNullOrWhiteSpace([string]$response.reason)) {
+        throw "$Context response is not the exact Gemini deny schema"
+    }
+}
+
 function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$Root) {
     $toolName = Get-ConnectorToolName
+    $toolEvent = if ($Connector -eq 'geminicli') { 'BeforeTool' } else { 'PreToolUse' }
     $payload = [ordered]@{
-        hook_event_name = 'PreToolUse'
+        hook_event_name = $toolEvent
         session_id = "dc-windows-contract-$Connector"
         turn_id = "dc-windows-contract-$Name"
         agent_id = "$Connector-windows-contract"
@@ -1109,7 +1166,9 @@ function Invoke-DangerousHook(
     [string]$Sentinel
 ) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', "PreTool-$Name") @(0, 2) $Payload
+    $hookEvent = if ($Connector -eq 'geminicli') { 'BeforeTool' } else { "PreTool-$Name" }
+    $allowedExitCodes = if ($Connector -eq 'geminicli') { @(0) } else { @(0, 2) }
+    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $hookEvent) $allowedExitCodes $Payload
 
     $decision = $null
     for ($attempt = 0; $attempt -lt 30 -and $null -eq $decision; $attempt++) {
@@ -1132,6 +1191,9 @@ function Invoke-DangerousHook(
         if ([string]$decision.action -ne 'block' -or [bool]$decision.would_block -or -not [bool]$decision.enforced) {
             throw "$Name action decision action=$($decision.action) raw=$($decision.raw_action) would_block=$($decision.would_block) enforced=$($decision.enforced)"
         }
+    }
+    if ($Connector -eq 'geminicli') {
+        Assert-GeminiHookResponse $result.StdOut $(if ($Mode -eq 'action') { 'block' } else { 'allow' }) "$Name $Mode"
     }
     if (Test-Path -LiteralPath $Sentinel) { throw "$Name command input executed and created $Sentinel" }
     Write-Result "dangerous-command:$Name`:$Mode" pass "exit=$($result.ExitCode) action=$($decision.action) raw=block would_block=$($decision.would_block) enforced=$($decision.enforced) rule=$RuleID sentinel=absent"
@@ -1199,6 +1261,79 @@ function Get-TreeFingerprint([string]$Root) {
     }
 }
 
+function Assert-GeminiWindowsRegistration([string]$Config, [string]$Context) {
+    try { $settings = $Config | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
+    $hookExecutable = Get-StableHookRuntimeExecutable
+    $literal = $hookExecutable.Replace("'", "''")
+    $expectedCommand = "& '$literal' hook --connector geminicli"
+    $events = @(
+        'SessionStart', 'SessionEnd', 'BeforeAgent', 'AfterAgent',
+        'BeforeModel', 'AfterModel', 'BeforeToolSelection', 'BeforeTool',
+        'AfterTool', 'PreCompress', 'Notification'
+    )
+    $expectedEvents = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($event in $events) { [void]$expectedEvents.Add($event) }
+    foreach ($event in $events) {
+        $property = $settings.hooks.PSObject.Properties[$event]
+        if ($null -eq $property) { throw "$Context is missing Gemini event $event" }
+        $owned = @(
+            foreach ($group in @($property.Value)) {
+                foreach ($handler in @($group.hooks)) {
+                    if ([string]$handler.command -ceq $expectedCommand) {
+                        [pscustomobject]@{ Group = $group; Handler = $handler }
+                    }
+                }
+            }
+        )
+        if ($owned.Count -ne 1) {
+            throw "$Context has $($owned.Count) native DefenseClaw handlers for $event, expected one"
+        }
+        $asyncProperty = $owned[0].Handler.PSObject.Properties['async']
+        $groupCondition = $owned[0].Group.PSObject.Properties['if']
+        $handlerCondition = $owned[0].Handler.PSObject.Properties['if']
+        if ([string]$owned[0].Group.matcher -cne '*' -or
+            [string]$owned[0].Handler.type -cne 'command' -or
+            [int]$owned[0].Handler.timeout -ne 30000 -or
+            ($null -ne $asyncProperty -and $asyncProperty.Value -eq $true) -or
+            ($null -ne $groupCondition -and -not [string]::IsNullOrEmpty([string]$groupCondition.Value)) -or
+            ($null -ne $handlerCondition -and -not [string]::IsNullOrEmpty([string]$handlerCondition.Value))) {
+            throw "$Context has an invalid matcher/type/timeout for $event"
+        }
+    }
+    foreach ($eventProperty in @($settings.hooks.PSObject.Properties)) {
+        if ($expectedEvents.Contains([string]$eventProperty.Name)) { continue }
+        foreach ($group in @($eventProperty.Value)) {
+            foreach ($handler in @($group.hooks)) {
+                if ([string]$handler.command -match '(?i)hook\s+--connector\s+geminicli(?:\s|$)') {
+                    throw "$Context has a DefenseClaw handler on unexpected Gemini event $($eventProperty.Name)"
+                }
+            }
+        }
+    }
+    $telemetry = $settings.telemetry
+    $endpointPattern = '^http://(?:127\.0\.0\.1|\[::1\]|localhost):\d{1,5}/otlp/geminicli/(?<token>[0-9a-f]{64})$'
+    if ($null -eq $telemetry -or $telemetry.enabled -ne $true -or
+        [string]$telemetry.target -cne 'local' -or
+        $telemetry.useCollector -ne $true -or
+        [string]$telemetry.otlpProtocol -cne 'http' -or
+        $telemetry.logPrompts -ne $true -or
+        [string]$telemetry.otlpEndpoint -notmatch $endpointPattern) {
+        throw "$Context does not contain the protected Gemini native OTLP configuration"
+    }
+    $endpointMatch = [regex]::Match([string]$telemetry.otlpEndpoint, $endpointPattern)
+    $endpointToken = $endpointMatch.Groups['token'].Value
+    $tokenPath = Join-Path $env:DEFENSECLAW_HOME 'hooks\.otlp-geminicli.token'
+    if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+        throw "$Context is missing the protected Gemini OTLP credential sidecar"
+    }
+    $sidecarToken = [IO.File]::ReadAllText($tokenPath).Trim()
+    if ($sidecarToken -cne $endpointToken) {
+        throw "$Context Gemini OTLP endpoint credential does not match its protected sidecar"
+    }
+    return $settings
+}
+
 function Assert-DoctorWindowsHookRegistration {
     $label = Get-ConnectorHookLabel
     $configPath = Get-EffectiveConnectorConfigPath $Connector
@@ -1224,6 +1359,8 @@ function Assert-DoctorWindowsHookRegistration {
             }
         }
         if (-not $nativeHookFound) { throw 'claudecode setup did not register the Windows native exec-form hook command' }
+    } elseif ($Connector -eq 'geminicli') {
+        $null = Assert-GeminiWindowsRegistration $config "$Connector setup"
     } elseif ($Connector -eq 'codex') {
         $codexCommand = Get-CodexWindowsHookCommand $config
         Assert-CodexSynchronousWindowsHookCommand $codexCommand "$Connector setup"
@@ -1280,6 +1417,7 @@ function Assert-DoctorWindowsHookRegistration {
             'codex' { 'cannot be resolved' }
             'claudecode' { 'does not use the native hook runtime' }
             'copilot' { 'not the DefenseClaw hook launcher' }
+            'geminicli' { 'cannot be resolved' }
         }
         if ($tamperedCheck.status -ne 'fail' -or
             $tamperedCheck.detail -notmatch [regex]::Escape($expectedTamperDetail)) {
@@ -1315,6 +1453,10 @@ function Assert-DoctorWindowsHookRegistration {
 }
 
 function Assert-NativeEnterpriseHooksRequireElevation {
+    if ($Connector -eq 'geminicli') {
+        Write-Result 'enterprise-hooks:install' skip 'cross-user enterprise hook deployment is not a Gemini CLI connector surface'
+        return
+    }
     $root = Join-Path $StateRoot 'enterprise-hooks-elevation-required'
     $targetHome = Join-Path $root 'target-home'
     $dataDir = Join-Path $targetHome '.defenseclaw'
@@ -1368,12 +1510,14 @@ function Install-Agent {
         'codex' { '@openai/codex@' + ($env:CODEX_VERSION ?? 'latest') }
         'claudecode' { '@anthropic-ai/claude-code@' + ($env:CLAUDE_VERSION ?? 'latest') }
         'copilot' { '@github/copilot@' + ($env:COPILOT_VERSION ?? 'latest') }
+        'geminicli' { '@google/gemini-cli@' + ($env:GEMINI_VERSION ?? 'latest') }
     }
     Invoke-Tool 'npm.cmd' @('install', '--no-audit', '--no-fund', '--prefix', $script:ToolRoot, $package) -Timeout 300 | Out-Null
     $command = switch ($Connector) {
         'codex' { 'codex.cmd' }
         'claudecode' { 'claude.cmd' }
         'copilot' { 'copilot.cmd' }
+        'geminicli' { 'gemini.cmd' }
     }
     $script:AgentPath = Join-Path $script:ToolRoot "node_modules\.bin\$command"
     $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
@@ -1660,6 +1804,9 @@ function Invoke-Agent([string]$Label, [string]$Prompt, [int[]]$AllowedExitCodes 
         }
         'copilot' {
             @('-p', $Prompt, '--allow-all-tools', '--no-ask-user')
+        }
+        'geminicli' {
+            @('-p', $Prompt, '-o', 'json', '--approval-mode', 'yolo')
         }
     }
     return Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $agentArgs -TimeoutSeconds $CommandTimeoutSeconds -AllowedExitCodes $AllowedExitCodes -LogPath (Join-Path $script:LogRoot "agent-$Label.log")

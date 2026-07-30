@@ -1,9 +1,10 @@
 ---
 title: Connectors and enforcement
-description: Exact native Windows Codex and Claude Code hook coverage, action boundaries, fail modes, and runtime controls.
+description: Exact certified Windows Codex and Claude Code coverage plus the staged, not-certified Gemini CLI enterprise adapter boundary.
 keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
+  - DefenseClaw Windows Gemini CLI
   - DefenseClaw Windows action mode
   - DefenseClaw Windows fail closed
   - DefenseClaw Windows hooks
@@ -19,6 +20,18 @@ DefenseClaw does not proxy Codex or Claude Code model traffic on Windows. A
 prompt, tool, subprocess, file change, or response that the agent does not emit
 through a registered hook or native telemetry surface is not silently
 intercepted by DefenseClaw.
+</Callout>
+
+<Callout type="warning" title="Gemini CLI is staged, not certified">
+The native Windows Gemini CLI adapter is implemented for the officially
+continuing enterprise, Google Cloud, and paid API-key audience, but remains
+`not_certified`. Consumer/free/Google AI Pro/Ultra Gemini CLI service ended on
+June 18, 2026 and moved to Antigravity CLI. DefenseClaw does not expose Gemini
+CLI as a supported Windows connector until a credentialed official-client
+certification passes. Native Setup exposes only a clearly labeled
+certification-pending lifecycle choice; runtime activation remains
+platform-gated. WSL, Docker, VMs, Git Bash, Cygwin, and MSYS are not
+substitutes.
 </Callout>
 
 ## Observe and action
@@ -112,6 +125,43 @@ Claude Code permission prompt there. `PostToolUse` is advisory because the
 tool already ran; `PostToolBatch` can stop the loop before another model call.
 `ConfigChange` cannot override Claude Code's higher-authority policy-settings
 source.
+
+## Gemini CLI (not certified)
+
+Google documents native Windows 11 24H2+, Node.js 20+, PowerShell, and the npm
+package `@google/gemini-cli`. The staged DefenseClaw adapter writes
+`%USERPROFILE%\.gemini\settings.json`, registers all 11 documented hook events,
+and invokes the installer-managed `defenseclaw-hook.exe` through Gemini's
+PowerShell command boundary. It also configures native OTLP with a
+connector-scoped loopback path token.
+
+DefenseClaw emits exit-0 JSON allow/deny decisions because that path is
+unambiguous across Gemini's documentation and current source. Adapter failure
+policy applies only after the hook process starts. Failures before adapter
+start, Gemini host launch failures, host-enforced timeouts, and collapsed
+nonzero process exits remain upstream/live-certification boundaries and are
+not covered by DefenseClaw's fail-closed claim. This connector will remain
+not certified until the real official client proves synchronous blocking,
+OTLP, Doctor tamper/recovery, and exact teardown with eligible credentials.
+Native Setup marks its staged lifecycle selection as certification-pending;
+that selection does not make Gemini a supported Windows connector.
+
+Gemini CLI and Antigravity both use the `%USERPROFILE%\.gemini` parent, so
+native Setup keeps their custody separate. Gemini lifecycle operations bind
+the official `.gemini` directory through DefenseClaw's hidden maintenance-only
+`--config-home` flag, but mutate only marked fields in `settings.json`, the
+Gemini-specific managed backup, and the `.otlp-geminicli.token` credential.
+They do not remove `.gemini\config\` (including Antigravity hooks/MCP),
+`.gemini\antigravity-cli\`, credentials, extensions, skills, agents, or other
+Google state, and they never delete the shared parent directory. No
+client-facing Gemini home override is invented.
+
+Research sources:
+[installation](https://geminicli.com/docs/get-started/installation/),
+[authentication](https://geminicli.com/docs/get-started/authentication/),
+[configuration](https://geminicli.com/docs/reference/configuration/),
+[hooks](https://geminicli.com/docs/hooks/reference/), and
+[product transition](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
 
 ## Fail behavior
 

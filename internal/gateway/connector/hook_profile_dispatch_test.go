@@ -795,6 +795,23 @@ func TestHermesProfileRespond_BlockDefaultReason(t *testing.T) {
 	}
 }
 
+func TestGeminiProfileRespondUsesOfficialDecisionSchemaForAlerts(t *testing.T) {
+	out := hookOnlyProfileRespond(HookRespondInput{
+		Req:               HookProfileRequest{ConnectorName: "geminicli", HookEventName: "BeforeTool"},
+		Action:            "alert",
+		RawAction:         "confirm",
+		AdditionalContext: "DefenseClaw needs approval.",
+	})
+	want := map[string]interface{}{
+		"decision":      "allow",
+		"systemMessage": "DefenseClaw needs approval.",
+	}
+	if out.FieldName != "hook_output" || !reflect.DeepEqual(out.Output, want) {
+		t.Fatalf("Gemini alert response = field %q body %#v, want official decision schema %#v",
+			out.FieldName, out.Output, want)
+	}
+}
+
 // TestCodexAdditionalContextForProfile pins the additional-context
 // wording. Operators have alerts on the exact phrasing
 // ("DefenseClaw would block this in action mode...") so a typo

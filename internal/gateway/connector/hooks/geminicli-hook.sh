@@ -1,5 +1,5 @@
 #!/bin/bash
-# defenseclaw-managed-hook v6
+# defenseclaw-managed-hook v7
 # DefenseClaw Gemini CLI hook — forwards Gemini hook payloads to the
 # DefenseClaw gateway. Intentional policy blocks are returned as JSON.
 set -euo pipefail
@@ -58,16 +58,33 @@ DEFENSECLAW_HOOK_CONNECTOR="geminicli"
 DEFENSECLAW_HOOK_NAME="geminicli-hook"
 export DEFENSECLAW_HOOK_CONNECTOR DEFENSECLAW_HOOK_NAME
 
+gemini_allow() {
+  printf '%s\n' '{"decision":"allow"}'
+  exit 0
+}
+
+gemini_deny() {
+  _dc_jq -cn --arg reason "${1:-Blocked by DefenseClaw Gemini CLI policy.}" \
+    '{decision:"deny",reason:$reason}'
+  exit 0
+}
+
 if [ ! -f "${HOOK_DIR}/{{.TokenFile}}" ] && [ -z "${DEFENSECLAW_GATEWAY_TOKEN:-}" ]; then
-  defenseclaw_handle_missing_token geminicli geminicli-hook "geminicli tool"
+  MISSING_TOKEN_REASON="missing gateway token (.token absent and DEFENSECLAW_GATEWAY_TOKEN unset)"
+  defenseclaw_log_hook_failure geminicli geminicli-hook "$MISSING_TOKEN_REASON" transport "$FAIL_MODE"
+  if defenseclaw_should_fail_closed_on_unreachable; then
+    echo "defenseclaw: ${MISSING_TOKEN_REASON}, blocking geminicli tool (fail mode closed)" >&2
+    gemini_deny "DefenseClaw hook failed closed"
+  fi
+  gemini_allow
 fi
 
 PAYLOAD="$(defenseclaw_read_stdin_capped)" || {
   echo "defenseclaw: geminicli hook refusing oversized payload" >&2
   if [ "$FAIL_MODE" = "closed" ]; then
-    exit 2
+    gemini_deny "DefenseClaw hook payload too large"
   fi
-  exit 0
+  gemini_allow
 }
 API_ADDR="{{.APIAddr}}"
 if [ "{{if .ScopedToken}}1{{else}}0{{end}}" = "1" ]; then
@@ -86,18 +103,18 @@ fail_unreachable() {
   defenseclaw_log_hook_failure geminicli geminicli-hook "$1" transport "$FAIL_MODE"
   defenseclaw_emit_unreachable_stderr "geminicli tool" "$1"
   if defenseclaw_should_fail_closed_on_unreachable; then
-    exit 2
+    gemini_deny "DefenseClaw hook failed closed"
   fi
-  exit 0
+  gemini_allow
 }
 
 fail_response() {
   defenseclaw_log_hook_failure geminicli geminicli-hook "$1" response "$FAIL_MODE"
   echo "defenseclaw: geminicli hook error: $1" >&2
   if [ "$FAIL_MODE" = "open" ]; then
-    exit 0
+    gemini_allow
   fi
-  exit 2
+  gemini_deny "DefenseClaw hook failed closed"
 }
 
 AUTH_HEADER_ARGS=()
@@ -133,10 +150,21 @@ elif [ "$HTTP_CODE" -lt 200 ] 2>/dev/null || [ "$HTTP_CODE" -ge 300 ] 2>/dev/nul
   fail_response "gateway returned HTTP ${HTTP_CODE}"
 fi
 
+ACTION=$(echo "$RESULT" | _dc_jq -er \
+  '.action | select(. == "allow" or . == "block" or . == "confirm")' 2>/dev/null) || {
+  fail_response "invalid or missing action in gateway response"
+}
 OUTPUT=$(echo "$RESULT" | _dc_jq -c '.hook_output // empty' 2>/dev/null) || {
   fail_response "invalid JSON response"
 }
 if [ -n "$OUTPUT" ] && [ "$OUTPUT" != "null" ]; then
   echo "$OUTPUT"
+  exit 0
 fi
-exit 0
+if [ "$ACTION" = "block" ]; then
+  REASON=$(echo "$RESULT" | _dc_jq -r '.reason // "Blocked by DefenseClaw Gemini CLI policy."' 2>/dev/null) || {
+    fail_response "invalid block reason in gateway response"
+  }
+  gemini_deny "$REASON"
+fi
+gemini_allow

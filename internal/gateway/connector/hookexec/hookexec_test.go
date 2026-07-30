@@ -332,15 +332,30 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:   0,
 		},
 		{
-			name:      "geminicli allow with no hook_output exit 0",
-			connector: "geminicli",
-			respBody:  `{"action":"allow"}`,
-			wantCode:  0,
+			name:       "geminicli allow with no hook_output emits JSON exit 0",
+			connector:  "geminicli",
+			respBody:   `{"action":"allow"}`,
+			wantStdout: `{"decision":"allow"}` + "\n",
+			wantCode:   0,
 		},
 		{
 			name:       "geminicli echoes hook_output deny exit 0",
 			connector:  "geminicli",
 			respBody:   `{"action":"block","hook_output":{"decision":"deny","reason":"no"}}`,
+			wantStdout: `{"decision":"deny","reason":"no"}` + "\n",
+			wantCode:   0,
+		},
+		{
+			name:       "geminicli alert preserves official allow and system message schema",
+			connector:  "geminicli",
+			respBody:   `{"action":"allow","hook_output":{"decision":"allow","systemMessage":"review"}}`,
+			wantStdout: `{"decision":"allow","systemMessage":"review"}` + "\n",
+			wantCode:   0,
+		},
+		{
+			name:       "geminicli block without hook_output synthesizes deny exit 0",
+			connector:  "geminicli",
+			respBody:   `{"action":"block","reason":"no"}`,
 			wantStdout: `{"decision":"deny","reason":"no"}` + "\n",
 			wantCode:   0,
 		},
@@ -482,7 +497,7 @@ func TestOversizedPayload(t *testing.T) {
 		"openhands":  {stdout: `{"decision":"deny","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"cursor":     {stdout: cursorDeny("DefenseClaw hook payload too large") + "\n", code: 2},
 		"copilot":    {stdout: "", code: 2},
-		"geminicli":  {stdout: "", code: 2},
+		"geminicli":  {stdout: geminiDeny("DefenseClaw hook payload too large") + "\n", code: 0},
 		"hermes":     {stdout: "", code: 2},
 		"windsurf":   {stdout: "", code: 2},
 	}
@@ -526,6 +541,28 @@ func TestUnreachable(t *testing.T) {
 		}
 		if r.stdout != cursorAllow()+"\n" {
 			t.Errorf("stdout = %q, want Cursor allow JSON", r.stdout)
+		}
+	})
+
+	t.Run("geminicli fail open emits documented allow json", func(t *testing.T) {
+		r := run(t, "geminicli", &stubRT{err: errors.New("dial tcp: refused")}, nil)
+		if r.code != 0 {
+			t.Fatalf("code = %d, want 0", r.code)
+		}
+		if r.stdout != geminiAllow()+"\n" {
+			t.Errorf("stdout = %q, want Gemini allow JSON", r.stdout)
+		}
+	})
+
+	t.Run("geminicli strict availability emits deny json with exit 0", func(t *testing.T) {
+		r := run(t, "geminicli", &stubRT{err: errors.New("refused")}, func(o *Options) {
+			o.StrictAvailability = true
+		})
+		if r.code != 0 {
+			t.Fatalf("code = %d, want 0", r.code)
+		}
+		if r.stdout != geminiDeny("DefenseClaw hook failed closed")+"\n" {
+			t.Errorf("stdout = %q", r.stdout)
 		}
 	})
 
@@ -700,6 +737,38 @@ func TestResponseFailure(t *testing.T) {
 		}
 	})
 
+	t.Run("geminicli response failure uses json for open and closed", func(t *testing.T) {
+		open := run(t, "geminicli", &stubRT{status: 401, body: "unauthorized"}, nil)
+		if open.code != 0 || open.stdout != geminiAllow()+"\n" {
+			t.Fatalf("open code=%d stdout=%q", open.code, open.stdout)
+		}
+		closed := run(t, "geminicli", &stubRT{status: 401, body: "unauthorized"}, func(o *Options) {
+			o.FailMode = "closed"
+		})
+		if closed.code != 0 || closed.stdout != geminiDeny("DefenseClaw hook failed closed")+"\n" {
+			t.Fatalf("closed code=%d stdout=%q", closed.code, closed.stdout)
+		}
+	})
+
+	t.Run("geminicli invalid response action uses exact json schema", func(t *testing.T) {
+		for _, body := range []string{
+			`{"reason":"missing action"}`,
+			`{"action":"unexpected"}`,
+		} {
+			open := run(t, "geminicli", ok(body), nil)
+			if open.code != 0 || open.stdout != `{"decision":"allow"}`+"\n" {
+				t.Fatalf("body=%s open code=%d stdout=%q", body, open.code, open.stdout)
+			}
+			closed := run(t, "geminicli", ok(body), func(o *Options) {
+				o.FailMode = "closed"
+			})
+			if closed.code != 0 ||
+				closed.stdout != `{"decision":"deny","reason":"DefenseClaw hook failed closed"}`+"\n" {
+				t.Fatalf("body=%s closed code=%d stdout=%q", body, closed.code, closed.stdout)
+			}
+		}
+	})
+
 	t.Run("4xx fail closed blocks per connector", func(t *testing.T) {
 		r := run(t, "cursor", &stubRT{status: 401, body: "unauthorized"}, func(o *Options) {
 			o.FailMode = "closed"
@@ -794,6 +863,20 @@ func TestMissingToken(t *testing.T) {
 		}
 		if r.stdout != cursorAllow()+"\n" {
 			t.Errorf("stdout = %q, want Cursor allow JSON", r.stdout)
+		}
+	})
+
+	t.Run("geminicli missing token uses json for open and closed", func(t *testing.T) {
+		open := run(t, "geminicli", ok(`{"action":"allow"}`), noToken)
+		if open.code != 0 || open.stdout != geminiAllow()+"\n" {
+			t.Fatalf("open code=%d stdout=%q", open.code, open.stdout)
+		}
+		closed := run(t, "geminicli", ok(`{"action":"allow"}`), func(o *Options) {
+			noToken(o)
+			o.FailMode = "closed"
+		})
+		if closed.code != 0 || closed.stdout != geminiDeny("DefenseClaw hook failed closed")+"\n" {
+			t.Fatalf("closed code=%d stdout=%q", closed.code, closed.stdout)
 		}
 	})
 
