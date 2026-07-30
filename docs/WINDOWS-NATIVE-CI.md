@@ -19,9 +19,11 @@ The merge gate covers:
   token-bound disposable Windows profile;
 - installed CLI, gateway lifecycle, doctor, scanner, and dependency checks;
 - Setup build and native install/repair/uninstall acceptance, including the
-  staged Copilot CLI selection, repair, custody, and exact-restoration path;
-  and
-- deterministic Codex and Claude Code connector contract tests.
+  staged connector selection, repair, custody, and exact-restoration paths; and
+- deterministic Codex, Claude Code, and OpenCode connector contract tests.
+  OpenCode's contract imports the installed JavaScript bridge, proves
+  `tool.execute.before` permits on normal return and blocks on a thrown error,
+  and treats `tool.execute.after` as observation only.
 
 The staged Copilot Setup lifecycle is exercised as pre-certification evidence.
 It does not add Copilot to the certified Windows connector matrix; packaged

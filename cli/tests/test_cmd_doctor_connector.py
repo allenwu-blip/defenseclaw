@@ -37,12 +37,14 @@ Coverage:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -889,10 +891,51 @@ class TestCheckHookHealth(unittest.TestCase):
             hook = os.path.join(tmp, "defenseclaw.js")
             with open(hook, "w", encoding="utf-8") as fh:
                 fh.write("export const plugin = () => fetch('http://127.0.0.1:4000');  // defenseclaw bridge\n")
+            body = Path(hook).read_bytes()
+            backup = Path(tmp) / "connector_backups" / "opencode" / "config.json"
+            backup.parent.mkdir(parents=True)
+            backup.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "connector": "opencode",
+                        "logical_name": "config",
+                        "path": hook,
+                        "post_sha256": hashlib.sha256(body).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
             r = _DoctorResult()
             _check_hook_health(self._cfg(tmp, "opencode", [hook]), "opencode", r)
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertEqual(r.checks[-1]["label"], "OpenCode hooks")
+        self.assertIn("not tamper-proof", r.checks[-1]["detail"])
+
+    def test_opencode_tamper_fails_digest_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hook = Path(tmp) / "defenseclaw.js"
+            original = b"// defenseclaw managed plugin\n"
+            hook.write_bytes(original)
+            backup = Path(tmp) / "connector_backups" / "opencode" / "config.json"
+            backup.parent.mkdir(parents=True)
+            backup.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "connector": "opencode",
+                        "logical_name": "config",
+                        "path": str(hook),
+                        "post_sha256": hashlib.sha256(original).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hook.write_text("// defenseclaw operator edit\n", encoding="utf-8")
+            r = _DoctorResult()
+            _check_hook_health(self._cfg(tmp, "opencode", [str(hook)]), "opencode", r)
+        self.assertEqual(r.checks[-1]["status"], "fail")
+        self.assertIn("drift detected", r.checks[-1]["detail"])
 
     def test_unknown_connector_is_noop(self) -> None:
         r = _DoctorResult()

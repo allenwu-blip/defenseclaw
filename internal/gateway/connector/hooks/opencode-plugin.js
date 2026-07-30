@@ -8,9 +8,11 @@
 // .env-protection example — when the gateway returns a block decision.
 //
 // The gateway address, bearer token, and fail mode are substituted in at
-// setup time. The file is written 0o600 (owner-only) because it carries
-// the gateway token; it is never executable. DefenseClaw's Teardown
-// removes this file (managed-file backup heal).
+// setup time. The file carries the gateway token, so Unix uses mode 0600
+// and Windows publishes a DACL restricted to the user, administrators,
+// and SYSTEM. The owning user/administrators can still modify it; Doctor
+// detects digest drift and Setup reconciles it. The file is never executable.
+// DefenseClaw's Teardown removes it (managed-file backup heal).
 //
 // Wire contract: POST {hook_event_name, tool_name, tool_input, cwd} to
 // /api/v1/opencode/hook; the response carries hook_output={decision,
@@ -105,8 +107,10 @@ export const DefenseClaw = async ({ directory, worktree }) => {
   const cwd = directory || worktree || "";
   return {
     // OpenCode publishes its session lifecycle through the generic event
-    // hook. Child sessions carry info.parentID, which DefenseClaw maps to
-    // a parent-agent relationship while preserving the child session ID.
+    // hook. OpenCode does not await this hook dispatch, so lifecycle delivery
+    // is best-effort telemetry only. Child sessions carry info.parentID, which
+    // DefenseClaw maps to a parent-agent relationship while preserving the
+    // child session ID.
     event: async ({ event }) => {
       if (!event || ![
         "session.created", "session.updated", "session.status", "session.idle",

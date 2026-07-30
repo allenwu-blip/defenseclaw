@@ -69,8 +69,8 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 		Reason: "Windsurf Cascade hooks and the native PowerShell adapter are implemented; packaged and official-client Windows x64 certification is pending.",
 	},
 	"geminicli": {
-		Status: PlatformNotCertified,
-		Reason: "Gemini CLI now serves enterprise, Google Cloud, and paid API-key users only; the DefenseClaw native Windows adapter has not completed credentialed official-client x64 certification.",
+		Status: PlatformUnsupported,
+		Reason: "Gemini CLI native Windows support is excluded from this release because the intended product and audience path was discontinued; existing non-Windows support is unchanged.",
 	},
 	"copilot": {
 		Status: PlatformNotCertified,
@@ -81,8 +81,8 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 		Reason: "The native Windows x64 implementation is awaiting integrated packaged and official-client validation.",
 	},
 	"opencode": {
-		Status: PlatformNotCertified,
-		Reason: "The DefenseClaw OpenCode integration has not completed native Windows x64 certification.",
+		Status: PlatformPreview,
+		Reason: "OpenCode native Windows support is preview pending integrated packaged Setup and official-client validation; OpenCode recommends WSL but does not require it.",
 	},
 	"hermes": {
 		Status: PlatformNotCertified,

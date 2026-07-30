@@ -24,6 +24,7 @@ _VALID_MODES = frozenset({"open", "closed"})
 _MAX_RUNTIME_FILE = 2 * 1024 * 1024
 _MAX_DIGEST_FILE = 128 * 1024 * 1024
 _FAIL_MODE_PATTERN = re.compile(r"FAIL_MODE=\"\$\{DEFENSECLAW_FAIL_MODE:-(open|closed)\}\"")
+_OPENCODE_FAIL_MODE_PATTERN = re.compile(r'const\s+DC_FAIL_MODE\s*=\s*"(open|closed)"\s*;')
 _EXPECTED_CONTRACTS = {
     "claudecode": frozenset({"claudecode-hooks-v1"}),
     "codex": frozenset(
@@ -133,7 +134,7 @@ def resolve_connector_fail_mode(
     if runtime_source[0].endswith("-legacy"):
         drift.append("windows-sidecar-legacy")
     process_env = str(os.environ.get("DEFENSECLAW_FAIL_MODE", "")).strip().lower()
-    if process_env in _VALID_MODES:
+    if name != "opencode" and process_env in _VALID_MODES:
         sources.append(("process-env", process_env))
         runtime = process_env
 
@@ -208,7 +209,7 @@ def connector_fail_mode_report(
     guardrail = cfg.guardrail
     resolver = getattr(guardrail, "effective_hook_fail_mode", None)
     configured = normalize_fail_mode(resolver(name) if callable(resolver) else getattr(guardrail, "hook_fail_mode", ""))
-    if name in _EXPECTED_CONTRACTS:
+    if name in _EXPECTED_CONTRACTS or name == "opencode":
         return resolve_connector_fail_mode(
             cfg,
             name,
@@ -227,6 +228,8 @@ def connector_fail_mode_report(
 
 
 def _platform_runtime_source(cfg: Any, connector: str) -> tuple[str, str | None]:
+    if connector == "opencode":
+        return "opencode-plugin", _read_opencode_plugin_mode(cfg)
     if _is_windows():
         mode, legacy = _read_windows_hook_mode(Path(cfg.data_dir) / "hooks" / ".hookcfg", connector)
         if legacy:
@@ -268,6 +271,30 @@ def _read_baked_hook_mode(path: Path) -> str | None:
         return None
     match = _FAIL_MODE_PATTERN.search(data)
     return match.group(1) if match else None
+
+
+def _read_opencode_plugin_mode(cfg: Any) -> str | None:
+    data = _read_small_file(Path(cfg.data_dir) / "hook_contract_lock.json")
+    if data is None:
+        return None
+    try:
+        payload = json.loads(data)
+    except (TypeError, ValueError):
+        return None
+    connectors = payload.get("connectors") if isinstance(payload, dict) else None
+    entry = connectors.get("opencode") if isinstance(connectors, dict) else None
+    locations = entry.get("locations") if isinstance(entry, dict) else None
+    paths = locations.get("hook_config_paths") if isinstance(locations, dict) else None
+    if not isinstance(paths, list):
+        return None
+    for raw_path in paths:
+        plugin = _read_small_file(Path(str(raw_path)))
+        if plugin is None:
+            continue
+        match = _OPENCODE_FAIL_MODE_PATTERN.search(plugin)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _connector_workspace(cfg: Any) -> str:

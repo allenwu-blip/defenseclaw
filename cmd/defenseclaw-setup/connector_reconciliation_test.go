@@ -541,15 +541,16 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 	t.Parallel()
 	root := t.TempDir()
 	transaction := setupTransaction{
-		ID:                       strings.Repeat("a", 32),
-		DataRoot:                 filepath.Join(root, "data"),
-		PreviousConnectors:       []string{"codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"},
-		PreviousCodexHome:        filepath.Join(root, "codex"),
-		PreviousClaudeConfigDir:  filepath.Join(root, "claude"),
-		PreviousCopilotHome:      filepath.Join(root, "copilot"),
-		PreviousGeminiConfigDir:  filepath.Join(root, ".gemini"),
-		PreviousCursorHome:       filepath.Join(root, "cursor"),
-		PreviousWindsurfUserHome: filepath.Join(root, "windsurf-profile"),
+		ID:                           strings.Repeat("a", 32),
+		DataRoot:                     filepath.Join(root, "data"),
+		PreviousConnectors:           []string{"codex", "claudecode", "copilot", "cursor", "windsurf", "antigravity", "opencode"},
+		PreviousCodexHome:            filepath.Join(root, "codex"),
+		PreviousClaudeConfigDir:      filepath.Join(root, "claude"),
+		PreviousCopilotHome:          filepath.Join(root, "copilot"),
+		PreviousCursorHome:           filepath.Join(root, "cursor"),
+		PreviousWindsurfUserHome:     filepath.Join(root, "windsurf-profile"),
+		PreviousAntigravityConfigDir: filepath.Join(root, ".gemini", "config"),
+		PreviousOpenCodeConfigDir:    filepath.Join(root, "opencode"),
 	}
 	var calls []string
 	recorder := reconcilePreservedConnectors(
@@ -561,11 +562,11 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 			return nil
 		},
 	)
-	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1,copilot:reconcile:PRESERVED=1,geminicli:reconcile:PRESERVED=1,cursor:reconcile:PRESERVED=1,windsurf:reconcile:PRESERVED=1"
+	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1,copilot:reconcile:PRESERVED=1,cursor:reconcile:PRESERVED=1,windsurf:reconcile:PRESERVED=1,antigravity:reconcile:PRESERVED=1,opencode:reconcile:PRESERVED=1"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("preserved connector calls = %q, want %q", got, want)
 	}
-	if len(recorder.attempts) != 6 || len(recorder.failures) != 0 {
+	if len(recorder.attempts) != 7 || len(recorder.failures) != 0 {
 		t.Fatalf("preserved connector reconciliation = %+v", recorder)
 	}
 }

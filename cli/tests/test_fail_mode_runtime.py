@@ -128,6 +128,39 @@ def _write_current_runtime(cfg: SimpleNamespace, home: Path, modes: dict[str, st
     )
 
 
+def _write_opencode_runtime(
+    cfg: SimpleNamespace,
+    tmp_path: Path,
+    *,
+    plugin_mode: str,
+    lock_mode: str,
+) -> Path:
+    plugin_path = tmp_path / "opencode" / "plugins" / "defenseclaw.js"
+    plugin_path.parent.mkdir(parents=True)
+    plugin_path.write_text(
+        f'const DC_FAIL_MODE = "{plugin_mode}";\n',
+        encoding="utf-8",
+    )
+    Path(cfg.data_dir).mkdir(parents=True, exist_ok=True)
+    (Path(cfg.data_dir) / "hook_contract_lock.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "connectors": {
+                    "opencode": {
+                        "connector": "opencode",
+                        "contract_id": "opencode-hooks-v1",
+                        "hook_fail_mode": lock_mode,
+                        "locations": {"hook_config_paths": [str(plugin_path)]},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return plugin_path
+
+
 def test_fail_mode_state_reports_effective_provenance() -> None:
     state = ConnectorFailModeState(
         connector="codex",
@@ -149,6 +182,35 @@ def test_fail_mode_state_reports_effective_provenance() -> None:
     assert report["provenance"] == "process-env"
     assert report["configured"] == "closed"
     assert report["drift"] == ["process-env-open"]
+
+
+def test_opencode_fail_mode_uses_baked_plugin_and_ignores_process_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg, _home = _runtime_cfg(monkeypatch, tmp_path, {"opencode": "closed"})
+    _write_opencode_runtime(cfg, tmp_path, plugin_mode="closed", lock_mode="closed")
+    monkeypatch.setenv("DEFENSECLAW_FAIL_MODE", "open")
+
+    state = resolve_connector_fail_mode(cfg, "opencode")
+
+    assert state.current
+    assert state.effective == "closed"
+    assert state.provenance == "opencode-plugin"
+    assert ("process-env", "open") not in state.sources
+
+
+def test_opencode_fail_mode_reports_managed_plugin_drift(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg, _home = _runtime_cfg(monkeypatch, tmp_path, {"opencode": "closed"})
+    _write_opencode_runtime(cfg, tmp_path, plugin_mode="open", lock_mode="closed")
+
+    state = resolve_connector_fail_mode(cfg, "opencode")
+
+    assert not state.current
+    assert state.effective == "open"
+    assert state.provenance == "opencode-plugin"
+    assert "opencode-plugin-open" in state.drift
 
 
 def test_connector_fail_mode_report_uses_disposable_windows_runtime(

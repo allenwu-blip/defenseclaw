@@ -88,9 +88,10 @@ _INSTALL_STATE_OPTIONAL_FIELDS = frozenset(
         "codex_home",
         "claude_config_dir",
         "copilot_home",
-        "gemini_config_dir",
         "cursor_home",
         "windsurf_user_home",
+        "antigravity_config_dir",
+        "opencode_config_dir",
         "transaction_id",
     }
 )
@@ -492,7 +493,16 @@ def _validate_install_state(
         or state.get("install_kind") != "native-windows-exe"
         or state.get("install_scope") != "user"
         or state.get("connector")
-        not in {"codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf", "none"}
+        not in {
+            "antigravity",
+            "codex",
+            "claudecode",
+            "copilot",
+            "cursor",
+            "windsurf",
+            "opencode",
+            "none",
+        }
         or state.get("mode") not in {"observe", "action"}
         or state.get("unsigned_local_artifact") is not False
         or state.get("release_signing_required") is not True

@@ -181,6 +181,7 @@ type options struct {
 	CursorHome           string
 	WindsurfUserHome     string
 	AntigravityConfigDir string
+	OpenCodeConfigDir    string
 	// PreserveConnectorConfiguration is internal transaction intent, never a
 	// command-line property. Servicing an existing install without an explicit
 	// connector or mode selection must refresh its owned registrations in place
@@ -259,6 +260,7 @@ type installState struct {
 	CursorHome             string            `json:"cursor_home,omitempty"`
 	WindsurfUserHome       string            `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
+	OpenCodeConfigDir      string            `json:"opencode_config_dir,omitempty"`
 	UnsignedLocalArtifact  bool              `json:"unsigned_local_artifact"`
 	ReleaseSigningRequired bool              `json:"release_signing_required"`
 	Toolchain              map[string]string `json:"toolchain"`
@@ -502,6 +504,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.CursorHome = transaction.CursorHome
 	opts.WindsurfUserHome = transaction.WindsurfUserHome
 	opts.AntigravityConfigDir = transaction.AntigravityConfigDir
+	opts.OpenCodeConfigDir = transaction.OpenCodeConfigDir
 	if err := beginSetupTransaction(transaction); err != nil {
 		return retryRequiredCode, err
 	}
@@ -904,7 +907,7 @@ func requestedServices(opts options, previous serviceState) serviceState {
 
 func connectorsForNativeUninstall(state *installState, dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
-	connectors := make([]string, 0, 7)
+	connectors := make([]string, 0, 8)
 	add := func(name string) {
 		if validConnector(name) && name != "none" && !seen[name] {
 			seen[name] = true
@@ -951,6 +954,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")) {
 		add("antigravity")
+	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")) {
+		add("opencode")
 	}
 	return connectors, nil
 }
@@ -1015,9 +1021,7 @@ func readNativeConfiguredConnectors(dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(value string) {
 		name := normalizeConnector(strings.TrimSpace(value))
-		if name == "codex" || name == "claudecode" ||
-			name == "copilot" || name == "geminicli" || name == "cursor" ||
-			name == "windsurf" || name == "antigravity" {
+		if name != "none" && validConnector(name) {
 			seen[name] = true
 		}
 	}
@@ -1229,6 +1233,8 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "WINDSURF_USER_HOME"
 	case "antigravity":
 		variable = "ANTIGRAVITY_CONFIG_DIR"
+	case "opencode":
+		variable = "OPENCODE_CONFIG_DIR"
 	default:
 		return "", fmt.Errorf("unsupported native connector %q", connectorName)
 	}
@@ -1270,8 +1276,8 @@ func samePath(a, b string) bool {
 
 func validConnector(value string) bool {
 	return value == "none" || value == "codex" || value == "claudecode" ||
-		value == "copilot" || value == "geminicli" || value == "cursor" ||
-		value == "windsurf" || value == "antigravity"
+		value == "copilot" || value == "cursor" ||
+		value == "windsurf" || value == "antigravity" || value == "opencode"
 }
 
 func validMode(value string) bool {
@@ -1548,6 +1554,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		CursorHome:             opts.CursorHome,
 		WindsurfUserHome:       opts.WindsurfUserHome,
 		AntigravityConfigDir:   opts.AntigravityConfigDir,
+		OpenCodeConfigDir:      opts.OpenCodeConfigDir,
 		UnsignedLocalArtifact:  payload.Manifest.Unsigned,
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
@@ -2543,7 +2550,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, geminicli, cursor, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, cursor, windsurf, opencode, or none", opts.Connector)
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2590,21 +2597,21 @@ func normalizeConnector(value string) string {
 		return "claudecode"
 	case "copilot", "githubcopilot", "github-copilot":
 		return "copilot"
-	case "gemini", "geminicli", "gemini-cli":
-		return "geminicli"
 	case "cursor", "cursoragent", "cursor-agent":
 		return "cursor"
 	case "windsurf":
 		return "windsurf"
 	case "antigravity", "agy":
 		return "antigravity"
+	case "opencode", "open-code":
+		return "opencode"
 	default:
 		return strings.ToLower(value)
 	}
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|geminicli|cursor|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|cursor|windsurf|opencode|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

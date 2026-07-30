@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -4291,6 +4291,13 @@ function Get-WindowsReleaseClientSpecifications {
             Package = '@anthropic-ai/claude-code'
             Manifest = 'node_modules\@anthropic-ai\claude-code\package.json'
             Command = 'claude.cmd'
+        },
+        [pscustomobject]@{
+            Connector = 'opencode'
+            Version = '1.18.10'
+            Package = 'opencode-ai'
+            Manifest = 'node_modules\opencode-ai\package.json'
+            Command = 'opencode.cmd'
         }
     )
 }
@@ -4575,7 +4582,7 @@ function Assert-WindowsReleaseRealClientResults([string]$ResultsPath) {
         'install', 'doctor:windows-hook-registration', 'lifecycle:fires', 'tool-allow:fires',
         'tool-block:enforced', 'audit-correlation', 'telemetry', 'teardown'
     )
-    foreach ($connectorName in @('codex', 'claudecode')) {
+    foreach ($connectorName in @('codex', 'claudecode', 'opencode')) {
         foreach ($eventName in $requiredEvents) {
             $matches = @($rows | Where-Object {
                 $_.connector -eq $connectorName -and
@@ -4602,10 +4609,15 @@ function Assert-WindowsReleaseDoctorRows([string]$Launcher, [string]$Logs) {
         -TimeoutSeconds 300 -LogPath (Join-Path $Logs 'release-doctor-after-maintenance.json')
     try { $report = $doctor.StdOut | ConvertFrom-Json -ErrorAction Stop }
     catch { throw "installed Doctor returned invalid JSON after repair/upgrade: $($_.Exception.Message)" }
-    foreach ($label in @('Codex hooks', 'Claude Code hooks')) {
+    foreach ($label in @('Codex hooks', 'Claude Code hooks', 'OpenCode hooks')) {
         $rows = @($report.checks | Where-Object { [string]$_.label -like "$label*" })
+        $healthyPattern = if ($label -eq 'OpenCode hooks') {
+            'managed plugin digest current'
+        } else {
+            'healthy Windows-native'
+        }
         if ($rows.Count -ne 1 -or [string]$rows[0].status -ne 'pass' -or
-            [string]$rows[0].detail -notmatch 'healthy Windows-native') {
+            [string]$rows[0].detail -notmatch $healthyPattern) {
             throw "Doctor did not verify $label after exact-installer repair/upgrade"
         }
     }
@@ -4732,11 +4744,13 @@ function Invoke-WindowsReleaseCertification {
     $codexManagedConfigPath = Join-Path $userProfile '.codex\managed_config.toml'
     $codexHooksPath = Join-Path $userProfile '.codex\hooks.json'
     $claudeConfigPath = Join-Path $userProfile '.claude\settings.json'
+    $openCodePluginPath = Join-Path $userProfile '.config\opencode\plugins\defenseclaw.js'
     $connectorConfigs = @(
         $codexConfigPath,
         $codexManagedConfigPath,
         $codexHooksPath,
-        $claudeConfigPath
+        $claudeConfigPath,
+        $openCodePluginPath
     )
     foreach ($path in @($installRoot, $dataRoot, $cacheRoot, $arpKey) + $connectorConfigs) {
         if (Test-Path -LiteralPath $path) {
@@ -4772,7 +4786,7 @@ function Invoke-WindowsReleaseCertification {
     $originalEnvironment = @{}
     foreach ($name in @(
         'PATH', 'HOME', 'USERPROFILE', 'DEFENSECLAW_HOME',
-        'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'NPM_CONFIG_CACHE'
+        'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'OPENCODE_CONFIG_DIR', 'NPM_CONFIG_CACHE'
     )) {
         $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
@@ -4799,6 +4813,7 @@ function Invoke-WindowsReleaseCertification {
         $env:DEFENSECLAW_HOME = $dataRoot
         $env:CODEX_HOME = Join-Path $userProfile '.codex'
         $env:CLAUDE_CONFIG_DIR = Join-Path $userProfile '.claude'
+        $env:OPENCODE_CONFIG_DIR = Join-Path $userProfile '.config\opencode'
 
         Invoke-WindowsNativeProcess $setup @(
             '/quiet', '/norestart', 'INSTALLSCOPE=user', 'CONNECTOR=codex',
@@ -4858,7 +4873,7 @@ function Invoke-WindowsReleaseCertification {
         Assert-PackagedV8ResourceContract $python (Join-Path $installRoot 'runtime\python')
         $env:PATH = "$bin;$(@($toolBins) -join ';');$($originalEnvironment['PATH'])"
 
-        foreach ($connectorName in @('codex', 'claudecode')) {
+        foreach ($connectorName in @('codex', 'claudecode', 'opencode')) {
             $client = $clients[$connectorName]
             Invoke-WindowsReleaseRealConnector `
                 $client.Specification $client.Path $client.Root $results $diagnostics
@@ -4871,6 +4886,9 @@ function Invoke-WindowsReleaseCertification {
         Invoke-WindowsNativeProcess $launcher @(
             'setup', 'claude-code', '--yes', '--mode', 'action', '--restart'
         ) -TimeoutSeconds 300 -LogPath (Join-Path $logs 'release-reconfigure-claudecode.log') | Out-Null
+        Invoke-WindowsNativeProcess $launcher @(
+            'setup', 'opencode', '--yes', '--mode', 'action', '--restart'
+        ) -TimeoutSeconds 300 -LogPath (Join-Path $logs 'release-reconfigure-opencode.log') | Out-Null
 
         Invoke-WindowsNativeProcess $setup @(
             '/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user'
@@ -4881,7 +4899,7 @@ function Invoke-WindowsReleaseCertification {
         Assert-PackagedV8ResourceContract $python (Join-Path $installRoot 'runtime\python')
         Assert-WindowsReleaseDoctorRows $launcher $logs
 
-        # Uninstall must tear down both active connectors itself. A pre-teardown
+        # Uninstall must tear down all three active connectors itself. A pre-teardown
         # here would hide the release defect this certification is meant to catch.
         Invoke-WindowsNativeProcess $setup @('/uninstall', '/quiet', 'DELETEUSERDATA=1') `
             -TimeoutSeconds 900 -LogPath (Join-Path $logs 'release-setup-uninstall.log') | Out-Null
@@ -4923,11 +4941,12 @@ function Invoke-WindowsReleaseCertification {
             clients = [ordered]@{
                 codex = [string]$clients['codex'].Specification.Version
                 claudecode = [string]$clients['claudecode'].Specification.Version
+                opencode = [string]$clients['opencode'].Specification.Version
             }
-            connectors = @('codex', 'claudecode')
+            connectors = @('codex', 'claudecode', 'opencode')
             requirements = @(
                 'automatic-codex-trust', 'lifecycle', 'tool-allow', 'tool-block',
-                'gateway-jsonl', 'audit-correlation', 'connector-otlp',
+                'gateway-jsonl', 'audit-correlation', 'connector-telemetry',
                 'repair', 'upgrade', 'uninstall'
             )
             source_commit = $env:GITHUB_SHA
@@ -4940,7 +4959,7 @@ function Invoke-WindowsReleaseCertification {
             ($evidence | ConvertTo-Json -Depth 8),
             [Text.UTF8Encoding]::new($false)
         )
-        Write-Host 'Exact signed Windows installer passed both real-client release certifications.'
+        Write-Host 'Exact signed Windows installer passed all three real-client release certifications.'
         $completed = $true
     } finally {
         if ($installed -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
@@ -5509,12 +5528,16 @@ function Invoke-Contract {
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
     $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'cursor-home')).TrimEnd('\')
-    $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome)
+    $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
+    $null = Assert-WindowsNativePathsDisjoint @(
+        $contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome, $openCodeHome
+    )
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
     $unrelatedGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
     $defaultWindsurfConfig = Join-Path $contractHome '.codeium\windsurf\hooks.json'
+    $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
         foreach ($path in @(
             $contractHome,
@@ -5524,7 +5547,8 @@ function Invoke-Contract {
             $codexHome,
             $claudeHome,
             $copilotHome,
-            $cursorHome
+            $cursorHome,
+            $openCodeHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
             Protect-TestDirectory $path
@@ -5535,6 +5559,7 @@ function Invoke-Contract {
         $env:CLAUDE_CONFIG_DIR = $claudeHome
         $env:COPILOT_HOME = $copilotHome
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome
+        $env:OPENCODE_CONFIG_DIR = $openCodeHome
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
             'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
@@ -5569,7 +5594,8 @@ function Invoke-Contract {
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath $defaultCursorHome) -or
-            (Test-Path -LiteralPath $defaultWindsurfConfig)) {
+            (Test-Path -LiteralPath $defaultWindsurfConfig) -or
+            (Test-Path -LiteralPath $defaultOpenCodeHome)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
 
@@ -5595,7 +5621,8 @@ function Invoke-Contract {
             $defaultCodexHome,
             $defaultClaudeHome,
             $defaultCursorHome,
-            $defaultWindsurfConfig
+            $defaultWindsurfConfig,
+            $defaultOpenCodeHome
         )
         if ($Connector -eq 'windsurf') {
             $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultWindsurfConfig })
@@ -5612,6 +5639,7 @@ function Invoke-Contract {
             cursor = Join-Path $cursorHome 'hooks.json'
             windsurf = Join-Path $contractHome '.codeium\windsurf\hooks.json'
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
+            opencode = Join-Path $openCodeHome 'plugins\defenseclaw.js'
         }
         $unrelatedConfigs = @(
             $connectorConfigTargets.Keys |

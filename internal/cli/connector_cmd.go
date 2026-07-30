@@ -228,16 +228,6 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		variable = "CLAUDE_CONFIG_DIR"
 	case "copilot":
 		variable = "COPILOT_HOME"
-	case "geminicli":
-		// Gemini CLI documents one fixed per-user settings directory rather
-		// than a home environment override. The hidden installer binding names
-		// that directory, so point only DefenseClaw's connector resolver at its
-		// settings file for this maintenance process.
-		previous := connector.GeminiSettingsPathOverride
-		connector.GeminiSettingsPathOverride = filepath.Join(home, "settings.json")
-		return func() {
-			connector.GeminiSettingsPathOverride = previous
-		}, nil
 	case "cursor":
 		// Cursor has no documented configuration-home environment variable.
 		// The hidden maintenance flag is carried through SetupOpts.ConfigHome
@@ -250,6 +240,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		return connector.BindUserHomeDir(home)
 	case "antigravity":
 		variable = "ANTIGRAVITY_CONFIG_DIR"
+	case "opencode":
+		variable = "OPENCODE_CONFIG_DIR"
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}

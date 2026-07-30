@@ -43,19 +43,15 @@ connector scope deliberately excludes WSL and requires both the upstream agent
 and the complete DefenseClaw hook path to run directly on Windows.
 
 - **Supported and certified:** Codex and Claude Code.
-- **Preview:** Cursor. Its native Windows implementation is available for
-  evaluation, but integrated packaged and official-client validation is still
-  required before certification.
-- **Not certified:** Windsurf, Gemini CLI, Copilot CLI, Antigravity, OpenCode,
-  and Hermes. Their cross-platform setup code is not a native Windows support
-  commitment.
-- **Preview, not yet certified:** Windsurf. Its native implementation is
-  available for focused validation, but release certification requires the
-  deferred packaged and interactive official-client gates.
-- **Not certified:** Cursor, Gemini CLI, Copilot CLI, Antigravity,
-  OpenCode, and Hermes. Their cross-platform setup code is not a native Windows
-  support commitment.
-- **Unsupported:** OpenHands, OmniGent, OpenClaw, and ZeptoClaw. Their required
+- **Preview, not certified:** Cursor, Windsurf, and OpenCode. Their native
+  implementations are available for focused validation, but certification
+  still requires the integrated packaged and authentic official-client gates.
+- **Implemented but not certified:** Copilot CLI and Antigravity. Setup support
+  is not a certification claim.
+- **Not certified:** Hermes, pending the native implementation decision.
+- **Unsupported/excluded:** Gemini CLI, OpenHands, OmniGent, OpenClaw, and
+  ZeptoClaw. Gemini native Windows is excluded from this release; the others'
+  required
   WSL, terminal/sandbox, or local-proxy topology is not hosted by native
   Windows DefenseClaw.
 
@@ -74,12 +70,16 @@ Cursor command hooks retain the vendor's fail-open default
 and upgrade reconcile the recorded `%USERPROFILE%\.cursor` home, while
 uninstall restores the exact pre-DefenseClaw `hooks.json` bytes and removes
 only DefenseClaw-owned adapter assets.
-Codex and Claude Code invoke the native `defenseclaw-hook.exe` entrypoint.
 Windsurf invokes a generated native PowerShell adapter through its documented
 `powershell` hook field; the adapter synchronously launches the exact packaged
 hook executable and preserves JSON stdin, stdout/stderr, and exit status. None
 of these paths adds WSL, Git Bash, `jq`, or a POSIX-shell dependency. Upstream
 agent prerequisites still apply, including Git for Windows for Claude Code.
+OpenCode auto-loads the dependency-free DefenseClaw JavaScript plugin in its
+native Windows process. None of these paths adds a WSL, Git Bash, `jq`, or
+POSIX-shell dependency. Upstream agent prerequisites still apply, including
+Git for Windows for Claude Code. OpenCode explicitly runs directly on Windows;
+its upstream WSL guidance is a recommendation, not a requirement.
 
 WSL availability is tracked for upstream research in
 [`CONNECTOR-MATRIX.md`](CONNECTOR-MATRIX.md), but it is not part of the current
@@ -546,17 +546,18 @@ interactive desktop session:
 Setup installs the CLI/TUI, native gateway, no-console hook launcher, and
 managed Python runtime under `%LOCALAPPDATA%\Programs\DefenseClaw`, and adds its
 managed `bin` directory to the current user's `PATH`. Use
-`CONNECTOR=claudecode` for Claude Code or `CONNECTOR=none` to configure a
-connector later. `CONNECTOR=copilot` exercises the staged GitHub Copilot CLI
-native lifecycle, including repair and uninstall custody, but remains
-`not_certified` until the packaged and real-client Windows certification phase
-passes; its presence in Setup is not a support claim.
+`CONNECTOR=claudecode` for Claude Code, `CONNECTOR=opencode` for OpenCode, or
+`CONNECTOR=none` to configure a connector later. The installer also exposes the
+staged Copilot, Cursor, Windsurf, and Antigravity lifecycles without claiming
+certification. Gemini CLI is intentionally not a Windows Setup choice. OpenCode uses
+`%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, defaulting to
+`%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`; restart OpenCode after
+Setup or teardown.
 
 Quiet mode does not authorize service, SYSTEM, session-zero, elevated, or
-background/batch installation. A configured Codex, Claude Code, or GitHub
-Copilot CLI connector requires gateway startup; only
-`CONNECTOR=none STARTGATEWAY=0` is a supported stopped CLI-only install. See the
-complete
+background/batch installation. Every configured connector requires gateway
+startup; only `CONNECTOR=none STARTGATEWAY=0` is a supported stopped CLI-only
+install. See the complete
 [native Windows guide](https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/windows/)
 for lifecycle, support, security, and troubleshooting boundaries.
 

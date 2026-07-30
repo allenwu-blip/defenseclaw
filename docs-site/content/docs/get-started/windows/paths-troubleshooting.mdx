@@ -45,6 +45,7 @@ intact when diagnosing a problem.
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
 | `%USERPROFILE%\.codeium\windsurf\hooks.json` | Windsurf user hook configuration. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
+| `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` | OpenCode bridge plugin. Default config root is `%USERPROFILE%\.config\opencode`. | Carries a connector-scoped token. Do not edit or copy; Doctor detects digest drift and Setup reconciles it. Restart OpenCode after lifecycle changes. |
 
 The installer records the exact connector homes and uses them for later repair,
 upgrade, and cleanup. Connector configuration backups are ownership records,
@@ -52,11 +53,13 @@ not a user-facing rollback directory.
 
 ## Supported path overrides
 
-`CODEX_HOME` and `CLAUDE_CONFIG_DIR` are the supported public connector
-configuration overrides. Set them to absolute, normalized native Windows paths
-before initial Setup or connector setup. The installer validates and records
-them; reparse ancestors are refused. Cursor publishes no equivalent override,
-so Setup records the exact native `.cursor` home that it selected internally.
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
+`ANTIGRAVITY_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` are the connector
+configuration overrides honored by their respective implementations. Set them
+to absolute, normalized native Windows paths before initial Setup or connector
+setup. The installer validates and records them; reparse ancestors are refused.
+Cursor and Windsurf publish no equivalent configuration-home override, so
+Setup records the exact native paths it selected internally.
 
 <Tabs items={['PowerShell', 'cmd']}>
   <Tab value="PowerShell">
@@ -64,6 +67,7 @@ so Setup records the exact native `.cursor` home that it selected internally.
 ```powershell
 $env:CODEX_HOME = "D:\Agent Profiles\Codex"
 $env:CLAUDE_CONFIG_DIR = "D:\Agent Profiles\Claude"
+$env:OPENCODE_CONFIG_DIR = "D:\Agent Profiles\OpenCode"
 ```
 
   </Tab>
@@ -72,6 +76,7 @@ $env:CLAUDE_CONFIG_DIR = "D:\Agent Profiles\Claude"
 ```cmd
 set "CODEX_HOME=D:\Agent Profiles\Codex"
 set "CLAUDE_CONFIG_DIR=D:\Agent Profiles\Claude"
+set "OPENCODE_CONFIG_DIR=D:\Agent Profiles\OpenCode"
 ```
 
   </Tab>
@@ -96,7 +101,14 @@ override is not supported.
 
 `DEFENSECLAW_FAIL_MODE` and `DEFENSECLAW_STRICT_AVAILABILITY` are runtime
 behavior overrides, not path controls. Prefer the persisted
-`defenseclaw guardrail fail-mode` command for normal operation.
+`defenseclaw guardrail fail-mode` command for normal operation. OpenCode does
+not consume those ambient process overrides: Setup bakes its persisted fail
+mode into the managed plugin, and status/Doctor report drift.
+
+Private Windows DACLs restrict connector assets to the current user,
+Administrators, and SYSTEM. They reduce access by other standard users but are
+not tamper-proof against the owning user or administrators. Doctor's digest
+check and Setup reconciliation are the supported drift/recovery controls.
 
 ## Quoting, long paths, and case
 
@@ -208,13 +220,14 @@ residue automatically.
     registration; repair Setup if it is missing. The watchdog runs only when
     `gateway.watchdog.enabled` is configured and is not a Windows service.
   </Accordion>
-  <Accordion title="Codex, Claude Code, or Cursor hooks do not appear">
+  <Accordion title="Connector enforcement does not appear">
     Confirm the agent runs natively as the same Windows user. Run
     `defenseclaw guardrail status` and `defenseclaw doctor`, then re-run the
-    connector setup in observe mode. Cursor automatically reloads `hooks.json`;
-    restart Cursor if the change is not loaded. Do not copy hook entries between
-    `config.toml`, `managed_config.toml`, `settings.json`, and `hooks.json` by
-    hand.
+    supported or preview connector setup in observe mode. Fully restart the
+    agent if its documented reload behavior requires it. Do not
+    copy hook entries between `config.toml`, `managed_config.toml`, and
+    `settings.json` by hand, and do not edit or copy OpenCode's
+    `plugins\defenseclaw.js`.
   </Accordion>
   <Accordion title="A connector is disabled or status disagrees with configuration">
     Use `defenseclaw guardrail status` to compare desired and runtime posture.
@@ -272,8 +285,8 @@ Complete this without real secrets or destructive tools:
   `defenseclaw-gateway` resolve from the product `bin` directory.
 - Run `defenseclaw version`; require the CLI and gateway generation to agree.
 - Run `defenseclaw-gateway status`, `defenseclaw status`, and
-  `defenseclaw guardrail status`; require the intended Codex, Claude Code,
-  and/or Cursor preview rows, mode, fail mode, and enabled state.
+  `defenseclaw guardrail status`; require every intended supported or preview
+  connector row, mode, fail mode, and enabled state.
 - Run `defenseclaw config validate` and `defenseclaw doctor`; resolve every
   connector registration or authentication failure.
 - Restart each configured native agent. In an empty disposable directory,
@@ -294,11 +307,10 @@ Complete this without real secrets or destructive tools:
   modes, fail modes, enabled state, and optional watchdog state.
 - Confirm the command path still resolves to the installed product directory,
   not a stale checkout or copied binary.
-- Confirm Codex, Claude Code, and Cursor have loaded their configuration, then
-  repeat the harmless per-connector event check above.
-- Restart Codex and Claude Code, then repeat the harmless per-connector event
-  check above. For the Windsurf preview, use an interactive native Windows
-  desktop session; a CLI, WSL, or shell substitute is not valid evidence.
+- Confirm each configured connector has loaded its configuration, restarting
+  the official client where documented, then repeat the harmless per-connector
+  event check above. For Windsurf, use an interactive native Windows desktop
+  session; a CLI, WSL, or shell substitute is not valid evidence.
 - Verify optional destinations with `defenseclaw observability plan` and the
   destination-specific test command. A destination failure does not erase the
   mandatory local audit, but it must be treated as degraded delivery.

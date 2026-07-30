@@ -2797,7 +2797,16 @@ def _native_windows_install_state(
         or not isinstance(state.get("version"), str)
         or _CANONICAL_VERSION_RE.fullmatch(state["version"]) is None
         or state.get("connector")
-        not in {"none", "codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"}
+        not in {
+            "none",
+            "antigravity",
+            "codex",
+            "claudecode",
+            "copilot",
+            "cursor",
+            "windsurf",
+            "opencode",
+        }
         or state.get("mode") not in {"observe", "action"}
     ):
         ux.err("Native installer state is not a supported native Windows install.", indent="  ")
@@ -3826,12 +3835,13 @@ def _handoff_windows_setup_upgrade(
     _windows_installer_policy(manifest)
     connector = state.get("connector")
     if connector not in {
+        "antigravity",
         "codex",
         "claudecode",
         "copilot",
-        "geminicli",
         "cursor",
         "windsurf",
+        "opencode",
         "none",
     }:
         connector = "none"

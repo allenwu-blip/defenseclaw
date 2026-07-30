@@ -369,12 +369,9 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
-		{
-			Label: "Gemini CLI (enterprise/Cloud/paid key; certification pending)",
-			Value: "geminicli",
-		},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Windsurf", Value: "windsurf"},
+		{Label: "OpenCode (preview)", Value: "opencode"},
 	}
 	modes := []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -417,7 +414,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"} {
+	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "cursor", "windsurf", "opencode"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode
@@ -505,8 +502,10 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "codex", want: "trusted automatically", reject: "open /hooks"},
 		{connector: "claudecode", want: "Claude Code is configured", reject: "defenseclaw init"},
 		{connector: "copilot", want: "GitHub Copilot CLI is configured", reject: "defenseclaw init"},
+		{connector: "cursor", want: "Cursor Agent is configured", reject: "certified"},
 		{connector: "windsurf", want: "preview", reject: "certified"},
 		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
+		{connector: "opencode", want: "OpenCode preview is configured", reject: "certified"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},
 	} {
 		t.Run(tc.connector, func(t *testing.T) {

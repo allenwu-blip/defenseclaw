@@ -1178,6 +1178,11 @@ func opencodePluginPath(SetupOpts) string {
 	if OpenCodePluginPathOverride != "" {
 		return OpenCodePluginPathOverride
 	}
+	if configDir := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_DIR")); configDir != "" {
+		if absolute, err := filepath.Abs(configDir); err == nil {
+			return filepath.Join(absolute, "plugins", "defenseclaw.js")
+		}
+	}
 	return homePath(".config", "opencode", "plugins", "defenseclaw.js")
 }
 

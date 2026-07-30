@@ -1,43 +1,28 @@
 ---
 title: Connectors and enforcement
-description: Exact certified Windows reference coverage plus staged, not-certified Gemini CLI and Cursor native hook boundaries.
+description: Exact native Windows connector hook coverage, action boundaries, fail modes, and runtime controls.
 keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
-  - DefenseClaw Windows Gemini CLI
-description: Exact native Windows Codex, Claude Code, and Windsurf hook coverage, action boundaries, fail modes, and runtime controls.
-keywords:
-  - DefenseClaw Windows Codex
-  - DefenseClaw Windows Claude Code
+  - DefenseClaw Windows Cursor
   - DefenseClaw Windows Windsurf
+  - DefenseClaw Windows OpenCode
   - DefenseClaw Windows action mode
   - DefenseClaw Windows fail closed
   - DefenseClaw Windows hooks
 ---
 
 Native Windows enforcement is connector-native and hook-only. A supported
-agent—or preview Cursor Agent—invokes the managed native hook path, the hook
+or preview agent invokes its managed native hook path. Codex and Claude Code
+invoke `defenseclaw-hook.exe`; Cursor and Windsurf use managed native
+PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge.
+The hook or plugin
 authenticates to the same-user loopback gateway, and the gateway maps a policy
 verdict back into that event's documented response shape.
 
 <Callout type="warning" title="Coverage stops at the agent surface">
-DefenseClaw does not proxy Codex, Claude Code, or Cursor model traffic on
-Windows. A prompt, tool, subprocess, file change, or response that the agent
-does not emit through a registered hook or native telemetry surface is not
-silently intercepted by DefenseClaw.
-</Callout>
-
-<Callout type="warning" title="Gemini CLI is staged, not certified">
-The native Windows Gemini CLI adapter is implemented for the officially
-continuing enterprise, Google Cloud, and paid API-key audience, but remains
-`not_certified`. Consumer/free/Google AI Pro/Ultra Gemini CLI service ended on
-June 18, 2026 and moved to Antigravity CLI. DefenseClaw does not expose Gemini
-CLI as a supported Windows connector until a credentialed official-client
-certification passes. Native Setup exposes only a clearly labeled
-certification-pending lifecycle choice; runtime activation remains
-platform-gated. WSL, Docker, VMs, Git Bash, Cygwin, and MSYS are not
-substitutes.
-DefenseClaw does not proxy Codex, Claude Code, or Windsurf model traffic on Windows. A
+DefenseClaw does not proxy supported or preview connector model traffic on
+Windows. A
 prompt, tool, subprocess, file change, or response that the agent does not emit
 through a registered hook or native telemetry surface is not silently
 intercepted by DefenseClaw.
@@ -57,6 +42,7 @@ defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
+defenseclaw setup opencode --mode observe
 ```
 
 After reviewing the event inventory and policy, promote one connector at a
@@ -67,6 +53,7 @@ defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
 defenseclaw setup cursor --mode action
 defenseclaw setup windsurf --mode action
+defenseclaw setup opencode --mode action
 defenseclaw guardrail status
 ```
 
@@ -139,43 +126,6 @@ tool already ran; `PostToolBatch` can stop the loop before another model call.
 `ConfigChange` cannot override Claude Code's higher-authority policy-settings
 source.
 
-## Gemini CLI (not certified)
-
-Google documents native Windows 11 24H2+, Node.js 20+, PowerShell, and the npm
-package `@google/gemini-cli`. The staged DefenseClaw adapter writes
-`%USERPROFILE%\.gemini\settings.json`, registers all 11 documented hook events,
-and invokes the installer-managed `defenseclaw-hook.exe` through Gemini's
-PowerShell command boundary. It also configures native OTLP with a
-connector-scoped loopback path token.
-
-DefenseClaw emits exit-0 JSON allow/deny decisions because that path is
-unambiguous across Gemini's documentation and current source. Adapter failure
-policy applies only after the hook process starts. Failures before adapter
-start, Gemini host launch failures, host-enforced timeouts, and collapsed
-nonzero process exits remain upstream/live-certification boundaries and are
-not covered by DefenseClaw's fail-closed claim. This connector will remain
-not certified until the real official client proves synchronous blocking,
-OTLP, Doctor tamper/recovery, and exact teardown with eligible credentials.
-Native Setup marks its staged lifecycle selection as certification-pending;
-that selection does not make Gemini a supported Windows connector.
-
-Gemini CLI and Antigravity both use the `%USERPROFILE%\.gemini` parent, so
-native Setup keeps their custody separate. Gemini lifecycle operations bind
-the official `.gemini` directory through DefenseClaw's hidden maintenance-only
-`--config-home` flag, but mutate only marked fields in `settings.json`, the
-Gemini-specific managed backup, and the `.otlp-geminicli.token` credential.
-They do not remove `.gemini\config\` (including Antigravity hooks/MCP),
-`.gemini\antigravity-cli\`, credentials, extensions, skills, agents, or other
-Google state, and they never delete the shared parent directory. No
-client-facing Gemini home override is invented.
-
-Research sources:
-[installation](https://geminicli.com/docs/get-started/installation/),
-[authentication](https://geminicli.com/docs/get-started/authentication/),
-[configuration](https://geminicli.com/docs/reference/configuration/),
-[hooks](https://geminicli.com/docs/hooks/reference/), and
-[product transition](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
-
 ## Cursor preview
 
 DefenseClaw manages its entries in `%USERPROFILE%\.cursor\hooks.json`. On
@@ -236,12 +186,43 @@ Windsurf has no native hook ask/HITL response. A `confirm` verdict uses the
 connector's configured immediate fallback and remains visible as `raw_action`
 in audit; it cannot be approved and resumed from the DefenseClaw TUI.
 
+## OpenCode
+
+DefenseClaw writes
+`%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, defaulting to
+`%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`. OpenCode auto-loads
+that dependency-free plugin at startup. Restart OpenCode after Setup, repair,
+upgrade, fail-mode reconciliation, or teardown.
+
+Only `tool.execute.before` is an authoritative enforcement path. OpenCode
+awaits this hook before invoking the tool, and a thrown `Error` aborts
+execution:
+
+| OpenCode event | Action-mode role |
+| --- | --- |
+| `tool.execute.before` | Await the gateway decision; normal return permits and a thrown error blocks before execution. |
+| `tool.execute.after` | Best-effort observe/telemetry only. The tool has already run, and the bridge does not await delivery. |
+| Generic lifecycle `event` dispatch | Best-effort observation only because OpenCode dispatches it without awaiting the plugin Promise. |
+
+OpenCode has no hook-driven native ask or context-injection response.
+`confirm` therefore falls back to allow with audit/alerting. Its plugin
+contract is in-process: OpenCode passes hook arguments and awaits the
+`tool.execute.before` Promise. There is no hook stdin, stdout response, or exit
+code contract.
+
+The plugin carries a connector-scoped gateway token. Its Windows DACL
+restricts access to the current user, Administrators, and SYSTEM, but does not
+make the file tamper-proof against the owning user or an administrator.
+`defenseclaw doctor` compares the managed digest, and Setup
+repair/reconciliation restores the expected plugin registration.
+
 ## Fail behavior
 
-A fresh Codex or Claude Code installation defaults to `closed`; a migrated
-older configuration may retain an explicit `open` posture. Cursor instead
+A fresh Codex, Claude Code, or OpenCode installation defaults to `closed`; a
+migrated older configuration may retain an explicit `open` posture. Cursor
 retains its documented fail-open default unless closed is selected explicitly.
-The effective connector setting applies to:
+For a block-capable pre-action event, the effective connector setting applies
+to both:
 
 - transport failures such as missing authentication, connection refusal,
   timeout, or gateway 5xx; and
@@ -249,9 +230,11 @@ The effective connector setting applies to:
   decision field.
 
 `open` allows the event and records the failure. `closed` returns the
-connector's block response. `DEFENSECLAW_STRICT_AVAILABILITY=1` remains an
-additional force-closed override, but the persisted connector policy is the
-normal control:
+connector's block response. For Codex and Claude Code,
+`DEFENSECLAW_STRICT_AVAILABILITY=1` remains an additional force-closed
+override. OpenCode instead bakes the persisted `open`/`closed` setting into the
+managed plugin; an ambient process environment override is not authoritative.
+The normal control is:
 
 ```powershell
 defenseclaw guardrail fail-mode
@@ -259,6 +242,7 @@ defenseclaw guardrail fail-mode closed --connector codex --yes
 defenseclaw guardrail fail-mode closed --connector claudecode --yes
 defenseclaw guardrail fail-mode closed --connector cursor --yes
 defenseclaw guardrail fail-mode closed --connector windsurf --yes
+defenseclaw guardrail fail-mode closed --connector opencode --yes
 defenseclaw guardrail status
 ```
 
@@ -272,6 +256,10 @@ Changing fail mode normally restarts the gateway and reconciles the native
 runtime. `--no-restart` only persists desired state; the running connector can
 remain on the prior value until restart. Status reports configured and runtime
 posture so that drift is visible.
+
+For OpenCode, `closed` is enforceable only in the awaited
+`tool.execute.before` path. It cannot turn `tool.execute.after` or generic
+lifecycle events into blocking or guaranteed delivery.
 
 One boundary is intentionally separate: if the gateway's internal evaluator
 panics, it returns allow with warning/telemetry rather than claiming a proven
@@ -305,12 +293,12 @@ These controls are not the same as skill or plugin runtime disable.
 
 Runtime disable is proven only on exact agent events:
 
-| Asset control | Codex | Claude Code |
-| --- | --- | --- |
-| Skill runtime disable | **Limited** — blocks an exact disabled skill identity at a leading `$skill` selection in `UserPromptSubmit`. | **Limited** — blocks an exact disabled skill identity at the native `UserPromptExpansion` load. |
-| Plugin runtime disable | **Limited** — policy is recorded, but no certified hard plugin-expansion event exists. Use quarantine for hard filesystem enforcement. | **Limited** — blocks the native slash-command/plugin expansion event. |
-| Skill quarantine/restore | **Supported** — validated root, journaled provenance/content hash, copy-verify-remove, and verified restore. | **Supported** with the same DefenseClaw quarantine contract. |
-| Plugin quarantine/restore | **Limited** — validated filesystem move/restore; do not assume the stronger skill transaction/hash guarantees. | **Limited** for the same reason. |
+| Asset control | Codex | Claude Code | OpenCode |
+| --- | --- | --- | --- |
+| Skill runtime disable | **Limited** — blocks an exact disabled skill identity at a leading `$skill` selection in `UserPromptSubmit`. | **Limited** — blocks an exact disabled skill identity at the native `UserPromptExpansion` load. | **Unsupported** — OpenCode skill inventory is not a v1 connector surface. |
+| Plugin runtime disable | **Limited** — policy is recorded, but no certified hard plugin-expansion event exists. Use quarantine for hard filesystem enforcement. | **Limited** — blocks the native slash-command/plugin expansion event. | **Unsupported** — DefenseClaw manages only its own bridge registration. |
+| Skill quarantine/restore | **Supported** — validated root, journaled provenance/content hash, copy-verify-remove, and verified restore. | **Supported** with the same DefenseClaw quarantine contract. | **Unsupported**. |
+| Plugin quarantine/restore | **Limited** — validated filesystem move/restore; do not assume the stronger skill transaction/hash guarantees. | **Limited** for the same reason. | **Unsupported**. |
 
 Runtime disable does not block future installation and does not move files.
 Restore removes only quarantine; a separate install block or runtime-disable
@@ -351,5 +339,6 @@ Protection is established only when all of the following agree:
 
 For configuration details, see [Codex](/docs/connectors/codex),
 [Claude Code](/docs/connectors/claudecode),
-[Cursor](/docs/connectors/cursor), and
+[Cursor](/docs/connectors/cursor),
+[OpenCode](/docs/connectors/opencode), plus
 [multi-connector setup](/docs/setup/guardrail/multi-connector).

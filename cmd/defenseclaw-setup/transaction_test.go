@@ -606,7 +606,7 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
 	transaction.PreserveConnectorConfiguration = true
-	transaction.PreviousConnectors = []string{"codex", "cursor"}
+	transaction.PreviousConnectors = []string{"codex", "cursor", "opencode"}
 	transaction.TargetServices.Gateway = true
 	transaction.PreviousCodexHome = filepath.Join(filepath.Dir(dataRoot), ".codex")
 	transaction.CodexHome = transaction.PreviousCodexHome
@@ -614,12 +614,12 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.ClaudeConfigDir = transaction.PreviousClaudeConfigDir
 	transaction.PreviousCopilotHome = filepath.Join(filepath.Dir(dataRoot), ".copilot")
 	transaction.CopilotHome = transaction.PreviousCopilotHome
-	transaction.PreviousGeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini")
-	transaction.GeminiConfigDir = transaction.PreviousGeminiConfigDir
 	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
 	transaction.CursorHome = transaction.PreviousCursorHome
 	transaction.PreviousAntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "config")
 	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
+	transaction.PreviousOpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".config", "opencode")
+	transaction.OpenCodeConfigDir = transaction.PreviousOpenCodeConfigDir
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -634,11 +634,6 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	if err := validateSetupTransaction(changedHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Copilot home")
 	}
-	changedGeminiHome := transaction
-	changedGeminiHome.GeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-gemini")
-	if err := validateSetupTransaction(changedGeminiHome, expected); err == nil {
-		t.Fatal("connector-preserving transaction changed its recorded Gemini configuration directory")
-	}
 	changedCursorHome := transaction
 	changedCursorHome.CursorHome = filepath.Join(filepath.Dir(dataRoot), "other-cursor")
 	if err := validateSetupTransaction(changedCursorHome, expected); err == nil {
@@ -648,6 +643,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	changedAntigravityHome.AntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "other")
 	if err := validateSetupTransaction(changedAntigravityHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Antigravity config home")
+	}
+	changedOpenCodeHome := transaction
+	changedOpenCodeHome.OpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-opencode")
+	if err := validateSetupTransaction(changedOpenCodeHome, expected); err == nil {
+		t.Fatal("connector-preserving transaction changed its recorded OpenCode home")
 	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
@@ -1264,7 +1264,7 @@ func TestTeardownSupersededConnectorsSwitchesConnector(t *testing.T) {
 func TestTeardownSupersededConnectorsOptOutRemovesEveryPreviousConnector(t *testing.T) {
 	transaction := setupTransaction{
 		DataRoot:           `C:\Users\tester\.defenseclaw`,
-		PreviousConnectors: []string{"codex", "claudecode", "cursor", "windsurf"},
+		PreviousConnectors: []string{"codex", "claudecode", "cursor", "windsurf", "opencode"},
 		TargetConnector:    "none",
 	}
 	var calls []string
@@ -1280,9 +1280,43 @@ func TestTeardownSupersededConnectorsOptOutRemovesEveryPreviousConnector(t *test
 		"claudecode:teardown", "claudecode:verify",
 		"cursor:teardown", "cursor:verify",
 		"windsurf:teardown", "windsurf:verify",
+		"opencode:teardown", "opencode:verify",
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("connector opt-out calls = %v, want %v", calls, want)
+	}
+}
+
+func TestTeardownSupersededOpenCodeUsesRecordedPreviousHome(t *testing.T) {
+	transaction := setupTransaction{
+		DataRoot:                  `C:\Users\tester\.defenseclaw`,
+		PreviousConnectors:        []string{"opencode"},
+		TargetConnector:           "opencode",
+		PreviousOpenCodeConfigDir: `C:\Users\tester\opencode-a`,
+		OpenCodeConfigDir:         `C:\Users\tester\opencode-b`,
+		PreviousCodexHome:         `C:\Users\tester\codex`,
+		PreviousClaudeConfigDir:   `C:\Users\tester\claude`,
+	}
+	var calls []string
+	run := func(_, _, connector, action string, env []string) error {
+		calls = append(calls, connector+":"+action+":"+envValue(env, "OPENCODE_CONFIG_DIR"))
+		return nil
+	}
+
+	if err := teardownSupersededConnectors(
+		transaction,
+		`C:\DefenseClaw\gateway.exe`,
+		transactionPreviousChildEnv(transaction),
+		run,
+	); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`opencode:teardown:C:\Users\tester\opencode-a`,
+		`opencode:verify:C:\Users\tester\opencode-a`,
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("OpenCode home migration calls = %v, want %v", calls, want)
 	}
 }
 
@@ -1411,6 +1445,31 @@ func TestInferManagedConnectorHomeUsesBoundTarget(t *testing.T) {
 	}
 	if !samePath(got, want) {
 		t.Fatalf("inferred managed connector home = %q, want %q", got, want)
+	}
+}
+
+func TestInferManagedOpenCodeHomeUsesPluginParent(t *testing.T) {
+	dataRoot := t.TempDir()
+	backupPath := filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(t.TempDir(), "opencode-a")
+	target := filepath.Join(want, "plugins", "defenseclaw.js")
+	if err := os.WriteFile(
+		backupPath,
+		[]byte(fmt.Sprintf(`{"path":%q}`, target)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := inferManagedConnectorHome(dataRoot, "opencode", "config", `C:\fallback`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(got, want) {
+		t.Fatalf("inferred managed OpenCode home = %q, want %q", got, want)
 	}
 }
 
@@ -1587,10 +1646,6 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	codexHome := filepath.Join(clientRoot, "codex")
 	claudeHome := filepath.Join(clientRoot, "claude")
 	copilotHome := filepath.Join(clientRoot, "copilot")
-	geminiConfigDir, err := defaultConnectorConfigHome(".gemini")
-	if err != nil {
-		t.Fatal(err)
-	}
 	cursorHome := filepath.Join(clientRoot, "cursor")
 	antigravityHome := filepath.Join(clientRoot, ".gemini", "config")
 	antigravityBackup := filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")
@@ -1604,7 +1659,8 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir, cursorHome, antigravityHome} {
+	openCodeHome := filepath.Join(clientRoot, "opencode")
+	for _, path := range []string{codexHome, claudeHome, copilotHome, cursorHome, antigravityHome, openCodeHome} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1620,11 +1676,26 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	); err != nil {
 		t.Fatal(err)
 	}
+	openCodeBackup := filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")
+	if err := os.MkdirAll(filepath.Dir(openCodeBackup), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		openCodeBackup,
+		[]byte(fmt.Sprintf(
+			`{"path":%q}`,
+			filepath.Join(openCodeHome, "plugins", "defenseclaw.js"),
+		)),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
 	t.Setenv("COPILOT_HOME", copilotHome)
 	t.Setenv("DEFENSECLAW_CURSOR_CONFIG_HOME", cursorHome)
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", antigravityHome)
+	t.Setenv("OPENCODE_CONFIG_DIR", openCodeHome)
 
 	legacyState := testInstallState(
 		installRoot,
@@ -1649,23 +1720,23 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
-		!samePath(transaction.PreviousGeminiConfigDir, geminiConfigDir) ||
 		!samePath(transaction.PreviousCursorHome, cursorHome) ||
-		!samePath(transaction.PreviousAntigravityConfigDir, antigravityHome) {
+		!samePath(transaction.PreviousAntigravityConfigDir, antigravityHome) ||
+		!samePath(transaction.PreviousOpenCodeConfigDir, openCodeHome) {
 		t.Fatalf(
 			"legacy transaction homes = (%q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q)",
 			transaction.PreviousCodexHome,
 			transaction.PreviousClaudeConfigDir,
 			transaction.PreviousCopilotHome,
-			transaction.PreviousGeminiConfigDir,
 			transaction.PreviousCursorHome,
 			transaction.PreviousAntigravityConfigDir,
+			transaction.PreviousOpenCodeConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
-			geminiConfigDir,
 			cursorHome,
 			antigravityHome,
+			openCodeHome,
 		)
 	}
 
@@ -1675,9 +1746,9 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	source.CodexHome = codexHome
 	source.ClaudeConfigDir = claudeHome
 	source.CopilotHome = copilotHome
-	source.GeminiConfigDir = geminiConfigDir
 	source.CursorHome = cursorHome
 	source.AntigravityConfigDir = antigravityHome
+	source.OpenCodeConfigDir = openCodeHome
 	source.UninstallHandoffHookStatus = stableHookSnapshotInactive
 	handoff, err := newUninstallHandoffTransaction(
 		source,
@@ -1690,23 +1761,23 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	if !samePath(handoff.PreviousCodexHome, codexHome) ||
 		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(handoff.PreviousCopilotHome, copilotHome) ||
-		!samePath(handoff.PreviousGeminiConfigDir, geminiConfigDir) ||
 		!samePath(handoff.PreviousCursorHome, cursorHome) ||
-		!samePath(handoff.PreviousAntigravityConfigDir, antigravityHome) {
+		!samePath(handoff.PreviousAntigravityConfigDir, antigravityHome) ||
+		!samePath(handoff.PreviousOpenCodeConfigDir, openCodeHome) {
 		t.Fatalf(
 			"legacy handoff homes = (%q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q)",
 			handoff.PreviousCodexHome,
 			handoff.PreviousClaudeConfigDir,
 			handoff.PreviousCopilotHome,
-			handoff.PreviousGeminiConfigDir,
 			handoff.PreviousCursorHome,
 			handoff.PreviousAntigravityConfigDir,
+			handoff.PreviousOpenCodeConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
-			geminiConfigDir,
 			cursorHome,
 			antigravityHome,
+			openCodeHome,
 		)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {

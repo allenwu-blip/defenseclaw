@@ -20,24 +20,18 @@ then use the same local audit and optional outbound observability pipeline.
 | Codex | Ten current lifecycle/tool events; the only enforcement path. | OTLP logs, metrics, and traces over HTTP/JSON. | Hooks in `%CODEX_HOME%\managed_config.toml`; marked OTLP/notify fields in `%CODEX_HOME%\config.toml`. |
 | Claude Code | 28 current lifecycle/tool/configuration events; the only enforcement path. | OTLP logs and metrics over HTTP/JSON; traces are explicitly disabled. | Marked hooks and OTLP environment entries in `%CLAUDE_CONFIG_DIR%\settings.json`. |
 | Cursor preview | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
+| Windsurf preview | Twelve Cascade events; only five pre-hooks can block. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. |
+| OpenCode | Awaited `tool.execute.before` is the only enforcement path; `tool.execute.after` and generic lifecycle delivery are best-effort observation. | No documented native OTLP surface; the plugin emits hook-generated audit/telemetry. | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, default `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`. |
 
 Codex and Claude Code configure a connector-scoped bearer and source/client
 identity for native OTLP. Codex does not place the credential in the endpoint
 URL. Claude Code stores the managed exporter settings in its configuration,
-not in the interactive shell. Cursor's managed hook uses its own protected
-connector credential for the hook gateway route. A scoped credential is
-accepted only for its connector and route; it cannot authenticate the
-management API, another connector, or a non-loopback request.
-| Windsurf | Twelve Cascade events; only five pre-hooks can block. | None; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. |
-
-Codex and Claude Code configure a connector-scoped bearer and source/client identity
-for native OTLP. Codex does not place the credential in the endpoint URL.
-Claude Code stores the managed exporter settings in its configuration, not in
-the interactive shell. A scoped credential is accepted only for its connector
-and OTLP route; it cannot authenticate the management API, another connector,
-or a non-loopback request. Windsurf's adapter invokes the same protected
-connector-scoped hook runtime and does not place the credential in its user
-hook JSON.
+not in the interactive shell. OpenCode embeds a separate connector-scoped hook
+token in its managed plugin and has no native OTLP credential. Cursor and
+Windsurf use protected connector-scoped hook credentials without placing them
+in the vendor hook JSON. A scoped credential is accepted only for its connector
+and route; it cannot authenticate the management API, another connector, or a
+non-loopback request.
 
 <Callout type="info" title="Native OTLP is observation-only">
 A native OTLP log, metric, or trace can enrich audit and dashboards, but it
@@ -129,8 +123,9 @@ defenseclaw doctor
 
 ## Loopback and network boundaries
 
-The certified connector topology uses the current user's native agent and
-gateway on loopback, normally `127.0.0.1:18970`. The loopback HTTP receiver is
+The certified connector topology—and the topology exercised by the OpenCode
+preview—uses the current user's native agent and gateway on loopback, normally
+`127.0.0.1:18970`. The loopback HTTP receiver is
 authenticated; it is not a claim that localhost is inherently trusted.
 
 - A connector-scoped token is restricted by connector, route, signal, and
@@ -154,8 +149,8 @@ A production native Windows release requires:
 3. a valid Authenticode signature from `Cisco Systems, Inc.` on Setup;
 4. signed and verified inner product executables; and
 5. release-pipeline certification of that exact signed Setup with pinned real
-   Codex and Claude Code versions. Windsurf remains preview until the packaged
-   lifecycle gate and interactive official-client gate are added and pass.
+   Codex and Claude Code versions. Cursor, Windsurf, and OpenCode remain preview
+   until their packaged lifecycle and authentic official-client gates pass.
 
 Pull-request and local Setup artifacts are unsigned test builds. Passing the
 deterministic PR suite proves code and lifecycle behavior, not production
@@ -171,9 +166,12 @@ for native Windows. See [Install and maintain](/docs/get-started/windows/install
 The public package runs as the current user and owns only exact state it
 created or recorded. Security-sensitive installer transaction directories,
 credentials, audit storage, and identity records use current-user ownership,
-non-reparse checks, and private Windows DACL validation. This is not a blanket
-claim that every file below every user-selected connector root has an identical
-DACL.
+non-reparse checks, and private Windows DACL validation. OpenCode's managed
+plugin restricts access to the current user, Administrators, and SYSTEM; that
+limits other standard users but is not tamper-proof against the owning user or
+an administrator. Doctor detects managed-plugin digest drift, and Setup
+reconciles it. This is not a blanket claim that every file below every
+user-selected connector root has an identical DACL.
 
 Setup and lifecycle commands:
 
@@ -202,7 +200,7 @@ connector homes as separate supported identities.
 | --- | --- |
 | Setup verification | Invalid architecture, launch identity, signature, payload, path, ownership, or prior state refuses before live mutation where possible. |
 | Setup transaction | Pre-commit failure rolls back owned changes; ambiguous or committed phases retain a journal and require safe recovery/convergence. |
-| Hook delivery/response | Effective `closed` blocks supported events for transport and malformed/unauthorized response failures. |
+| Hook delivery/response | Effective `closed` blocks supported block-capable events for transport and malformed/unauthorized response failures. For OpenCode, only the awaited `tool.execute.before` thrown-error path is authoritative; after/lifecycle delivery remains best effort. |
 | Managed enterprise hook | The narrow administrator-managed Claude Code path fails closed when protected policy identity is invalid. |
 | Runtime skill selection | A disabled-state database or provenance failure blocks the exact Codex/Claude skill-selection surface. |
 | Internal evaluator panic | Fails open with warning and telemetry because no authoritative verdict was produced. |

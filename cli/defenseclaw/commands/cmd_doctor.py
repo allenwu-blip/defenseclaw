@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1602,6 +1603,41 @@ def _file_references_marker(path: str, markers: tuple[str, ...]) -> bool:
     return any(m and m in data for m in markers)
 
 
+def _opencode_managed_plugin_drift(cfg, path: str) -> str:
+    """Return an integrity failure for OpenCode's user-scoped bridge, if any."""
+
+    data_dir = str(getattr(cfg, "data_dir", "") or "")
+    backup_path = os.path.join(data_dir, "connector_backups", "opencode", "config.json")
+    try:
+        with open(backup_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return f"managed backup evidence is missing or unreadable: {backup_path}"
+    if record.get("connector") != "opencode" or record.get("logical_name") != "config":
+        return f"managed backup identity is invalid: {backup_path}"
+    recorded_path = str(record.get("path") or "")
+    if not recorded_path or os.path.normcase(os.path.abspath(recorded_path)) != os.path.normcase(os.path.abspath(path)):
+        return f"managed backup target does not match the active plugin: {backup_path}"
+    expected = str(record.get("post_sha256") or "")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return f"managed backup digest is missing or invalid: {backup_path}"
+    try:
+        if os.path.islink(path) or not os.path.isfile(path):
+            return f"managed plugin is not a regular file: {path}"
+        with open(path, "rb") as fh:
+            body = fh.read(2 * 1024 * 1024 + 1)
+    except OSError as exc:
+        return f"managed plugin cannot be read: {exc}"
+    if len(body) > 2 * 1024 * 1024:
+        return f"managed plugin exceeds the 2 MiB integrity limit: {path}"
+    if hashlib.sha256(body).hexdigest() != expected:
+        return (
+            "managed plugin drift detected; run "
+            "`defenseclaw setup opencode --yes --restart` to reconcile"
+        )
+    return ""
+
+
 def _split_configured_hook_command(command: str, *, platform_name: str | None = None) -> list[str]:
     """Split the narrow command shape DefenseClaw writes into hooks.json."""
     is_windows = (platform_name or os.name) == "nt"
@@ -2110,16 +2146,17 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
         if _file_references_marker(path, markers):
             if connector == "cursor":
                 _check_cursor_configured_runtime(cfg, path, label, r)
-            elif connector == "geminicli" and os.name == "nt":
-                _check_windows_native_hooks(cfg, connector, label, r, config_path=path)
-            elif connector == "geminicli":
-                _emit(
-                    "pass",
-                    label,
-                    f"reachable at {path}; continuing enterprise/Google Cloud/paid API-key "
-                    "audience only; consumer/free/Google AI Pro/Ultra service ended 2026-06-18",
-                    r=r,
-                )
+            elif connector == "opencode":
+                if drift := _opencode_managed_plugin_drift(cfg, path):
+                    _emit("fail", label, drift, r=r)
+                else:
+                    _emit(
+                        "pass",
+                        label,
+                        f"managed plugin digest current at {path}; "
+                        "access is restricted to the user/administrators, not tamper-proof",
+                        r=r,
+                    )
             else:
                 _emit("pass", label, f"reachable at {path}", r=r)
             return
@@ -4477,6 +4514,9 @@ _CONNECTOR_RESIDUE_ARTIFACTS: dict[str, tuple[str, ...]] = {
         "codex_backup.json",
         "codex_config_backup.json",
         os.path.join("connector_backups", "codex", "config.toml.json"),
+    ),
+    "opencode": (
+        os.path.join("connector_backups", "opencode", "config.json"),
     ),
     "zeptoclaw": (
         "zeptoclaw_backup.json",

@@ -114,6 +114,50 @@ func TestOpenCodeSetup_FailModeDefaultsClosed(t *testing.T) {
 	}
 }
 
+func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
+	body, err := hookFS.ReadFile("hooks/opencode-plugin.js")
+	if err != nil {
+		t.Fatalf("read bridge: %v", err)
+	}
+	text := string(body)
+	beforeStart := strings.Index(text, `"tool.execute.before": async`)
+	beforeAwait := strings.Index(text, `const verdict = await defenseclawPost(`)
+	beforeThrow := strings.Index(text, `if (verdict) throw new Error(verdict.reason);`)
+	if beforeStart < 0 || beforeAwait < beforeStart || beforeThrow < beforeAwait {
+		t.Fatal("tool.execute.before must await the gateway verdict and throw synchronously on block")
+	}
+	afterStart := strings.Index(text, `"tool.execute.after": async`)
+	afterPost := strings.Index(text[afterStart:], `defenseclawPost("tool.execute.after"`)
+	if afterStart < 0 || afterPost < 0 {
+		t.Fatal("tool.execute.after observe path is missing")
+	}
+	afterBody := text[afterStart:]
+	afterEnd := strings.Index(afterBody, "\n    },")
+	if afterEnd < 0 {
+		t.Fatal("tool.execute.after body terminator is missing")
+	}
+	if strings.Contains(afterBody[:afterEnd], "await defenseclawPost") {
+		t.Fatal("tool.execute.after must remain best-effort and observe-only")
+	}
+	if !strings.Contains(text, "OpenCode does not await this hook dispatch") {
+		t.Fatal("lifecycle hook must document best-effort upstream dispatch")
+	}
+}
+
+func TestOpenCodePluginPathHonorsConfigDir(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "OpenCode Config")
+	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	previous := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = ""
+	t.Cleanup(func() { OpenCodePluginPathOverride = previous })
+
+	got := opencodePluginPath(SetupOpts{})
+	want := filepath.Join(configDir, "plugins", "defenseclaw.js")
+	if got != want {
+		t.Fatalf("opencodePluginPath() = %q, want %q", got, want)
+	}
+}
+
 // TestOpenCode_OpenClaw_NoCollision pins the isolation between the two
 // confusingly-similar plugin installs: opencode (the third-party agent,
 // bridge plugin at ~/.config/opencode/plugins/defenseclaw.js) and

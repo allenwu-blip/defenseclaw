@@ -214,12 +214,9 @@ var (
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
-		{
-			Label: "Gemini CLI (enterprise/Cloud/paid key; certification pending)",
-			Value: "geminicli",
-		},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Windsurf", Value: "windsurf"},
+		{Label: "OpenCode (preview)", Value: "opencode"},
 	}
 	wizardModeChoices = []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -742,14 +739,14 @@ func wizardCompletionDescription(connector string) string {
 		return "Claude Code is configured and its native Windows hooks are ready." + installed
 	case "copilot":
 		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
-	case "geminicli":
-		return "Gemini CLI is configured for its continuing enterprise, Google Cloud, or paid API-key audience; native Windows certification remains pending." + installed
 	case "cursor":
 		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
 	case "windsurf":
 		return "Windsurf native Windows support is configured as preview with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
 	case "antigravity":
 		return "Google Antigravity is configured with its native Windows hooks." + installed
+	case "opencode":
+		return "OpenCode preview is configured with the native Windows bridge plugin. Restart OpenCode to load it." + installed
 	default:
 		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
 	}

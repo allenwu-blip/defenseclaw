@@ -521,6 +521,27 @@ func TestDeferredCleanupTransactionRootExpectationFailsClosed(t *testing.T) {
 	}
 }
 
+func TestDeferredCleanupAcceptsVerifiedOpenCodeConnector(t *testing.T) {
+	fixture := newDeferredCleanupFixture(t)
+	fixture.record.VerifiedConnectors = []string{"claudecode", "codex", "opencode"}
+	paths := hookruntime.Paths{
+		Root:     fixture.record.RuntimeRoot,
+		Launcher: fixture.record.LauncherPath,
+		State:    fixture.record.StatePath,
+	}
+
+	if err := validateDeferredUninstallCleanupRecord(
+		fixture.record,
+		paths,
+		fixture.record.InstallerStateRoot,
+		fixture.record.MaintenancePath,
+		fixture.record.RunValueName,
+		fixture.record.RunCommand,
+	); err != nil {
+		t.Fatalf("OpenCode deferred cleanup custody: %v", err)
+	}
+}
+
 func newDeferredCleanupFixture(t *testing.T) deferredCleanupFixture {
 	t.Helper()
 	productRoot := filepath.Join(t.TempDir(), "DefenseClaw")
@@ -668,7 +689,7 @@ func TestDeferredCleanupAcceptsCompleteWindsurfConnectorSet(t *testing.T) {
 	}
 }
 
-func TestDeferredCleanupConnectorCustodyAcceptsGeminiAndRejectsAntigravity(t *testing.T) {
+func TestDeferredCleanupConnectorCustodyAcceptsAntigravityAndRejectsGemini(t *testing.T) {
 	fixture := newDeferredCleanupFixture(t)
 	paths := hookruntime.Paths{
 		Root:     fixture.record.RuntimeRoot,
@@ -676,7 +697,7 @@ func TestDeferredCleanupConnectorCustodyAcceptsGeminiAndRejectsAntigravity(t *te
 		State:    fixture.record.StatePath,
 	}
 
-	fixture.record.VerifiedConnectors = []string{"claudecode", "codex", "geminicli"}
+	fixture.record.VerifiedConnectors = []string{"antigravity", "claudecode", "codex"}
 	if err := validateDeferredUninstallCleanupRecord(
 		fixture.record,
 		paths,
@@ -685,7 +706,7 @@ func TestDeferredCleanupConnectorCustodyAcceptsGeminiAndRejectsAntigravity(t *te
 		fixture.record.RunValueName,
 		fixture.record.RunCommand,
 	); err != nil {
-		t.Fatalf("Gemini deferred-cleanup custody rejected: %v", err)
+		t.Fatalf("Antigravity deferred-cleanup custody rejected: %v", err)
 	}
 
 	fixture.record.VerifiedConnectors = []string{"antigravity", "geminicli"}
@@ -697,7 +718,7 @@ func TestDeferredCleanupConnectorCustodyAcceptsGeminiAndRejectsAntigravity(t *te
 		fixture.record.RunValueName,
 		fixture.record.RunCommand,
 	); err == nil || !strings.Contains(err.Error(), "invalid connector") {
-		t.Fatalf("Antigravity entered Gemini deferred-cleanup custody: %v", err)
+		t.Fatalf("Gemini entered native-Windows deferred-cleanup custody: %v", err)
 	}
 }
 

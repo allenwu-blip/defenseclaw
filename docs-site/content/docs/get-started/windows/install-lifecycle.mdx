@@ -22,7 +22,7 @@ runtime, and maintenance copy as one transaction.
 | User context | A signed-in, **non-elevated interactive user**. Setup rejects Run as administrator, service identities, session zero, and background/batch launch for every state-changing action, including `/quiet`. |
 | Install scope | Current user only. There is no machine-scope Setup or MSI. |
 | Terminal | The installed commands run from PowerShell or cmd. Windows Terminal and PowerShell 7 are optional hosts, not prerequisites. |
-| Agent | A supported agent, or preview Cursor Agent, installed natively for the same Windows user. Claude Code also retains its own Git for Windows requirement. |
+| Agent | A supported or preview agent installed natively for the same Windows user. Claude Code retains its Git for Windows requirement. OpenCode supports direct Windows execution while recommending, but not requiring, WSL; the DefenseClaw preview uses only direct native execution. |
 | Included runtime | Setup includes the CLI/TUI runtime, gateway, hook launcher, scanners, and pinned packages. No separate Python, `uv`, Go, Node.js, or global scanner install is required. |
 | Networking | Release download needs network unless staged offline. At runtime, the certified DefenseClaw path is authenticated loopback, normally `127.0.0.1:18970`; each agent still reaches its own upstream normally. |
 | Disk and memory | No exact minimum is published. Setup checks and stages the packaged transaction; an allocation or publication failure is reported and recovered rather than converted into an invented requirement. |
@@ -81,7 +81,11 @@ verification is a stop condition; do not bypass it.
 Double-click the EXE without **Run as administrator**. Choose one of:
 
 - **Codex** or **Claude Code** to configure a certified native connector.
-- **Cursor Agent** to configure the native Windows preview.
+- **Cursor Agent** or **Windsurf** to configure their native Windows previews.
+- **OpenCode (preview)** to configure the direct native bridge while its
+  integrated packaged-Setup and official-client release gates remain pending.
+- **Copilot CLI** or **Antigravity** to exercise their clearly labeled
+  certification-pending lifecycles; Setup presence is not certification.
 - **Configure later** for a CLI-only installation with no agent changes.
 
 Start in **Observe** mode. Choose **Action** only after reviewing observed
@@ -127,11 +131,12 @@ DefenseClawSetup-x64.exe /quiet /norestart INSTALLSCOPE=user CONNECTOR=codex MOD
   </Tab>
 </Tabs>
 
-Use `CONNECTOR=claudecode` for Claude Code or `CONNECTOR=cursor` for the Cursor
-preview. To install without configuring an agent or starting the gateway, use
-`CONNECTOR=none STARTGATEWAY=0`. `STARTGATEWAY=0` cannot leave a Codex, Claude
-Code, or Cursor installation stopped: those connectors require gateway startup
-and current-user logon integration.
+Use `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=cursor`, `windsurf`, or
+`opencode` for a preview, and `copilot` or `antigravity` for a
+certification-pending lifecycle. Gemini CLI is not a Windows Setup choice. To
+install without configuring an agent or starting the gateway, use
+`CONNECTOR=none STARTGATEWAY=0`. Every configured connector requires gateway
+startup and current-user logon integration.
 
 Public Setup properties are:
 
@@ -140,8 +145,7 @@ Public Setup properties are:
 | Action | fresh install, `/repair`, `/upgrade`, or `/uninstall` |
 | UI | interactive or `/quiet` (`/qn` alias); `/norestart` is accepted |
 | Scope | `INSTALLSCOPE=user` only |
-| Connector | `CONNECTOR=codex`, `claudecode`, `cursor` (preview), or `none` |
-| Connector | `CONNECTOR=codex`, `claudecode`, `windsurf` (preview), or `none` |
+| Connector | `CONNECTOR=antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `opencode`, `windsurf`, or `none` |
 | Policy mode | `MODE=observe` or `action` |
 | Gateway | `STARTGATEWAY=1` or `0`, subject to the connector rule above |
 | User data on uninstall | `DELETEUSERDATA=0` (default) or `1` |
@@ -157,24 +161,17 @@ For guided configuration:
 defenseclaw init
 ```
 
-For explicit supported connectors and the Cursor preview:
+For explicit supported or preview connectors:
 
 ```powershell
 defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
-```
-
-One local gateway can host all three. Add connectors without removing the
-existing roster:
-For the not-yet-certified Windsurf preview:
-
-```powershell
 defenseclaw setup windsurf --mode observe
-defenseclaw doctor
+defenseclaw setup opencode --mode observe
 ```
 
-One local gateway can host both. Add the second connector without removing the
+One local gateway can host all five. Add connectors without removing the
 first:
 
 ```powershell
@@ -182,21 +179,21 @@ defenseclaw setup `
   --connector codex `
   --connector claudecode `
   --connector cursor `
+  --connector windsurf `
+  --connector opencode `
   --mode observe `
   --restart `
   --yes
 ```
 
-Setup records validated `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, and Cursor
-configuration-home paths when they are used. Repair and upgrade preserve those
-recorded homes instead of following later profile or environment drift. Cursor
-does not publish a configuration-home environment variable; the installer
-records its exact `%USERPROFILE%\.cursor` path internally. The packaged data
-root itself is fixed to the current Windows profile; see
-Setup records validated `CODEX_HOME` and `CLAUDE_CONFIG_DIR` values when they
-are used. For Windsurf it records the exact Windows Profile Known Folder; no
-vendor home override exists. Repair and upgrade preserve those recorded homes
-instead of following later environment drift. The packaged data root itself is
+Setup records validated `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
+`ANTIGRAVITY_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` values when they are used.
+Cursor publishes no configuration-home environment variable, so Setup records
+its exact configuration home internally. Windsurf likewise uses the exact
+Windows Profile Known Folder rather than an invented vendor override. Repair
+and upgrade preserve these recorded homes instead of following later profile
+or environment drift. Restart OpenCode after lifecycle changes so the running
+client loads the reconciled plugin state. The packaged data root itself is
 fixed to the current Windows profile; see
 [Path and override rules](/docs/get-started/windows/paths-troubleshooting#supported-path-overrides).
 

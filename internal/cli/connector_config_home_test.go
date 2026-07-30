@@ -43,30 +43,6 @@ func TestBindConnectorLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testin
 	}
 }
 
-func TestBindConnectorLifecycleConfigHomeTargetsGeminiSettingsAndRestoresIt(t *testing.T) {
-	root := t.TempDir()
-	configDir := filepath.Join(root, ".gemini")
-	previous := filepath.Join(root, "previous", "settings.json")
-	connector.GeminiSettingsPathOverride = previous
-	connectorFlagConfigHome = configDir
-	t.Cleanup(func() {
-		connectorFlagConfigHome = ""
-		connector.GeminiSettingsPathOverride = ""
-	})
-
-	restore, err := bindConnectorLifecycleConfigHome("geminicli")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := connector.GeminiSettingsPathOverride, filepath.Join(configDir, "settings.json"); got != want {
-		t.Fatalf("bound Gemini settings path = %q, want %q", got, want)
-	}
-	restore()
-	if got := connector.GeminiSettingsPathOverride; got != previous {
-		t.Fatalf("restored Gemini settings path = %q, want %q", got, previous)
-	}
-}
-
 func TestBindWindsurfLifecycleProfileOverridesAmbientAndRestoresIt(t *testing.T) {
 	root := t.TempDir()
 	ambient := filepath.Join(root, "ambient-profile")
@@ -117,6 +93,26 @@ func TestBindAntigravityLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *test
 	restore()
 	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != ambient {
 		t.Fatalf("restored ANTIGRAVITY_CONFIG_DIR = %q, want %q", got, ambient)
+	}
+}
+
+func TestBindOpenCodeLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testing.T) {
+	ambient := filepath.Join(t.TempDir(), "ambient-opencode")
+	bound := filepath.Join(t.TempDir(), "bound-opencode")
+	t.Setenv("OPENCODE_CONFIG_DIR", ambient)
+	connectorFlagConfigHome = bound
+	t.Cleanup(func() { connectorFlagConfigHome = "" })
+
+	restore, err := bindConnectorLifecycleConfigHome("opencode")
+	if err != nil {
+		t.Fatalf("bind OpenCode config home: %v", err)
+	}
+	if got := os.Getenv("OPENCODE_CONFIG_DIR"); got != bound {
+		t.Fatalf("OPENCODE_CONFIG_DIR = %q, want %q", got, bound)
+	}
+	restore()
+	if got := os.Getenv("OPENCODE_CONFIG_DIR"); got != ambient {
+		t.Fatalf("restored OPENCODE_CONFIG_DIR = %q, want %q", got, ambient)
 	}
 }
 

@@ -19,7 +19,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract')]
     [string]$Mode,
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [Parameter(Mandatory)][string]$ArtifactRoot,
     [Parameter(Mandatory)][string]$StateRoot,
     [string]$TargetVersion = '',
@@ -741,7 +741,7 @@ function Publish-BoundedDisposableContractResults {
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$DestinationPath,
         [Parameter(Mandatory)][string]$DestinationRoot,
-        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')]
+        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')]
         [string]$ExpectedConnector
     )
 
@@ -997,6 +997,7 @@ try {
             'assert-gateway-jsonl.py',
             'assert-observability-v8-jsonl.py',
             'live-connector-e2e\run-windows.ps1',
+            'live-connector-e2e\assert-opencode-plugin.mjs',
             'live-connector-e2e\assert-windows-evidence.py',
             'live-connector-e2e\testdata\windows-mock.ps1',
             "live-connector-e2e\golden\$Connector\pre_tool_allow.json",

@@ -62,6 +62,7 @@ on:
           - all
           - codex
           - claudecode
+          - opencode
           - geminicli
           - cursor
           - copilot
@@ -520,7 +521,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        connector: [codex, claudecode, cursor]
+        connector: [codex, claudecode, cursor, opencode]
     env:
       DC_WINDOWS_STATE: ${{ github.workspace }}/.dc-e2e-${{ matrix.connector }}-live
       DC_E2E_RESULTS: ${{ github.workspace }}/connector-live-e2e-results.jsonl
@@ -530,6 +531,7 @@ jobs:
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       CODEX_VERSION: ${{ inputs.version }}
       CLAUDE_VERSION: ${{ inputs.version }}
+      OPENCODE_VERSION: ${{ inputs.version }}
     steps:
       - name: Select requested Windows connector
         id: select

@@ -27,7 +27,6 @@ def test_windows_release_metadata_is_exact() -> None:
         "geminicli",
         "copilot",
         "antigravity",
-        "opencode",
         "hermes",
     }
     assert WINDOWS_UNSUPPORTED_CONNECTORS == {"openhands", "omnigent", "openclaw", "zeptoclaw"}
@@ -56,6 +55,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "| Codex | `codex` | **Supported**" in text
     assert "| Claude Code | `claudecode` | **Supported**" in text
     assert "| Windsurf | `windsurf` | **Preview**" in text
+    assert "| OpenCode | `opencode` | **Preview**" in text
     assert "local observability" in text
     assert "Local Splunk" in text
     assert "Hyper-V backend" in text
@@ -118,7 +118,16 @@ def test_release_runtime_custody_splits_certified_x64_from_compatibility_arm64()
 
     installer = (ROOT / "scripts/install.ps1").read_text(encoding="utf-8")
     assert '"ARM64" { Die "Windows ARM64 is not certified' in installer
-    assert '"codex",\n    "claudecode",\n    "windsurf",\n    "none"' in installer
+    assert (
+        '"antigravity",\n'
+        '    "codex",\n'
+        '    "claudecode",\n'
+        '    "copilot",\n'
+        '    "cursor",\n'
+        '    "opencode",\n'
+        '    "windsurf",\n'
+        '    "none"'
+    ) in installer
 
 
 def test_connector_matrix_preserves_macos_and_linux_support() -> None:

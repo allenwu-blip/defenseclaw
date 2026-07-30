@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -51,7 +51,7 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'windsurf') {
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
@@ -65,6 +65,7 @@ function Resolve-EffectiveConnectorHome(
         'copilot' { 'COPILOT_HOME' }
         'cursor' { 'DEFENSECLAW_CURSOR_CONFIG_HOME' }
         'antigravity' { 'ANTIGRAVITY_CONFIG_DIR' }
+        'opencode' { 'OPENCODE_CONFIG_DIR' }
     }
     if (-not [string]::IsNullOrWhiteSpace($environmentName)) {
         $configured = [Environment]::GetEnvironmentVariable($environmentName)
@@ -82,12 +83,13 @@ function Resolve-EffectiveConnectorHome(
         'copilot' { '.copilot' }
         'cursor' { '.cursor' }
         'antigravity' { '.gemini\config' }
+        'opencode' { '.config\opencode' }
     }
     return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $defaultLeaf)).TrimEnd('\')
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'windsurf') {
         return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) '.codeium\windsurf\hooks.json'
@@ -98,6 +100,7 @@ function Get-EffectiveConnectorConfigPath(
         'copilot' { 'hooks\defenseclaw.json' }
         'cursor' { 'hooks.json' }
         'antigravity' { 'hooks.json' }
+        'opencode' { 'plugins\defenseclaw.js' }
     }
     return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) $fileName
 }
@@ -115,12 +118,14 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         $cursorHome = Join-Path $Root 'cursor-home'
         Protect-TestDirectory $cursorHome
     }
+    $openCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
     $homes = @(Assert-WindowsNativePathsDisjoint @(
         $ProfileHome,
         $codexHome,
         $claudeHome,
         $copilotHome,
-        $cursorHome
+        $cursorHome,
+        $openCodeHome
     ))
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     foreach ($connectorHome in $homes) {
@@ -137,6 +142,7 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $env:CLAUDE_CONFIG_DIR = $homes[2]
     $env:COPILOT_HOME = $homes[3]
     $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $homes[4]
+    $env:OPENCODE_CONFIG_DIR = $homes[5]
 }
 
 function Get-StableHookRuntimeExecutable {
@@ -963,6 +969,7 @@ function Invoke-Setup([string]$Mode) {
         'cursor' { 'cursor' }
         'windsurf' { 'windsurf' }
         'antigravity' { 'antigravity' }
+        'opencode' { 'opencode' }
     }
     Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
     Wait-Gateway
@@ -976,6 +983,7 @@ function Get-ConnectorHookLabel {
         'cursor' { 'Cursor hooks' }
         'windsurf' { 'Windsurf hooks' }
         'antigravity' { 'Antigravity hooks' }
+        'opencode' { 'OpenCode hooks' }
     }
 }
 
@@ -1191,15 +1199,22 @@ function Assert-DoctorHookRegistration {
     $rows = @($report.checks | Where-Object { $_.label -like "$label*" })
     if ($rows.Count -ne 1) { throw "doctor returned $($rows.Count) $label rows after setup" }
     if ($rows[0].status -ne 'pass') { throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)" }
-    $expectedHookExecutable = if ($Connector -eq 'cursor') {
-        Join-Path $env:DEFENSECLAW_HOME 'hooks\cursor-hook.ps1'
-    } elseif ($Connector -eq 'windsurf') {
-        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
+    if ($Connector -eq 'opencode') {
+        if ($rows[0].detail -notmatch 'managed plugin digest current' -or
+            $rows[0].detail -notmatch 'not tamper-proof') {
+            throw "doctor did not report the OpenCode user/admin ACL and digest boundary: $($rows[0].detail)"
+        }
     } else {
-        Get-StableHookRuntimeExecutable
-    }
-    if ($rows[0].detail.IndexOf($expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
-        throw "doctor validated an unexpected $Connector hook target: $($rows[0].detail)"
+        $expectedHookExecutable = if ($Connector -eq 'cursor') {
+            Join-Path $env:DEFENSECLAW_HOME 'hooks\cursor-hook.ps1'
+        } elseif ($Connector -eq 'windsurf') {
+            Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
+        } else {
+            Get-StableHookRuntimeExecutable
+        }
+        if ($rows[0].detail.IndexOf($expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "doctor validated an unexpected $Connector hook target: $($rows[0].detail)"
+        }
     }
     if (Test-ObsoleteWindowsHookGuidance $rows[0].detail) {
         throw "doctor returned obsolete Unix guidance for native Windows $Connector hooks"
@@ -1225,6 +1240,12 @@ function Assert-DoctorHookRegistration {
         }
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $registration
+    } elseif ($Connector -eq 'opencode') {
+        foreach ($marker in @('tool.execute.before', 'await defenseclawPost', 'throw new Error', 'tool.execute.after')) {
+            if ($registration.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+                throw "setup-created OpenCode plugin is missing $marker"
+            }
+        }
     } elseif ($registration -notmatch '(?i)defenseclaw-hook(?:\.exe|\.cmd)') {
         throw "setup-created $Connector registration does not use a native DefenseClaw hook launcher"
     }
@@ -1247,6 +1268,7 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\cursor'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\windsurf'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\antigravity'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\opencode'),
         (Join-Path $env:DEFENSECLAW_HOME 'hooks')
     )
     foreach ($directory in $privateDirectories) { Protect-TestDirectory $directory }
@@ -1319,7 +1341,7 @@ function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$R
         [IO.File]::WriteAllText($path, ($payload | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
         return $path
     }
-    $toolName = Get-ConnectorToolName
+    $toolName = if ($Connector -eq 'opencode') { 'bash' } else { Get-ConnectorToolName }
     $toolEvent = 'PreToolUse'
     $payload = [ordered]@{
         hook_event_name = $toolEvent
@@ -1435,7 +1457,99 @@ function Get-TreeFingerprint([string]$Root) {
     }
 }
 
+function Assert-OpenCodePluginContract {
+    $label = 'OpenCode hooks'
+    $pluginPath = Get-EffectiveConnectorConfigPath 'opencode'
+    if (-not (Test-Path -LiteralPath $pluginPath -PathType Leaf)) {
+        throw "OpenCode managed plugin is missing: $pluginPath"
+    }
+    $plugin = [IO.File]::ReadAllText($pluginPath)
+    foreach ($marker in @(
+        '"tool.execute.before": async',
+        'const verdict = await defenseclawPost(',
+        'if (verdict) throw new Error(verdict.reason);',
+        '"tool.execute.after": async'
+    )) {
+        if ($plugin.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+            throw "OpenCode managed plugin is missing synchronous enforcement marker: $marker"
+        }
+    }
+    $after = $plugin.Substring($plugin.IndexOf('"tool.execute.after": async', [StringComparison]::Ordinal))
+    if ($after -match 'await\s+defenseclawPost\("tool\.execute\.after"') {
+        throw 'OpenCode tool.execute.after unexpectedly became an enforcement boundary'
+    }
+
+    $result = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
+    try { $report = $result.StdOut | ConvertFrom-Json } catch { throw "Doctor did not return JSON: $($_.Exception.Message)" }
+    $checks = @($report.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
+    if ($checks.Count -ne 1 -or $checks[0].status -ne 'pass' -or
+        $checks[0].detail -notmatch 'managed plugin digest current' -or
+        $checks[0].detail -notmatch 'not tamper-proof') {
+        throw "Doctor did not validate the OpenCode ACL/digest boundary: $($checks[0].detail)"
+    }
+    Write-Result 'doctor:windows-hook-registration' pass "label=$label target=$pluginPath digest=current user-admin-boundary=reported"
+
+    $node = (Get-Command 'node.exe' -ErrorAction Stop).Source
+    $assertion = Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-opencode-plugin.mjs'
+    $scratch = Join-Path $StateRoot 'opencode-plugin-contract.mjs'
+    Invoke-NativeProcess -FilePath $node -ArgumentList @(
+        $assertion,
+        $pluginPath,
+        $scratch,
+        'allow',
+        'Write-Output defenseclaw-opencode-allow'
+    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'opencode-plugin-allow.log') | Out-Null
+    Invoke-NativeProcess -FilePath $node -ArgumentList @(
+        $assertion,
+        $pluginPath,
+        $scratch,
+        'block',
+        "Get-Content -LiteralPath 'C:\Windows\System32\config\SAM'"
+    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'opencode-plugin-block.log') | Out-Null
+    Write-Result 'opencode:plugin-before' pass 'allow returned and denied tool threw synchronously; after remained observe-only'
+
+    $original = [IO.File]::ReadAllBytes($pluginPath)
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    try {
+        [IO.File]::WriteAllText(
+            $pluginPath,
+            $plugin + "`n// defenseclaw contract tamper",
+            [Text.UTF8Encoding]::new($false)
+        )
+        $tampered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1) -Timeout 120
+        try { $tamperedReport = $tampered.StdOut | ConvertFrom-Json } catch { throw "Tampered Doctor run did not return JSON: $($_.Exception.Message)" }
+        $tamperedChecks = @($tamperedReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
+        if ($tamperedChecks.Count -ne 1 -or $tamperedChecks[0].status -ne 'fail' -or
+            $tamperedChecks[0].detail -notmatch 'drift detected' -or
+            $tamperedChecks[0].detail -notmatch 'setup opencode --yes --restart') {
+            throw "Doctor did not reject OpenCode plugin drift with repair guidance: $($tamperedChecks[0].detail)"
+        }
+        Write-Result 'doctor:windows-hook-tamper' pass 'user-owned plugin digest drift rejected with reconciliation guidance'
+    } finally {
+        [IO.File]::WriteAllBytes($pluginPath, $original)
+    }
+
+    $recovered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
+    try { $recoveredReport = $recovered.StdOut | ConvertFrom-Json } catch { throw "Recovered Doctor run did not return JSON: $($_.Exception.Message)" }
+    $recoveredChecks = @($recoveredReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
+    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne 'pass') {
+        throw 'Doctor did not recover after restoring the OpenCode plugin byte-for-byte'
+    }
+    Write-Result 'doctor:windows-hook-recovery' pass 'original plugin restored byte-for-byte and digest validated'
+    try {
+        $env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'
+        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+    } finally {
+        Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT -ErrorAction SilentlyContinue
+    }
+    Wait-Gateway
+}
+
 function Assert-DoctorWindowsHookRegistration {
+    if ($Connector -eq 'opencode') {
+        Assert-OpenCodePluginContract
+        return
+    }
     $label = Get-ConnectorHookLabel
     $configPath = Get-EffectiveConnectorConfigPath $Connector
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Doctor contract hook config is missing: $configPath" }
@@ -1735,12 +1849,14 @@ function Install-Agent {
             'codex' { '@openai/codex@' + ($env:CODEX_VERSION ?? 'latest') }
             'claudecode' { '@anthropic-ai/claude-code@' + ($env:CLAUDE_VERSION ?? 'latest') }
             'copilot' { '@github/copilot@' + ($env:COPILOT_VERSION ?? 'latest') }
+            'opencode' { 'opencode-ai@' + ($env:OPENCODE_VERSION ?? 'latest') }
         }
         Invoke-Tool 'npm.cmd' @('install', '--no-audit', '--no-fund', '--prefix', $script:ToolRoot, $package) -Timeout 300 | Out-Null
         $command = switch ($Connector) {
             'codex' { 'codex.cmd' }
             'claudecode' { 'claude.cmd' }
             'copilot' { 'copilot.cmd' }
+            'opencode' { 'opencode.cmd' }
         }
         $script:AgentPath = Join-Path $script:ToolRoot "node_modules\.bin\$command"
     }
@@ -2035,6 +2151,9 @@ function Invoke-Agent([string]$Label, [string]$Prompt, [int[]]$AllowedExitCodes 
         'antigravity' {
             @('--dangerously-skip-permissions', '--print', $Prompt)
         }
+        'opencode' {
+            @('run', '--format', 'json', '--model', ($env:OPENCODE_MODEL ?? 'openai/gpt-5-mini'), '--auto', $Prompt)
+        }
     }
     return Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $agentArgs -TimeoutSeconds $CommandTimeoutSeconds -AllowedExitCodes $AllowedExitCodes -LogPath (Join-Path $script:LogRoot "agent-$Label.log")
 }
@@ -2047,10 +2166,20 @@ function Assert-Evidence([int]$Since = 0) {
         '--require-event-name', 'hook_decision'
     ) | Out-Null
     Invoke-Tool 'python.exe' @((Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-windows-evidence.py'), '--jsonl', $script:GatewayJsonl, '--audit-db', $script:AuditDb, '--connector', $Connector, '--since', "$Since") | Out-Null
-    if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $Since)) { throw 'no connector-tagged telemetry event reached the gateway' }
+    if ($Connector -eq 'opencode') {
+        if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $Since)) {
+            throw 'no connector-tagged OpenCode hook telemetry reached the gateway'
+        }
+    } elseif (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $Since)) {
+        throw 'no connector-tagged native telemetry event reached the gateway'
+    }
     Write-Result schema pass 'canonical observability-v8 JSONL schema valid'
     Write-Result audit-correlation pass 'canonical correlation.request_id matched SQLite audit evidence'
-    Write-Result telemetry pass 'connector-tagged OTLP event recorded'
+    if ($Connector -eq 'opencode') {
+        Write-Result telemetry pass 'connector-tagged hook telemetry recorded; native OTLP not claimed'
+    } else {
+        Write-Result telemetry pass 'connector-tagged OTLP event recorded'
+    }
 }
 
 function Assert-TimeoutHandling {
@@ -2174,8 +2303,10 @@ function Invoke-LiveRun {
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw 'blocked tool hook did not reach the gateway' }
     if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw 'blocked action has no block verdict' }
     Write-Result tool-block:enforced pass 'sentinel absent and block verdict present'
-    if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $start)) { throw 'no connector-tagged OTLP telemetry reached the gateway' }
-    Write-Result otlp pass
+    if ($Connector -ne 'opencode') {
+        if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $start)) { throw 'no connector-tagged OTLP telemetry reached the gateway' }
+        Write-Result otlp pass
+    }
     Assert-Evidence $start
     Invoke-Teardown
     Write-Result teardown pass
@@ -2379,15 +2510,21 @@ if (-not $NoRun) {
     # The smoke deliberately rewrites connector posture while exercising
     # observe/action setup. The packaged contract pre-registers pairwise-disjoint
     # connector homes with the native launcher; preserve those exact homes.
-    # Other runs bind both homes beneath their selected disposable profile.
+    # Other runs bind all connector homes beneath their selected disposable profile.
     $env:DEFENSECLAW_CONFIG = Join-Path $env:DEFENSECLAW_HOME 'config.yaml'
     if ([string]::IsNullOrWhiteSpace($NativeDataRoot)) {
         $env:CODEX_HOME = Join-Path $env:USERPROFILE '.codex'
         $env:CLAUDE_CONFIG_DIR = Join-Path $env:USERPROFILE '.claude'
         $env:COPILOT_HOME = Join-Path $env:USERPROFILE '.copilot'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $env:USERPROFILE '.cursor'
+        $env:OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE '.config\opencode'
     } else {
         Assert-PackagedConnectorHomes $StateRoot $HomeRoot
+    }
+    if ($Connector -eq 'opencode') {
+        # The certification path exercises OpenCode's native PowerShell runner.
+        # Never let an ambient Git Bash override turn this into a workaround.
+        Remove-Item Env:OPENCODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
     }
     if (-not $ReleaseCertification) { Protect-TestDirectory $env:USERPROFILE }
     $script:GatewayJsonl = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
