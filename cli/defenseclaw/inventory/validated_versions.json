@@ -75,7 +75,10 @@
     "omnigent": {
       "version_probe": "omnigent --version",
       "live": false,
-      "notes": "contract-only (Layer A); custom Python policy bridge"
+      "os": {
+        "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
+      },
+      "notes": "contract-only; native Windows server/SDK policy bridge is degraded preview and its official-client job remains advisory"
     }
   }
 }

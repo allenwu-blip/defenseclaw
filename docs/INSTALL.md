@@ -38,22 +38,25 @@ On **macOS**, OpenShell is not available. DefenseClaw still works for scanning, 
 
 ### Windows support
 
-On **native Windows**, DefenseClaw is **hook-only**. The current Windows
-connector scope deliberately excludes WSL and requires both the upstream agent
-and the complete DefenseClaw hook path to run directly on Windows.
+On **native Windows**, DefenseClaw is **connector-native and proxy-free**. The
+current Windows connector scope deliberately excludes WSL and requires the
+upstream agent and complete DefenseClaw hook or awaited policy path to run
+directly on Windows.
 
 - **Supported and certified:** Codex and Claude Code.
 - **Preview, not certified:** Cursor, Windsurf, and OpenCode. Their native
   implementations are available for focused validation, but certification
   still requires the integrated packaged and authentic official-client gates.
+- **Native degraded preview, not certified:** OmniGent 0.7.0 server and SDK
+  harnesses through its awaited in-process policy API. Its terminal wrappers
+  and filesystem, network, and L7 sandbox surfaces are unavailable on Windows.
 - **Implemented but not certified:** Copilot CLI and Antigravity. Setup support
   is not a certification claim.
 - **Not certified:** Hermes, pending the native implementation decision.
-- **Unsupported/excluded:** Gemini CLI, OpenHands, OmniGent, OpenClaw, and
-  ZeptoClaw. Gemini native Windows is excluded from this release; the others'
-  required
-  WSL, terminal/sandbox, or local-proxy topology is not hosted by native
-  Windows DefenseClaw.
+- **Excluded:** Gemini CLI native Windows support. Existing non-Windows support
+  is unchanged.
+- **Unsupported:** OpenHands, OpenClaw, and ZeptoClaw. Their required WSL or
+  local-proxy topology is not hosted by native Windows DefenseClaw.
 
 The certified connectors and the Cursor preview use the native
 `defenseclaw-hook.exe` runtime. Cursor first invokes the managed

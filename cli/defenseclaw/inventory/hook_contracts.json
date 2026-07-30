@@ -829,7 +829,7 @@
       "kind": "hook",
       "compatibility_gate": "hook-contract",
       "version_probe": "omnigent --version",
-      "docs_url": "https://omnigent.ai/docs/policies/custom",
+      "docs_url": "https://github.com/omnigent-ai/omnigent/blob/v0.7.0/docs/POLICIES.md",
       "contracts": [
         {
           "contract_id": "omnigent-custom-policy-v1",
@@ -885,7 +885,8 @@
             "The bridge covers request, tool_call, tool_result, response, llm_request, and llm_response phases exposed by OmniGent's PolicyEvent schema.",
             "ASK is native only for OmniGent's pre-action request, tool_call, and llm_request phases; post-action confirm verdicts use DefenseClaw's explicit fallback.",
             "The in-process Python bridge forwards an active OpenTelemetry W3C trace context when present; otherwise DefenseClaw starts a new trace.",
-            "Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; native traces require its optional tracing extra."
+            "Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; native traces require its optional tracing extra.",
+            "On Windows, OmniGent 0.7.0 server and SDK harnesses are a native degraded preview. Terminal wrappers and filesystem/network/L7 sandbox isolation are unavailable, and no WSL or POSIX shell path is used."
           ]
         }
       ]

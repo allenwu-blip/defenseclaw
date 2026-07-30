@@ -37,6 +37,8 @@
 # certification remains closed until the packaged and live gates are integrated.
 # Antigravity's official client uses Windows Credential Manager/browser auth,
 # so its real-client cell runs only on a dedicated pre-authenticated runner.
+# OmniGent 0.7.0 has a separate advisory packaged native-degraded cell in
+# windows-native.yml; it is not scheduled as a green certification cell here.
 
 name: Connector Live E2E
 

@@ -93,8 +93,8 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 		Reason: "OpenHands CLI requires WSL; DefenseClaw does not implement a WSL connector path.",
 	},
 	"omnigent": {
-		Status: PlatformUnsupported,
-		Reason: "OmniGent has no supported native Windows terminal/sandbox path for this connector.",
+		Status: PlatformPreview,
+		Reason: "OmniGent 0.7.0 supports native Windows server and SDK harnesses in degraded mode; DefenseClaw uses its awaited in-process policy API without terminal wrapping or filesystem/network sandbox parity.",
 	},
 	"openclaw": {
 		Status: PlatformUnsupported,

@@ -111,8 +111,8 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "OpenHands CLI requires WSL; DefenseClaw does not implement a WSL connector path.",
     ),
     "omnigent": ConnectorPlatformSupport(
-        UNSUPPORTED,
-        "OmniGent has no supported native Windows terminal/sandbox path for this connector.",
+        PREVIEW,
+        "OmniGent 0.7.0 supports native Windows server and SDK harnesses in degraded mode; DefenseClaw uses its awaited in-process policy API without terminal wrapping or filesystem/network sandbox parity.",
     ),
     "openclaw": ConnectorPlatformSupport(
         UNSUPPORTED,
@@ -144,7 +144,7 @@ WINDOWS_UNSUPPORTED_FEATURES: frozenset[str] = frozenset(
         "sandbox",
         "enterprise-hooks",
         "openhands",
-        "omnigent",
+        "omnigent-terminal-sandbox",
         "openclaw",
         "zeptoclaw",
     }

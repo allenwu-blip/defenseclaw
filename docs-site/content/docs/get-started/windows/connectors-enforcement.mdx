@@ -7,15 +7,18 @@ keywords:
   - DefenseClaw Windows Cursor
   - DefenseClaw Windows Windsurf
   - DefenseClaw Windows OpenCode
+  - DefenseClaw Windows OmniGent
   - DefenseClaw Windows action mode
   - DefenseClaw Windows fail closed
   - DefenseClaw Windows hooks
 ---
 
-Native Windows enforcement is connector-native and hook-only. A supported
-or preview agent invokes its managed native hook path. Codex and Claude Code
+Native Windows enforcement is connector-native and proxy-free. A supported
+or preview agent invokes its managed native hook or awaited policy path. Codex and Claude Code
 invoke `defenseclaw-hook.exe`; Cursor and Windsurf use managed native
-PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge.
+PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
+OmniGent imports a Python policy bridge into its selected native `uv tool`
+environment.
 The hook or plugin
 authenticates to the same-user loopback gateway, and the gateway maps a policy
 verdict back into that event's documented response shape.
@@ -27,6 +30,10 @@ prompt, tool, subprocess, file change, or response that the agent does not emit
 through a registered hook or native telemetry surface is not silently
 intercepted by DefenseClaw.
 </Callout>
+
+OmniGent is a narrower preview: DefenseClaw does not proxy its model traffic
+either, and protection is limited to events its native Windows server or SDK
+harness sends through the awaited custom-policy surface.
 
 ## Observe and action
 
@@ -43,6 +50,7 @@ defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
 defenseclaw setup opencode --mode observe
+defenseclaw setup omnigent --mode observe
 ```
 
 After reviewing the event inventory and policy, promote one connector at a
@@ -54,6 +62,7 @@ defenseclaw setup claude-code --mode action
 defenseclaw setup cursor --mode action
 defenseclaw setup windsurf --mode action
 defenseclaw setup opencode --mode action
+defenseclaw setup omnigent --mode action
 defenseclaw guardrail status
 ```
 
@@ -216,6 +225,37 @@ make the file tamper-proof against the owning user or an administrator.
 `defenseclaw doctor` compares the managed digest, and Setup
 repair/reconciliation restores the expected plugin registration.
 
+## OmniGent — native degraded preview
+
+OmniGent 0.7.0 documents direct native Windows execution for `omnigent server`
+and SDK-based `omnigent run` harnesses. Install it from PowerShell with its
+documented `uv` path:
+
+```powershell
+uv tool install --python 3.12 omnigent==0.7.0
+defenseclaw setup omnigent --mode observe
+omnigent server --config "$env:OMNIGENT_CONFIG_HOME\config.yaml"
+```
+
+DefenseClaw binds setup to the freshly selected `omnigent.exe`, resolves the
+matching `uv tool` environment, and writes the bridge import shim into that
+environment's `Lib\site-packages`. The server imports the bridge in-process.
+Each synchronous policy function call posts to the authenticated same-user
+loopback gateway and returns `ALLOW`, `ASK`, or `DENY`; there is no
+stdin/stdout/exit-code hook protocol or shell wrapper.
+
+The supported policy phases are `request`, `tool_call`, `tool_result`,
+`response`, `llm_request`, and `llm_response`. Native `ASK` is meaningful only
+before the action at `request`, `tool_call`, and `llm_request`; a post-action
+decision cannot undo an already-completed side effect.
+
+This is intentionally not sandbox parity. OmniGent's native Windows terminal
+wrappers are unavailable, Windows Job Objects provide process-tree/resource
+containment but not filesystem or network isolation, and the Linux/macOS L7
+egress sandbox is unavailable. Upstream v0.7.0 Windows CI is explicitly
+non-blocking while support stabilizes, so DefenseClaw keeps this connector in
+preview pending integrated packaged and official-client validation.
+
 ## Fail behavior
 
 A fresh Codex, Claude Code, or OpenCode installation defaults to `closed`; a
@@ -340,5 +380,6 @@ Protection is established only when all of the following agree:
 For configuration details, see [Codex](/docs/connectors/codex),
 [Claude Code](/docs/connectors/claudecode),
 [Cursor](/docs/connectors/cursor),
-[OpenCode](/docs/connectors/opencode), plus
+[OpenCode](/docs/connectors/opencode),
+[OmniGent](/docs/connectors/omnigent), and
 [multi-connector setup](/docs/setup/guardrail/multi-connector).

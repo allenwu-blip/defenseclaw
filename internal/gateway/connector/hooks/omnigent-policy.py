@@ -34,6 +34,7 @@ _API_TOKEN = _decoded("{{API_TOKEN_B64}}")
 _FAIL_MODE = _decoded("{{FAIL_MODE_B64}}")
 _ENDPOINT = f"http://{_API_ADDR}/api/v1/omnigent/hook"
 _TIMEOUT_SECONDS = 10
+_MAX_RESPONSE_BYTES = 1024 * 1024
 
 _EVENT_NAMES = {
     "request": "UserPromptSubmit",
@@ -146,14 +147,21 @@ def defenseclaw_policy(event: dict[str, Any]) -> dict[str, str]:
         with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
             if response.status < 200 or response.status >= 300:
                 return _failure(f"HTTP {response.status}")
-            result = json.loads(response.read().decode("utf-8"))
+            response_body = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(response_body) > _MAX_RESPONSE_BYTES:
+                return _failure("gateway response exceeded 1 MiB")
+            result = json.loads(response_body.decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return _failure(f"HTTP {exc.code}")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
         return _failure(str(exc))
 
-    action = str(result.get("action") or "allow").lower() if isinstance(result, dict) else "allow"
-    reason = str(result.get("reason") or "") if isinstance(result, dict) else ""
+    if not isinstance(result, dict):
+        return _failure("gateway response was not an object")
+    action = str(result.get("action") or "").lower()
+    if action not in {"allow", "block", "confirm"}:
+        return _failure("gateway response had no valid action")
+    reason = str(result.get("reason") or "")
     if action == "block":
         return {"result": "DENY", "reason": reason or "DefenseClaw blocked this action."}
     if action == "confirm":

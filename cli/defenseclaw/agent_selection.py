@@ -49,7 +49,7 @@ _CODEX_WINDOWS_PLATFORM_VARIANTS = (
     ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
 )
 _MAX_AGENT_EXECUTABLE_BYTES = 512 * 1024 * 1024
-_SUPPORTED_CONNECTORS = frozenset({"codex", "claudecode"})
+_SUPPORTED_CONNECTORS = frozenset({"codex", "claudecode", "omnigent"})
 
 
 @dataclass(frozen=True)

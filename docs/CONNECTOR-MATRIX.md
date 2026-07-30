@@ -43,10 +43,13 @@ defenseclaw setup omnigent --mode action --yes
 omnigent server --config "${OMNIGENT_CONFIG_HOME:-$HOME/.omnigent}/config.yaml"
 ```
 
-OmniGent connector setup is not supported on native Windows. Its terminal
-runner requires `tmux`, its documented OS-sandbox backends are Linux/macOS,
-and its Windows desktop application is not yet available. DefenseClaw does not
-add a WSL implementation; use this connector on macOS/Linux.
+OmniGent 0.7.0 connector setup is a conditional native-degraded preview on
+Windows for `omnigent server` and SDK harnesses. In PowerShell, install it with
+`uv tool install --python 3.12 omnigent==0.7.0`, then run the same
+`defenseclaw setup omnigent` command. DefenseClaw invokes native `.exe` and
+`Scripts\python.exe` processes directly and does not add a WSL implementation.
+The tmux/PTY terminal wrappers and Linux/macOS filesystem, network, and L7
+sandbox backends remain unavailable.
 
 `~/.omnigent/config.yaml` is the default. When `OMNIGENT_CONFIG_HOME` is set,
 both OmniGent and DefenseClaw use `OMNIGENT_CONFIG_HOME/config.yaml` instead
@@ -137,7 +140,7 @@ represent DefenseClaw Windows support or release certification.
 | OpenCode | supported | supported | **preview** | The direct native implementation installs OpenCode's auto-loaded bridge with Windows paths/processes, but certification remains pending the integrated packaged-Setup and official-client gates. Upstream recommends WSL but does not require it. |
 | Hermes | supported | supported | **not certified** | Upstream Windows availability does not substitute for DefenseClaw native release certification. |
 | OpenHands | supported | supported | unsupported | OpenHands CLI explicitly requires WSL; DefenseClaw has no WSL connector implementation. |
-| OmniGent | supported | supported | unsupported | The terminal path requires `tmux`, the OS sandbox documents Linux/macOS backends, and the Windows desktop app is still pending. |
+| OmniGent | supported | supported | preview (native degraded) | OmniGent 0.7.0 documents native Windows server and SDK harnesses. DefenseClaw uses the awaited in-process policy API; terminal wrappers and filesystem/network/L7 sandbox parity are unavailable. |
 | OpenClaw | supported | supported | unsupported | OpenClaw itself has a native path, but DefenseClaw's connector requires the local guardrail-proxy lifecycle, which DefenseClaw does not host on Windows. |
 | ZeptoClaw | supported | supported | unsupported | Upstream publishes macOS/Linux support, and the DefenseClaw connector also requires the unavailable Windows guardrail proxy. |
 
@@ -166,9 +169,10 @@ is `not separately documented` rather than an inferred support promise.
 | OpenHands | The CLI explicitly requires WSL on Windows; native Windows is not officially supported. | Unsupported on Windows because WSL-only does not meet the native requirement. |
 | Antigravity | Native Windows CLI/app downloads and local hooks are documented; WSL is not a separate hook target. | Native Windows x64 implementation is not yet certified; WSL is out of scope. |
 | OpenCode | Direct Windows execution is explicit, while upstream recommends WSL for the best experience. | The auto-loaded JavaScript bridge is a native Windows preview pending integrated validation; WSL remains out of scope. |
-| OmniGent | Linux terminal and sandbox prerequisites are documented; WSL is not explicitly supported as a Windows product path. | Unsupported on native Windows; no WSL connector is implemented or certified. |
+| OmniGent | WSL is neither required nor used by the implemented surface. | Conditional preview for OmniGent 0.7.0 native server/SDK harnesses only; no tmux/PTY terminal wrapper, filesystem/network/L7 sandbox, or certification claim. |
 
-Evidence checked 2026-07-30 against the current upstream documentation:
+Evidence checked 2026-07-30 against the current upstream documentation and
+OmniGent v0.7.0 (released 2026-07-27):
 [Codex install](https://github.com/openai/codex#quickstart),
 [Codex Windows](https://developers.openai.com/codex/windows),
 [Codex hooks](https://developers.openai.com/codex/hooks),
@@ -203,6 +207,8 @@ Evidence checked 2026-07-30 against the current upstream documentation:
 [Hermes platform support](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support),
 [Hermes native Windows guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native),
 [OpenHands CLI quick start](https://docs.openhands.dev/openhands/usage/cli/quick-start),
+[OmniGent v0.7.0 Windows support](https://github.com/omnigent-ai/omnigent/blob/v0.7.0/README.md#native-windows-support-degraded-mode),
+[OmniGent v0.7.0 custom policies](https://github.com/omnigent-ai/omnigent/blob/v0.7.0/docs/POLICIES.md),
 [OmniGent terminal](https://omnigent.ai/docs/interact/terminal),
 [OmniGent sandbox](https://omnigent.ai/docs/policies/os-sandbox),
 [OmniGent desktop](https://omnigent.ai/docs/interact/desktop), and
@@ -408,7 +414,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | --------- | ----- | ----- | ------- | ------------------------------- | ----- |
 | Codex | live | live | live\* (certified) | `codex exec --json --full-auto` | native OTLP asserted |
 | Claude Code | live | live | live\* (certified) | `claude -p` | native OTLP asserted; native-ask is Layer A only |
-| Gemini CLI | live driver (credential-deferred) | live driver (credential-deferred) | staged live driver (not certified) | `gemini -p -o json --approval-mode yolo` | driver asserts `BeforeTool` exit-0 JSON allow/block and native OTLP; certification requires eligible paid/enterprise credentials. Failures before adapter start, host launch/timeout behavior, and collapsed nonzero exits remain live-certification boundaries. |
+| Gemini CLI | live driver (credential-deferred) | live driver (credential-deferred) | — (excluded) | `gemini -p -o json --approval-mode yolo` on supported non-Windows hosts only | Native Windows validation is intentionally excluded; existing non-Windows behavior and its credential requirements are unchanged. |
 | Cursor | live | live | live\* (preview; certification pending) | `agent -p --force` (`cursor-agent` compatibility alias) | native PowerShell contract coverage is implemented; integrated packaged and official-client validation is pending |
 | Copilot CLI | live\* | live\* | live\* (not certified) | `copilot -p` | user-level hooks only; entitled token |
 | OpenHands | live | — | — | `openhands --headless --json` | Docker runtime, Linux-only |
@@ -416,7 +422,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | Hermes | contract-only | contract-only | contract-only (not certified) | — | Native Windows is upstream Tier 1, but DefenseClaw does not certify the connector there. |
 | Windsurf | contract-only | contract-only | contract-only (preview; not certified) | — | no headless CLI/SDK; interactive native Windows client gate deferred |
 | Antigravity | contract-only | contract-only | contract + native package validation pending (not certified) | `agy --dangerously-skip-permissions --print` on an authenticated runner | Google documents Windows Credential Manager/browser auth, not API-key bootstrap; real live E2E requires a pre-authenticated native Windows runner. |
-| OmniGent | contract-only | contract-only | — | — | Native Windows connector unsupported; Python custom-policy bridge covered by local integration tests on supported hosts; live smoke pending |
+| OmniGent | contract-only | contract-only | contract-only (native degraded preview) | `omnigent server` plus SDK harnesses | v0.7.0 official-client Windows job is advisory while upstream Windows CI remains non-blocking; no terminal/sandbox parity |
 
 `\*` = advisory cell (`continue-on-error`) until it goes consistently green.
 All Windows live cells and every Copilot cell start advisory; they are promoted

@@ -14,7 +14,8 @@ local gateway, native hook launcher, CLI, TUI, scanners, and managed Python
 runtime. The certified connector scope is deliberately narrow: **Codex** and
 **Claude Code**. **Cursor**, **Windsurf**, and **OpenCode** are available as
 previews while packaged and authentic official-client validation remains
-pending.
+pending. **OmniGent 0.7.0** is a narrower native-degraded preview for awaited
+server/SDK policy calls only.
 
 <Callout type="warning" title="WSL is not supported">
 This guide is for DefenseClaw, the agent, and its configuration running in the
@@ -28,12 +29,13 @@ native agent at a WSL installation, or mix native and WSL connector homes.
 | --- | --- |
 | **Supported** | Implemented and covered by the required native Windows x64 test or release contract. |
 | **Preview** | Implemented and selectable, but not yet promoted to the supported/certified release contract. |
+| **Preview — native degraded** | Available only on the stated native surface; advisory validation and explicit upstream limitations prevent a certification claim. |
 | **Limited** | Supported only on the stated surface, with optional configuration, an extra dependency, or a narrower guarantee. |
 | **Not certified** | Code exists, but the native Windows release contract does not qualify it. Do not treat it as supported. |
 | **Unsupported** | Rejected, unavailable, or outside the native Windows product contract. |
 | **Not applicable** | A platform-specific concept is intentionally absent from the Windows design. |
 
-## Certified connector scope
+## Connector scope
 
 | Connector | Setup name | Native Windows x64 | Enforcement topology |
 | --- | --- | --- | --- |
@@ -42,15 +44,16 @@ native agent at a WSL installation, or mix native and WSL connector homes.
 | Cursor | `cursor` | **Preview** | Native command hooks use a managed PowerShell adapter and the loopback gateway; certification is pending. |
 | Windsurf | `windsurf` | **Preview** | Native PowerShell hook adapter to the loopback gateway; packaged and official-client certification pending. |
 | OpenCode | `opencode` | **Preview** | Auto-loaded in-process JavaScript plugin; only awaited `tool.execute.before` can block. Integrated release validation remains pending. |
+| OmniGent | `omnigent` | **Preview — native degraded** | OmniGent 0.7.0 server/SDK harness policy calls only; no terminal wrapper or filesystem/network/L7 sandbox parity. |
 | Copilot CLI, Antigravity | — | **Not certified** | Native lifecycle code exists, but Setup presence is not a Windows certification claim. |
 | Gemini CLI | — | **Excluded** | Native Windows support is intentionally excluded; non-Windows behavior is unchanged. |
 | Hermes | — | **Pending** | No native Windows claim is made until its separate handoff is accepted. |
-| OpenHands, OmniGent, OpenClaw, ZeptoClaw | — | **Unsupported** | Their required sandbox, terminal, or proxy topology is not hosted by native Windows DefenseClaw. |
+| OpenHands, OpenClaw, ZeptoClaw | — | **Unsupported** | Their required WSL or proxy topology is not hosted by native Windows DefenseClaw. |
 
 All supported and preview connectors remain connected directly to their normal upstream
 service. DefenseClaw does **not** insert a model proxy on Windows. It can only
 protect and observe events the installed agent emits through its documented
-hook and native telemetry surfaces.
+hook, awaited policy, and native telemetry surfaces.
 
 <Cards>
   <Card title="Install and maintain" href="/docs/get-started/windows/install-lifecycle" description="Requirements, signed Setup, repair, upgrade qualification, recovery, and uninstall." />
@@ -69,10 +72,11 @@ The normal installation is one current-user application:
 2. Connector setup registers `defenseclaw-hook.exe` directly for Codex and
    Claude Code. Cursor and Windsurf receive managed native PowerShell adapters
    that synchronously launch that exact packaged executable. OpenCode setup
-   installs `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`.
-3. The native hook, adapter, or OpenCode plugin sends declared events to an
+   installs `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`. OmniGent setup
+   installs its import bridge into the selected native `uv tool` environment.
+3. The native hook, adapter, or in-process bridge sends declared events to an
    authenticated gateway API on loopback. Action mode can return a decision
-   only where that agent event supports one.
+   only where that agent event or awaited policy phase supports one.
 4. Native OTLP from the agent enters a connector-scoped loopback receiver. It
    adds telemetry; it is never an enforcement path.
 5. The gateway evaluates policy and persists mandatory local audit data. Any

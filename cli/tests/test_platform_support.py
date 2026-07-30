@@ -63,9 +63,9 @@ from defenseclaw.tui.services.cli_choices import (
 from tests.helpers import cleanup_app, make_app_context
 
 WINDOWS_SUPPORTED = {"codex", "claudecode"}
-WINDOWS_PREVIEW: set[str] = {"cursor", "windsurf", "opencode"}
+WINDOWS_PREVIEW: set[str] = {"cursor", "windsurf", "opencode", "omnigent"}
 WINDOWS_NOT_CERTIFIED = {"copilot", "antigravity", "hermes"}
-WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "omnigent", "openclaw", "zeptoclaw"}
+WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
 
@@ -291,6 +291,7 @@ def test_windows_views_include_labeled_preview_and_hide_unavailable() -> None:
         for connector, label in labels.items()
         if connector not in WINDOWS_PREVIEW
     )
+    assert "omnigent" in {choice.wire for choice in win_modes}
 
 
 def test_non_windows_views_are_unfiltered() -> None:
@@ -342,17 +343,9 @@ def test_direct_windows_setup_rejects_unsupported_with_reason() -> None:
                 ["openhands", "--yes", "--no-restart"],
                 obj=app,
             )
-            omnigent = runner.invoke(
-                setup_group,
-                ["omnigent", "--yes", "--no-restart"],
-                obj=app,
-            )
         assert openhands.exit_code != 0
         assert "unsupported on windows" in openhands.output
         assert "requires WSL" in openhands.output
-        assert omnigent.exit_code != 0
-        assert "unsupported on windows" in omnigent.output
-        assert "no supported native Windows" in omnigent.output
     finally:
         cleanup_app(app, db_path, tmp_dir)
 

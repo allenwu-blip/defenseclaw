@@ -3692,7 +3692,7 @@ def _record_windows_setup_agent_selections(
     data_dir: str | os.PathLike[str] | None,
     connectors: list[str] | tuple[str, ...],
 ) -> None:
-    """Refresh protected executable authority required by native Codex setup."""
+    """Refresh protected executable authority for native runtime inspection."""
 
     if platform_support.host_os() != "windows":
         return
@@ -3700,7 +3700,7 @@ def _record_windows_setup_agent_selections(
         dict.fromkeys(
             connector
             for raw in connectors
-            if (connector := normalize_connector(raw)) == "codex"
+            if (connector := normalize_connector(raw)) in {"codex", "omnigent"}
         )
     )
     if not selected:

@@ -649,10 +649,7 @@ func TestConnectorSetupTokensProxyKeepsMasterOutOfScopedSidecar(t *testing.T) {
 }
 
 func TestConnectorSetupTokensOmnigentGetsScopedToken(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("OmniGent is unsupported on native Windows; platform gate coverage remains active")
-	}
-	tokens, err := connectorSetupTokensFor(t.TempDir(), connector.NewOmnigentConnector(), "gateway-master", false)
+	tokens, err := connectorSetupTokensFor(testenv.PrivateTempDir(t), connector.NewOmnigentConnector(), "gateway-master", false)
 	if err != nil {
 		t.Fatalf("connectorSetupTokensFor omnigent: %v", err)
 	}

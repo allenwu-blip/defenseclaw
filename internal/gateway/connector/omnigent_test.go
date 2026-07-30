@@ -26,11 +26,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func requireOmnigentHost(t *testing.T) {
+func omnigentTestPython(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("OmniGent has no supported native Windows policy bridge; platform rejection coverage remains active")
+	for _, name := range []string{"python", "python3"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
 	}
+	t.Skip("Python is required for the OmniGent policy bridge test")
+	return ""
 }
 
 func withOmnigentPathOverrides(t *testing.T, configPath, sitePackages string) {
@@ -165,7 +169,7 @@ func TestOmnigentSitePackagesIgnoresInterpreterStderr(t *testing.T) {
 	}
 	for name, body := range map[string]string{
 		"omnigent": "#!/bin/sh\nexit 0\n",
-		"python":   "#!/bin/sh\nprintf 'sitecustomize warning\\n' >&2\nprintf '%s\\n' \"$OMNIGENT_TEST_PURELIB\"\n",
+		"python":   "#!/bin/sh\nprintf 'sitecustomize warning\\n' >&2\nprintf '0.7.0\\n%s\\n' \"$OMNIGENT_TEST_PURELIB\"\n",
 	} {
 		path := filepath.Join(binDir, name)
 		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
@@ -179,7 +183,7 @@ func TestOmnigentSitePackagesIgnoresInterpreterStderr(t *testing.T) {
 	OmnigentSitePackagesPathOverride = ""
 	t.Cleanup(func() { OmnigentSitePackagesPathOverride = previous })
 
-	got, err := omnigentSitePackages(context.Background())
+	got, err := omnigentSitePackages(context.Background(), SetupOpts{})
 	if err != nil {
 		t.Fatalf("omnigentSitePackages: %v", err)
 	}
@@ -208,7 +212,7 @@ func TestOmnigentSitePackagesRejectsUntrustedInterpreter(t *testing.T) {
 	OmnigentSitePackagesPathOverride = ""
 	t.Cleanup(func() { OmnigentSitePackagesPathOverride = previous })
 
-	_, err := omnigentSitePackages(context.Background())
+	_, err := omnigentSitePackages(context.Background(), SetupOpts{})
 	if err == nil || !strings.Contains(err.Error(), "trusted install prefix") {
 		t.Fatalf("error = %v, want trusted-prefix refusal", err)
 	}
@@ -231,7 +235,7 @@ func TestOmnigentSitePackagesRejectsShebangArguments(t *testing.T) {
 	OmnigentSitePackagesPathOverride = ""
 	t.Cleanup(func() { OmnigentSitePackagesPathOverride = previous })
 
-	_, err := omnigentSitePackages(context.Background())
+	_, err := omnigentSitePackages(context.Background(), SetupOpts{})
 	if err == nil || !strings.Contains(err.Error(), "unsupported interpreter arguments") {
 		t.Fatalf("error = %v, want unsupported shebang arguments", err)
 	}
@@ -306,11 +310,7 @@ func TestOmnigentSetupRefreshesBackupsWhenTargetsMove(t *testing.T) {
 }
 
 func TestOmnigentRawPolicyTemplateImportsFailOpen(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the raw-template import test")
-	}
+	python := omnigentTestPython(t)
 	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
 	if err != nil {
 		t.Fatal(err)
@@ -340,11 +340,7 @@ print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})
 }
 
 func TestOmnigentPolicyPayloadRejectsNonFiniteNumbers(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the policy payload test")
-	}
+	python := omnigentTestPython(t)
 	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
 	if err != nil {
 		t.Fatal(err)
@@ -378,11 +374,7 @@ print(json.dumps(payload, allow_nan=False))
 }
 
 func TestOmnigentPolicyBridgeMapsBlockToDeny(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the policy bridge integration test")
-	}
+	python := omnigentTestPython(t)
 
 	var received map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -464,11 +456,7 @@ print(json.dumps(module.defenseclaw_policy({
 }
 
 func TestOmnigentPolicyBridgeFailMode(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the policy bridge fail-mode test")
-	}
+	python := omnigentTestPython(t)
 	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
 	if err != nil {
 		t.Fatal(err)
@@ -505,6 +493,55 @@ print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})
 	}
 }
 
+func TestOmnigentPolicyBridgeInvalidResponseHonorsFailMode(t *testing.T) {
+	python := omnigentTestPython(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("defenseclaw_omnigent_policy", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})))
+`
+	for _, tc := range []struct {
+		mode string
+		want string
+	}{{"open", "ALLOW"}, {"closed", "DENY"}} {
+		t.Run(tc.mode, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
+			rendered := renderOmnigentPolicy(
+				string(templateBytes),
+				strings.TrimPrefix(server.URL, "http://"),
+				"",
+				tc.mode,
+			)
+			if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := exec.Command(python, "-c", script, path).CombinedOutput()
+			if err != nil {
+				t.Fatalf("execute policy: %v\n%s", err, output)
+			}
+			var verdict map[string]string
+			if err := json.Unmarshal(output, &verdict); err != nil {
+				t.Fatal(err)
+			}
+			if verdict["result"] != tc.want {
+				t.Fatalf("verdict = %v, want %s", verdict, tc.want)
+			}
+		})
+	}
+}
+
 func TestOmnigentConfirmIsNativeOnlyBeforeActions(t *testing.T) {
 	profile := NewOmnigentConnector().HookProfile(SetupOpts{APIAddr: "127.0.0.1:18970"})
 	response := profile.Respond(HookRespondInput{Req: HookProfileRequest{ConnectorName: "omnigent"}, Action: "allow"})
@@ -526,11 +563,7 @@ func TestOmnigentConfirmIsNativeOnlyBeforeActions(t *testing.T) {
 }
 
 func TestOmnigentPolicyBridgeVerdictMappingAndEmptyToken(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the policy bridge integration test")
-	}
+	python := omnigentTestPython(t)
 	responses := map[string]string{"deny-case": "block", "ask-case": "confirm", "allow-case": "allow"}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "" {
@@ -583,11 +616,7 @@ for name in ("deny-case", "ask-case", "allow-case"):
 }
 
 func TestOmnigentPolicyEventFixture(t *testing.T) {
-	requireOmnigentHost(t)
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is required for the policy event fixture test")
-	}
+	python := omnigentTestPython(t)
 	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
 	if err != nil {
 		t.Fatal(err)

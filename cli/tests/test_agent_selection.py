@@ -52,6 +52,31 @@ def test_record_setup_agent_selection_writes_short_lived_protected_receipt(
     assert expires_at - selected_at == agent_selection.SELECTION_LIFETIME
 
 
+def test_record_setup_agent_selection_accepts_omnigent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    executable = tmp_path / "trusted" / "omnigent.exe"
+    executable.parent.mkdir()
+    executable.write_bytes(b"omnigent")
+    selected = agent_selection.SetupAgentSelection(
+        connector="omnigent",
+        executable=str(executable),
+        raw_version="omnigent 0.7.0",
+        normalized_version="0.7.0",
+        sha256=hashlib.sha256(b"omnigent").hexdigest(),
+    )
+    monkeypatch.setattr(agent_selection, "_select_agent_executable", lambda *_args: selected)
+
+    selections, errors = agent_selection.record_setup_agent_selections(
+        tmp_path / "state",
+        ["omnigent"],
+    )
+
+    assert selections == {"omnigent": selected}
+    assert errors == {}
+
+
 def test_explicit_selection_probes_candidates_instead_of_discovery_cache(
     tmp_path: Path,
     monkeypatch,

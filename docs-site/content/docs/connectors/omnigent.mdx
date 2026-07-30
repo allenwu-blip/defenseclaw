@@ -10,12 +10,27 @@ keywords:
 
 The OmniGent connector uses OmniGent's documented custom Python policy API. It does not proxy OmniGent's model traffic. A small in-process policy bridge sends each policy event to the local DefenseClaw gateway, then maps the result back to OmniGent `ALLOW`, `ASK`, or `DENY`.
 
+On Windows this is a **native degraded preview** for OmniGent 0.7.0 or newer.
+Only `omnigent server` and SDK-based harnesses are in scope. Native
+tmux/PTY terminal wrappers, filesystem/network sandboxing, and the L7 egress
+proxy are unavailable; DefenseClaw does not emulate them with WSL or a shell
+compatibility layer.
+
 ## Setup
 
 ```bash
 defenseclaw setup omnigent                # observe (default)
 defenseclaw setup omnigent --mode action  # enforce ALLOW / ASK / DENY
 omnigent server --config ~/.omnigent/config.yaml
+```
+
+Native Windows PowerShell:
+
+```powershell
+uv tool install --python 3.12 omnigent==0.7.0
+$env:OMNIGENT_CONFIG_HOME = Join-Path $HOME '.omnigent'
+defenseclaw setup omnigent --mode action
+omnigent server --config (Join-Path $env:OMNIGENT_CONFIG_HOME 'config.yaml')
 ```
 
 Restart OmniGent after setup so it reloads the policy registry. DefenseClaw:
@@ -32,7 +47,16 @@ When `OMNIGENT_CONFIG_HOME` is set, DefenseClaw and OmniGent both use
 The connector must write the `.pth` file into the Python environment that owns
 the `omnigent` executable. Use an isolated environment that your user can
 write; setup stops with a clear error instead of attempting a privileged
-system-Python install.
+system-Python install. Native Windows setup requires the official `uv tool`
+layout and a fresh protected executable selection; discovery, setup, repair,
+and later reconciliation bind the exact `omnigent.exe` digest to the connector
+lock.
+
+The preview currently covers packaged CLI setup, restart reconciliation,
+Doctor, connector teardown, and clean-state verification. It is not evidence
+that the Windows Setup executable's installer-driven repair, upgrade, or
+deferred-uninstall transaction has qualified OmniGent; those shared installer
+paths remain part of the later integrated validation and promotion gate.
 
 All three managed files are backed up. Teardown restores unchanged files byte-for-byte and removes only DefenseClaw-owned YAML entries when the operator has edited the config.
 
@@ -48,6 +72,12 @@ All three managed files are backed up. Teardown restores unchanged files byte-fo
 | `llm_response` | `AfterModel` | scan and block/replace; ASK falls back |
 
 OmniGent parks only its pre-action `request`, `tool_call`, and `llm_request` phases for approval. DefenseClaw therefore advertises native human approval only for those events. The bridge also honors fail-open or fail-closed behavior when the gateway is unavailable.
+
+The official extension is an awaited in-process Python function. It does not
+read policy events from stdin, write verdicts to stdout, or communicate an
+enforcement result through a process exit code. A bridge exception is
+fail-closed by OmniGent's policy engine; DefenseClaw's configured fail mode
+governs transport and invalid-response handling inside the bridge.
 
 ## Telemetry
 

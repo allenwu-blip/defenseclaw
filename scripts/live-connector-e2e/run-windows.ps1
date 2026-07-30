@@ -1366,8 +1366,8 @@ function Invoke-DangerousHook(
     [string]$Sentinel
 ) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $event = if ($Connector -eq 'antigravity') { 'PreToolUse' } else { "PreTool-$Name" }
-    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $event) @(0, 2) $Payload
+    $eventName = if ($Connector -eq 'antigravity') { 'PreToolUse' } else { "PreTool-$Name" }
+    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $eventName) @(0, 2) $Payload
 
     $decision = $null
     for ($attempt = 0; $attempt -lt 30 -and $null -eq $decision; $attempt++) {

@@ -27,7 +27,7 @@ var windowsSupportedConnectorNames = []string{
 	"codex",
 }
 
-var windowsPreviewConnectorNames = []string{"cursor", "opencode", "windsurf"}
+var windowsPreviewConnectorNames = []string{"cursor", "omnigent", "opencode", "windsurf"}
 
 var windowsNotCertifiedConnectorNames = []string{
 	"antigravity", "copilot", "hermes",
@@ -37,7 +37,6 @@ var windowsUnsupportedConnectorNames = []string{
 	"geminicli",
 	"openclaw",
 	"openhands",
-	"omnigent",
 	"zeptoclaw",
 }
 

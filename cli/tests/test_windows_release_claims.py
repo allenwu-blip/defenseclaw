@@ -21,22 +21,25 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_windows_release_metadata_is_exact() -> None:
     assert WINDOWS_SUPPORTED_CONNECTORS == {"codex", "claudecode"}
-    assert WINDOWS_PREVIEW_CONNECTORS == {"windsurf"}
+    assert WINDOWS_PREVIEW_CONNECTORS == {"cursor", "windsurf", "opencode", "omnigent"}
     assert WINDOWS_NOT_CERTIFIED_CONNECTORS == {
-        "cursor",
-        "geminicli",
         "copilot",
         "antigravity",
         "hermes",
     }
-    assert WINDOWS_UNSUPPORTED_CONNECTORS == {"openhands", "omnigent", "openclaw", "zeptoclaw"}
+    assert WINDOWS_UNSUPPORTED_CONNECTORS == {
+        "geminicli",
+        "openhands",
+        "openclaw",
+        "zeptoclaw",
+    }
     assert WINDOWS_CERTIFIED_ARCHITECTURES == {"amd64"}
     assert WINDOWS_NOT_CERTIFIED_ARCHITECTURES == {"arm64"}
     assert WINDOWS_UNSUPPORTED_FEATURES == {
         "sandbox",
         "enterprise-hooks",
         "openhands",
-        "omnigent",
+        "omnigent-terminal-sandbox",
         "openclaw",
         "zeptoclaw",
     }
@@ -56,6 +59,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "| Claude Code | `claudecode` | **Supported**" in text
     assert "| Windsurf | `windsurf` | **Preview**" in text
     assert "| OpenCode | `opencode` | **Preview**" in text
+    assert "| OmniGent | `omnigent` | **Preview — native degraded**" in text
     assert "local observability" in text
     assert "Local Splunk" in text
     assert "Hyper-V backend" in text
