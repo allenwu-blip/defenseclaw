@@ -58,7 +58,7 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 	},
 	"claudecode": {
 		Status: PlatformSupported,
-		Reason: "Claude Code with Git for Windows and native hooks is certified on native Windows x64.",
+		Reason: "Claude Code and the DefenseClaw native executable hook entrypoint are certified on native Windows x64.",
 	},
 	"cursor": {
 		Status: PlatformNotCertified,

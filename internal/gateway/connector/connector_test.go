@@ -616,6 +616,49 @@ func TestClaudeCode_ImplementsComponentScanner(t *testing.T) {
 	}
 }
 
+func TestClaudeCode_ComponentTargetsHonorMCPStateScope(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	previous := ClaudeCodeSettingsPathOverride
+	ClaudeCodeSettingsPathOverride = ""
+	t.Cleanup(func() { ClaudeCodeSettingsPathOverride = previous })
+
+	targets := NewClaudeCodeConnector().ComponentTargets(workspace)
+	settingsPath := filepath.Join(configDir, "settings.json")
+	mcpStatePath := filepath.Join(configDir, ".claude.json")
+	projectMCPPath := filepath.Join(workspace, ".mcp.json")
+
+	for _, expected := range []string{mcpStatePath, projectMCPPath} {
+		if !slices.Contains(targets["mcp"], expected) {
+			t.Errorf("ComponentTargets(mcp) = %v, missing %q", targets["mcp"], expected)
+		}
+	}
+	if slices.Contains(targets["mcp"], settingsPath) {
+		t.Errorf("ComponentTargets(mcp) = %v, settings.json is not Claude MCP state", targets["mcp"])
+	}
+	if slices.Contains(targets["config"], mcpStatePath) ||
+		slices.Contains(targets["config"], projectMCPPath) {
+		t.Errorf("ComponentTargets(config) = %v, MCP state must not be attributed as generic config", targets["config"])
+	}
+}
+
+func TestClaudeCode_FileChangedMatcherCoversNativeConfigSurfaces(t *testing.T) {
+	for _, expected := range []string{
+		"CLAUDE.local.md",
+		".claude/CLAUDE.md",
+		".claude/rules/.*",
+		".claude/settings.json",
+		".claude/settings.local.json",
+		".claude.json",
+		".mcp.json",
+	} {
+		if !strings.Contains(fileChangedMatcher, expected) {
+			t.Errorf("fileChangedMatcher = %q, missing %q", fileChangedMatcher, expected)
+		}
+	}
+}
+
 func TestCodex_ImplementsComponentScanner(t *testing.T) {
 	c := NewCodexConnector()
 	var _ ComponentScanner = c
@@ -1345,10 +1388,11 @@ func TestClaudeCode_Setup_HonorsClaudeConfigDir(t *testing.T) {
 	}
 
 	targets := c.ComponentTargets(filepath.Join(dir, "workspace"))
+	mcpStatePath := filepath.Join(claudeConfigDir, ".claude.json")
 	for component, expected := range map[string]string{
 		"skill":   filepath.Join(claudeConfigDir, "skills"),
 		"plugin":  filepath.Join(claudeConfigDir, "plugins"),
-		"mcp":     settingsPath,
+		"mcp":     mcpStatePath,
 		"agent":   filepath.Join(claudeConfigDir, "agents"),
 		"command": filepath.Join(claudeConfigDir, "commands"),
 		"config":  settingsPath,
@@ -1356,6 +1400,12 @@ func TestClaudeCode_Setup_HonorsClaudeConfigDir(t *testing.T) {
 		if !slices.Contains(targets[component], expected) {
 			t.Errorf("ComponentTargets(%q) = %v, missing CLAUDE_CONFIG_DIR path %q", component, targets[component], expected)
 		}
+	}
+	if slices.Contains(targets["mcp"], settingsPath) {
+		t.Errorf("ComponentTargets(mcp) = %v, settings.json is not Claude MCP state", targets["mcp"])
+	}
+	if slices.Contains(targets["config"], mcpStatePath) {
+		t.Errorf("ComponentTargets(config) = %v, MCP state must not be attributed as generic config", targets["config"])
 	}
 
 	if err := c.Teardown(context.Background(), opts); err != nil {

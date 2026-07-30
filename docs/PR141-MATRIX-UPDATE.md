@@ -61,10 +61,10 @@
 
 | Sub-feature | OpenClaw | ZeptoClaw | Claude Code | Codex |
 |---|---|---|---|---|
-| **`mcp list`** | ✅ | ✅ 🆕 Python `config.py:mcp_servers()` dispatches to `_read_mcp_servers_zeptoclaw()` (reads `~/.zeptoclaw/config.json` mcp.servers + `.mcp.json`) | ✅ 🆕 dispatches to `_read_mcp_servers_claudecode()` (reads `~/.claude/settings.json` mcpServers + `.mcp.json`) | ✅ 🆕 dispatches to `_read_mcp_servers_codex()` (reads `.mcp.json`) |
+| **`mcp list`** | ✅ | ✅ 🆕 Python `config.py:mcp_servers()` dispatches to `_read_mcp_servers_zeptoclaw()` (reads `~/.zeptoclaw/config.json` mcp.servers + `.mcp.json`) | ✅ 🆕 dispatches to `_read_mcp_servers_claudecode()` (reads user `~/.claude.json` mcpServers + project `.mcp.json`) | ✅ 🆕 dispatches to `_read_mcp_servers_codex()` (reads `.mcp.json`) |
 | **`mcp scan <path>` (explicit)** | ✅ | ✅ path-agnostic | ✅ | ✅ |
 | **`mcp scan --all`** | ✅ | ✅ 🆕 `app.cfg.mcp_servers()` is connector-aware | ✅ 🆕 same | ✅ 🆕 same |
-| **`mcp set`** | ✅ writes `openclaw.json` via `openclaw config set` | ✅ 🆕🆕 `_connector_config_set_mcp()` writes to `~/.zeptoclaw/config.json` under `mcp.servers.<name>` | ✅ 🆕🆕 writes to `~/.claude/settings.json` under `mcpServers.<name>` | ✅ 🆕🆕 writes to `.mcp.json` under `mcpServers.<name>` |
+| **`mcp set`** | ✅ writes `openclaw.json` via `openclaw config set` | ✅ 🆕🆕 `_connector_config_set_mcp()` writes to `~/.zeptoclaw/config.json` under `mcp.servers.<name>` | ✅ 🆕🆕 writes user scope to `~/.claude.json` under `mcpServers.<name>` | ✅ 🆕🆕 writes to `.mcp.json` under `mcpServers.<name>` |
 | **`mcp unset`** | ✅ removes from `openclaw.json` via `openclaw config unset` | ✅ 🆕🆕 `_connector_config_unset_mcp()` removes from `~/.zeptoclaw/config.json` | ✅ 🆕🆕 removes from `~/.claude/settings.json` | ✅ 🆕🆕 removes from `.mcp.json` |
 | **`mcp block` / `mcp allow`** | ✅ | ✅ connector-agnostic (stored in DefenseClaw policy DB) | ✅ | ✅ |
 | **MCP scanned at SessionStart hook** | n/a (handled by extension) | ❌ | ✅ `claudeCodeComponentTargets` includes `~/.claude/settings.json` and `<cwd>/.mcp.json` | ✅ `codexComponentTargets` includes `~/.codex/config.toml` and `<cwd>/.mcp.json` |
@@ -98,7 +98,7 @@
 
 | Feature | OpenClaw | ZeptoClaw | Claude Code | Codex |
 |---|---|---|---|---|
-| **Inventory of skills/plugins/MCP** | ✅ shells out to `openclaw <cat> --json` for full inventory (7 categories) | ✅ 🆕🆕 `build_claw_aibom` dispatches to `_build_filesystem_aibom` — enumerates skills from `cfg.skill_dirs()`, plugins from `cfg.plugin_dirs()`, MCP servers from `cfg.mcp_servers()` | ✅ 🆕🆕 same — reads `~/.claude/settings.json` MCPs, `~/.claude/skills/`, `~/.claude/plugins/` | ✅ 🆕🆕 same — reads `.mcp.json` MCPs, `~/.codex/skills/`, `~/.codex/plugins/` |
+| **Inventory of skills/plugins/MCP** | ✅ shells out to `openclaw <cat> --json` for full inventory (7 categories) | ✅ 🆕🆕 `build_claw_aibom` dispatches to `_build_filesystem_aibom` — enumerates skills from `cfg.skill_dirs()`, plugins from `cfg.plugin_dirs()`, MCP servers from `cfg.mcp_servers()` | ✅ 🆕🆕 same — reads `~/.claude.json` and project `.mcp.json` MCPs, `~/.claude/skills/`, `~/.claude/plugins/` | ✅ 🆕🆕 same — reads `.mcp.json` MCPs, `~/.codex/skills/`, `~/.codex/plugins/` |
 | **Inventory of agents/tools/models/memory** | ✅ via OpenClaw CLI | ⚠️ 🆕🆕 empty arrays (no CLI to query). `_build_filesystem_aibom` returns `agents: [], tools: [], model_providers: [], memory: []` | ⚠️ 🆕🆕 same | ⚠️ 🆕🆕 same |
 | **Output includes `connector` field** | ✅ 🆕🆕 `"connector": "openclaw"` in output | ✅ 🆕🆕 `"connector": "zeptoclaw"` | ✅ 🆕🆕 `"connector": "claudecode"` | ✅ 🆕🆕 `"connector": "codex"` |
 

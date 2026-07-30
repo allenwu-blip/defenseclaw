@@ -352,6 +352,24 @@ def test_codex_and_claude_discovery_honor_client_config_homes(
     assert signal.config_path == str(config)
 
 
+def test_claude_discovery_honors_overridden_mcp_state(
+    monkeypatch,
+    tmp_path,
+):
+    _pin_home(monkeypatch, tmp_path / "default-home")
+    configured_home = tmp_path / "custom-claudecode"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured_home))
+    state = configured_home / ".claude.json"
+    state.parent.mkdir(parents=True)
+    state.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("claudecode")
+
+    assert signal.configured is True
+    assert signal.config_path == str(state)
+
+
 def test_hermes_legacy_windows_config_is_not_current_configuration_evidence(
     monkeypatch,
     tmp_path,

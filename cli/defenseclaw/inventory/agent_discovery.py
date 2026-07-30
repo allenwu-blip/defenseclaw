@@ -1001,10 +1001,10 @@ def _scan_agent(
         config_candidates = (connector_config_files("codex")[0],)
     elif name == "claudecode":
         config_candidates = (
-            connector_config_files("claudecode")[0],
-            "~/.claude.json",
+            *connector_config_files("claudecode"),
             ".claude/settings.json",
             ".claude/settings.local.json",
+            ".mcp.json",
         )
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)

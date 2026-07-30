@@ -426,19 +426,25 @@ func (c *ClaudeCodeConnector) SupportsComponentScanning() bool { return true }
 
 func (c *ClaudeCodeConnector) ComponentTargets(cwd string) map[string][]string {
 	userDir := claudeCodeConfigDir()
+	mcpState := claudeCodeMCPStatePath()
 	workspaceDir := filepath.Join(cwd, ".claude")
 
 	targets := map[string][]string{
 		"skill":   {filepath.Join(userDir, "skills"), filepath.Join(workspaceDir, "skills")},
 		"plugin":  {filepath.Join(userDir, "plugins"), filepath.Join(workspaceDir, "plugins")},
-		"mcp":     {filepath.Join(userDir, "settings.json"), filepath.Join(cwd, ".mcp.json")},
+		"mcp":     {mcpState, filepath.Join(cwd, ".mcp.json")},
 		"agent":   {filepath.Join(userDir, "agents"), filepath.Join(workspaceDir, "agents")},
 		"command": {filepath.Join(userDir, "commands"), filepath.Join(workspaceDir, "commands")},
 		"config": {
 			filepath.Join(userDir, "settings.json"),
+			filepath.Join(userDir, "CLAUDE.md"),
+			filepath.Join(userDir, "rules"),
+			filepath.Join(workspaceDir, "settings.json"),
+			filepath.Join(workspaceDir, "settings.local.json"),
+			filepath.Join(workspaceDir, "CLAUDE.md"),
 			filepath.Join(workspaceDir, "rules"),
 			filepath.Join(cwd, "CLAUDE.md"),
-			filepath.Join(cwd, ".claude.json"),
+			filepath.Join(cwd, "CLAUDE.local.md"),
 		},
 	}
 	return targets
@@ -532,11 +538,38 @@ func claudeCodeSettingsPath() string {
 	return filepath.Join(claudeCodeConfigDir(), "settings.json")
 }
 
+// claudeCodeMCPStatePath resolves Claude Code's user/local MCP state file.
+// The default lives beside ~/.claude rather than inside it. A configured
+// CLAUDE_CONFIG_DIR relocates all Claude state under the configured directory.
+func claudeCodeMCPStatePath() string {
+	if ClaudeCodeSettingsPathOverride != "" {
+		return filepath.Join(filepath.Dir(ClaudeCodeSettingsPathOverride), ".claude.json")
+	}
+	if configDir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); configDir != "" {
+		return filepath.Join(configDir, ".claude.json")
+	}
+	return filepath.Join(userHomeDir(), ".claude.json")
+}
+
+// ClaudeCodeConfigDir exposes the user configuration root to the gateway's
+// runtime component scanner so setup, watching, and hook-triggered inventory
+// share one CLAUDE_CONFIG_DIR-aware path model.
+func ClaudeCodeConfigDir() string {
+	return claudeCodeConfigDir()
+}
+
+// ClaudeCodeMCPStatePath exposes the user/local MCP state path to the
+// gateway's runtime scanner. It deliberately remains distinct from
+// settings.json, which Claude Code does not use for MCP registration.
+func ClaudeCodeMCPStatePath() string {
+	return claudeCodeMCPStatePath()
+}
+
 // fileChangedMatcher targets config files that affect Claude Code's
 // behavior or the sandbox's trust boundary. Regular source file writes
 // are already covered by PostToolUse — narrowing FileChanged keeps the
 // hook bus from thundering on every edit.
-const fileChangedMatcher = "CLAUDE.md|.claude/settings.json|.claude/settings.local.json|.mcp.json|.env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
+const fileChangedMatcher = "CLAUDE.md|CLAUDE.local.md|.claude/CLAUDE.md|.claude/rules/.*|.claude/settings.json|.claude/settings.local.json|.claude.json|.mcp.json|.env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
 
 // hookGroups defines the full Claude Code event coverage. Mirrors the
 // _CLAUDE_CODE_EVENTS list established by PR #140 so every server case
@@ -570,8 +603,9 @@ func newClaudeCodeHookGroup(eventType, matcher string) claudeCodeHookGroup {
 		// MessageDisplay is observational: the server records its streamed
 		// response delta but cannot return an enforcement decision for this
 		// event. Running it synchronously adds interactive latency without a
-		// security benefit. Every other registered surface remains synchronous
-		// so tool, permission, lifecycle, and stop decisions can block.
+		// security benefit. Every other handler is registered with async=false
+		// so decision-capable tool, permission, lifecycle, and stop events wait;
+		// host-defined non-blocking events remain observational.
 		async: eventType == "MessageDisplay",
 	}
 }

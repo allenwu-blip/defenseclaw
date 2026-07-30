@@ -8,7 +8,7 @@ keywords:
   - Claude Code observability
 ---
 
-The Claude Code connector wires DefenseClaw into [Anthropic's documented hook surfaces](https://docs.anthropic.com/) without inserting a proxy in the data path. Claude Code talks directly to its native upstream; DefenseClaw inspects via hooks + native OTel.
+The Claude Code connector wires DefenseClaw into [Anthropic's documented hook surfaces](https://code.claude.com/docs/en/hooks) without inserting a proxy in the data path. Claude Code talks directly to its native upstream; DefenseClaw inspects via hooks + native OTel.
 
 <Callout type="info">
 The Claude Code connector is **hook-only**. There is no LLM-proxy data path — Claude Code talks directly to `api.anthropic.com` and DefenseClaw observes via hooks + native OTel.
@@ -26,6 +26,13 @@ defenseclaw setup claude-code --mode action  # block on policy hits via PreToolU
 ```
 
 `setup claude-code` is shorthand for `setup guardrail --connector claudecode`: it adds or reconfigures Claude Code, wires hooks + native OTel, and can join an existing hook-connector roster when you choose **Add**. No proxy listener binds for Claude Code in either mode.
+
+On native Windows, install and run Claude Code directly from PowerShell or CMD
+using Anthropic's [native setup](https://code.claude.com/docs/en/setup).
+DefenseClaw registers a native executable with Claude Code's `args` exec form;
+Git for Windows is optional and is not part of the connector contract. WSL,
+Git Bash, Cygwin, MSYS, containers, and virtual machines are not certification
+paths for this connector.
 
 Native OTLP uses managed loopback exporter settings with a Claude-scoped
 Authorization bearer. Logs and metrics are enabled; traces are explicitly
@@ -84,6 +91,11 @@ DefenseClaw stores a hash-checked backup of `settings.json` before edits.
 Teardown restores it byte-for-byte when the identity still matches; if the file
 drifted, only DefenseClaw-owned entries are removed.
 
+Claude Code keeps user/local MCP registration state in `~/.claude.json`
+(`%CLAUDE_CONFIG_DIR%\.claude.json` when that override is set) and project MCP
+state in `<workspace>/.mcp.json`; these are inventory surfaces, not hook setup
+files. See Anthropic's [MCP scope reference](https://code.claude.com/docs/en/mcp).
+
 ## Hook capabilities
 
 <HookEventsList connector="claudecode" />
@@ -91,6 +103,12 @@ drifted, only DefenseClaw-owned entries are removed.
 <Callout type="info">
 Claude Code is one of the few connectors that supports native PreToolUse ask. HITL approvals surface inside the agent UI itself, so the operator never has to leave Claude Code to decide.
 </Callout>
+
+`Setup` is observation-only and is not registered. `WorktreeCreate` is not
+registered because a handler replaces Claude Code's default worktree creation
+and must return the new path. Anthropic's v2.1.219 release notes mention a
+`DirectoryAdded` event, but the current hooks reference does not yet publish
+its schema, ordering, or blocking behavior, so DefenseClaw does not register it.
 
 ## Telemetry channels at boot
 

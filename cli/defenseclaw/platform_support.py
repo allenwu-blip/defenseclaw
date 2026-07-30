@@ -72,7 +72,7 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "claudecode": ConnectorPlatformSupport(
         SUPPORTED,
-        "Claude Code with Git for Windows and native hooks is certified on native Windows x64.",
+        "Claude Code and the DefenseClaw native executable hook entrypoint are certified on native Windows x64.",
     ),
     "cursor": ConnectorPlatformSupport(
         NOT_CERTIFIED,

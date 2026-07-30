@@ -270,6 +270,20 @@ def claude_config_dir() -> str:
     return _connector_env_home("CLAUDE_CONFIG_DIR", ".claude")
 
 
+def claude_mcp_state_path() -> str:
+    """Return Claude Code's user/local MCP state file.
+
+    Claude Code keeps user-scoped MCP servers at ``~/.claude.json`` by
+    default. When ``CLAUDE_CONFIG_DIR`` is set, Claude stores its state under
+    that override instead of the default home locations.
+    """
+
+    configured = (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if configured:
+        return os.path.join(claude_config_dir(), ".claude.json")
+    return os.path.join(os.path.abspath(str(Path.home())), ".claude.json")
+
+
 def codex_home() -> str:
     """Return Codex's effective home directory."""
 
@@ -436,7 +450,10 @@ def connector_config_files(
     if name == "claudecode":
         paths = [
             os.path.join(claude_config_dir(), "settings.json"),
+            claude_mcp_state_path(),
             _workspace_path(workspace_dir, ".claude", "settings.json"),
+            _workspace_path(workspace_dir, ".claude", "settings.local.json"),
+            _workspace_path(workspace_dir, ".mcp.json"),
         ]
     elif name == "codex":
         paths = [
@@ -616,7 +633,7 @@ def mcp_servers(
 
     Reads each framework's canonical config:
 
-    * Claude Code: ``~/.claude/settings.json`` then explicit workspace ``.mcp.json``
+    * Claude Code: user ``~/.claude.json`` plus explicit workspace ``.mcp.json``
     * Codex:       ``~/.codex/config.toml`` then explicit workspace ``.mcp.json``
     * ZeptoClaw:   ``~/.zeptoclaw/config.json`` then explicit workspace ``.mcp.json``
     * Antigravity: ``~/.gemini/config/mcp_config.json`` then explicit workspace
@@ -920,15 +937,20 @@ def _openclaw_plugin_dirs(openclaw_home: str | None) -> list[str]:
 
 def _claudecode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
     entries: list[MCPServerEntry] = []
-    entries.extend(
-        _read_mcp_settings_block(
-            os.path.join(claude_config_dir(), "settings.json"),
-            keys=("mcpServers",),
-        )
-    )
+    # Claude's documented precedence is local, project, then user. This reader
+    # inventories project and user scope, so put project entries first before
+    # the stable first-wins de-duplicator. Local entries share the user state
+    # file but are nested below the active project's path and are left to
+    # Claude's own project-aware CLI.
     project_mcp = _workspace_path(workspace_dir, ".mcp.json")
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
+    entries.extend(
+        _read_mcp_settings_block(
+            claude_mcp_state_path(),
+            keys=("mcpServers",),
+        )
+    )
     return _dedup_mcp_entries(entries)
 
 
@@ -1494,7 +1516,8 @@ def set_mcp_server(
                      ``(path, json_value_str)``). Caller injects this
                      so we can keep subprocess access out of this
                      module.
-    * Claude Code  — ``$HOME/.claude/settings.json[mcpServers][name]``
+    * Claude Code  — ``$HOME/.claude.json[mcpServers][name]`` (or the
+                     equivalent file under ``CLAUDE_CONFIG_DIR``)
                      via :func:`_atomic_json_merge`.
     * Codex        — ``~/.codex/config.toml[mcp_servers][name]``
                      by default, or ``<workspace>/.mcp.json`` when
@@ -1522,7 +1545,7 @@ def set_mcp_server(
         openclaw_config_setter(f"mcp.servers.{name}", json.dumps(entry))
         return
     if name_n == "claudecode":
-        path = os.path.join(claude_config_dir(), "settings.json")
+        path = claude_mcp_state_path()
         try:
             _set_claudecode_mcp_server(path, name, entry)
         except UnsafePathError as exc:
@@ -1623,7 +1646,7 @@ def unset_mcp_server(
         openclaw_config_unsetter(f"mcp.servers.{name}")
         return
     if name_n == "claudecode":
-        path = os.path.join(claude_config_dir(), "settings.json")
+        path = claude_mcp_state_path()
         try:
             _unset_claudecode_mcp_server(path, name)
         except UnsafePathError as exc:
@@ -2096,7 +2119,7 @@ def _unset_opencode_mcp_server(
 # These mirror the Go-side atomicWriteFile pattern in
 # internal/gateway/connector/codex.go: write to a tempfile in the same
 # directory, fsync, then os.replace. Permissions are forced to 0o600
-# because the targets (~/.claude/settings.json, ./.mcp.json) frequently
+# because the targets (~/.claude.json, ./.mcp.json) frequently
 # carry credentials in the env: block.
 
 
@@ -4679,7 +4702,7 @@ def _managed_mcp_backup_path(path: str) -> str:
 # ---------------------------------------------------------------------------
 #
 # The historical ``.defenseclaw-<name>.bak`` sibling-file scheme works
-# fine for user-scope configs (``~/.claude/settings.json``) because the
+# fine for user-scope configs (``~/.claude.json``) because the
 # absolute path is stable. It breaks for explicitly pinned workspace configs
 # (for example Copilot's ``<workspace>/.github/mcp.json``) because the .bak
 # is anchored to the target directory; restoring after a ``cd`` used to lose

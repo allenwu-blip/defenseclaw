@@ -128,7 +128,7 @@ represent DefenseClaw Windows support or release certification.
 | Connector | macOS | Linux | Native Windows | Windows reason |
 | --------- | ----- | ----- | -------------- | -------------- |
 | Codex | supported | supported | supported | Current Codex releases run natively on Windows and expose Windows-specific hook commands; DefenseClaw uses its native hook entrypoint. |
-| Claude Code | supported | supported | supported | Native Windows with Git for Windows is documented and supports command hooks. |
+| Claude Code | supported | supported | supported | Anthropic documents direct PowerShell/CMD installation and native command hooks. Git for Windows is recommended, not required; Claude Code uses its PowerShell tool when Git Bash is absent. |
 | Cursor | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. Cursor CLI remains WSL-only. |
 | Windsurf | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Gemini CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
@@ -157,7 +157,7 @@ is `not separately documented` rather than an inferred support promise.
 | Hook connector | Upstream WSL position | Current DefenseClaw Windows decision |
 | -------------- | --------------------- | ------------------------------------ |
 | Codex | WSL2 is documented; WSL1 is no longer supported starting with Codex 0.115. | Native Windows supported; WSL is out of scope. |
-| Claude Code | WSL1 and WSL2 are documented alternatives to native Windows with Git for Windows. | Native Windows supported; WSL is out of scope. |
+| Claude Code | WSL1 and WSL2 are documented alternatives to the direct native Windows installation. | Native Windows supported; WSL is out of scope. |
 | Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | Cursor | Cursor CLI is supported on Windows through WSL; Cursor IDE hooks run on native Windows. | Native IDE hooks are not certified by DefenseClaw; the WSL-only CLI is not configured. |
 | Windsurf | Hook docs publish Linux/WSL configuration locations as well as native Windows locations. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
@@ -172,7 +172,10 @@ Evidence checked 2026-06-30 against the current upstream documentation:
 [Codex install](https://github.com/openai/codex#quickstart),
 [Codex Windows](https://developers.openai.com/codex/windows),
 [Codex hooks](https://developers.openai.com/codex/hooks),
-[Claude Code Windows setup](https://docs.anthropic.com/en/docs/claude-code/getting-started),
+[Claude Code setup](https://code.claude.com/docs/en/setup),
+[Claude Code hooks](https://code.claude.com/docs/en/hooks),
+[Claude Code settings](https://code.claude.com/docs/en/settings),
+[Claude Code MCP](https://code.claude.com/docs/en/mcp),
 [Cursor CLI installation](https://docs.cursor.com/en/cli/installation),
 [Cursor hooks](https://cursor.com/docs/hooks),
 [Windsurf Cascade hooks](https://docs.windsurf.com/windsurf/cascade/hooks),
@@ -247,7 +250,9 @@ until upstream publishes a hook-version floor. DefenseClaw installs OpenHands
 globally through `~/.openhands/hooks.json` by default and uses repo-local
 `.openhands/hooks.json` only when a workspace is pinned.
 Claude Code is pinned to the current documented hook surface captured at
-`2.1.144`; older Claude Code versions exposed smaller event sets.
+`2.1.152`; older Claude Code versions exposed smaller event sets. The Claude
+native-Windows evidence and hook contract were rechecked on 2026-07-30; see the
+[Claude Code native Windows reference](reference/CLAUDE-CODE-WINDOWS.md).
 
 ## Hook Capability Matrix
 
@@ -274,6 +279,8 @@ audit. The DefenseClaw TUI can review those records but cannot resume the call.
 
 | Connector | MCP | Skills | Rules | Plugins / extensions | Agents | CodeGuard native assets |
 | --------- | --- | ------ | ----- | -------------------- | ------ | ----------------------- |
+| Claude Code | user/local `~/.claude.json`; project `<workspace>/.mcp.json` | `~/.claude/skills`, `<workspace>/.claude/skills` | user/project `CLAUDE.md` and `.claude/rules` surfaces | user cache under `~/.claude/plugins`; enablement is stored in scoped settings | `~/.claude/agents`, `<workspace>/.claude/agents` | opt-in skill or rule |
+| Codex | `~/.codex/config.toml`, optional workspace `.mcp.json` | `~/.codex/skills`, optional workspace `.codex/skills` | `AGENTS.md` hierarchy | `~/.codex/plugins`, optional workspace plugin paths | built-in/subagent surfaces differ from Claude Code; no path equivalence assumed | opt-in skill |
 | Hermes | `$HERMES_HOME/config.yaml` | `$HERMES_HOME/skills` | unsupported | `$HERMES_HOME/plugins` (`.hermes/plugins` workspace discovery only) | unsupported | opt-in skill |
 | Cursor | `.cursor/mcp.json`, `~/.cursor/mcp.json` | `.cursor/skills`, `.agents/skills`, user equivalents | `.cursor/rules`, `AGENTS.md` | unsupported | unsupported | opt-in skill or rule |
 | Windsurf | existing documented/user MCP paths only | unsupported | existing documented/user rules paths only | unsupported | unsupported | opt-in rule only when a rules path exists |

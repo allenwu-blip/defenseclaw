@@ -507,20 +507,20 @@ class TestMCPServers:
         entries = connector_paths.mcp_servers("codex", workspace_dir=str(cwd))
         assert [e.name for e in entries] == ["local-search"]
 
-    def test_claudecode_merges_settings_and_dotmcp(
+    def test_claudecode_merges_user_state_and_dotmcp_without_duplicates(
         self,
         tmp_path,
         monkeypatch,
     ):
-        # Override $HOME so we can write a fake .claude/settings.json
+        # Override $HOME so we can write a fake user MCP state file.
         fake_home = tmp_path / "home"
         fake_home.mkdir()
-        (fake_home / ".claude").mkdir()
-        (fake_home / ".claude" / "settings.json").write_text(
+        (fake_home / ".claude.json").write_text(
             json.dumps(
                 {
                     "mcpServers": {
-                        "from-settings": {"command": "x"},
+                        "shared": {"command": "user-command"},
+                        "from-user-state": {"command": "x"},
                     },
                 }
             )
@@ -532,15 +532,18 @@ class TestMCPServers:
         self._write_mcp_json(
             cwd,
             {
+                "shared": {"command": "project-command"},
                 "from-mcp-json": {"command": "y"},
             },
         )
         monkeypatch.chdir(cwd)
 
         entries = connector_paths.mcp_servers("claudecode", workspace_dir=str(cwd))
-        names = [e.name for e in entries]
-        assert "from-settings" in names
+        names = [entry.name for entry in entries]
+        assert "from-user-state" in names
         assert "from-mcp-json" in names
+        assert names.count("shared") == 1
+        assert next(entry for entry in entries if entry.name == "shared").command == "project-command"
 
     def test_zeptoclaw_reads_config_json(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
@@ -755,6 +758,13 @@ class TestConnectorHome:
 
         assert connector_paths.connector_home(connector) == str(tmp_path / directory)
 
+    def test_claude_mcp_state_honors_config_override(self, monkeypatch, tmp_path):
+        configured = tmp_path / "custom-claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured))
+
+        assert connector_paths.claude_mcp_state_path() == str(configured / ".claude.json")
+        assert str(configured / ".claude.json") in connector_paths.connector_config_files("claudecode")
+
     def test_opencode_home_is_xdg_config(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
         assert connector_paths.connector_home("opencode") == os.path.join(str(tmp_path), ".config", "opencode")
@@ -885,7 +895,7 @@ class TestConnectorConfigFiles:
         ("connector", "variable", "directory", "file_name"),
         [
             ("codex", "CODEX_HOME", "codex-home", "config.toml"),
-            ("claudecode", "CLAUDE_CONFIG_DIR", "claude-home", "settings.json"),
+            ("claudecode", "CLAUDE_CONFIG_DIR", "claude-home", ".claude.json"),
         ],
     )
     def test_config_reads_and_writes_use_effective_client_home(

@@ -18,6 +18,8 @@ package gateway
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -771,4 +773,45 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestClaudeCodeComponentTargetsHonorConfigDirAndMCPAttribution(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	userSettings := filepath.Join(configDir, "settings.json")
+	userMCP := filepath.Join(configDir, ".claude.json")
+	projectSettings := filepath.Join(workspace, ".claude", "settings.json")
+	projectMCP := filepath.Join(workspace, ".mcp.json")
+	for _, path := range []string{userSettings, userMCP, projectSettings, projectMCP} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	targets := claudeCodeComponentTargets(workspace)
+	for _, want := range []string{userMCP, projectMCP} {
+		if !containsString(targets["mcp"], want) {
+			t.Errorf("MCP targets = %v, missing %q", targets["mcp"], want)
+		}
+	}
+	for _, wrong := range []string{userSettings, projectSettings} {
+		if containsString(targets["mcp"], wrong) {
+			t.Errorf("MCP targets = %v, settings file %q is misattributed", targets["mcp"], wrong)
+		}
+	}
+	for _, want := range []string{userSettings, projectSettings} {
+		if !containsString(targets["config"], want) {
+			t.Errorf("config targets = %v, missing %q", targets["config"], want)
+		}
+	}
+	for _, wrong := range []string{userMCP, projectMCP} {
+		if containsString(targets["config"], wrong) {
+			t.Errorf("config targets = %v, MCP file %q is double-counted", targets["config"], wrong)
+		}
+	}
 }

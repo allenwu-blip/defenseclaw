@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	gatewayconnector "github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/notifier"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
@@ -777,26 +778,29 @@ func claudeCodeComponentTargets(cwd string) map[string][]string {
 		"command": {},
 		"config":  {},
 	}
-	home, err := os.UserHomeDir()
-	if err == nil {
-		claudeHome := filepath.Join(home, ".claude")
-		targets["skill"] = append(targets["skill"], childDirs(filepath.Join(claudeHome, "skills"))...)
-		targets["plugin"] = append(targets["plugin"], childDirs(filepath.Join(claudeHome, "plugins"))...)
-		targets["agent"] = append(targets["agent"], childDirs(filepath.Join(claudeHome, "agents"))...)
-		targets["command"] = append(targets["command"], childDirs(filepath.Join(claudeHome, "commands"))...)
-		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(claudeHome, "settings.json"))...)
-		targets["config"] = append(targets["config"], existingFiles(filepath.Join(claudeHome, "settings.json"), filepath.Join(claudeHome, "rules"), filepath.Join(home, ".claude.json"))...)
-		targets["config"] = append(targets["config"], childDirs(filepath.Join(claudeHome, "rules"))...)
-	}
+	claudeHome := gatewayconnector.ClaudeCodeConfigDir()
+	targets["skill"] = append(targets["skill"], childDirs(filepath.Join(claudeHome, "skills"))...)
+	targets["plugin"] = append(targets["plugin"], childDirs(filepath.Join(claudeHome, "plugins"))...)
+	targets["agent"] = append(targets["agent"], childDirs(filepath.Join(claudeHome, "agents"))...)
+	targets["command"] = append(targets["command"], childDirs(filepath.Join(claudeHome, "commands"))...)
+	targets["mcp"] = append(targets["mcp"], existingFiles(gatewayconnector.ClaudeCodeMCPStatePath())...)
+	targets["config"] = append(targets["config"], existingFiles(
+		filepath.Join(claudeHome, "settings.json"),
+		filepath.Join(claudeHome, "CLAUDE.md"),
+		filepath.Join(claudeHome, "rules"),
+	)...)
+	targets["config"] = append(targets["config"], childDirs(filepath.Join(claudeHome, "rules"))...)
 	for _, root := range workspaceCodexRoots(cwd) {
 		claudeDir := filepath.Join(root, ".claude")
 		targets["skill"] = append(targets["skill"], childDirs(filepath.Join(claudeDir, "skills"))...)
 		targets["plugin"] = append(targets["plugin"], childDirs(filepath.Join(claudeDir, "plugins"))...)
 		targets["agent"] = append(targets["agent"], childDirs(filepath.Join(claudeDir, "agents"))...)
 		targets["command"] = append(targets["command"], childDirs(filepath.Join(claudeDir, "commands"))...)
-		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(root, ".mcp.json"), filepath.Join(claudeDir, "settings.json"), filepath.Join(claudeDir, "settings.local.json"))...)
+		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(root, ".mcp.json"))...)
 		targets["config"] = append(targets["config"], existingFiles(
 			filepath.Join(root, "CLAUDE.md"),
+			filepath.Join(root, "CLAUDE.local.md"),
+			filepath.Join(claudeDir, "CLAUDE.md"),
 			filepath.Join(claudeDir, "settings.json"),
 			filepath.Join(claudeDir, "settings.local.json"),
 			filepath.Join(claudeDir, "rules"),
