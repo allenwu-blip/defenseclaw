@@ -210,6 +210,7 @@ type wizardChoice struct {
 var (
 	wizardConnectorChoices = []wizardChoice{
 		{Label: "Configure later", Value: "none"},
+		{Label: "Google Antigravity", Value: "antigravity"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
@@ -747,6 +748,8 @@ func wizardCompletionDescription(connector string) string {
 		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
 	case "windsurf":
 		return "Windsurf native Windows support is configured as preview with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
+	case "antigravity":
+		return "Google Antigravity is configured with its native Windows hooks." + installed
 	default:
 		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
 	}

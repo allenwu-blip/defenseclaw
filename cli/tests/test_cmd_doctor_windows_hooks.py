@@ -45,6 +45,7 @@ from defenseclaw.doctor_hooks import (
     _packaged_windows_install_root,
     _read_claude_registry_policy,
     _split_windows,
+    _validate_antigravity_hook_matrix,
     _validate_codex_hook_contract,
     resolve_windows_command,
     validate_windows_hook_registration,
@@ -115,7 +116,12 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
     @staticmethod
     def _encoded_hook_command(
-        runtime: Path, connector: str = "codex", *, legacy: bool = False, unqualified: bool = False
+        runtime: Path,
+        connector: str = "codex",
+        *,
+        event: str = "",
+        legacy: bool = False,
+        unqualified: bool = False,
     ) -> str:
         literal = str(runtime).replace("'", "''")
         if legacy and unqualified:
@@ -128,11 +134,12 @@ class WindowsHookDoctorTests(unittest.TestCase):
             )
         else:
             start_process = "Start-Process" if unqualified else r"Microsoft.PowerShell.Management\Start-Process"
+            event_args = f",'--event','{event}'" if event else ""
             script = (
                 "$ErrorActionPreference='Stop'; "
                 "$env:NoDefaultCurrentDirectoryInExePath='1'; "
                 f"$hookProcess={start_process} -FilePath '{literal}' "
-                f"-ArgumentList @('hook','--connector','{connector}') "
+                f"-ArgumentList @('hook','--connector','{connector}'{event_args}) "
                 "-NoNewWindow -Wait -PassThru; exit $hookProcess.ExitCode"
             )
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -140,6 +147,32 @@ class WindowsHookDoctorTests(unittest.TestCase):
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
             f"-NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
         )
+
+    def test_antigravity_mixed_schema_binds_every_official_event(self) -> None:
+        runtime = self._runtime()
+        document: dict[str, object] = {}
+        for event in ("PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop"):
+            handler = {
+                "type": "command",
+                "command": self._encoded_hook_command(runtime, "antigravity", event=event),
+                "timeout": 30,
+            }
+            entries: list[object]
+            if event in {"PreToolUse", "PostToolUse"}:
+                entries = [{"matcher": "*", "hooks": [handler]}]
+            else:
+                entries = [handler]
+            document[f"defenseclaw-antigravity-{event.lower()}"] = {event: entries}
+
+        commands = _validate_antigravity_hook_matrix(document)
+        self.assertEqual(len(commands), 5)
+
+        malformed = json.loads(json.dumps(document))
+        malformed["defenseclaw-antigravity-stop"]["Stop"] = [  # type: ignore[index]
+            {"matcher": "*", "hooks": []}
+        ]
+        with self.assertRaisesRegex(_InspectionError, "direct handler"):
+            _validate_antigravity_hook_matrix(malformed)
 
     def _lock(
         self,

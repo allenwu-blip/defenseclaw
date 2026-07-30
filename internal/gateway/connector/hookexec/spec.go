@@ -127,11 +127,9 @@ var specs = map[string]spec{
 		unreachableStrict:  failResult{body: geminiDeny(failedClosed), exit: 0},
 		responseClosed:     failResult{body: geminiDeny(failedClosed), exit: 0},
 	},
-	// antigravity-hook.sh is "Modelled on geminicli-hook.sh": the gateway
-	// encodes the verdict in hook_output, the hook echoes it and exits 0, and
-	// every failure path is a bare exit 2 with no connector-native body. Without
-	// this entry the native Windows runner returns "unknown hook connector" and
-	// fails every antigravity hook closed (exit 2) before reaching the gateway.
+	// Antigravity consumes per-event JSON on stdout. PreToolUse decision=deny is
+	// the only documented hard block; hookexec converts generic failure results
+	// into exact event-native bodies and does not rely on process exit status.
 	"antigravity": {
 		connector: "antigravity", hookName: "antigravity-hook", errLabel: "antigravity",
 		subject: "antigravity tool", endpoint: "/api/v1/antigravity/hook",

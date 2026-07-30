@@ -82,8 +82,9 @@ func newHookCmd() *cobra.Command {
 				}
 				opts.Stdin = input
 			}
-			// hookexec returns the exact agent exit code (0 allow / 2 block).
-			// os.Exit is required because cobra collapses RunE outcomes to 0/1.
+			// hookexec returns the connector-native process status after writing
+			// any structured decision. os.Exit is required because cobra
+			// collapses RunE outcomes to 0/1.
 			code := hookexec.Run(cmd.Context(), opts)
 			if input != nil {
 				// Preserve hookexec's exact allow/block exit code after it has

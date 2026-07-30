@@ -14,6 +14,19 @@ import (
 	"unicode/utf8"
 )
 
+func TestAntigravityDefaultCleanupHomeIsNarrowGeminiConfigDirectory(t *testing.T) {
+	profile := t.TempDir()
+	dataRoot := filepath.Join(profile, ".defenseclaw")
+	got := connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
+	want := filepath.Join(profile, ".gemini", "config")
+	if !samePath(got, want) {
+		t.Fatalf("Antigravity cleanup home = %q, want %q", got, want)
+	}
+	if samePath(got, filepath.Join(profile, ".gemini")) {
+		t.Fatal("Antigravity cleanup claimed the shared Gemini root")
+	}
+}
+
 func TestConnectorReconciliationRecordsAndClearsPerConfigHome(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -507,7 +520,7 @@ func TestReconcileRemovedConnectorsRetainsFallbackFailureAtExactHome(t *testing.
 	recorder := reconcileRemovedConnectors(
 		transaction,
 		filepath.Join(root, "gateway.exe"),
-		transactionChildEnvForHomes(transaction, historicalHome, ""),
+		transactionChildEnvForHomes(transaction, historicalHome, "", ""),
 		run,
 	)
 	want := []string{

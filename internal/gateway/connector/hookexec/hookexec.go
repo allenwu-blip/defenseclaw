@@ -117,9 +117,11 @@ type Options struct {
 	Now func() time.Time
 }
 
-// Run executes the hook described by opts and returns the process exit code
-// (0 = allow / no-op, 2 = block / fail-closed). It never returns other codes
-// so callers can pass the result straight to os.Exit.
+// Run executes the hook described by opts and returns the process exit code.
+// Connector-native stdout is the enforcement surface when the upstream
+// contract defines one. In particular, Antigravity blocking is expressed only
+// by synchronous PreToolUse stdout {"decision":"deny"}; no Antigravity
+// behavior relies on a non-zero process exit code.
 func Run(ctx context.Context, opts Options) int {
 	startedAt := time.Now()
 	opts = withDefaults(opts)
@@ -301,6 +303,12 @@ func sendHookRequest(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-DefenseClaw-Client", sp.hookName+"/1.0")
+	if opts.Connector == "antigravity" && validAntigravityEvent(opts.Event) {
+		// The official Antigravity stdin body has no event-name field. Carry
+		// Setup's event-specific registration metadata separately so the
+		// gateway can decode the body without rewriting it here.
+		req.Header.Set("X-DefenseClaw-Antigravity-Event", opts.Event)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -312,6 +320,15 @@ func sendHookRequest(
 	}
 
 	return opts.HTTPClient.Do(req)
+}
+
+func validAntigravityEvent(event string) bool {
+	switch strings.TrimSpace(event) {
+	case "PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop":
+		return true
+	default:
+		return false
+	}
 }
 
 // decide shapes the connector-native stdout + exit code from a 2xx gateway
@@ -373,7 +390,7 @@ func (sp spec) decide(opts Options, body []byte) int {
 		if output != "" {
 			fmt.Fprintln(opts.Stdout, output)
 		} else {
-			return emit(opts.Stdout, sp.openAllow)
+			return emitHookResult(opts, sp, sp.openAllow)
 		}
 		return 0
 
@@ -421,19 +438,28 @@ func handleMissingToken(opts Options, sp spec, failMode string) int {
 	const reason = "missing gateway token (connector-scoped and legacy token sidecars absent; DEFENSECLAW_GATEWAY_TOKEN unset)"
 	logHookFailure(opts, sp, reason, "transport", failMode)
 	if opts.StrictAvailability || failMode == "closed" {
-		fmt.Fprintf(opts.Stderr,
-			"defenseclaw: %s, blocking %s (fail mode closed)\n", reason, sp.subject)
-		return emit(opts.Stdout, sp.unreachableStrict)
+		if sp.connector == "antigravity" {
+			fmt.Fprintf(opts.Stderr,
+				"defenseclaw: %s, applying Antigravity's event-specific failure response\n", reason)
+		} else {
+			fmt.Fprintf(opts.Stderr,
+				"defenseclaw: %s, blocking %s (fail mode closed)\n", reason, sp.subject)
+		}
+		return emitHookResult(opts, sp, sp.unreachableStrict)
 	}
-	return emit(opts.Stdout, sp.openAllow)
+	return emitHookResult(opts, sp, sp.openAllow)
 }
 
 func handleUnavailableHome(opts Options, sp spec, reason string) int {
 	if opts.StrictAvailability || opts.ManagedEnterprise {
-		fmt.Fprintf(opts.Stderr, "defenseclaw: %s, blocking %s (managed/strict availability)\n", reason, sp.subject)
-		return emit(opts.Stdout, sp.unreachableStrict)
+		if sp.connector == "antigravity" {
+			fmt.Fprintf(opts.Stderr, "defenseclaw: %s, applying Antigravity's event-specific failure response\n", reason)
+		} else {
+			fmt.Fprintf(opts.Stderr, "defenseclaw: %s, blocking %s (managed/strict availability)\n", reason, sp.subject)
+		}
+		return emitHookResult(opts, sp, sp.unreachableStrict)
 	}
-	return emit(opts.Stdout, sp.openAllow)
+	return emitHookResult(opts, sp, sp.openAllow)
 }
 
 // handleOversized mirrors the per-connector oversized-payload branch.
@@ -441,9 +467,9 @@ func handleOversized(opts Options, sp spec, failMode string) int {
 	logHookFailure(opts, sp, "stdin body exceeded cap", "transport", failMode)
 	fmt.Fprintf(opts.Stderr, "defenseclaw: %s hook refusing oversized payload\n", sp.connector)
 	if failMode == "closed" {
-		return emit(opts.Stdout, sp.oversizedClosed)
+		return emitHookResult(opts, sp, sp.oversizedClosed)
 	}
-	return emit(opts.Stdout, sp.openAllow)
+	return emitHookResult(opts, sp, sp.openAllow)
 }
 
 // failUnreachable applies the connector's effective fail mode to native hook
@@ -452,12 +478,17 @@ func handleOversized(opts Options, sp spec, failMode string) int {
 func failUnreachable(opts Options, sp spec, failMode, reason string) int {
 	logHookFailure(opts, sp, reason, "transport", failMode)
 	if opts.StrictAvailability || failMode == "closed" {
-		fmt.Fprintf(opts.Stderr,
-			"defenseclaw: gateway unreachable, blocking %s (fail mode closed): %s\n", sp.subject, reason)
-		return emit(opts.Stdout, sp.unreachableStrict)
+		if sp.connector == "antigravity" {
+			fmt.Fprintf(opts.Stderr,
+				"defenseclaw: gateway unreachable, applying Antigravity's event-specific failure response: %s\n", reason)
+		} else {
+			fmt.Fprintf(opts.Stderr,
+				"defenseclaw: gateway unreachable, blocking %s (fail mode closed): %s\n", sp.subject, reason)
+		}
+		return emitHookResult(opts, sp, sp.unreachableStrict)
 	}
 	fmt.Fprintf(opts.Stderr, "defenseclaw: gateway unreachable, allowing %s: %s\n", sp.subject, reason)
-	return emit(opts.Stdout, sp.openAllow)
+	return emitHookResult(opts, sp, sp.openAllow)
 }
 
 func rawString(fields map[string]json.RawMessage, key string) (string, bool) {
@@ -478,9 +509,9 @@ func failResponse(opts Options, sp spec, failMode, reason string) int {
 	logHookFailure(opts, sp, reason, "response", failMode)
 	fmt.Fprintf(opts.Stderr, "defenseclaw: %s hook error: %s\n", sp.errLabel, reason)
 	if failMode == "open" {
-		return emit(opts.Stdout, sp.openAllow)
+		return emitHookResult(opts, sp, sp.openAllow)
 	}
-	return emit(opts.Stdout, sp.responseClosed)
+	return emitHookResult(opts, sp, sp.responseClosed)
 }
 
 func responseFailureReason(reason string) string {
@@ -496,6 +527,34 @@ func emit(out io.Writer, r failResult) int {
 		fmt.Fprintln(out, r.body)
 	}
 	return r.exit
+}
+
+// emitHookResult supplies Antigravity's required per-event stdout contract on
+// local/transport/response fallbacks. Only PreToolUse has a documented hard
+// deny. Other events return their documented no-op shape even when a generic
+// strict-availability result carries exit 2; Antigravity exit-code enforcement
+// is not documented, so the native bridge exits successfully after emitting
+// the structured response.
+func emitHookResult(opts Options, sp spec, result failResult) int {
+	if sp.connector != "antigravity" {
+		return emit(opts.Stdout, result)
+	}
+	closed := result.exit != 0
+	var body string
+	switch strings.TrimSpace(opts.Event) {
+	case "PreToolUse":
+		if closed {
+			body = `{"decision":"deny","reason":"DefenseClaw policy service is unavailable."}`
+		} else {
+			body = `{"decision":"allow"}`
+		}
+	case "Stop":
+		body = `{"decision":"allow"}`
+	default:
+		body = `{}`
+	}
+	fmt.Fprintln(opts.Stdout, body)
+	return 0
 }
 
 func withDefaults(o Options) Options {
@@ -555,6 +614,11 @@ func resolveHookEvent(explicit string, payload []byte) string {
 }
 
 func hookRequestTimeout(connector, event string) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(connector), "antigravity") {
+		// Setup registers every official Antigravity handler with timeout=30.
+		// Keep one second for the parent runtime to receive and parse stdout.
+		return 29 * time.Second
+	}
 	if !strings.EqualFold(strings.TrimSpace(connector), "claudecode") {
 		return defaultHookRequestTimeout
 	}

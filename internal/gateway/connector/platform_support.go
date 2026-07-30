@@ -78,7 +78,7 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 	},
 	"antigravity": {
 		Status: PlatformNotCertified,
-		Reason: "The DefenseClaw Antigravity integration has not completed native Windows x64 certification.",
+		Reason: "The native Windows x64 implementation is awaiting integrated packaged and official-client validation.",
 	},
 	"opencode": {
 		Status: PlatformNotCertified,

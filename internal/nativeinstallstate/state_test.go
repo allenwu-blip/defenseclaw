@@ -27,15 +27,16 @@ func fixtureState(t *testing.T) (State, string) {
 		t.Fatal(err)
 	}
 	state := State{
-		SchemaVersion:   1,
-		InstallKind:     "native-windows-exe",
-		InstallScope:    "user",
-		InstallRoot:     root,
-		CommandDir:      bin,
-		DataRoot:        filepath.Join(t.TempDir(), ".defenseclaw"),
-		Runtime:         filepath.Join(root, "runtime", "python"),
-		CodexHome:       filepath.Join(t.TempDir(), "codex-home"),
-		ClaudeConfigDir: filepath.Join(t.TempDir(), "claude-home"),
+		SchemaVersion:        1,
+		InstallKind:          "native-windows-exe",
+		InstallScope:         "user",
+		InstallRoot:          root,
+		CommandDir:           bin,
+		DataRoot:             filepath.Join(t.TempDir(), ".defenseclaw"),
+		Runtime:              filepath.Join(root, "runtime", "python"),
+		CodexHome:            filepath.Join(t.TempDir(), "codex-home"),
+		ClaudeConfigDir:      filepath.Join(t.TempDir(), "claude-home"),
+		AntigravityConfigDir: filepath.Join(t.TempDir(), ".gemini", "config"),
 	}
 	body, err := json.Marshal(state)
 	if err != nil {
@@ -58,11 +59,13 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
 		"DEFENSECLAW_HOME=project-data",
+		"ANTIGRAVITY_CONFIG_DIR=project-antigravity",
 	})
 	joined := strings.Join(env, "\n")
 	for _, expected := range []string{
 		"CODEX_HOME=" + want.CodexHome,
 		"CLAUDE_CONFIG_DIR=" + want.ClaudeConfigDir,
+		"ANTIGRAVITY_CONFIG_DIR=" + want.AntigravityConfigDir,
 		"DEFENSECLAW_HOME=" + want.DataRoot,
 		"DEFENSECLAW_INSTALL_ROOT=" + want.InstallRoot,
 	} {
@@ -81,10 +84,12 @@ func TestEnvironmentRemovesAmbientConnectorHomesFromLegacyState(t *testing.T) {
 		"PATH=fixture",
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
+		"antigravity_config_dir=project-antigravity",
 	})
 	joined := strings.Join(env, "\n")
 	if strings.Contains(strings.ToUpper(joined), "CODEX_HOME=") ||
-		strings.Contains(strings.ToUpper(joined), "CLAUDE_CONFIG_DIR=") {
+		strings.Contains(strings.ToUpper(joined), "CLAUDE_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "ANTIGRAVITY_CONFIG_DIR=") {
 		t.Fatalf("ambient connector home survived legacy state: %v", env)
 	}
 }

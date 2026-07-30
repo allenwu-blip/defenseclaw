@@ -160,26 +160,27 @@ func validateRunCommand(command string) error {
 }
 
 type options struct {
-	Action             string
-	Quiet              bool
-	NoRestart          bool // Standard installer property; setup never initiates an OS reboot.
-	InstallScope       string
-	Connector          string
-	Mode               string
-	StartGateway       bool
-	DeleteUserData     bool
-	ConnectorSet       bool
-	ModeSet            bool
-	StartGatewaySet    bool
-	WaitPID            uint32
-	FromVersion        string
-	CleanupTransaction string
-	CodexHome          string
-	ClaudeConfigDir    string
-	CopilotHome        string
-	GeminiConfigDir    string
-	CursorHome         string
-	WindsurfUserHome   string
+	Action               string
+	Quiet                bool
+	NoRestart            bool // Standard installer property; setup never initiates an OS reboot.
+	InstallScope         string
+	Connector            string
+	Mode                 string
+	StartGateway         bool
+	DeleteUserData       bool
+	ConnectorSet         bool
+	ModeSet              bool
+	StartGatewaySet      bool
+	WaitPID              uint32
+	FromVersion          string
+	CleanupTransaction   string
+	CodexHome            string
+	ClaudeConfigDir      string
+	CopilotHome          string
+	GeminiConfigDir      string
+	CursorHome           string
+	WindsurfUserHome     string
+	AntigravityConfigDir string
 	// PreserveConnectorConfiguration is internal transaction intent, never a
 	// command-line property. Servicing an existing install without an explicit
 	// connector or mode selection must refresh its owned registrations in place
@@ -257,6 +258,7 @@ type installState struct {
 	GeminiConfigDir        string            `json:"gemini_config_dir,omitempty"`
 	CursorHome             string            `json:"cursor_home,omitempty"`
 	WindsurfUserHome       string            `json:"windsurf_user_home,omitempty"`
+	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
 	UnsignedLocalArtifact  bool              `json:"unsigned_local_artifact"`
 	ReleaseSigningRequired bool              `json:"release_signing_required"`
 	Toolchain              map[string]string `json:"toolchain"`
@@ -499,6 +501,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.GeminiConfigDir = transaction.GeminiConfigDir
 	opts.CursorHome = transaction.CursorHome
 	opts.WindsurfUserHome = transaction.WindsurfUserHome
+	opts.AntigravityConfigDir = transaction.AntigravityConfigDir
 	if err := beginSetupTransaction(transaction); err != nil {
 		return retryRequiredCode, err
 	}
@@ -901,7 +904,7 @@ func requestedServices(opts options, previous serviceState) serviceState {
 
 func connectorsForNativeUninstall(state *installState, dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
-	connectors := make([]string, 0, 6)
+	connectors := make([]string, 0, 7)
 	add := func(name string) {
 		if validConnector(name) && name != "none" && !seen[name] {
 			seen[name] = true
@@ -945,6 +948,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "windsurf", "config.json")) {
 		add("windsurf")
+	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")) {
+		add("antigravity")
 	}
 	return connectors, nil
 }
@@ -1011,7 +1017,7 @@ func readNativeConfiguredConnectors(dataRoot string) ([]string, error) {
 		name := normalizeConnector(strings.TrimSpace(value))
 		if name == "codex" || name == "claudecode" ||
 			name == "copilot" || name == "geminicli" || name == "cursor" ||
-			name == "windsurf" {
+			name == "windsurf" || name == "antigravity" {
 			seen[name] = true
 		}
 	}
@@ -1221,6 +1227,8 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "DEFENSECLAW_CURSOR_CONFIG_HOME"
 	case "windsurf":
 		variable = "WINDSURF_USER_HOME"
+	case "antigravity":
+		variable = "ANTIGRAVITY_CONFIG_DIR"
 	default:
 		return "", fmt.Errorf("unsupported native connector %q", connectorName)
 	}
@@ -1263,7 +1271,7 @@ func samePath(a, b string) bool {
 func validConnector(value string) bool {
 	return value == "none" || value == "codex" || value == "claudecode" ||
 		value == "copilot" || value == "geminicli" || value == "cursor" ||
-		value == "windsurf"
+		value == "windsurf" || value == "antigravity"
 }
 
 func validMode(value string) bool {
@@ -1539,6 +1547,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		GeminiConfigDir:        opts.GeminiConfigDir,
 		CursorHome:             opts.CursorHome,
 		WindsurfUserHome:       opts.WindsurfUserHome,
+		AntigravityConfigDir:   opts.AntigravityConfigDir,
 		UnsignedLocalArtifact:  payload.Manifest.Unsigned,
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
@@ -2534,7 +2543,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected codex, claudecode, copilot, geminicli, cursor, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, geminicli, cursor, windsurf, or none", opts.Connector)
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2587,13 +2596,15 @@ func normalizeConnector(value string) string {
 		return "cursor"
 	case "windsurf":
 		return "windsurf"
+	case "antigravity", "agy":
+		return "antigravity"
 	default:
 		return strings.ToLower(value)
 	}
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|geminicli|cursor|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|geminicli|cursor|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

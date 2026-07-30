@@ -632,6 +632,25 @@ func TestWindowsNativeHookCommandPreservesConnectorSpecificPayload(t *testing.T)
 	}
 }
 
+func TestAntigravityWindowsHookCommandBindsOfficialEvent(t *testing.T) {
+	const windowsExe = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, windowsExe)
+	command := antigravityHookInvocationCommandForEvent("windows", "PostInvocation", "")
+	if strings.ContainsAny(command, `"'`) {
+		t.Fatalf("visible Antigravity command contains quote characters: %q", command)
+	}
+	decoded := decodePowerShellEncodedCommandForTest(t, command)
+	for _, expected := range []string{
+		powershellQuoteLiteral(windowsExe),
+		"'hook','--connector','antigravity','--event','PostInvocation'",
+		"-NoNewWindow -Wait -PassThru",
+	} {
+		if !strings.Contains(decoded, expected) {
+			t.Fatalf("encoded event command missing %q:\n%s", expected, decoded)
+		}
+	}
+}
+
 // TestWindowsNativePowerShellHookCommandPropagatesProcessResults executes the
 // exact emitted command across the supported agent launch boundaries. The
 // probe uses the same GUI subsystem as release defenseclaw-hook.exe so this
@@ -1575,8 +1594,9 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					}
 				}
 			} else if connectorName == "antigravity" {
-				wantCommand := hookInvocationCommand(
-					"antigravity",
+				wantCommand := antigravityHookInvocationCommandForEvent(
+					"windows",
+					"PreToolUse",
 					filepath.Join(dataDir, "hooks", "antigravity-hook.sh"),
 				)
 				encodedCommand, err := json.Marshal(wantCommand)
@@ -1590,7 +1610,8 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					t.Errorf("config still contains legacy bare Antigravity launcher:\n%s", text)
 				}
 				decoded := decodePowerShellEncodedCommandForTest(t, wantCommand)
-				if !strings.Contains(decoded, powershellQuoteLiteral(defenseclawHookBinary())) {
+				if !strings.Contains(decoded, powershellQuoteLiteral(defenseclawHookBinary())) ||
+					!strings.Contains(decoded, "'--event','PreToolUse'") {
 					t.Errorf("Antigravity encoded command missing managed launcher path:\n%s", decoded)
 				}
 			} else if connectorName == "claudecode" {

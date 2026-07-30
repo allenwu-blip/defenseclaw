@@ -248,6 +248,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		// connector path resolver directly to Setup's validated profile root;
 		// never inherit a maintenance process's ambient USERPROFILE.
 		return connector.BindUserHomeDir(home)
+	case "antigravity":
+		variable = "ANTIGRAVITY_CONFIG_DIR"
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}

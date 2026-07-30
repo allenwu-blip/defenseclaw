@@ -162,6 +162,20 @@ func (a *APIServer) handleAgentHook(connectorName string) http.HandlerFunc {
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 			return
 		}
+		if connectorName == "antigravity" {
+			// Antigravity's official stdin schemas omit the event name. Setup
+			// binds each synchronous handler to `--event`, and the bridge
+			// forwards that trusted registration value out-of-band so the raw
+			// official body remains unchanged for audit and provenance.
+			if event := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Antigravity-Event")); event != "" {
+				if !validAntigravityHookEvent(event) {
+					a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "invalid_event", int64(len(b)))
+					a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Antigravity hook event"})
+					return
+				}
+				payload["hookEventName"] = event
+			}
+		}
 
 		profile := a.hookProfileForConnector(connectorName)
 		runtime := hookRuntimeForProfile(profile)
@@ -372,6 +386,15 @@ func (a *APIServer) handleAgentHook(connectorName string) http.HandlerFunc {
 		// renderAgentHookResponse() for the canonical
 		// connector → field-name mapping.
 		a.writeJSON(w, http.StatusOK, renderAgentHookResponseForProfile(profile, resp))
+	}
+}
+
+func validAntigravityHookEvent(event string) bool {
+	switch event {
+	case "PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop":
+		return true
+	default:
+		return false
 	}
 }
 

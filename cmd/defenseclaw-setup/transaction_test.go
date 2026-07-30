@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -617,6 +618,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.GeminiConfigDir = transaction.PreviousGeminiConfigDir
 	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
 	transaction.CursorHome = transaction.PreviousCursorHome
+	transaction.PreviousAntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "config")
+	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -641,6 +644,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	if err := validateSetupTransaction(changedCursorHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Cursor home")
 	}
+	changedAntigravityHome := transaction
+	changedAntigravityHome.AntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "other")
+	if err := validateSetupTransaction(changedAntigravityHome, expected); err == nil {
+		t.Fatal("connector-preserving transaction changed its recorded Antigravity config home")
+	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
 	if err := validateSetupTransaction(changedSelection, expected); err == nil {
@@ -650,6 +658,48 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	disabledGateway.TargetServices.Gateway = false
 	if err := validateSetupTransaction(disabledGateway, expected); err == nil {
 		t.Fatal("connector-preserving transaction disabled its required gateway")
+	}
+}
+
+func TestSetupJournalRoundTripsAntigravityConfigHomeCustody(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"1.0.0",
+	)
+	home := filepath.Join(filepath.Dir(dataRoot), ".gemini", "config")
+	previous.AntigravityConfigDir = home
+	transaction := testSetupTransactionForRoots(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		&previous,
+	)
+	transaction.PreviousConnectors = []string{"antigravity"}
+	transaction.PreviousAntigravityConfigDir = home
+	transaction.AntigravityConfigDir = home
+
+	body, err := json.Marshal(setupJournal{
+		SchemaVersion: setupJournalSchemaVersion,
+		Phase:         setupPhaseIntent,
+		Transaction:   transaction,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored setupJournal
+	if err := decodeSetupJournalJSON(body, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.Transaction.PreviousState == nil ||
+		!samePath(restored.Transaction.PreviousState.AntigravityConfigDir, home) ||
+		!samePath(restored.Transaction.PreviousAntigravityConfigDir, home) ||
+		!samePath(restored.Transaction.AntigravityConfigDir, home) {
+		t.Fatalf("Antigravity config-home custody was not preserved: %+v", restored.Transaction)
 	}
 }
 
@@ -1513,7 +1563,7 @@ func TestResolvePreviousWindsurfUserHomeRejectsBindingOutsideVendorConfig(t *tes
 	}
 }
 
-func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *testing.T) {
+func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows setup transaction connector-home resolution")
 	}
@@ -1542,7 +1592,19 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 		t.Fatal(err)
 	}
 	cursorHome := filepath.Join(clientRoot, "cursor")
-	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir, cursorHome} {
+	antigravityHome := filepath.Join(clientRoot, ".gemini", "config")
+	antigravityBackup := filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")
+	if err := os.MkdirAll(filepath.Dir(antigravityBackup), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		antigravityBackup,
+		[]byte(fmt.Sprintf(`{"path":%q}`, filepath.Join(antigravityHome, "hooks.json"))),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir, cursorHome, antigravityHome} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1562,6 +1624,7 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
 	t.Setenv("COPILOT_HOME", copilotHome)
 	t.Setenv("DEFENSECLAW_CURSOR_CONFIG_HOME", cursorHome)
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", antigravityHome)
 
 	legacyState := testInstallState(
 		installRoot,
@@ -1587,19 +1650,22 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
 		!samePath(transaction.PreviousGeminiConfigDir, geminiConfigDir) ||
-		!samePath(transaction.PreviousCursorHome, cursorHome) {
+		!samePath(transaction.PreviousCursorHome, cursorHome) ||
+		!samePath(transaction.PreviousAntigravityConfigDir, antigravityHome) {
 		t.Fatalf(
-			"legacy transaction homes = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
+			"legacy transaction homes = (%q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q)",
 			transaction.PreviousCodexHome,
 			transaction.PreviousClaudeConfigDir,
 			transaction.PreviousCopilotHome,
 			transaction.PreviousGeminiConfigDir,
 			transaction.PreviousCursorHome,
+			transaction.PreviousAntigravityConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
 			geminiConfigDir,
 			cursorHome,
+			antigravityHome,
 		)
 	}
 
@@ -1611,6 +1677,7 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	source.CopilotHome = copilotHome
 	source.GeminiConfigDir = geminiConfigDir
 	source.CursorHome = cursorHome
+	source.AntigravityConfigDir = antigravityHome
 	source.UninstallHandoffHookStatus = stableHookSnapshotInactive
 	handoff, err := newUninstallHandoffTransaction(
 		source,
@@ -1624,19 +1691,22 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(handoff.PreviousCopilotHome, copilotHome) ||
 		!samePath(handoff.PreviousGeminiConfigDir, geminiConfigDir) ||
-		!samePath(handoff.PreviousCursorHome, cursorHome) {
+		!samePath(handoff.PreviousCursorHome, cursorHome) ||
+		!samePath(handoff.PreviousAntigravityConfigDir, antigravityHome) {
 		t.Fatalf(
-			"legacy handoff homes = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
+			"legacy handoff homes = (%q, %q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q, %q)",
 			handoff.PreviousCodexHome,
 			handoff.PreviousClaudeConfigDir,
 			handoff.PreviousCopilotHome,
 			handoff.PreviousGeminiConfigDir,
 			handoff.PreviousCursorHome,
+			handoff.PreviousAntigravityConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
 			geminiConfigDir,
 			cursorHome,
+			antigravityHome,
 		)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {

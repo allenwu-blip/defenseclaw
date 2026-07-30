@@ -817,7 +817,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Add-WindowsNativeDiagnosticTail\b.*?(?=\r?\nfunction )'
     ).Value
-    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, copilot, geminicli, cursor, windsurf\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native connector'
+    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, copilot, geminicli, cursor, windsurf, antigravity\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native connector'
     Assert-True ($nativeWorkflowText -match '(?m)^\s+name: Windows Native Required\s*$') 'stable aggregate check name exists'
     foreach ($job in @('windows-go', 'windows-python', 'powershell-static', 'package-artifact', 'packaged-acceptance', 'connector-contract')) {
         Assert-True ($nativeWorkflowText -match "(?m)^\s{6}- $([regex]::Escape($job))\s*$") "aggregate depends on $job"
@@ -1296,6 +1296,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'fresh-step cleanup is process-scoped and removes without reparse traversal'
 
     Assert-True ($liveWorkflowText -match '(?s)windows-live:.*?connector: \[codex, claudecode, cursor\].*?report:') 'manual Windows live matrix contains Codex, Claude, and Cursor'
+    Assert-True ($liveWorkflowText -match '(?s)windows-antigravity-live:.*?runs-on: \[self-hosted, Windows, X64, antigravity-authenticated\].*?AuthenticatedAntigravityRunner') 'manual Antigravity live job requires a dedicated authenticated native Windows runner'
     $windowsLiveJob = [regex]::Match($liveWorkflowText, '(?s)  windows-live:.*?(?=\r?\n  # -+\r?\n  # Report)').Value
     Assert-True ($windowsLiveJob -notmatch 'continue-on-error') 'Windows live jobs are not advisory'
     Assert-True ($windowsLiveJob -notmatch 'shell:\s*bash') 'Windows live jobs never select Bash'

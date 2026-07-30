@@ -489,6 +489,20 @@ func windowsAntigravityHookCommand() string {
 	return windowsNativePowerShellHookCommand("antigravity")
 }
 
+// antigravityHookInvocationCommandForEvent returns the exact synchronous
+// command registered for one documented Antigravity lifecycle event. The
+// upstream stdin schema does not include the event name, so Setup binds the
+// event to the trusted registration and passes it as a DefenseClaw launcher
+// argument. Unix retains agy's direct command-tokenization contract; Windows
+// uses the system PowerShell EncodedCommand bridge so GUI-subsystem launchers
+// are awaited and stdin/stdout remain attached.
+func antigravityHookInvocationCommandForEvent(goos, event, unixCommand string) string {
+	if goos == "windows" {
+		return windowsNativePowerShellHookCommandForEvent("antigravity", event, defenseclawHookBinary())
+	}
+	return strings.TrimSpace(unixCommand) + " " + event
+}
+
 func windowsNativeHookCommand(connector string) string {
 	return windowsNativePowerShellHookCommand(connector)
 }
@@ -498,10 +512,20 @@ func windowsNativePowerShellHookCommand(connector string) string {
 }
 
 func windowsNativePowerShellHookCommandForBinary(connector, hookBinary string) string {
+	return windowsNativePowerShellHookCommandForEvent(connector, "", hookBinary)
+}
+
+func windowsNativePowerShellHookCommandForEvent(connector, event, hookBinary string) string {
 	arguments := []string{
 		powershellQuoteLiteral("hook"),
 		powershellQuoteLiteral("--connector"),
 		powershellQuoteLiteral(connector),
+	}
+	if strings.TrimSpace(event) != "" {
+		arguments = append(arguments,
+			powershellQuoteLiteral("--event"),
+			powershellQuoteLiteral(event),
+		)
 	}
 	script := strings.Join([]string{
 		"$ErrorActionPreference='Stop'",

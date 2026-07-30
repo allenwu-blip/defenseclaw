@@ -365,6 +365,7 @@ func TestUpdateInstalledPathOwnershipRecordsCreatedValue(t *testing.T) {
 func TestWizardChoiceMappings(t *testing.T) {
 	connectors := []wizardChoice{
 		{Label: "Configure later", Value: "none"},
+		{Label: "Google Antigravity", Value: "antigravity"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
@@ -416,7 +417,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"} {
+	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode
@@ -505,6 +506,7 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "claudecode", want: "Claude Code is configured", reject: "defenseclaw init"},
 		{connector: "copilot", want: "GitHub Copilot CLI is configured", reject: "defenseclaw init"},
 		{connector: "windsurf", want: "preview", reject: "certified"},
+		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},
 	} {
 		t.Run(tc.connector, func(t *testing.T) {

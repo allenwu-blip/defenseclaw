@@ -400,10 +400,11 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:   0,
 		},
 		{
-			name:      "antigravity allow with no hook_output exit 0",
-			connector: "antigravity",
-			respBody:  `{"action":"allow"}`,
-			wantCode:  0,
+			name:       "antigravity allow with no hook_output emits documented allow",
+			connector:  "antigravity",
+			respBody:   `{"action":"allow"}`,
+			wantStdout: `{"decision":"allow"}` + "\n",
+			wantCode:   0,
 		},
 		{
 			name:       "antigravity echoes hook_output deny exit 0",
@@ -967,6 +968,39 @@ func TestNativeConnectorEndpointMatrix(t *testing.T) {
 			}
 			if got := string(rt.gotBody); got != `{"event":"x"}` {
 				t.Errorf("JSON stdin body = %q", got)
+			}
+			if connector == "antigravity" {
+				if got := rt.gotReq.Header.Get("X-DefenseClaw-Antigravity-Event"); got != "PreToolUse" {
+					t.Errorf("Antigravity event header = %q", got)
+				}
+			}
+		})
+	}
+}
+
+func TestAntigravityFailureFallbacksUseDocumentedEventOutput(t *testing.T) {
+	cases := []struct {
+		event  string
+		closed bool
+		want   string
+	}{
+		{"PreToolUse", false, `{"decision":"allow"}` + "\n"},
+		{"PreToolUse", true, `{"decision":"deny","reason":"DefenseClaw policy service is unavailable."}` + "\n"},
+		{"PostToolUse", true, "{}\n"},
+		{"PreInvocation", true, "{}\n"},
+		{"PostInvocation", true, "{}\n"},
+		{"Stop", true, `{"decision":"allow"}` + "\n"},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s_closed_%v", tc.event, tc.closed), func(t *testing.T) {
+			result := run(t, "antigravity", &stubRT{err: errors.New("offline")}, func(opts *Options) {
+				opts.Event = tc.event
+				if tc.closed {
+					opts.FailMode = "closed"
+				}
+			})
+			if result.code != 0 || result.stdout != tc.want {
+				t.Fatalf("code=%d stdout=%q want %q", result.code, result.stdout, tc.want)
 			}
 		})
 	}

@@ -17,6 +17,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 	copilotHome := filepath.Join(root, "copilot")
 	cursorHome := filepath.Join(root, "cursor")
 	windsurfHome := filepath.Join(root, "windsurf-profile")
+	antigravityHome := filepath.Join(root, ".gemini", "config")
 	env := []string{
 		"UNRELATED=preserved",
 		"codex_home=" + codexHome,
@@ -24,6 +25,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		"COPILOT_HOME=" + copilotHome,
 		"DEFENSECLAW_CURSOR_CONFIG_HOME=" + cursorHome,
 		"WINDSURF_USER_HOME=" + windsurfHome,
+		"ANTIGRAVITY_CONFIG_DIR=" + antigravityHome,
 	}
 	for _, test := range []struct {
 		connector string
@@ -34,6 +36,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		{connector: "copilot", want: copilotHome},
 		{connector: "cursor", want: cursorHome},
 		{connector: "windsurf", want: windsurfHome},
+		{connector: "antigravity", want: antigravityHome},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			got, err := connectorLifecycleConfigHome(env, test.connector)

@@ -563,43 +563,10 @@ func mapKeys(m map[string]interface{}) []string {
 	return out
 }
 
-// TestAntigravitySetup_WritesClaudeCodeNestedSchema pins the
-// hooks.json shape that agy v1.0.x actually evaluates and is the
-// regression guard for two cumulative empirical findings from the
-// v0.5.0 smoke test:
-//
-//  1. **Nested schema, not flat.** An earlier draft wrote a flat
-//     {event, matcher, command, description} object per top-level
-//     key. agy never evaluated those entries — neither tracer hooks
-//     nor DefenseClaw hooks fired. Replacing the file with a
-//     Claude-Code-style nested schema (top-level key →
-//     {<EventName>: [{matcher, hooks: [{type, command}]}]}) caused
-//     agy to invoke the configured command on every tool call. agy
-//     binary `strings` confirms only the nested shape is parsed.
-//
-//  2. **No embedded quotes in command.** Empirical D3 of the smoke
-//     test (D1=bare-path-OK, D2=sh -c-OK, D3=direct-exec-FAILS-127)
-//     proved agy invokes the configured command via direct exec()
-//     not through a shell, so any '/" added by shellWord() would
-//     become literal path bytes and the hook would silently
-//     no-fire.
-//
-// Combined assertions:
-//
-//   - top-level key "defenseclaw-antigravity-pretooluse" exists
-//   - its value is a map with key "PreToolUse"
-//   - "PreToolUse" is a list with exactly one entry
-//   - that entry has matcher="*" and hooks=[{type="command",
-//     command=<tokenizer-safe Antigravity command>}]
-//   - the inner command field has no visible quote characters and no
-//     surrounding whitespace; on Windows the absolute managed launcher path
-//     lives inside the PowerShell encoded command instead
-//
-// If a future agy release pivots back to a flat schema, OR adds
-// shell invocation, OR moves the hooks file again, this test must
-// be updated in lockstep with patchAntigravityHooks /
-// antigravityHooksPath. Until then this test pins the contract.
-func TestAntigravitySetup_WritesClaudeCodeNestedSchema(t *testing.T) {
+// TestAntigravitySetup_WritesOfficialMixedSchema pins the documented
+// matcher-group shape for tool events, direct handler shape for invocation/Stop
+// events, and event-bound synchronous native command.
+func TestAntigravitySetup_WritesOfficialMixedSchema(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".gemini", "config", "hooks.json")
 	prev := AntigravityHooksPathOverride
@@ -624,99 +591,6 @@ func TestAntigravitySetup_WritesClaudeCodeNestedSchema(t *testing.T) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("antigravity hooks.json is not valid JSON: %v\n%s", err, string(data))
 	}
-
-	entry, ok := cfg["defenseclaw-antigravity-pretooluse"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("defenseclaw-antigravity-pretooluse missing or wrong shape: %#v", cfg)
-	}
-
-	preToolUse, ok := entry["PreToolUse"].([]interface{})
-	if !ok {
-		t.Fatalf("PreToolUse is not an array: %#v\nfull entry: %#v", entry["PreToolUse"], entry)
-	}
-	if len(preToolUse) != 1 {
-		t.Fatalf("PreToolUse must hold exactly one matcher group, got %d:\n%#v", len(preToolUse), preToolUse)
-	}
-
-	group, ok := preToolUse[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("PreToolUse[0] is not an object: %#v", preToolUse[0])
-	}
-	if group["matcher"] != "*" {
-		t.Fatalf("matcher=%#v want *", group["matcher"])
-	}
-
-	hooks, ok := group["hooks"].([]interface{})
-	if !ok {
-		t.Fatalf("hooks is not an array: %#v", group["hooks"])
-	}
-	if len(hooks) != 1 {
-		t.Fatalf("hooks must hold exactly one entry, got %d:\n%#v", len(hooks), hooks)
-	}
-
-	hook, ok := hooks[0].(map[string]interface{})
-	if !ok {
-		t.Fatalf("hooks[0] is not an object: %#v", hooks[0])
-	}
-	if hook["type"] != "command" {
-		t.Fatalf("hook type=%#v want command", hook["type"])
-	}
-	command, isString := hook["command"].(string)
-	if !isString {
-		t.Fatalf("command field is not a string: %#v", hook["command"])
-	}
-
-	// Primary assertion: no quote characters at all. agy v1.0.x
-	// exec()s the command directly, so any '/" would become a
-	// literal byte in the path and the hook would silently
-	// no-fire.
-	if strings.ContainsAny(command, `'"`) {
-		t.Fatalf(
-			"antigravity command field contains quote characters %q — "+
-				"agy v1.0.x exec()s this directly so the quotes become "+
-				"literal path bytes. Did shellWord() get re-introduced?",
-			command,
-		)
-	}
-	wantCommand := conn.hookCommand(opts)
-	if command != wantCommand {
-		t.Fatalf("command=%q want %q", command, wantCommand)
-	}
-	// Unix runs the absolute shell hook. Windows runs a tokenizer-safe system
-	// PowerShell command whose encoded script invokes the absolute no-console
-	// hook launcher path; agy's direct-exec tokenizer cannot dequote that path
-	// if it is placed visibly in hooks.json.
-	if runtime.GOOS == "windows" {
-		if command == legacyAntigravityWindowsHookCommand() {
-			t.Fatalf("windows command still uses vulnerable bare launcher: %q", command)
-		}
-		decoded := decodePowerShellEncodedCommandForTest(t, command)
-		if !strings.Contains(decoded, windowsNativePowerShellStartForTest(defenseclawHookBinary(), "antigravity")) ||
-			!strings.Contains(decoded, "NoDefaultCurrentDirectoryInExePath") {
-			t.Fatalf("windows encoded command lost managed launcher or hardening:\n%s", decoded)
-		}
-	} else {
-		if !strings.HasSuffix(command, "antigravity-hook.sh") {
-			t.Fatalf("command=%q does not end with antigravity-hook.sh", command)
-		}
-		if !filepath.IsAbs(command) {
-			t.Fatalf("command=%q is not an absolute path", command)
-		}
-	}
-	// Tertiary: no surrounding whitespace either.
-	if command != strings.TrimSpace(command) {
-		t.Fatalf("command=%q has surrounding whitespace", command)
-	}
-
-	// Quaternary: all five Antigravity 2.0 lifecycle events are
-	// registered under their own DefenseClaw-owned outer keys, with
-	// the same nested Claude-Code-derived schema. Spec source:
-	// Antigravity 2.0 hook docs (PreInvocation, PreToolUse,
-	// PostToolUse, PostInvocation, Stop). PreToolUse is the only
-	// event empirically verified against agy v1.0.1; the other four
-	// keys are registered for spec parity so DefenseClaw is ready
-	// when agy starts emitting them upstream — see
-	// patchAntigravityHooks docs in hook_only.go for the rationale.
 	for _, event := range []string{"PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop"} {
 		outerKey := "defenseclaw-antigravity-" + strings.ToLower(event)
 		eventEntry, ok := cfg[outerKey].(map[string]interface{})
@@ -730,33 +604,60 @@ func TestAntigravitySetup_WritesClaudeCodeNestedSchema(t *testing.T) {
 			continue
 		}
 		if len(eventList) != 1 {
-			t.Errorf("%s[%q] must hold exactly one matcher group, got %d", outerKey, event, len(eventList))
+			t.Errorf("%s[%q] must hold exactly one entry, got %d", outerKey, event, len(eventList))
 			continue
 		}
-		matcherGroup, ok := eventList[0].(map[string]interface{})
+		var hookEntry map[string]interface{}
+		if event == "PreToolUse" || event == "PostToolUse" {
+			group, ok := eventList[0].(map[string]interface{})
+			if !ok || group["matcher"] != "*" {
+				t.Errorf("%s must use matcher group '*': %#v", event, eventList[0])
+				continue
+			}
+			hooks, ok := group["hooks"].([]interface{})
+			if !ok || len(hooks) != 1 {
+				t.Errorf("%s nested handlers=%#v", event, group["hooks"])
+				continue
+			}
+			hookEntry, ok = hooks[0].(map[string]interface{})
+			if !ok {
+				t.Errorf("%s handler=%#v", event, hooks[0])
+				continue
+			}
+		} else {
+			hookEntry, ok = eventList[0].(map[string]interface{})
+			if !ok || hookEntry["matcher"] != nil || hookEntry["hooks"] != nil {
+				t.Errorf("%s must use a direct handler: %#v", event, eventList[0])
+				continue
+			}
+		}
 		if !ok {
-			t.Errorf("%s[%q][0] is not an object: %#v", outerKey, event, eventList[0])
 			continue
 		}
-		if matcherGroup["matcher"] != "*" {
-			t.Errorf("%s[%q][0].matcher=%#v want *", outerKey, event, matcherGroup["matcher"])
-		}
-		hookList, ok := matcherGroup["hooks"].([]interface{})
-		if !ok || len(hookList) != 1 {
-			t.Errorf("%s[%q][0].hooks not a single-entry array: %#v", outerKey, event, matcherGroup["hooks"])
-			continue
-		}
-		hookEntry, ok := hookList[0].(map[string]interface{})
-		if !ok {
-			t.Errorf("%s[%q][0].hooks[0] is not an object: %#v", outerKey, event, hookList[0])
-			continue
-		}
-		if hookEntry["type"] != "command" {
-			t.Errorf("%s[%q][0].hooks[0].type=%#v want command", outerKey, event, hookEntry["type"])
+		if hookEntry["type"] != "command" || hookEntry["timeout"] != float64(30) {
+			t.Errorf("%s handler type/timeout=%#v/%#v", event, hookEntry["type"], hookEntry["timeout"])
 		}
 		eventCommand, ok := hookEntry["command"].(string)
+		wantCommand := antigravityHookInvocationCommandForEvent(
+			runtime.GOOS,
+			event,
+			filepath.Join(opts.DataDir, "hooks", "antigravity-hook.sh"),
+		)
 		if !ok || eventCommand != wantCommand {
-			t.Errorf("%s[%q][0].hooks[0].command=%#v want %q", outerKey, event, hookEntry["command"], wantCommand)
+			t.Errorf("%s command=%#v want %q", event, hookEntry["command"], wantCommand)
+			continue
+		}
+		if strings.ContainsAny(eventCommand, `'"`) {
+			t.Errorf("%s command contains visible quotes: %q", event, eventCommand)
+		}
+		if runtime.GOOS == "windows" {
+			decoded := decodePowerShellEncodedCommandForTest(t, eventCommand)
+			if !strings.Contains(decoded, "'--event','"+event+"'") ||
+				!strings.Contains(decoded, powershellQuoteLiteral(defenseclawHookBinary())) {
+				t.Errorf("%s encoded command is not event-bound:\n%s", event, decoded)
+			}
+		} else if !strings.HasSuffix(eventCommand, "antigravity-hook.sh "+event) {
+			t.Errorf("%s Unix command is not event-bound: %q", event, eventCommand)
 		}
 	}
 }

@@ -96,7 +96,7 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "antigravity": ConnectorPlatformSupport(
         NOT_CERTIFIED,
-        "The DefenseClaw Antigravity integration has not completed native Windows x64 certification.",
+        "The native Windows x64 implementation is awaiting integrated packaged and official-client validation.",
     ),
     "opencode": ConnectorPlatformSupport(
         NOT_CERTIFIED,

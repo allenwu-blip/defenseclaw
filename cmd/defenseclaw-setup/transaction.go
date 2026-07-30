@@ -93,12 +93,14 @@ type setupTransaction struct {
 	PreviousGeminiConfigDir        string                   `json:"previous_gemini_config_dir,omitempty"`
 	PreviousCursorHome             string                   `json:"previous_cursor_home,omitempty"`
 	PreviousWindsurfUserHome       string                   `json:"previous_windsurf_user_home,omitempty"`
+	PreviousAntigravityConfigDir   string                   `json:"previous_antigravity_config_dir,omitempty"`
 	CodexHome                      string                   `json:"codex_home,omitempty"`
 	ClaudeConfigDir                string                   `json:"claude_config_dir,omitempty"`
 	CopilotHome                    string                   `json:"copilot_home,omitempty"`
 	GeminiConfigDir                string                   `json:"gemini_config_dir,omitempty"`
 	CursorHome                     string                   `json:"cursor_home,omitempty"`
 	WindsurfUserHome               string                   `json:"windsurf_user_home,omitempty"`
+	AntigravityConfigDir           string                   `json:"antigravity_config_dir,omitempty"`
 	MaintenanceSHA256              string                   `json:"maintenance_sha256,omitempty"`
 	DeleteUserData                 bool                     `json:"delete_user_data,omitempty"`
 	UninstallPathEntryOwned        bool                     `json:"uninstall_path_entry_owned,omitempty"`
@@ -299,6 +301,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		return setupTransaction{}, fmt.Errorf("resolve Windsurf user profile: %w", err)
 	}
 	defaultWindsurfUserHome = filepath.Clean(defaultWindsurfUserHome)
+	defaultAntigravityConfigDir, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	codexHome, err := transactionConfigHome("CODEX_HOME", defaultCodexHome)
 	if err != nil {
 		return setupTransaction{}, err
@@ -319,7 +325,11 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState, previousCopilotState, previousGeminiState, previousCursorState, previousWindsurfState := "", "", "", "", "", ""
+	antigravityConfigDir, err := transactionConfigHome("ANTIGRAVITY_CONFIG_DIR", defaultAntigravityConfigDir)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCodexState, previousClaudeState, previousCopilotState, previousGeminiState, previousCursorState, previousWindsurfState, previousAntigravityState := "", "", "", "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
@@ -327,6 +337,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		previousGeminiState = oldState.GeminiConfigDir
 		previousCursorState = oldState.CursorHome
 		previousWindsurfState = oldState.WindsurfUserHome
+		previousAntigravityState = oldState.AntigravityConfigDir
 	}
 	// Pre-home-binding releases can advertise a connector only through their
 	// legacy backup. In that case the validated current override is the sole
@@ -340,6 +351,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	}
 	previousCursorHome, err := resolvePreviousConnectorHome(
 		previousCursorState, previousConnectors, dataRoot, "cursor", "hooks.json", cursorHome,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousAntigravityConfigDir, err := resolvePreviousConnectorHome(
+		previousAntigravityState, previousConnectors, dataRoot, "antigravity", "hooks.json", antigravityConfigDir,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -382,6 +399,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		geminiConfigDir = previousGeminiConfigDir
 		cursorHome = previousCursorHome
 		windsurfUserHome = previousWindsurfUserHome
+		antigravityConfigDir = previousAntigravityConfigDir
 	}
 	maintenanceSHA256 := ""
 	maintenanceExisted, previousMaintenanceSHA256, err := snapshotMaintenanceFile(maintenancePath)
@@ -433,13 +451,15 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousCopilotHome:            previousCopilotHome,
 		PreviousGeminiConfigDir:        previousGeminiConfigDir,
 		PreviousCursorHome:             previousCursorHome,
+		PreviousWindsurfUserHome:       previousWindsurfUserHome,
+		PreviousAntigravityConfigDir:   previousAntigravityConfigDir,
 		CodexHome:                      codexHome,
 		ClaudeConfigDir:                claudeConfigDir,
 		CopilotHome:                    copilotHome,
 		GeminiConfigDir:                geminiConfigDir,
 		CursorHome:                     cursorHome,
-		PreviousWindsurfUserHome:       previousWindsurfUserHome,
 		WindsurfUserHome:               windsurfUserHome,
+		AntigravityConfigDir:           antigravityConfigDir,
 		MaintenanceSHA256:              maintenanceSHA256,
 		DeleteUserData:                 opts.DeleteUserData,
 		UninstallPathEntryOwned:        uninstallPathOwned,
@@ -498,7 +518,11 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		return setupTransaction{}, fmt.Errorf("resolve Windsurf user profile: %w", err)
 	}
 	defaultWindsurfUserHome = filepath.Clean(defaultWindsurfUserHome)
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredGeminiConfigDir, configuredCursorHome, configuredWindsurfHome := "", "", "", "", "", ""
+	defaultAntigravityConfigDir, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredGeminiConfigDir, configuredCursorHome, configuredWindsurfHome, configuredAntigravityHome := "", "", "", "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
@@ -506,6 +530,7 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		configuredGeminiConfigDir = oldState.GeminiConfigDir
 		configuredCursorHome = oldState.CursorHome
 		configuredWindsurfHome = oldState.WindsurfUserHome
+		configuredAntigravityHome = oldState.AntigravityConfigDir
 	}
 	// The source install transaction already captured validated client homes.
 	// Preserve them across an install-to-uninstall handoff when predecessor
@@ -529,6 +554,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	legacyCursorFallback := source.CursorHome
 	if legacyCursorFallback == "" {
 		legacyCursorFallback = defaultCursorHome
+	}
+	legacyAntigravityFallback := source.AntigravityConfigDir
+	if legacyAntigravityFallback == "" {
+		legacyAntigravityFallback = defaultAntigravityConfigDir
 	}
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		configuredCodexHome,
@@ -572,6 +601,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		previousConnectors,
 		source.DataRoot,
 		legacyWindsurfFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousAntigravityConfigDir, err := resolvePreviousConnectorHome(
+		configuredAntigravityHome,
+		previousConnectors,
+		source.DataRoot,
+		"antigravity",
+		"hooks.json",
+		legacyAntigravityFallback,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -661,13 +701,15 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousCopilotHome:          previousCopilotHome,
 		PreviousGeminiConfigDir:      previousGeminiConfigDir,
 		PreviousCursorHome:           previousCursorHome,
+		PreviousWindsurfUserHome:     previousWindsurfUserHome,
+		PreviousAntigravityConfigDir: previousAntigravityConfigDir,
 		CodexHome:                    previousCodexHome,
 		ClaudeConfigDir:              previousClaudeConfigDir,
 		CopilotHome:                  previousCopilotHome,
 		GeminiConfigDir:              previousGeminiConfigDir,
 		CursorHome:                   previousCursorHome,
-		PreviousWindsurfUserHome:     previousWindsurfUserHome,
 		WindsurfUserHome:             previousWindsurfUserHome,
+		AntigravityConfigDir:         previousAntigravityConfigDir,
 		DeleteUserData:               opts.DeleteUserData,
 		UninstallPathEntryOwned:      pathOwned,
 		UninstallPathSeparatorReused: pathSeparatorReused,
@@ -870,6 +912,7 @@ func transactionChildEnv(transaction setupTransaction) []string {
 		transaction.GeminiConfigDir,
 		transaction.CursorHome,
 		transaction.WindsurfUserHome,
+		transaction.AntigravityConfigDir,
 	)
 }
 
@@ -882,10 +925,19 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction.PreviousGeminiConfigDir,
 		transaction.PreviousCursorHome,
 		transaction.PreviousWindsurfUserHome,
+		transaction.PreviousAntigravityConfigDir,
 	)
 }
 
-func transactionChildEnvForHomes(transaction setupTransaction, codexHome, claudeConfigDir string) []string {
+func transactionChildEnvForHomes(
+	transaction setupTransaction,
+	codexHome, claudeConfigDir string,
+	antigravityConfigDirOverride ...string,
+) []string {
+	antigravityConfigDir := transaction.AntigravityConfigDir
+	if len(antigravityConfigDirOverride) != 0 {
+		antigravityConfigDir = antigravityConfigDirOverride[0]
+	}
 	return transactionChildEnvForConnectorHomes(
 		transaction,
 		codexHome,
@@ -894,15 +946,16 @@ func transactionChildEnvForHomes(transaction setupTransaction, codexHome, claude
 		transaction.GeminiConfigDir,
 		transaction.CursorHome,
 		transaction.WindsurfUserHome,
+		antigravityConfigDir,
 	)
 }
 
 func transactionChildEnvForConnectorHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome, geminiConfigDir, cursorHome, windsurfUserHome string,
+	codexHome, claudeConfigDir, copilotHome, geminiConfigDir, cursorHome, windsurfUserHome, antigravityConfigDir string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+6)
+	filtered := make([]string, 0, len(base)+7)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
@@ -910,7 +963,8 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "COPILOT_HOME") ||
 			strings.EqualFold(name, "DEFENSECLAW_GEMINI_CONFIG_DIR") ||
 			strings.EqualFold(name, "DEFENSECLAW_CURSOR_CONFIG_HOME") ||
-			strings.EqualFold(name, "WINDSURF_USER_HOME")) {
+			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
+			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR")) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -932,6 +986,9 @@ func transactionChildEnvForConnectorHomes(
 	}
 	if windsurfUserHome != "" {
 		filtered = append(filtered, "WINDSURF_USER_HOME="+windsurfUserHome)
+	}
+	if antigravityConfigDir != "" {
+		filtered = append(filtered, "ANTIGRAVITY_CONFIG_DIR="+antigravityConfigDir)
 	}
 	return filtered
 }
@@ -1125,7 +1182,9 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) ||
 			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) ||
 			!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir) ||
-			!samePath(transaction.PreviousCursorHome, transaction.CursorHome) {
+			!samePath(transaction.PreviousCursorHome, transaction.CursorHome) ||
+			!samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome) ||
+			!samePath(transaction.PreviousAntigravityConfigDir, transaction.AntigravityConfigDir) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
@@ -1143,18 +1202,20 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		return errors.New("setup transaction records a digest for an absent previous maintenance executable")
 	}
 	for label, value := range map[string]string{
-		"previous Codex home":               transaction.PreviousCodexHome,
-		"previous Claude configuration dir": transaction.PreviousClaudeConfigDir,
-		"previous Copilot home":             transaction.PreviousCopilotHome,
-		"Copilot home":                      transaction.CopilotHome,
-		"previous Gemini configuration dir": transaction.PreviousGeminiConfigDir,
-		"Gemini configuration dir":          transaction.GeminiConfigDir,
-		"previous Cursor home":              transaction.PreviousCursorHome,
-		"Codex home":                        transaction.CodexHome,
-		"Claude configuration dir":          transaction.ClaudeConfigDir,
-		"Cursor home":                       transaction.CursorHome,
-		"previous Windsurf user home":       transaction.PreviousWindsurfUserHome,
-		"Windsurf user home":                transaction.WindsurfUserHome,
+		"previous Codex home":                    transaction.PreviousCodexHome,
+		"previous Claude configuration dir":      transaction.PreviousClaudeConfigDir,
+		"previous Copilot home":                  transaction.PreviousCopilotHome,
+		"previous Gemini configuration dir":      transaction.PreviousGeminiConfigDir,
+		"previous Cursor home":                   transaction.PreviousCursorHome,
+		"previous Windsurf user home":            transaction.PreviousWindsurfUserHome,
+		"previous Antigravity configuration dir": transaction.PreviousAntigravityConfigDir,
+		"Codex home":                             transaction.CodexHome,
+		"Claude configuration dir":               transaction.ClaudeConfigDir,
+		"Copilot home":                           transaction.CopilotHome,
+		"Gemini configuration dir":               transaction.GeminiConfigDir,
+		"Cursor home":                            transaction.CursorHome,
+		"Windsurf user home":                     transaction.WindsurfUserHome,
+		"Antigravity configuration dir":          transaction.AntigravityConfigDir,
 	} {
 		if value == "" {
 			continue
@@ -1182,9 +1243,7 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	}
 	seenConnectors := map[string]bool{}
 	for _, connectorName := range transaction.PreviousConnectors {
-		if connectorName != "codex" && connectorName != "claudecode" &&
-			connectorName != "copilot" && connectorName != "geminicli" &&
-			connectorName != "cursor" && connectorName != "windsurf" {
+		if connectorName == "none" || !validConnector(connectorName) {
 			return fmt.Errorf("setup transaction has an invalid previous connector %q", connectorName)
 		}
 		if seenConnectors[connectorName] {
@@ -1240,12 +1299,13 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		}
 	}
 	for label, value := range map[string]string{
-		"Codex home":               state.CodexHome,
-		"Claude configuration dir": state.ClaudeConfigDir,
-		"Copilot home":             state.CopilotHome,
-		"Gemini configuration dir": state.GeminiConfigDir,
-		"Cursor home":              state.CursorHome,
-		"Windsurf user home":       state.WindsurfUserHome,
+		"Codex home":                    state.CodexHome,
+		"Claude configuration dir":      state.ClaudeConfigDir,
+		"Copilot home":                  state.CopilotHome,
+		"Gemini configuration dir":      state.GeminiConfigDir,
+		"Cursor home":                   state.CursorHome,
+		"Windsurf user home":            state.WindsurfUserHome,
+		"Antigravity configuration dir": state.AntigravityConfigDir,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
@@ -3126,6 +3186,8 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousCursorHome, transaction.CursorHome)
 	case "windsurf":
 		return !samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome)
+	case "antigravity":
+		return !samePath(transaction.PreviousAntigravityConfigDir, transaction.AntigravityConfigDir)
 	default:
 		return false
 	}

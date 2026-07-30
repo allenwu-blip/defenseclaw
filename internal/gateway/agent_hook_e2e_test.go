@@ -152,7 +152,7 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 			health := NewSidecarHealth()
 			api := &APIServer{scannerCfg: cfg, health: health}
 			handler := inboundTraceContextMiddleware(http.HandlerFunc(api.handleAgentHook(sh.connector)))
-			body, err := json.Marshal(map[string]interface{}{
+			payload := map[string]interface{}{
 				"hook_event_name": sh.event,
 				"session_id":      "session-" + sh.connector,
 				"turn_id":         "turn-" + sh.connector,
@@ -163,7 +163,19 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 				"tool_input": map[string]interface{}{
 					"command": "rm -rf /",
 				},
-			})
+			}
+			if sh.connector == "antigravity" {
+				payload = map[string]interface{}{
+					"conversationId": "session-antigravity",
+					"stepIdx":        1,
+					"workspacePaths": []string{"/workspace"},
+					"toolCall": map[string]interface{}{
+						"name": sh.toolName,
+						"args": map[string]interface{}{"CommandLine": "rm -rf /"},
+					},
+				}
+			}
+			body, err := json.Marshal(payload)
 			if err != nil {
 				t.Fatalf("marshal request: %v", err)
 			}
@@ -173,6 +185,9 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 				bytes.NewReader(body),
 			)
 			req.Header.Set("Content-Type", "application/json")
+			if sh.connector == "antigravity" {
+				req.Header.Set("X-DefenseClaw-Antigravity-Event", sh.event)
+			}
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 

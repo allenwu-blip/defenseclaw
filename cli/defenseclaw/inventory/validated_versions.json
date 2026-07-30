@@ -67,7 +67,10 @@
     "antigravity": {
       "version_probe": "agy --version",
       "live": false,
-      "notes": "contract-only (Layer A); headless auth is Google Sign-In/keyring OAuth, no API key"
+      "notes": "Native Windows x64 implementation and contract checks are present but certification remains pending integrated packaged and official-client validation. Real official-client E2E is manual on a dedicated pre-authenticated Windows runner because Google documents Windows Credential Manager/browser auth, not API-key bootstrap.",
+      "os": {
+        "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
+      }
     },
     "omnigent": {
       "version_probe": "omnigent --version",

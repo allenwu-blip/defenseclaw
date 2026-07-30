@@ -415,17 +415,7 @@ func TestClaudeCodeProfileRespond_Parity(t *testing.T) {
 // adds Decode), so this table exercises hookOnlyProfileRespond with
 // ConnectorName="antigravity" parameterised on event name.
 //
-// Wire-shape contract per event:
-//
-//	PreInvocation  + PreToolUse → block→{decision:deny}, confirm→{decision:ask}, alert→{systemMessage}
-//	Stop                        → block→{decision:block} (spec-distinct verb)
-//	PostToolUse + PostInvocation → alert→{additionalContext} only (no block)
-//
-// observe_mode_block intentionally expects nil — agy v1.0.1 does
-// not render any PreToolUse field inline for observe-mode
-// demoted-allow findings; visibility ships via gateway.log + OTel
-// until agy adds a render channel (see the antigravity case in
-// hook_only_profile.go for the empirical history).
+// Wire-shape contract per event follows Google's hooks documentation exactly.
 func TestAntigravityProfileRespond_Parity(t *testing.T) {
 	const alertMsg = "DefenseClaw observed a MEDIUM antigravity hook finding: matched: SOFT-WARN-RULE"
 	cases := []struct {
@@ -437,14 +427,13 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 		additional string
 		expected   map[string]interface{}
 	}{
-		// PreToolUse: full action-matrix (block/alert/observe).
 		{
-			name:       "PreToolUse_observe_mode_block_finding_returns_nil",
+			name:       "PreToolUse_observe_mode_block_finding_allows",
 			event:      "PreToolUse",
 			action:     "allow",
 			raw:        "block",
 			additional: "DefenseClaw would block this in action mode a HIGH antigravity hook finding: matched policy",
-			expected:   nil,
+			expected:   map[string]interface{}{"decision": "allow"},
 		},
 		{
 			name:   "PreToolUse_action_mode_block_renders_decision_deny",
@@ -458,60 +447,52 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 			},
 		},
 		{
-			name:       "PreToolUse_action_mode_alert_renders_systemMessage",
+			name:       "PreToolUse_action_mode_alert_allows",
 			event:      "PreToolUse",
 			action:     "alert",
 			raw:        "alert",
 			additional: alertMsg,
-			expected:   map[string]interface{}{"systemMessage": alertMsg},
+			expected:   map[string]interface{}{"decision": "allow"},
 		},
-		// PreInvocation: same wire shape as PreToolUse — block emits
-		// decision:deny, prompt-content rules can deny harmful prompts
-		// before they reach the LLM.
 		{
-			name:   "PreInvocation_action_mode_block_renders_decision_deny",
-			event:  "PreInvocation",
-			action: "block",
-			raw:    "block",
-			reason: "prompt contains exfiltration intent",
+			name:       "PreInvocation_finding_injects_ephemeral_message",
+			event:      "PreInvocation",
+			action:     "alert",
+			raw:        "alert",
+			additional: alertMsg,
 			expected: map[string]interface{}{
-				"decision": "deny",
-				"reason":   "prompt contains exfiltration intent",
+				"injectSteps": []interface{}{
+					map[string]interface{}{"ephemeralMessage": alertMsg},
+				},
 			},
 		},
-		// Stop: spec-distinct verb. block emits decision:"block" (not
-		// "deny"), matching the spec's "block-terminating the agent
-		// if validation checks fail" phrasing.
 		{
-			name:   "Stop_action_mode_block_renders_decision_block",
-			event:  "Stop",
-			action: "block",
-			raw:    "block",
-			reason: "validation checks failed; agent must keep running",
-			expected: map[string]interface{}{
-				"decision": "block",
-				"reason":   "validation checks failed; agent must keep running",
-			},
+			name:     "Stop_does_not_claim_hard_blocking",
+			event:    "Stop",
+			action:   "block",
+			raw:      "block",
+			reason:   "validation checks failed",
+			expected: map[string]interface{}{"decision": "allow"},
 		},
-		// PostToolUse: cannot block (tool already ran). Alert findings
-		// surface as additionalContext for next-turn ingestion.
 		{
-			name:       "PostToolUse_alert_renders_additionalContext_only",
+			name:       "PostToolUse_returns_empty_object",
 			event:      "PostToolUse",
 			action:     "alert",
 			raw:        "alert",
 			additional: "Tool output contained API_KEY=sk-...",
-			expected:   map[string]interface{}{"additionalContext": "Tool output contained API_KEY=sk-..."},
+			expected:   map[string]interface{}{},
 		},
-		// PostInvocation: same as PostToolUse — cannot block, alert
-		// surfaces as additionalContext.
 		{
-			name:       "PostInvocation_alert_renders_additionalContext_only",
+			name:       "PostInvocation_injects_ephemeral_message",
 			event:      "PostInvocation",
 			action:     "alert",
 			raw:        "alert",
 			additional: "Model response leaked PII",
-			expected:   map[string]interface{}{"additionalContext": "Model response leaked PII"},
+			expected: map[string]interface{}{
+				"injectSteps": []interface{}{
+					map[string]interface{}{"ephemeralMessage": "Model response leaked PII"},
+				},
+			},
 		},
 	}
 	for _, tc := range cases {

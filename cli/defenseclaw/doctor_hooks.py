@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation for Windows-native Codex, Claude Code, Copilot, Gemini CLI, and Windsurf hooks.
+"""Validation for Windows-native Codex, Claude Code, Copilot, Gemini CLI, Cursor, Windsurf, and Antigravity hooks.
 
 This module never starts a configured hook command. Agent hook configuration is
 untrusted input, so Doctor only parses those command lines and inspects their
@@ -51,6 +51,7 @@ _EXPECTED_CONTRACTS = {
     "copilot": frozenset({"copilot-hooks-v1"}),
     "geminicli": frozenset({"geminicli-hooks-v1"}),
     "windsurf": frozenset({"windsurf-hooks-v1"}),
+    "antigravity": frozenset({"antigravity-hooks-v2"}),
 }
 _CODEX_HOOK_SPECS = {
     "SessionStart": ("session_start", "startup|resume|clear", 30),
@@ -125,6 +126,7 @@ _REPAIR = {
     "copilot": "defenseclaw setup copilot --yes --restart",
     "geminicli": "defenseclaw setup geminicli --yes --restart",
     "windsurf": "defenseclaw setup windsurf --yes --restart",
+    "antigravity": "defenseclaw setup antigravity --yes --restart",
 }
 _GEMINI_AUDIENCE = (
     "continuing enterprise/Google Cloud/paid API-key audience only; "
@@ -216,6 +218,14 @@ _GEMINI_REQUIRED_HOOKS: dict[str, tuple[str, int]] = {
     "AfterTool": ("*", 30_000),
     "PreCompress": ("*", 30_000),
     "Notification": ("*", 30_000),
+}
+
+_ANTIGRAVITY_REQUIRED_HOOKS: dict[str, bool] = {
+    "PreInvocation": False,
+    "PreToolUse": True,
+    "PostToolUse": True,
+    "PostInvocation": False,
+    "Stop": False,
 }
 
 
@@ -2349,6 +2359,83 @@ def _validate_gemini_telemetry(document: dict[str, Any], data_dir: str) -> str:
     return f"native_otlp=loopback/path-token endpoint={match.group('host')}:{match.group('port')}"
 
 
+def _validate_antigravity_hook_matrix(document: dict[str, Any]) -> list[str]:
+    """Validate Google's mixed matcher/direct lifecycle schema passively."""
+
+    commands: list[str] = []
+    targets: set[str] = set()
+    expected_keys = {
+        f"defenseclaw-antigravity-{event.lower()}" for event in _ANTIGRAVITY_REQUIRED_HOOKS
+    }
+    for event, uses_matcher in _ANTIGRAVITY_REQUIRED_HOOKS.items():
+        key = f"defenseclaw-antigravity-{event.lower()}"
+        container = document.get(key)
+        if not isinstance(container, dict):
+            raise _InspectionError("missing", f"Antigravity DefenseClaw registration {key} is missing")
+        entries = container.get(event)
+        if not isinstance(entries, list) or len(entries) != 1:
+            raise _InspectionError(
+                "stale", f"Antigravity {event} must contain exactly one registered entry"
+            )
+        if uses_matcher:
+            group = entries[0]
+            if not isinstance(group, dict) or group.get("matcher") != "*":
+                raise _InspectionError("stale", f"Antigravity {event} matcher must be '*'")
+            handlers = group.get("hooks")
+            if not isinstance(handlers, list) or len(handlers) != 1:
+                raise _InspectionError(
+                    "stale", f"Antigravity {event} must contain exactly one command handler"
+                )
+            handler = handlers[0]
+        else:
+            handler = entries[0]
+            if isinstance(handler, dict) and ("matcher" in handler or "hooks" in handler):
+                raise _InspectionError(
+                    "stale", f"Antigravity {event} must use a direct handler list without a matcher"
+                )
+        if not isinstance(handler, dict) or handler.get("type") != "command":
+            raise _InspectionError("malformed", f"Antigravity {event} handler type is not command")
+        if handler.get("timeout") != 30:
+            raise _InspectionError("stale", f"Antigravity {event} timeout must be 30 seconds")
+        command = handler.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise _InspectionError("malformed", f"Antigravity {event} handler has no command")
+        target, args, _kind = _command_target(command.strip(), "antigravity")
+        if args != ["hook", "--connector", "antigravity", "--event", event]:
+            raise _InspectionError(
+                "stale", f"Antigravity {event} command is not bound to its registered event"
+            )
+        if ntpath.basename(target).casefold() not in {
+            "defenseclaw-hook",
+            "defenseclaw-hook.exe",
+            "defenseclaw-hook.cmd",
+        }:
+            raise _InspectionError("foreign", f"Antigravity {event} does not use DefenseClaw's hook runtime")
+        commands.append(command.strip())
+        targets.add(os.path.normcase(os.path.normpath(target)))
+
+    if len(targets) != 1:
+        raise _InspectionError("stale", "Antigravity lifecycle events target inconsistent hook runtimes")
+    for key, value in document.items():
+        if (
+            key.startswith("defenseclaw-antigravity-")
+            and key not in expected_keys
+            and _hook_json_value_targets_defenseclaw(value, "antigravity")
+        ):
+            raise _InspectionError("stale", f"unexpected Antigravity DefenseClaw registration {key}")
+    return commands
+
+
+def _hook_json_value_targets_defenseclaw(value: Any, connector: str) -> bool:
+    if isinstance(value, dict):
+        if _handler_targets_defenseclaw(value, connector):
+            return True
+        return any(_hook_json_value_targets_defenseclaw(item, connector) for item in value.values())
+    if isinstance(value, list):
+        return any(_hook_json_value_targets_defenseclaw(item, connector) for item in value)
+    return False
+
+
 def _split_windows(command: str) -> list[str]:
     try:
         parts = shlex.split(command, posix=False)
@@ -2401,6 +2488,11 @@ def _command_target(
                 script = encoded.decode("utf-16-le")
             except (binascii.Error, UnicodeError, ValueError) as exc:
                 raise _InspectionError("malformed", f"PowerShell EncodedCommand hook is invalid: {exc}") from exc
+            event_suffix = (
+                r"(?:,'--event','(PreInvocation|PreToolUse|PostToolUse|PostInvocation|Stop)')?"
+                if connector == "antigravity"
+                else ""
+            )
             match = re.fullmatch(
                 r"\$ErrorActionPreference='Stop'; "
                 r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
@@ -2408,19 +2500,26 @@ def _command_target(
                 r"-FilePath '((?:[^']|'')+)' "
                 r"-ArgumentList @\('hook','--connector','"
                 + re.escape(connector)
-                + r"'\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
+                + r"'"
+                + event_suffix
+                + r"\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
                 script,
             )
             if match:
                 target = match.group(1).replace("''", "'")
-                return target, ["hook", "--connector", connector], "direct"
+                args = ["hook", "--connector", connector]
+                if connector == "antigravity" and match.group(2):
+                    args.extend(["--event", match.group(2)])
+                return target, args, "direct"
             unqualified = re.fullmatch(
                 r"\$ErrorActionPreference='Stop'; "
                 r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
                 r"\$hookProcess=Start-Process -FilePath '((?:[^']|'')+)' "
                 r"-ArgumentList @\('hook','--connector','"
                 + re.escape(connector)
-                + r"'\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
+                + r"'"
+                + event_suffix
+                + r"\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
                 script,
             )
             if unqualified:
@@ -2456,6 +2555,12 @@ def _command_target(
         args = parts[1:]
         kind = "powershell" if call_operator and ntpath.splitext(target)[1].casefold() == ".ps1" else "direct"
     expected = ["hook", "--connector", connector]
+    antigravity_event_expected = (
+        len(args) == 5
+        and args[:3] == expected
+        and args[3] == "--event"
+        and args[4] in _ANTIGRAVITY_REQUIRED_HOOKS
+    )
     enterprise_expected = [*expected, "--enterprise-managed"]
     windsurf_adapter = (
         connector == "windsurf"
@@ -2463,7 +2568,7 @@ def _command_target(
         and ntpath.basename(target).casefold() == "windsurf-hook.ps1"
         and not args
     )
-    if not windsurf_adapter and args != expected and not (
+    if not windsurf_adapter and args != expected and not antigravity_event_expected and not (
         connector == "claudecode" and allow_enterprise_managed and args == enterprise_expected
     ):
         if len(args) == 3 and args[:2] == ["hook", "--connector"]:
@@ -2715,12 +2820,16 @@ def validate_windows_hook_registration(
         if connector == "windsurf":
             adapter = os.path.join(data_dir, "hooks", "windsurf-hook.ps1")
             windsurf_expected_command = "& '" + adapter.replace("'", "''") + "'"
-        commands = _commands_from_hooks(
-            document,
-            connector,
-            claude_managed_settings_paths=claude_managed_settings_paths,
-            windsurf_expected_command=windsurf_expected_command,
-        )
+        if connector == "antigravity":
+            commands = _validate_antigravity_hook_matrix(document)
+            matrix_entries = len(commands)
+        else:
+            commands = _commands_from_hooks(
+                document,
+                connector,
+                claude_managed_settings_paths=claude_managed_settings_paths,
+                windsurf_expected_command=windsurf_expected_command,
+            )
         command = commands[0]
         if connector == "codex":
             if inspect_effective_policy:
@@ -2735,6 +2844,8 @@ def validate_windows_hook_registration(
         elif connector == "geminicli":
             matrix_entries = _validate_gemini_hook_matrix(document)
             policy_detail = _validate_gemini_telemetry(document, data_dir)
+        elif connector == "antigravity":
+            pass
         else:
             raise _InspectionError("foreign", f"unsupported Windows hook connector: {connector}")
         raw_target, _args, kind = _command_target(

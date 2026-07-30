@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -2565,12 +2565,6 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
             DoctorLabel = 'Copilot hooks'
             DoctorRuntimePattern = 'healthy Windows-native Copilot PowerShell registration'
         }
-        geminicli = @{
-            HookScript = 'geminicli-hook.sh'
-            ConfigPath = Join-Path $UserProfile '.gemini\settings.json'
-            DoctorLabel = 'Gemini CLI hooks'
-            DoctorRuntimePattern = 'healthy Windows-native executable registration'
-        }
         cursor = @{
             HookScript = 'cursor-hook.ps1'
             ConfigPath = Join-Path $UserProfile '.cursor\hooks.json'
@@ -2582,6 +2576,12 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
             ConfigPath = Join-Path $UserProfile '.codeium\windsurf\hooks.json'
             DoctorLabel = 'Windsurf hooks'
             DoctorRuntimePattern = 'healthy Windows-native PowerShell registration'
+        }
+        antigravity = @{
+            HookScript = 'antigravity-hook.sh'
+            ConfigPath = Join-Path $UserProfile '.gemini\config\hooks.json'
+            DoctorLabel = 'Antigravity hooks'
+            DoctorRuntimePattern = 'healthy Windows-native executable registration'
         }
     }
     if (-not $definitions.Contains($ConnectorName)) {
@@ -2635,9 +2635,6 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
         'copilot' {
             @('connector_backups\copilot\config.json')
         }
-        'geminicli' {
-            @('connector_backups\geminicli\config.json')
-        }
         'cursor' {
             @(
                 'connector_backups\cursor\hooks.json.json'
@@ -2645,6 +2642,9 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
         }
         'windsurf' {
             @('connector_backups\windsurf\config.json')
+        }
+        'antigravity' {
+            @('connector_backups\antigravity\hooks.json.json')
         }
         default { throw "unsupported native connector backup marker: $Connector" }
     }
@@ -2659,19 +2659,15 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
+        if ([string]$name -notin @('antigravity', 'codex', 'claudecode', 'copilot', 'cursor', 'windsurf')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
     }
-    $required = @('codex', 'claudecode')
+    $required = @('antigravity', 'codex', 'claudecode')
     if ($configured.Contains('copilot') -or
         @(Get-NativeConnectorBackupMarkers $DataRoot 'copilot').Count -ne 0) {
         $required += 'copilot'
-    }
-    if ($configured.Contains('geminicli') -or
-        @(Get-NativeConnectorBackupMarkers $DataRoot 'geminicli').Count -ne 0) {
-        $required += 'geminicli'
     }
     if ($configured.Contains('cursor') -or
         @(Get-NativeConnectorBackupMarkers $DataRoot 'cursor').Count -ne 0) {
@@ -2698,7 +2694,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
+    foreach ($connector in @('antigravity', 'codex', 'claudecode', 'copilot', 'cursor', 'windsurf')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -2907,6 +2903,18 @@ function Assert-SetupInstallState(
             throw 'setup install state did not preserve the explicit Windsurf profile binding'
         }
     }
+    if ($ConnectorName -eq 'antigravity') {
+        $expectedAntigravityConfigDir = Join-Path (
+            [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        ) '.gemini\config'
+        if (-not [string]::Equals(
+            [string]$state.antigravity_config_dir,
+            [IO.Path]::GetFullPath($expectedAntigravityConfigDir),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "setup install state did not preserve the exact Antigravity config-home custody"
+        }
+    }
 }
 
 function Get-DefenseClawGatewayAutoStart {
@@ -3032,6 +3040,52 @@ function Assert-WizardHookRegistration(
             $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
             $script -match '(?i)\$LASTEXITCODE') {
             throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"
+        }
+    } elseif ($Specification.Connector -eq 'antigravity') {
+        try { $hooks = $registration | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "wizard-selected Antigravity registration is not valid JSON: $($_.Exception.Message)" }
+        foreach ($event in @('PreInvocation', 'PreToolUse', 'PostToolUse', 'PostInvocation', 'Stop')) {
+            $key = "defenseclaw-antigravity-$($event.ToLowerInvariant())"
+            $outer = $hooks.PSObject.Properties[$key]
+            if ($null -eq $outer) { throw "wizard-selected Antigravity registration lacks $key" }
+            $eventHandlers = @($outer.Value.PSObject.Properties[$event].Value)
+            if ($eventHandlers.Count -ne 1) {
+                throw "wizard-selected Antigravity $event registration must contain exactly one handler"
+            }
+            if ($event -in @('PreToolUse', 'PostToolUse')) {
+                if ([string]$eventHandlers[0].matcher -cne '*' -or @($eventHandlers[0].hooks).Count -ne 1) {
+                    throw "wizard-selected Antigravity $event registration has an invalid matcher group"
+                }
+                $handler = @($eventHandlers[0].hooks)[0]
+            } else {
+                $handler = $eventHandlers[0]
+                if ($null -ne $handler.PSObject.Properties['matcher'] -or
+                    $null -ne $handler.PSObject.Properties['hooks']) {
+                    throw "wizard-selected Antigravity $event registration must use a direct handler"
+                }
+            }
+            if ([string]$handler.type -cne 'command' -or [int]$handler.timeout -ne 30) {
+                throw "wizard-selected Antigravity $event handler has an invalid type or timeout"
+            }
+            $encoded = [regex]::Match(
+                [string]$handler.command,
+                '(?i)(?:^|\s)-EncodedCommand\s+([A-Za-z0-9+/=]+)(?:\s|$)'
+            )
+            if (-not $encoded.Success) {
+                throw "wizard-selected Antigravity $event command does not use EncodedCommand"
+            }
+            try {
+                $script = [Text.Encoding]::Unicode.GetString(
+                    [Convert]::FromBase64String($encoded.Groups[1].Value)
+                )
+            } catch {
+                throw "wizard-selected Antigravity $event command is not valid UTF-16LE Base64"
+            }
+            $eventArgs = "'hook','--connector','antigravity','--event','" + $event + "'"
+            if ($script -notmatch '(?i)Start-Process' -or
+                $script.IndexOf($eventArgs, [StringComparison]::Ordinal) -lt 0) {
+                throw "wizard-selected Antigravity $event command is not event-bound to the native hook launcher"
+            }
         }
     } elseif ($Specification.Connector -eq 'claudecode') {
         try { $settings = $registration | ConvertFrom-Json -ErrorAction Stop }
@@ -3553,11 +3607,11 @@ function Invoke-SetupAcceptance {
     $transactionJournalPath = Join-Path $installerStateRoot 'setup-transaction.json'
     $arpKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DefenseClaw'
     $connectorConfigPaths = @(
+        (Join-Path $userProfile '.gemini\config\hooks.json'),
         (Join-Path $userProfile '.codex\config.toml'),
         (Join-Path $userProfile '.codex\managed_config.toml'),
         (Join-Path $userProfile '.claude\settings.json'),
         (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
-        (Join-Path $userProfile '.gemini\settings.json'),
         (Join-Path $userProfile '.cursor\hooks.json'),
         (Join-Path $userProfile '.codeium\windsurf\hooks.json')
     )
@@ -3618,7 +3672,7 @@ function Invoke-SetupAcceptance {
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = "$fixtureSearchPath;$processPathBefore"
 
-            foreach ($wizardConnector in @('copilot', 'geminicli', 'cursor', 'windsurf')) {
+            foreach ($wizardConnector in @('copilot', 'cursor', 'windsurf', 'antigravity')) {
                 Invoke-WizardConnectorAcceptance `
                     $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                     $fixtureSearchPath $userPathBefore $wizardConnector 'observe'
@@ -4177,7 +4231,7 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
             catch { Write-Warning "setup acceptance watchdog cleanup failed: $($_.Exception.Message)" }
             try { Invoke-Installed $gateway @('stop') @(0, 1) 60 | Out-Null }
             catch { Write-Warning "setup acceptance gateway cleanup failed: $($_.Exception.Message)" }
-            foreach ($configuredConnector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
+            foreach ($configuredConnector in @('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')) {
                 try {
                     Invoke-Installed $gateway @('connector', 'teardown', '--connector', $configuredConnector) `
                         @(0, 1) 120 | Out-Null
@@ -5458,7 +5512,7 @@ function Invoke-Contract {
     $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome)
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
-    $defaultGeminiHome = Join-Path $contractHome '.gemini'
+    $unrelatedGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
     $defaultWindsurfConfig = Join-Path $contractHome '.codeium\windsurf\hooks.json'
     try {
@@ -5514,7 +5568,6 @@ function Invoke-Contract {
 
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
-            (Test-Path -LiteralPath $defaultGeminiHome) -or
             (Test-Path -LiteralPath $defaultCursorHome) -or
             (Test-Path -LiteralPath $defaultWindsurfConfig)) {
             throw 'contract installation touched a default connector home before connector setup'
@@ -5541,13 +5594,10 @@ function Invoke-Contract {
         $defaultConnectorHomes = @(
             $defaultCodexHome,
             $defaultClaudeHome,
-            $defaultGeminiHome,
             $defaultCursorHome,
             $defaultWindsurfConfig
         )
-        if ($Connector -eq 'geminicli') {
-            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultGeminiHome })
-        } elseif ($Connector -eq 'windsurf') {
+        if ($Connector -eq 'windsurf') {
             $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultWindsurfConfig })
         }
         foreach ($defaultHome in $defaultConnectorHomes) {
@@ -5559,9 +5609,9 @@ function Invoke-Contract {
             codex = Join-Path $codexHome 'config.toml'
             claudecode = Join-Path $claudeHome 'settings.json'
             copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
-            geminicli = Join-Path $contractHome '.gemini\settings.json'
             cursor = Join-Path $cursorHome 'hooks.json'
             windsurf = Join-Path $contractHome '.codeium\windsurf\hooks.json'
+            antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
         }
         $unrelatedConfigs = @(
             $connectorConfigTargets.Keys |
@@ -5572,6 +5622,9 @@ function Invoke-Contract {
             if (Test-Path -LiteralPath $unrelatedConfig) {
                 throw "connector contract wrote to the unrelated agent home: $unrelatedConfig"
             }
+        }
+        if (Test-Path -LiteralPath $unrelatedGeminiSettings) {
+            throw "connector contract wrote to excluded Gemini settings: $unrelatedGeminiSettings"
         }
         if ($Connector -eq 'claudecode') {
             Assert-PackagedClaudeTokenRotation `

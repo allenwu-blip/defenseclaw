@@ -24,15 +24,16 @@ const maxStateBytes = 128 << 10
 var nativeInstallStateBeforeOpen func(string) error
 
 type State struct {
-	SchemaVersion   int    `json:"schema_version"`
-	InstallKind     string `json:"install_kind"`
-	InstallScope    string `json:"install_scope"`
-	InstallRoot     string `json:"install_root"`
-	CommandDir      string `json:"command_dir"`
-	DataRoot        string `json:"data_root"`
-	Runtime         string `json:"runtime"`
-	CodexHome       string `json:"codex_home,omitempty"`
-	ClaudeConfigDir string `json:"claude_config_dir,omitempty"`
+	SchemaVersion        int    `json:"schema_version"`
+	InstallKind          string `json:"install_kind"`
+	InstallScope         string `json:"install_scope"`
+	InstallRoot          string `json:"install_root"`
+	CommandDir           string `json:"command_dir"`
+	DataRoot             string `json:"data_root"`
+	Runtime              string `json:"runtime"`
+	CodexHome            string `json:"codex_home,omitempty"`
+	ClaudeConfigDir      string `json:"claude_config_dir,omitempty"`
+	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
 }
 
 // Environment removes ambient profile selectors and restores the exact
@@ -44,8 +45,9 @@ func (state State) Environment(base []string) []string {
 		"DEFENSECLAW_HOME":         true,
 		"CODEX_HOME":               true,
 		"CLAUDE_CONFIG_DIR":        true,
+		"ANTIGRAVITY_CONFIG_DIR":   true,
 	}
-	result := make([]string, 0, len(base)+4)
+	result := make([]string, 0, len(base)+5)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || owned[strings.ToUpper(name)] {
@@ -62,6 +64,9 @@ func (state State) Environment(base []string) []string {
 	}
 	if state.ClaudeConfigDir != "" {
 		result = append(result, "CLAUDE_CONFIG_DIR="+state.ClaudeConfigDir)
+	}
+	if state.AntigravityConfigDir != "" {
+		result = append(result, "ANTIGRAVITY_CONFIG_DIR="+state.AntigravityConfigDir)
 	}
 	return result
 }
@@ -139,7 +144,12 @@ func loadAt(executable, installRoot string) (State, error) {
 			return State{}, errors.New("native install state does not match its physical installation")
 		}
 	}
-	for _, value := range []string{state.DataRoot, state.CodexHome, state.ClaudeConfigDir} {
+	for _, value := range []string{
+		state.DataRoot,
+		state.CodexHome,
+		state.ClaudeConfigDir,
+		state.AntigravityConfigDir,
+	} {
 		if value != "" && !absoluteCleanPath(value) {
 			return State{}, errors.New("native install state contains an invalid profile path")
 		}

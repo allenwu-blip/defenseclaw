@@ -137,7 +137,7 @@ represent DefenseClaw Windows support or release certification.
 | Windsurf | supported | supported | **preview** | Devin Desktop (Windsurf) ships native Windows x64, and its documented `powershell` hook field runs via `powershell -Command`. DefenseClaw implements a synchronous native PowerShell adapter to the exact packaged hook executable; packaged and interactive official-client certification is still pending. |
 | Gemini CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Copilot CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
-| Antigravity | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
+| Antigravity | supported | supported | **not certified** | Google publishes native Windows x64/ARM64 clients and the implementation targets CLI 1.1.8+, but integrated packaged and official-client validation is still pending. |
 | OpenCode | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Hermes | supported | supported | **not certified** | Upstream Windows availability does not substitute for DefenseClaw native release certification. |
 | OpenHands | supported | supported | unsupported | OpenHands CLI explicitly requires WSL; DefenseClaw has no WSL connector implementation. |
@@ -172,7 +172,7 @@ is `not separately documented` rather than an inferred support promise.
 | Gemini CLI | WSL is mentioned as a Unix-compatibility option, but the supported OS matrix already includes native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | Copilot CLI | Hooks are documented for Windows, Linux, and macOS; WSL is not a separate hook target. | Not certified by DefenseClaw on native Windows; no WSL support claim. |
 | OpenHands | The CLI explicitly requires WSL on Windows; native Windows is not officially supported. | Unsupported on Windows because WSL-only does not meet the native requirement. |
-| Antigravity | Native Windows CLI/app downloads and local hooks are documented; WSL is not a separate hook target. | Not certified by DefenseClaw on native Windows; no WSL support claim. |
+| Antigravity | Native Windows CLI/app downloads and local hooks are documented; WSL is not a separate hook target. | Native Windows x64 implementation is not yet certified; WSL is out of scope. |
 | OpenCode | Direct Windows execution is available, while upstream recommends WSL for the best experience. | The JavaScript bridge is not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | OmniGent | Linux terminal and sandbox prerequisites are documented; WSL is not explicitly supported as a Windows product path. | Unsupported on native Windows; no WSL connector is implemented or certified. |
 
@@ -262,7 +262,7 @@ with a warning. Action mode fails closed on that contract mismatch.
 | Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v7` | prompt, tool_call, tool_result |
 | Copilot CLI | hook contract | `>=1.0.18` | `copilot-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | OpenHands | hook contract | unversioned / documented hooks; tested with `OpenHands CLI 1.16.0` | `openhands-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
-| Antigravity | hook contract | `>=1.0.0` | `antigravity-hooks-v2` / `v7` | prompt, tool_call, tool_result, event_content |
+| Antigravity | hook contract | `>=1.1.8` | `antigravity-hooks-v2` / `v8` | tool_call, event_content |
 | OpenCode | hook contract | unversioned / stable plugin API | `opencode-hooks-v1` / `v6` (JS bridge plugin) | tool_call, tool_result |
 | OmniGent | hook contract | unversioned / documented custom-policy API | `omnigent-custom-policy-v1` / `v1` (Python policy bridge) | prompt, tool_call, tool_result, event_content |
 
@@ -424,7 +424,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | OpenCode | contract-only | contract-only | contract-only (not certified) | — | JS bridge plugin (tool.execute.before blocks); live smoke pending |
 | Hermes | contract-only | contract-only | contract-only (not certified) | — | Native Windows is upstream Tier 1, but DefenseClaw does not certify the connector there. |
 | Windsurf | contract-only | contract-only | contract-only (preview; not certified) | — | no headless CLI/SDK; interactive native Windows client gate deferred |
-| Antigravity | contract-only | contract-only | contract-only (not certified) | — | headless auth is OAuth, no API key |
+| Antigravity | contract-only | contract-only | contract + native package validation pending (not certified) | `agy --dangerously-skip-permissions --print` on an authenticated runner | Google documents Windows Credential Manager/browser auth, not API-key bootstrap; real live E2E requires a pre-authenticated native Windows runner. |
 | OmniGent | contract-only | contract-only | — | — | Native Windows connector unsupported; Python custom-policy bridge covered by local integration tests on supported hosts; live smoke pending |
 
 `\*` = advisory cell (`continue-on-error`) until it goes consistently green.

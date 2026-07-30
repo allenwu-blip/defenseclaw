@@ -99,6 +99,27 @@ func TestBindWindsurfLifecycleProfileOverridesAmbientAndRestoresIt(t *testing.T)
 	}
 }
 
+func TestBindAntigravityLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testing.T) {
+	root := t.TempDir()
+	ambient := filepath.Join(root, "ambient")
+	bound := filepath.Join(root, ".gemini", "config")
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", ambient)
+	connectorFlagConfigHome = bound
+	t.Cleanup(func() { connectorFlagConfigHome = "" })
+
+	restore, err := bindConnectorLifecycleConfigHome("antigravity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != bound {
+		t.Fatalf("bound ANTIGRAVITY_CONFIG_DIR = %q, want %q", got, bound)
+	}
+	restore()
+	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != ambient {
+		t.Fatalf("restored ANTIGRAVITY_CONFIG_DIR = %q, want %q", got, ambient)
+	}
+}
+
 func TestBindConnectorLifecycleConfigHomeRejectsUnsafeTargets(t *testing.T) {
 	root := t.TempDir()
 	unnormalized := root + string(filepath.Separator) + "child" + string(filepath.Separator) + ".." + string(filepath.Separator) + "codex"
