@@ -296,6 +296,62 @@ def copilot_home() -> str:
     return _connector_env_home("COPILOT_HOME", ".copilot")
 
 
+def windsurf_user_home() -> str:
+    """Return DefenseClaw's exact Windsurf user-profile binding.
+
+    Windsurf has no vendor configuration-home override. Native Setup records
+    the Windows Profile Known Folder and the packaged launcher supplies that
+    validated value through this DefenseClaw-only environment contract.
+    Reject malformed bindings instead of falling back to an ambient profile.
+    """
+
+    configured = os.environ.get("WINDSURF_USER_HOME")
+    if configured:
+        if (
+            configured.strip() != configured
+            or "\x00" in configured
+            or "\r" in configured
+            or "\n" in configured
+            or not os.path.isabs(configured)
+            or os.path.normpath(configured) != configured
+        ):
+            raise ValueError("WINDSURF_USER_HOME is not an absolute normalized path")
+        return configured
+    if os.name == "nt" and os.environ.get("DEFENSECLAW_INSTALL_ROOT"):
+        raise ValueError("packaged Windsurf profile binding is missing")
+    return os.path.abspath(str(Path.home()))
+
+
+def windsurf_config_home() -> str:
+    """Return the bound user-level Windsurf configuration directory."""
+
+    root = windsurf_user_home()
+    candidate = os.path.normpath(os.path.join(root, ".codeium", "windsurf"))
+    if os.path.commonpath((root, candidate)) != os.path.commonpath((root, root)):
+        raise ValueError("Windsurf configuration path escapes its bound profile")
+    return candidate
+
+
+def windsurf_hook_config_path() -> str:
+    """Return the exact bound user-level Cascade hooks file."""
+
+    expected = os.path.join(windsurf_config_home(), "hooks.json")
+    configured = os.environ.get("WINDSURF_HOOK_CONFIG_PATH")
+    if configured:
+        if (
+            configured.strip() != configured
+            or "\x00" in configured
+            or "\r" in configured
+            or "\n" in configured
+            or not os.path.isabs(configured)
+            or os.path.normpath(configured) != configured
+            or os.path.normcase(configured) != os.path.normcase(expected)
+        ):
+            raise ValueError("WINDSURF_HOOK_CONFIG_PATH does not match the bound profile")
+        return configured
+    return expected
+
+
 def _resolve_hermes_home(
     *,
     platform_name: str,
@@ -418,7 +474,7 @@ def connector_home(
     if name == "cursor":
         return os.path.join(home, ".cursor")
     if name == "windsurf":
-        return os.path.join(home, ".codeium", "windsurf")
+        return windsurf_config_home()
     if name == "hermes":
         return hermes_home()
     if name == "opencode":
@@ -519,7 +575,7 @@ def connector_config_files(
             _workspace_path(workspace_dir, ".cursor", "mcp.json"),
         ]
     elif name == "windsurf":
-        paths = list(_windsurf_mcp_paths(home))
+        paths = list(_windsurf_mcp_paths())
     elif name == "hermes":
         # Hermes' real config file is YAML, not JSON. HERMES_HOME takes
         # precedence, native Windows defaults to %LOCALAPPDATA%\\hermes, and
@@ -569,7 +625,7 @@ def skill_dirs(
     if name == "cursor":
         return _cursor_skill_dirs(workspace_dir)
     if name == "windsurf":
-        return _windsurf_skill_dirs()
+        return _windsurf_skill_dirs(workspace_dir)
     if name == "geminicli":
         return _gemini_skill_dirs(workspace_dir)
     if name == "copilot":
@@ -738,8 +794,13 @@ def _cursor_skill_dirs(workspace_dir: str | None = None) -> list[str]:
     )
 
 
-def _windsurf_skill_dirs() -> list[str]:
-    return []
+def _windsurf_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    return _dedup(
+        [
+            _workspace_path(workspace_dir, ".windsurf", "skills"),
+            _workspace_path(workspace_dir, ".agents", "skills"),
+        ]
+    )
 
 
 def _opencode_config_dir() -> str:
@@ -1363,7 +1424,7 @@ def _read_zepto_config(path: str) -> list[MCPServerEntry]:
 
 
 def _windsurf_mcp_paths(home: str | None = None) -> list[str]:
-    home = home or str(Path.home())
+    home = home or windsurf_user_home()
     return [
         os.path.join(home, ".codeium", "windsurf", "mcp_config.json"),
         os.path.join(home, ".codeium", "windsurf", "mcp.json"),

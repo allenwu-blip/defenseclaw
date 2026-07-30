@@ -1076,7 +1076,7 @@ func transactionChildEnvForConnectorHomes(
 	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+9)
+	filtered := make([]string, 0, len(base)+10)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
@@ -1084,6 +1084,7 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "COPILOT_HOME") ||
 			strings.EqualFold(name, "DEFENSECLAW_CURSOR_CONFIG_HOME") ||
 			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
+			strings.EqualFold(name, "WINDSURF_HOOK_CONFIG_PATH") ||
 			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR") ||
 			strings.EqualFold(name, "OPENCODE_CONFIG_DIR") ||
 			strings.EqualFold(name, "OMNIGENT_CONFIG_HOME") ||
@@ -1106,6 +1107,15 @@ func transactionChildEnvForConnectorHomes(
 	}
 	if windsurfUserHome != "" {
 		filtered = append(filtered, "WINDSURF_USER_HOME="+windsurfUserHome)
+		filtered = append(
+			filtered,
+			"WINDSURF_HOOK_CONFIG_PATH="+filepath.Join(
+				windsurfUserHome,
+				".codeium",
+				"windsurf",
+				"hooks.json",
+			),
+		)
 	}
 	if antigravityConfigDir != "" {
 		filtered = append(filtered, "ANTIGRAVITY_CONFIG_DIR="+antigravityConfigDir)
@@ -1439,6 +1449,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Copilot home":                  state.CopilotHome,
 		"Cursor home":                   state.CursorHome,
 		"Windsurf user home":            state.WindsurfUserHome,
+		"Windsurf hooks path":           state.WindsurfHooksPath,
 		"Antigravity configuration dir": state.AntigravityConfigDir,
 		"OpenCode configuration dir":    state.OpenCodeConfigDir,
 		"OmniGent configuration home":   state.OmnigentConfigHome,
@@ -1447,6 +1458,13 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
 		}
+	}
+	if state.WindsurfHooksPath != "" && (state.WindsurfUserHome == "" ||
+		!strings.EqualFold(
+			state.WindsurfHooksPath,
+			filepath.Join(state.WindsurfUserHome, ".codeium", "windsurf", "hooks.json"),
+		)) {
+		return errors.New("installer state has an inconsistent Windsurf hooks path")
 	}
 	return nil
 }

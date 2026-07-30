@@ -2902,6 +2902,14 @@ function Assert-SetupInstallState(
         )) {
             throw 'setup install state did not preserve the explicit Windsurf profile binding'
         }
+        $expectedHooksPath = Join-Path $expectedProfile '.codeium\windsurf\hooks.json'
+        if (-not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$state.windsurf_hooks_path),
+            [IO.Path]::GetFullPath($expectedHooksPath),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'setup install state did not preserve the exact Windsurf hooks target'
+        }
     }
     if ($ConnectorName -eq 'antigravity') {
         $expectedAntigravityConfigDir = Join-Path (

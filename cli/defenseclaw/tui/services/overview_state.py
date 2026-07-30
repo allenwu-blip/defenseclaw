@@ -22,6 +22,7 @@ from defenseclaw.connector_paths import (
     connector_home,
     hermes_config_path,
     hermes_home,
+    windsurf_hook_config_path,
 )
 from defenseclaw.observability.display import redact_endpoint_for_display
 from defenseclaw.observability.v8_status import (
@@ -1267,6 +1268,8 @@ def connector_source_label(connector: str, category: str) -> str:
         opencode_mcp_sources.append(
             os.path.join(connector_home("opencode"), "opencode.json") + " (mcp; custom override)"
         )
+    windsurf_configs = connector_config_files("windsurf") if connector == "windsurf" else []
+    windsurf_hooks = windsurf_hook_config_path() if connector == "windsurf" else ""
     sources = {
         ("openclaw", "skills"): ("./skills", "~/.openclaw/skills"),
         ("claudecode", "skills"): (os.path.join(claude_root, "skills"), "./.claude/skills"),
@@ -1291,7 +1294,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("zeptoclaw", "mcps"): ("~/.zeptoclaw/config.json (mcp.servers)", "./.mcp.json"),
         ("hermes", "mcps"): (f"{hermes_config} (mcp.servers)",),
         ("cursor", "mcps"): ("./.cursor/mcp.json", "~/.cursor/mcp.json"),
-        ("windsurf", "mcps"): ("~/.codeium/windsurf/mcp_config.json", "~/.codeium/windsurf/mcp.json"),
+        ("windsurf", "mcps"): tuple(windsurf_configs),
         ("geminicli", "mcps"): ("~/.gemini/settings.json (mcpServers)", "./.mcp.json"),
         ("copilot", "mcps"): ("~/.copilot/mcp-config.json", "./.github/mcp.json", "./.mcp.json"),
         ("openhands", "mcps"): ("~/.openhands/mcp.json",),
@@ -1328,7 +1331,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("zeptoclaw", "config"): ("~/.zeptoclaw/config.json",),
         ("hermes", "config"): (hermes_config,),
         ("cursor", "config"): ("~/.cursor/hooks.json",),
-        ("windsurf", "config"): ("~/.codeium/windsurf/hooks.json",),
+        ("windsurf", "config"): (windsurf_hooks,),
         ("geminicli", "config"): ("~/.gemini/settings.json",),
         ("copilot", "config"): ("./.github/hooks/*.json",),
         ("openhands", "config"): ("~/.openhands/hooks.json",),

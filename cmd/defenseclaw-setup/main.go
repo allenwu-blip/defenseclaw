@@ -259,6 +259,7 @@ type installState struct {
 	CopilotHome            string            `json:"copilot_home,omitempty"`
 	CursorHome             string            `json:"cursor_home,omitempty"`
 	WindsurfUserHome       string            `json:"windsurf_user_home,omitempty"`
+	WindsurfHooksPath      string            `json:"windsurf_hooks_path,omitempty"`
 	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
 	OpenCodeConfigDir      string            `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome     string            `json:"omnigent_config_home,omitempty"`
@@ -1553,6 +1554,10 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 	if err := writeJSON(filepath.Join(staging, "installer", "payload-manifest.json"), payload.Manifest); err != nil {
 		return err
 	}
+	windsurfHooksPath := ""
+	if opts.WindsurfUserHome != "" {
+		windsurfHooksPath = filepath.Join(opts.WindsurfUserHome, ".codeium", "windsurf", "hooks.json")
+	}
 	state := installState{
 		SchemaVersion:          1,
 		Version:                payload.Manifest.Version,
@@ -1575,6 +1580,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		CopilotHome:            opts.CopilotHome,
 		CursorHome:             opts.CursorHome,
 		WindsurfUserHome:       opts.WindsurfUserHome,
+		WindsurfHooksPath:      windsurfHooksPath,
 		AntigravityConfigDir:   opts.AntigravityConfigDir,
 		OpenCodeConfigDir:      opts.OpenCodeConfigDir,
 		OmnigentConfigHome:     opts.OmnigentConfigHome,

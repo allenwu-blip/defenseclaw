@@ -46,6 +46,7 @@ from defenseclaw.connector_paths import (
     copilot_home,
     hermes_config_path,
     omnigent_config_path,
+    windsurf_hook_config_path,
 )
 from defenseclaw.inventory import agent_discovery
 
@@ -1436,7 +1437,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             return StepResult("Connector", "pass", "Cursor hooks found")
         return StepResult("Connector", "warn", "Cursor hooks not found yet", "defenseclaw setup cursor")
     if connector == "windsurf":
-        path = os.path.expanduser("~/.codeium/windsurf/hooks.json")
+        path = windsurf_hook_config_path()
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Windsurf hooks found")
         return StepResult("Connector", "warn", "Windsurf hooks not found yet", "defenseclaw setup windsurf")

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -52,7 +53,14 @@ func TestBindWindsurfLifecycleProfileOverridesAmbientAndRestoresIt(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("USERPROFILE", ambient)
+	homeEnv := "HOME"
+	switch runtime.GOOS {
+	case "windows":
+		homeEnv = "USERPROFILE"
+	case "plan9":
+		homeEnv = "home"
+	}
+	t.Setenv(homeEnv, ambient)
 	connectorFlagConfigHome = bound
 	t.Cleanup(func() { connectorFlagConfigHome = "" })
 

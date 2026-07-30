@@ -625,10 +625,12 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     claude_home = tmp_path / "claude-home"
     codex_home = tmp_path / "codex-home"
     opencode_home = tmp_path / "opencode-home"
+    windsurf_profile = tmp_path / "windsurf-profile"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(opencode_home))
+    monkeypatch.setenv("WINDSURF_USER_HOME", str(windsurf_profile))
     cases = {
         "hermes": "Hermes",
         "cursor": "Cursor",
@@ -646,7 +648,9 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert str(claude_home / "settings.json") in connector_source_label("claudecode", "config")
     assert str(codex_home / "config.toml") in connector_source_label("codex", "config")
     assert ".cursor/skills" in connector_source_label("cursor", "skills")
-    assert ".codeium/windsurf/hooks.json" in connector_source_label("windsurf", "config")
+    assert str(windsurf_profile / ".codeium" / "windsurf" / "hooks.json") in connector_source_label(
+        "windsurf", "config"
+    )
     assert ".gemini/extensions" in connector_source_label("geminicli", "plugins")
     assert ".github/mcp.json" in connector_source_label("copilot", "mcps")
     # opencode MCP is now managed by DefenseClaw (read+write via the bridge

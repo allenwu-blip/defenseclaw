@@ -20,15 +20,18 @@ defenseclaw setup windsurf
 ```
 
 <Callout type="warning">
-Windsurf setup is supported on macOS and Linux. The DefenseClaw connector is
-not certified on native Windows x64, so setup rejects it there.
+Windsurf setup is supported on macOS and Linux. Native Windows x64 setup is
+available as a preview, but it is not yet certified for release.
 </Callout>
 
 `setup windsurf` is the dedicated Windsurf alias. It uses the shared guardrail
 setup backend and wires hooks against `~/.codeium/windsurf/hooks.json`.
-DefenseClaw discovers existing MCP and rules surfaces but never auto-creates
-workspace configuration. **There is no proxy-enforcement path** — blocking
-happens hook-side via Cascade's `pre_user_prompt`, `pre_read_code`,
+DefenseClaw discovers existing MCP, global rules, `.devin/rules` and legacy
+Windsurf rule surfaces. When a workspace is explicitly pinned, inventory also
+includes its documented `.windsurf/skills` and `.agents/skills` roots.
+DefenseClaw never auto-creates workspace configuration. **There is no
+proxy-enforcement path** — blocking happens hook-side via Cascade's
+`pre_user_prompt`, `pre_read_code`,
 `pre_write_code`, `pre_run_command`, and `pre_mcp_tool_use`. Windsurf has no
 native ask surface, so confirm verdicts use its non-pausing fallback with
 `raw_action` preserved for audit.
@@ -133,15 +136,15 @@ defenseclaw setup windsurf --mode action
 
 With `mode=action`, the five declared pre-hooks block when policy returns
 `block`. A `confirm` verdict uses Windsurf's non-pausing fallback because the
-agent has no native ask surface. Windsurf does not provide a fail-closed hook
-transport surface, so `--fail-mode closed` cannot make an unavailable hook
-block the agent.
+agent has no native ask surface.
 
-`fail_mode: closed` maps DefenseClaw adapter availability failures to
-Windsurf's blocking exit `2`; it does not change the vendor contract. Exit `2`
-can block only the five documented pre-hooks. Every other non-zero exit
-proceeds, all post-hooks are non-blocking, the two Cascade response hooks run
-asynchronously, and Restricted Mode disables hooks entirely.
+The vendor hook transport has no generic fail-closed error: exit `2` is the
+only blocking status and applies only to the five documented pre-hooks; every
+other exit proceeds. DefenseClaw's `fail_mode: closed` deliberately maps its
+own adapter availability failures to that vendor-defined exit `2` on those
+five pre-hooks. It cannot make any post-hook block. Of the post-hooks, only
+`post_cascade_response` and `post_cascade_response_with_transcript` run
+asynchronously. Restricted Mode disables hooks entirely.
 
 </Tab>
 
@@ -185,8 +188,9 @@ Windsurf has no native human-approval surface. Confirm verdicts use an immediate
 <Callout type="warning" title="Know the vendor enforcement limits">
 Only `pre_user_prompt`, `pre_read_code`, `pre_write_code`,
 `pre_run_command`, and `pre_mcp_tool_use` can block, and only with exit `2`.
-Other errors fail open. Post-hooks cannot block, Cascade response post-hooks
-are asynchronous, and Restricted Mode disables all hooks.
+Every other exit proceeds. Post-hooks cannot block; only
+`post_cascade_response` and `post_cascade_response_with_transcript` run
+asynchronously. Restricted Mode disables all hooks.
 </Callout>
 
 ## Subprocess policy

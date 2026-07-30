@@ -1327,6 +1327,53 @@ print(json.dumps({"entries": len(expected), "command": next(iter(commands))}))
     }
 }
 
+function Assert-WindsurfWindowsHookConfig(
+    [string]$Config,
+    [string]$ExpectedAdapter,
+    [string]$Context
+) {
+    try { $settings = $Config | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
+
+    $expectedEvents = @(
+        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
+        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
+        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
+        'post_setup_worktree'
+    )
+    if ($null -eq $settings.hooks) { throw "$Context does not contain a hooks object" }
+    $actualEvents = @($settings.hooks.PSObject.Properties.Name)
+    $actualEventKey = (@($actualEvents | Sort-Object) -join "`0")
+    $expectedEventKey = (@($expectedEvents | Sort-Object) -join "`0")
+    if ($actualEventKey -cne $expectedEventKey) {
+        throw "$Context registered an unexpected event matrix: $($actualEvents -join ', ')"
+    }
+
+    $expectedPowerShell = "& '" + $ExpectedAdapter.Replace("'", "''") + "'"
+    foreach ($eventName in $expectedEvents) {
+        $handlers = @($settings.hooks.$eventName)
+        $managed = @(
+            $handlers |
+                Where-Object {
+                    [string]::Equals(
+                        [string]$_.powershell,
+                        $expectedPowerShell,
+                        [StringComparison]::Ordinal
+                    )
+                }
+        )
+        if ($managed.Count -ne 1) {
+            throw "$Context registered $($managed.Count) exact managed PowerShell handlers for $eventName, expected one"
+        }
+        if ($null -ne $managed[0].PSObject.Properties['command']) {
+            throw "$Context registered a command fallback for $eventName"
+        }
+        if ($managed[0].show_output -ne $true) {
+            throw "$Context did not enable show_output for $eventName"
+        }
+    }
+}
+
 function Assert-DoctorHookRegistration {
     $doctor = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1)
     try {
@@ -1375,10 +1422,7 @@ function Assert-DoctorHookRegistration {
     } elseif ($Connector -eq 'hermes') {
         Assert-HermesWindowsHookConfig $config 'setup-created Hermes registration'
     } elseif ($Connector -eq 'windsurf') {
-        if ($registration -notmatch '(?i)"powershell"\s*:\s*"[^"]*windsurf-hook\.ps1"' -or
-            $registration -match '(?i)"command"\s*:\s*"[^"]*windsurf-hook') {
-            throw 'setup-created Windsurf registration is not powershell-only'
-        }
+        Assert-WindsurfWindowsHookConfig $registration $expectedHookExecutable 'setup-created Windsurf registration'
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $registration
     } elseif ($Connector -eq 'opencode') {
@@ -1738,37 +1782,9 @@ function Assert-DoctorWindowsHookRegistration {
         $codexCommand = Get-CodexWindowsHookCommand $config
         Assert-CodexSynchronousWindowsHookCommand $codexCommand "$Connector setup"
     } elseif ($Connector -eq 'windsurf') {
-        try { $settings = $config | ConvertFrom-Json -ErrorAction Stop }
-        catch { throw "Windsurf hook config is not valid JSON: $($_.Exception.Message)" }
-        $expectedEvents = @(
-            'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
-            'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
-            'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
-            'post_setup_worktree'
-        )
-        if ($null -eq $settings.hooks) { throw 'Windsurf setup did not create a hooks object' }
-        $actualEvents = @($settings.hooks.PSObject.Properties.Name)
-        $actualEventKey = (@($actualEvents | Sort-Object) -join "`0")
-        $expectedEventKey = (@($expectedEvents | Sort-Object) -join "`0")
-        if ($actualEventKey -cne $expectedEventKey) {
-            throw "Windsurf setup registered an unexpected event matrix: $($actualEvents -join ', ')"
-        }
-        foreach ($eventName in $expectedEvents) {
-            $handlers = @($settings.hooks.$eventName)
-            $managed = @(
-                $handlers |
-                    Where-Object { [string]$_.powershell -match '(?i)windsurf-hook\.ps1' }
-            )
-            if ($managed.Count -ne 1) {
-                throw "Windsurf setup registered $($managed.Count) managed PowerShell handlers for $eventName, expected one"
-            }
-            if ($null -ne $managed[0].PSObject.Properties['command']) {
-                throw "Windsurf setup registered a command fallback for $eventName"
-            }
-            if ($managed[0].show_output -ne $true) {
-                throw "Windsurf setup did not enable show_output for $eventName"
-            }
-        }
+        Assert-WindsurfWindowsHookConfig $config `
+            (Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1') `
+            'Windsurf setup'
     } else {
         Assert-CopilotSynchronousWindowsHookConfig $config "$Connector setup"
     }

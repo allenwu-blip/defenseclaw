@@ -1,5 +1,5 @@
 # DefenseClaw Windsurf native Windows hook adapter.
-# defenseclaw-managed-hook v6
+# defenseclaw-managed-hook v7
 #
 # Windsurf invokes this script through its documented `powershell` hook field.
 # Copy the vendor's JSON stdin byte-for-byte into the exact packaged HookRuntime
@@ -25,6 +25,10 @@ try {
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
+    # Windows PowerShell 5.1 constructs Process.StandardInput with the current
+    # console input encoding. Pin that writer to BOM-free UTF-8 before Start so
+    # the raw copy below preserves Windsurf's JSON bytes.
+    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
     if (-not $process.Start()) {
         throw "failed to start the packaged DefenseClaw hook launcher"
     }

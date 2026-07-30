@@ -33,6 +33,8 @@ type State struct {
 	Runtime              string `json:"runtime"`
 	CodexHome            string `json:"codex_home,omitempty"`
 	ClaudeConfigDir      string `json:"claude_config_dir,omitempty"`
+	WindsurfUserHome     string `json:"windsurf_user_home,omitempty"`
+	WindsurfHooksPath    string `json:"windsurf_hooks_path,omitempty"`
 	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
 }
 
@@ -41,13 +43,15 @@ type State struct {
 // state written before those fields existed; current setup always records both.
 func (state State) Environment(base []string) []string {
 	owned := map[string]bool{
-		"DEFENSECLAW_INSTALL_ROOT": true,
-		"DEFENSECLAW_HOME":         true,
-		"CODEX_HOME":               true,
-		"CLAUDE_CONFIG_DIR":        true,
-		"ANTIGRAVITY_CONFIG_DIR":   true,
+		"DEFENSECLAW_INSTALL_ROOT":  true,
+		"DEFENSECLAW_HOME":          true,
+		"CODEX_HOME":                true,
+		"CLAUDE_CONFIG_DIR":         true,
+		"WINDSURF_USER_HOME":        true,
+		"WINDSURF_HOOK_CONFIG_PATH": true,
+		"ANTIGRAVITY_CONFIG_DIR":    true,
 	}
-	result := make([]string, 0, len(base)+5)
+	result := make([]string, 0, len(base)+7)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || owned[strings.ToUpper(name)] {
@@ -64,6 +68,12 @@ func (state State) Environment(base []string) []string {
 	}
 	if state.ClaudeConfigDir != "" {
 		result = append(result, "CLAUDE_CONFIG_DIR="+state.ClaudeConfigDir)
+	}
+	if state.WindsurfUserHome != "" {
+		result = append(result, "WINDSURF_USER_HOME="+state.WindsurfUserHome)
+	}
+	if state.WindsurfHooksPath != "" {
+		result = append(result, "WINDSURF_HOOK_CONFIG_PATH="+state.WindsurfHooksPath)
 	}
 	if state.AntigravityConfigDir != "" {
 		result = append(result, "ANTIGRAVITY_CONFIG_DIR="+state.AntigravityConfigDir)
@@ -148,6 +158,8 @@ func loadAt(executable, installRoot string) (State, error) {
 		state.DataRoot,
 		state.CodexHome,
 		state.ClaudeConfigDir,
+		state.WindsurfUserHome,
+		state.WindsurfHooksPath,
 		state.AntigravityConfigDir,
 	} {
 		if value != "" && !absoluteCleanPath(value) {
@@ -156,6 +168,13 @@ func loadAt(executable, installRoot string) (State, error) {
 	}
 	if state.DataRoot == "" {
 		return State{}, errors.New("native install state has no data root")
+	}
+	if state.WindsurfHooksPath != "" && (state.WindsurfUserHome == "" ||
+		!strings.EqualFold(
+			state.WindsurfHooksPath,
+			filepath.Join(state.WindsurfUserHome, ".codeium", "windsurf", "hooks.json"),
+		)) {
+		return State{}, errors.New("native install state has an inconsistent Windsurf hooks path")
 	}
 	return state, nil
 }

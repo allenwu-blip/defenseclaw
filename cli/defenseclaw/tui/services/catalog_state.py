@@ -1631,7 +1631,7 @@ def mcp_unset_target_for_connector(connector: str) -> str:
         case "cursor":
             return "./.cursor/mcp.json"
         case "windsurf":
-            return "~/.codeium/windsurf/mcp_config.json"
+            return connector_config_files("windsurf")[0]
         case "geminicli":
             return "~/.gemini/settings.json"
         case "copilot":

@@ -36,8 +36,15 @@ func fixtureState(t *testing.T) (State, string) {
 		Runtime:              filepath.Join(root, "runtime", "python"),
 		CodexHome:            filepath.Join(t.TempDir(), "codex-home"),
 		ClaudeConfigDir:      filepath.Join(t.TempDir(), "claude-home"),
+		WindsurfUserHome:     filepath.Join(t.TempDir(), "windsurf-profile"),
 		AntigravityConfigDir: filepath.Join(t.TempDir(), ".gemini", "config"),
 	}
+	state.WindsurfHooksPath = filepath.Join(
+		state.WindsurfUserHome,
+		".codeium",
+		"windsurf",
+		"hooks.json",
+	)
 	body, err := json.Marshal(state)
 	if err != nil {
 		t.Fatal(err)
@@ -58,6 +65,8 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 		"PATH=fixture",
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
+		"windsurf_user_home=project-windsurf",
+		"windsurf_hook_config_path=project-windsurf-hooks",
 		"DEFENSECLAW_HOME=project-data",
 		"ANTIGRAVITY_CONFIG_DIR=project-antigravity",
 	})
@@ -65,6 +74,8 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 	for _, expected := range []string{
 		"CODEX_HOME=" + want.CodexHome,
 		"CLAUDE_CONFIG_DIR=" + want.ClaudeConfigDir,
+		"WINDSURF_USER_HOME=" + want.WindsurfUserHome,
+		"WINDSURF_HOOK_CONFIG_PATH=" + want.WindsurfHooksPath,
 		"ANTIGRAVITY_CONFIG_DIR=" + want.AntigravityConfigDir,
 		"DEFENSECLAW_HOME=" + want.DataRoot,
 		"DEFENSECLAW_INSTALL_ROOT=" + want.InstallRoot,
@@ -84,11 +95,15 @@ func TestEnvironmentRemovesAmbientConnectorHomesFromLegacyState(t *testing.T) {
 		"PATH=fixture",
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
+		"windsurf_user_home=project-windsurf",
+		"windsurf_hook_config_path=project-windsurf-hooks",
 		"antigravity_config_dir=project-antigravity",
 	})
 	joined := strings.Join(env, "\n")
 	if strings.Contains(strings.ToUpper(joined), "CODEX_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "CLAUDE_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "WINDSURF_USER_HOME=") ||
+		strings.Contains(strings.ToUpper(joined), "WINDSURF_HOOK_CONFIG_PATH=") ||
 		strings.Contains(strings.ToUpper(joined), "ANTIGRAVITY_CONFIG_DIR=") {
 		t.Fatalf("ambient connector home survived legacy state: %v", env)
 	}
@@ -103,5 +118,21 @@ func TestLoadAtRejectsRelocatedOrMalformedState(t *testing.T) {
 	}
 	if _, err := loadAt(executable, filepath.Dir(filepath.Dir(executable))); err == nil {
 		t.Fatal("relocated state was accepted")
+	}
+}
+
+func TestLoadAtRejectsMalformedWindsurfProfileBinding(t *testing.T) {
+	state, executable := fixtureState(t)
+	state.WindsurfUserHome = filepath.Join("relative", "profile")
+	body, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(filepath.Dir(filepath.Dir(executable)), "installer", "install-state.json")
+	if err := os.WriteFile(statePath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAt(executable, filepath.Dir(filepath.Dir(executable))); err == nil {
+		t.Fatal("malformed Windsurf profile binding was accepted")
 	}
 }

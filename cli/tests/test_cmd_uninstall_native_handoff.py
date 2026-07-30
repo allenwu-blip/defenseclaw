@@ -206,6 +206,7 @@ def test_prepare_accepts_bound_windsurf_profile_state(tmp_path: Path) -> None:
     state = _install_state(local_app_data, profile)
     state["connector"] = "windsurf"
     state["windsurf_user_home"] = str(profile)
+    state["windsurf_hooks_path"] = str(profile / ".codeium" / "windsurf" / "hooks.json")
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     request = _prepare_from_tree(local_app_data, profile)

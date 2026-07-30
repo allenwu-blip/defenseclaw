@@ -52,6 +52,7 @@ from defenseclaw.connector_paths import (
     connector_home,
     hermes_config_path,
     omnigent_config_path,
+    windsurf_hook_config_path,
 )
 from defenseclaw.file_permissions import atomic_write_private_bytes
 
@@ -684,6 +685,8 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 os.path.join(local_app_data, "agy", "bin"),
                 os.path.join(local_app_data, "Programs", "antigravity"),
                 os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"),
+                os.path.join(local_app_data, "Programs", "Devin"),
+                os.path.join(local_app_data, "Programs", "Windsurf"),
                 os.path.join(local_app_data, "Programs", "Windsurf", "bin"),
                 os.path.join(local_app_data, "Microsoft", "WinGet", "Links"),
             )
@@ -713,6 +716,14 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 os.path.join(root, "OpenAI", "Codex", "bin"),
                 os.path.join(root, "cursor", "resources", "app", "bin"),
                 os.path.join(root, "Windsurf", "bin"),
+            )
+        )
+    program_files = os.environ.get("ProgramFiles", "")
+    if program_files:
+        candidates.extend(
+            (
+                os.path.join(program_files, "Devin"),
+                os.path.join(program_files, "Windsurf"),
             )
         )
     if system_root:
@@ -1021,6 +1032,11 @@ def _scan_agent(
     elif name == "omnigent":
         config_path = omnigent_config_path()
         config_candidates = (config_path,)
+    elif name == "windsurf":
+        config_candidates = (
+            windsurf_hook_config_path(),
+            *connector_config_files("windsurf"),
+        )
     config_path = _first_existing_file(config_candidates)
     binary_candidates = _binary_candidates_for_agent(name, spec)
     binary_path = binary_candidates[0] if binary_candidates else ""
@@ -1662,12 +1678,18 @@ def _version_for_agent_binary(
         or (
             name == "windsurf"
             and _is_windows_host()
-            and command_name in {"devin-desktop", "windsurf"}
+            and command_name in {"devin", "devin-desktop", "windsurf"}
         )
     ):
         return _windows_file_version_for_binary(
             binary_path,
-            require_trusted_binary_paths=require_trusted_binary_paths,
+            # Windsurf discovery includes an optional PATH launcher and exact
+            # GUI product roots. Always apply Windows canonical-path and ACL
+            # admission before trusting metadata from either lane; the global
+            # execution-probe opt-in does not weaken this connector boundary.
+            require_trusted_binary_paths=(
+                True if name == "windsurf" else require_trusted_binary_paths
+            ),
             data_dir=data_dir,
         )
     return _version_for_binary(
@@ -1849,6 +1871,36 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
                 os.path.join(local_app_data, "agy", "bin", "agy.exe"),
                 os.path.join(local_app_data, "Programs", "antigravity", "Antigravity.exe"),
             ):
+                if os.path.isfile(candidate):
+                    candidates.append(os.path.abspath(candidate))
+
+    if name == "windsurf":
+        # The terminal launcher is optional during Devin Desktop onboarding.
+        # Discover the GUI directly from narrow current and legacy product
+        # roots, then read version metadata without launching it.
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        product_roots: list[str] = []
+        if local_app_data:
+            product_roots.extend(
+                (
+                    os.path.join(local_app_data, "Programs", "Devin"),
+                    os.path.join(local_app_data, "Programs", "Windsurf"),
+                )
+            )
+        program_files = os.environ.get("ProgramFiles", "")
+        if program_files:
+            product_roots.extend(
+                (
+                    os.path.join(program_files, "Devin"),
+                    os.path.join(program_files, "Windsurf"),
+                )
+            )
+        for product_root in product_roots:
+            executable_names = ("Devin.exe",)
+            if os.path.basename(product_root).casefold() == "windsurf":
+                executable_names += ("Windsurf.exe",)
+            for executable_name in executable_names:
+                candidate = os.path.join(product_root, executable_name)
                 if os.path.isfile(candidate):
                     candidates.append(os.path.abspath(candidate))
 

@@ -458,7 +458,7 @@ var builtinHookContracts = map[string][]HookContract{
 		ContractID:              "windsurf-hooks-v1",
 		MinAgentVersion:         "1.12.41",
 		DefaultForUnversioned:   true,
-		HookScriptVersion:       "v6",
+		HookScriptVersion:       "v7",
 		HookConfigPathTemplates: []string{"~/.codeium/windsurf/hooks.json"},
 		ResponseFieldName:       "hook_output",
 		Events: []string{

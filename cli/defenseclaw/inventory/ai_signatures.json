@@ -259,10 +259,13 @@
       "confidence": 0.95,
       "supported_connector": "windsurf",
       "binary_names": [
+        "Devin.exe",
         "devin-desktop",
         "windsurf"
       ],
       "process_names": [
+        "Devin",
+        "Devin.exe",
         "devin-desktop",
         "Devin Desktop",
         "windsurf",
@@ -272,8 +275,11 @@
         "~/.codeium/windsurf/hooks.json",
         "~/.codeium/windsurf/mcp_config.json",
         "~/.codeium/windsurf/mcp.json",
+        "~/.codeium/windsurf/memories/global_rules.md",
+        ".devin/rules",
         ".windsurf/rules",
-        ".codeium/windsurf/rules",
+        ".windsurf/skills",
+        ".agents/skills",
         ".windsurfrules"
       ],
       "extension_ids": [

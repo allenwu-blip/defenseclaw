@@ -90,6 +90,7 @@ _INSTALL_STATE_OPTIONAL_FIELDS = frozenset(
         "copilot_home",
         "cursor_home",
         "windsurf_user_home",
+        "windsurf_hooks_path",
         "antigravity_config_dir",
         "opencode_config_dir",
         "transaction_id",

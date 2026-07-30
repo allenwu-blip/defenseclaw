@@ -110,6 +110,52 @@ try {
     . $harness -NoRun
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
 
+    $windsurfAdapter = "C:\DefenseClaw Data\Kevin O'Brien\hooks\windsurf-hook.ps1"
+    $windsurfPowerShell = "& '" + $windsurfAdapter.Replace("'", "''") + "'"
+    $windsurfEvents = @(
+        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
+        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
+        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
+        'post_setup_worktree'
+    )
+    $windsurfHooks = [ordered]@{}
+    foreach ($eventName in $windsurfEvents) {
+        $windsurfHooks[$eventName] = @(
+            [ordered]@{ powershell = $windsurfPowerShell; show_output = $true }
+        )
+    }
+    $windsurfConfig = [ordered]@{ hooks = $windsurfHooks } | ConvertTo-Json -Depth 8
+    Assert-WindsurfWindowsHookConfig $windsurfConfig $windsurfAdapter 'synthetic Windsurf registration'
+
+    $windsurfFallback = $windsurfConfig | ConvertFrom-Json
+    $windsurfFallback.hooks.pre_read_code[0] |
+        Add-Member -NotePropertyName command -NotePropertyValue 'windsurf-hook.cmd'
+    $rejectedFallback = $false
+    try {
+        Assert-WindsurfWindowsHookConfig `
+            ($windsurfFallback | ConvertTo-Json -Depth 8) `
+            $windsurfAdapter `
+            'synthetic Windsurf command fallback'
+    } catch {
+        $rejectedFallback = $_.Exception.Message -match 'command fallback'
+    }
+    Assert-True $rejectedFallback 'Windsurf validator rejects a command fallback'
+
+    $windsurfWrongShape = $windsurfConfig | ConvertFrom-Json
+    $windsurfWrongShape.hooks.pre_read_code[0].powershell =
+        "powershell.exe -File '$windsurfAdapter'"
+    $rejectedWrongShape = $false
+    try {
+        Assert-WindsurfWindowsHookConfig `
+            ($windsurfWrongShape | ConvertTo-Json -Depth 8) `
+            $windsurfAdapter `
+            'synthetic Windsurf command-shape drift'
+    } catch {
+        $rejectedWrongShape = $_.Exception.Message -match 'exact managed PowerShell handlers'
+    }
+    Assert-True $rejectedWrongShape `
+        'Windsurf validator accepts only the safely quoted call-operator adapter command'
+
     $safeRegistrationLocations = @(Get-DefenseClawRegistrationLocations @'
 notify = ["C:\synthetic-private-path\DefenseClaw\bin\launcher.exe", "notify"]
 

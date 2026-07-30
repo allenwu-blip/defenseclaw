@@ -181,12 +181,14 @@ func TestLoadAISignatures_WindsurfIncludesOfficialDevinDesktopRename(t *testing.
 		for field, values := range map[string][]string{
 			"binary_names":      sig.BinaryNames,
 			"process_names":     sig.ProcessNames,
+			"config_paths":      sig.ConfigPaths,
 			"application_names": sig.ApplicationNames,
 			"domain_patterns":   sig.DomainPatterns,
 		} {
 			want := map[string]string{
-				"binary_names":      "devin-desktop",
-				"process_names":     "Devin Desktop",
+				"binary_names":      "Devin.exe",
+				"process_names":     "Devin.exe",
+				"config_paths":      ".devin/rules",
 				"application_names": "Devin Desktop",
 				"domain_patterns":   "devin.ai",
 			}[field]

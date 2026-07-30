@@ -74,6 +74,52 @@ class TestIsKnown:
         assert connector_paths.is_known(None)
 
 
+def test_windsurf_paths_use_explicit_profile_binding_not_ambient_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = tmp_path / "bound-profile"
+    ambient = tmp_path / "ambient-profile"
+    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+    monkeypatch.setattr(Path, "home", lambda: ambient)
+
+    assert connector_paths.connector_home("windsurf") == str(
+        bound / ".codeium" / "windsurf"
+    )
+    assert connector_paths.windsurf_hook_config_path() == str(
+        bound / ".codeium" / "windsurf" / "hooks.json"
+    )
+    assert connector_paths.connector_config_files("windsurf") == [
+        str(bound / ".codeium" / "windsurf" / "mcp_config.json"),
+        str(bound / ".codeium" / "windsurf" / "mcp.json"),
+    ]
+
+
+def test_windsurf_profile_binding_rejects_non_normalized_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "WINDSURF_USER_HOME",
+        str(tmp_path / "profile" / ".." / "redirected"),
+    )
+
+    with pytest.raises(ValueError, match="absolute normalized"):
+        connector_paths.windsurf_hook_config_path()
+
+
+def test_windsurf_hook_binding_must_match_bound_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = tmp_path / "bound-profile"
+    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+    monkeypatch.setenv(
+        "WINDSURF_HOOK_CONFIG_PATH",
+        str(tmp_path / "ambient-profile" / ".codeium" / "windsurf" / "hooks.json"),
+    )
+
+    with pytest.raises(ValueError, match="does not match"):
+        connector_paths.windsurf_hook_config_path()
+
+
 # ---------------------------------------------------------------------------
 # skill_dirs
 # ---------------------------------------------------------------------------
@@ -115,6 +161,10 @@ class TestSkillDirs:
             workspace_dir=str(tmp_path),
         )
         assert connector_paths.skill_dirs("windsurf") == []
+        assert connector_paths.skill_dirs("windsurf", workspace_dir=str(tmp_path)) == [
+            os.path.join(str(tmp_path), ".windsurf", "skills"),
+            os.path.join(str(tmp_path), ".agents", "skills"),
+        ]
         antigravity = connector_paths.skill_dirs("antigravity", workspace_dir=str(tmp_path))
         assert os.path.join(str(tmp_path), ".agents", "skills") in antigravity
         assert os.path.join(str(tmp_path), "_agents", "skills") in antigravity

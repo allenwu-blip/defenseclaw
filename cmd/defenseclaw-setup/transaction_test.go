@@ -63,6 +63,49 @@ func testInstallState(installRoot, dataRoot, maintenancePath, transactionID, ver
 	}
 }
 
+func TestValidateInstallStateForRootsRequiresExactWindsurfHooksTarget(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	state := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testCurrentTransactionID,
+		"1.0.0",
+	)
+	state.Connector = "windsurf"
+	state.WindsurfUserHome = filepath.Join(t.TempDir(), "bound-profile")
+	state.WindsurfHooksPath = filepath.Join(
+		state.WindsurfUserHome,
+		".codeium",
+		"windsurf",
+		"hooks.json",
+	)
+	if err := validateInstallStateForRoots(
+		&state,
+		installRoot,
+		dataRoot,
+		maintenancePath,
+	); err != nil {
+		t.Fatalf("exact Windsurf hook target was rejected: %v", err)
+	}
+
+	state.WindsurfHooksPath = filepath.Join(
+		t.TempDir(),
+		"other-profile",
+		".codeium",
+		"windsurf",
+		"hooks.json",
+	)
+	if err := validateInstallStateForRoots(
+		&state,
+		installRoot,
+		dataRoot,
+		maintenancePath,
+	); err == nil || !strings.Contains(err.Error(), "inconsistent Windsurf hooks path") {
+		t.Fatalf("mismatched Windsurf hook target error = %v", err)
+	}
+}
+
 func writeInstallTree(t *testing.T, tree string, state installState) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(tree, "installer"), 0o755); err != nil {
@@ -1429,6 +1472,32 @@ func TestTeardownSupersededWindsurfUsesExactPreviousProfile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("Windsurf profile migration calls = %v, want %v", calls, want)
+	}
+}
+
+func TestTransactionChildEnvReplacesAmbientWindsurfBindings(t *testing.T) {
+	t.Setenv("WINDSURF_USER_HOME", `C:\Users\ambient-profile`)
+	t.Setenv(
+		"WINDSURF_HOOK_CONFIG_PATH",
+		`C:\Users\ambient-profile\.codeium\windsurf\hooks.json`,
+	)
+	transaction := setupTransaction{
+		DataRoot:         `C:\Users\tester\.defenseclaw`,
+		WindsurfUserHome: `C:\Users\bound-profile`,
+	}
+
+	env := transactionChildEnv(transaction)
+	if got := envValue(env, "WINDSURF_USER_HOME"); got != transaction.WindsurfUserHome {
+		t.Fatalf("Windsurf user home = %q, want %q", got, transaction.WindsurfUserHome)
+	}
+	wantHooks := filepath.Join(
+		transaction.WindsurfUserHome,
+		".codeium",
+		"windsurf",
+		"hooks.json",
+	)
+	if got := envValue(env, "WINDSURF_HOOK_CONFIG_PATH"); got != wantHooks {
+		t.Fatalf("Windsurf hooks path = %q, want %q", got, wantHooks)
 	}
 }
 

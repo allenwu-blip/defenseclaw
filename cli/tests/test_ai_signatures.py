@@ -51,8 +51,16 @@ def test_windsurf_signature_tracks_official_devin_desktop_rename():
     signatures = {sig.id: sig for sig in load_ai_signatures()}
     windsurf = signatures["windsurf"]
 
-    assert {"devin-desktop", "windsurf"} <= set(windsurf.binary_names)
-    assert {"Devin Desktop", "Windsurf"} <= set(windsurf.process_names)
+    assert {"Devin.exe", "devin-desktop", "windsurf"} <= set(windsurf.binary_names)
+    assert {"Devin", "Devin.exe", "Devin Desktop", "Windsurf"} <= set(windsurf.process_names)
+    assert {
+        "~/.codeium/windsurf/memories/global_rules.md",
+        ".devin/rules",
+        ".windsurf/rules",
+        ".windsurf/skills",
+        ".agents/skills",
+    } <= set(windsurf.config_paths)
+    assert ".codeium/windsurf/rules" not in windsurf.config_paths
     assert "Devin Desktop" in windsurf.application_names
     assert "devin.ai" in windsurf.domain_patterns
 

@@ -503,7 +503,7 @@
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
-          "hook_script_version": "v6",
+          "hook_script_version": "v7",
           "hook_script": "windsurf-hook.sh",
           "hook_config_path_templates": [
             "~/.codeium/windsurf/hooks.json"
