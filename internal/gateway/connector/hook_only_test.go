@@ -271,7 +271,7 @@ func TestHookOnlyConnector_SurfaceCapabilities(t *testing.T) {
 		// MCP install surface.
 		mcpSupported bool
 	}{
-		{NewHermesConnector(), []string{"skill"}, false, false, true},
+		{NewHermesConnector(), []string{"skill"}, false, true, true},
 		{NewCursorConnector(), []string{"skill", "rule"}, false, false, true},
 		{NewWindsurfConnector(), []string{"rule"}, false, false, true},
 		{NewGeminiCLIConnector(), []string{"skill"}, true, false, true},
@@ -461,7 +461,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 }
 
 // TestHermesSetup_WritesFullLifecycleAndAutoAccept pins the
-// hermes-hooks-v1 setup contract: Setup must register every lifecycle
+// hermes-hooks-v1 setup contract: Setup must register all 23 v0.19 hooks
 // event in the cli-config.yaml `hooks:` block AND set hooks_auto_accept
 // so the hooks actually register on non-TTY/gateway runs (Hermes
 // silently skips un-accepted hooks there). Teardown must heal a
@@ -491,13 +491,21 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 		t.Fatalf("hooks block missing or wrong type: %#v", cfg["hooks"])
 	}
 	for _, event := range []string{
-		"pre_llm_call", "pre_tool_call", "post_tool_call", "post_llm_call",
+		"pre_tool_call", "post_tool_call",
+		"transform_terminal_output", "transform_tool_result", "transform_llm_output",
+		"pre_llm_call", "post_llm_call", "pre_verify",
+		"pre_api_request", "post_api_request", "api_request_error",
 		"on_session_start", "on_session_end", "on_session_finalize", "on_session_reset",
 		"subagent_start", "subagent_stop",
+		"pre_gateway_dispatch", "pre_approval_request", "post_approval_response",
+		"kanban_task_claimed", "kanban_task_completed", "kanban_task_blocked",
 	} {
 		if _, ok := hooks[event]; !ok {
 			t.Errorf("hooks block missing lifecycle event %q; got keys %v", event, mapKeys(hooks))
 		}
+	}
+	if len(hooks) != 23 {
+		t.Errorf("Hermes hooks count = %d, want 23; got keys %v", len(hooks), mapKeys(hooks))
 	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {
@@ -510,12 +518,12 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 	}
 }
 
-// TestHermesSetup_RespectsExplicitAutoAcceptAndHealsUserConfig asserts
-// two coupled behaviors: (1) Setup does NOT override an operator's
-// explicit hooks_auto_accept:false, and (2) Teardown heals a
-// pre-existing config back to its pristine bytes (managed-file backup),
-// preserving the user's own hook and their auto-accept choice.
-func TestHermesSetup_RespectsExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
+// TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig asserts
+// two coupled behaviors: (1) selecting Setup enables non-interactive
+// registration even when the prior hooks_auto_accept value was false,
+// and (2) Teardown heals a pre-existing config back to its pristine
+// bytes, preserving the user's hook and prior auto-accept choice.
+func TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
@@ -539,8 +547,8 @@ func TestHermesSetup_RespectsExplicitAutoAcceptAndHealsUserConfig(t *testing.T) 
 	if err != nil {
 		t.Fatalf("read after setup: %v", err)
 	}
-	if v, ok := cfg["hooks_auto_accept"].(bool); !ok || v {
-		t.Fatalf("explicit hooks_auto_accept:false was overridden: %#v", cfg["hooks_auto_accept"])
+	if v, ok := cfg["hooks_auto_accept"].(bool); !ok || !v {
+		t.Fatalf("hooks_auto_accept was not enabled by Setup: %#v", cfg["hooks_auto_accept"])
 	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {

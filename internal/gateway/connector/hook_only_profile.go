@@ -50,29 +50,31 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 	var output map[string]interface{}
 	switch in.Req.ConnectorName {
 	case "hermes":
-		// Hermes shell-hook lifecycle (cli-config.yaml `hooks:` block):
+		// Hermes v0.19 shell-hook lifecycle (config.yaml `hooks:` block):
 		//
-		//	pre_llm_call     → inspect prompt; inject {"context":...}
-		//	pre_tool_call    → inspect tool args; BLOCK (only blockable event)
-		//	post_tool_call   → inspect tool output (observe)
-		//	post_llm_call    → inspect model output (observe)
-		//	on_session_*     → lifecycle telemetry (observe)
-		//	subagent_start/stop → delegate-task telemetry (observe)
+		//	pre_tool_call       → BLOCK with valid JSON (only tool veto)
+		//	pre_llm_call        → inject {"context":...}
+		//	pre_verify          → bounded {"action":"continue",...}
+		//	remaining 20 events → attributed audit from the shell lane
 		//
-		// Hermes reads a blocking stdout response only for
-		// pre_tool_call and a {"context":...} injection for
-		// pre_llm_call; it ignores the stdout of every other event, so
-		// those return a nil body. Hermes accepts both
+		// Python transform/gateway plugin hooks have response semantics that
+		// Hermes' shell JSON parser cannot express; approval/API/Kanban and
+		// ordinary lifecycle responses are ignored or undocumented. We never
+		// infer response authority from VALID_HOOKS membership. Hermes accepts both
 		// {"action":"block","message"} (its canonical shape) and
 		// {"decision":"block","reason"} (the Claude-Code style it
 		// normalizes internally); we emit the latter for wire parity
 		// with the legacy shaper (hookOutputFor) and the pinned
-		// hermes/verdict-blocked golden. Confirm verdicts fall through
-		// to the shared {"systemMessage":...} epilogue below (hermes
-		// has no native ask surface).
-		if in.Action == "block" {
+		// hermes/verdict-blocked golden. Confirm verdicts intentionally
+		// return no hook_output: Hermes has no documented ask, approve,
+		// or system-message response shape. The gateway still records and
+		// alerts the downgraded finding.
+		event := canonicalHookEvent(in.Req.HookEventName)
+		if in.Action == "block" && event == "pretoolcall" {
 			output = map[string]interface{}{"decision": "block", "reason": reason}
-		} else if canonicalHookEvent(in.Req.HookEventName) == "prellmcall" && in.AdditionalContext != "" {
+		} else if in.Action == "block" && event == "preverify" {
+			output = map[string]interface{}{"action": "continue", "message": reason}
+		} else if event == "prellmcall" && in.AdditionalContext != "" {
 			output = map[string]interface{}{"context": in.AdditionalContext}
 		}
 	case "cursor":
@@ -111,7 +113,8 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 		// hook_output body is required by OmniGent's policy API.
 		return HookRespondOutput{}
 	}
-	if output == nil && in.RawAction == "confirm" && in.AdditionalContext != "" && !in.Caps.CanAskNative {
+	if output == nil && in.Req.ConnectorName != "hermes" &&
+		in.RawAction == "confirm" && in.AdditionalContext != "" && !in.Caps.CanAskNative {
 		output = map[string]interface{}{"systemMessage": in.AdditionalContext}
 	}
 	return HookRespondOutput{FieldName: "hook_output", Output: output}

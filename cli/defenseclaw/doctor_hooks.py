@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation for Windows-native Codex, Claude Code, Copilot, Cursor, Windsurf, and Antigravity hooks.
+"""Passive validation for every accepted native-Windows hook connector.
 
 This module never starts a configured hook command. Agent hook configuration is
 untrusted input, so Doctor only parses those command lines and inspects their
@@ -33,6 +33,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+import yaml
+
 try:  # Python 3.11+
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
@@ -51,6 +53,7 @@ _EXPECTED_CONTRACTS = {
     "copilot": frozenset({"copilot-hooks-v1"}),
     "windsurf": frozenset({"windsurf-hooks-v1"}),
     "antigravity": frozenset({"antigravity-hooks-v2"}),
+    "hermes": frozenset({"hermes-hooks-v1"}),
 }
 _CODEX_HOOK_SPECS = {
     "SessionStart": ("session_start", "startup|resume|clear", 30),
@@ -125,6 +128,7 @@ _REPAIR = {
     "copilot": "defenseclaw setup copilot --yes --restart",
     "windsurf": "defenseclaw setup windsurf --yes --restart",
     "antigravity": "defenseclaw setup antigravity --yes --restart",
+    "hermes": "defenseclaw setup hermes --yes --restart",
 }
 _WINDSURF_EVENTS = frozenset(
     {
@@ -205,6 +209,32 @@ _ANTIGRAVITY_REQUIRED_HOOKS: dict[str, bool] = {
     "PostToolUse": True,
     "PostInvocation": False,
     "Stop": False,
+}
+
+_HERMES_REQUIRED_HOOKS: dict[str, str | None] = {
+    "pre_tool_call": ".*",
+    "post_tool_call": ".*",
+    "transform_terminal_output": None,
+    "transform_tool_result": None,
+    "transform_llm_output": None,
+    "pre_llm_call": None,
+    "post_llm_call": None,
+    "pre_verify": None,
+    "pre_api_request": None,
+    "post_api_request": None,
+    "api_request_error": None,
+    "on_session_start": None,
+    "on_session_end": None,
+    "on_session_finalize": None,
+    "on_session_reset": None,
+    "subagent_start": None,
+    "subagent_stop": None,
+    "pre_gateway_dispatch": None,
+    "pre_approval_request": None,
+    "post_approval_response": None,
+    "kanban_task_claimed": None,
+    "kanban_task_completed": None,
+    "kanban_task_blocked": None,
 }
 
 
@@ -787,8 +817,13 @@ def _read_config(path: str, connector: str) -> dict[str, Any]:
     ):
         raise _InspectionError("stale", f"hook registration file changed during inspection: {path}")
     try:
-        document = tomllib.loads(raw.decode("utf-8")) if connector == "codex" else json.loads(raw)
-    except (UnicodeError, ValueError, tomllib.TOMLDecodeError) as exc:
+        if connector == "codex":
+            document = tomllib.loads(raw.decode("utf-8"))
+        elif connector == "hermes":
+            document = yaml.safe_load(raw.decode("utf-8"))
+        else:
+            document = json.loads(raw)
+    except (UnicodeError, ValueError, tomllib.TOMLDecodeError, yaml.YAMLError) as exc:
         raise _InspectionError("malformed", f"cannot parse hook registration file {path}: {exc}") from exc
     if not isinstance(document, dict):
         raise _InspectionError("malformed", f"hook registration file does not contain an object: {path}")
@@ -1512,6 +1547,7 @@ def _managed_hook_command(command: str, connector: str) -> bool:
         "codex": "codex-hook.sh",
         "claudecode": "claude-code-hook.sh",
         "windsurf": "windsurf-hook.ps1",
+        "hermes": "hermes-hook.sh",
     }.get(connector, "")
     return ntpath.basename(target).casefold() in {
         "defenseclaw-hook",
@@ -1654,7 +1690,10 @@ def _malformed_owned_hook_target(command: str, connector: str) -> str:
         target = parts[0]
         args = parts[1:]
 
-    legacy_script = "codex-hook.sh" if connector == "codex" else "claude-code-hook.sh"
+    legacy_script = {
+        "codex": "codex-hook.sh",
+        "hermes": "hermes-hook.sh",
+    }.get(connector, "claude-code-hook.sh")
     if ntpath.basename(target).casefold() == legacy_script and not args:
         return target
     if args[:3] != ["hook", "--connector", connector]:
@@ -1886,6 +1925,27 @@ def _commands_from_hooks(
         features = document.get("features")
         if isinstance(features, dict) and features.get("hooks") is False:
             raise _InspectionError("malformed", "Codex features.hooks is explicitly disabled")
+    if connector == "hermes":
+        commands: list[str] = []
+        malformed_entry = False
+        for entries in hooks.values():
+            if not isinstance(entries, list):
+                malformed_entry = True
+                continue
+            for entry in entries:
+                command = entry.get("command") if isinstance(entry, dict) else None
+                if isinstance(command, str) and command.strip():
+                    commands.append(command.strip())
+                else:
+                    malformed_entry = True
+        if malformed_entry and not commands:
+            raise _InspectionError("malformed", "Hermes hook registration contains malformed entries")
+        managed = [command for command in commands if _managed_hook_command(command, "hermes")]
+        if not managed:
+            raise _InspectionError("foreign", "Hermes hook registration contains no DefenseClaw command")
+        if len(set(managed)) != 1:
+            raise _InspectionError("malformed", "DefenseClaw Hermes hooks use inconsistent commands")
+        return managed
     commands: list[str] = []
     command_entries: list[tuple[str, dict[str, Any], dict[str, Any], str]] = []
     malformed_entry = False
@@ -2287,6 +2347,72 @@ def _hook_json_value_targets_defenseclaw(value: Any, connector: str) -> bool:
     if isinstance(value, list):
         return any(_hook_json_value_targets_defenseclaw(item, connector) for item in value)
     return False
+
+
+def _validate_hermes_hook_matrix(document: dict[str, Any]) -> int:
+    if document.get("hooks_auto_accept") is not True:
+        raise _InspectionError(
+            "stale",
+            "Hermes hooks_auto_accept is not true; non-interactive hook registration can be skipped",
+        )
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict):
+        raise _InspectionError("missing", "Hermes hook registration has no hooks table")
+    commands: set[str] = set()
+    count = 0
+    for event, expected_matcher in _HERMES_REQUIRED_HOOKS.items():
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            raise _InspectionError("missing", f"Hermes DefenseClaw hook event {event} is missing")
+        owned = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and _handler_targets_defenseclaw(entry, "hermes")
+        ]
+        if len(owned) != 1:
+            raise _InspectionError(
+                "stale",
+                f"Hermes event {event} has {len(owned)} DefenseClaw handlers; expected exactly one",
+            )
+        entry = owned[0]
+        if entry.get("timeout") != 30 or type(entry.get("timeout")) is not int:
+            raise _InspectionError("stale", f"Hermes event {event} timeout must be 30 seconds")
+        matcher = entry.get("matcher") if "matcher" in entry else None
+        if matcher != expected_matcher:
+            raise _InspectionError(
+                "stale",
+                f"Hermes event {event} matcher is {matcher!r}; expected {expected_matcher!r}",
+            )
+        command = str(entry.get("command") or "").strip()
+        if (
+            not command.startswith('"')
+            or command.startswith("&")
+            or "powershell" in command.casefold()
+            or ".ps1" in command.casefold()
+            or "bash" in command.casefold()
+        ):
+            raise _InspectionError(
+                "stale",
+                f"Hermes event {event} is not a directly quoted native executable argv",
+            )
+        target, args, kind = _command_target(command, "hermes")
+        if kind != "direct" or ntpath.basename(target).casefold() != "defenseclaw-hook.exe":
+            raise _InspectionError(
+                "stale",
+                f"Hermes event {event} does not use the direct native DefenseClaw executable",
+            )
+        if args != ["hook", "--connector", "hermes"]:
+            raise _InspectionError("stale", f"Hermes event {event} has unexpected native argv")
+        commands.add(command)
+        count += 1
+    if len(commands) != 1:
+        raise _InspectionError("stale", "Hermes DefenseClaw hook events use inconsistent command identities")
+    for event, entries in hooks.items():
+        if event in _HERMES_REQUIRED_HOOKS or not isinstance(entries, list):
+            continue
+        if any(_handler_targets_defenseclaw(entry, "hermes") for entry in entries):
+            raise _InspectionError("stale", f"unexpected Hermes event {event} contains a DefenseClaw handler")
+    return count
 
 
 def _split_windows(command: str) -> list[str]:
@@ -2696,6 +2822,8 @@ def validate_windows_hook_registration(
             matrix_entries = _validate_claude_hook_matrix(document, managed_enterprise=managed_enterprise)
         elif connector == "antigravity":
             pass
+        elif connector == "hermes":
+            matrix_entries = _validate_hermes_hook_matrix(document)
         else:
             raise _InspectionError("foreign", f"unsupported Windows hook connector: {connector}")
         raw_target, _args, kind = _command_target(

@@ -1,11 +1,12 @@
 ---
 title: Connectors and enforcement
-description: Exact native Windows connector hook coverage, action boundaries, fail modes, and runtime controls.
+description: Exact native Windows connector and preview hook/policy coverage, action boundaries, fail modes, and runtime controls.
 keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
   - DefenseClaw Windows Cursor
   - DefenseClaw Windows Windsurf
+  - DefenseClaw Windows Hermes Agent
   - DefenseClaw Windows OpenCode
   - DefenseClaw Windows OmniGent
   - DefenseClaw Windows action mode
@@ -14,8 +15,8 @@ keywords:
 ---
 
 Native Windows enforcement is connector-native and proxy-free. A supported
-or preview agent invokes its managed native hook or awaited policy path. Codex and Claude Code
-invoke `defenseclaw-hook.exe`; Cursor and Windsurf use managed native
+or preview agent invokes its managed native hook or awaited policy path. Codex, Claude Code,
+and Hermes invoke `defenseclaw-hook.exe`; Cursor and Windsurf use managed native
 PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
 OmniGent imports a Python policy bridge into its selected native `uv tool`
 environment.
@@ -49,6 +50,7 @@ defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
+defenseclaw setup hermes --mode observe
 defenseclaw setup opencode --mode observe
 defenseclaw setup omnigent --mode observe
 ```
@@ -61,6 +63,7 @@ defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
 defenseclaw setup cursor --mode action
 defenseclaw setup windsurf --mode action
+defenseclaw setup hermes --mode action
 defenseclaw setup opencode --mode action
 defenseclaw setup omnigent --mode action
 defenseclaw guardrail status
@@ -256,13 +259,65 @@ egress sandbox is unavailable. Upstream v0.7.0 Windows CI is explicitly
 non-blocking while support stabilizes, so DefenseClaw keeps this connector in
 preview pending integrated packaged and official-client validation.
 
+## Hermes Agent (preview)
+
+Hermes native Windows support is preview and not certified. DefenseClaw manages
+the `hooks` mapping and `hooks_auto_accept: true` in
+`%HERMES_HOME%\config.yaml`; the default home is
+`%LOCALAPPDATA%\hermes`. Each managed handler uses one directly quoted absolute
+native command:
+
+```text
+"C:/Program Files/DefenseClaw/bin/defenseclaw-hook.exe" hook --connector hermes
+```
+
+The forward-slash Windows path is intentional: Hermes parses the configured
+string with Python `shlex.split`, then calls `subprocess.run(argv,
+shell=False)`. DefenseClaw does not put PowerShell, `&`, a `.ps1`, Bash, Git
+Bash, MSYS, Cygwin, WSL, Docker, or another wrapper in that command.
+
+The preview contract requires Hermes v0.19.0 or newer and registers all 23
+events in that release's `VALID_HOOKS` set. Membership does not imply
+enforcement; each event is classified from its documented callback and shell
+response semantics:
+
+| Hermes event(s) | Official host semantics | DefenseClaw shell-lane classification |
+| --- | --- | --- |
+| `pre_tool_call` with matcher `.*` | Accepts canonical block or Claude-style block JSON. | **Enforce/block:** the only tool veto. |
+| `post_tool_call` with matcher `.*` | Return ignored after the tool completes. | **Observe/audit:** cannot undo the tool. |
+| `pre_llm_call` | Accepts non-empty `{"context":"..."}`. | **Context transform:** can add context, not block. |
+| `post_llm_call` | Return ignored after the model loop. | **Observe/audit.** |
+| `pre_verify` | Accepts `{"action":"continue","message":"..."}` (or normalized stop-block form), bounded by Hermes verification nudges. | **Control/continue:** may keep verification going; it is not a tool deny, fail-closed result, or ask. |
+| `transform_terminal_output`, `transform_tool_result`, `transform_llm_output` | Python plugin hooks require a returned string to replace content. | **Audit-only / transform N/A:** the shell JSON parser cannot return the required Python string, so DefenseClaw does not claim redaction or rewriting. |
+| `pre_gateway_dispatch` | Python plugins may return `skip`, `rewrite`, or `allow`. | **Audit-only / gateway mutation N/A:** Hermes's shell response parser does not pass those shapes through. |
+| `pre_approval_request`, `post_approval_response` | Approval observers; return values are ignored. | **Audit-only:** they do not approve, deny, or answer a prompt. |
+| `pre_api_request`, `post_api_request`, `api_request_error` | Listed as valid in v0.19 source; the hook guide does not document a shell response effect. | **Partial audit-only:** no response authority is inferred. |
+| `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset` | Session lifecycle callbacks; returns ignored. | **Observe/audit.** |
+| `subagent_start`, `subagent_stop` | Delegation lifecycle callbacks; returns ignored. | **Observe/audit.** |
+| `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` | Observers around durable task transitions; returns ignored. `blocked` names a completed transition, not a veto surface. | **Audit-only:** cannot alter the board transition. |
+
+Hermes has no native ask/approve/HITL hook response. A DefenseClaw `confirm`
+finding is recorded and alerted but cannot pause and resume the Hermes call.
+Hermes also treats a timeout, missing or rejected authentication, connection
+failure, nonzero exit, malformed output, or other invalid hook result as a
+warning and continues. Exit status is not an enforcement signal. DefenseClaw
+therefore never synthesizes a Hermes fail-closed response, including when the
+generic connector policy says `closed` or strict availability is enabled.
+
+Hermes itself installs PortableGit and uses Git Bash for its upstream terminal
+tool on Windows. That is an upstream Hermes limitation, not part of the
+DefenseClaw hook path; DefenseClaw does not locate, invoke, configure, or test
+that terminal dependency.
+
 ## Fail behavior
 
 A fresh Codex, Claude Code, or OpenCode installation defaults to `closed`; a
 migrated older configuration may retain an explicit `open` posture. Cursor
 retains its documented fail-open default unless closed is selected explicitly.
-For a block-capable pre-action event, the effective connector setting applies
-to both:
+Hermes is always effectively fail-open regardless of the requested generic
+policy. For a block-capable pre-action event on any other connector, the
+effective connector setting applies to both, subject to that vendor's response
+contract:
 
 - transport failures such as missing authentication, connection refusal,
   timeout, or gateway 5xx; and
@@ -291,6 +346,14 @@ response failures become the vendor's blocking exit `2`. It does not broaden
 Windsurf's semantics: arbitrary non-`2` hook errors still fail open, only the
 five documented pre-hooks can block, and Restricted Mode still disables all
 hooks.
+
+<Callout type="warning" title="Hermes failures are always fail open">
+Hermes only honors a valid synchronous JSON response. Its official hook
+runner ignores exit status for enforcement and warns/continues on timeout,
+nonzero exit, malformed output, and other hook failures. The displayed generic
+fail-mode value is policy provenance, not a claim that DefenseClaw can make
+those Hermes failures block or ask.
+</Callout>
 
 Changing fail mode normally restarts the gateway and reconciles the native
 runtime. `--no-restart` only persists desired state; the running connector can
@@ -333,12 +396,12 @@ These controls are not the same as skill or plugin runtime disable.
 
 Runtime disable is proven only on exact agent events:
 
-| Asset control | Codex | Claude Code | OpenCode |
-| --- | --- | --- | --- |
-| Skill runtime disable | **Limited** — blocks an exact disabled skill identity at a leading `$skill` selection in `UserPromptSubmit`. | **Limited** — blocks an exact disabled skill identity at the native `UserPromptExpansion` load. | **Unsupported** — OpenCode skill inventory is not a v1 connector surface. |
-| Plugin runtime disable | **Limited** — policy is recorded, but no certified hard plugin-expansion event exists. Use quarantine for hard filesystem enforcement. | **Limited** — blocks the native slash-command/plugin expansion event. | **Unsupported** — DefenseClaw manages only its own bridge registration. |
-| Skill quarantine/restore | **Supported** — validated root, journaled provenance/content hash, copy-verify-remove, and verified restore. | **Supported** with the same DefenseClaw quarantine contract. | **Unsupported**. |
-| Plugin quarantine/restore | **Limited** — validated filesystem move/restore; do not assume the stronger skill transaction/hash guarantees. | **Limited** for the same reason. | **Unsupported**. |
+| Asset control | Codex | Claude Code | OpenCode | Hermes Agent |
+| --- | --- | --- | --- | --- |
+| Skill runtime disable | **Limited** — blocks an exact disabled skill identity at a leading `$skill` selection in `UserPromptSubmit`. | **Limited** — blocks an exact disabled skill identity at the native `UserPromptExpansion` load. | **Unsupported** — OpenCode skill inventory is not a v1 connector surface. | **Observe only** — inventory and policy records exist, but Hermes publishes no native skill-selection enforcement event. |
+| Plugin runtime disable | **Limited** — policy is recorded, but no certified hard plugin-expansion event exists. Use quarantine for hard filesystem enforcement. | **Limited** — blocks the native slash-command/plugin expansion event. | **Unsupported** — DefenseClaw manages only its own bridge registration. | **Observe only** — plugin discovery is read-only; no native expansion enforcement event is claimed. |
+| Skill quarantine/restore | **Supported** — validated root, journaled provenance/content hash, copy-verify-remove, and verified restore. | **Supported** with the same DefenseClaw quarantine contract. | **Unsupported**. | **Supported only where the discovered filesystem root satisfies the generic quarantine contract; not a Hermes hook capability.** |
+| Plugin quarantine/restore | **Limited** — validated filesystem move/restore; do not assume the stronger skill transaction/hash guarantees. | **Limited** for the same reason. | **Unsupported**. | **Limited** for the same reason; Hermes plugin inventory itself is discovery-only. |
 
 Runtime disable does not block future installation and does not move files.
 Restore removes only quarantine; a separate install block or runtime-disable
@@ -372,7 +435,8 @@ reload with restart as the fallback if a change is not loaded.
 Protection is established only when all of the following agree:
 
 1. the intended native agent and DefenseClaw run as the same Windows user;
-2. the connector appears active with the expected mode and fail mode;
+2. the connector appears active with the expected mode and truthful fail
+   posture (Hermes must report failure handling as open);
 3. the gateway reports ready and authenticated;
 4. doctor recognizes the agent version and full hook contract; and
 5. a new non-sensitive prompt produces connector-attributed local activity.
@@ -381,5 +445,6 @@ For configuration details, see [Codex](/docs/connectors/codex),
 [Claude Code](/docs/connectors/claudecode),
 [Cursor](/docs/connectors/cursor),
 [OpenCode](/docs/connectors/opencode),
-[OmniGent](/docs/connectors/omnigent), and
+[OmniGent](/docs/connectors/omnigent),
+[Hermes Agent](/docs/connectors/hermes), and
 [multi-connector setup](/docs/setup/guardrail/multi-connector).

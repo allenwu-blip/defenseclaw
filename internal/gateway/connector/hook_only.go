@@ -498,7 +498,17 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill"}
-		caps.Plugins = pluginsAreOpenClawOnly()
+		caps.Plugins = SurfaceCapability{
+			Supported: true,
+			Scope:     "workspace,user",
+			ReadPaths: []string{
+				filepath.Join(hermespath.HomeDir(), "plugins"),
+				workspacePath(opts, ".hermes", "plugins"),
+			},
+			Notes: []string{
+				"Hermes plugins are inventory/discovery-only in DefenseClaw v1; connector setup does not install or modify them.",
+			},
+		}
 		caps.Rules = unsupportedSurface("Hermes rules are not a separate documented local surface.")
 		caps.Agents = unsupportedSurface("Hermes subagent/agent asset locations are not installed by DefenseClaw v1.")
 	case "cursor":
@@ -1460,27 +1470,38 @@ func patchHermesHooks(path, hookScript string) error {
 	// daemon, cron, CI) there is no prompt, so an un-accepted hook is
 	// silently skipped and never fires. hooks_auto_accept is the
 	// documented escape hatch that lets all of DefenseClaw's lifecycle
-	// hooks register without an interactive prompt. We only set it when
-	// the operator has not made an explicit choice, so a deliberate
-	// `hooks_auto_accept: false` is preserved (and surfaced by doctor).
-	// The managed-file backup captures and heals this key on teardown.
-	if _, ok := cfg["hooks_auto_accept"]; !ok {
-		cfg["hooks_auto_accept"] = true
-	}
+	// hooks register without an interactive prompt. Selecting Hermes
+	// Setup is an explicit request to register those hooks, so Setup sets
+	// the key even when the prior value was false. The managed-file backup
+	// restores the operator's exact prior bytes on teardown.
+	cfg["hooks_auto_accept"] = true
 	for _, spec := range []struct {
 		event   string
 		matcher string
 	}{
 		{"pre_tool_call", ".*"},
 		{"post_tool_call", ".*"},
+		{"transform_terminal_output", ""},
+		{"transform_tool_result", ""},
+		{"transform_llm_output", ""},
 		{"pre_llm_call", ""},
 		{"post_llm_call", ""},
+		{"pre_verify", ""},
+		{"pre_api_request", ""},
+		{"post_api_request", ""},
+		{"api_request_error", ""},
 		{"on_session_start", ""},
 		{"on_session_end", ""},
 		{"on_session_finalize", ""},
 		{"on_session_reset", ""},
 		{"subagent_start", ""},
 		{"subagent_stop", ""},
+		{"pre_gateway_dispatch", ""},
+		{"pre_approval_request", ""},
+		{"post_approval_response", ""},
+		{"kanban_task_claimed", ""},
+		{"kanban_task_completed", ""},
+		{"kanban_task_blocked", ""},
 	} {
 		entry := map[string]interface{}{
 			"command": shellWord(hookScript),

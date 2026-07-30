@@ -42,8 +42,9 @@ import (
 	"time"
 )
 
-// blockExit is the POSIX exit code every supported agent treats as "this hook
-// blocked the action" (Claude Code, Codex, Cursor, Windsurf, OpenHands, ...).
+// blockExit is the failure/block exit used by connectors whose upstream hook
+// contracts interpret process status. Hermes is explicitly excluded: it only
+// blocks through valid synchronous JSON written to stdout.
 const blockExit = 2
 
 // defaultMaxBody caps how many bytes of the agent's hook payload we read from
@@ -423,7 +424,7 @@ func (sp spec) decide(opts Options, body []byte) int {
 func handleMissingToken(opts Options, sp spec, failMode string) int {
 	const reason = "missing gateway token (connector-scoped and legacy token sidecars absent; DEFENSECLAW_GATEWAY_TOKEN unset)"
 	logHookFailure(opts, sp, reason, "transport", failMode)
-	if opts.StrictAvailability || failMode == "closed" {
+	if !sp.failOpenOnly && (opts.StrictAvailability || failMode == "closed") {
 		if sp.connector == "antigravity" {
 			fmt.Fprintf(opts.Stderr,
 				"defenseclaw: %s, applying Antigravity's event-specific failure response\n", reason)
@@ -437,7 +438,7 @@ func handleMissingToken(opts Options, sp spec, failMode string) int {
 }
 
 func handleUnavailableHome(opts Options, sp spec, reason string) int {
-	if opts.StrictAvailability || opts.ManagedEnterprise {
+	if !sp.failOpenOnly && (opts.StrictAvailability || opts.ManagedEnterprise) {
 		if sp.connector == "antigravity" {
 			fmt.Fprintf(opts.Stderr, "defenseclaw: %s, applying Antigravity's event-specific failure response\n", reason)
 		} else {
@@ -452,7 +453,7 @@ func handleUnavailableHome(opts Options, sp spec, reason string) int {
 func handleOversized(opts Options, sp spec, failMode string) int {
 	logHookFailure(opts, sp, "stdin body exceeded cap", "transport", failMode)
 	fmt.Fprintf(opts.Stderr, "defenseclaw: %s hook refusing oversized payload\n", sp.connector)
-	if failMode == "closed" {
+	if !sp.failOpenOnly && failMode == "closed" {
 		return emitHookResult(opts, sp, sp.oversizedClosed)
 	}
 	return emitHookResult(opts, sp, sp.openAllow)
@@ -463,7 +464,7 @@ func handleOversized(opts Options, sp spec, failMode string) int {
 // override for compatibility with existing deployments.
 func failUnreachable(opts Options, sp spec, failMode, reason string) int {
 	logHookFailure(opts, sp, reason, "transport", failMode)
-	if opts.StrictAvailability || failMode == "closed" {
+	if !sp.failOpenOnly && (opts.StrictAvailability || failMode == "closed") {
 		if sp.connector == "antigravity" {
 			fmt.Fprintf(opts.Stderr,
 				"defenseclaw: gateway unreachable, applying Antigravity's event-specific failure response: %s\n", reason)
@@ -494,7 +495,7 @@ func failResponse(opts Options, sp spec, failMode, reason string) int {
 	reason = responseFailureReason(reason)
 	logHookFailure(opts, sp, reason, "response", failMode)
 	fmt.Fprintf(opts.Stderr, "defenseclaw: %s hook error: %s\n", sp.errLabel, reason)
-	if failMode == "open" {
+	if sp.failOpenOnly || failMode == "open" {
 		return emitHookResult(opts, sp, sp.openAllow)
 	}
 	return emitHookResult(opts, sp, sp.responseClosed)
@@ -507,7 +508,8 @@ func responseFailureReason(reason string) string {
 	return reason
 }
 
-// emit writes a fail-closed JSON body (if any) and returns its exit code.
+// emit writes the connector-native failure body (if any) and returns its exit
+// code. Hermes failure results are always empty exit-0 allows.
 func emit(out io.Writer, r failResult) int {
 	if r.body != "" {
 		fmt.Fprintln(out, r.body)

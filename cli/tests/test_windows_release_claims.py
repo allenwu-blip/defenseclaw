@@ -21,11 +21,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_windows_release_metadata_is_exact() -> None:
     assert WINDOWS_SUPPORTED_CONNECTORS == {"codex", "claudecode"}
-    assert WINDOWS_PREVIEW_CONNECTORS == {"cursor", "windsurf", "opencode", "omnigent"}
+    assert WINDOWS_PREVIEW_CONNECTORS == {"cursor", "hermes", "windsurf", "opencode", "omnigent"}
     assert WINDOWS_NOT_CERTIFIED_CONNECTORS == {
         "copilot",
         "antigravity",
-        "hermes",
     }
     assert WINDOWS_UNSUPPORTED_CONNECTORS == {
         "geminicli",
@@ -65,8 +64,8 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "Hyper-V backend" in text
     assert "per-user Docker Desktop" in text
     assert "WSL2 engines" in text
-    assert "Hermes remains preview" not in text
-    assert "Hermes is preview" not in install_text
+    assert "Hermes" in text and "Preview" in text
+    assert "Hermes" in install_text and "preview" in install_text.lower()
     assert "```bash" not in text and "```sh" not in text
     assert text.count("```powershell") >= 8
     for label in (

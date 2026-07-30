@@ -21,6 +21,7 @@ then use the same local audit and optional outbound observability pipeline.
 | Claude Code | 28 current lifecycle/tool/configuration events; the only enforcement path. | OTLP logs and metrics over HTTP/JSON; traces are explicitly disabled. | Marked hooks and OTLP environment entries in `%CLAUDE_CONFIG_DIR%\settings.json`. |
 | Cursor preview | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
 | Windsurf preview | Twelve Cascade events; only five pre-hooks can block. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. |
+| Hermes Agent (preview) | All 23 v0.19 events are registered and independently classified; only a valid `pre_tool_call` JSON block can veto a tool. | No official native OTLP logs, metrics, or traces. Hook-derived events enter the same v8 audit pipeline. | Owned handlers in `%HERMES_HOME%\config.yaml`; no native exporter settings are invented. |
 | OpenCode | Awaited `tool.execute.before` is the only enforcement path; `tool.execute.after` and generic lifecycle delivery are best-effort observation. | No documented native OTLP surface; the plugin emits hook-generated audit/telemetry. | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, default `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`. |
 
 Codex and Claude Code configure a connector-scoped bearer and source/client
@@ -29,9 +30,12 @@ URL. Claude Code stores the managed exporter settings in its configuration,
 not in the interactive shell. OpenCode embeds a separate connector-scoped hook
 token in its managed plugin and has no native OTLP credential. Cursor and
 Windsurf use protected connector-scoped hook credentials without placing them
-in the vendor hook JSON. A scoped credential is accepted only for its connector
-and route; it cannot authenticate the management API, another connector, or a
-non-loopback request.
+in the vendor hook JSON; Hermes uses its own connector-scoped hook credential.
+A scoped credential is accepted only for its connector and route; it cannot
+authenticate the management API, another connector, or a non-loopback request.
+Hermes hook-derived audit records retain connector, session, event,
+and correlation attribution before entering generic alert, webhook, OTLP, or
+Splunk destinations.
 
 <Callout type="info" title="Native OTLP is observation-only">
 A native OTLP log, metric, or trace can enrich audit and dashboards, but it
@@ -49,9 +53,9 @@ The v8 observability pipeline writes mandatory local SQLite audit data to
 - an optional remote destination is temporarily degraded.
 
 In the supported standalone hook topology, “gateway disabled” in a fleet row
-means there is no OpenClaw fleet WebSocket to dial. It does not mean the local
-hook API, policy evaluation, native OTLP ingest, local audit, alerts, or TUI
-have stopped.
+  means there is no OpenClaw fleet WebSocket to dial. It does not mean the local
+  hook API, policy evaluation, available native OTLP ingest, local audit,
+  alerts, or TUI have stopped.
 
 `gateway.jsonl` is **not** a default audit file. It exists only if an optional
 `kind: jsonl` destination is configured to write that path. The detached
@@ -89,7 +93,7 @@ DefenseClaw uses distinct credentials for distinct jobs:
 | --- | --- | --- |
 | Gateway master token | Local gateway control/lifecycle authentication. Stored through the protected DefenseClaw environment file. | Rotate with the CLI; do not edit, print, or pass it on an argv. |
 | Connector hook credential | One connector's hook API route. | Managed by setup/teardown; never copy its sidecar. |
-| Connector native-OTLP credential | One connector's OTLP routes only. | Stable across unrelated master-token rotation and revoked during connector teardown. |
+| Connector native-OTLP credential | One Codex or Claude Code connector's OTLP routes only; Hermes has no official native OTLP surface. | Stable across unrelated master-token rotation and revoked during connector teardown. |
 | Provider or destination credentials | Only the configured external provider/destination. | Reference protected environment names; do not place literal values in YAML or support output. |
 
 ### Rotate safely
@@ -108,10 +112,11 @@ each supported signal. A post-stop failure restores the exact prior protected
 file and ready gateway generation. `--no-restart` is intentionally refused,
 and an externally managed noncanonical token environment is not rewritten.
 
-Connector-scoped OTLP credentials remain distinct from the master token. The
-rotation does not expose them and does not turn one connector's credential into
-a cross-connector credential. Restart every configured agent after a successful
-rotation so its next hook subprocess uses the reconciled generation.
+Connector-scoped hook and OTLP credentials remain distinct from the master
+token. The rotation does not expose them and does not turn one connector's
+credential into a cross-connector credential. Restart every configured agent
+after a successful rotation so its next hook subprocess uses the reconciled
+generation.
 
 Verify without reading any token:
 
@@ -149,7 +154,8 @@ A production native Windows release requires:
 3. a valid Authenticode signature from `Cisco Systems, Inc.` on Setup;
 4. signed and verified inner product executables; and
 5. release-pipeline certification of that exact signed Setup with pinned real
-   Codex and Claude Code versions. Cursor, Windsurf, and OpenCode remain preview
+   Codex and Claude Code versions. Cursor, Windsurf, Hermes, OpenCode, and
+   OmniGent remain preview
    until their packaged lifecycle and authentic official-client gates pass.
 
 Pull-request and local Setup artifacts are unsigned test builds. Passing the
@@ -200,9 +206,9 @@ connector homes as separate supported identities.
 | --- | --- |
 | Setup verification | Invalid architecture, launch identity, signature, payload, path, ownership, or prior state refuses before live mutation where possible. |
 | Setup transaction | Pre-commit failure rolls back owned changes; ambiguous or committed phases retain a journal and require safe recovery/convergence. |
-| Hook delivery/response | Effective `closed` blocks supported block-capable events for transport and malformed/unauthorized response failures. For OpenCode, only the awaited `tool.execute.before` thrown-error path is authoritative; after/lifecycle delivery remains best effort. |
+| Hook delivery/response | Effective `closed` blocks only vendor-supported block-capable events for transport and malformed/unauthorized response failures. For OpenCode, only the awaited `tool.execute.before` thrown-error path is authoritative; after/lifecycle delivery remains best effort. Hermes officially warns and continues for timeout, nonzero exit, malformed output, authentication, and transport failures, so DefenseClaw never claims fail-closed Hermes delivery. |
 | Managed enterprise hook | The narrow administrator-managed Claude Code path fails closed when protected policy identity is invalid. |
-| Runtime skill selection | A disabled-state database or provenance failure blocks the exact Codex/Claude skill-selection surface. |
+| Runtime skill selection | A disabled-state database or provenance failure blocks the exact Codex/Claude skill-selection surface. Hermes exposes no equivalent native skill-selection enforcement event. |
 | Internal evaluator panic | Fails open with warning and telemetry because no authoritative verdict was produced. |
 | Optional exporter outage | Local SQLite and healthy gateway operation continue; the destination is reported degraded. |
 

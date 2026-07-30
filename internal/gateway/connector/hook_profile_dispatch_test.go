@@ -517,13 +517,14 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 
 // TestHermesProfileRespond_Parity pins the hermes branch of
 // hookOnlyProfileRespond (hermes is wired through the shared responder;
-// it has no profile file of its own). Only pre_tool_call blocks
-// ({"decision":"block"}); pre_llm_call injects context; every other
-// event is observe-only (nil body). Wire parity with the legacy
+// it has no profile file of its own). pre_tool_call blocks
+// ({"decision":"block"}); pre_llm_call injects context; pre_verify can
+// continue Hermes's bounded verification loop. Every other shell-hook-valid
+// event is audit-only from DefenseClaw's JSON shell lane. Wire parity with the legacy
 // hookOutputFor("hermes") shaper and the hermes/verdict-blocked golden
 // is intentional — a divergence here ships a silent behavior change.
-// Confirm verdicts (hermes has no native ask surface) downgrade via the
-// shared epilogue to {"systemMessage":...}.
+// Confirm verdicts (Hermes has no native ask/approve or message response)
+// remain audit/alert-only and produce no hook output.
 func TestHermesProfileRespond_Parity(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -558,6 +559,17 @@ func TestHermesProfileRespond_Parity(t *testing.T) {
 			expected:  nil,
 		},
 		{
+			name:      "pre_verify_block_keeps_bounded_verification_loop_going",
+			event:     "pre_verify",
+			action:    "block",
+			rawAction: "block",
+			reason:    "run the required focused verification",
+			expected: map[string]interface{}{
+				"action":  "continue",
+				"message": "run the required focused verification",
+			},
+		},
+		{
 			name:       "post_tool_call_alert_is_observe_only",
 			event:      "post_tool_call",
 			action:     "alert",
@@ -573,16 +585,33 @@ func TestHermesProfileRespond_Parity(t *testing.T) {
 			expected:  nil,
 		},
 		{
-			// Confirm downgrade: hermes CanAskNative=false, so a confirm
-			// verdict reaches Respond as action=alert / rawAction=confirm
-			// and the shared epilogue surfaces the warning as a
-			// systemMessage (the pre-bespoke-profile shipped behavior).
-			name:       "pre_tool_call_confirm_downgrades_to_systemMessage",
+			name:       "transform_tool_result_is_audit_only_in_shell_lane",
+			event:      "transform_tool_result",
+			action:     "block",
+			rawAction:  "block",
+			reason:     "Python transform requires a string return",
+			additional: "do not synthesize a transform",
+			expected:   nil,
+		},
+		{
+			name:       "pre_gateway_dispatch_is_audit_only_in_shell_lane",
+			event:      "pre_gateway_dispatch",
+			action:     "block",
+			rawAction:  "block",
+			reason:     "shell parser cannot express skip or rewrite",
+			additional: "do not synthesize a gateway action",
+			expected:   nil,
+		},
+		{
+			// Confirm downgrade: Hermes CanAskNative=false, so the
+			// gateway records/alerts it without fabricating an
+			// undocumented hook response.
+			name:       "pre_tool_call_confirm_is_audit_only",
 			event:      "pre_tool_call",
 			action:     "alert",
 			rawAction:  "confirm",
 			additional: "DefenseClaw needs your approval before terminal can run.",
-			expected:   map[string]interface{}{"systemMessage": "DefenseClaw needs your approval before terminal can run."},
+			expected:   nil,
 		},
 	}
 	for _, tc := range cases {

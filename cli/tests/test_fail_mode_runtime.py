@@ -230,6 +230,21 @@ def test_connector_fail_mode_report_uses_disposable_windows_runtime(
     assert report["current"] is True
 
 
+def test_connector_fail_mode_report_hermes_preserves_configured_provenance_but_reports_open(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg, _home = _runtime_cfg(monkeypatch, tmp_path, {"hermes": "closed"})
+
+    report = connector_fail_mode_report(cfg, "hermes")
+
+    assert report["configured"] == "closed"
+    assert report["effective"] == "open"
+    assert report["runtime"] == "open"
+    assert report["provenance"] == "hermes-upstream-fail-open"
+    assert report["current"] is True
+    assert report["sources"][-1] == {"name": "hermes-upstream", "mode": "open"}
+
+
 def test_windows_registration_freshness_uses_authenticated_packaged_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

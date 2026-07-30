@@ -215,6 +215,7 @@ var (
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
+		{Label: "Hermes Agent (preview)", Value: "hermes"},
 		{Label: "Windsurf", Value: "windsurf"},
 		{Label: "OmniGent (native degraded preview)", Value: "omnigent"},
 		{Label: "OpenCode (preview)", Value: "opencode"},
@@ -742,6 +743,8 @@ func wizardCompletionDescription(connector string) string {
 		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
 	case "cursor":
 		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
+	case "hermes":
+		return "Hermes preview hooks are configured through the direct native launcher. Valid synchronous JSON can block pre-tool calls; hook failures remain open and no native ask surface exists." + installed
 	case "windsurf":
 		return "Windsurf native Windows support is configured as preview with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
 	case "antigravity":

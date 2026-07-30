@@ -63,8 +63,8 @@ from defenseclaw.tui.services.cli_choices import (
 from tests.helpers import cleanup_app, make_app_context
 
 WINDOWS_SUPPORTED = {"codex", "claudecode"}
-WINDOWS_PREVIEW: set[str] = {"cursor", "windsurf", "opencode", "omnigent"}
-WINDOWS_NOT_CERTIFIED = {"copilot", "antigravity", "hermes"}
+WINDOWS_PREVIEW: set[str] = {"cursor", "hermes", "windsurf", "opencode", "omnigent"}
+WINDOWS_NOT_CERTIFIED = {"copilot", "antigravity"}
 WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
@@ -187,6 +187,7 @@ def test_supported_connectors_preserves_order_and_available_windows_scope() -> N
         "cursor",
         "codex",
         "opencode",
+        "hermes",
         "claudecode",
     ]
     assert supported_connectors(ordered, "linux") == ordered

@@ -242,6 +242,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		variable = "ANTIGRAVITY_CONFIG_DIR"
 	case "opencode":
 		variable = "OPENCODE_CONFIG_DIR"
+	case "hermes":
+		variable = "HERMES_HOME"
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}
@@ -333,9 +335,9 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
 	if name != "antigravity" && name != "claudecode" && name != "codex" &&
-		name != "copilot" && name != "cursor" && name != "omnigent" &&
+		name != "copilot" && name != "cursor" && name != "hermes" && name != "omnigent" &&
 		name != "opencode" && name != "windsurf" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for antigravity, claudecode, codex, copilot, cursor, omnigent, opencode, and windsurf")
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for antigravity, claudecode, codex, copilot, cursor, hermes, omnigent, opencode, and windsurf")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		// Transactional Windows Setup must be able to preserve and repair a

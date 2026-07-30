@@ -145,7 +145,7 @@ represent DefenseClaw Windows support or release certification.
 | Copilot CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Antigravity | supported | supported | **not certified** | Google publishes native Windows x64/ARM64 clients and the implementation targets CLI 1.1.8+, but integrated packaged and official-client validation is still pending. |
 | OpenCode | supported | supported | **preview** | The direct native implementation installs OpenCode's auto-loaded bridge with Windows paths/processes, but certification remains pending the integrated packaged-Setup and official-client gates. Upstream recommends WSL but does not require it. |
-| Hermes | supported | supported | **not certified** | Upstream Windows availability does not substitute for DefenseClaw native release certification. |
+| Hermes | supported | supported | **preview / not certified** | Upstream Windows 10/11 x86_64/aarch64 is Tier 1. DefenseClaw registers a directly quoted absolute native hook executable through Hermes's `shlex.split` + `subprocess.run(shell=False)` boundary; packaged and real-client certification is pending. |
 | OpenHands | supported | supported | unsupported | OpenHands CLI explicitly requires WSL; DefenseClaw has no WSL connector implementation. |
 | OmniGent | supported | supported | preview (native degraded) | OmniGent 0.7.0 documents native Windows server and SDK harnesses. DefenseClaw uses the awaited in-process policy API; terminal wrappers and filesystem/network/L7 sandbox parity are unavailable. |
 | OpenClaw | supported | supported | unsupported | OpenClaw itself has a native path, but DefenseClaw's connector requires the local guardrail-proxy lifecycle, which DefenseClaw does not host on Windows. |
@@ -168,7 +168,7 @@ is `not separately documented` rather than an inferred support promise.
 | -------------- | --------------------- | ------------------------------------ |
 | Codex | WSL2 is documented; WSL1 is no longer supported starting with Codex 0.115. | Native Windows supported; WSL is out of scope. |
 | Claude Code | WSL1 and WSL2 are documented alternatives to the direct native Windows installation. | Native Windows supported; WSL is out of scope. |
-| Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
+| Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Native Windows preview through a direct DefenseClaw executable only; WSL remains out of scope. Hermes's own Windows terminal tool uses installer-managed PortableGit internally and is not a DefenseClaw dependency. |
 | Cursor | Cursor documents both native Windows Agent installation and WSL installation. | Native Windows Agent/IDE hooks are available as a DefenseClaw preview; WSL remains out of scope. |
 | Windsurf | Hook docs publish Linux/WSL configuration locations as well as native Windows locations. | Native Windows preview through the documented PowerShell hook transport; WSL remains out of scope and certification is pending. |
 | Gemini CLI | Upstream documents native Windows, but the intended DefenseClaw Windows product/audience path was discontinued. | Native Windows support is excluded; existing macOS/Linux behavior remains unchanged. |
@@ -213,6 +213,9 @@ OmniGent v0.7.0 (released 2026-07-27):
 [OpenCode v1.18.10 release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10),
 [Hermes platform support](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support),
 [Hermes native Windows guide](https://hermes-agent.nousresearch.com/docs/user-guide/windows-native),
+[Hermes hooks](https://github.com/NousResearch/hermes-agent/blob/v2026.7.20/website/docs/user-guide/features/hooks.md),
+[Hermes hook process source](https://github.com/NousResearch/hermes-agent/blob/v2026.7.20/agent/shell_hooks.py),
+[Hermes v2026.7.20 release](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.20),
 [OpenHands CLI quick start](https://docs.openhands.dev/openhands/usage/cli/quick-start),
 [OmniGent v0.7.0 Windows support](https://github.com/omnigent-ai/omnigent/blob/v0.7.0/README.md#native-windows-support-degraded-mode),
 [OmniGent v0.7.0 custom policies](https://github.com/omnigent-ai/omnigent/blob/v0.7.0/docs/POLICIES.md),
@@ -222,7 +225,10 @@ OmniGent v0.7.0 (released 2026-07-27):
 [ZeptoClaw installation](https://zeptoclaw.com/docs/getting-started/installation/).
 
 Windows DefenseClaw is **hook-only**. The Codex and Claude Code registrations
-invoke `defenseclaw-hook.exe` natively. Cursor and Windsurf use managed native
+invoke `defenseclaw-hook.exe` natively. The Hermes preview registers only a
+directly quoted absolute forward-slash `defenseclaw-hook.exe` argv and does not
+install, locate, invoke, configure, or test Hermes's upstream PortableGit
+terminal dependency. Cursor and Windsurf use managed native
 PowerShell adapters that synchronously invoke the exact packaged hook runtime.
 OpenCode's preview runs its DefenseClaw bridge in-process from
 `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` (default
@@ -256,7 +262,7 @@ with a warning. Action mode fails closed on that contract mismatch.
 | ZeptoClaw | proxy, not hook-gated | not gated by hook contract | n/a | proxy request/response surfaces |
 | Codex | hook contract | `>=0.124.0` | `codex-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Claude Code | hook contract | `>=2.1.152` | `claudecode-hooks-v1` / `v7` | prompt, tool_call, tool_result, event_content |
-| Hermes | hook contract | `>=0.11.0` | `hermes-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
+| Hermes | hook contract | `>=0.19.0` | `hermes-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
 | Cursor | hook contract | `>=1.7.0` | `cursor-hooks-v1` / `v8` | prompt, tool_call, tool_result |
 | Windsurf | hook contract | `>=1.12.41` | `windsurf-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v6` | prompt, tool_call, tool_result |
@@ -274,7 +280,8 @@ checks instead of being blocked by a guessed major-version cap.
 Version floors are evidence-backed from upstream release notes or current
 vendor docs: Codex `0.124.0` is the stable-hooks release, Gemini CLI `0.26.0`
 enabled hooks by default, Cursor `1.7.0` introduced beta hooks, Hermes
-`0.11.0` added shell hooks for `pre_tool_call`, Windsurf `1.12.41` added user
+`0.19.0` is the floor for DefenseClaw's current 23-event shell-hook contract
+(earlier Hermes releases exposed smaller sets), Windsurf `1.12.41` added user
 prompt hooks to the Cascade pre-hook set, and Copilot CLI `1.0.18` is the first
 release containing every event in the current DefenseClaw Copilot contract.
 OpenHands uses the current documented `.openhands/hooks.json` contract, has
@@ -417,7 +424,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | Copilot CLI | live\* | live\* | live\* (not certified) | `copilot -p` | user-level hooks only; entitled token |
 | OpenHands | live | — | — | `openhands --headless --json` | Docker runtime, Linux-only |
 | OpenCode | contract-only | contract-only | live\* (required release gate) | `opencode run --format json --model openai/gpt-5-mini --auto` | Native JS bridge; only awaited `tool.execute.before` blocks. The Windows gate pins official OpenCode `1.18.10`; its result must be recorded before publishing the corresponding release claim. |
-| Hermes | contract-only | contract-only | contract-only (not certified) | — | Native Windows is upstream Tier 1, but DefenseClaw does not certify the connector there. |
+| Hermes | contract-only | contract-only | contract-only (preview; not certified) | — | Official client is native Windows Tier 1; direct executable contract is implemented, but packaged and interactive block-visibility gates remain deferred. |
 | Windsurf | contract-only | contract-only | contract-only (preview; not certified) | — | no headless CLI/SDK; interactive native Windows client gate deferred |
 | Antigravity | contract-only | contract-only | contract + native package validation pending (not certified) | `agy --dangerously-skip-permissions --print` on an authenticated runner | Google documents Windows Credential Manager/browser auth, not API-key bootstrap; real live E2E requires a pre-authenticated native Windows runner. |
 | OmniGent | contract-only | contract-only | contract-only (native degraded preview) | `omnigent server` plus SDK harnesses | v0.7.0 official-client Windows job is advisory while upstream Windows CI remains non-blocking; no terminal/sandbox parity |

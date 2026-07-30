@@ -606,7 +606,7 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
 	transaction.PreserveConnectorConfiguration = true
-	transaction.PreviousConnectors = []string{"codex", "cursor", "opencode"}
+	transaction.PreviousConnectors = []string{"codex", "cursor", "hermes", "opencode"}
 	transaction.TargetServices.Gateway = true
 	transaction.PreviousCodexHome = filepath.Join(filepath.Dir(dataRoot), ".codex")
 	transaction.CodexHome = transaction.PreviousCodexHome
@@ -620,6 +620,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
 	transaction.PreviousOpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".config", "opencode")
 	transaction.OpenCodeConfigDir = transaction.PreviousOpenCodeConfigDir
+	transaction.PreviousHermesHome = filepath.Join(filepath.Dir(dataRoot), "AppData", "Local", "hermes")
+	transaction.HermesHome = transaction.PreviousHermesHome
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -648,6 +650,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	changedOpenCodeHome.OpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-opencode")
 	if err := validateSetupTransaction(changedOpenCodeHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded OpenCode home")
+	}
+	changedHermesHome := transaction
+	changedHermesHome.HermesHome = filepath.Join(filepath.Dir(dataRoot), "other-hermes")
+	if err := validateSetupTransaction(changedHermesHome, expected); err == nil {
+		t.Fatal("connector-preserving transaction changed its recorded Hermes home")
 	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
@@ -1782,6 +1789,85 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {
 		t.Fatalf("handoff stable-hook posture = %q", handoff.PreviousStableHookStatus)
+	}
+}
+
+func TestHermesManagedHomeSurvivesRepairEnvironmentDriftAndHandoff(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows setup transaction connector-home resolution")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	managedHome := filepath.Join(filepath.Dir(dataRoot), "AppData", "Local", "Hermes Managed")
+	ambientHome := filepath.Join(filepath.Dir(dataRoot), "ambient-hermes")
+	backupPath := filepath.Join(dataRoot, "connector_backups", "hermes", "config.yaml.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binding := fmt.Sprintf(`{"path":%q}`, filepath.Join(managedHome, "config.yaml"))
+	if err := os.WriteFile(backupPath, []byte(binding), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ambientHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERMES_HOME", ambientHome)
+
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"0.8.6",
+	)
+	previous.HermesHome = filepath.Join(filepath.Dir(dataRoot), "stale-hermes-state")
+	transaction, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"0.8.6",
+		"0.8.7",
+		&previous,
+		options{
+			Action:                         "repair",
+			Connector:                      "none",
+			Mode:                           "observe",
+			PreserveConnectorConfiguration: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(transaction.PreviousHermesHome, managedHome) ||
+		!samePath(transaction.HermesHome, managedHome) {
+		t.Fatalf(
+			"Hermes repair homes = (%q, %q), want managed binding %q",
+			transaction.PreviousHermesHome,
+			transaction.HermesHome,
+			managedHome,
+		)
+	}
+	if got := envValue(transactionChildEnv(transaction), "HERMES_HOME"); !samePath(got, managedHome) {
+		t.Fatalf("Hermes repair child env = %q, want %q", got, managedHome)
+	}
+
+	transaction.UninstallHandoffHookStatus = stableHookSnapshotInactive
+	handoff, err := newUninstallHandoffTransaction(
+		transaction,
+		&previous,
+		options{Action: "uninstall", Connector: "none", Mode: "observe"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(handoff.PreviousHermesHome, managedHome) ||
+		!samePath(handoff.HermesHome, managedHome) {
+		t.Fatalf(
+			"Hermes handoff homes = (%q, %q), want managed binding %q",
+			handoff.PreviousHermesHome,
+			handoff.HermesHome,
+			managedHome,
+		)
 	}
 }
 

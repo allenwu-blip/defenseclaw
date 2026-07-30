@@ -5,6 +5,9 @@
 #
 # Real provider-secret Codex/Claude tests remain in connector-live-e2e.yml and
 # are workflow_dispatch-only. They are regression radar, not a merge gate.
+# Hermes remains preview/not-certified and is intentionally absent from the
+# required packaged connector matrix until the deferred acceptance pass in
+# docs/research/HERMES-NATIVE-WINDOWS.md is implemented and passes.
 
 name: Windows Native CI
 
@@ -614,10 +617,12 @@ jobs:
     timeout-minutes: 35
     env:
       CONNECTOR: ${{ matrix.connector }}
-    strategy:
-      fail-fast: false
-      matrix:
-        connector: [codex, claudecode, copilot, cursor, windsurf, antigravity, opencode]
+      strategy:
+        fail-fast: false
+        matrix:
+          # Contract coverage does not certify preview/not-certified connectors;
+          # promotion still requires packaged and official-client evidence.
+          connector: [codex, claudecode, copilot, cursor, hermes, windsurf, antigravity, opencode]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:

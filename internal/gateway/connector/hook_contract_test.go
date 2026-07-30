@@ -193,6 +193,42 @@ func TestHookContractsCoverHookEndpoints(t *testing.T) {
 	}
 }
 
+func TestHermesHookContractV019ClassifiesAllValidEventsWithoutInventingBlockSurfaces(t *testing.T) {
+	if got := ResolveHookContract("hermes", "0.18.99").Status; got != HookCompatibilityUnknown {
+		t.Fatalf("Hermes 0.18 compatibility = %q, want unknown for the v0.19 event contract", got)
+	}
+	resolution := ResolveHookContract("hermes", "0.19.0")
+	if resolution.Status != HookCompatibilityKnown {
+		t.Fatalf("Hermes 0.19 compatibility = %q, want known", resolution.Status)
+	}
+	contract := resolution.Contract
+	if len(contract.Events) != 23 {
+		t.Fatalf("Hermes event count = %d, want 23: %v", len(contract.Events), contract.Events)
+	}
+	seen := make(map[string]struct{}, len(contract.Events))
+	for _, event := range contract.Events {
+		if _, exists := seen[event]; exists {
+			t.Fatalf("Hermes event %q appears more than once", event)
+		}
+		seen[event] = struct{}{}
+	}
+	for _, event := range []string{
+		"pre_tool_call", "pre_llm_call", "pre_verify",
+		"transform_terminal_output", "pre_gateway_dispatch",
+		"pre_approval_request", "api_request_error", "kanban_task_blocked",
+	} {
+		if _, ok := seen[event]; !ok {
+			t.Errorf("Hermes v0.19 contract missing classified event %q", event)
+		}
+	}
+	if got := contract.Capabilities.BlockEvents; !reflect.DeepEqual(got, []string{"pre_tool_call"}) {
+		t.Fatalf("Hermes block events = %v, want only pre_tool_call", got)
+	}
+	if contract.Capabilities.CanAskNative || contract.Capabilities.SupportsFailClosed {
+		t.Fatalf("Hermes contract invented ask/fail-closed support: %+v", contract.Capabilities)
+	}
+}
+
 // TestContentEnvelopeKeyDeclarations pins which connectors declare a
 // content envelope: hermes nests inspectable content under the
 // per-event "extra" object; every other contract is flat (and must

@@ -103,8 +103,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "OpenCode native Windows support is preview pending integrated packaged Setup and official-client validation; OpenCode recommends WSL but does not require it.",
     ),
     "hermes": ConnectorPlatformSupport(
-        NOT_CERTIFIED,
-        "The DefenseClaw Hermes integration has not completed native Windows x64 certification.",
+        PREVIEW,
+        "Hermes native shell hooks use a direct DefenseClaw executable; "
+        "packaged and official-client Windows x64 certification is pending.",
     ),
     "openhands": ConnectorPlatformSupport(
         UNSUPPORTED,

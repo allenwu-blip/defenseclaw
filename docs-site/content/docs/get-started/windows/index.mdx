@@ -12,7 +12,7 @@ keywords:
 DefenseClaw has a native, per-user Windows x64 (`amd64`) distribution. It installs a
 local gateway, native hook launcher, CLI, TUI, scanners, and managed Python
 runtime. The certified connector scope is deliberately narrow: **Codex** and
-**Claude Code**. **Cursor**, **Windsurf**, and **OpenCode** are available as
+**Claude Code**. **Cursor**, **Windsurf**, **Hermes**, and **OpenCode** are available as
 previews while packaged and authentic official-client validation remains
 pending. **OmniGent 0.7.0** is a narrower native-degraded preview for awaited
 server/SDK policy calls only.
@@ -43,11 +43,11 @@ native agent at a WSL installation, or mix native and WSL connector homes.
 | Claude Code | `claudecode` | **Supported** | Native hooks to the loopback gateway; native OTLP is observation-only. |
 | Cursor | `cursor` | **Preview** | Native command hooks use a managed PowerShell adapter and the loopback gateway; certification is pending. |
 | Windsurf | `windsurf` | **Preview** | Native PowerShell hook adapter to the loopback gateway; packaged and official-client certification pending. |
+| Hermes | `hermes` | **Preview / not certified** | Direct absolute native hook executable; synchronous JSON block only; all hook failures open; no ask. Hermes's own terminal tool still uses installer-managed PortableGit internally. |
 | OpenCode | `opencode` | **Preview** | Auto-loaded in-process JavaScript plugin; only awaited `tool.execute.before` can block. Integrated release validation remains pending. |
 | OmniGent | `omnigent` | **Preview — native degraded** | OmniGent 0.7.0 server/SDK harness policy calls only; no terminal wrapper or filesystem/network/L7 sandbox parity. |
-| Copilot CLI, Antigravity | — | **Not certified** | Native lifecycle code exists, but Setup presence is not a Windows certification claim. |
+| Copilot CLI, Antigravity | `copilot`, `antigravity` | **Not certified** | Native lifecycle code exists, but Setup presence is not a Windows certification claim. |
 | Gemini CLI | — | **Excluded** | Native Windows support is intentionally excluded; non-Windows behavior is unchanged. |
-| Hermes | — | **Pending** | No native Windows claim is made until its separate handoff is accepted. |
 | OpenHands, OpenClaw, ZeptoClaw | — | **Unsupported** | Their required WSL or proxy topology is not hosted by native Windows DefenseClaw. |
 
 All supported and preview connectors remain connected directly to their normal upstream
@@ -69,8 +69,9 @@ The normal installation is one current-user application:
 
 1. `DefenseClawSetup-x64.exe` installs product-owned files and an embedded
    runtime below the current user's Programs directory.
-2. Connector setup registers `defenseclaw-hook.exe` directly for Codex and
-   Claude Code. Cursor and Windsurf receive managed native PowerShell adapters
+2. Connector setup registers `defenseclaw-hook.exe` directly for Codex,
+   Claude Code, and Hermes. Hermes receives a direct absolute forward-slash
+   executable argv with no shell wrapper. Cursor and Windsurf receive managed native PowerShell adapters
    that synchronously launch that exact packaged executable. OpenCode setup
    installs `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`. OmniGent setup
    installs its import bridge into the selected native `uv tool` environment.

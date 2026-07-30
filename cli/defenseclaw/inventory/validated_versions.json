@@ -57,7 +57,7 @@
     "hermes": {
       "version_probe": "hermes --version",
       "live": false,
-      "notes": "contract-only (Layer A); only pre_tool_call is mapped"
+      "notes": "contract-only (Layer A); all 23 v0.19 shell-hook-valid events are mapped by official role; packaged and real-client Windows validation is pending"
     },
     "windsurf": {
       "version_probe": "",

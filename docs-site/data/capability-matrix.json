@@ -85,7 +85,7 @@
     {
       "id": "hermes",
       "label": "Hermes",
-      "summary": "Configuration hooks across the Hermes agent runtime lifecycle.",
+      "summary": "Preview native lifecycle hooks with valid-JSON pre-tool blocking and unconditional failure-open behavior.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
@@ -97,8 +97,8 @@
         "supportsFailClosed": false,
         "scope": "user"
       },
-      "hilt": "Can block supported hook events but has no native human-approval surface; confirm verdicts fall back explicitly.",
-      "notes": "Hooks live in ~/.hermes/config.yaml (hermes-hooks-v1; generic decoder lifts content from the per-event extra envelope). Full shell-hook lifecycle: pre_tool_call blocks, pre_llm_call injects context, post_tool_call/post_llm_call/on_session_start/on_session_end/subagent_stop observe. Setup sets hooks_auto_accept so events register on non-TTY/gateway runs. Discovery surfaces for MCP, skills, plugins."
+      "hilt": "Hermes has no native human-approval surface; confirm verdicts are recorded and alerted but cannot pause or resume the hook.",
+      "notes": "Preview/not certified on native Windows. Hooks live in %HERMES_HOME%/config.yaml (default %LOCALAPPDATA%/hermes; hermes-hooks-v1 >=0.19.0). The owned command is a directly quoted absolute native defenseclaw-hook.exe argv parsed by shlex.split and run with shell=False; DefenseClaw uses no shell wrapper. All 23 Hermes v0.19 VALID_HOOKS events are registered and classified independently. Only valid synchronous pre_tool_call block JSON vetoes a tool; pre_llm_call may inject context and pre_verify may continue a bounded verification loop. Transform, API, gateway, approval, Kanban, and ordinary lifecycle events are audit-only in DefenseClaw's shell lane unless the official shell parser proves an effect. Timeout, nonzero exit, malformed output, authentication, and transport failures warn and continue; exit status is not enforcement. Hermes's separate upstream terminal tool uses installer-managed PortableGit/Git Bash on Windows and is outside DefenseClaw integration. Discovery surfaces cover MCP, skills, and read-only plugins."
     },
     {
       "id": "opencode",

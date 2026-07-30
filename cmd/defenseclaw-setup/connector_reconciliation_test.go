@@ -447,11 +447,49 @@ func TestConnectorDefaultHomeBesideDataRootIsStrictlyBound(t *testing.T) {
 		{dataRoot: filepath.Join(root, "data"), name: "codex"},
 		{dataRoot: ".defenseclaw", name: "codex"},
 		{dataRoot: dataRoot, name: "windsurf"},
+		{dataRoot: dataRoot, name: "hermes"},
 		{dataRoot: dataRoot, name: "openclaw"},
 	} {
 		if got := connectorDefaultHomeBesideDataRoot(test.dataRoot, test.name); got != "" {
 			t.Fatalf("unbound default home for %q/%q = %q", test.dataRoot, test.name, got)
 		}
+	}
+}
+
+func TestReconcileRemovedHermesUsesOnlyRecordedCurrentAndPreviousHomes(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	historicalHome := filepath.Join(root, "historical-hermes")
+	currentHome := filepath.Join(root, "current-hermes")
+	transaction := setupTransaction{
+		ID:                 strings.Repeat("b", 32),
+		DataRoot:           filepath.Join(root, "data"),
+		PreviousConnectors: []string{"hermes"},
+		PreviousHermesHome: historicalHome,
+		HermesHome:         currentHome,
+	}
+	var calls []string
+	run := func(_, _, connector, action string, env []string) error {
+		calls = append(calls, connector+":"+action+":"+envValue(env, "HERMES_HOME"))
+		return nil
+	}
+
+	recorder := reconcileRemovedConnectors(
+		transaction,
+		filepath.Join(root, "gateway.exe"),
+		transactionPreviousChildEnv(transaction),
+		run,
+	)
+	want := []string{
+		"hermes:teardown:" + historicalHome,
+		"hermes:verify:" + historicalHome,
+		"hermes:verify:" + currentHome,
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("Hermes current/previous cleanup calls = %v, want %v", calls, want)
+	}
+	if len(recorder.failures) != 0 {
+		t.Fatalf("Hermes cleanup produced residue: %+v", recorder.failures)
 	}
 }
 
@@ -519,7 +557,7 @@ func TestReconcileRemovedConnectorsRetainsFallbackFailureAtExactHome(t *testing.
 	recorder := reconcileRemovedConnectors(
 		transaction,
 		filepath.Join(root, "gateway.exe"),
-		transactionChildEnvForHomes(transaction, historicalHome, ""),
+		transactionChildEnvForHomes(transaction, historicalHome, "", ""),
 		run,
 	)
 	want := []string{

@@ -329,26 +329,42 @@ var builtinHookContracts = map[string][]HookContract{
 	"hermes": {{
 		Connector:               "hermes",
 		ContractID:              "hermes-hooks-v1",
-		MinAgentVersion:         "0.11.0",
+		MinAgentVersion:         "0.19.0",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v6",
 		HookConfigPathTemplates: []string{"$HERMES_HOME/config.yaml", "%LOCALAPPDATA%/hermes/config.yaml", "~/.hermes/config.yaml"},
 		ResponseFieldName:       "hook_output",
-		// Hermes' shell-hook surface (cli-config.yaml `hooks:` block).
-		// Only pre_tool_call can block; pre_llm_call injects context;
-		// the remaining events are observe-only telemetry decoded for
-		// inspection/audit. Order follows the agent lifecycle.
+		// Hermes' v0.19 shell-hook surface (config.yaml `hooks:` block).
+		// VALID_HOOKS membership alone does not grant response authority:
+		// the shell bridge parses a block only at pre_tool_call, context
+		// at pre_llm_call, and continue-at-stop at pre_verify. Transform,
+		// gateway, approval, API, Kanban, and ordinary lifecycle events
+		// are registered for attributed audit but cannot be changed by
+		// DefenseClaw's shell-hook JSON response.
 		Events: []string{
-			"pre_llm_call",
 			"pre_tool_call",
 			"post_tool_call",
+			"transform_terminal_output",
+			"transform_tool_result",
+			"transform_llm_output",
+			"pre_llm_call",
 			"post_llm_call",
+			"pre_verify",
+			"pre_api_request",
+			"post_api_request",
+			"api_request_error",
 			"on_session_start",
 			"on_session_end",
 			"on_session_finalize",
 			"on_session_reset",
 			"subagent_start",
 			"subagent_stop",
+			"pre_gateway_dispatch",
+			"pre_approval_request",
+			"post_approval_response",
+			"kanban_task_claimed",
+			"kanban_task_completed",
+			"kanban_task_blocked",
 		},
 		// pre_llm_call → prompt; pre/post_tool_call → tool_call/tool_result;
 		// session + subagent lifecycle → event_content (audit envelope).
@@ -356,11 +372,11 @@ var builtinHookContracts = map[string][]HookContract{
 		Capabilities: HookCapability{
 			CanBlock:     true,
 			CanAskNative: false,
-			// Only pre_tool_call honors a blocking stdout response;
-			// pre_llm_call can inject context but cannot veto, and the
-			// post/session/subagent events are read-only on Hermes' side
-			// (their stdout is ignored). Hermes never blocks on exit code
-			// or hook timeout, so SupportsFailClosed stays false.
+			// Only pre_tool_call honors a blocking stdout response.
+			// pre_llm_call injects context and pre_verify can continue a
+			// bounded verification loop, but neither is a tool veto.
+			// Hermes never blocks on exit code or hook timeout, so
+			// SupportsFailClosed stays false.
 			BlockEvents:        []string{"pre_tool_call"},
 			SupportsFailClosed: false,
 			Scope:              "user",
@@ -372,8 +388,8 @@ var builtinHookContracts = map[string][]HookContract{
 		// every top-level content lookup misses.
 		ContentEnvelopeKey: "extra",
 		Notes: []string{
-			"Covers the documented shell-hook lifecycle including session start/end/finalize/reset and subagent start/stop telemetry. Hermes nests prompt/result and delegation identity under the per-event `extra` envelope; the generic decoder lifts those fields into the canonical lifecycle.",
-			"pre_tool_call is the only blockable event: Hermes accepts both {\"action\":\"block\",\"message\"} (canonical) and {\"decision\":\"block\",\"reason\"} (Claude-Code style) and normalizes internally. pre_llm_call injects via {\"context\":...}. Confirm verdicts (no native ask surface) downgrade to a {\"systemMessage\":...} alert via the shared responder epilogue. Non-zero exit codes and hook timeouts only log a warning upstream, so there is no fail-closed surface; hermes remains live-smoke pending (docs/CONNECTOR-MATRIX.md).",
+			"Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event `extra` envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
+			"pre_tool_call is the only blockable event: Hermes accepts both {\"action\":\"block\",\"message\"} (canonical) and {\"decision\":\"block\",\"reason\"} (Claude-Code style) and normalizes internally. pre_llm_call injects {\"context\":...}; pre_verify accepts {\"action\":\"continue\",\"message\"} to keep the bounded verification loop going. Transform hooks require Python string returns, pre_gateway_dispatch requires skip/rewrite/allow plugin results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output. Non-zero exit codes and hook timeouts only warn upstream, so there is no fail-closed surface; Hermes remains live-smoke pending (docs/CONNECTOR-MATRIX.md).",
 			"Multi-event registration requires hooks_auto_accept in cli-config.yaml on non-TTY/gateway runs; otherwise Hermes prompts for per-(event,command) consent on first use and silently skips unaccepted hooks. Setup writes hooks_auto_accept so all events register, and the managed-backup heals it.",
 		},
 	}},

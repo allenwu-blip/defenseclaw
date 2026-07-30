@@ -19,6 +19,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 	windsurfHome := filepath.Join(root, "windsurf-profile")
 	antigravityHome := filepath.Join(root, ".gemini", "config")
 	openCodeHome := filepath.Join(root, "opencode")
+	hermesHome := filepath.Join(root, "hermes")
 	env := []string{
 		"UNRELATED=preserved",
 		"codex_home=" + codexHome,
@@ -28,6 +29,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		"WINDSURF_USER_HOME=" + windsurfHome,
 		"ANTIGRAVITY_CONFIG_DIR=" + antigravityHome,
 		"OPENCODE_CONFIG_DIR=" + openCodeHome,
+		"HERMES_HOME=" + hermesHome,
 	}
 	for _, test := range []struct {
 		connector string
@@ -40,6 +42,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		{connector: "windsurf", want: windsurfHome},
 		{connector: "antigravity", want: antigravityHome},
 		{connector: "opencode", want: openCodeHome},
+		{connector: "hermes", want: hermesHome},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			got, err := connectorLifecycleConfigHome(env, test.connector)
@@ -173,6 +176,7 @@ func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.
 		{name: "cursor missing", connector: "cursor", env: []string{"UNRELATED=1"}, want: "DEFENSECLAW_CURSOR_CONFIG_HOME is empty"},
 		{name: "cursor duplicate", connector: "cursor", env: []string{"DEFENSECLAW_CURSOR_CONFIG_HOME=" + valid, "defenseclaw_cursor_config_home=" + valid}, want: "DEFENSECLAW_CURSOR_CONFIG_HOME is duplicated"},
 		{name: "windsurf missing", connector: "windsurf", env: []string{"USERPROFILE=" + valid}, want: "WINDSURF_USER_HOME is empty"},
+		{name: "hermes missing", connector: "hermes", env: []string{"USERPROFILE=" + valid}, want: "HERMES_HOME is empty"},
 		{name: "unsupported", connector: "openclaw", env: []string{"CODEX_HOME=" + valid}, want: "unsupported native connector"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

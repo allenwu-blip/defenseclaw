@@ -1535,6 +1535,31 @@ def _check_windsurf_hooks(cfg, r: _DoctorResult, *, platform_name: str | None = 
     _check_hook_health(cfg, "windsurf", r)
 
 
+def _check_hermes_hooks(
+    cfg,
+    r: _DoctorResult,
+    *,
+    platform_name: str | None = None,
+    config_path: str | None = None,
+    install_root: str | None = None,
+    search_path: str | None = None,
+    pathext: str | None = None,
+) -> None:
+    if (platform_name or os.name) == "nt":
+        _check_windows_native_hooks(
+            cfg,
+            "hermes",
+            "Hermes hooks (preview; fail-open)",
+            r,
+            config_path=config_path,
+            install_root=install_root,
+            search_path=search_path,
+            pathext=pathext,
+        )
+        return
+    _check_hook_health(cfg, "hermes", r)
+
+
 # ---------------------------------------------------------------------------
 # Generic per-connector hook-health (D4)
 # ---------------------------------------------------------------------------
@@ -2211,6 +2236,9 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         _check_codex_hooks(cfg, r)
     elif connector == "windsurf":
         _check_windsurf_hooks(cfg, r)
+    elif connector == "hermes":
+        _check_hermes_hooks(cfg, r)
+        _check_hermes_legacy_config(r)
     elif connector == "zeptoclaw":
         _check_zeptoclaw_config(cfg, r)
     elif connector == "copilot":
@@ -2222,12 +2250,9 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "omnigent":
         _check_omnigent_policy_health(cfg, r)
     elif connector in _HOOK_HEALTH_FALLBACK:
-        # Hermes / Cursor / Gemini CLI / OpenCode use the lock-file-driven
-        # health row; Windows-native connectors with richer contracts dispatch
-        # to their dedicated checks above.
+        # Cursor / Gemini CLI / OpenCode use the lock-file-driven health row;
+        # Windows-native connectors with richer contracts dispatch above.
         _check_hook_health(cfg, connector, r)
-        if connector == "hermes":
-            _check_hermes_legacy_config(r)
 
 
 def _workspace_dir(cfg) -> str:
@@ -4423,6 +4448,7 @@ def _check_hook_contract_lock(
         "codex",
         "claudecode",
         "copilot",
+        "hermes",
         "windsurf",
     }:
         native_runtime = _windows_native_hook_check(

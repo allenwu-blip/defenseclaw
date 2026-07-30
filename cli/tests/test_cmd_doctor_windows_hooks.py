@@ -1,4 +1,4 @@
-"""Windows-native Codex, Claude, and Windsurf Doctor regressions."""
+"""Windows-native connector Doctor hook validation regressions."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import defenseclaw.doctor_hooks as doctor_hooks
+import yaml
 
 try:
     import tomllib
@@ -186,6 +188,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             contract = {
                 "codex": "codex-hooks-v1",
                 "claudecode": "claudecode-hooks-v1",
+                "hermes": "hermes-hooks-v1",
                 "windsurf": "windsurf-hooks-v1",
             }[connector]
         normalized_agent_version = {
@@ -195,6 +198,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.152",
             "windsurf-hooks-v1": "1.12.41",
+            "hermes-hooks-v1": "0.19.0",
         }[contract]
         locations = {"hook_config_paths": [str(config)]}
         if runtime_paths is not None:
@@ -298,6 +302,22 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 (("[features]\nhooks = true\n\n" if codex_features else "") + "[hooks]\n") + "\n".join(rows) + "\n",
                 encoding="utf-8",
             )
+        elif connector == "hermes":
+            path = self.profile / "AppData" / "Local" / "hermes" / "config.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            events: dict[str, object] = {}
+            for event, matcher in doctor_hooks._HERMES_REQUIRED_HOOKS.items():
+                entry: dict[str, object] = {"command": command, "timeout": 30}
+                if matcher is not None:
+                    entry["matcher"] = matcher
+                events[event] = [entry]
+            if extra_command:
+                assert isinstance(events["post_tool_call"], list)
+                events["post_tool_call"].append({"command": extra_command, "timeout": 30, "matcher": ".*"})
+            path.write_text(
+                yaml.safe_dump({"hooks_auto_accept": True, "hooks": events}, sort_keys=False),
+                encoding="utf-8",
+            )
         elif connector == "claudecode":
             path = self.profile / ".claude" / "settings.json"
             path.parent.mkdir(exist_ok=True)
@@ -326,6 +346,51 @@ class WindowsHookDoctorTests(unittest.TestCase):
             version="v6",
         )
         return path
+
+    def test_hermes_direct_native_registration_is_healthy(self) -> None:
+        runtime = self._runtime()
+        command = f'"{runtime}" hook --connector hermes'
+        config = self._config("hermes", command)
+
+        check = self._validate("hermes", config)
+
+        self.assertTrue(check.healthy, check.detail)
+        self.assertIn("entries=23", check.detail)
+        self.assertIn("Windows-native executable", check.detail)
+
+    def test_hermes_direct_command_matches_upstream_shlex_argv(self) -> None:
+        command = (
+            '"C:/Users/Kevin O\'Brien/Defense Claw $Preview/defenseclaw-hook.exe" '
+            "hook --connector hermes"
+        )
+
+        self.assertEqual(
+            shlex.split(command),
+            [
+                "C:/Users/Kevin O'Brien/Defense Claw $Preview/defenseclaw-hook.exe",
+                "hook",
+                "--connector",
+                "hermes",
+            ],
+        )
+
+    def test_hermes_rejects_shell_wrapper_and_missing_auto_accept(self) -> None:
+        runtime = self._runtime()
+        command = f"& '{runtime}' hook --connector hermes"
+        config = self._config("hermes", command)
+
+        wrapped = self._validate("hermes", config)
+        self.assertFalse(wrapped.healthy)
+        self.assertIn("directly quoted native", wrapped.detail)
+
+        command = f'"{runtime}" hook --connector hermes'
+        config = self._config("hermes", command)
+        document = yaml.safe_load(config.read_text(encoding="utf-8"))
+        document["hooks_auto_accept"] = False
+        config.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        stale = self._validate("hermes", config)
+        self.assertFalse(stale.healthy)
+        self.assertIn("hooks_auto_accept", stale.detail)
 
     def _validate(
         self,

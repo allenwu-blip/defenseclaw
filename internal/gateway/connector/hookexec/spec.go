@@ -60,6 +60,11 @@ type spec struct {
 	endpoint    string // gateway path ("/api/v1/claude-code/hook")
 	outputField string // response field echoed to stdout ("claude_code_output")
 	style       decisionStyle
+	// failOpenOnly is set when the upstream host has no exit-status or
+	// fail-closed hook contract. Runtime, authentication, transport, timeout,
+	// and malformed-response failures must then remain an empty exit-0 allow;
+	// only a valid connector-native response may request a block.
+	failOpenOnly bool
 
 	defaultBlockReason string // used when action=block but reason is empty
 
@@ -134,10 +139,7 @@ var specs = map[string]spec{
 	"hermes": {
 		connector: "hermes", hookName: "hermes-hook", errLabel: "hermes",
 		subject: "hermes tool", endpoint: "/api/v1/hermes/hook",
-		outputField: "hook_output", style: styleHookEcho,
-		oversizedClosed:   failResult{exit: blockExit},
-		unreachableStrict: failResult{body: `{"action":"block","message":"` + failedClosed + `"}`, exit: blockExit},
-		responseClosed:    failResult{body: `{"action":"block","message":"` + failedClosed + `"}`, exit: 0},
+		outputField: "hook_output", style: styleHookEcho, failOpenOnly: true,
 	},
 	"windsurf": {
 		connector: "windsurf", hookName: "windsurf-hook", errLabel: "windsurf",

@@ -350,7 +350,7 @@
         {
           "contract_id": "hermes-hooks-v1",
           "agent_version": {
-            "min_inclusive": "0.11.0",
+            "min_inclusive": "0.19.0",
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
@@ -363,16 +363,29 @@
           ],
           "response_field": "hook_output",
           "events": [
-            "pre_llm_call",
             "pre_tool_call",
             "post_tool_call",
+            "transform_terminal_output",
+            "transform_tool_result",
+            "transform_llm_output",
+            "pre_llm_call",
             "post_llm_call",
+            "pre_verify",
+            "pre_api_request",
+            "post_api_request",
+            "api_request_error",
             "on_session_start",
             "on_session_end",
             "on_session_finalize",
             "on_session_reset",
             "subagent_start",
-            "subagent_stop"
+            "subagent_stop",
+            "pre_gateway_dispatch",
+            "pre_approval_request",
+            "post_approval_response",
+            "kanban_task_claimed",
+            "kanban_task_completed",
+            "kanban_task_blocked"
           ],
           "aid_surfaces": [
             "prompt",
@@ -394,8 +407,8 @@
             "scope": "user"
           },
           "notes": [
-            "Covers the documented shell-hook lifecycle including session start/end/finalize/reset and subagent start/stop telemetry. Hermes nests prompt/result and delegation identity under the per-event extra envelope; the generic decoder lifts those fields into the canonical lifecycle.",
-            "pre_tool_call is the only blockable event; pre_llm_call injects context; confirm verdicts downgrade to a systemMessage alert (no native ask surface); Hermes never blocks on exit code or hook timeout so there is no fail-closed surface.",
+            "Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event extra envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
+            "pre_tool_call is the only blockable event; pre_llm_call injects context; pre_verify can continue the bounded verification loop. Transform hooks require Python string returns, pre_gateway_dispatch requires plugin skip/rewrite/allow results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output; Hermes never blocks on exit code or hook timeout so there is no fail-closed surface.",
             "Multi-event registration requires hooks_auto_accept in cli-config.yaml on non-TTY/gateway runs; Setup writes it and the managed-backup heals it."
           ]
         }

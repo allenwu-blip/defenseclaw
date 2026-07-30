@@ -46,6 +46,7 @@ intact when diagnosing a problem.
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
 | `%USERPROFILE%\.codeium\windsurf\hooks.json` | Windsurf user hook configuration. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
 | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` | OpenCode bridge plugin. Default config root is `%USERPROFILE%\.config\opencode`. | Carries a connector-scoped token. Do not edit or copy; Doctor detects digest drift and Setup reconciles it. Restart OpenCode after lifecycle changes. |
+| `%HERMES_HOME%\config.yaml` | Preview Hermes hook configuration. Default is `%LOCALAPPDATA%\hermes`. | Do not add a shell wrapper or edit DefenseClaw-owned handlers; use setup/remove. |
 
 The installer records the exact connector homes and uses them for later repair,
 upgrade, and cleanup. Connector configuration backups are ownership records,
@@ -54,7 +55,8 @@ not a user-facing rollback directory.
 ## Supported path overrides
 
 `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
-`ANTIGRAVITY_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` are the connector
+`ANTIGRAVITY_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `OMNIGENT_CONFIG_HOME`, and
+`HERMES_HOME` are the connector
 configuration overrides honored by their respective implementations. Set them
 to absolute, normalized native Windows paths before initial Setup or connector
 setup. The installer validates and records them; reparse ancestors are refused.
@@ -68,6 +70,7 @@ Setup records the exact native paths it selected internally.
 $env:CODEX_HOME = "D:\Agent Profiles\Codex"
 $env:CLAUDE_CONFIG_DIR = "D:\Agent Profiles\Claude"
 $env:OPENCODE_CONFIG_DIR = "D:\Agent Profiles\OpenCode"
+$env:HERMES_HOME = "D:\Agent Profiles\Hermes"
 ```
 
   </Tab>
@@ -77,6 +80,7 @@ $env:OPENCODE_CONFIG_DIR = "D:\Agent Profiles\OpenCode"
 set "CODEX_HOME=D:\Agent Profiles\Codex"
 set "CLAUDE_CONFIG_DIR=D:\Agent Profiles\Claude"
 set "OPENCODE_CONFIG_DIR=D:\Agent Profiles\OpenCode"
+set "HERMES_HOME=D:\Agent Profiles\Hermes"
 ```
 
   </Tab>
@@ -124,6 +128,13 @@ In cmd, quote the executable itself:
 ```cmd
 "%LOCALAPPDATA%\DefenseClaw\InstallerCache\DefenseClawSetup-x64.exe" /verify
 ```
+
+Those examples are interactive shell syntax. The command stored in Hermes
+`config.yaml` is deliberately different: it is a directly double-quoted
+absolute `defenseclaw-hook.exe` path followed by literal argv, with forward
+slashes in the Windows path. It must not contain PowerShell's `&`, a `.ps1`,
+or any other shell wrapper because Hermes uses `shlex.split` and
+`subprocess.run(..., shell=False)`.
 
 DefenseClaw product executables are long-path-aware, and installer journal and
 process-identity tests cover paths beyond the legacy `MAX_PATH` limit. That
@@ -227,7 +238,9 @@ residue automatically.
     agent if its documented reload behavior requires it. Do not
     copy hook entries between `config.toml`, `managed_config.toml`, and
     `settings.json` by hand, and do not edit or copy OpenCode's
-    `plugins\defenseclaw.js`.
+    `plugins\defenseclaw.js`, or add PowerShell/Bash syntax to Hermes
+    `config.yaml`. Hermes Doctor must report its direct native command and
+    preview fail-open posture.
   </Accordion>
   <Accordion title="A connector is disabled or status disagrees with configuration">
     Use `defenseclaw guardrail status` to compare desired and runtime posture.
@@ -246,6 +259,10 @@ residue automatically.
     separate block or disable policy.
   </Accordion>
   <Accordion title="Native OTLP authentication fails">
+    Hermes publishes no official native OTLP surface; its audit records come
+    from authenticated hook events and use the generic downstream exporters.
+    Do not diagnose a missing Hermes native exporter as token drift.
+
     Run `defenseclaw doctor` and `defenseclaw-gateway status`. Reconcile the
     connector with its setup command and restart the agent. If doctor diagnoses
     master-token drift, preview `doctor --fix --dry-run`; use
@@ -286,7 +303,9 @@ Complete this without real secrets or destructive tools:
 - Run `defenseclaw version`; require the CLI and gateway generation to agree.
 - Run `defenseclaw-gateway status`, `defenseclaw status`, and
   `defenseclaw guardrail status`; require every intended supported or preview
-  connector row, mode, fail mode, and enabled state.
+  connector row, mode, enabled state, and truthful failure posture. Hermes
+  failures must be reported open even if generic policy
+  provenance is `closed`.
 - Run `defenseclaw config validate` and `defenseclaw doctor`; resolve every
   connector registration or authentication failure.
 - Restart each configured native agent. In an empty disposable directory,
@@ -295,7 +314,9 @@ Complete this without real secrets or destructive tools:
 - Open `defenseclaw tui` or use `defenseclaw alerts` and confirm new activity is
   attributed only to the agent you exercised.
 - If multiple connectors are installed, repeat the harmless prompt once in each;
-  one connector's success does not prove the other's hook or OTLP settings.
+  one connector's success does not prove another's hooks or telemetry.
+  Hermes manual block visibility must use a harmless matched tool request and
+  confirm only a valid synchronous JSON block, never a timeout/nonzero test.
 
 ## Post-upgrade checklist
 

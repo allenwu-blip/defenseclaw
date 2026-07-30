@@ -44,7 +44,13 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
     ModeChoice("zeptoclaw", "ZeptoClaw", "z", True, "api_base redirect + proxy response-scan (full guardrail)"),
     ModeChoice("claudecode", "Claude Code", "k", False, "PreToolUse hooks + native OTel + CodeGuard plugin"),
     ModeChoice("codex", "Codex", "c", False, "hook scripts + native OTel + notify + CodeGuard skill"),
-    ModeChoice("hermes", "Hermes", "h", False, "shell hooks + vendor-native block events"),
+    ModeChoice(
+        "hermes",
+        "Hermes",
+        "h",
+        False,
+        "shell hooks; synchronous JSON pre-tool block; no ask or fail-closed",
+    ),
     ModeChoice("cursor", "Cursor", "u", False, "command hooks + event-scoped ask/block"),
     ModeChoice("windsurf", "Windsurf", "w", False, "Cascade hooks + fail-open block decisions"),
     ModeChoice(

@@ -569,6 +569,22 @@ func TestHookInvocationCommand(t *testing.T) {
 		t.Errorf("isNativeHookCommand(%q) = false, want true", claude)
 	}
 
+	// Hermes passes this exact string through shlex.split and then
+	// subprocess.run(shell=False). It therefore receives only a quoted absolute
+	// executable plus argv, never PowerShell syntax or a script wrapper.
+	hermes := hookInvocationCommandFor("windows", "hermes", unix)
+	wantHermes := `"C:/Program Files/DefenseClaw/defenseclaw-hook.exe" hook --connector hermes`
+	if hermes != wantHermes {
+		t.Errorf("hermes command = %q, want %q", hermes, wantHermes)
+	}
+	if strings.Contains(hermes, "& ") || strings.Contains(strings.ToLower(hermes), "powershell") ||
+		strings.Contains(strings.ToLower(hermes), "bash") || strings.Contains(hermes, ".ps1") {
+		t.Errorf("hermes command contains a shell or wrapper: %q", hermes)
+	}
+	if !isNativeHookCommand(hermes) {
+		t.Errorf("isNativeHookCommand(%q) = false, want true", hermes)
+	}
+
 	// Antigravity's direct-exec parser does not dequote command paths. Keep the
 	// visible command tokenizer-safe and put the absolute managed hook path in a
 	// PowerShell encoded command so install roots containing spaces still work.
@@ -586,6 +602,27 @@ func TestHookInvocationCommand(t *testing.T) {
 	if !strings.Contains(decoded, windowsNativePowerShellStartForTest(windowsExe, "antigravity")) ||
 		!strings.Contains(decoded, "NoDefaultCurrentDirectoryInExePath") {
 		t.Errorf("antigravity encoded command lost managed launcher or hardening:\n%s", decoded)
+	}
+}
+
+func TestWindowsHermesDirectHookCommandQuotesAndRejectsUnsafePaths(t *testing.T) {
+	valid := `C:\Users\Kevin O'Brien\Defense Claw $Preview\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, valid)
+	want := `"C:/Users/Kevin O'Brien/Defense Claw $Preview/defenseclaw-hook.exe" hook --connector hermes`
+	if got := windowsHermesDirectHookCommand(valid); got != want {
+		t.Fatalf("Hermes direct command = %q, want %q", got, want)
+	}
+	if !isNativeHookCommand(want) {
+		t.Fatalf("quoted Hermes direct command was not recognized as owned: %q", want)
+	}
+	for _, invalid := range []string{
+		`defenseclaw-hook.exe`,
+		`C:\Defense"Claw\defenseclaw-hook.exe`,
+		"C:\\DefenseClaw\\defenseclaw-hook.exe\nother.exe",
+	} {
+		if got := windowsHermesDirectHookCommand(invalid); got != "" {
+			t.Errorf("unsafe Hermes path %q produced command %q", invalid, got)
+		}
 	}
 }
 

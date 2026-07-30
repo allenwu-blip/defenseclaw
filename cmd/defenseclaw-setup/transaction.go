@@ -91,6 +91,7 @@ type setupTransaction struct {
 	PreviousClaudeConfigDir        string                   `json:"previous_claude_config_dir,omitempty"`
 	PreviousCopilotHome            string                   `json:"previous_copilot_home,omitempty"`
 	PreviousCursorHome             string                   `json:"previous_cursor_home,omitempty"`
+	PreviousHermesHome             string                   `json:"previous_hermes_home,omitempty"`
 	PreviousWindsurfUserHome       string                   `json:"previous_windsurf_user_home,omitempty"`
 	PreviousAntigravityConfigDir   string                   `json:"previous_antigravity_config_dir,omitempty"`
 	PreviousOpenCodeConfigDir      string                   `json:"previous_opencode_config_dir,omitempty"`
@@ -103,6 +104,7 @@ type setupTransaction struct {
 	AntigravityConfigDir           string                   `json:"antigravity_config_dir,omitempty"`
 	OpenCodeConfigDir              string                   `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome             string                   `json:"omnigent_config_home,omitempty"`
+	HermesHome                     string                   `json:"hermes_home,omitempty"`
 	MaintenanceSHA256              string                   `json:"maintenance_sha256,omitempty"`
 	DeleteUserData                 bool                     `json:"delete_user_data,omitempty"`
 	UninstallPathEntryOwned        bool                     `json:"uninstall_path_entry_owned,omitempty"`
@@ -308,6 +310,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		return setupTransaction{}, err
 	}
 	defaultOmnigentConfigHome, err := defaultConnectorConfigHome(".omnigent")
+	hermesDefaultHome, err := defaultHermesHome()
 	if err != nil {
 		return setupTransaction{}, err
 	}
@@ -339,12 +342,17 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousWindsurfState, previousAntigravityState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", ""
+	hermesHome, err := transactionConfigHome("HERMES_HOME", hermesDefaultHome)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousHermesState, previousWindsurfState, previousAntigravityState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
 		previousCopilotState = oldState.CopilotHome
 		previousCursorState = oldState.CursorHome
+		previousHermesState = oldState.HermesHome
 		previousWindsurfState = oldState.WindsurfUserHome
 		previousAntigravityState = oldState.AntigravityConfigDir
 		previousOpenCodeState = oldState.OpenCodeConfigDir
@@ -384,6 +392,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	previousHermesHome, err := resolvePreviousConnectorHome(
+		previousHermesState, previousConnectors, dataRoot, "hermes", "config.yaml", hermesHome,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	previousOpenCodeConfigDir, err := resolvePreviousConnectorHome(
 		previousOpenCodeState, previousConnectors, dataRoot, "opencode", "config", openCodeConfigDir,
 	)
@@ -414,6 +428,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		claudeConfigDir = previousClaudeConfigDir
 		copilotHome = previousCopilotHome
 		cursorHome = previousCursorHome
+		hermesHome = previousHermesHome
 		windsurfUserHome = previousWindsurfUserHome
 		antigravityConfigDir = previousAntigravityConfigDir
 		openCodeConfigDir = previousOpenCodeConfigDir
@@ -468,6 +483,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousClaudeConfigDir:        previousClaudeConfigDir,
 		PreviousCopilotHome:            previousCopilotHome,
 		PreviousCursorHome:             previousCursorHome,
+		PreviousHermesHome:             previousHermesHome,
 		PreviousWindsurfUserHome:       previousWindsurfUserHome,
 		PreviousAntigravityConfigDir:   previousAntigravityConfigDir,
 		PreviousOpenCodeConfigDir:      previousOpenCodeConfigDir,
@@ -476,6 +492,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		ClaudeConfigDir:                claudeConfigDir,
 		CopilotHome:                    copilotHome,
 		CursorHome:                     cursorHome,
+		HermesHome:                     hermesHome,
 		WindsurfUserHome:               windsurfUserHome,
 		AntigravityConfigDir:           antigravityConfigDir,
 		OpenCodeConfigDir:              openCodeConfigDir,
@@ -546,12 +563,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredWindsurfHome, configuredAntigravityHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", ""
+	hermesDefaultHome, err := defaultHermesHome()
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredHermesHome, configuredWindsurfHome, configuredAntigravityHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
 		configuredCopilotHome = oldState.CopilotHome
 		configuredCursorHome = oldState.CursorHome
+		configuredHermesHome = oldState.HermesHome
 		configuredWindsurfHome = oldState.WindsurfUserHome
 		configuredAntigravityHome = oldState.AntigravityConfigDir
 		configuredOpenCodeHome = oldState.OpenCodeConfigDir
@@ -587,6 +609,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	legacyOmnigentFallback := source.OmnigentConfigHome
 	if legacyOmnigentFallback == "" {
 		legacyOmnigentFallback = defaultOmnigentConfigHome
+	}
+	legacyHermesFallback := source.HermesHome
+	if legacyHermesFallback == "" {
+		legacyHermesFallback = hermesDefaultHome
 	}
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		configuredCodexHome,
@@ -678,6 +704,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	previousHermesHome, err := resolvePreviousConnectorHome(
+		configuredHermesHome,
+		previousConnectors,
+		source.DataRoot,
+		"hermes",
+		"config.yaml",
+		legacyHermesFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	var previousState *installState
 	if oldState != nil {
 		copyState := *oldState
@@ -740,6 +777,7 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousClaudeConfigDir:      previousClaudeConfigDir,
 		PreviousCopilotHome:          previousCopilotHome,
 		PreviousCursorHome:           previousCursorHome,
+		PreviousHermesHome:           previousHermesHome,
 		PreviousWindsurfUserHome:     previousWindsurfUserHome,
 		PreviousAntigravityConfigDir: previousAntigravityConfigDir,
 		PreviousOpenCodeConfigDir:    previousOpenCodeConfigDir,
@@ -748,6 +786,7 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		ClaudeConfigDir:              previousClaudeConfigDir,
 		CopilotHome:                  previousCopilotHome,
 		CursorHome:                   previousCursorHome,
+		HermesHome:                   previousHermesHome,
 		WindsurfUserHome:             previousWindsurfUserHome,
 		AntigravityConfigDir:         previousAntigravityConfigDir,
 		OpenCodeConfigDir:            previousOpenCodeConfigDir,
@@ -954,6 +993,7 @@ func transactionChildEnv(transaction setupTransaction) []string {
 		transaction.AntigravityConfigDir,
 		transaction.OpenCodeConfigDir,
 		transaction.OmnigentConfigHome,
+		transaction.HermesHome,
 	)
 }
 
@@ -968,6 +1008,7 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction.PreviousAntigravityConfigDir,
 		transaction.PreviousOpenCodeConfigDir,
 		transaction.PreviousOmnigentConfigHome,
+		transaction.PreviousHermesHome,
 	)
 }
 
@@ -990,6 +1031,7 @@ func transactionChildEnvForHomes(
 		antigravityConfigDir,
 		transaction.OpenCodeConfigDir,
 		transaction.OmnigentConfigHome,
+		transaction.HermesHome,
 	)
 }
 
@@ -1007,15 +1049,16 @@ func transactionChildEnvForAllHomes(
 		transaction.AntigravityConfigDir,
 		openCodeConfigDir,
 		transaction.OmnigentConfigHome,
+		transaction.HermesHome,
 	)
 }
 
 func transactionChildEnvForConnectorHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, openCodeConfigDir, omnigentConfigHome string,
+	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+8)
+	filtered := make([]string, 0, len(base)+9)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
@@ -1025,7 +1068,8 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
 			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR") ||
 			strings.EqualFold(name, "OPENCODE_CONFIG_DIR") ||
-			strings.EqualFold(name, "OMNIGENT_CONFIG_HOME")) {
+			strings.EqualFold(name, "OMNIGENT_CONFIG_HOME") ||
+			strings.EqualFold(name, "HERMES_HOME")) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -1053,6 +1097,9 @@ func transactionChildEnvForConnectorHomes(
 	}
 	if omnigentConfigHome != "" {
 		filtered = append(filtered, "OMNIGENT_CONFIG_HOME="+omnigentConfigHome)
+	}
+	if hermesHome != "" {
+		filtered = append(filtered, "HERMES_HOME="+hermesHome)
 	}
 	return filtered
 }
@@ -1249,7 +1296,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome) ||
 			!samePath(transaction.PreviousAntigravityConfigDir, transaction.AntigravityConfigDir) ||
 			!samePath(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir) ||
-			!samePath(transaction.PreviousOmnigentConfigHome, transaction.OmnigentConfigHome) {
+			!samePath(transaction.PreviousOmnigentConfigHome, transaction.OmnigentConfigHome) ||
+			!samePath(transaction.PreviousHermesHome, transaction.HermesHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
@@ -1283,6 +1331,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"Antigravity configuration dir":          transaction.AntigravityConfigDir,
 		"OpenCode configuration dir":             transaction.OpenCodeConfigDir,
 		"OmniGent configuration home":            transaction.OmnigentConfigHome,
+		"previous Hermes home":                   transaction.PreviousHermesHome,
+		"Hermes home":                            transaction.HermesHome,
 	} {
 		if value == "" {
 			continue
@@ -1374,6 +1424,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Antigravity configuration dir": state.AntigravityConfigDir,
 		"OpenCode configuration dir":    state.OpenCodeConfigDir,
 		"OmniGent configuration home":   state.OmnigentConfigHome,
+		"Hermes home":                   state.HermesHome,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
@@ -3258,6 +3309,8 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir)
 	case "omnigent":
 		return !samePath(transaction.PreviousOmnigentConfigHome, transaction.OmnigentConfigHome)
+	case "hermes":
+		return !samePath(transaction.PreviousHermesHome, transaction.HermesHome)
 	default:
 		return false
 	}

@@ -44,7 +44,7 @@ upstream agent and complete DefenseClaw hook or awaited policy path to run
 directly on Windows.
 
 - **Supported and certified:** Codex and Claude Code.
-- **Preview, not certified:** Cursor, Windsurf, and OpenCode. Their native
+- **Preview, not certified:** Cursor, Windsurf, Hermes, and OpenCode. Their native
   implementations are available for focused validation, but certification
   still requires the integrated packaged and authentic official-client gates.
 - **Native degraded preview, not certified:** OmniGent 0.7.0 server and SDK
@@ -52,7 +52,6 @@ directly on Windows.
   and filesystem, network, and L7 sandbox surfaces are unavailable on Windows.
 - **Implemented but not certified:** Copilot CLI and Antigravity. Setup support
   is not a certification claim.
-- **Not certified:** Hermes, pending the native implementation decision.
 - **Excluded:** Gemini CLI native Windows support. Existing non-Windows support
   is unchanged.
 - **Unsupported:** OpenHands, OpenClaw, and ZeptoClaw. Their required WSL or
@@ -75,14 +74,17 @@ uninstall restores the exact pre-DefenseClaw `hooks.json` bytes and removes
 only DefenseClaw-owned adapter assets.
 Windsurf invokes a generated native PowerShell adapter through its documented
 `powershell` hook field; the adapter synchronously launches the exact packaged
-hook executable and preserves JSON stdin, stdout/stderr, and exit status. None
-of these paths adds WSL, Git Bash, `jq`, or a POSIX-shell dependency. Upstream
-agent prerequisites still apply, including Git for Windows for Claude Code.
+hook executable and preserves JSON stdin, stdout/stderr, and exit status.
+Hermes uses a directly quoted absolute forward-slash native executable through
+its synchronous `shlex.split` and `subprocess.run(..., shell=False)` hook runner.
 OpenCode auto-loads the dependency-free DefenseClaw JavaScript plugin in its
-native Windows process. None of these paths adds a WSL, Git Bash, `jq`, or
-POSIX-shell dependency. Upstream agent prerequisites still apply, including
-Git for Windows for Claude Code. OpenCode explicitly runs directly on Windows;
-its upstream WSL guidance is a recommendation, not a requirement.
+native Windows process. None of these DefenseClaw paths adds WSL, Git Bash,
+`jq`, or a POSIX-shell dependency. Upstream agent prerequisites still apply,
+including Git for Windows for Claude Code. Hermes itself officially uses
+installer-managed PortableGit internally for its terminal tool; DefenseClaw
+does not install, locate, configure, invoke, or test that separate dependency.
+OpenCode explicitly runs directly on Windows; its upstream WSL guidance is a
+recommendation, not a requirement.
 
 WSL availability is tracked for upstream research in
 [`CONNECTOR-MATRIX.md`](CONNECTOR-MATRIX.md), but it is not part of the current
@@ -550,7 +552,7 @@ Setup installs the CLI/TUI, native gateway, no-console hook launcher, and
 managed Python runtime under `%LOCALAPPDATA%\Programs\DefenseClaw`, and adds its
 managed `bin` directory to the current user's `PATH`. Use
 `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=opencode` for OpenCode,
-`CONNECTOR=omnigent` for the native-degraded OmniGent preview, or
+`CONNECTOR=hermes` for Hermes, `CONNECTOR=omnigent` for the native-degraded OmniGent preview, or
 `CONNECTOR=none` to configure a connector later. OmniGent must already be
 installed for the same user with the official native `uv tool` layout. The
 installer also exposes the staged Copilot, Cursor, Windsurf, and Antigravity

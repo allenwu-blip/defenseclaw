@@ -3165,7 +3165,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "hermes": {
         "label": "Hermes",
-        "description": "config.yaml hooks + MCP/skills/plugins surfaces",
+        "description": "config.yaml hooks (JSON block; fail-open) + MCP/skills/plugin inventory",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -3274,7 +3274,7 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         ),
         "HERMES_HOME/config.yaml MCP entries when configured explicitly",
         "HERMES_HOME/skills and HERMES_HOME/plugins discovery/install surfaces",
-        "~/.defenseclaw/hooks/hermes-hook.sh",
+        "DefenseClaw's platform-native hook runtime and connector-scoped token files",
     ),
     "cursor": (
         "~/.cursor/hooks.json hooks",
@@ -5382,7 +5382,11 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     else:
         click.echo(f"  This wires {label} into DefenseClaw via the agent's")
         click.echo("  native hook bus. No proxy is inserted in the LLM data")
-        if mode == "action":
+        if connector == "hermes" and mode == "action":
+            click.echo("  path; valid synchronous pre_tool_call JSON can deny tools,")
+            click.echo("  while pre_verify JSON can continue verification. Failures")
+            click.echo("  remain open, exit status is not enforcement, and there is no ask.")
+        elif mode == "action":
             click.echo("  path; supported actions flagged by policy are blocked")
             click.echo("  by the connector's native lifecycle verdict.")
         else:
@@ -5391,6 +5395,8 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     click.echo("  Telemetry channels:")
     if connector == "omnigent":
         click.echo("    • Policy API — six request/tool/model phases → /api/v1/omnigent/hook")
+    elif connector == "hermes":
+        click.echo("    • Hooks      — 23 classified v0.19 events → /api/v1/hermes/hook")
     else:
         click.echo(f"    • Hooks      — tool calls, prompt-submit, agent stop → /api/v1/{connector}/hook")
     native_otel_connectors = {"codex", "claudecode", "geminicli", "copilot", "omnigent"}
@@ -5457,6 +5463,12 @@ def _print_observability_summary(
     label = _CONNECTOR_META[connector]["label"]
     if connector == "omnigent":
         enforcement_label = "enabled (custom policy API)" if mode == "action" else "disabled (observe-only)"
+    elif connector == "hermes":
+        enforcement_label = (
+            "preview (pre_tool deny; pre_verify continue; failures open; no ask)"
+            if mode == "action"
+            else "disabled (observe-only)"
+        )
     else:
         enforcement_label = "enabled (hook-driven)" if mode == "action" else "disabled (observe-only)"
 
@@ -5500,6 +5512,14 @@ def _print_observability_summary(
     ]
     if connector == "omnigent":
         rows.append(("native OTel", "optional; inactive until OTEL_* is exported for OmniGent"))
+    elif connector == "hermes":
+        rows.extend(
+            [
+                ("hook failure posture", "upstream fail-open"),
+                ("native ask/approve", "unsupported"),
+                ("native OTel", "unsupported; hook-derived audit only"),
+            ]
+        )
     for k, v in rows:
         click.echo(f"    {k + ':':<22s} {v}")
     click.echo()
@@ -5721,6 +5741,11 @@ def _setup_observability_alias(
         normalized_mode = _prompt_connector_mode(connector, default_mode=normalized_mode)
 
     _print_connector_observability_banner(connector, mode=normalized_mode)
+    if connector == "hermes" and (fail_mode or "").strip().lower() == "closed":
+        ux.warn(
+            "Hermes remains upstream fail-open. --fail-mode closed is recorded only as policy "
+            "provenance; timeout, nonzero, malformed, authentication, and transport failures continue."
+        )
 
     # WU7: resolve add-vs-replace. Only HOOK-ENFORCED peers count as valid
     # multi-connector neighbors (D4=A) — proxy-backed connectors

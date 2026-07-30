@@ -182,6 +182,7 @@ type options struct {
 	AntigravityConfigDir string
 	OpenCodeConfigDir    string
 	OmnigentConfigHome   string
+	HermesHome           string
 	// PreserveConnectorConfiguration is internal transaction intent, never a
 	// command-line property. Servicing an existing install without an explicit
 	// connector or mode selection must refresh its owned registrations in place
@@ -261,6 +262,7 @@ type installState struct {
 	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
 	OpenCodeConfigDir      string            `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome     string            `json:"omnigent_config_home,omitempty"`
+	HermesHome             string            `json:"hermes_home,omitempty"`
 	UnsignedLocalArtifact  bool              `json:"unsigned_local_artifact"`
 	ReleaseSigningRequired bool              `json:"release_signing_required"`
 	Toolchain              map[string]string `json:"toolchain"`
@@ -505,6 +507,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.AntigravityConfigDir = transaction.AntigravityConfigDir
 	opts.OpenCodeConfigDir = transaction.OpenCodeConfigDir
 	opts.OmnigentConfigHome = transaction.OmnigentConfigHome
+	opts.HermesHome = transaction.HermesHome
 	if err := beginSetupTransaction(transaction); err != nil {
 		return retryRequiredCode, err
 	}
@@ -961,6 +964,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 			break
 		}
 	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "hermes", "config.yaml.json")) {
+		add("hermes")
+	}
 	return connectors, nil
 }
 
@@ -1235,6 +1241,8 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "OPENCODE_CONFIG_DIR"
 	case "omnigent":
 		variable = "OMNIGENT_CONFIG_HOME"
+	case "hermes":
+		variable = "HERMES_HOME"
 	default:
 		return "", fmt.Errorf("unsupported native connector %q", connectorName)
 	}
@@ -1284,6 +1292,7 @@ var nativeLifecycleConnectorNames = []string{
 	"codex",
 	"copilot",
 	"cursor",
+	"hermes",
 	"omnigent",
 	"opencode",
 	"windsurf",
@@ -1568,6 +1577,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		AntigravityConfigDir:   opts.AntigravityConfigDir,
 		OpenCodeConfigDir:      opts.OpenCodeConfigDir,
 		OmnigentConfigHome:     opts.OmnigentConfigHome,
+		HermesHome:             opts.HermesHome,
 		UnsignedLocalArtifact:  payload.Manifest.Unsigned,
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
@@ -2563,7 +2573,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, cursor, omnigent, opencode, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2626,7 +2636,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|cursor|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

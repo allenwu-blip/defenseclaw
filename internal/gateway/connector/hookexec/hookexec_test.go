@@ -378,10 +378,17 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:  0,
 		},
 		{
-			name:       "hermes block echoes hook_output exit 0",
+			name:       "hermes valid decision block echoes json exit 0",
 			connector:  "hermes",
-			respBody:   `{"action":"block","hook_output":{"action":"block","message":"no"}}`,
-			wantStdout: `{"action":"block","message":"no"}` + "\n",
+			respBody:   `{"action":"block","hook_output":{"decision":"block","reason":"no"}}`,
+			wantStdout: `{"decision":"block","reason":"no"}` + "\n",
+			wantCode:   0,
+		},
+		{
+			name:       "hermes valid pre llm context echoes json exit 0",
+			connector:  "hermes",
+			respBody:   `{"action":"alert","hook_output":{"context":"DefenseClaw policy context"}}`,
+			wantStdout: `{"context":"DefenseClaw policy context"}` + "\n",
 			wantCode:   0,
 		},
 		{
@@ -415,6 +422,56 @@ func TestDecisionGolden(t *testing.T) {
 				}
 			} else if !strings.Contains(r.stderr, tt.wantStderr) {
 				t.Errorf("stderr = %q, want substring %q", r.stderr, tt.wantStderr)
+			}
+		})
+	}
+}
+
+func TestHermesJSONStdinAndValidOutputShapes(t *testing.T) {
+	input := `{"event":"pre_tool_call","session_id":"hermes-session","extra":{"tool_name":"terminal","tool_input":{"command":"Get-ChildItem \"C:\\Program Files\""}}}`
+	for _, tc := range []struct {
+		name       string
+		event      string
+		response   string
+		wantStdout string
+	}{
+		{
+			name:       "block",
+			event:      "pre_tool_call",
+			response:   `{"action":"block","hook_output":{"decision":"block","reason":"blocked by test policy"}}`,
+			wantStdout: `{"decision":"block","reason":"blocked by test policy"}` + "\n",
+		},
+		{
+			name:       "context",
+			event:      "pre_llm_call",
+			response:   `{"action":"alert","hook_output":{"context":"test policy context"}}`,
+			wantStdout: `{"context":"test policy context"}` + "\n",
+		},
+		{
+			name:       "bounded verification continue",
+			event:      "pre_verify",
+			response:   `{"action":"block","hook_output":{"action":"continue","message":"run focused verification"}}`,
+			wantStdout: `{"action":"continue","message":"run focused verification"}` + "\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := ok(tc.response)
+			result := run(t, "hermes", rt, func(opts *Options) {
+				opts.Event = tc.event
+				opts.Stdin = strings.NewReader(input)
+			})
+			if result.code != 0 || result.stdout != tc.wantStdout || result.stderr != "" {
+				t.Fatalf(
+					"Hermes %s output = (code=%d stdout=%q stderr=%q), want code=0 stdout=%q",
+					tc.event,
+					result.code,
+					result.stdout,
+					result.stderr,
+					tc.wantStdout,
+				)
+			}
+			if got := string(rt.gotBody); got != input {
+				t.Fatalf("Hermes %s JSON stdin = %q, want %q", tc.event, got, input)
 			}
 		})
 	}
@@ -484,7 +541,7 @@ func TestOversizedPayload(t *testing.T) {
 		"cursor":     {stdout: cursorDeny("DefenseClaw hook payload too large") + "\n", code: 2},
 		"copilot":    {stdout: "", code: 2},
 		"geminicli":  {stdout: "", code: 2},
-		"hermes":     {stdout: "", code: 2},
+		"hermes":     {stdout: "", code: 0},
 		"windsurf":   {stdout: "", code: 2},
 	}
 	for connector, want := range cases {
@@ -763,6 +820,49 @@ func TestMixedConnectorEffectiveFailModeResponseMatrix(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHermesFailuresAlwaysFailOpen(t *testing.T) {
+	type failureCase struct {
+		name   string
+		rt     *stubRT
+		mutate func(*Options)
+	}
+	cases := []failureCase{
+		{name: "auth", rt: &stubRT{status: 401, body: "unauthorized"}},
+		{name: "network", rt: &stubRT{err: errors.New("connection refused")}},
+		{name: "timeout", rt: &stubRT{err: context.DeadlineExceeded}},
+		{name: "server", rt: &stubRT{status: 503, body: "unavailable"}},
+		{name: "malformed", rt: ok("not-json")},
+		{name: "oversized", rt: ok(`{"action":"allow"}`), mutate: func(o *Options) {
+			o.MaxBody = 2
+			o.Stdin = strings.NewReader(`{"event":"pre_tool_call"}`)
+		}},
+		{name: "missing-token", rt: ok(`{"action":"allow"}`), mutate: func(o *Options) {
+			o.Token = ""
+			o.HookDir = filepath.Join(o.Home, "no-token")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := run(t, "hermes", tc.rt, func(o *Options) {
+				o.FailMode = "closed"
+				o.StrictAvailability = true
+				o.ManagedEnterprise = true
+				if tc.mutate != nil {
+					tc.mutate(o)
+				}
+			})
+			if result.code != 0 || result.stdout != "" {
+				t.Fatalf(
+					"Hermes failure synthesized enforcement: code=%d stdout=%q stderr=%q",
+					result.code,
+					result.stdout,
+					result.stderr,
+				)
+			}
+		})
 	}
 }
 

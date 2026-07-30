@@ -21,9 +21,9 @@ the release actually qualifies.
 | Windsurf connector setup | **Preview** | Native PowerShell transport and full Setup lifecycle are implemented; packaged and interactive official-client certification is pending. |
 | OpenCode connector setup | **Preview** | Same-user native OpenCode process and auto-loaded JavaScript plugin are implemented; certification awaits the integrated packaged-Setup and official-client gates. |
 | OmniGent 0.7.0 connector setup | **Preview — native degraded** | Same-user native `uv tool` environment and awaited Python policy calls from server/SDK harnesses. Terminal wrappers and filesystem/network/L7 sandboxing remain unavailable. |
+| Hermes connector setup | **Preview / not certified** | Same-user Tier-1 native Hermes, direct absolute forward-slash `defenseclaw-hook.exe` argv, and authenticated loopback gateway. Packaged and official-client certification gates are pending. |
 | Copilot CLI and Antigravity setup | **Not certified** | Native lifecycle code exists, but the Windows release does not qualify it without packaged and official-client evidence. |
 | Gemini CLI setup | **Excluded** | Native Windows support is intentionally excluded; existing non-Windows behavior is unchanged. |
-| Hermes setup | **Pending** | No native Windows claim is made until the separate handoff is accepted. |
 | OpenHands, OpenClaw, and ZeptoClaw setup | **Unsupported** | Their required WSL or proxy topology is not hosted by native Windows DefenseClaw. |
 | Python CLI | **Supported** | Packaged launcher and embedded runtime; PowerShell and cmd. Individual optional/network subcommands retain their caveats below. |
 | TUI | **Supported** | Native console input, UTF-8 output, clipboard support, managed process cancellation, and safe fallback when redraw is unavailable. |
@@ -31,8 +31,8 @@ the release actually qualifies.
 | Logon startup | **Supported** | Installer-owned HKCU Run value and no-console startup helper when a connector is configured. |
 | Watchdog | **Limited** | Config-enabled detached process with protected identity. Not a service or Scheduled Task. |
 | Observe and action modes | **Supported** | Action applies only to declared connector/event response surfaces. |
-| Fail open/fail closed | **Supported** | Effective connector setting covers transport and invalid response failures on declared block-capable pre-action events. OpenCode fail-closed is authoritative only for awaited `tool.execute.before`; internal evaluator panic remains a reported fail-open boundary. |
-| Native hook/policy lanes | **Supported; connector previews as labeled** | Codex/Claude Code use `defenseclaw-hook.exe`; Cursor/Windsurf use managed PowerShell adapters; OpenCode and OmniGent load in-process bridges. No Bash, cmd wrapper, `jq`, compatibility fallback, or proxy is required. |
+| Fail open/fail closed | **Connector-specific** | Effective connector setting covers transport and invalid-response failures only where the vendor contract supports them. Hermes is forced fail-open; OpenCode fail-closed is authoritative only for awaited `tool.execute.before`, while internal evaluator panic remains a reported fail-open boundary. |
+| Native hook/policy lanes | **Supported; connector previews as labeled** | Codex/Claude Code/Hermes use `defenseclaw-hook.exe`; Cursor/Windsurf use managed PowerShell adapters; OpenCode and OmniGent load in-process bridges. Hermes uses a direct argv. No DefenseClaw Bash, cmd wrapper, `jq`, compatibility fallback, or proxy is required. |
 | Native OTLP ingress | **Supported where officially exposed** | Codex logs/metrics/traces and Claude Code logs/metrics with traces disabled. Other connectors rely on hook/policy-derived audit unless their official native telemetry contract is separately established. Observation only. |
 | Mandatory local audit | **Supported** | SQLite persists locally even without an outbound destination. |
 | Remote telemetry destinations | **Limited** | Supported when explicitly configured and reachable; credentials, network policy, and destination capabilities remain operator responsibilities. |
@@ -54,8 +54,8 @@ the release actually qualifies.
 | Offline install/servicing | **Limited** | Self-contained Setup after authenticated staging; remote registries/providers/destinations are not offline features. |
 | Local observability and Local Splunk | **Limited** | Optional Hyper-V Docker Desktop/Linux-container path on x64 Pro/Enterprise/Education only. |
 | OpenShell sandbox | **Unsupported** | Linux-only lifecycle. |
-| Model proxy/rerouting for supported or preview connectors | **Not applicable** | Codex, Claude Code, Cursor, Windsurf, and OpenCode keep their direct upstream path; Windows enforcement is hook-native. |
-| POSIX services and hook shells | **Not applicable** | Windows uses native processes, HKCU startup, the native hook runner, or OpenCode's in-process plugin. |
+| Model proxy/rerouting for supported or preview connectors | **Not applicable** | Codex, Claude Code, Cursor, Windsurf, Hermes, OpenCode, and OmniGent keep their direct upstream path; Windows enforcement uses native hook or policy lanes. |
+| POSIX services and hook shells | **Not applicable** | Windows uses native processes, HKCU startup, native hook/adapter runners, or in-process policy bridges. |
 
 ## Public `defenseclaw` command inventory
 
@@ -116,7 +116,8 @@ The public tree contains:
   `splunk dashboards apply/destroy/plan`.
 
 On native Windows, `codex` and `claude-code` are certified connector aliases;
-`cursor`, `windsurf`, and `opencode` are selectable previews. Other aliases may
+`cursor`, `windsurf`, `hermes`, `opencode`, and `omnigent` are selectable
+previews; `copilot` and `antigravity` remain selectable but not certified. Other aliases may
 remain visible because this is one cross-platform CLI; their presence does not
 override the platform gate. Gemini CLI is excluded from native Windows. Local
 observability, Splunk, providers, webhooks, Galileo, registries, and remote
@@ -129,7 +130,7 @@ destinations are optional and retain their own prerequisites.
 | `start`, `status`, `restart`, `stop` | no child commands | **Supported** current-user daemon lifecycle. |
 | `watchdog` | `start`, `status`, `stop` | **Limited** config-enabled detached monitor, not an OS service. |
 | `audit` | `export` | **Supported**. Exported content can be sensitive; handle it as audit data. |
-| `connector` | `list-backups`, `reconcile`, `teardown`, `verify` | **Supported** for Codex/Claude Code and **Preview** for Cursor/Windsurf/OpenCode; low-level operator/recovery surface. |
+| `connector` | `list-backups`, `reconcile`, `teardown`, `verify` | **Supported** for Codex/Claude Code and **Preview** for Cursor/Windsurf/Hermes/OpenCode/OmniGent; Copilot/Antigravity remain not certified; low-level operator/recovery surface. |
 | `policy` | `domains`, `evaluate`, `evaluate-firewall`, `reload`, `show`, `validate` | **Supported**. |
 | `provenance` | `show` | **Supported**. |
 | `scan` | `code` | **Supported** CodeGuard/ClawShield source scan. |

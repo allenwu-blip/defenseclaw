@@ -234,7 +234,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "cursor", "windsurf", "opencode"} {
+	for _, connector := range []string{"none", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -309,7 +309,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"antigravity", "codex", "claudecode", "copilot", "cursor", "windsurf", "opencode"} {
+	for _, connectorName := range []string{"antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -564,6 +564,8 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 		filepath.Join("connector_backups", "cursor", "hooks.json.json"),
 		filepath.Join("connector_backups", "windsurf", "config.json"),
 		filepath.Join("connector_backups", "opencode", "config.json"),
+		filepath.Join("connector_backups", "omnigent", "config.json"),
+		filepath.Join("connector_backups", "hermes", "config.yaml.json"),
 	}
 	for _, marker := range markers {
 		path := filepath.Join(dataRoot, marker)
@@ -579,7 +581,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "copilot", "cursor", "windsurf", "antigravity", "opencode"}
+	want := []string{"codex", "claudecode", "copilot", "cursor", "windsurf", "antigravity", "opencode", "omnigent", "hermes"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}

@@ -188,11 +188,33 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 		adapter := strings.TrimSuffix(unixCommand, ".sh") + ".ps1"
 		return "& " + powershellQuoteLiteral(adapter)
 	}
+	// Hermes tokenizes the configured command with Python shlex.split and
+	// launches the resulting argv through subprocess.run(shell=False). A
+	// PowerShell call operator or wrapper would therefore be treated as an
+	// executable name instead of being evaluated. Register the stable native
+	// launcher as the first, quoted argv token and use forward slashes so
+	// shlex cannot consume a Windows backslash before one of its metacharacters.
+	//
+	// The direct executable is the entire DefenseClaw boundary. Hermes itself
+	// may use installer-managed PortableGit for its terminal tool, but this
+	// integration neither locates nor invokes that upstream dependency.
+	if connector == "hermes" {
+		return windowsHermesDirectHookCommand(defenseclawHookBinary())
+	}
 	// Claude Code evaluates hook command strings with PowerShell on Windows.
 	// A quoted executable path alone is only a string expression there; the
 	// call operator is required to invoke it. Use a single-quoted literal so an
 	// install path cannot introduce PowerShell interpolation.
 	return "& " + powershellQuoteLiteral(defenseclawHookBinary()) + " " + nativeHookFlag + connector
+}
+
+func windowsHermesDirectHookCommand(binary string) string {
+	binary = strings.TrimSpace(binary)
+	if binary == "" || strings.ContainsAny(binary, "\"\x00\r\n") || !isWindowsAbsolutePath(binary) {
+		return ""
+	}
+	binary = strings.ReplaceAll(binary, `\`, "/")
+	return `"` + binary + `" ` + nativeHookFlag + "hermes"
 }
 
 // defenseclawHookBinary returns the stable native HookRuntime launcher on
@@ -751,6 +773,14 @@ func isWindowsDriveAbsolutePath(path string) bool {
 		return false
 	}
 	return (path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')
+}
+
+func isWindowsAbsolutePath(path string) bool {
+	if isWindowsDriveAbsolutePath(path) {
+		return true
+	}
+	normalized := strings.ReplaceAll(path, `/`, `\`)
+	return strings.HasPrefix(normalized, `\\`) && len(strings.TrimPrefix(normalized, `\\`)) > 0
 }
 
 func validNativeHookConnector(connector string) bool {

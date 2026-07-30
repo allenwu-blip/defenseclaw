@@ -209,6 +209,20 @@ def connector_fail_mode_report(
     guardrail = cfg.guardrail
     resolver = getattr(guardrail, "effective_hook_fail_mode", None)
     configured = normalize_fail_mode(resolver(name) if callable(resolver) else getattr(guardrail, "hook_fail_mode", ""))
+    if name == "hermes":
+        return {
+            "effective": "open",
+            "provenance": "hermes-upstream-fail-open",
+            "configured": configured,
+            "desired": "open",
+            "runtime": "open",
+            "current": True,
+            "drift": [],
+            "sources": [
+                {"name": "config", "mode": configured},
+                {"name": "hermes-upstream", "mode": "open"},
+            ],
+        }
     if name in _EXPECTED_CONTRACTS or name == "opencode":
         return resolve_connector_fail_mode(
             cfg,
