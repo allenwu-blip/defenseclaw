@@ -162,7 +162,8 @@ func validateDeferredUninstallCleanupRecord(
 		return errors.New("deferred uninstall cleanup has an invalid verified connector set")
 	}
 	for index, connector := range record.VerifiedConnectors {
-		if connector != "claudecode" && connector != "codex" && connector != "copilot" {
+		if connector != "claudecode" && connector != "codex" &&
+			connector != "copilot" && connector != "geminicli" {
 			return fmt.Errorf("deferred uninstall cleanup has an invalid connector %q", connector)
 		}
 		if index > 0 && record.VerifiedConnectors[index-1] == connector {

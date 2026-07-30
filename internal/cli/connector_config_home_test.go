@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 )
 
 const ownedCodexOTLPFixture = `[otel.exporter.otlp-http]
@@ -37,6 +39,30 @@ func TestBindConnectorLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testin
 	restore()
 	if got := os.Getenv("CODEX_HOME"); got != ambient {
 		t.Fatalf("restored CODEX_HOME = %q, want %q", got, ambient)
+	}
+}
+
+func TestBindConnectorLifecycleConfigHomeTargetsGeminiSettingsAndRestoresIt(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, ".gemini")
+	previous := filepath.Join(root, "previous", "settings.json")
+	connector.GeminiSettingsPathOverride = previous
+	connectorFlagConfigHome = configDir
+	t.Cleanup(func() {
+		connectorFlagConfigHome = ""
+		connector.GeminiSettingsPathOverride = ""
+	})
+
+	restore, err := bindConnectorLifecycleConfigHome("geminicli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := connector.GeminiSettingsPathOverride, filepath.Join(configDir, "settings.json"); got != want {
+		t.Fatalf("bound Gemini settings path = %q, want %q", got, want)
+	}
+	restore()
+	if got := connector.GeminiSettingsPathOverride; got != previous {
+		t.Fatalf("restored Gemini settings path = %q, want %q", got, previous)
 	}
 }
 

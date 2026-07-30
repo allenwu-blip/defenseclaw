@@ -213,6 +213,10 @@ var (
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
+		{
+			Label: "Gemini CLI (enterprise/Cloud/paid key; certification pending)",
+			Value: "geminicli",
+		},
 	}
 	wizardModeChoices = []wizardChoice{
 		{Label: "Observe", Value: "observe"},

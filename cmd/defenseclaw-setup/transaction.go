@@ -90,9 +90,11 @@ type setupTransaction struct {
 	PreviousCodexHome              string                   `json:"previous_codex_home,omitempty"`
 	PreviousClaudeConfigDir        string                   `json:"previous_claude_config_dir,omitempty"`
 	PreviousCopilotHome            string                   `json:"previous_copilot_home,omitempty"`
+	CopilotHome                    string                   `json:"copilot_home,omitempty"`
+	PreviousGeminiConfigDir        string                   `json:"previous_gemini_config_dir,omitempty"`
 	CodexHome                      string                   `json:"codex_home,omitempty"`
 	ClaudeConfigDir                string                   `json:"claude_config_dir,omitempty"`
-	CopilotHome                    string                   `json:"copilot_home,omitempty"`
+	GeminiConfigDir                string                   `json:"gemini_config_dir,omitempty"`
 	MaintenanceSHA256              string                   `json:"maintenance_sha256,omitempty"`
 	DeleteUserData                 bool                     `json:"delete_user_data,omitempty"`
 	UninstallPathEntryOwned        bool                     `json:"uninstall_path_entry_owned,omitempty"`
@@ -280,6 +282,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	defaultGeminiConfigDir, err := defaultConnectorConfigHome(".gemini")
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	codexHome, err := transactionConfigHome("CODEX_HOME", defaultCodexHome)
 	if err != nil {
 		return setupTransaction{}, err
@@ -292,11 +298,16 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState, previousCopilotState := "", "", ""
+	// Gemini CLI has no documented configuration-home environment override.
+	// Bind Setup to the exact official per-user directory instead of inventing
+	// a client-facing variable.
+	geminiConfigDir := defaultGeminiConfigDir
+	previousCodexState, previousClaudeState, previousCopilotState, previousGeminiState := "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
 		previousCopilotState = oldState.CopilotHome
+		previousGeminiState = oldState.GeminiConfigDir
 	}
 	// Pre-home-binding releases can advertise a connector only through their
 	// legacy backup. In that case the validated current override is the sole
@@ -320,6 +331,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	previousGeminiConfigDir, err := resolvePreviousConnectorHome(
+		previousGeminiState, previousConnectors, dataRoot, "geminicli", "config", geminiConfigDir,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	if preserveConnectorConfiguration {
 		// A quiet repair/upgrade without a connector choice services the exact
 		// homes already owned by the installation. Environment drift must not
@@ -327,6 +344,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		codexHome = previousCodexHome
 		claudeConfigDir = previousClaudeConfigDir
 		copilotHome = previousCopilotHome
+		geminiConfigDir = previousGeminiConfigDir
 	}
 	maintenanceSHA256 := ""
 	maintenanceExisted, previousMaintenanceSHA256, err := snapshotMaintenanceFile(maintenancePath)
@@ -376,9 +394,11 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousCodexHome:              previousCodexHome,
 		PreviousClaudeConfigDir:        previousClaudeConfigDir,
 		PreviousCopilotHome:            previousCopilotHome,
+		CopilotHome:                    copilotHome,
+		PreviousGeminiConfigDir:        previousGeminiConfigDir,
 		CodexHome:                      codexHome,
 		ClaudeConfigDir:                claudeConfigDir,
-		CopilotHome:                    copilotHome,
+		GeminiConfigDir:                geminiConfigDir,
 		MaintenanceSHA256:              maintenanceSHA256,
 		DeleteUserData:                 opts.DeleteUserData,
 		UninstallPathEntryOwned:        uninstallPathOwned,
@@ -424,11 +444,16 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome := "", "", ""
+	defaultGeminiConfigDir, err := defaultConnectorConfigHome(".gemini")
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredGeminiConfigDir := "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
 		configuredCopilotHome = oldState.CopilotHome
+		configuredGeminiConfigDir = oldState.GeminiConfigDir
 	}
 	// The source install transaction already captured validated client homes.
 	// Preserve them across an install-to-uninstall handoff when predecessor
@@ -444,6 +469,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	legacyCopilotFallback := source.CopilotHome
 	if legacyCopilotFallback == "" {
 		legacyCopilotFallback = defaultCopilotHome
+	}
+	legacyGeminiFallback := source.GeminiConfigDir
+	if legacyGeminiFallback == "" {
+		legacyGeminiFallback = defaultGeminiConfigDir
 	}
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		configuredCodexHome,
@@ -474,6 +503,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		"claudecode",
 		"settings.json",
 		legacyClaudeFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousGeminiConfigDir, err := resolvePreviousConnectorHome(
+		configuredGeminiConfigDir,
+		previousConnectors,
+		source.DataRoot,
+		"geminicli",
+		"config",
+		legacyGeminiFallback,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -539,9 +579,11 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousCodexHome:            previousCodexHome,
 		PreviousClaudeConfigDir:      previousClaudeConfigDir,
 		PreviousCopilotHome:          previousCopilotHome,
+		CopilotHome:                  previousCopilotHome,
+		PreviousGeminiConfigDir:      previousGeminiConfigDir,
 		CodexHome:                    previousCodexHome,
 		ClaudeConfigDir:              previousClaudeConfigDir,
-		CopilotHome:                  previousCopilotHome,
+		GeminiConfigDir:              previousGeminiConfigDir,
 		DeleteUserData:               opts.DeleteUserData,
 		UninstallPathEntryOwned:      pathOwned,
 		UninstallPathSeparatorReused: pathSeparatorReused,
@@ -653,6 +695,11 @@ func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback st
 		}
 		home = filepath.Dir(home)
 	}
+	if connectorName == "geminicli" && !strings.EqualFold(filepath.Base(target), "settings.json") {
+		return "", errors.New(
+			"geminicli managed backup target is not the owned Gemini CLI settings.json",
+		)
+	}
 	return home, nil
 }
 
@@ -687,6 +734,7 @@ func transactionChildEnv(transaction setupTransaction) []string {
 		transaction.CodexHome,
 		transaction.ClaudeConfigDir,
 		transaction.CopilotHome,
+		transaction.GeminiConfigDir,
 	)
 }
 
@@ -696,20 +744,22 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction.PreviousCodexHome,
 		transaction.PreviousClaudeConfigDir,
 		transaction.PreviousCopilotHome,
+		transaction.PreviousGeminiConfigDir,
 	)
 }
 
 func transactionChildEnvForHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome string,
+	codexHome, claudeConfigDir, copilotHome, geminiConfigDir string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+3)
+	filtered := make([]string, 0, len(base)+4)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
 			strings.EqualFold(name, "CLAUDE_CONFIG_DIR") ||
-			strings.EqualFold(name, "COPILOT_HOME")) {
+			strings.EqualFold(name, "COPILOT_HOME") ||
+			strings.EqualFold(name, "DEFENSECLAW_GEMINI_CONFIG_DIR")) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -722,6 +772,9 @@ func transactionChildEnvForHomes(
 	}
 	if copilotHome != "" {
 		filtered = append(filtered, "COPILOT_HOME="+copilotHome)
+	}
+	if geminiConfigDir != "" {
+		filtered = append(filtered, "DEFENSECLAW_GEMINI_CONFIG_DIR="+geminiConfigDir)
 	}
 	return filtered
 }
@@ -913,7 +966,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		}
 		if !samePath(transaction.PreviousCodexHome, transaction.CodexHome) ||
 			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) ||
-			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) {
+			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) ||
+			!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
@@ -934,9 +988,11 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"previous Codex home":               transaction.PreviousCodexHome,
 		"previous Claude configuration dir": transaction.PreviousClaudeConfigDir,
 		"previous Copilot home":             transaction.PreviousCopilotHome,
+		"Copilot home":                      transaction.CopilotHome,
+		"previous Gemini configuration dir": transaction.PreviousGeminiConfigDir,
 		"Codex home":                        transaction.CodexHome,
 		"Claude configuration dir":          transaction.ClaudeConfigDir,
-		"Copilot home":                      transaction.CopilotHome,
+		"Gemini configuration dir":          transaction.GeminiConfigDir,
 	} {
 		if value == "" {
 			continue
@@ -964,7 +1020,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	}
 	seenConnectors := map[string]bool{}
 	for _, connectorName := range transaction.PreviousConnectors {
-		if connectorName != "codex" && connectorName != "claudecode" && connectorName != "copilot" {
+		if connectorName != "codex" && connectorName != "claudecode" &&
+			connectorName != "copilot" && connectorName != "geminicli" {
 			return fmt.Errorf("setup transaction has an invalid previous connector %q", connectorName)
 		}
 		if seenConnectors[connectorName] {
@@ -1023,6 +1080,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Codex home":               state.CodexHome,
 		"Claude configuration dir": state.ClaudeConfigDir,
 		"Copilot home":             state.CopilotHome,
+		"Gemini configuration dir": state.GeminiConfigDir,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
@@ -2897,6 +2955,8 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir)
 	case "copilot":
 		return !samePath(transaction.PreviousCopilotHome, transaction.CopilotHome)
+	case "geminicli":
+		return !samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir)
 	default:
 		return false
 	}

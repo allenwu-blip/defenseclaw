@@ -222,7 +222,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "codex", "claudecode", "copilot"} {
+	for _, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -297,7 +297,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"codex", "claudecode", "copilot"} {
+	for _, connectorName := range []string{"codex", "claudecode", "copilot", "geminicli"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -548,6 +548,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 		filepath.Join("connector_backups", "codex", "config.toml.json"),
 		filepath.Join("connector_backups", "claudecode", "settings.json.json"),
 		filepath.Join("connector_backups", "copilot", "config.json"),
+		filepath.Join("connector_backups", "geminicli", "config.json"),
 	}
 	for _, marker := range markers {
 		path := filepath.Join(dataRoot, marker)
@@ -563,7 +564,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "copilot"}
+	want := []string{"codex", "claudecode", "copilot", "geminicli"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -600,6 +601,8 @@ guardrail:
       mode: observe
     copilot:
       mode: observe
+    geminicli:
+      mode: observe
 gateway:
   token: private-synthetic-value-must-not-appear
 observability:
@@ -613,7 +616,7 @@ observability:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claudecode", "codex", "copilot"}
+	want := []string{"claudecode", "codex", "copilot", "geminicli"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -805,6 +808,18 @@ func TestParseArgsConnectorLaterNormalizesToNone(t *testing.T) {
 	}
 	if opts.Connector != "none" {
 		t.Fatalf("connector = %q, want none", opts.Connector)
+	}
+}
+
+func TestParseArgsGeminiAliasesNormalizeToGeminiCLI(t *testing.T) {
+	for _, alias := range []string{"gemini", "gemini-cli", "geminicli"} {
+		opts, err := parseArgs([]string{"CONNECTOR=" + alias})
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", alias, err)
+		}
+		if opts.Connector != "geminicli" || !opts.ConnectorSet {
+			t.Fatalf("connector alias %q parsed as %+v", alias, opts)
+		}
 	}
 }
 

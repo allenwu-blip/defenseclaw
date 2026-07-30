@@ -647,6 +647,39 @@ func TestDeferredCleanupRecordCarriesCopilotRestorationReceipt(t *testing.T) {
 	}
 }
 
+func TestDeferredCleanupConnectorCustodyAcceptsGeminiAndRejectsAntigravity(t *testing.T) {
+	fixture := newDeferredCleanupFixture(t)
+	paths := hookruntime.Paths{
+		Root:     fixture.record.RuntimeRoot,
+		Launcher: fixture.record.LauncherPath,
+		State:    fixture.record.StatePath,
+	}
+
+	fixture.record.VerifiedConnectors = []string{"claudecode", "codex", "geminicli"}
+	if err := validateDeferredUninstallCleanupRecord(
+		fixture.record,
+		paths,
+		fixture.record.InstallerStateRoot,
+		fixture.record.MaintenancePath,
+		fixture.record.RunValueName,
+		fixture.record.RunCommand,
+	); err != nil {
+		t.Fatalf("Gemini deferred-cleanup custody rejected: %v", err)
+	}
+
+	fixture.record.VerifiedConnectors = []string{"antigravity", "geminicli"}
+	if err := validateDeferredUninstallCleanupRecord(
+		fixture.record,
+		paths,
+		fixture.record.InstallerStateRoot,
+		fixture.record.MaintenancePath,
+		fixture.record.RunValueName,
+		fixture.record.RunCommand,
+	); err == nil || !strings.Contains(err.Error(), "invalid connector") {
+		t.Fatalf("Antigravity entered Gemini deferred-cleanup custody: %v", err)
+	}
+}
+
 func writeDeferredCleanupHookState(t *testing.T, path string, state hookruntime.State) {
 	t.Helper()
 	body, err := json.MarshalIndent(state, "", "  ")

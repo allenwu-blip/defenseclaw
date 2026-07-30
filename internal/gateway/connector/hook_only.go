@@ -910,22 +910,17 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 				return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 			}
 		}
+		if c.name == "copilot" {
+			var cfg map[string]interface{}
+			if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
+				return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+			}
+		}
 		if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
 			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
 			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
-	}
-	if c.name == "copilot" {
-		var cfg map[string]interface{}
-		if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
-			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
-		}
-	}
-	if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
-		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
-		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
-		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
 	if c.name == "geminicli" {
 		tokenPath, tokenPathErr := OTLPPathTokenFilePath(opts.DataDir, OTLPScopeGeminiCLI)

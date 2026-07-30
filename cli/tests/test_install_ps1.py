@@ -228,6 +228,17 @@ if ($LASTEXITCODE -ne 0) {{ throw "help exited $LASTEXITCODE" }}
             ],
         ),
         (
+            "-Connector gemini-cli -Yes -Quickstart",
+            [
+                "/quiet",
+                "/norestart",
+                "INSTALLSCOPE=user",
+                "CONNECTOR=geminicli",
+                "MODE=observe",
+                "STARTGATEWAY=1",
+            ],
+        ),
+        (
             "-NoOpenclaw -Yes -Quickstart",
             [
                 "/quiet",

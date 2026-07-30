@@ -19,7 +19,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract')]
     [string]$Mode,
-    [ValidateSet('codex', 'claudecode', 'copilot')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$Connector = 'codex',
     [Parameter(Mandatory)][string]$ArtifactRoot,
     [Parameter(Mandatory)][string]$StateRoot,
     [string]$TargetVersion = '',
@@ -741,7 +741,7 @@ function Publish-BoundedDisposableContractResults {
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$DestinationPath,
         [Parameter(Mandatory)][string]$DestinationRoot,
-        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'copilot')]
+        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')]
         [string]$ExpectedConnector
     )
 

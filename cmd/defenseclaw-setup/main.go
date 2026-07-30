@@ -177,6 +177,7 @@ type options struct {
 	CodexHome          string
 	ClaudeConfigDir    string
 	CopilotHome        string
+	GeminiConfigDir    string
 	// PreserveConnectorConfiguration is internal transaction intent, never a
 	// command-line property. Servicing an existing install without an explicit
 	// connector or mode selection must refresh its owned registrations in place
@@ -251,6 +252,7 @@ type installState struct {
 	CodexHome              string            `json:"codex_home,omitempty"`
 	ClaudeConfigDir        string            `json:"claude_config_dir,omitempty"`
 	CopilotHome            string            `json:"copilot_home,omitempty"`
+	GeminiConfigDir        string            `json:"gemini_config_dir,omitempty"`
 	UnsignedLocalArtifact  bool              `json:"unsigned_local_artifact"`
 	ReleaseSigningRequired bool              `json:"release_signing_required"`
 	Toolchain              map[string]string `json:"toolchain"`
@@ -490,6 +492,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.CodexHome = transaction.CodexHome
 	opts.ClaudeConfigDir = transaction.ClaudeConfigDir
 	opts.CopilotHome = transaction.CopilotHome
+	opts.GeminiConfigDir = transaction.GeminiConfigDir
 	if err := beginSetupTransaction(transaction); err != nil {
 		return retryRequiredCode, err
 	}
@@ -892,9 +895,10 @@ func requestedServices(opts options, previous serviceState) serviceState {
 
 func connectorsForNativeUninstall(state *installState, dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
-	connectors := make([]string, 0, 3)
+	connectors := make([]string, 0, 4)
 	add := func(name string) {
-		if (name == "codex" || name == "claudecode" || name == "copilot") && !seen[name] {
+		if (name == "codex" || name == "claudecode" ||
+			name == "copilot" || name == "geminicli") && !seen[name] {
 			seen[name] = true
 			connectors = append(connectors, name)
 		}
@@ -927,6 +931,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "copilot", "config.json")) {
 		add("copilot")
+	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "geminicli", "config.json")) {
+		add("geminicli")
 	}
 	return connectors, nil
 }
@@ -991,7 +998,8 @@ func readNativeConfiguredConnectors(dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(value string) {
 		name := normalizeConnector(strings.TrimSpace(value))
-		if name == "codex" || name == "claudecode" || name == "copilot" {
+		if name == "codex" || name == "claudecode" ||
+			name == "copilot" || name == "geminicli" {
 			seen[name] = true
 		}
 	}
@@ -1192,6 +1200,11 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "CLAUDE_CONFIG_DIR"
 	case "copilot":
 		variable = "COPILOT_HOME"
+	case "geminicli":
+		// This installer-private binding is consumed only by the hidden
+		// --config-home maintenance flag. Gemini CLI itself has no documented
+		// home override and continues to read %USERPROFILE%\.gemini.
+		variable = "DEFENSECLAW_GEMINI_CONFIG_DIR"
 	default:
 		return "", fmt.Errorf("unsupported native connector %q", connectorName)
 	}
@@ -1232,7 +1245,8 @@ func samePath(a, b string) bool {
 }
 
 func validConnector(value string) bool {
-	return value == "none" || value == "codex" || value == "claudecode" || value == "copilot"
+	return value == "none" || value == "codex" || value == "claudecode" ||
+		value == "copilot" || value == "geminicli"
 }
 
 func validMode(value string) bool {
@@ -1505,6 +1519,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		CodexHome:              opts.CodexHome,
 		ClaudeConfigDir:        opts.ClaudeConfigDir,
 		CopilotHome:            opts.CopilotHome,
+		GeminiConfigDir:        opts.GeminiConfigDir,
 		UnsignedLocalArtifact:  payload.Manifest.Unsigned,
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
@@ -2500,7 +2515,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected codex, claudecode, copilot, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected codex, claudecode, copilot, geminicli, or none", opts.Connector)
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2547,13 +2562,15 @@ func normalizeConnector(value string) string {
 		return "claudecode"
 	case "copilot", "githubcopilot", "github-copilot":
 		return "copilot"
+	case "gemini", "geminicli", "gemini-cli":
+		return "geminicli"
 	default:
 		return strings.ToLower(value)
 	}
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|geminicli|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

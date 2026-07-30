@@ -85,6 +85,7 @@ $CosignUrl = "https://github.com/sigstore/cosign/releases/download/v$CosignVersi
 $ConnectorChoices = @(
     "codex",
     "claudecode",
+    "geminicli",
     "none"
 )
 $HookConnectors = @()
@@ -862,6 +863,8 @@ function Resolve-SelectedConnector {
     switch ($selected) {
         "claude"      { $selected = "claudecode" }
         "claude-code" { $selected = "claudecode" }
+        "gemini"      { $selected = "geminicli" }
+        "gemini-cli"  { $selected = "geminicli" }
     }
     if ($NoOpenclaw -and [string]::IsNullOrWhiteSpace($selected)) {
         $selected = "none"

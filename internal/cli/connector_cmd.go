@@ -228,6 +228,16 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		variable = "CLAUDE_CONFIG_DIR"
 	case "copilot":
 		variable = "COPILOT_HOME"
+	case "geminicli":
+		// Gemini CLI documents one fixed per-user settings directory rather
+		// than a home environment override. The hidden installer binding names
+		// that directory, so point only DefenseClaw's connector resolver at its
+		// settings file for this maintenance process.
+		previous := connector.GeminiSettingsPathOverride
+		connector.GeminiSettingsPathOverride = filepath.Join(home, "settings.json")
+		return func() {
+			connector.GeminiSettingsPathOverride = previous
+		}, nil
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}
@@ -317,18 +327,17 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
-	if name != "claudecode" && name != "codex" && name != "copilot" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, and copilot")
+	if name != "claudecode" && name != "codex" && name != "copilot" && name != "geminicli" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, and geminicli")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		// Transactional Windows Setup must be able to preserve and repair a
-		// Copilot registration while the public certification classification
+		// preview registration while its public certification classification
 		// remains not_certified. The hidden, absolute --config-home binding is
 		// Setup's custody proof. Unsupported connectors and ordinary unbound
 		// calls remain rejected.
 		support := connector.ConnectorSupportOnHostOS(name)
-		if name != "copilot" || connectorFlagConfigHome == "" ||
-			support.Status != connector.PlatformNotCertified {
+		if connectorFlagConfigHome == "" || support.Status != connector.PlatformNotCertified {
 			return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
 		}
 		fmt.Fprintf(

@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -2604,6 +2604,9 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
         'copilot' {
             @('connector_backups\copilot\config.json')
         }
+        'geminicli' {
+            @('connector_backups\geminicli\config.json')
+        }
         default { throw "unsupported native connector backup marker: $Connector" }
     }
     return @($relativePaths | Where-Object {
@@ -2617,12 +2620,21 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('codex', 'claudecode', 'copilot')) {
+        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
     }
-    foreach ($connector in @('codex', 'claudecode')) {
+    $required = @('codex', 'claudecode')
+    if ($configured.Contains('copilot') -or
+        @(Get-NativeConnectorBackupMarkers $DataRoot 'copilot').Count -ne 0) {
+        $required += 'copilot'
+    }
+    if ($configured.Contains('geminicli') -or
+        @(Get-NativeConnectorBackupMarkers $DataRoot 'geminicli').Count -ne 0) {
+        $required += 'geminicli'
+    }
+    foreach ($connector in $required) {
         # Setup intentionally classifies uninstall work from the configured
         # roster as well as active state and backup markers. Exact connector
         # restoration can consume a marker before uninstall, so the validated
@@ -2636,7 +2648,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('codex', 'claudecode', 'copilot')) {
+    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -3382,7 +3394,8 @@ function Invoke-SetupAcceptance {
         (Join-Path $userProfile '.codex\config.toml'),
         (Join-Path $userProfile '.codex\managed_config.toml'),
         (Join-Path $userProfile '.claude\settings.json'),
-        (Join-Path $userProfile '.copilot\hooks\defenseclaw.json')
+        (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
+        (Join-Path $userProfile '.gemini\settings.json')
     )
     if (Test-Path -LiteralPath $installRoot) { throw "refusing to overwrite an existing current-user install: $installRoot" }
     if (Test-Path -LiteralPath $dataRoot) { throw "refusing to overwrite existing current-user data: $dataRoot" }
@@ -5272,6 +5285,7 @@ function Invoke-Contract {
     $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome)
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
+    $defaultGeminiHome = Join-Path $contractHome '.gemini'
     try {
         foreach ($path in @(
             $contractHome,
@@ -5291,7 +5305,7 @@ function Invoke-Contract {
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
             'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
-            'AWS_SESSION_TOKEN', 'LLM_API_KEY'
+            'AWS_SESSION_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'LLM_API_KEY'
         )) {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
         }
@@ -5319,7 +5333,8 @@ function Invoke-Contract {
         Assert-ManagedDistributionIntegrity (Join-Path $managedPython 'python.exe') $managedPython
 
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
-            (Test-Path -LiteralPath $defaultClaudeHome)) {
+            (Test-Path -LiteralPath $defaultClaudeHome) -or
+            (Test-Path -LiteralPath $defaultGeminiHome)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
 
@@ -5341,18 +5356,25 @@ function Invoke-Contract {
             -AllowNativeDataRoot -ResultsPath (Join-Path $root 'results.jsonl') `
             -ArtifactPath (Join-Path $root 'contract-diagnostics')
 
-        foreach ($defaultHome in @($defaultCodexHome, $defaultClaudeHome)) {
+        foreach ($defaultHome in @($defaultCodexHome, $defaultClaudeHome, $defaultGeminiHome)) {
             if (Test-Path -LiteralPath $defaultHome) {
                 throw "connector contract wrote to the default agent home: $defaultHome"
             }
         }
-        $unrelatedConfig = if ($Connector -eq 'codex') {
-            Join-Path $claudeHome 'settings.json'
-        } else {
-            Join-Path $codexHome 'config.toml'
+        $unrelatedConfigs = switch ($Connector) {
+            'codex' { @(Join-Path $claudeHome 'settings.json') }
+            'claudecode' { @(Join-Path $codexHome 'config.toml') }
+            default {
+                @(
+                    (Join-Path $codexHome 'config.toml'),
+                    (Join-Path $claudeHome 'settings.json')
+                )
+            }
         }
-        if (Test-Path -LiteralPath $unrelatedConfig) {
-            throw "connector contract wrote to the unrelated agent home: $unrelatedConfig"
+        foreach ($unrelatedConfig in $unrelatedConfigs) {
+            if (Test-Path -LiteralPath $unrelatedConfig) {
+                throw "connector contract wrote to the unrelated agent home: $unrelatedConfig"
+            }
         }
         if ($Connector -eq 'claudecode') {
             Assert-PackagedClaudeTokenRotation `

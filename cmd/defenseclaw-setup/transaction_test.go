@@ -613,6 +613,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.ClaudeConfigDir = transaction.PreviousClaudeConfigDir
 	transaction.PreviousCopilotHome = filepath.Join(filepath.Dir(dataRoot), ".copilot")
 	transaction.CopilotHome = transaction.PreviousCopilotHome
+	transaction.PreviousGeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini")
+	transaction.GeminiConfigDir = transaction.PreviousGeminiConfigDir
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -626,6 +628,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	changedHome.CopilotHome = filepath.Join(filepath.Dir(dataRoot), "other-copilot")
 	if err := validateSetupTransaction(changedHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Copilot home")
+	}
+	changedGeminiHome := transaction
+	changedGeminiHome.GeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-gemini")
+	if err := validateSetupTransaction(changedGeminiHome, expected); err == nil {
+		t.Fatal("connector-preserving transaction changed its recorded Gemini configuration directory")
 	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
@@ -1393,7 +1400,11 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	codexHome := filepath.Join(clientRoot, "codex")
 	claudeHome := filepath.Join(clientRoot, "claude")
 	copilotHome := filepath.Join(clientRoot, "copilot")
-	for _, path := range []string{codexHome, claudeHome, copilotHome} {
+	geminiConfigDir, err := defaultConnectorConfigHome(".gemini")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -1424,15 +1435,18 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	}
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
-		!samePath(transaction.PreviousCopilotHome, copilotHome) {
+		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
+		!samePath(transaction.PreviousGeminiConfigDir, geminiConfigDir) {
 		t.Fatalf(
-			"legacy transaction homes = (%q, %q, %q), want validated overrides (%q, %q, %q)",
+			"legacy transaction homes = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
 			transaction.PreviousCodexHome,
 			transaction.PreviousClaudeConfigDir,
 			transaction.PreviousCopilotHome,
+			transaction.PreviousGeminiConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
+			geminiConfigDir,
 		)
 	}
 
@@ -1442,6 +1456,7 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	source.CodexHome = codexHome
 	source.ClaudeConfigDir = claudeHome
 	source.CopilotHome = copilotHome
+	source.GeminiConfigDir = geminiConfigDir
 	source.UninstallHandoffHookStatus = stableHookSnapshotInactive
 	handoff, err := newUninstallHandoffTransaction(
 		source,
@@ -1453,15 +1468,18 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	}
 	if !samePath(handoff.PreviousCodexHome, codexHome) ||
 		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) ||
-		!samePath(handoff.PreviousCopilotHome, copilotHome) {
+		!samePath(handoff.PreviousCopilotHome, copilotHome) ||
+		!samePath(handoff.PreviousGeminiConfigDir, geminiConfigDir) {
 		t.Fatalf(
-			"legacy handoff homes = (%q, %q, %q), want source overrides (%q, %q, %q)",
+			"legacy handoff homes = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
 			handoff.PreviousCodexHome,
 			handoff.PreviousClaudeConfigDir,
 			handoff.PreviousCopilotHome,
+			handoff.PreviousGeminiConfigDir,
 			codexHome,
 			claudeHome,
 			copilotHome,
+			geminiConfigDir,
 		)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {

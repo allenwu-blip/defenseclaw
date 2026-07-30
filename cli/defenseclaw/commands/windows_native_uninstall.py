@@ -87,6 +87,7 @@ _INSTALL_STATE_OPTIONAL_FIELDS = frozenset(
         "path_value_created",
         "codex_home",
         "claude_config_dir",
+        "gemini_config_dir",
         "transaction_id",
     }
 )
@@ -487,7 +488,7 @@ def _validate_install_state(
         state.get("distribution_flavor") != "oss"
         or state.get("install_kind") != "native-windows-exe"
         or state.get("install_scope") != "user"
-        or state.get("connector") not in {"codex", "claudecode", "none"}
+        or state.get("connector") not in {"codex", "claudecode", "geminicli", "none"}
         or state.get("mode") not in {"observe", "action"}
         or state.get("unsigned_local_artifact") is not False
         or state.get("release_signing_required") is not True
