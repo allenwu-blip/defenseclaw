@@ -222,7 +222,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "codex", "claudecode"} {
+	for _, connector := range []string{"none", "codex", "claudecode", "copilot"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -297,7 +297,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"codex", "claudecode"} {
+	for _, connectorName := range []string{"codex", "claudecode", "copilot"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -318,6 +318,20 @@ func TestCanonicalInitializationUsesExplicitNoConnectorAuthority(t *testing.T) {
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("canonical initialization args = %v, want %v", args, want)
+	}
+}
+
+func TestCopilotInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
+	args := initialConfigurationArgs(options{Connector: "copilot", Mode: "action"})
+	want := []string{
+		"init", "--skip-install", "--non-interactive", "--yes",
+		"--connector", "copilot",
+		"--profile", "action",
+		"--no-start-gateway", "--no-verify",
+		"--native-setup-copilot",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("Copilot initialization args = %v, want %v", args, want)
 	}
 }
 
@@ -533,6 +547,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	markers := []string{
 		filepath.Join("connector_backups", "codex", "config.toml.json"),
 		filepath.Join("connector_backups", "claudecode", "settings.json.json"),
+		filepath.Join("connector_backups", "copilot", "config.json"),
 	}
 	for _, marker := range markers {
 		path := filepath.Join(dataRoot, marker)
@@ -548,15 +563,15 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	want := []string{"codex", "claudecode", "copilot"}
+	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
 }
 
 func TestConnectorsForNativeUninstallUsesActiveConnectorRoster(t *testing.T) {
 	dataRoot := t.TempDir()
-	state := []byte(`{"version":3,"names":["claudecode","codex"],"name":"claudecode"}`)
+	state := []byte(`{"version":3,"names":["claudecode","codex","copilot"],"name":"claudecode"}`)
 	if err := os.WriteFile(filepath.Join(dataRoot, "active_connector.json"), state, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -565,8 +580,8 @@ func TestConnectorsForNativeUninstallUsesActiveConnectorRoster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claudecode", "codex"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	want := []string{"claudecode", "codex", "copilot"}
+	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
 }
@@ -583,6 +598,8 @@ guardrail:
       mode: action
     codex:
       mode: observe
+    copilot:
+      mode: observe
 gateway:
   token: private-synthetic-value-must-not-appear
 observability:
@@ -596,7 +613,7 @@ observability:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claudecode", "codex"}
+	want := []string{"claudecode", "codex", "copilot"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}

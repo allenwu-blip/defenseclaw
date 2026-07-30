@@ -24,6 +24,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
+$script:CopilotConfiguredMode = ''
 
 function Get-SecretValues {
     $names = @(
@@ -866,10 +867,29 @@ function Set-IsolatedGatewayPort {
 }
 
 function Invoke-Setup([string]$Mode) {
+    if ($Connector -eq 'copilot') {
+        if ($script:CopilotConfiguredMode -cne $Mode) {
+            Invoke-Tool 'defenseclaw' @(
+                'init', '--skip-install', '--non-interactive', '--yes',
+                '--connector', 'copilot', '--profile', $Mode,
+                '--no-start-gateway', '--no-verify', '--native-setup-copilot'
+            ) | Out-Null
+            Set-IsolatedGatewayPort
+            $script:CopilotConfiguredMode = $Mode
+        }
+        $copilotHome = Resolve-EffectiveConnectorHome 'copilot'
+        Invoke-Tool 'defenseclaw-gateway' @(
+            'connector', 'reconcile', '--connector', 'copilot',
+            '--data-dir', $env:DEFENSECLAW_HOME,
+            '--config-home', $copilotHome, '--json'
+        ) | Out-Null
+        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+        Wait-Gateway
+        return
+    }
     $subcommand = switch ($Connector) {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
-        'copilot' { 'copilot' }
     }
     Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
     Wait-Gateway
@@ -1702,10 +1722,15 @@ function Invoke-ContractRun {
     Assert-TimeoutHandling
     Assert-NativeEnterpriseHooksRequireElevation
     Initialize-DefenseClawEnv
-    Invoke-Tool 'defenseclaw' @(
+    $initArgs = @(
         'init', '--skip-install', '--non-interactive', '--yes', '--connector', $Connector,
         '--profile', 'observe', '--no-start-gateway', '--no-verify'
-    ) | Out-Null
+    )
+    if ($Connector -eq 'copilot') {
+        $initArgs += '--native-setup-copilot'
+        $script:CopilotConfiguredMode = 'observe'
+    }
+    Invoke-Tool 'defenseclaw' $initArgs | Out-Null
     Set-IsolatedGatewayPort
     Invoke-Setup observe
     Assert-DoctorHookRegistration
@@ -1735,7 +1760,7 @@ function Invoke-ContractRun {
 function Invoke-LiveRun {
     Install-Agent
     Initialize-DefenseClawEnv
-    if (-not $ReleaseCertification) {
+    if (-not $ReleaseCertification -and $Connector -ne 'copilot') {
         Invoke-Tool 'defenseclaw' @('init') | Out-Null
     }
     Invoke-Setup action

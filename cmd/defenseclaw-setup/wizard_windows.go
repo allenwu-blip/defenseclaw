@@ -212,6 +212,7 @@ var (
 		{Label: "Configure later", Value: "none"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
+		{Label: "GitHub Copilot CLI", Value: "copilot"},
 	}
 	wizardModeChoices = []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -732,8 +733,10 @@ func wizardCompletionDescription(connector string) string {
 		return "Codex CLI is configured and the DefenseClaw hooks are trusted automatically." + installed
 	case "claudecode":
 		return "Claude Code is configured and its native Windows hooks are ready." + installed
+	case "copilot":
+		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
 	default:
-		return "Open a terminal and run defenseclaw init when you are ready to configure Codex, Claude Code, or another connector." + installed
+		return "Open a terminal and run defenseclaw init when you are ready to configure Codex, Claude Code, GitHub Copilot CLI, or another connector." + installed
 	}
 }
 

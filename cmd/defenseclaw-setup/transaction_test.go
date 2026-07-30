@@ -611,6 +611,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.CodexHome = transaction.PreviousCodexHome
 	transaction.PreviousClaudeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".claude")
 	transaction.ClaudeConfigDir = transaction.PreviousClaudeConfigDir
+	transaction.PreviousCopilotHome = filepath.Join(filepath.Dir(dataRoot), ".copilot")
+	transaction.CopilotHome = transaction.PreviousCopilotHome
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -621,9 +623,9 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	}
 
 	changedHome := transaction
-	changedHome.CodexHome = filepath.Join(filepath.Dir(dataRoot), "other-codex")
+	changedHome.CopilotHome = filepath.Join(filepath.Dir(dataRoot), "other-copilot")
 	if err := validateSetupTransaction(changedHome, expected); err == nil {
-		t.Fatal("connector-preserving transaction changed its recorded Codex home")
+		t.Fatal("connector-preserving transaction changed its recorded Copilot home")
 	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
@@ -1292,11 +1294,14 @@ func TestResolvePreviousConnectorHomeUsesBackupBindingWithoutInstallState(t *tes
 	}{
 		{"codex", "config.toml", "codex_config_backup.json"},
 		{"claudecode", "settings.json", "claudecode_backup.json"},
+		{"copilot", "config", ""},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			dataRoot := t.TempDir()
-			if err := os.WriteFile(filepath.Join(dataRoot, test.legacyBackup), []byte(`{}`), 0o600); err != nil {
-				t.Fatal(err)
+			if test.legacyBackup != "" {
+				if err := os.WriteFile(filepath.Join(dataRoot, test.legacyBackup), []byte(`{}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			managedBackup := filepath.Join(
 				dataRoot, "connector_backups", test.connector, test.logicalName+".json",
@@ -1305,9 +1310,13 @@ func TestResolvePreviousConnectorHomeUsesBackupBindingWithoutInstallState(t *tes
 				t.Fatal(err)
 			}
 			want := filepath.Join(t.TempDir(), test.connector+"-custom-home")
+			target := filepath.Join(want, test.logicalName)
+			if test.connector == "copilot" {
+				target = filepath.Join(want, "hooks", "defenseclaw.json")
+			}
 			if err := os.WriteFile(
 				managedBackup,
-				[]byte(fmt.Sprintf(`{"path":%q}`, filepath.Join(want, test.logicalName))),
+				[]byte(fmt.Sprintf(`{"path":%q}`, target)),
 				0o600,
 			); err != nil {
 				t.Fatal(err)
@@ -1373,16 +1382,25 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(
+		filepath.Join(dataRoot, "active_connector.json"),
+		[]byte(`{"names":["copilot"]}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	clientRoot := filepath.Join(filepath.Dir(dataRoot), "client-homes")
 	codexHome := filepath.Join(clientRoot, "codex")
 	claudeHome := filepath.Join(clientRoot, "claude")
-	for _, path := range []string{codexHome, claudeHome} {
+	copilotHome := filepath.Join(clientRoot, "copilot")
+	for _, path := range []string{codexHome, claudeHome, copilotHome} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
+	t.Setenv("COPILOT_HOME", copilotHome)
 
 	legacyState := testInstallState(
 		installRoot,
@@ -1405,13 +1423,16 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 		t.Fatal(err)
 	}
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
-		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) {
+		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
+		!samePath(transaction.PreviousCopilotHome, copilotHome) {
 		t.Fatalf(
-			"legacy transaction homes = (%q, %q), want validated overrides (%q, %q)",
+			"legacy transaction homes = (%q, %q, %q), want validated overrides (%q, %q, %q)",
 			transaction.PreviousCodexHome,
 			transaction.PreviousClaudeConfigDir,
+			transaction.PreviousCopilotHome,
 			codexHome,
 			claudeHome,
+			copilotHome,
 		)
 	}
 
@@ -1420,6 +1441,7 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	source.ID = testCurrentTransactionID
 	source.CodexHome = codexHome
 	source.ClaudeConfigDir = claudeHome
+	source.CopilotHome = copilotHome
 	source.UninstallHandoffHookStatus = stableHookSnapshotInactive
 	handoff, err := newUninstallHandoffTransaction(
 		source,
@@ -1430,13 +1452,16 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 		t.Fatal(err)
 	}
 	if !samePath(handoff.PreviousCodexHome, codexHome) ||
-		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) {
+		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) ||
+		!samePath(handoff.PreviousCopilotHome, copilotHome) {
 		t.Fatalf(
-			"legacy handoff homes = (%q, %q), want source overrides (%q, %q)",
+			"legacy handoff homes = (%q, %q, %q), want source overrides (%q, %q, %q)",
 			handoff.PreviousCodexHome,
 			handoff.PreviousClaudeConfigDir,
+			handoff.PreviousCopilotHome,
 			codexHome,
 			claudeHome,
+			copilotHome,
 		)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {

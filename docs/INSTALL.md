@@ -520,12 +520,16 @@ Setup installs the CLI/TUI, native gateway, no-console hook launcher, and
 managed Python runtime under `%LOCALAPPDATA%\Programs\DefenseClaw`, and adds its
 managed `bin` directory to the current user's `PATH`. Use
 `CONNECTOR=claudecode` for Claude Code or `CONNECTOR=none` to configure a
-connector later.
+connector later. `CONNECTOR=copilot` exercises the staged GitHub Copilot CLI
+native lifecycle, including repair and uninstall custody, but remains
+`not_certified` until the packaged and real-client Windows certification phase
+passes; its presence in Setup is not a support claim.
 
 Quiet mode does not authorize service, SYSTEM, session-zero, elevated, or
-background/batch installation. A configured Codex or Claude Code connector
-requires gateway startup; only `CONNECTOR=none STARTGATEWAY=0` is a supported
-stopped CLI-only install. See the complete
+background/batch installation. A configured Codex, Claude Code, or GitHub
+Copilot CLI connector requires gateway startup; only
+`CONNECTOR=none STARTGATEWAY=0` is a supported stopped CLI-only install. See the
+complete
 [native Windows guide](https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/windows/)
 for lifecycle, support, security, and troubleshooting boundaries.
 

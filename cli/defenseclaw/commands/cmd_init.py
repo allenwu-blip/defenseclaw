@@ -61,6 +61,7 @@ _render_checkbox_menu = terminal_checkbox.render_checkbox_menu
 @click.option("--non-interactive", is_flag=True, help="Run the guided first-run backend without prompts.")
 @click.option("--yes", "-y", is_flag=True, help="Assume defaults/yes for first-run prompts.")
 @click.option("--rescan-agents", is_flag=True, help="Refresh cached local agent discovery before choosing a connector.")
+@click.option("--native-setup-copilot", is_flag=True, hidden=True)
 @click.option(
     "--connector",
     type=click.Choice(
@@ -182,6 +183,7 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     non_interactive: bool,
     yes: bool,
     rescan_agents: bool,
+    native_setup_copilot: bool,
     connector: str | None,
     profile: str | None,
     observe_all: bool,
@@ -226,11 +228,31 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     if connector:
         requested_connectors.append(_normalize_connector_arg(connector))
     requested_connectors.extend(_parse_connector_list(action_connectors))
+    installer_copilot = native_setup_copilot and _native_setup_copilot_invocation_allowed(
+        connector=connector,
+        requested_connectors=requested_connectors,
+        skip_install=skip_install,
+        non_interactive=non_interactive,
+        yes=yes,
+        sandbox=sandbox,
+        observe_all=observe_all,
+        action_connectors=action_connectors,
+        start_gateway=start_gateway,
+        verify=verify,
+    )
+    if native_setup_copilot and not installer_copilot:
+        raise click.ClickException(
+            "--native-setup-copilot is reserved for the exact non-interactive native Windows Setup invocation"
+        )
     for requested in requested_connectors:
         if requested == "none":
             continue
         support = platform_support.connector_platform_support(requested)
-        if not support.available:
+        if not support.available and not (
+            installer_copilot
+            and requested == "copilot"
+            and support.status == platform_support.NOT_CERTIFIED
+        ):
             raise click.ClickException(
                 f"connector {requested!r} is {support.status} on "
                 f"{platform_support.host_os()}: {support.reason}"
@@ -1783,6 +1805,42 @@ def _normalize_connector_arg(
     if value in {"claude-code", "claude_code", "claude"}:
         return "claudecode"
     return value
+
+
+def _native_setup_copilot_invocation_allowed(
+    *,
+    connector: str | None,
+    requested_connectors: list[str],
+    skip_install: bool,
+    non_interactive: bool,
+    yes: bool,
+    sandbox: bool,
+    observe_all: bool,
+    action_connectors: str,
+    start_gateway: bool | None,
+    verify: bool | None,
+) -> bool:
+    """Recognize only Setup's narrow pre-certification Copilot bootstrap.
+
+    Public CLI/TUI setup remains governed by the not_certified platform
+    classification. Native Windows Setup uses this hidden path to seed the
+    canonical config inside its durable transaction before the maintenance
+    gateway performs the explicitly home-bound connector reconcile.
+    """
+
+    return (
+        platform_support.host_os() == "windows"
+        and _normalize_connector_arg(connector) == "copilot"
+        and requested_connectors == ["copilot"]
+        and skip_install
+        and non_interactive
+        and yes
+        and not sandbox
+        and not observe_all
+        and not action_connectors.strip()
+        and start_gateway is False
+        and verify is False
+    )
 
 
 def _render_first_run_report(report, renderer) -> None:

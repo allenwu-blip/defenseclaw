@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -2526,25 +2526,46 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
     if ($ConnectorName -eq 'codex') {
         return [pscustomobject]@{
             Connector = 'codex'
-            OtherConnector = 'claudecode'
+            OtherConnectors = @('claudecode', 'copilot')
             HookScript = 'codex-hook.sh'
-            OtherHookScript = 'claude-code-hook.sh'
+            OtherHookScripts = @('claude-code-hook.sh', 'copilot-hook.sh')
             ConfigPath = Join-Path $UserProfile '.codex\managed_config.toml'
-            OtherConfigPath = Join-Path $UserProfile '.claude\settings.json'
+            OtherConfigPaths = @(
+                (Join-Path $UserProfile '.claude\settings.json'),
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json')
+            )
             DoctorLabel = 'Codex hooks'
-            OtherDoctorLabel = 'Claude Code hooks'
+            OtherDoctorLabels = @('Claude Code hooks', 'Copilot hooks')
         }
     }
     if ($ConnectorName -eq 'claudecode') {
         return [pscustomobject]@{
             Connector = 'claudecode'
-            OtherConnector = 'codex'
+            OtherConnectors = @('codex', 'copilot')
             HookScript = 'claude-code-hook.sh'
-            OtherHookScript = 'codex-hook.sh'
+            OtherHookScripts = @('codex-hook.sh', 'copilot-hook.sh')
             ConfigPath = Join-Path $UserProfile '.claude\settings.json'
-            OtherConfigPath = Join-Path $UserProfile '.codex\managed_config.toml'
+            OtherConfigPaths = @(
+                (Join-Path $UserProfile '.codex\managed_config.toml'),
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json')
+            )
             DoctorLabel = 'Claude Code hooks'
-            OtherDoctorLabel = 'Codex hooks'
+            OtherDoctorLabels = @('Codex hooks', 'Copilot hooks')
+        }
+    }
+    if ($ConnectorName -eq 'copilot') {
+        return [pscustomobject]@{
+            Connector = 'copilot'
+            OtherConnectors = @('codex', 'claudecode')
+            HookScript = 'copilot-hook.sh'
+            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh')
+            ConfigPath = Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'
+            OtherConfigPaths = @(
+                (Join-Path $UserProfile '.codex\managed_config.toml'),
+                (Join-Path $UserProfile '.claude\settings.json')
+            )
+            DoctorLabel = 'Copilot hooks'
+            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks')
         }
     }
     throw "unsupported wizard connector specification: $ConnectorName"
@@ -2580,6 +2601,9 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
                 'connector_backups\claudecode\settings.json.json'
             )
         }
+        'copilot' {
+            @('connector_backups\copilot\config.json')
+        }
         default { throw "unsupported native connector backup marker: $Connector" }
     }
     return @($relativePaths | Where-Object {
@@ -2593,7 +2617,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('codex', 'claudecode')) {
+        if ([string]$name -notin @('codex', 'claudecode', 'copilot')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
@@ -2612,7 +2636,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('codex', 'claudecode')) {
+    foreach ($connector in @('codex', 'claudecode', 'copilot')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -2900,12 +2924,14 @@ function Assert-WizardHookRegistration(
 ) {
     $hookDir = Join-Path $DataRoot 'hooks'
     $expectedHook = Join-Path $hookDir $Specification.HookScript
-    $wrongHook = Join-Path $hookDir $Specification.OtherHookScript
     if (-not (Test-Path -LiteralPath $expectedHook -PathType Leaf)) {
         throw "wizard-selected connector hook is missing: $expectedHook"
     }
-    if (Test-Path -LiteralPath $wrongHook) {
-        throw "wizard configured the wrong connector hook: $wrongHook"
+    foreach ($otherHookScript in @($Specification.OtherHookScripts)) {
+        $wrongHook = Join-Path $hookDir $otherHookScript
+        if (Test-Path -LiteralPath $wrongHook) {
+            throw "wizard configured the wrong connector hook: $wrongHook"
+        }
     }
     if (-not (Test-Path -LiteralPath $Specification.ConfigPath -PathType Leaf)) {
         throw "wizard-selected connector registration is missing: $($Specification.ConfigPath)"
@@ -2952,17 +2978,53 @@ function Assert-WizardHookRegistration(
         if (-not $nativeHookFound) {
             throw "wizard-selected connector does not use its exact native exec-form hook command: $($Specification.ConfigPath)"
         }
+    } elseif ($Specification.Connector -eq 'copilot') {
+        try { $hookDocument = $registration | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "wizard-selected Copilot registration is not valid JSON: $($_.Exception.Message)" }
+        $requiredEvents = @(
+            'agentStop', 'errorOccurred', 'notification', 'permissionRequest',
+            'postToolUse', 'postToolUseFailure', 'preCompact', 'preToolUse',
+            'sessionEnd', 'sessionStart', 'subagentStart', 'subagentStop',
+            'userPromptSubmitted'
+        )
+        $registeredEvents = @($hookDocument.hooks.PSObject.Properties.Name | Sort-Object)
+        if (($registeredEvents -join "`0") -cne (($requiredEvents | Sort-Object) -join "`0")) {
+            throw 'wizard-selected Copilot registration does not contain the exact required hook event set'
+        }
+        $commandPattern = '(?i)^\$ErrorActionPreference=''Stop''; ' +
+            '\$env:NoDefaultCurrentDirectoryInExePath=''1''; ' +
+            '\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process ' +
+            '-FilePath ''(?<path>(?:[^'']|'''')+)'' ' +
+            '-ArgumentList @\(''hook'',''--connector'',''copilot''\) ' +
+            '-NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode$'
+        foreach ($eventName in $requiredEvents) {
+            $entries = @($hookDocument.hooks.$eventName)
+            if ($entries.Count -ne 1 -or [string]$entries[0].type -cne 'command' -or
+                [int]$entries[0].timeoutSec -ne 30) {
+                throw "wizard-selected Copilot $eventName hook does not use the required command schema"
+            }
+            $command = [string]$entries[0].powershell
+            $match = [regex]::Match($command, $commandPattern)
+            if (-not $match.Success -or $command.Contains('&amp;')) {
+                throw "wizard-selected Copilot $eventName hook is not the exact synchronous PowerShell contract"
+            }
+            $runtimePath = $match.Groups['path'].Value.Replace("''", "'")
+            if (-not [IO.Path]::GetFullPath($runtimePath).Equals(
+                [IO.Path]::GetFullPath((Get-StableHookRuntimeExecutable)),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                throw "wizard-selected Copilot $eventName hook targets an unexpected runtime"
+            }
+        }
     } else {
-        $pattern = '(?i)defenseclaw-hook(?:\.exe)?[^\r\n]*\bhook\b[^\r\n]*--connector\s+' +
-            [regex]::Escape($Specification.Connector) + '\b'
-        if ($registration -notmatch $pattern) {
-            throw "wizard-selected connector does not use its exact native hook command: $($Specification.ConfigPath)"
+        throw "unsupported wizard connector registration contract: $($Specification.Connector)"
+    }
+    foreach ($otherConnector in @($Specification.OtherConnectors)) {
+        if ($registration -match ('(?i)--connector\s+' + [regex]::Escape($otherConnector) + '\b')) {
+            throw "wizard-selected connector registration references the wrong connector"
         }
     }
-    if ($registration -match ('(?i)--connector\s+' + [regex]::Escape($Specification.OtherConnector) + '\b')) {
-        throw "wizard-selected connector registration references the wrong connector"
-    }
-    Assert-NoDefenseClawRegistration @($Specification.OtherConfigPath)
+    Assert-NoDefenseClawRegistration @($Specification.OtherConfigPaths)
 }
 
 function Set-WizardCodexLegacyNonWaitingHook([object]$Specification) {
@@ -3079,7 +3141,7 @@ function Assert-WizardConnectorHealth(
         throw "wizard doctor validated an unexpected hook executable: $($hookRows[0].detail)"
     }
     $wrongRows = @($doctor.checks | Where-Object {
-        [string]::Equals([string]$_.label, $Specification.OtherDoctorLabel, [StringComparison]::Ordinal)
+        [string]$_.label -in @($Specification.OtherDoctorLabels)
     })
     if ($wrongRows.Count -ne 0) {
         throw "wizard doctor reported a hook row for the unselected connector"
@@ -3270,9 +3332,8 @@ function Invoke-WizardConnectorAcceptance(
     if (Test-Path -LiteralPath $ARPKey) {
         throw "wizard $ConnectorName uninstall left Installed Apps registration behind"
     }
-    Assert-NoDefenseClawRegistration @(
-        $specification.ConfigPath,
-        $specification.OtherConfigPath
+    Assert-NoDefenseClawRegistration (
+        @($specification.ConfigPath) + @($specification.OtherConfigPaths)
     )
     Assert-NoGatewayAutoStart
     Assert-NoInstalledGatewayProcess $gateway
@@ -3320,7 +3381,8 @@ function Invoke-SetupAcceptance {
     $connectorConfigPaths = @(
         (Join-Path $userProfile '.codex\config.toml'),
         (Join-Path $userProfile '.codex\managed_config.toml'),
-        (Join-Path $userProfile '.claude\settings.json')
+        (Join-Path $userProfile '.claude\settings.json'),
+        (Join-Path $userProfile '.copilot\hooks\defenseclaw.json')
     )
     if (Test-Path -LiteralPath $installRoot) { throw "refusing to overwrite an existing current-user install: $installRoot" }
     if (Test-Path -LiteralPath $dataRoot) { throw "refusing to overwrite existing current-user data: $dataRoot" }
@@ -3376,6 +3438,12 @@ function Invoke-SetupAcceptance {
             Invoke-WizardConnectorAcceptance `
                 $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                 $fixtureSearchPath $userPathBefore 'claudecode' 'action'
+            Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
+            $env:PATH = "$fixtureSearchPath;$processPathBefore"
+
+            Invoke-WizardConnectorAcceptance `
+                $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
+                $fixtureSearchPath $userPathBefore 'copilot' 'observe'
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = $processPathBefore
         }

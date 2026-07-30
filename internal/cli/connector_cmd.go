@@ -226,6 +226,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		variable = "CODEX_HOME"
 	case "claudecode":
 		variable = "CLAUDE_CONFIG_DIR"
+	case "copilot":
+		variable = "COPILOT_HOME"
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}
@@ -315,11 +317,26 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
-	if name != "claudecode" && name != "codex" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode and codex")
+	if name != "claudecode" && name != "codex" && name != "copilot" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, and copilot")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
-		return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
+		// Transactional Windows Setup must be able to preserve and repair a
+		// Copilot registration while the public certification classification
+		// remains not_certified. The hidden, absolute --config-home binding is
+		// Setup's custody proof. Unsupported connectors and ordinary unbound
+		// calls remain rejected.
+		support := connector.ConnectorSupportOnHostOS(name)
+		if name != "copilot" || connectorFlagConfigHome == "" ||
+			support.Status != connector.PlatformNotCertified {
+			return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
+		}
+		fmt.Fprintf(
+			cmd.ErrOrStderr(),
+			"connector reconcile %s: installer maintenance for not-certified native Windows connector: %s\n",
+			name,
+			support.Reason,
+		)
 	} else if warning != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "connector reconcile %s: warning: %s\n", name, warning)
 	}
@@ -339,9 +356,10 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("connector reconcile: ensure scoped hook token: %w", err)
 		}
 	}
-	// Match the sidecar's least-privilege registration semantics: Claude and
-	// Codex use the connector-scoped token for both native telemetry and hook
-	// calls. Never write the gateway master token into agent-owned config.
+	// Match the sidecar's least-privilege registration semantics: Claude,
+	// Codex, and Copilot use the connector-scoped token for native telemetry
+	// and hook calls. Never write the gateway master token into agent-owned
+	// config.
 	opts.APIToken = hookToken
 	opts.HookAPIToken = hookToken
 	opts.HookAPITokenScoped = true

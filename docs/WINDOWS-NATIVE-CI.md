@@ -18,8 +18,15 @@ The merge gate covers:
 - the public `install.ps1` authentication and native handoff path under a
   token-bound disposable Windows profile;
 - installed CLI, gateway lifecycle, doctor, scanner, and dependency checks;
-- Setup build and native install/repair/uninstall acceptance; and
+- Setup build and native install/repair/uninstall acceptance, including the
+  staged Copilot CLI selection, repair, custody, and exact-restoration path;
+  and
 - deterministic Codex and Claude Code connector contract tests.
+
+The staged Copilot Setup lifecycle is exercised as pre-certification evidence.
+It does not add Copilot to the certified Windows connector matrix; packaged
+and real official-client certification evidence is still required before that
+support status can change.
 
 The packaged test artifact is built once and reused by the disposable lifecycle
 jobs. The public-bootstrap shard uses the authenticated `0.8.7` release as its

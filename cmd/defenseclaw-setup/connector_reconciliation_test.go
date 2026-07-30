@@ -405,6 +405,7 @@ func TestConnectorDefaultHomeBesideDataRootIsStrictlyBound(t *testing.T) {
 	for connectorName, want := range map[string]string{
 		"codex":      filepath.Join(root, ".codex"),
 		"claudecode": filepath.Join(root, ".claude"),
+		"copilot":    filepath.Join(root, ".copilot"),
 	} {
 		if got := connectorDefaultHomeBesideDataRoot(dataRoot, connectorName); !samePath(got, want) {
 			t.Fatalf("%s default home = %q, want %q", connectorName, got, want)
@@ -488,7 +489,7 @@ func TestReconcileRemovedConnectorsRetainsFallbackFailureAtExactHome(t *testing.
 	recorder := reconcileRemovedConnectors(
 		transaction,
 		filepath.Join(root, "gateway.exe"),
-		transactionChildEnvForHomes(transaction, historicalHome, ""),
+		transactionChildEnvForHomes(transaction, historicalHome, "", ""),
 		run,
 	)
 	want := []string{
@@ -511,9 +512,10 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 	transaction := setupTransaction{
 		ID:                      strings.Repeat("a", 32),
 		DataRoot:                filepath.Join(root, "data"),
-		PreviousConnectors:      []string{"codex", "claudecode"},
+		PreviousConnectors:      []string{"codex", "claudecode", "copilot"},
 		PreviousCodexHome:       filepath.Join(root, "codex"),
 		PreviousClaudeConfigDir: filepath.Join(root, "claude"),
+		PreviousCopilotHome:     filepath.Join(root, "copilot"),
 	}
 	var calls []string
 	recorder := reconcilePreservedConnectors(
@@ -525,11 +527,11 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 			return nil
 		},
 	)
-	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1"
+	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1,copilot:reconcile:PRESERVED=1"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("preserved connector calls = %q, want %q", got, want)
 	}
-	if len(recorder.attempts) != 2 || len(recorder.failures) != 0 {
+	if len(recorder.attempts) != 3 || len(recorder.failures) != 0 {
 		t.Fatalf("preserved connector reconciliation = %+v", recorder)
 	}
 }

@@ -176,6 +176,7 @@ type options struct {
 	CleanupTransaction string
 	CodexHome          string
 	ClaudeConfigDir    string
+	CopilotHome        string
 	// PreserveConnectorConfiguration is internal transaction intent, never a
 	// command-line property. Servicing an existing install without an explicit
 	// connector or mode selection must refresh its owned registrations in place
@@ -249,6 +250,7 @@ type installState struct {
 	Mode                   string            `json:"mode"`
 	CodexHome              string            `json:"codex_home,omitempty"`
 	ClaudeConfigDir        string            `json:"claude_config_dir,omitempty"`
+	CopilotHome            string            `json:"copilot_home,omitempty"`
 	UnsignedLocalArtifact  bool              `json:"unsigned_local_artifact"`
 	ReleaseSigningRequired bool              `json:"release_signing_required"`
 	Toolchain              map[string]string `json:"toolchain"`
@@ -487,6 +489,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	// must never depend on a later process inheriting the same environment.
 	opts.CodexHome = transaction.CodexHome
 	opts.ClaudeConfigDir = transaction.ClaudeConfigDir
+	opts.CopilotHome = transaction.CopilotHome
 	if err := beginSetupTransaction(transaction); err != nil {
 		return retryRequiredCode, err
 	}
@@ -889,9 +892,9 @@ func requestedServices(opts options, previous serviceState) serviceState {
 
 func connectorsForNativeUninstall(state *installState, dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
-	connectors := make([]string, 0, 2)
+	connectors := make([]string, 0, 3)
 	add := func(name string) {
-		if (name == "codex" || name == "claudecode") && !seen[name] {
+		if (name == "codex" || name == "claudecode" || name == "copilot") && !seen[name] {
 			seen[name] = true
 			connectors = append(connectors, name)
 		}
@@ -921,6 +924,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	if pathExists(filepath.Join(dataRoot, "claudecode_backup.json")) ||
 		pathExists(filepath.Join(dataRoot, "connector_backups", "claudecode", "settings.json.json")) {
 		add("claudecode")
+	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "copilot", "config.json")) {
+		add("copilot")
 	}
 	return connectors, nil
 }
@@ -985,7 +991,7 @@ func readNativeConfiguredConnectors(dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
 	add := func(value string) {
 		name := normalizeConnector(strings.TrimSpace(value))
-		if name == "codex" || name == "claudecode" {
+		if name == "codex" || name == "claudecode" || name == "copilot" {
 			seen[name] = true
 		}
 	}
@@ -1184,6 +1190,8 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "CODEX_HOME"
 	case "claudecode":
 		variable = "CLAUDE_CONFIG_DIR"
+	case "copilot":
+		variable = "COPILOT_HOME"
 	default:
 		return "", fmt.Errorf("unsupported native connector %q", connectorName)
 	}
@@ -1224,7 +1232,7 @@ func samePath(a, b string) bool {
 }
 
 func validConnector(value string) bool {
-	return value == "none" || value == "codex" || value == "claudecode"
+	return value == "none" || value == "codex" || value == "claudecode" || value == "copilot"
 }
 
 func validMode(value string) bool {
@@ -1496,6 +1504,7 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		Mode:                   opts.Mode,
 		CodexHome:              opts.CodexHome,
 		ClaudeConfigDir:        opts.ClaudeConfigDir,
+		CopilotHome:            opts.CopilotHome,
 		UnsignedLocalArtifact:  payload.Manifest.Unsigned,
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
@@ -1692,12 +1701,19 @@ func runInitialConfigurationWithEnv(root, dataRoot string, opts options, env []s
 }
 
 func initialConfigurationArgs(opts options) []string {
-	return []string{
+	args := []string{
 		"init", "--skip-install", "--non-interactive", "--yes",
 		"--connector", opts.Connector,
 		"--profile", opts.Mode,
 		"--no-start-gateway", "--no-verify",
 	}
+	if opts.Connector == "copilot" {
+		// This hidden, installer-shaped escape hatch permits the staged native
+		// implementation to be exercised without changing Copilot's public
+		// not_certified platform classification.
+		args = append(args, "--native-setup-copilot")
+	}
+	return args
 }
 
 func runCanonicalInitializationWithEnv(root, dataRoot string, env []string) error {
@@ -2483,8 +2499,8 @@ func parseArgs(args []string) (options, error) {
 	if opts.InstallScope != "user" {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
-	if opts.Connector != "none" && opts.Connector != "codex" && opts.Connector != "claudecode" {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected codex, claudecode, or none", opts.Connector)
+	if !validConnector(opts.Connector) {
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected codex, claudecode, copilot, or none", opts.Connector)
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2529,13 +2545,15 @@ func normalizeConnector(value string) string {
 		return "codex"
 	case "claude", "claudecode", "claude-code":
 		return "claudecode"
+	case "copilot", "githubcopilot", "github-copilot":
+		return "copilot"
 	default:
 		return strings.ToLower(value)
 	}
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

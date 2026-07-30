@@ -14,10 +14,12 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 	root := t.TempDir()
 	codexHome := filepath.Join(root, "codex")
 	claudeHome := filepath.Join(root, "claude")
+	copilotHome := filepath.Join(root, "copilot")
 	env := []string{
 		"UNRELATED=preserved",
 		"codex_home=" + codexHome,
 		"CLAUDE_CONFIG_DIR=" + claudeHome,
+		"COPILOT_HOME=" + copilotHome,
 	}
 	for _, test := range []struct {
 		connector string
@@ -25,6 +27,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 	}{
 		{connector: "codex", want: codexHome},
 		{connector: "claudecode", want: claudeHome},
+		{connector: "copilot", want: copilotHome},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			got, err := connectorLifecycleConfigHome(env, test.connector)
@@ -63,6 +66,31 @@ func TestConnectorLifecycleCommandArgsBindsConfigHomeExplicitly(t *testing.T) {
 	}
 }
 
+func TestCopilotLifecycleCommandArgsBindExactHome(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	copilotHome := filepath.Join(root, "copilot")
+	args, err := connectorLifecycleCommandArgs(
+		dataRoot,
+		"copilot",
+		"reconcile",
+		[]string{"COPILOT_HOME=" + copilotHome},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"connector", "reconcile",
+		"--connector", "copilot",
+		"--data-dir", dataRoot,
+		"--config-home", copilotHome,
+		"--json",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("Copilot lifecycle args = %q, want %q", args, want)
+	}
+}
+
 func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "codex")
@@ -78,6 +106,8 @@ func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.
 		{name: "relative", connector: "codex", env: []string{"CODEX_HOME=relative"}, want: "absolute normalized path"},
 		{name: "unnormalized", connector: "codex", env: []string{"CODEX_HOME=" + unnormalized}, want: "absolute normalized path"},
 		{name: "newline", connector: "codex", env: []string{"CODEX_HOME=" + valid + "\nother"}, want: "absolute normalized path"},
+		{name: "missing Copilot", connector: "copilot", env: []string{"UNRELATED=1"}, want: "COPILOT_HOME is empty"},
+		{name: "duplicate Copilot", connector: "copilot", env: []string{"COPILOT_HOME=" + valid, "copilot_home=" + valid}, want: "COPILOT_HOME is duplicated"},
 		{name: "unsupported", connector: "openclaw", env: []string{"CODEX_HOME=" + valid}, want: "unsupported native connector"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

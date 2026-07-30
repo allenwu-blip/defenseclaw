@@ -340,6 +340,60 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
         self.selection_mock.assert_not_called()
 
+    def test_windows_copilot_remains_publicly_not_certified(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "copilot",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
+            ])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("not_certified", result.output)
+
+    def test_native_setup_copilot_bootstrap_seeds_canonical_config(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "copilot",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
+                "--native-setup-copilot",
+                "--json-summary",
+            ])
+
+        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+        summary = json.loads(result.output)
+        self.assertEqual(summary["connector"], "copilot")
+        import yaml
+
+        with open(os.path.join(self.tmp_dir, "config.yaml"), encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+        self.assertEqual(cfg["claw"]["mode"], "copilot")
+        self.assertEqual(cfg["guardrail"]["connector"], "copilot")
+
+    def test_native_setup_copilot_escape_hatch_rejects_non_setup_shape(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--connector",
+                "copilot",
+                "--native-setup-copilot",
+            ])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("reserved for the exact non-interactive native Windows Setup invocation", result.output)
+
     def test_sandbox_flag_reports_explicit_scope(self):
         with patch("defenseclaw.platform_support.host_os", return_value="linux"):
             result = self._invoke([

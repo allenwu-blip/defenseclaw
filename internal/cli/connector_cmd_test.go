@@ -361,6 +361,52 @@ func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 	}
 }
 
+func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Setup maintenance contract")
+	}
+	dataDir := testenv.PrivateTempDir(t)
+	home := filepath.Join(t.TempDir(), ".copilot")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer withConnectorState(t, dataDir, "copilot")()
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"copilot": {HookFailMode: "open"},
+	}
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "copilot", "--json")
+	if !strings.Contains(stderr, "not certified on windows") {
+		t.Fatalf("unbound Copilot reconcile bypassed public platform gate: %q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "hooks", "defenseclaw.json")); !os.IsNotExist(err) {
+		t.Fatalf("unbound Copilot reconcile mutated hook config: %v", err)
+	}
+
+	connectorFlagConfigHome = home
+	stdout, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "copilot", "--json")
+	if !strings.Contains(stderr, "installer maintenance for not-certified native Windows connector") {
+		t.Fatalf("bound Copilot reconcile omitted certification warning: %q", stderr)
+	}
+	if !strings.Contains(stdout, `"connector":"copilot"`) {
+		t.Fatalf("bound Copilot reconcile output = %q", stdout)
+	}
+	hookConfig := filepath.Join(home, "hooks", "defenseclaw.json")
+	if _, err := os.Stat(hookConfig); err != nil {
+		t.Fatalf("bound Copilot reconcile did not publish hook config: %v", err)
+	}
+
+	_, stderr, exitCode := runConnectorCmd(t, "teardown", "--connector", "copilot")
+	if stderr != "" || exitCode != 0 {
+		t.Fatalf("Copilot teardown failed: exit=%d stderr=%q", exitCode, stderr)
+	}
+	_, stderr, exitCode = runConnectorCmd(t, "verify", "--connector", "copilot", "--json")
+	if stderr != "" || exitCode != 0 {
+		t.Fatalf("Copilot verify failed: exit=%d stderr=%q", exitCode, stderr)
+	}
+}
+
 func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	seedCodexSelectionForTest(t, dataDir)

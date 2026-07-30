@@ -89,8 +89,10 @@ type setupTransaction struct {
 	TargetVersion                  string                   `json:"target_version,omitempty"`
 	PreviousCodexHome              string                   `json:"previous_codex_home,omitempty"`
 	PreviousClaudeConfigDir        string                   `json:"previous_claude_config_dir,omitempty"`
+	PreviousCopilotHome            string                   `json:"previous_copilot_home,omitempty"`
 	CodexHome                      string                   `json:"codex_home,omitempty"`
 	ClaudeConfigDir                string                   `json:"claude_config_dir,omitempty"`
+	CopilotHome                    string                   `json:"copilot_home,omitempty"`
 	MaintenanceSHA256              string                   `json:"maintenance_sha256,omitempty"`
 	DeleteUserData                 bool                     `json:"delete_user_data,omitempty"`
 	UninstallPathEntryOwned        bool                     `json:"uninstall_path_entry_owned,omitempty"`
@@ -274,6 +276,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	defaultCopilotHome, err := defaultConnectorConfigHome(".copilot")
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	codexHome, err := transactionConfigHome("CODEX_HOME", defaultCodexHome)
 	if err != nil {
 		return setupTransaction{}, err
@@ -282,10 +288,15 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState := "", ""
+	copilotHome, err := transactionConfigHome("COPILOT_HOME", defaultCopilotHome)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCodexState, previousClaudeState, previousCopilotState := "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
+		previousCopilotState = oldState.CopilotHome
 	}
 	// Pre-home-binding releases can advertise a connector only through their
 	// legacy backup. In that case the validated current override is the sole
@@ -303,12 +314,19 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	previousCopilotHome, err := resolvePreviousConnectorHome(
+		previousCopilotState, previousConnectors, dataRoot, "copilot", "config", copilotHome,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	if preserveConnectorConfiguration {
 		// A quiet repair/upgrade without a connector choice services the exact
 		// homes already owned by the installation. Environment drift must not
 		// silently move or collapse connector configuration.
 		codexHome = previousCodexHome
 		claudeConfigDir = previousClaudeConfigDir
+		copilotHome = previousCopilotHome
 	}
 	maintenanceSHA256 := ""
 	maintenanceExisted, previousMaintenanceSHA256, err := snapshotMaintenanceFile(maintenancePath)
@@ -357,8 +375,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		TargetVersion:                  targetVersion,
 		PreviousCodexHome:              previousCodexHome,
 		PreviousClaudeConfigDir:        previousClaudeConfigDir,
+		PreviousCopilotHome:            previousCopilotHome,
 		CodexHome:                      codexHome,
 		ClaudeConfigDir:                claudeConfigDir,
+		CopilotHome:                    copilotHome,
 		MaintenanceSHA256:              maintenanceSHA256,
 		DeleteUserData:                 opts.DeleteUserData,
 		UninstallPathEntryOwned:        uninstallPathOwned,
@@ -400,10 +420,15 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome := "", ""
+	defaultCopilotHome, err := defaultConnectorConfigHome(".copilot")
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome := "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
+		configuredCopilotHome = oldState.CopilotHome
 	}
 	// The source install transaction already captured validated client homes.
 	// Preserve them across an install-to-uninstall handoff when predecessor
@@ -416,6 +441,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if legacyClaudeFallback == "" {
 		legacyClaudeFallback = defaultClaudeConfigDir
 	}
+	legacyCopilotFallback := source.CopilotHome
+	if legacyCopilotFallback == "" {
+		legacyCopilotFallback = defaultCopilotHome
+	}
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		configuredCodexHome,
 		previousConnectors,
@@ -423,6 +452,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		"codex",
 		"config.toml",
 		legacyCodexFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCopilotHome, err := resolvePreviousConnectorHome(
+		configuredCopilotHome,
+		previousConnectors,
+		source.DataRoot,
+		"copilot",
+		"config",
+		legacyCopilotFallback,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -498,8 +538,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		TargetMode:                   opts.Mode,
 		PreviousCodexHome:            previousCodexHome,
 		PreviousClaudeConfigDir:      previousClaudeConfigDir,
+		PreviousCopilotHome:          previousCopilotHome,
 		CodexHome:                    previousCodexHome,
 		ClaudeConfigDir:              previousClaudeConfigDir,
+		CopilotHome:                  previousCopilotHome,
 		DeleteUserData:               opts.DeleteUserData,
 		UninstallPathEntryOwned:      pathOwned,
 		UninstallPathSeparatorReused: pathSeparatorReused,
@@ -598,7 +640,20 @@ func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback st
 	if strings.TrimSpace(binding.Path) == "" || !filepath.IsAbs(binding.Path) {
 		return "", fmt.Errorf("%s managed backup has an invalid target path", connectorName)
 	}
-	return filepath.Dir(filepath.Clean(binding.Path)), nil
+	target := filepath.Clean(binding.Path)
+	home := filepath.Dir(target)
+	if connectorName == "copilot" {
+		// Copilot's managed hook document is nested beneath
+		// <COPILOT_HOME>\hooks. Persist and replay COPILOT_HOME itself, not the
+		// hooks directory, so repair and teardown resolve the same official
+		// global hook location.
+		if !strings.EqualFold(filepath.Base(target), "defenseclaw.json") ||
+			!strings.EqualFold(filepath.Base(home), "hooks") {
+			return "", errors.New("copilot managed backup has an invalid hook target path")
+		}
+		home = filepath.Dir(home)
+	}
+	return home, nil
 }
 
 func resolvePreviousConnectorHome(
@@ -627,7 +682,12 @@ func resolvePreviousConnectorHome(
 }
 
 func transactionChildEnv(transaction setupTransaction) []string {
-	return transactionChildEnvForHomes(transaction, transaction.CodexHome, transaction.ClaudeConfigDir)
+	return transactionChildEnvForHomes(
+		transaction,
+		transaction.CodexHome,
+		transaction.ClaudeConfigDir,
+		transaction.CopilotHome,
+	)
 }
 
 func transactionPreviousChildEnv(transaction setupTransaction) []string {
@@ -635,15 +695,21 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction,
 		transaction.PreviousCodexHome,
 		transaction.PreviousClaudeConfigDir,
+		transaction.PreviousCopilotHome,
 	)
 }
 
-func transactionChildEnvForHomes(transaction setupTransaction, codexHome, claudeConfigDir string) []string {
+func transactionChildEnvForHomes(
+	transaction setupTransaction,
+	codexHome, claudeConfigDir, copilotHome string,
+) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+2)
+	filtered := make([]string, 0, len(base)+3)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
-		if ok && (strings.EqualFold(name, "CODEX_HOME") || strings.EqualFold(name, "CLAUDE_CONFIG_DIR")) {
+		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
+			strings.EqualFold(name, "CLAUDE_CONFIG_DIR") ||
+			strings.EqualFold(name, "COPILOT_HOME")) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -653,6 +719,9 @@ func transactionChildEnvForHomes(transaction setupTransaction, codexHome, claude
 	}
 	if claudeConfigDir != "" {
 		filtered = append(filtered, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+	}
+	if copilotHome != "" {
+		filtered = append(filtered, "COPILOT_HOME="+copilotHome)
 	}
 	return filtered
 }
@@ -843,7 +912,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			return errors.New("connector-preserving transaction changed the installer selection")
 		}
 		if !samePath(transaction.PreviousCodexHome, transaction.CodexHome) ||
-			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) {
+			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) ||
+			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
@@ -863,8 +933,10 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	for label, value := range map[string]string{
 		"previous Codex home":               transaction.PreviousCodexHome,
 		"previous Claude configuration dir": transaction.PreviousClaudeConfigDir,
+		"previous Copilot home":             transaction.PreviousCopilotHome,
 		"Codex home":                        transaction.CodexHome,
 		"Claude configuration dir":          transaction.ClaudeConfigDir,
+		"Copilot home":                      transaction.CopilotHome,
 	} {
 		if value == "" {
 			continue
@@ -892,7 +964,7 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	}
 	seenConnectors := map[string]bool{}
 	for _, connectorName := range transaction.PreviousConnectors {
-		if connectorName != "codex" && connectorName != "claudecode" {
+		if connectorName != "codex" && connectorName != "claudecode" && connectorName != "copilot" {
 			return fmt.Errorf("setup transaction has an invalid previous connector %q", connectorName)
 		}
 		if seenConnectors[connectorName] {
@@ -950,6 +1022,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 	for label, value := range map[string]string{
 		"Codex home":               state.CodexHome,
 		"Claude configuration dir": state.ClaudeConfigDir,
+		"Copilot home":             state.CopilotHome,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
@@ -2822,6 +2895,8 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousCodexHome, transaction.CodexHome)
 	case "claudecode":
 		return !samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir)
+	case "copilot":
+		return !samePath(transaction.PreviousCopilotHome, transaction.CopilotHome)
 	default:
 		return false
 	}

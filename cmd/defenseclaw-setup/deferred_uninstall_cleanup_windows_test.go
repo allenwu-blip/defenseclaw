@@ -627,6 +627,26 @@ func newDeferredCleanupFixture(t *testing.T) deferredCleanupFixture {
 	}
 }
 
+func TestDeferredCleanupRecordCarriesCopilotRestorationReceipt(t *testing.T) {
+	fixture := newDeferredCleanupFixture(t)
+	fixture.record.VerifiedConnectors = []string{"claudecode", "codex", "copilot"}
+	paths := hookruntime.Paths{
+		Root:     fixture.record.RuntimeRoot,
+		Launcher: fixture.record.LauncherPath,
+		State:    fixture.record.StatePath,
+	}
+	if err := validateDeferredUninstallCleanupRecord(
+		fixture.record,
+		paths,
+		fixture.record.InstallerStateRoot,
+		fixture.record.MaintenancePath,
+		fixture.record.RunValueName,
+		fixture.record.RunCommand,
+	); err != nil {
+		t.Fatalf("Copilot deferred-cleanup receipt rejected: %v", err)
+	}
+}
+
 func writeDeferredCleanupHookState(t *testing.T, path string, state hookruntime.State) {
 	t.Helper()
 	body, err := json.MarshalIndent(state, "", "  ")

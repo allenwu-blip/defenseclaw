@@ -21,6 +21,14 @@ DefenseClaw's public platform status remains **not certified** until the
 packaged and real-client Windows certification phase passes. Internal contract
 tests do not promote that status.
 
+The native Setup executable includes Copilot in its staged connector selection
+and durable lifecycle. It records the exact `COPILOT_HOME`, replays the
+home-bound maintenance command during repair and upgrade, carries the binding
+through uninstall handoff and deferred cleanup, and consumes the managed hook
+backup only during exact restoration. The ordinary CLI/TUI setup surface
+continues to reject Copilot on Windows while its public status is
+`not_certified`; Setup's narrow internal bootstrap does not change that claim.
+
 ## Official sources
 
 - [About GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli)
@@ -117,5 +125,9 @@ The prepared native driver is
 `scripts/live-connector-e2e/run-windows.ps1 -Connector copilot`. Its live layer
 uses the official `@github/copilot` Windows package (or an explicitly pinned
 official client for release certification), `copilot version`, the documented
-headless `copilot -p` surface, and the official token precedence. The driver is
-not certification evidence until that later run completes successfully.
+headless `copilot -p` surface, and the official token precedence. Until public
+certification changes, its setup transitions use the same hidden
+transaction-shaped bootstrap and explicitly home-bound maintenance command as
+native Setup; they do not bypass the ordinary CLI/TUI platform gate. The
+driver is not certification evidence until that later run completes
+successfully.

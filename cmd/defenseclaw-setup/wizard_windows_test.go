@@ -367,6 +367,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "Configure later", Value: "none"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
+		{Label: "GitHub Copilot CLI", Value: "copilot"},
 	}
 	modes := []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -409,7 +410,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "codex", "claudecode"} {
+	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode
@@ -496,6 +497,7 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 	}{
 		{connector: "codex", want: "trusted automatically", reject: "open /hooks"},
 		{connector: "claudecode", want: "Claude Code is configured", reject: "defenseclaw init"},
+		{connector: "copilot", want: "GitHub Copilot CLI is configured", reject: "defenseclaw init"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},
 	} {
 		t.Run(tc.connector, func(t *testing.T) {
