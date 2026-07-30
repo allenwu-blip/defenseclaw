@@ -562,16 +562,14 @@ func TestOmnigentConfirmIsNativeOnlyBeforeActions(t *testing.T) {
 	}
 }
 
-func TestOmnigentBlockingIsAuthoritativeOnlyBeforeActions(t *testing.T) {
+func TestOmnigentDenyIsAuthoritativeAcrossAllPolicyPhases(t *testing.T) {
 	caps := NewOmnigentConnector().Capabilities(SetupOpts{}).Hooks
-	for _, event := range []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"} {
+	for _, event := range []string{
+		"UserPromptSubmit", "PreToolUse", "PostToolUse",
+		"AfterAgentResponse", "BeforeModel", "AfterModel",
+	} {
 		if !stringSliceContains(caps.BlockEvents, event) {
-			t.Errorf("%s missing from authoritative pre-action block events: %v", event, caps.BlockEvents)
-		}
-	}
-	for _, event := range []string{"PostToolUse", "AfterAgentResponse", "AfterModel"} {
-		if stringSliceContains(caps.BlockEvents, event) {
-			t.Errorf("%s incorrectly claims post-action reversal: %v", event, caps.BlockEvents)
+			t.Errorf("%s missing from authoritative DENY events: %v", event, caps.BlockEvents)
 		}
 	}
 }

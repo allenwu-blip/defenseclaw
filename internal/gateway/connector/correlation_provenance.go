@@ -100,7 +100,7 @@ func correlationContractSources(name string) []CorrelationContractSource {
 				{
 					ID: "omnigent-policy-event-35519fb", Surface: CorrelationSurfaceHook,
 					Path:         "internal/gateway/connector/testdata/omnigent-policy-event.json",
-					SHA256:       "sha256:dae13269b64c22c01870e94d401a33e1c9ee0866e5be23bb0629452824188cf8",
+					SHA256:       "sha256:8fa398a41ae73ed90777ee2e6bd7c9b66681f0f24eb7568b9ca1bf8e933fea81",
 					AgentVersion: "0.7.0", EvidenceKind: "provider-source-derived",
 				},
 				{

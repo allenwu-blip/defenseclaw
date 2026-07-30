@@ -106,7 +106,7 @@ func (c *OmnigentConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			CanBlock:           true,
 			CanAskNative:       true,
 			AskEvents:          []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
-			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
+			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "AfterAgentResponse", "BeforeModel", "AfterModel"},
 			SupportsFailClosed: true,
 			Scope:              "user",
 			ConfigPath:         configPath,
