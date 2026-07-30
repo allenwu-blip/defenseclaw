@@ -633,14 +633,14 @@ jobs:
     needs: [powershell-static, package-artifact]
     runs-on: windows-latest
     timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        # Contract coverage does not certify preview/not-certified connectors;
+        # promotion still requires packaged and official-client evidence.
+        connector: [codex, claudecode, copilot, cursor, hermes, windsurf, antigravity, opencode]
     env:
       CONNECTOR: ${{ matrix.connector }}
-      strategy:
-        fail-fast: false
-        matrix:
-          # Contract coverage does not certify preview/not-certified connectors;
-          # promotion still requires packaged and official-client evidence.
-          connector: [codex, claudecode, copilot, cursor, hermes, windsurf, antigravity, opencode]
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
