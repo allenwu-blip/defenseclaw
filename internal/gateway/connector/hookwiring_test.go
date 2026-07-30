@@ -461,9 +461,9 @@ func TestWindowsHookContractLockIncludesNativeLauncherDigest(t *testing.T) {
 }
 
 // TestHookInvocationCommand pins the platform split: Unix runs the bundled .sh
-// path; Windows Cursor uses the PowerShell object-pipeline adapter while other
-// connectors invoke the native Go `hook` subcommand directly. PowerShell
-// shell-string connectors include its call operator.
+// path; Windows Cursor uses the PowerShell object-pipeline adapter, Copilot
+// receives a synchronous program in its native powershell field, and other
+// connectors invoke the native Go `hook` subcommand directly.
 func TestHookInvocationCommand(t *testing.T) {
 	const unix = "/home/u/.defenseclaw/hooks/codex-hook.sh"
 	const windowsExe = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
@@ -507,6 +507,37 @@ func TestHookInvocationCommand(t *testing.T) {
 	}
 	if !isNativeHookCommand(codex) {
 		t.Errorf("isNativeHookCommand(%q) = false, want true", codex)
+	}
+
+	copilot := hookInvocationCommandFor("windows", "copilot", unix)
+	wantCopilot := windowsCopilotPowerShellHookCommandForBinary(windowsExe)
+	if copilot != wantCopilot {
+		t.Errorf("copilot command = %q, want %q", copilot, wantCopilot)
+	}
+	for _, marker := range []string{
+		"Microsoft.PowerShell.Management\\Start-Process",
+		"-NoNewWindow -Wait -PassThru",
+		"exit $hookProcess.ExitCode",
+		powershellQuoteLiteral(windowsExe),
+	} {
+		if !strings.Contains(copilot, marker) {
+			t.Errorf("copilot command missing synchronous marker %q: %q", marker, copilot)
+		}
+	}
+	if strings.HasPrefix(copilot, "& ") || strings.Contains(copilot, "powershell.exe") ||
+		strings.Contains(copilot, ".sh") || strings.Contains(copilot, "bash") {
+		t.Errorf("copilot command nests an invalid vendor boundary: %q", copilot)
+	}
+	if !isNativeHookCommand(copilot) {
+		t.Errorf("isNativeHookCommand(%q) = false, want true", copilot)
+	}
+	for _, legacy := range []string{
+		legacyWindowsCopilotPowerShellHookCommandForBinary(windowsExe),
+		legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(windowsExe),
+	} {
+		if !isNativeHookCommand(legacy) {
+			t.Errorf("legacy Copilot command is not owned for repair/teardown: %q", legacy)
+		}
 	}
 
 	// Claude Code accepts an exact command string and therefore uses the
@@ -572,7 +603,7 @@ func TestWindowsNativeHookCommandPreservesConnectorSpecificPayload(t *testing.T)
 }
 
 // TestWindowsNativePowerShellHookCommandPropagatesProcessResults executes the
-// exact emitted command across both supported agent launch boundaries. The
+// exact emitted command across the supported agent launch boundaries. The
 // probe uses the same GUI subsystem as release defenseclaw-hook.exe so this
 // catches PowerShell returning before the process exits.
 const windowsNativePowerShellTestTimeout = time.Minute
@@ -634,12 +665,17 @@ func main() {
 		{connector: "codex", exitCode: 1},
 		{connector: "codex", exitCode: 2},
 		{connector: "antigravity", exitCode: 2},
+		{connector: "copilot", exitCode: 0},
+		{connector: "copilot", exitCode: 2},
 	}
 	for _, testCase := range cases {
 		t.Run(fmt.Sprintf("%s-exit-%d", testCase.connector, testCase.exitCode), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), windowsNativePowerShellTestTimeout)
 			defer cancel()
 			command := windowsNativePowerShellHookCommand(testCase.connector)
+			if testCase.connector == "copilot" {
+				command = windowsCopilotPowerShellHookCommand()
+			}
 			cmd := windowsNativePowerShellTestProcess(ctx, testCase.connector, command)
 			cmd.Env = minimalWindowsHookTestEnvironment(
 				"PSModuleAnalysisCachePath="+filepath.Join(t.TempDir(), "module-analysis-cache"),
@@ -745,6 +781,17 @@ func windowsNativePowerShellTestProcess(ctx context.Context, connector, command 
 			comspec = "cmd.exe"
 		}
 		return exec.CommandContext(ctx, comspec, "/D", "/S", "/C", command)
+	}
+	if connector == "copilot" {
+		return exec.CommandContext(
+			ctx,
+			"pwsh.exe",
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			command,
+		)
 	}
 	argv := strings.Fields(command)
 	return exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -1457,6 +1504,10 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 				if !strings.Contains(decoded, windowsNativePowerShellStartForTest(defenseclawHookBinary(), connectorName)) {
 					t.Errorf("config missing native command_windows connector command for %s:\n%s", connectorName, text)
 				}
+			} else if connectorName == "copilot" {
+				if !strings.Contains(text, "Microsoft.PowerShell.Management\\\\Start-Process") {
+					t.Errorf("config missing synchronous Copilot PowerShell command:\n%s", text)
+				}
 			} else {
 				if !strings.Contains(text, windowsHookBinaryName) {
 					t.Errorf("config does not invoke %s:\n%s", windowsHookBinaryName, text)
@@ -1478,7 +1529,7 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					t.Fatalf("parse Copilot config: %v", err)
 				}
 				hooks, _ := cfg["hooks"].(map[string]interface{})
-				want := "& " + hookInvocationCommand("copilot", "")
+				want := hookInvocationCommand("copilot", "")
 				for event, raw := range hooks {
 					entries, _ := raw.([]interface{})
 					if len(entries) == 0 {
@@ -1487,6 +1538,9 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					entry, _ := entries[0].(map[string]interface{})
 					if got, _ := entry["powershell"].(string); got != want {
 						t.Errorf("Copilot %s powershell command = %q, want %q", event, got, want)
+					}
+					if strings.Contains(entry["powershell"].(string), "& &") {
+						t.Errorf("Copilot %s retained duplicated PowerShell call operator", event)
 					}
 					if _, present := entry["bash"]; present {
 						t.Errorf("Copilot %s retained a bash command on Windows", event)

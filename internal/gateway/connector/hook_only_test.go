@@ -1185,6 +1185,124 @@ func TestCopilotSetupDefaultsToGlobalWhenDaemonCwdIsDataDir(t *testing.T) {
 	}
 }
 
+func TestCopilotHomeOverrideDrivesHooksAndInventory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "copilot-home")
+	t.Setenv("COPILOT_HOME", root)
+	opts := SetupOpts{}
+
+	if got, want := copilotHooksPath(opts), filepath.Join(root, "hooks", "defenseclaw.json"); got != want {
+		t.Fatalf("copilotHooksPath = %q, want %q", got, want)
+	}
+	caps := NewCopilotConnector().Capabilities(opts)
+	for _, want := range []string{
+		filepath.Join(root, "mcp-config.json"),
+		filepath.Join(root, "skills"),
+		filepath.Join(root, "agents"),
+	} {
+		found := false
+		for _, paths := range [][]string{
+			caps.MCP.ConfigPaths,
+			caps.Skills.ReadPaths,
+			caps.Agents.ReadPaths,
+		} {
+			if stringInSlice(paths, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Copilot capabilities do not contain COPILOT_HOME path %q: %+v", want, caps)
+		}
+	}
+}
+
+func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Copilot selects the powershell hook field only on Windows")
+	}
+	const hookBinary = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, hookBinary)
+	current := windowsCopilotPowerShellHookCommandForBinary(hookBinary)
+	legacy := legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary)
+	duplicated := legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary)
+	historic := legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(
+		filepath.Join(userHomeDir(), ".local", "bin", windowsHookBinaryName),
+	)
+	foreign := "Write-Output 'operator hook'"
+	path := filepath.Join(t.TempDir(), "defenseclaw.json")
+	cfg := map[string]interface{}{
+		"version": 1,
+		"hooks": map[string]interface{}{
+			"preToolUse": []interface{}{
+				map[string]interface{}{"type": "command", "powershell": duplicated, "timeoutSec": 30},
+				map[string]interface{}{"type": "command", "powershell": legacy, "timeoutSec": 30},
+				map[string]interface{}{"type": "command", "powershell": historic, "timeoutSec": 30},
+				map[string]interface{}{"type": "command", "powershell": foreign, "timeoutSec": 10},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal fixture: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if err := patchCopilotHooks(path, current); err != nil {
+		t.Fatalf("patchCopilotHooks: %v", err)
+	}
+	repaired, err := readJSONObject(path)
+	if err != nil {
+		t.Fatalf("read repaired hooks: %v", err)
+	}
+	hooks := repaired["hooks"].(map[string]interface{})
+	for event, raw := range hooks {
+		entries := raw.([]interface{})
+		managed := 0
+		for _, rawEntry := range entries {
+			entry := rawEntry.(map[string]interface{})
+			command, _ := entry["powershell"].(string)
+			if command == current {
+				managed++
+				if entry["type"] != "command" || fmt.Sprint(entry["timeoutSec"]) != "30" {
+					t.Errorf("%s canonical entry drifted: %#v", event, entry)
+				}
+			}
+			if command == legacy || command == duplicated || command == historic {
+				t.Errorf("%s retained legacy Copilot command %q", event, command)
+			}
+		}
+		if managed != 1 {
+			t.Errorf("%s managed entry count = %d, want 1", event, managed)
+		}
+	}
+	repairedData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read repaired config: %v", err)
+	}
+	if !strings.Contains(string(repairedData), foreign) {
+		t.Fatal("repair removed the operator-owned hook")
+	}
+
+	if err := removeJSONHookReferences(path, current); err != nil {
+		t.Fatalf("removeJSONHookReferences: %v", err)
+	}
+	afterData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config after teardown: %v", err)
+	}
+	after := string(afterData)
+	for _, owned := range []string{current, legacy, duplicated, historic} {
+		if strings.Contains(after, owned) {
+			t.Errorf("owned Copilot command survived teardown: %q", owned)
+		}
+	}
+	if !strings.Contains(after, foreign) {
+		t.Fatal("teardown removed the operator-owned hook")
+	}
+}
+
 func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "hooks.json")

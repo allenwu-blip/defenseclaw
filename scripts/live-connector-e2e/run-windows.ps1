@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -30,7 +30,8 @@ function Get-SecretValues {
         'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
         'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN', 'LLM_API_KEY', 'DC_E2E_TEST_SECRET',
-        'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN'
+        'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN',
+        'COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_CLI_TOKEN'
     )
     @($names | ForEach-Object { [Environment]::GetEnvironmentVariable($_) } |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.Length -ge 8 } |
@@ -46,12 +47,12 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot')][string]$ConnectorName
 ) {
-    $environmentName = if ($ConnectorName -eq 'codex') {
-        'CODEX_HOME'
-    } else {
-        'CLAUDE_CONFIG_DIR'
+    $environmentName = switch ($ConnectorName) {
+        'codex' { 'CODEX_HOME' }
+        'claudecode' { 'CLAUDE_CONFIG_DIR' }
+        'copilot' { 'COPILOT_HOME' }
     }
     $configured = [Environment]::GetEnvironmentVariable($environmentName)
     if (-not [string]::IsNullOrWhiteSpace($configured)) {
@@ -60,24 +61,38 @@ function Resolve-EffectiveConnectorHome(
     if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
         throw "$environmentName is unset and USERPROFILE is unavailable"
     }
-    $defaultLeaf = if ($ConnectorName -eq 'codex') { '.codex' } else { '.claude' }
+    $defaultLeaf = switch ($ConnectorName) {
+        'codex' { '.codex' }
+        'claudecode' { '.claude' }
+        'copilot' { '.copilot' }
+    }
     return [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE $defaultLeaf)).TrimEnd('\')
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot')][string]$ConnectorName
 ) {
-    $fileName = if ($ConnectorName -eq 'codex') { 'managed_config.toml' } else { 'settings.json' }
+    $fileName = switch ($ConnectorName) {
+        'codex' { 'managed_config.toml' }
+        'claudecode' { 'settings.json' }
+        'copilot' { 'hooks\defenseclaw.json' }
+    }
     return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) $fileName
 }
 
 function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME')
     $claudeHome = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
+    $copilotHome = [Environment]::GetEnvironmentVariable('COPILOT_HOME')
+    if ([string]::IsNullOrWhiteSpace($copilotHome)) {
+        $copilotHome = Join-Path $Root 'copilot-home'
+        Protect-TestDirectory $copilotHome
+    }
     $homes = @(Assert-WindowsNativePathsDisjoint @(
         $ProfileHome,
         $codexHome,
-        $claudeHome
+        $claudeHome,
+        $copilotHome
     ))
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     foreach ($connectorHome in $homes) {
@@ -92,6 +107,7 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     }
     $env:CODEX_HOME = $homes[1]
     $env:CLAUDE_CONFIG_DIR = $homes[2]
+    $env:COPILOT_HOME = $homes[3]
 }
 
 function Get-StableHookRuntimeExecutable {
@@ -703,7 +719,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
             agent_id = "$Connector-readiness"
             agent_name = "$Connector Windows readiness"
             agent_type = "$Connector-cli"
-            tool_name = if ($Connector -eq 'claudecode') { 'Bash' } else { 'shell' }
+            tool_name = Get-ConnectorToolName
             tool_input = [ordered]@{ command = 'echo dc-gateway-readiness' }
         }
         [IO.File]::WriteAllText(
@@ -850,9 +866,37 @@ function Set-IsolatedGatewayPort {
 }
 
 function Invoke-Setup([string]$Mode) {
-    $subcommand = if ($Connector -eq 'claudecode') { 'claude-code' } else { 'codex' }
+    $subcommand = switch ($Connector) {
+        'codex' { 'codex' }
+        'claudecode' { 'claude-code' }
+        'copilot' { 'copilot' }
+    }
     Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
     Wait-Gateway
+}
+
+function Get-ConnectorHookLabel {
+    switch ($Connector) {
+        'codex' { 'Codex hooks' }
+        'claudecode' { 'Claude Code hooks' }
+        'copilot' { 'Copilot hooks' }
+    }
+}
+
+function Get-ConnectorRepairSubcommand {
+    switch ($Connector) {
+        'codex' { 'codex' }
+        'claudecode' { 'claude-code' }
+        'copilot' { 'copilot' }
+    }
+}
+
+function Get-ConnectorToolName {
+    switch ($Connector) {
+        'claudecode' { 'Bash' }
+        'copilot' { 'powershell' }
+        default { 'shell' }
+    }
 }
 
 function Test-ObsoleteWindowsHookGuidance([string]$Text) {
@@ -897,6 +941,41 @@ function Assert-CodexSynchronousWindowsHookCommand([object]$CodexCommand, [strin
     }
 }
 
+function Assert-CopilotSynchronousWindowsHookConfig([string]$Config, [string]$Context) {
+    try { $document = $Config | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
+    if ($document.version -ne 1 -or $null -eq $document.hooks) {
+        throw "$Context is not a version-1 Copilot hook document"
+    }
+    $events = @(
+        'sessionStart', 'sessionEnd', 'userPromptSubmitted', 'preToolUse',
+        'postToolUse', 'postToolUseFailure', 'permissionRequest', 'agentStop',
+        'subagentStart', 'subagentStop', 'errorOccurred', 'preCompact', 'notification'
+    )
+    $commands = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $pattern = '(?i)^\$ErrorActionPreference=''Stop'';\s+\$env:NoDefaultCurrentDirectoryInExePath=''1'';\s+\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''copilot''\)\s+-NoNewWindow\s+-Wait\s+-PassThru;\s+exit\s+\$hookProcess\.ExitCode$'
+    foreach ($event in $events) {
+        $property = $document.hooks.PSObject.Properties[$event]
+        if ($null -eq $property) { throw "$Context is missing Copilot event $event" }
+        $owned = @($property.Value | Where-Object {
+            $_.type -ceq 'command' -and [string]$_.powershell -match 'defenseclaw-hook\.exe'
+        })
+        if ($owned.Count -ne 1) { throw "$Context event $event has $($owned.Count) native DefenseClaw handlers" }
+        $entry = $owned[0]
+        if ([int]$entry.timeoutSec -ne 30 -or
+            $null -ne $entry.PSObject.Properties['bash'] -or
+            $null -ne $entry.PSObject.Properties['command']) {
+            throw "$Context event $event has a malformed Windows command entry"
+        }
+        $command = [string]$entry.powershell
+        if ($command -notmatch $pattern -or $command -match '(?i)&\s+&|\$LASTEXITCODE') {
+            throw "$Context event $event does not use the exact synchronous Copilot PowerShell command"
+        }
+        [void]$commands.Add($command)
+    }
+    if ($commands.Count -ne 1) { throw "$Context uses inconsistent Copilot PowerShell commands" }
+}
+
 function Assert-DoctorHookRegistration {
     $doctor = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1)
     try {
@@ -904,7 +983,7 @@ function Assert-DoctorHookRegistration {
     } catch {
         throw "doctor did not return JSON after $Connector setup"
     }
-    $label = if ($Connector -eq 'claudecode') { 'Claude Code hooks' } else { 'Codex hooks' }
+    $label = Get-ConnectorHookLabel
     $rows = @($report.checks | Where-Object { $_.label -like "$label*" })
     if ($rows.Count -ne 1) { throw "doctor returned $($rows.Count) $label rows after setup" }
     if ($rows[0].status -ne 'pass') { throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)" }
@@ -922,6 +1001,8 @@ function Assert-DoctorHookRegistration {
     if ($Connector -eq 'codex') {
         $codexCommand = Get-CodexWindowsHookCommand $registration
         Assert-CodexSynchronousWindowsHookCommand $codexCommand 'setup-created Codex registration'
+    } elseif ($Connector -eq 'copilot') {
+        Assert-CopilotSynchronousWindowsHookConfig $registration 'setup-created Copilot registration'
     } elseif ($registration -notmatch '(?i)defenseclaw-hook(?:\.exe|\.cmd)') {
         throw "setup-created $Connector registration does not use a native DefenseClaw hook launcher"
     }
@@ -940,6 +1021,7 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\codex'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\claudecode'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
         (Join-Path $env:DEFENSECLAW_HOME 'hooks')
     )
     foreach ($directory in $privateDirectories) { Protect-TestDirectory $directory }
@@ -983,7 +1065,7 @@ function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow',
 }
 
 function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$Root) {
-    $toolName = if ($Connector -eq 'claudecode') { 'Bash' } else { 'shell' }
+    $toolName = Get-ConnectorToolName
     $payload = [ordered]@{
         hook_event_name = 'PreToolUse'
         session_id = "dc-windows-contract-$Connector"
@@ -1098,7 +1180,7 @@ function Get-TreeFingerprint([string]$Root) {
 }
 
 function Assert-DoctorWindowsHookRegistration {
-    $label = if ($Connector -eq 'claudecode') { 'Claude Code hooks' } else { 'Codex hooks' }
+    $label = Get-ConnectorHookLabel
     $configPath = Get-EffectiveConnectorConfigPath $Connector
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { throw "Doctor contract hook config is missing: $configPath" }
     $originalConfig = [IO.File]::ReadAllBytes($configPath)
@@ -1122,9 +1204,11 @@ function Assert-DoctorWindowsHookRegistration {
             }
         }
         if (-not $nativeHookFound) { throw 'claudecode setup did not register the Windows native exec-form hook command' }
-    } else {
+    } elseif ($Connector -eq 'codex') {
         $codexCommand = Get-CodexWindowsHookCommand $config
         Assert-CodexSynchronousWindowsHookCommand $codexCommand "$Connector setup"
+    } else {
+        Assert-CopilotSynchronousWindowsHookConfig $config "$Connector setup"
     }
 
     $result = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
@@ -1132,7 +1216,12 @@ function Assert-DoctorWindowsHookRegistration {
     $checks = @($report.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
     if ($checks.Count -ne 1) { throw "Doctor returned $($checks.Count) '$label' checks, expected one" }
     $check = $checks[0]
-    if ($check.status -ne 'pass' -or $check.detail -notmatch 'healthy Windows-native executable registration') {
+    $healthyDetail = if ($Connector -eq 'copilot') {
+        'healthy Windows-native Copilot PowerShell registration'
+    } else {
+        'healthy Windows-native executable registration'
+    }
+    if ($check.status -ne 'pass' -or $check.detail -notmatch [regex]::Escape($healthyDetail)) {
         throw "Doctor did not validate the registered $Connector Windows hook: $($check.status) $($check.detail)"
     }
     $hookExecutable = Get-StableHookRuntimeExecutable
@@ -1167,16 +1256,17 @@ function Assert-DoctorWindowsHookRegistration {
         $tamperedChecks = @($tamperedReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
         if ($tamperedChecks.Count -ne 1) { throw "Tampered Doctor run returned $($tamperedChecks.Count) '$label' checks, expected one" }
         $tamperedCheck = $tamperedChecks[0]
-        $expectedTamperDetail = if ($Connector -eq 'codex') {
-            'cannot be resolved'
-        } else {
-            'does not use the native hook runtime'
+        $expectedTamperDetail = switch ($Connector) {
+            'codex' { 'cannot be resolved' }
+            'claudecode' { 'does not use the native hook runtime' }
+            'copilot' { 'not the DefenseClaw hook launcher' }
         }
         if ($tamperedCheck.status -ne 'fail' -or
             $tamperedCheck.detail -notmatch [regex]::Escape($expectedTamperDetail)) {
             throw "Doctor did not reject the tampered $Connector hook command: $($tamperedCheck.status) $($tamperedCheck.detail)"
         }
-        if ($tamperedCheck.detail -notmatch "setup $(if ($Connector -eq 'codex') { 'codex' } else { 'claude-code' }) --yes --restart") {
+        $repairSubcommand = Get-ConnectorRepairSubcommand
+        if ($tamperedCheck.detail -notmatch "setup $repairSubcommand --yes --restart") {
             throw "Doctor tamper result omitted native setup repair guidance: $($tamperedCheck.detail)"
         }
         if ($tamperedCheck.detail -match '(?i)\x2esh\b|\bbash\b|\bwsl\b|\bchmod\b|\bunset\b|hook script') {
@@ -1190,7 +1280,8 @@ function Assert-DoctorWindowsHookRegistration {
     $recovered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
     try { $recoveredReport = $recovered.StdOut | ConvertFrom-Json } catch { throw "Recovered Doctor run did not return JSON: $($_.Exception.Message)" }
     $recoveredChecks = @($recoveredReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
-    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne 'pass' -or $recoveredChecks[0].detail -notmatch 'healthy Windows-native executable registration') {
+    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne 'pass' -or
+        $recoveredChecks[0].detail -notmatch [regex]::Escape($healthyDetail)) {
         throw "Doctor did not recover after restoring the $Connector hook command"
     }
     Write-Result 'doctor:windows-hook-recovery' pass 'original registration restored byte-for-byte and validated'
@@ -1236,7 +1327,8 @@ function Install-Agent {
         if (-not $script:AgentPath.StartsWith($statePrefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw "release client must be installed below the disposable certification state root: $script:AgentPath"
         }
-        $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList @('--version') `
+        $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
+        $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs `
             -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
         $script:AgentVersion = ($version.StdOut + $version.StdErr).Trim()
         $observedVersions = [regex]::Matches(
@@ -1252,11 +1344,20 @@ function Install-Agent {
     }
 
     [IO.Directory]::CreateDirectory($script:ToolRoot) | Out-Null
-    $package = if ($Connector -eq 'codex') { '@openai/codex@' + ($env:CODEX_VERSION ?? 'latest') } else { '@anthropic-ai/claude-code@' + ($env:CLAUDE_VERSION ?? 'latest') }
+    $package = switch ($Connector) {
+        'codex' { '@openai/codex@' + ($env:CODEX_VERSION ?? 'latest') }
+        'claudecode' { '@anthropic-ai/claude-code@' + ($env:CLAUDE_VERSION ?? 'latest') }
+        'copilot' { '@github/copilot@' + ($env:COPILOT_VERSION ?? 'latest') }
+    }
     Invoke-Tool 'npm.cmd' @('install', '--no-audit', '--no-fund', '--prefix', $script:ToolRoot, $package) -Timeout 300 | Out-Null
-    $command = if ($Connector -eq 'codex') { 'codex.cmd' } else { 'claude.cmd' }
+    $command = switch ($Connector) {
+        'codex' { 'codex.cmd' }
+        'claudecode' { 'claude.cmd' }
+        'copilot' { 'copilot.cmd' }
+    }
     $script:AgentPath = Join-Path $script:ToolRoot "node_modules\.bin\$command"
-    $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList @('--version') -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
+    $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
+    $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
     $script:AgentVersion = ($version.StdOut + $version.StdErr).Trim()
     Write-Result install pass $script:AgentVersion
 }
@@ -1530,10 +1631,16 @@ function Assert-CodexPinnedTrustMatrix {
 }
 
 function Invoke-Agent([string]$Label, [string]$Prompt, [int[]]$AllowedExitCodes = @(0)) {
-    $agentArgs = if ($Connector -eq 'codex') {
-        @('exec', '--json', '--full-auto', '--model', ($env:CODEX_MODEL ?? 'gpt-5-mini'), $Prompt)
-    } else {
-        @('-p', $Prompt, '--output-format', 'json', '--model', ($env:CLAUDE_MODEL ?? 'claude-haiku-4-5'), '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash')
+    $agentArgs = switch ($Connector) {
+        'codex' {
+            @('exec', '--json', '--full-auto', '--model', ($env:CODEX_MODEL ?? 'gpt-5-mini'), $Prompt)
+        }
+        'claudecode' {
+            @('-p', $Prompt, '--output-format', 'json', '--model', ($env:CLAUDE_MODEL ?? 'claude-haiku-4-5'), '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash')
+        }
+        'copilot' {
+            @('-p', $Prompt, '--allow-all-tools', '--no-ask-user')
+        }
     }
     return Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $agentArgs -TimeoutSeconds $CommandTimeoutSeconds -AllowedExitCodes $AllowedExitCodes -LogPath (Join-Path $script:LogRoot "agent-$Label.log")
 }
@@ -1840,6 +1947,11 @@ if (-not $NoRun) {
     $script:ToolRoot = Join-Path $StateRoot 'tools'
     $script:CommandIndex = 0; $script:AgentVersion = 'unversioned'
     $env:USERPROFILE = $HomeRoot; $env:HOME = $env:USERPROFILE
+    if ($Connector -eq 'copilot' -and
+        [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('COPILOT_GITHUB_TOKEN')) -and
+        -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('COPILOT_CLI_TOKEN'))) {
+        $env:COPILOT_GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('COPILOT_CLI_TOKEN')
+    }
     $env:DEFENSECLAW_HOME = if (-not [string]::IsNullOrWhiteSpace($NativeDataRoot)) {
         if ($Layer -ne 'contract' -or -not $AllowNativeDataRoot) {
             throw 'NativeDataRoot is restricted to an explicitly authorized packaged contract run'
@@ -1865,6 +1977,7 @@ if (-not $NoRun) {
     if ([string]::IsNullOrWhiteSpace($NativeDataRoot)) {
         $env:CODEX_HOME = Join-Path $env:USERPROFILE '.codex'
         $env:CLAUDE_CONFIG_DIR = Join-Path $env:USERPROFILE '.claude'
+        $env:COPILOT_HOME = Join-Path $env:USERPROFILE '.copilot'
     } else {
         Assert-PackagedConnectorHomes $StateRoot $HomeRoot
     }

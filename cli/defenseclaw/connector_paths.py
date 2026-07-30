@@ -290,6 +290,12 @@ def codex_home() -> str:
     return _connector_env_home("CODEX_HOME", ".codex")
 
 
+def copilot_home() -> str:
+    """Return GitHub Copilot CLI's effective user configuration directory."""
+
+    return _connector_env_home("COPILOT_HOME", ".copilot")
+
+
 def _resolve_hermes_home(
     *,
     platform_name: str,
@@ -385,7 +391,7 @@ def connector_home(
     if name == "geminicli":
         return os.path.join(home, ".gemini")
     if name == "copilot":
-        return os.path.join(home, ".copilot")
+        return copilot_home()
     if name == "openhands":
         root = _workspace_dir(workspace_dir)
         if root:
@@ -472,9 +478,10 @@ def connector_config_files(
             _workspace_path(workspace_dir, ".gemini", "settings.json"),
         ]
     elif name == "copilot":
+        copilot_root = copilot_home()
         paths = [
-            os.path.join(home, ".copilot", "config.json"),
-            os.path.join(home, ".copilot", "hooks", "defenseclaw.json"),
+            os.path.join(copilot_root, "config.json"),
+            os.path.join(copilot_root, "hooks", "defenseclaw.json"),
             _workspace_path(workspace_dir, ".github", "copilot.json"),
             _workspace_path(workspace_dir, ".github", "hooks", "defenseclaw.json"),
         ]
@@ -787,10 +794,9 @@ def _gemini_skill_dirs(workspace_dir: str | None = None) -> list[str]:
 
 
 def _copilot_skill_dirs(workspace_dir: str | None = None) -> list[str]:
-    home = str(Path.home())
     return _dedup(
         [
-            os.path.join(home, ".copilot", "skills"),
+            os.path.join(copilot_home(), "skills"),
             _workspace_path(workspace_dir, ".github", "skills"),
             _workspace_path(workspace_dir, ".agents", "skills"),
         ]
@@ -1082,9 +1088,8 @@ def _gemini_mcp_servers() -> list[MCPServerEntry]:
 
 
 def _copilot_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
-    home = str(Path.home())
     entries: list[MCPServerEntry] = []
-    entries.extend(_read_dotmcp_json(os.path.join(home, ".copilot", "mcp-config.json")))
+    entries.extend(_read_dotmcp_json(os.path.join(copilot_home(), "mcp-config.json")))
     github_mcp = _workspace_path(workspace_dir, ".github", "mcp.json")
     if github_mcp:
         entries.extend(_read_dotmcp_json(github_mcp))
@@ -1589,7 +1594,7 @@ def set_mcp_server(
         path = (
             os.path.join(workspace, ".github", "mcp.json")
             if workspace
-            else os.path.join(str(Path.home()), ".copilot", "mcp-config.json")
+            else os.path.join(copilot_home(), "mcp-config.json")
         )
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
@@ -1688,7 +1693,7 @@ def unset_mcp_server(
         path = (
             os.path.join(workspace, ".github", "mcp.json")
             if workspace
-            else os.path.join(str(Path.home()), ".copilot", "mcp-config.json")
+            else os.path.join(copilot_home(), "mcp-config.json")
         )
         _atomic_json_delete(path, ("mcpServers", name))
         return

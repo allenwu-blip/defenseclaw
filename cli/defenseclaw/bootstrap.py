@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING
 
 from defenseclaw.connector_paths import (
     connector_config_files,
+    copilot_home,
     hermes_config_path,
     omnigent_config_path,
 )
@@ -1453,7 +1454,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
         if workspace:
             path = os.path.join(workspace, ".github", "hooks", "defenseclaw.json")
         else:
-            path = os.path.expanduser("~/.copilot/hooks/defenseclaw.json")
+            path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Copilot hooks found")
         return StepResult("Connector", "warn", "Copilot hooks not found yet", "defenseclaw setup copilot")

@@ -145,6 +145,13 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 	if connector == "antigravity" {
 		return windowsAntigravityHookCommand()
 	}
+	// Copilot selects the powershell field itself on Windows. Give that vendor
+	// boundary a PowerShell program rather than nesting another powershell.exe.
+	// The packaged launcher uses the GUI subsystem, so Start-Process must wait,
+	// inherit stdin/stdout, and propagate the exact exit code synchronously.
+	if connector == "copilot" {
+		return windowsCopilotPowerShellHookCommand()
+	}
 	// Cursor 3.9.x writes the hook payload to a temporary file and then feeds
 	// it through Windows PowerShell's object pipeline. A native executable on
 	// that boundary receives encoding preambles instead of the JSON. The
@@ -472,6 +479,37 @@ func windowsNativePowerShellHookCommandForBinary(connector, hookBinary string) s
 	return windowsSystemPowerShellExe() + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + powershellEncodedCommand(script)
 }
 
+func windowsCopilotPowerShellHookCommand() string {
+	return windowsCopilotPowerShellHookCommandForBinary(defenseclawHookBinary())
+}
+
+func windowsCopilotPowerShellHookCommandForBinary(hookBinary string) string {
+	arguments := []string{
+		powershellQuoteLiteral("hook"),
+		powershellQuoteLiteral("--connector"),
+		powershellQuoteLiteral("copilot"),
+	}
+	return strings.Join([]string{
+		"$ErrorActionPreference='Stop'",
+		"$env:NoDefaultCurrentDirectoryInExePath='1'",
+		"$hookProcess=Microsoft.PowerShell.Management\\Start-Process -FilePath " + powershellQuoteLiteral(hookBinary) +
+			" -ArgumentList @(" + strings.Join(arguments, ",") + ") -NoNewWindow -Wait -PassThru",
+		"exit $hookProcess.ExitCode",
+	}, "; ")
+}
+
+// These two forms reconstruct Copilot registrations emitted before the
+// vendor-specific PowerShell boundary was implemented. Setup accidentally
+// prepended a second call operator to the first form. They remain owned for
+// repair and teardown but are never generated.
+func legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary string) string {
+	return "& " + powershellQuoteLiteral(hookBinary) + " " + nativeHookFlag + "copilot"
+}
+
+func legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary string) string {
+	return "& " + legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary)
+}
+
 // legacyUnqualifiedWindowsNativePowerShellHookCommandForBinary reconstructs
 // the exact synchronous command emitted before the Start-Process module was
 // qualified. It remains owned for repair and teardown, but is never generated.
@@ -531,20 +569,7 @@ func isNativeHookCommand(cmd string) bool {
 	// EncodedCommand so an absolute path containing spaces reaches CreateProcess
 	// without shell interpolation. Compare against the exact commands we emit;
 	// accepting arbitrary encoded scripts would let teardown claim foreign hooks.
-	hookBinaries := []string{defenseclawHookBinary()}
-	if runtime.GOOS == "windows" {
-		// A Setup-owned maintenance gateway runs outside the installed layout,
-		// and the installed payload may itself have been quarantined. The
-		// canonical launcher path is still authoritative because it comes from
-		// the Windows Known Folder API, not environment or PATH. Accept the exact
-		// encoded command Setup writes without making repository builds generate
-		// it.
-		hookBinaries = append(
-			hookBinaries,
-			canonicalNativeWindowsHookBinary(),
-			canonicalNativeWindowsInstalledHookBinary(),
-		)
-	}
+	hookBinaries := nativeHookBinaryOwnershipCandidates()
 	for _, connectorName := range []string{"codex", "antigravity"} {
 		for _, hookBinary := range uniqueNonEmptyStrings(hookBinaries) {
 			if cmd == windowsNativePowerShellHookCommandForBinary(connectorName, hookBinary) ||
@@ -552,6 +577,13 @@ func isNativeHookCommand(cmd string) bool {
 				cmd == legacyWindowsNativePowerShellHookCommandForBinary(connectorName, hookBinary) {
 				return true
 			}
+		}
+	}
+	for _, hookBinary := range uniqueNonEmptyStrings(hookBinaries) {
+		if cmd == windowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
+			cmd == legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
+			cmd == legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary) {
+			return true
 		}
 	}
 	// Codex's Windows command uses PATH with current-directory lookup disabled;
@@ -591,6 +623,23 @@ func isNativeHookCommand(cmd string) bool {
 		return false
 	}
 	return isDefenseClawHookExecutable(exe)
+}
+
+func nativeHookBinaryOwnershipCandidates() []string {
+	hookBinaries := []string{defenseclawHookBinary()}
+	if runtime.GOOS != "windows" {
+		return uniqueNonEmptyStrings(hookBinaries)
+	}
+	// A Setup-owned maintenance gateway runs outside the installed layout,
+	// and the installed payload may itself have been quarantined. Known
+	// installer locations plus the pre-installer ~/.local launcher remain
+	// teardown authority. All comparisons still require one exact command.
+	return uniqueNonEmptyStrings(append(
+		hookBinaries,
+		canonicalNativeWindowsHookBinary(),
+		canonicalNativeWindowsInstalledHookBinary(),
+		filepath.Join(userHomeDir(), ".local", "bin", windowsHookBinaryName),
+	))
 }
 
 func isDefenseClawHookExecutable(exe string) bool {

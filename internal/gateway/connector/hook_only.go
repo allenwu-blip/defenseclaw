@@ -606,16 +606,16 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
 			Scope:           "workspace,user",
-			ConfigPaths:     []string{homePath(".copilot", "mcp-config.json"), workspacePath(opts, ".github", "mcp.json"), workspacePath(opts, ".mcp.json")},
-			WritePaths:      []string{homePath(".copilot", "mcp-config.json"), workspacePath(opts, ".github", "mcp.json")},
+			ConfigPaths:     []string{copilotHomePath("mcp-config.json"), workspacePath(opts, ".github", "mcp.json"), workspacePath(opts, ".mcp.json")},
+			WritePaths:      []string{copilotHomePath("mcp-config.json"), workspacePath(opts, ".github", "mcp.json")},
 			SupportsBackup:  true,
 			SupportsRestore: true,
 		}
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{homePath(".copilot", "skills"), workspacePath(opts, ".github", "skills"), workspacePath(opts, ".agents", "skills")},
-			WritePaths:     []string{homePath(".copilot", "skills"), workspacePath(opts, ".github", "skills")},
+			ReadPaths:      []string{copilotHomePath("skills"), workspacePath(opts, ".github", "skills"), workspacePath(opts, ".agents", "skills")},
+			WritePaths:     []string{copilotHomePath("skills"), workspacePath(opts, ".github", "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
 		}
@@ -631,8 +631,8 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Agents = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{homePath(".copilot", "agents"), workspacePath(opts, ".github", "agents")},
-			WritePaths:     []string{homePath(".copilot", "agents"), workspacePath(opts, ".github", "agents")},
+			ReadPaths:      []string{copilotHomePath("agents"), workspacePath(opts, ".github", "agents")},
+			WritePaths:     []string{copilotHomePath("agents"), workspacePath(opts, ".github", "agents")},
 			InstallTargets: []string{"agent"},
 			RequiresOptIn:  true,
 		}
@@ -899,6 +899,12 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
 	}
+	if c.name == "copilot" {
+		var cfg map[string]interface{}
+		if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
+			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+		}
+	}
 	if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
 		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
 		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
@@ -1093,7 +1099,7 @@ func copilotHooksPath(opts SetupOpts) string {
 	if root := workspaceRoot(opts); root != "" {
 		return filepath.Join(root, ".github", "hooks", "defenseclaw.json")
 	}
-	return homePath(".copilot", "hooks", "defenseclaw.json")
+	return copilotHomePath("hooks", "defenseclaw.json")
 }
 
 func openhandsHooksPath(opts SetupOpts) string {
@@ -1192,6 +1198,11 @@ func homePath(parts ...string) string {
 	}
 	all := append([]string{home}, parts...)
 	return filepath.Join(all...)
+}
+
+func copilotHomePath(parts ...string) string {
+	root := connectorEnvHomeDir("COPILOT_HOME", ".copilot")
+	return filepath.Join(append([]string{root}, parts...)...)
 }
 
 func unsupportedSurface(note string) SurfaceCapability {
@@ -1648,15 +1659,14 @@ func patchCopilotHooks(path, hookScript string) error {
 			"timeoutSec": 30,
 		}
 		if runtime.GOOS == "windows" {
-			// Copilot selects the command field by host OS. A `bash`-only
-			// entry is ignored on Windows even when its value names a native
-			// executable. PowerShell requires the call operator before a quoted
-			// executable path, otherwise the path is parsed as a string literal.
-			entry["powershell"] = "& " + hookScript
+			// Copilot selects this field itself and evaluates it with PowerShell.
+			// hookScript is therefore the complete vendor-specific program: do
+			// not prepend a call operator or another PowerShell process.
+			entry["powershell"] = hookScript
 		} else {
 			entry["bash"] = shellWord(hookScript)
 		}
-		hooks[event] = appendUniqueFlatHook(hooks[event], hookScript, entry)
+		hooks[event] = reconcileCopilotFlatHook(hooks[event], hookScript, entry)
 	}
 	return writeJSONObject(path, cfg)
 }
@@ -1886,6 +1896,26 @@ func appendUniqueFlatHook(raw interface{}, hookScript string, entry map[string]i
 	return append(list, entry)
 }
 
+func reconcileCopilotFlatHook(raw interface{}, hookScript string, entry map[string]interface{}) []interface{} {
+	list, _ := raw.([]interface{})
+	out := make([]interface{}, 0, len(list)+1)
+	replaced := false
+	for _, item := range list {
+		if managedHookCommandEntry(item, hookScript) {
+			if !replaced {
+				out = append(out, entry)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, item)
+	}
+	if !replaced {
+		out = append(out, entry)
+	}
+	return out
+}
+
 func appendUniqueGeminiHookGroup(raw interface{}, hookScript string, group map[string]interface{}) []interface{} {
 	list, _ := raw.([]interface{})
 	for _, item := range list {
@@ -2047,10 +2077,25 @@ func managedHookCommandEntry(raw interface{}, hookScript string) bool {
 	if !ok {
 		return false
 	}
-	for _, key := range []string{"command", "bash"} {
+	for _, key := range []string{"command", "bash", "powershell"} {
 		command, _ := entry[key].(string)
 		command = strings.TrimSpace(command)
 		if command == strings.TrimSpace(hookScript) || command == strings.TrimSpace(shellWord(hookScript)) {
+			return true
+		}
+		if isCopilotNativeHookCommand(hookScript) && isCopilotNativeHookCommand(command) {
+			return true
+		}
+	}
+	return false
+}
+
+func isCopilotNativeHookCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	for _, hookBinary := range nativeHookBinaryOwnershipCandidates() {
+		if command == windowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
+			command == legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
+			command == legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary) {
 			return true
 		}
 	}

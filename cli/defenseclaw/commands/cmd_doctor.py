@@ -45,6 +45,7 @@ from defenseclaw.audit_actions import ACTION_DOCTOR
 from defenseclaw.connector_paths import (
     codex_home,
     connector_config_files,
+    copilot_home,
     hermes_config_path,
     hermes_legacy_config_path,
     omnigent_config_path,
@@ -59,6 +60,7 @@ from defenseclaw.doctor_gateway import (
 from defenseclaw.doctor_hooks import (
     WindowsHookCheck,
     _packaged_windows_install_root,
+    validate_windows_copilot_hook_registration,
     validate_windows_hook_registration,
 )
 from defenseclaw.envvars import active_security_overrides
@@ -1391,19 +1393,31 @@ def _windows_native_hook_check(
             config_path = paths[0]
         elif connector == "codex":
             config_path = os.path.join(codex_home(), "managed_config.toml")
+        elif connector == "copilot":
+            config_path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
         else:
             config_path = connector_config_files(connector)[0]
     if install_root is None:
         install_root = _packaged_windows_install_root(getattr(cfg, "data_dir", "") or "")
     if install_root is None:
         install_root = os.path.expanduser("~/.local/bin")
-    return validate_windows_hook_registration(
+    validator = (
+        validate_windows_copilot_hook_registration
+        if connector == "copilot"
+        else validate_windows_hook_registration
+    )
+    common = {
+        "config_path": config_path,
+        "data_dir": getattr(cfg, "data_dir", "") or "",
+        "install_root": install_root,
+        "search_path": os.environ.get("PATH", "") if search_path is None else search_path,
+        "pathext": os.environ.get("PATHEXT", "") if pathext is None else pathext,
+    }
+    if connector == "copilot":
+        return validator(**common)
+    return validator(
         connector=connector,
-        config_path=config_path,
-        data_dir=getattr(cfg, "data_dir", "") or "",
-        install_root=install_root,
-        search_path=os.environ.get("PATH", "") if search_path is None else search_path,
-        pathext=os.environ.get("PATHEXT", "") if pathext is None else pathext,
+        **common,
         workspace_dir=_workspace_dir(cfg) if connector == "claudecode" else "",
         managed_enterprise=(
             connector == "claudecode"
@@ -2246,11 +2260,32 @@ def _check_openhands_hooks(cfg, r: _DoctorResult) -> None:
     )
 
 
-def _check_copilot_hooks(cfg, r: _DoctorResult) -> None:
+def _check_copilot_hooks(
+    cfg,
+    r: _DoctorResult,
+    *,
+    platform_name: str | None = None,
+    config_path: str | None = None,
+    install_root: str | None = None,
+    search_path: str | None = None,
+    pathext: str | None = None,
+) -> None:
+    if (platform_name or os.name) == "nt":
+        _check_windows_native_hooks(
+            cfg,
+            "copilot",
+            "Copilot hooks",
+            r,
+            config_path=config_path,
+            install_root=install_root,
+            search_path=search_path,
+            pathext=pathext,
+        )
+        return
     workspace = _workspace_dir(cfg)
     data_dir = getattr(cfg, "data_dir", "") or ""
     if not workspace:
-        path = os.path.join(os.path.expanduser("~"), ".copilot", "hooks", "defenseclaw.json")
+        path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
         if not os.path.isfile(path):
             _emit("fail", "Copilot hooks", f"{path} not found", r=r)
             return
@@ -4295,7 +4330,7 @@ def _check_hook_contract_lock(
         detail += f" script={script_version}"
     locations = entry.get("locations") or {}
     native_runtime = None
-    if (platform_name or os.name) == "nt" and connector in {"codex", "claudecode"}:
+    if (platform_name or os.name) == "nt" and connector in {"codex", "claudecode", "copilot"}:
         native_runtime = _windows_native_hook_check(
             cfg,
             connector,

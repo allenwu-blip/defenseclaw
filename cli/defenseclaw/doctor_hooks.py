@@ -1,7 +1,7 @@
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation for Windows-native Codex and Claude Code hooks.
+"""Validation for Windows-native Codex, Claude Code, and Copilot hooks.
 
 This module never starts a configured hook command. Agent hook configuration is
 untrusted input, so Doctor only parses those command lines and inspects their
@@ -48,6 +48,7 @@ _EXPECTED_CONTRACTS = {
         {"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
     ),
     "claudecode": frozenset({"claudecode-hooks-v1"}),
+    "copilot": frozenset({"copilot-hooks-v1"}),
 }
 _CODEX_HOOK_SPECS = {
     "SessionStart": ("session_start", "startup|resume|clear", 30),
@@ -119,6 +120,7 @@ _CLAUDE_FILE_CHANGED_MATCHER = (
 _REPAIR = {
     "codex": "defenseclaw setup codex --yes --restart",
     "claudecode": "defenseclaw setup claude-code --yes --restart",
+    "copilot": "defenseclaw setup copilot --yes --restart",
 }
 
 _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
@@ -151,6 +153,32 @@ _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
     "Elicitation": ("*", 30),
     "ElicitationResult": ("*", 30),
 }
+
+_COPILOT_REQUIRED_HOOKS = (
+    "sessionStart",
+    "sessionEnd",
+    "userPromptSubmitted",
+    "preToolUse",
+    "postToolUse",
+    "postToolUseFailure",
+    "permissionRequest",
+    "agentStop",
+    "subagentStart",
+    "subagentStop",
+    "errorOccurred",
+    "preCompact",
+    "notification",
+)
+
+_COPILOT_POWERSHELL_COMMAND = re.compile(
+    r"^\$ErrorActionPreference='Stop'; "
+    r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
+    r"\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process "
+    r"-FilePath '((?:[^']|'')+)' "
+    r"-ArgumentList @\('hook','--connector','copilot'\) "
+    r"-NoNewWindow -Wait -PassThru; "
+    r"exit \$hookProcess\.ExitCode$"
+)
 
 
 @dataclass(frozen=True)
@@ -2265,6 +2293,142 @@ def _contract_evidence(data_dir: str, connector: str, config_path: str) -> tuple
         if actual not in expected:
             raise _InspectionError("stale", "hook contract lock points at a different registration file")
     return f"contract={contract} version={version} status={status}", version, contract
+
+
+def _copilot_powershell_target(command: str) -> str | None:
+    match = _COPILOT_POWERSHELL_COMMAND.fullmatch(command.strip())
+    if match:
+        return match.group(1).replace("''", "'")
+    lowered = command.casefold()
+    if "hook --connector copilot" in lowered and (
+        "defenseclaw-hook" in lowered or "$hookprocess" in lowered or lowered.startswith("& ")
+    ):
+        if lowered.startswith("& & "):
+            raise _InspectionError("stale", "Copilot PowerShell hook has the legacy duplicated call operator")
+        if lowered.startswith("& "):
+            raise _InspectionError(
+                "stale",
+                "Copilot PowerShell hook uses the legacy non-waiting call-operator launcher",
+            )
+        raise _InspectionError(
+            "malformed",
+            "Copilot PowerShell hook does not implement the synchronous wait/stdin/stdout/exit contract",
+        )
+    return None
+
+
+def _validate_copilot_hook_matrix(document: dict[str, Any]) -> tuple[str, int]:
+    if type(document.get("version")) is not int or document.get("version") != 1:
+        raise _InspectionError("malformed", "Copilot hook registration version must be integer 1")
+    if "disableAllHooks" in document:
+        disabled = document["disableAllHooks"]
+        if type(disabled) is not bool:
+            raise _InspectionError("malformed", "Copilot disableAllHooks must be boolean")
+        if disabled:
+            raise _InspectionError("stale", "Copilot disableAllHooks disables the DefenseClaw registration")
+    hooks = document.get("hooks")
+    if not isinstance(hooks, dict):
+        raise _InspectionError("missing", "Copilot hook registration has no hooks object")
+
+    commands: set[str] = set()
+    expected = set(_COPILOT_REQUIRED_HOOKS)
+    count = 0
+    for event in _COPILOT_REQUIRED_HOOKS:
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            raise _InspectionError("missing", f"Copilot DefenseClaw hook event {event} is missing")
+        owned: list[tuple[dict[str, Any], str]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("powershell")
+            if not isinstance(command, str) or not command.strip():
+                continue
+            target = _copilot_powershell_target(command)
+            if target is not None:
+                owned.append((entry, command.strip()))
+        if len(owned) != 1:
+            raise _InspectionError(
+                "stale",
+                f"Copilot event {event} has {len(owned)} DefenseClaw handlers; expected exactly one",
+            )
+        entry, command = owned[0]
+        if entry.get("type") != "command":
+            raise _InspectionError("malformed", f"Copilot event {event} handler type is not command")
+        timeout = entry.get("timeoutSec")
+        if type(timeout) is not int or timeout != 30:
+            raise _InspectionError(
+                "stale",
+                f"Copilot event {event} timeoutSec is {timeout!r}; expected 30",
+            )
+        if "bash" in entry or "command" in entry:
+            raise _InspectionError(
+                "stale",
+                f"Copilot event {event} mixes the Windows powershell handler with another command field",
+            )
+        commands.add(command)
+        count += 1
+
+    for event, entries in hooks.items():
+        if event in expected or not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("powershell")
+            if isinstance(command, str) and _copilot_powershell_target(command) is not None:
+                raise _InspectionError("stale", f"unexpected Copilot event {event} contains a DefenseClaw handler")
+
+    if len(commands) != 1:
+        raise _InspectionError("stale", "Copilot DefenseClaw hook events use inconsistent PowerShell commands")
+    return next(iter(commands)), count
+
+
+def validate_windows_copilot_hook_registration(
+    *,
+    config_path: str,
+    data_dir: str,
+    install_root: str,
+    search_path: str,
+    pathext: str,
+) -> WindowsHookCheck:
+    """Passively validate Copilot's native Windows PowerShell hook contract."""
+    command = ""
+    target = ""
+    raw_target = ""
+    try:
+        document = _read_config(config_path, "copilot")
+        command, matrix_entries = _validate_copilot_hook_matrix(document)
+        raw_target = _copilot_powershell_target(command) or ""
+        resolved = _resolve_target(raw_target, "direct", search_path=search_path, pathext=pathext)
+        if not resolved:
+            raise _InspectionError("missing", f"registered hook target cannot be resolved with PATHEXT: {raw_target}")
+        target = resolved
+        if ntpath.basename(resolved).casefold() != "defenseclaw-hook.exe":
+            raise _InspectionError(
+                "foreign",
+                f"registered hook target is not the DefenseClaw hook launcher: {resolved}",
+            )
+        runtime_root = _windows_hook_runtime_root(resolved) or install_root
+        if _stable_regular_file(resolved, runtime_root, read_limit=2) != b"MZ":
+            raise _InspectionError("foreign", f"registered hook executable is not a Windows PE file: {resolved}")
+        evidence, _runtime_version, _contract_id = _contract_evidence(data_dir, "copilot", config_path)
+        return WindowsHookCheck(
+            "healthy",
+            f"healthy Windows-native Copilot PowerShell registration; entries={matrix_entries}; "
+            f"target={resolved}; {evidence}",
+            command,
+            resolved,
+            raw_target,
+        )
+    except _InspectionError as exc:
+        return WindowsHookCheck(
+            exc.state,
+            _repair_detail("copilot", exc.detail),
+            command,
+            target,
+            raw_target,
+        )
 
 
 def validate_windows_hook_registration(

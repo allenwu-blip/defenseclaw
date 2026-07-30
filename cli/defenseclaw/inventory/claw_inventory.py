@@ -1552,7 +1552,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * codex      — ``agents/*`` below the precedence-aware connector home
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` array
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
-    * copilot    — ``.github/agents`` and ``~/.copilot/agents``
+    * copilot    — ``.github/agents`` and ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
     """
     home = os.path.expanduser("~")
     name = (connector or "").lower()
@@ -1575,7 +1575,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _agents_from_md_dirs(
             [
                 os.path.join(os.getcwd(), ".github", "agents"),
-                os.path.join(home, ".copilot", "agents"),
+                os.path.join(connector_paths.connector_home(name), "agents"),
             ]
         )
     return []

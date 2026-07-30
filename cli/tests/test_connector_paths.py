@@ -728,9 +728,10 @@ class TestConnectorHome:
         [
             ("codex", "CODEX_HOME", "custom-codex", "config.toml"),
             ("claudecode", "CLAUDE_CONFIG_DIR", "custom-claude", "settings.json"),
+            ("copilot", "COPILOT_HOME", "custom-copilot", "config.json"),
         ],
     )
-    def test_codex_and_claude_honor_client_home_overrides(
+    def test_clients_honor_client_home_overrides(
         self,
         connector,
         variable,
@@ -750,6 +751,7 @@ class TestConnectorHome:
         [
             ("codex", "CODEX_HOME", "relative-codex"),
             ("claudecode", "CLAUDE_CONFIG_DIR", "relative-claude"),
+            ("copilot", "COPILOT_HOME", "relative-copilot"),
         ],
     )
     def test_client_home_overrides_are_resolved_absolutely(self, connector, variable, directory, monkeypatch, tmp_path):

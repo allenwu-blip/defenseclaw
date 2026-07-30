@@ -220,7 +220,7 @@ func structuredHookCommandReferences(raw interface{}, needles []string) bool {
 			return true
 		}
 		for key, item := range value {
-			if key == "command" || key == "bash" || key == "handler" {
+			if key == "command" || key == "bash" || key == "powershell" || key == "handler" {
 				command := strings.TrimSpace(stringValue(item))
 				for _, needle := range needles {
 					needle = strings.TrimSpace(needle)
