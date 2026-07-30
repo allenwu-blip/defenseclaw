@@ -238,6 +238,11 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		return func() {
 			connector.GeminiSettingsPathOverride = previous
 		}, nil
+	case "cursor":
+		// Cursor has no documented configuration-home environment variable.
+		// The hidden maintenance flag is carried through SetupOpts.ConfigHome
+		// instead of inventing an upstream-facing override.
+		return func() {}, nil
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}
@@ -292,6 +297,7 @@ func newConnectorRegistryWithPlugins() *connector.Registry {
 func resolveConnectorOpts(dataDir string) connector.SetupOpts {
 	opts := connector.SetupOpts{
 		DataDir:     dataDir,
+		ConfigHome:  connectorFlagConfigHome,
 		Interactive: false,
 	}
 	if cfg == nil {
@@ -327,8 +333,9 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
-	if name != "claudecode" && name != "codex" && name != "copilot" && name != "geminicli" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, and geminicli")
+	if name != "claudecode" && name != "codex" && name != "copilot" &&
+		name != "geminicli" && name != "cursor" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, geminicli, and cursor")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		// Transactional Windows Setup must be able to preserve and repair a
@@ -365,10 +372,10 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("connector reconcile: ensure scoped hook token: %w", err)
 		}
 	}
-	// Match the sidecar's least-privilege registration semantics: Claude,
-	// Codex, and Copilot use the connector-scoped token for native telemetry
-	// and hook calls. Never write the gateway master token into agent-owned
-	// config.
+	// Match the sidecar's least-privilege registration semantics: native hook
+	// connectors use the connector-scoped token for hook calls and, where
+	// supported by the vendor, native telemetry. Never write the gateway
+	// master token into agent-owned config.
 	opts.APIToken = hookToken
 	opts.HookAPIToken = hookToken
 	opts.HookAPITokenScoped = true

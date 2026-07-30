@@ -90,11 +90,13 @@ type setupTransaction struct {
 	PreviousCodexHome              string                   `json:"previous_codex_home,omitempty"`
 	PreviousClaudeConfigDir        string                   `json:"previous_claude_config_dir,omitempty"`
 	PreviousCopilotHome            string                   `json:"previous_copilot_home,omitempty"`
-	CopilotHome                    string                   `json:"copilot_home,omitempty"`
 	PreviousGeminiConfigDir        string                   `json:"previous_gemini_config_dir,omitempty"`
+	PreviousCursorHome             string                   `json:"previous_cursor_home,omitempty"`
 	CodexHome                      string                   `json:"codex_home,omitempty"`
 	ClaudeConfigDir                string                   `json:"claude_config_dir,omitempty"`
+	CopilotHome                    string                   `json:"copilot_home,omitempty"`
 	GeminiConfigDir                string                   `json:"gemini_config_dir,omitempty"`
+	CursorHome                     string                   `json:"cursor_home,omitempty"`
 	MaintenanceSHA256              string                   `json:"maintenance_sha256,omitempty"`
 	DeleteUserData                 bool                     `json:"delete_user_data,omitempty"`
 	UninstallPathEntryOwned        bool                     `json:"uninstall_path_entry_owned,omitempty"`
@@ -286,6 +288,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	defaultCursorHome, err := defaultConnectorConfigHome(".cursor")
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	codexHome, err := transactionConfigHome("CODEX_HOME", defaultCodexHome)
 	if err != nil {
 		return setupTransaction{}, err
@@ -302,12 +308,17 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	// Bind Setup to the exact official per-user directory instead of inventing
 	// a client-facing variable.
 	geminiConfigDir := defaultGeminiConfigDir
-	previousCodexState, previousClaudeState, previousCopilotState, previousGeminiState := "", "", "", ""
+	cursorHome, err := transactionConfigHome("DEFENSECLAW_CURSOR_CONFIG_HOME", defaultCursorHome)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCodexState, previousClaudeState, previousCopilotState, previousGeminiState, previousCursorState := "", "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
 		previousCopilotState = oldState.CopilotHome
 		previousGeminiState = oldState.GeminiConfigDir
+		previousCursorState = oldState.CursorHome
 	}
 	// Pre-home-binding releases can advertise a connector only through their
 	// legacy backup. In that case the validated current override is the sole
@@ -315,6 +326,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	// consume the shared backup while editing and verifying a different file.
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		previousCodexState, previousConnectors, dataRoot, "codex", "config.toml", codexHome,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCursorHome, err := resolvePreviousConnectorHome(
+		previousCursorState, previousConnectors, dataRoot, "cursor", "hooks.json", cursorHome,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -345,6 +362,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		claudeConfigDir = previousClaudeConfigDir
 		copilotHome = previousCopilotHome
 		geminiConfigDir = previousGeminiConfigDir
+		cursorHome = previousCursorHome
 	}
 	maintenanceSHA256 := ""
 	maintenanceExisted, previousMaintenanceSHA256, err := snapshotMaintenanceFile(maintenancePath)
@@ -394,11 +412,13 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousCodexHome:              previousCodexHome,
 		PreviousClaudeConfigDir:        previousClaudeConfigDir,
 		PreviousCopilotHome:            previousCopilotHome,
-		CopilotHome:                    copilotHome,
 		PreviousGeminiConfigDir:        previousGeminiConfigDir,
+		PreviousCursorHome:             previousCursorHome,
 		CodexHome:                      codexHome,
 		ClaudeConfigDir:                claudeConfigDir,
+		CopilotHome:                    copilotHome,
 		GeminiConfigDir:                geminiConfigDir,
+		CursorHome:                     cursorHome,
 		MaintenanceSHA256:              maintenanceSHA256,
 		DeleteUserData:                 opts.DeleteUserData,
 		UninstallPathEntryOwned:        uninstallPathOwned,
@@ -448,12 +468,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredGeminiConfigDir := "", "", "", ""
+	defaultCursorHome, err := defaultConnectorConfigHome(".cursor")
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredGeminiConfigDir, configuredCursorHome := "", "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
 		configuredCopilotHome = oldState.CopilotHome
 		configuredGeminiConfigDir = oldState.GeminiConfigDir
+		configuredCursorHome = oldState.CursorHome
 	}
 	// The source install transaction already captured validated client homes.
 	// Preserve them across an install-to-uninstall handoff when predecessor
@@ -474,6 +499,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if legacyGeminiFallback == "" {
 		legacyGeminiFallback = defaultGeminiConfigDir
 	}
+	legacyCursorFallback := source.CursorHome
+	if legacyCursorFallback == "" {
+		legacyCursorFallback = defaultCursorHome
+	}
 	previousCodexHome, err := resolvePreviousConnectorHome(
 		configuredCodexHome,
 		previousConnectors,
@@ -492,6 +521,17 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		"copilot",
 		"config",
 		legacyCopilotFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousCursorHome, err := resolvePreviousConnectorHome(
+		configuredCursorHome,
+		previousConnectors,
+		source.DataRoot,
+		"cursor",
+		"hooks.json",
+		legacyCursorFallback,
 	)
 	if err != nil {
 		return setupTransaction{}, err
@@ -579,11 +619,13 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousCodexHome:            previousCodexHome,
 		PreviousClaudeConfigDir:      previousClaudeConfigDir,
 		PreviousCopilotHome:          previousCopilotHome,
-		CopilotHome:                  previousCopilotHome,
 		PreviousGeminiConfigDir:      previousGeminiConfigDir,
+		PreviousCursorHome:           previousCursorHome,
 		CodexHome:                    previousCodexHome,
 		ClaudeConfigDir:              previousClaudeConfigDir,
+		CopilotHome:                  previousCopilotHome,
 		GeminiConfigDir:              previousGeminiConfigDir,
+		CursorHome:                   previousCursorHome,
 		DeleteUserData:               opts.DeleteUserData,
 		UninstallPathEntryOwned:      pathOwned,
 		UninstallPathSeparatorReused: pathSeparatorReused,
@@ -729,37 +771,51 @@ func resolvePreviousConnectorHome(
 }
 
 func transactionChildEnv(transaction setupTransaction) []string {
-	return transactionChildEnvForHomes(
+	return transactionChildEnvForConnectorHomes(
 		transaction,
 		transaction.CodexHome,
 		transaction.ClaudeConfigDir,
 		transaction.CopilotHome,
 		transaction.GeminiConfigDir,
+		transaction.CursorHome,
 	)
 }
 
 func transactionPreviousChildEnv(transaction setupTransaction) []string {
-	return transactionChildEnvForHomes(
+	return transactionChildEnvForConnectorHomes(
 		transaction,
 		transaction.PreviousCodexHome,
 		transaction.PreviousClaudeConfigDir,
 		transaction.PreviousCopilotHome,
 		transaction.PreviousGeminiConfigDir,
+		transaction.PreviousCursorHome,
 	)
 }
 
-func transactionChildEnvForHomes(
+func transactionChildEnvForHomes(transaction setupTransaction, codexHome, claudeConfigDir string) []string {
+	return transactionChildEnvForConnectorHomes(
+		transaction,
+		codexHome,
+		claudeConfigDir,
+		transaction.CopilotHome,
+		transaction.GeminiConfigDir,
+		transaction.CursorHome,
+	)
+}
+
+func transactionChildEnvForConnectorHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome, geminiConfigDir string,
+	codexHome, claudeConfigDir, copilotHome, geminiConfigDir, cursorHome string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+4)
+	filtered := make([]string, 0, len(base)+5)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
 			strings.EqualFold(name, "CLAUDE_CONFIG_DIR") ||
 			strings.EqualFold(name, "COPILOT_HOME") ||
-			strings.EqualFold(name, "DEFENSECLAW_GEMINI_CONFIG_DIR")) {
+			strings.EqualFold(name, "DEFENSECLAW_GEMINI_CONFIG_DIR") ||
+			strings.EqualFold(name, "DEFENSECLAW_CURSOR_CONFIG_HOME")) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -775,6 +831,9 @@ func transactionChildEnvForHomes(
 	}
 	if geminiConfigDir != "" {
 		filtered = append(filtered, "DEFENSECLAW_GEMINI_CONFIG_DIR="+geminiConfigDir)
+	}
+	if cursorHome != "" {
+		filtered = append(filtered, "DEFENSECLAW_CURSOR_CONFIG_HOME="+cursorHome)
 	}
 	return filtered
 }
@@ -967,7 +1026,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		if !samePath(transaction.PreviousCodexHome, transaction.CodexHome) ||
 			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) ||
 			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) ||
-			!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir) {
+			!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir) ||
+			!samePath(transaction.PreviousCursorHome, transaction.CursorHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
@@ -990,9 +1050,11 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"previous Copilot home":             transaction.PreviousCopilotHome,
 		"Copilot home":                      transaction.CopilotHome,
 		"previous Gemini configuration dir": transaction.PreviousGeminiConfigDir,
+		"Gemini configuration dir":          transaction.GeminiConfigDir,
+		"previous Cursor home":              transaction.PreviousCursorHome,
 		"Codex home":                        transaction.CodexHome,
 		"Claude configuration dir":          transaction.ClaudeConfigDir,
-		"Gemini configuration dir":          transaction.GeminiConfigDir,
+		"Cursor home":                       transaction.CursorHome,
 	} {
 		if value == "" {
 			continue
@@ -1021,7 +1083,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	seenConnectors := map[string]bool{}
 	for _, connectorName := range transaction.PreviousConnectors {
 		if connectorName != "codex" && connectorName != "claudecode" &&
-			connectorName != "copilot" && connectorName != "geminicli" {
+			connectorName != "copilot" && connectorName != "geminicli" &&
+			connectorName != "cursor" {
 			return fmt.Errorf("setup transaction has an invalid previous connector %q", connectorName)
 		}
 		if seenConnectors[connectorName] {
@@ -1081,6 +1144,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Claude configuration dir": state.ClaudeConfigDir,
 		"Copilot home":             state.CopilotHome,
 		"Gemini configuration dir": state.GeminiConfigDir,
+		"Cursor home":              state.CursorHome,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
 			return fmt.Errorf("installer state has an invalid %s", label)
@@ -2957,6 +3021,8 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousCopilotHome, transaction.CopilotHome)
 	case "geminicli":
 		return !samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir)
+	case "cursor":
+		return !samePath(transaction.PreviousCursorHome, transaction.CursorHome)
 	default:
 		return false
 	}

@@ -1472,6 +1472,82 @@ func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
 		if entry["failClosed"] != false {
 			t.Fatalf("Cursor %s retained failClosed=true after observe refresh: %#v", event, entry)
 		}
+		if fmt.Sprint(entry["timeout"]) != "30" {
+			t.Fatalf("Cursor %s timeout=%#v, want 30 seconds", event, entry["timeout"])
+		}
+	}
+}
+
+func TestCursorTeardownRestoresConfigAndRemovesOwnedRuntimes(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, ".cursor", "hooks.json")
+	prev := CursorHooksPathOverride
+	CursorHooksPathOverride = cfgPath
+	t.Cleanup(func() { CursorHooksPathOverride = prev })
+
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const original = "{\n  \"version\": 1,\n  \"hooks\": {}\n}\n"
+	if err := os.WriteFile(cfgPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conn := NewCursorConnector()
+	opts := SetupOpts{
+		DataDir:      filepath.Join(dir, "dc"),
+		APIAddr:      "127.0.0.1:18970",
+		APIToken:     "tok-test",
+		HookFailMode: "open",
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	for _, name := range conn.HookScriptNames(opts) {
+		if _, err := os.Stat(filepath.Join(opts.DataDir, "hooks", name)); err != nil {
+			t.Fatalf("runtime %s missing after setup: %v", name, err)
+		}
+	}
+
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	restored, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restored) != original {
+		t.Fatalf("Cursor config was not restored byte-for-byte:\n%s", restored)
+	}
+	for _, name := range []string{"cursor-hook.sh", "cursor-hook.ps1"} {
+		if _, err := os.Stat(filepath.Join(opts.DataDir, "hooks", name)); !os.IsNotExist(err) {
+			t.Fatalf("Cursor runtime %s remains after teardown: %v", name, err)
+		}
+	}
+}
+
+func TestCursorTeardownRefusesForeignRuntimeReplacement(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "hooks.json")
+	prev := CursorHooksPathOverride
+	CursorHooksPathOverride = cfgPath
+	t.Cleanup(func() { CursorHooksPathOverride = prev })
+
+	conn := NewCursorConnector()
+	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970"}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	foreign := filepath.Join(opts.DataDir, "hooks", "cursor-hook.sh")
+	if err := os.WriteFile(foreign, []byte("# operator-owned replacement\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := conn.Teardown(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "without DefenseClaw ownership marker") {
+		t.Fatalf("Teardown error = %v, want foreign-runtime refusal", err)
+	}
+	body, readErr := os.ReadFile(foreign)
+	if readErr != nil || string(body) != "# operator-owned replacement\n" {
+		t.Fatalf("foreign runtime was not preserved: body=%q err=%v", body, readErr)
 	}
 }
 

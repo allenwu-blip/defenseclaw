@@ -5316,6 +5316,16 @@ def _apply_hook_connector_setup(
     # but presenting that as guardrail.mode nudges users toward unsafe global
     # edits on multi-connector installs.
     click.echo(f"  ✓ {connector} mode={desired_mode}")
+    if connector == "cursor":
+        effective_fail_mode = gc.effective_hook_fail_mode("cursor") or "open"
+        click.echo(
+            f"  ✓ cursor hook failures={effective_fail_mode} "
+            f"(failClosed={str(effective_fail_mode == 'closed').lower()}; vendor default is fail-open)"
+        )
+        click.echo(
+            "  ℹ Cursor ask is enforced only for beforeShellExecution and beforeMCPExecution; "
+            "sessionStart/sessionEnd are fire-and-forget and stop is followup-only"
+        )
 
     if restart:
         click.echo()

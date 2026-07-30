@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 const ownedCodexOTLPFixture = `[otel.exporter.otlp-http]
@@ -127,6 +128,88 @@ func TestConnectorVerifyUsesExplicitConfigHomeWithoutMutation(t *testing.T) {
 	}
 	if got := os.Getenv("CODEX_HOME"); got != ambient {
 		t.Fatalf("CODEX_HOME after verify = %q, want restored ambient %q", got, ambient)
+	}
+}
+
+func TestCursorVerifyUsesExplicitConfigHomeWithoutVendorEnvironmentOverride(t *testing.T) {
+	root := t.TempDir()
+	dataDir := testenv.PrivateTempDir(t)
+	bound := filepath.Join(root, "cursor")
+	if err := os.MkdirAll(bound, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := filepath.Join(dataDir, "hooks", "cursor-hook.ps1")
+	config := []byte(`{"version":1,"hooks":{"preToolUse":[{"type":"command","command":"` +
+		`& '` + strings.ReplaceAll(adapter, `\`, `\\`) + `'` +
+		`","timeout":30,"failClosed":false}]}}`)
+	configPath := filepath.Join(bound, "hooks.json")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defer withConnectorState(t, dataDir, "cursor")()
+
+	stdout, stderr, exitCode := runConnectorCmd(
+		t,
+		"verify",
+		"--connector", "cursor",
+		"--data-dir", dataDir,
+		"--config-home", bound,
+		"--json",
+	)
+	if exitCode != 1 || stderr != "" ||
+		!strings.Contains(stdout, `"clean":false`) ||
+		!strings.Contains(stdout, "cursor-hook") {
+		t.Fatalf("Cursor explicit-home verify: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(gotConfig, config) {
+		t.Fatal("Cursor explicit-home verification mutated hooks.json")
+	}
+	if _, exists := os.LookupEnv("CURSOR_HOME"); exists {
+		t.Fatal("Cursor maintenance invented a vendor CURSOR_HOME environment override")
+	}
+}
+
+func TestCursorReconcileWritesOnlyExplicitConfigHome(t *testing.T) {
+	root := t.TempDir()
+	dataDir := testenv.PrivateTempDir(t)
+	bound := filepath.Join(root, "cursor")
+	for _, path := range []string{bound} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := validateConnectorLifecycleConfigHomePath(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	defer withConnectorState(t, dataDir, "cursor")()
+	if _, err := connector.EnsureHookAPIToken(dataDir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, _ := runConnectorCmd(
+		t,
+		"reconcile",
+		"--connector", "cursor",
+		"--data-dir", dataDir,
+		"--config-home", bound,
+		"--json",
+	)
+	if !strings.Contains(stdout, `"connector":"cursor"`) ||
+		(stderr != "" && !strings.Contains(stderr, "preview on windows")) {
+		t.Fatalf("Cursor reconcile: stdout=%q stderr=%q", stdout, stderr)
+	}
+	hooksPath := filepath.Join(bound, "hooks.json")
+	hooks, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(hooks, []byte(`"failClosed": false`)) ||
+		!bytes.Contains(hooks, []byte(`"preToolUse"`)) {
+		t.Fatalf("Cursor reconcile wrote an incomplete registration: %s", hooks)
 	}
 }
 

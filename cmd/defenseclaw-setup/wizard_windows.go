@@ -217,6 +217,7 @@ var (
 			Label: "Gemini CLI (enterprise/Cloud/paid key; certification pending)",
 			Value: "geminicli",
 		},
+		{Label: "Cursor Agent", Value: "cursor"},
 	}
 	wizardModeChoices = []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -739,8 +740,12 @@ func wizardCompletionDescription(connector string) string {
 		return "Claude Code is configured and its native Windows hooks are ready." + installed
 	case "copilot":
 		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
+	case "geminicli":
+		return "Gemini CLI is configured for its continuing enterprise, Google Cloud, or paid API-key audience; native Windows certification remains pending." + installed
+	case "cursor":
+		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
 	default:
-		return "Open a terminal and run defenseclaw init when you are ready to configure Codex, Claude Code, GitHub Copilot CLI, or another connector." + installed
+		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
 	}
 }
 

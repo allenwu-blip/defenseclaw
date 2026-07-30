@@ -1,6 +1,6 @@
 ---
 title: Connectors and enforcement
-description: Exact certified Windows Codex and Claude Code coverage plus the staged, not-certified Gemini CLI enterprise adapter boundary.
+description: Exact certified Windows reference coverage plus staged, not-certified Gemini CLI and Cursor native hook boundaries.
 keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
@@ -11,15 +11,15 @@ keywords:
 ---
 
 Native Windows enforcement is connector-native and hook-only. A supported
-agent invokes `defenseclaw-hook.exe`, the hook authenticates to the same-user
-loopback gateway, and the gateway maps a policy verdict back into that event's
-documented response shape.
+agent—or preview Cursor Agent—invokes the managed native hook path, the hook
+authenticates to the same-user loopback gateway, and the gateway maps a policy
+verdict back into that event's documented response shape.
 
 <Callout type="warning" title="Coverage stops at the agent surface">
-DefenseClaw does not proxy Codex or Claude Code model traffic on Windows. A
-prompt, tool, subprocess, file change, or response that the agent does not emit
-through a registered hook or native telemetry surface is not silently
-intercepted by DefenseClaw.
+DefenseClaw does not proxy Codex, Claude Code, or Cursor model traffic on
+Windows. A prompt, tool, subprocess, file change, or response that the agent
+does not emit through a registered hook or native telemetry surface is not
+silently intercepted by DefenseClaw.
 </Callout>
 
 <Callout type="warning" title="Gemini CLI is staged, not certified">
@@ -46,6 +46,7 @@ Start with observe:
 ```powershell
 defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
+defenseclaw setup cursor --mode observe
 ```
 
 After reviewing the event inventory and policy, promote one connector at a
@@ -54,6 +55,7 @@ time:
 ```powershell
 defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
+defenseclaw setup cursor --mode action
 defenseclaw guardrail status
 ```
 
@@ -163,11 +165,37 @@ Research sources:
 [hooks](https://geminicli.com/docs/hooks/reference/), and
 [product transition](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/).
 
+## Cursor preview
+
+DefenseClaw manages its entries in `%USERPROFILE%\.cursor\hooks.json`. On
+Windows, Cursor invokes the managed `cursor-hook.ps1` adapter, which preserves
+the JSON pipeline input and waits for `defenseclaw-hook.exe` to return its
+documented synchronous verdict. Cursor spawns each command hook and
+automatically reloads `hooks.json`; if a configuration change is not observed,
+the documented fallback is to restart Cursor.
+
+The preview registers 21 events. Its block-capable events are `preToolUse`,
+`beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`,
+`beforeTabFileRead`, and `beforeSubmitPrompt`. Native ask is enforceable only
+for `beforeShellExecution` and `beforeMCPExecution`; although the
+`preToolUse` schema accepts `ask`, Cursor does not enforce it there.
+`sessionStart` and `sessionEnd` are fire-and-forget. `stop` accepts only a
+follow-up message. None of those three lifecycle surfaces is a synchronous
+enforcement gate.
+
+Cursor command hooks fail open by vendor default, so observe/default setup
+writes `failClosed: false`. An explicit closed failure policy writes
+`failClosed: true`; Cursor then treats hook crashes, timeouts, invalid JSON,
+and exit code `2` as a deny path. This is a connector-specific exception to the
+fresh-install default described below. Cursor remains preview-only until its
+packaged Setup and official-client Windows validation passes.
+
 ## Fail behavior
 
-A fresh installation defaults to `closed`; a migrated older configuration may
-retain an explicit `open` posture. The effective connector setting applies to
-both:
+A fresh Codex or Claude Code installation defaults to `closed`; a migrated
+older configuration may retain an explicit `open` posture. Cursor instead
+retains its documented fail-open default unless closed is selected explicitly.
+The effective connector setting applies to:
 
 - transport failures such as missing authentication, connection refusal,
   timeout, or gateway 5xx; and
@@ -183,6 +211,7 @@ normal control:
 defenseclaw guardrail fail-mode
 defenseclaw guardrail fail-mode closed --connector codex --yes
 defenseclaw guardrail fail-mode closed --connector claudecode --yes
+defenseclaw guardrail fail-mode closed --connector cursor --yes
 defenseclaw guardrail status
 ```
 
@@ -201,7 +230,7 @@ See [Fail modes](/docs/reference/fail-modes) for the cross-platform reference.
 
 ## Enable, disable, and remove
 
-Connector-scoped controls preserve the other active peer:
+Connector-scoped controls preserve the other active peers:
 
 ```powershell
 defenseclaw guardrail disable --connector codex --yes
@@ -255,8 +284,9 @@ defenseclaw doctor
 Use `defenseclaw-gateway connector verify --connector <name>` only after
 teardown or removal: it verifies that DefenseClaw-owned connector state is
 absent. On an active connector, that state is expected, so use `doctor` and
-`guardrail status` instead. After setup or mode changes, fully restart the
-agent so it reloads its native hook configuration.
+`guardrail status` instead. After setup or mode changes, confirm the agent
+loaded its native hook configuration. Cursor documents automatic `hooks.json`
+reload with restart as the fallback if a change is not loaded.
 
 Protection is established only when all of the following agree:
 
@@ -267,5 +297,6 @@ Protection is established only when all of the following agree:
 5. a new non-sensitive prompt produces connector-attributed local activity.
 
 For configuration details, see [Codex](/docs/connectors/codex),
-[Claude Code](/docs/connectors/claudecode), and
+[Claude Code](/docs/connectors/claudecode),
+[Cursor](/docs/connectors/cursor), and
 [multi-connector setup](/docs/setup/guardrail/multi-connector).

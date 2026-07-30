@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -46,7 +46,8 @@ function Get-RedactionValues {
         'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
         'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN', 'LLM_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN',
-        'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN', 'DC_E2E_TEST_SECRET'
+        'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN', 'DC_E2E_TEST_SECRET',
+        'CURSOR_API_KEY'
     )
     return @($names | ForEach-Object { [Environment]::GetEnvironmentVariable($_) } |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_.Length -ge 8 } |
@@ -2321,8 +2322,11 @@ function New-WizardAgentFixtures([string]$Root) {
     $claudeBin = Join-Path $userProfile '.local\bin'
     $codexPath = Join-Path $codexBin 'codex.exe'
     $claudePath = Join-Path $claudeBin 'claude.exe'
-    if (Test-Path -LiteralPath $claudePath) {
-        throw "refusing to replace an existing Claude executable fixture target: $claudePath"
+    $cursorPath = Join-Path $claudeBin 'agent.exe'
+    foreach ($existing in @($claudePath, $cursorPath)) {
+        if (Test-Path -LiteralPath $existing) {
+            throw "refusing to replace an existing connector executable fixture target: $existing"
+        }
     }
     try {
         foreach ($path in @($codexTrustedRoot, $codexBin, $claudeBin)) {
@@ -2373,6 +2377,19 @@ public static class ClaudeVersionFixture {
     }
 }
 "@
+        },
+        [pscustomobject]@{
+            Path = $cursorPath
+            ClassName = 'CursorAgentVersionFixture'
+            Source = @"
+using System;
+public static class CursorAgentVersionFixture {
+    public static int Main(string[] arguments) {
+        Console.WriteLine("cursor-agent 3.13.0");
+        return 0;
+    }
+}
+"@
         }
         )
         foreach ($fixture in $fixtures) {
@@ -2397,6 +2414,10 @@ public static class ClaudeVersionFixture {
         if ($claudeVersion.StdOut.Trim() -ne 'claude 2.1.152') {
             throw "Claude fixture returned an unexpected version: $($claudeVersion.StdOut)"
         }
+        $cursorVersion = Invoke-WindowsNativeProcess $cursorPath @('--version') -TimeoutSeconds 30
+        if ($cursorVersion.StdOut.Trim() -ne 'cursor-agent 3.13.0') {
+            throw "Cursor Agent fixture returned an unexpected version: $($cursorVersion.StdOut)"
+        }
         Assert-WizardCodexPolicyFixture $codexPath
         return [pscustomobject]@{
             CodexBin = $codexBin
@@ -2407,10 +2428,11 @@ public static class ClaudeVersionFixture {
             SearchPath = $claudeBin
             CodexPath = $codexPath
             ClaudePath = $claudePath
+            CursorPath = $cursorPath
             CodexTrustedRoot = $codexTrustedRoot
         }
     } catch {
-        foreach ($path in @($codexPath, $claudePath)) {
+        foreach ($path in @($codexPath, $claudePath, $cursorPath)) {
             Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $codexBin -PathType Container) {
@@ -2489,7 +2511,8 @@ function Remove-WizardAgentFixtures([AllowNull()][object]$Fixtures) {
     if ($null -eq $Fixtures) { return }
     $owned = @(
         [pscustomobject]@{ Path = [string]$Fixtures.CodexPath; Root = [string]$Fixtures.CodexTrustedRoot; Name = 'codex.exe' },
-        [pscustomobject]@{ Path = [string]$Fixtures.ClaudePath; Root = [string]$Fixtures.ClaudeBin; Name = 'claude.exe' }
+        [pscustomobject]@{ Path = [string]$Fixtures.ClaudePath; Root = [string]$Fixtures.ClaudeBin; Name = 'claude.exe' },
+        [pscustomobject]@{ Path = [string]$Fixtures.CursorPath; Root = [string]$Fixtures.ClaudeBin; Name = 'agent.exe' }
     )
     foreach ($entry in $owned) {
         $path = [IO.Path]::GetFullPath($entry.Path)
@@ -2526,46 +2549,86 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
     if ($ConnectorName -eq 'codex') {
         return [pscustomobject]@{
             Connector = 'codex'
-            OtherConnectors = @('claudecode', 'copilot')
+            OtherConnectors = @('claudecode', 'copilot', 'geminicli', 'cursor')
             HookScript = 'codex-hook.sh'
-            OtherHookScripts = @('claude-code-hook.sh', 'copilot-hook.sh')
+            OtherHookScripts = @('claude-code-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.codex\managed_config.toml'
             OtherConfigPaths = @(
                 (Join-Path $UserProfile '.claude\settings.json'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json')
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
+                (Join-Path $UserProfile '.gemini\settings.json'),
+                (Join-Path $UserProfile '.cursor\hooks.json')
             )
             DoctorLabel = 'Codex hooks'
-            OtherDoctorLabels = @('Claude Code hooks', 'Copilot hooks')
+            OtherDoctorLabels = @('Claude Code hooks', 'Copilot hooks', 'Gemini CLI hooks', 'Cursor hooks')
         }
     }
     if ($ConnectorName -eq 'claudecode') {
         return [pscustomobject]@{
             Connector = 'claudecode'
-            OtherConnectors = @('codex', 'copilot')
+            OtherConnectors = @('codex', 'copilot', 'geminicli', 'cursor')
             HookScript = 'claude-code-hook.sh'
-            OtherHookScripts = @('codex-hook.sh', 'copilot-hook.sh')
+            OtherHookScripts = @('codex-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.claude\settings.json'
             OtherConfigPaths = @(
                 (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json')
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
+                (Join-Path $UserProfile '.gemini\settings.json'),
+                (Join-Path $UserProfile '.cursor\hooks.json')
             )
             DoctorLabel = 'Claude Code hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Copilot hooks')
+            OtherDoctorLabels = @('Codex hooks', 'Copilot hooks', 'Gemini CLI hooks', 'Cursor hooks')
         }
     }
     if ($ConnectorName -eq 'copilot') {
         return [pscustomobject]@{
             Connector = 'copilot'
-            OtherConnectors = @('codex', 'claudecode')
+            OtherConnectors = @('codex', 'claudecode', 'geminicli', 'cursor')
             HookScript = 'copilot-hook.sh'
-            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh')
+            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'
             OtherConfigPaths = @(
                 (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.claude\settings.json')
+                (Join-Path $UserProfile '.claude\settings.json'),
+                (Join-Path $UserProfile '.gemini\settings.json'),
+                (Join-Path $UserProfile '.cursor\hooks.json')
             )
             DoctorLabel = 'Copilot hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks')
+            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Gemini CLI hooks', 'Cursor hooks')
+        }
+    }
+    if ($ConnectorName -eq 'geminicli') {
+        return [pscustomobject]@{
+            Connector = 'geminicli'
+            OtherConnectors = @('codex', 'claudecode', 'copilot', 'cursor')
+            HookScript = 'geminicli-hook.sh'
+            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'copilot-hook.sh', 'cursor-hook.ps1')
+            ConfigPath = Join-Path $UserProfile '.gemini\settings.json'
+            OtherConfigPaths = @(
+                (Join-Path $UserProfile '.codex\managed_config.toml'),
+                (Join-Path $UserProfile '.claude\settings.json'),
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
+                (Join-Path $UserProfile '.cursor\hooks.json')
+            )
+            DoctorLabel = 'Gemini CLI hooks'
+            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Copilot hooks', 'Cursor hooks')
+        }
+    }
+    if ($ConnectorName -eq 'cursor') {
+        return [pscustomobject]@{
+            Connector = 'cursor'
+            OtherConnectors = @('codex', 'claudecode', 'copilot', 'geminicli')
+            HookScript = 'cursor-hook.ps1'
+            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh')
+            ConfigPath = Join-Path $UserProfile '.cursor\hooks.json'
+            OtherConfigPaths = @(
+                (Join-Path $UserProfile '.codex\managed_config.toml'),
+                (Join-Path $UserProfile '.claude\settings.json'),
+                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
+                (Join-Path $UserProfile '.gemini\settings.json')
+            )
+            DoctorLabel = 'Cursor hooks'
+            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Copilot hooks', 'Gemini CLI hooks')
         }
     }
     throw "unsupported wizard connector specification: $ConnectorName"
@@ -2607,6 +2670,11 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
         'geminicli' {
             @('connector_backups\geminicli\config.json')
         }
+        'cursor' {
+            @(
+                'connector_backups\cursor\hooks.json.json'
+            )
+        }
         default { throw "unsupported native connector backup marker: $Connector" }
     }
     return @($relativePaths | Where-Object {
@@ -2620,7 +2688,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli')) {
+        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
@@ -2633,6 +2701,10 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
     if ($configured.Contains('geminicli') -or
         @(Get-NativeConnectorBackupMarkers $DataRoot 'geminicli').Count -ne 0) {
         $required += 'geminicli'
+    }
+    if ($configured.Contains('cursor') -or
+        @(Get-NativeConnectorBackupMarkers $DataRoot 'cursor').Count -ne 0) {
+        $required += 'cursor'
     }
     foreach ($connector in $required) {
         # Setup intentionally classifies uninstall work from the configured
@@ -2648,7 +2720,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli')) {
+    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -2932,7 +3004,8 @@ function Assert-NoGatewayAutoStart {
 
 function Assert-WizardHookRegistration(
     [object]$Specification,
-    [string]$DataRoot
+    [string]$DataRoot,
+    [ValidateSet('observe', 'action')][string]$Mode
 ) {
     $hookDir = Join-Path $DataRoot 'hooks'
     $expectedHook = Join-Path $hookDir $Specification.HookScript
@@ -3026,6 +3099,61 @@ function Assert-WizardHookRegistration(
                 [StringComparison]::OrdinalIgnoreCase
             )) {
                 throw "wizard-selected Copilot $eventName hook targets an unexpected runtime"
+            }
+        }
+    } elseif ($Specification.Connector -eq 'cursor') {
+        try { $hooksDocument = $registration | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "wizard-selected Cursor registration is not valid JSON: $($_.Exception.Message)" }
+        if ([int]$hooksDocument.version -ne 1 -or $null -eq $hooksDocument.hooks) {
+            throw 'wizard-selected Cursor registration does not use hooks schema version 1'
+        }
+        $expectedEvents = @(
+            'sessionStart', 'sessionEnd', 'preToolUse', 'postToolUse', 'postToolUseFailure',
+            'subagentStart', 'subagentStop', 'beforeShellExecution', 'beforeMCPExecution',
+            'afterShellExecution', 'afterMCPExecution', 'beforeReadFile', 'beforeTabFileRead',
+            'afterFileEdit', 'afterTabFileEdit', 'beforeSubmitPrompt', 'afterAgentResponse',
+            'afterAgentThought', 'stop', 'preCompact', 'workspaceOpen'
+        )
+        $expectedFailClosed = $Mode -eq 'action'
+        foreach ($eventName in $expectedEvents) {
+            $eventProperty = $hooksDocument.hooks.PSObject.Properties[$eventName]
+            if ($null -eq $eventProperty) {
+                throw "wizard-selected Cursor registration is missing $eventName"
+            }
+            $managedEntries = @($eventProperty.Value | Where-Object {
+                [string]$_.command -match '(?i)cursor-hook\.ps1'
+            })
+            if ($managedEntries.Count -ne 1) {
+                throw "wizard-selected Cursor registration has $($managedEntries.Count) managed $eventName entries"
+            }
+            $entry = $managedEntries[0]
+            if ([string]$entry.type -cne 'command' -or [int]$entry.timeout -ne 30 -or
+                [bool]$entry.failClosed -ne $expectedFailClosed) {
+                throw "wizard-selected Cursor $eventName entry has the wrong type, timeout, or failClosed value"
+            }
+            $commandMatch = [regex]::Match(
+                [string]$entry.command,
+                "^\s*&\s+'(?<path>(?:''|[^'])+)'\s*$"
+            )
+            if (-not $commandMatch.Success) {
+                throw "wizard-selected Cursor $eventName entry is not an exact PowerShell adapter invocation"
+            }
+            $adapterPath = $commandMatch.Groups['path'].Value.Replace("''", "'")
+            if (-not [IO.Path]::GetFullPath($adapterPath).Equals(
+                [IO.Path]::GetFullPath($expectedHook),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                throw "wizard-selected Cursor $eventName entry names an unexpected adapter"
+            }
+        }
+        $adapter = [IO.File]::ReadAllText($expectedHook)
+        $expectedAdapterMode = if ($expectedFailClosed) { '$failClosed = $true' } else { '$failClosed = $false' }
+        foreach ($marker in @(
+            'defenseclaw-managed-hook v8', 'defenseclaw-hook.exe', '--input-file',
+            'ProcessStartInfo', 'RedirectStandardOutput', 'WaitForExit', $expectedAdapterMode
+        )) {
+            if ($adapter.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+                throw "wizard-selected Cursor adapter is missing required marker $marker"
             }
         }
     } else {
@@ -3141,13 +3269,22 @@ function Assert-WizardConnectorHealth(
     $hookRows = @($doctor.checks | Where-Object {
         [string]::Equals([string]$_.label, $Specification.DoctorLabel, [StringComparison]::Ordinal)
     })
+    $detailPattern = if ($Specification.Connector -eq 'cursor') {
+        'configured runtime=.*cursor-hook\.ps1.*failClosed='
+    } else {
+        'healthy Windows-native executable registration'
+    }
     if ($hookRows.Count -ne 1 -or [string]$hookRows[0].status -ne 'pass' -or
-        [string]$hookRows[0].detail -notmatch 'healthy Windows-native executable registration') {
+        [string]$hookRows[0].detail -notmatch $detailPattern) {
         throw "wizard doctor did not validate the selected native hook: $($hookRows | ConvertTo-Json -Compress -Depth 5)"
     }
-    $expectedHookExecutable = Get-StableHookRuntimeExecutable
+    $expectedHookRuntime = if ($Specification.Connector -eq 'cursor') {
+        Join-Path ([Environment]::GetEnvironmentVariable('DEFENSECLAW_HOME')) 'hooks\cursor-hook.ps1'
+    } else {
+        Get-StableHookRuntimeExecutable
+    }
     if (([string]$hookRows[0].detail).IndexOf(
-        $expectedHookExecutable,
+        $expectedHookRuntime,
         [StringComparison]::OrdinalIgnoreCase
     ) -lt 0) {
         throw "wizard doctor validated an unexpected hook executable: $($hookRows[0].detail)"
@@ -3273,7 +3410,7 @@ function Invoke-WizardConnectorAcceptance(
     $beforeState = Get-PackagedConnectorState $python `
         (Join-Path $Logs "wizard-$ConnectorName-before-state.log")
     Assert-WizardConnectorState $beforeState $ConnectorName $Mode
-    Assert-WizardHookRegistration $specification $DataRoot
+    Assert-WizardHookRegistration $specification $DataRoot $Mode
 
     Invoke-Installed $gateway @('status') -Timeout 30 `
         -Log (Join-Path $Logs "wizard-$ConnectorName-gateway-status.log") | Out-Null
@@ -3310,7 +3447,7 @@ function Invoke-WizardConnectorAcceptance(
     }
     Assert-SetupInstallState $InstallRoot $ConnectorName $Mode
     Assert-GatewayAutoStart $gateway
-    Assert-WizardHookRegistration $specification $DataRoot
+    Assert-WizardHookRegistration $specification $DataRoot $Mode
     Assert-WizardConnectorHealth $launcher $specification $Mode $Logs 'after-repair'
     if (-not (Test-Path -LiteralPath $preserved -PathType Leaf)) {
         throw "setup repair did not preserve $ConnectorName user data"
@@ -3395,7 +3532,8 @@ function Invoke-SetupAcceptance {
         (Join-Path $userProfile '.codex\managed_config.toml'),
         (Join-Path $userProfile '.claude\settings.json'),
         (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
-        (Join-Path $userProfile '.gemini\settings.json')
+        (Join-Path $userProfile '.gemini\settings.json'),
+        (Join-Path $userProfile '.cursor\hooks.json')
     )
     if (Test-Path -LiteralPath $installRoot) { throw "refusing to overwrite an existing current-user install: $installRoot" }
     if (Test-Path -LiteralPath $dataRoot) { throw "refusing to overwrite existing current-user data: $dataRoot" }
@@ -3457,6 +3595,12 @@ function Invoke-SetupAcceptance {
             Invoke-WizardConnectorAcceptance `
                 $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                 $fixtureSearchPath $userPathBefore 'copilot' 'observe'
+            Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
+            $env:PATH = "$fixtureSearchPath;$processPathBefore"
+
+            Invoke-WizardConnectorAcceptance `
+                $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
+                $fixtureSearchPath $userPathBefore 'cursor' 'observe'
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = $processPathBefore
         }
@@ -3536,12 +3680,15 @@ function Invoke-SetupAcceptance {
             '--profile', 'observe', '--no-start-gateway', '--no-verify'
         ) -Timeout 300 -Log (Join-Path $logs 'setup-init-codex.log') | Out-Null
         # ``init`` is intentionally a first-run/replacement workflow. Add a
-        # second hook connector through the documented additive setup path so
+        # the remaining hook connectors through the documented additive setup path so
         # the acceptance test verifies roster preservation instead of asking a
         # second first-run invocation to retain stale peers.
         Invoke-Installed $launcher @(
             'setup', 'claude-code', '--yes', '--no-restart'
         ) -Timeout 300 -Log (Join-Path $logs 'setup-add-claudecode.log') | Out-Null
+        Invoke-Installed $launcher @(
+            'setup', 'cursor', '--yes', '--no-restart'
+        ) -Timeout 300 -Log (Join-Path $logs 'setup-add-cursor.log') | Out-Null
 
         # Windows searches the working directory before PATH for a bare
         # executable name. Prove the packaged Python CLI always restarts the
@@ -3579,7 +3726,7 @@ function Invoke-SetupAcceptance {
         }
         $rosterLine = $rosterLines[0]
         $roster = @($rosterLine.Substring('DC_ROSTER='.Length) | ConvertFrom-Json)
-        foreach ($expectedConnector in @('codex', 'claudecode')) {
+        foreach ($expectedConnector in @('codex', 'claudecode', 'cursor')) {
             if ($expectedConnector -notin $roster) {
                 throw "packaged connector setup collapsed the existing roster; missing $expectedConnector"
             }
@@ -3618,6 +3765,7 @@ guardrail:
   connectors:
     codex: {}
     claudecode: {}
+    cursor: {}
 gateway:
   fleet_mode: disabled
   watcher:
@@ -3683,7 +3831,7 @@ otlp = next(
 assert (otlp.get("tls") or {}).get("insecure") is True
 assert (otlp.get("network_safety") or {}).get("allow_private_networks") is True
 assert (document.get("guardrail") or {}).get("retain_judge_bodies") is True
-assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"codex", "claudecode"}
+assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"codex", "claudecode", "cursor"}
 '@
         Invoke-Installed $python @('-I', '-c', $assertMigratedConfig, $configPath) -Timeout 120 `
             -Log (Join-Path $logs 'setup-seeded-v8-contract.log') | Out-Null
@@ -4006,7 +4154,7 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
             catch { Write-Warning "setup acceptance watchdog cleanup failed: $($_.Exception.Message)" }
             try { Invoke-Installed $gateway @('stop') @(0, 1) 60 | Out-Null }
             catch { Write-Warning "setup acceptance gateway cleanup failed: $($_.Exception.Message)" }
-            foreach ($configuredConnector in @('codex', 'claudecode')) {
+            foreach ($configuredConnector in @('codex', 'claudecode', 'cursor')) {
                 try {
                     Invoke-Installed $gateway @('connector', 'teardown', '--connector', $configuredConnector) `
                         @(0, 1) 120 | Out-Null
@@ -5282,10 +5430,12 @@ function Invoke-Contract {
     $contractHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'home')).TrimEnd('\')
     $codexHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'codex-home')).TrimEnd('\')
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
-    $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome)
+    $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'cursor-home')).TrimEnd('\')
+    $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome, $cursorHome)
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
     $defaultGeminiHome = Join-Path $contractHome '.gemini'
+    $defaultCursorHome = Join-Path $contractHome '.cursor'
     try {
         foreach ($path in @(
             $contractHome,
@@ -5293,7 +5443,8 @@ function Invoke-Contract {
             (Join-Path $contractHome 'AppData\Local'),
             (Join-Path $contractRoot 'temp'),
             $codexHome,
-            $claudeHome
+            $claudeHome,
+            $cursorHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
             Protect-TestDirectory $path
@@ -5302,10 +5453,12 @@ function Invoke-Contract {
         # launcher intentionally rejects later ambient overrides.
         $env:CODEX_HOME = $codexHome
         $env:CLAUDE_CONFIG_DIR = $claudeHome
+        $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
             'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
-            'AWS_SESSION_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'LLM_API_KEY'
+            'AWS_SESSION_TOKEN', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'LLM_API_KEY',
+            'CURSOR_API_KEY'
         )) {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
         }
@@ -5334,7 +5487,8 @@ function Invoke-Contract {
 
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
-            (Test-Path -LiteralPath $defaultGeminiHome)) {
+            (Test-Path -LiteralPath $defaultGeminiHome) -or
+            (Test-Path -LiteralPath $defaultCursorHome)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
 
@@ -5356,18 +5510,35 @@ function Invoke-Contract {
             -AllowNativeDataRoot -ResultsPath (Join-Path $root 'results.jsonl') `
             -ArtifactPath (Join-Path $root 'contract-diagnostics')
 
-        foreach ($defaultHome in @($defaultCodexHome, $defaultClaudeHome, $defaultGeminiHome)) {
+        foreach ($defaultHome in @($defaultCodexHome, $defaultClaudeHome, $defaultGeminiHome, $defaultCursorHome)) {
             if (Test-Path -LiteralPath $defaultHome) {
                 throw "connector contract wrote to the default agent home: $defaultHome"
             }
         }
         $unrelatedConfigs = switch ($Connector) {
-            'codex' { @(Join-Path $claudeHome 'settings.json') }
-            'claudecode' { @(Join-Path $codexHome 'config.toml') }
-            default {
+            'codex' {
+                @(
+                    (Join-Path $claudeHome 'settings.json'),
+                    (Join-Path $cursorHome 'hooks.json')
+                )
+            }
+            'claudecode' {
+                @(
+                    (Join-Path $codexHome 'config.toml'),
+                    (Join-Path $cursorHome 'hooks.json')
+                )
+            }
+            'cursor' {
                 @(
                     (Join-Path $codexHome 'config.toml'),
                     (Join-Path $claudeHome 'settings.json')
+                )
+            }
+            default {
+                @(
+                    (Join-Path $codexHome 'config.toml'),
+                    (Join-Path $claudeHome 'settings.json'),
+                    (Join-Path $cursorHome 'hooks.json')
                 )
             }
         }

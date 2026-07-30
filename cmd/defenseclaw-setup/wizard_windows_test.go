@@ -372,6 +372,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 			Label: "Gemini CLI (enterprise/Cloud/paid key; certification pending)",
 			Value: "geminicli",
 		},
+		{Label: "Cursor Agent", Value: "cursor"},
 	}
 	modes := []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -414,7 +415,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli"} {
+	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli", "cursor"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode

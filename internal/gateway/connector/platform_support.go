@@ -61,8 +61,8 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 		Reason: "Claude Code and the DefenseClaw native executable hook entrypoint are certified on native Windows x64.",
 	},
 	"cursor": {
-		Status: PlatformNotCertified,
-		Reason: "The DefenseClaw Cursor integration has not completed native Windows x64 certification.",
+		Status: PlatformPreview,
+		Reason: "Cursor Agent and the DefenseClaw PowerShell hook adapter are available as a native Windows x64 preview pending integrated packaged and official-client validation.",
 	},
 	"windsurf": {
 		Status: PlatformNotCertified,

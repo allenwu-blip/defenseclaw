@@ -2627,12 +2627,6 @@ func TestEveryHookOwner_TeardownLeavesTombstone(t *testing.T) {
 			setup:      hookOnlySetup(".yaml", NewHermesConnector, &HermesConfigPathOverride),
 		},
 		{
-			name:       "cursor",
-			hookScript: "cursor-hook.sh",
-			hookAPI:    "/api/v1/cursor/hook",
-			setup:      hookOnlySetup(".json", NewCursorConnector, &CursorHooksPathOverride),
-		},
-		{
 			name:       "windsurf",
 			hookScript: "windsurf-hook.sh",
 			hookAPI:    "/api/v1/windsurf/hook",
@@ -9094,7 +9088,8 @@ func TestHookScript_FailOpen_Override(t *testing.T) {
 //
 // Contract:
 //   - Explicit "closed" stays closed when the connector supports it.
-//   - Empty / invalid HookFailMode normalizes to "closed".
+//   - Empty HookFailMode uses the connector default (Cursor open; otherwise
+//     closed), while invalid explicit values normalize to "closed".
 func TestSetupOpts_HookFailMode_RespectsOperatorChoice(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell scripts not supported on windows")
@@ -9134,6 +9129,13 @@ func TestSetupOpts_HookFailMode_RespectsOperatorChoice(t *testing.T) {
 			connector:    &CodexConnector{},
 			hookFile:     "codex-hook.sh",
 			wantFailMode: "closed",
+		},
+		{
+			name:         "cursor_empty_opts_match_vendor_fail_open_default",
+			opts:         SetupOpts{APIAddr: "127.0.0.1:1"},
+			connector:    NewCursorConnector(),
+			hookFile:     "cursor-hook.sh",
+			wantFailMode: "open",
 		},
 		{
 			// The safer default is "closed": empty

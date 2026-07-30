@@ -180,6 +180,18 @@ func TestParseArgsSilentInstallProperties(t *testing.T) {
 	}
 }
 
+func TestParseArgsNormalizesCursorAgentAliases(t *testing.T) {
+	for _, alias := range []string{"cursor", "cursor-agent", "cursoragent"} {
+		opts, err := parseArgs([]string{"/quiet", "CONNECTOR=" + alias})
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", alias, err)
+		}
+		if opts.Connector != "cursor" || !opts.ConnectorSet {
+			t.Fatalf("parseArgs(%q) connector = %q, set=%t", alias, opts.Connector, opts.ConnectorSet)
+		}
+	}
+}
+
 func TestParseArgsVerifyAction(t *testing.T) {
 	opts, err := parseArgs([]string{"/verify"})
 	if err != nil {
@@ -222,7 +234,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli"} {
+	for _, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli", "cursor"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -297,7 +309,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"codex", "claudecode", "copilot", "geminicli"} {
+	for _, connectorName := range []string{"codex", "claudecode", "copilot", "geminicli", "cursor"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -537,7 +549,7 @@ func TestConnectorsForNativeUninstallUsesDurableBackups(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"codex", "claudecode"}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
 }
@@ -549,6 +561,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 		filepath.Join("connector_backups", "claudecode", "settings.json.json"),
 		filepath.Join("connector_backups", "copilot", "config.json"),
 		filepath.Join("connector_backups", "geminicli", "config.json"),
+		filepath.Join("connector_backups", "cursor", "hooks.json.json"),
 	}
 	for _, marker := range markers {
 		path := filepath.Join(dataRoot, marker)
@@ -564,7 +577,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "copilot", "geminicli"}
+	want := []string{"codex", "claudecode", "copilot", "geminicli", "cursor"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -572,7 +585,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 
 func TestConnectorsForNativeUninstallUsesActiveConnectorRoster(t *testing.T) {
 	dataRoot := t.TempDir()
-	state := []byte(`{"version":3,"names":["claudecode","codex","copilot"],"name":"claudecode"}`)
+	state := []byte(`{"version":3,"names":["claudecode","codex","copilot","cursor"],"name":"claudecode"}`)
 	if err := os.WriteFile(filepath.Join(dataRoot, "active_connector.json"), state, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +594,7 @@ func TestConnectorsForNativeUninstallUsesActiveConnectorRoster(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claudecode", "codex", "copilot"}
+	want := []string{"claudecode", "codex", "copilot", "cursor"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -603,6 +616,8 @@ guardrail:
       mode: observe
     geminicli:
       mode: observe
+    cursor:
+      mode: observe
 gateway:
   token: private-synthetic-value-must-not-appear
 observability:
@@ -616,7 +631,7 @@ observability:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claudecode", "codex", "copilot", "geminicli"}
+	want := []string{"claudecode", "codex", "copilot", "cursor", "geminicli"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}

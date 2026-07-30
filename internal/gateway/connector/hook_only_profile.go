@@ -128,6 +128,19 @@ func cursorHookOutputForProfile(event, action, reason, additional string) map[st
 		}
 		return map[string]interface{}{"continue": true}
 	}
+	if event == "stop" {
+		// Cursor Stop hooks cannot veto termination. The only documented
+		// response is followup_message, which starts a follow-up turn rather
+		// than retroactively blocking the stop.
+		message := additional
+		if message == "" && action != "allow" {
+			message = reason
+		}
+		if message != "" {
+			return map[string]interface{}{"followup_message": message}
+		}
+		return map[string]interface{}{}
+	}
 	switch action {
 	case "block":
 		return map[string]interface{}{"continue": true, "permission": "deny", "user_message": reason, "agent_message": reason}
@@ -139,7 +152,7 @@ func cursorHookOutputForProfile(event, action, reason, additional string) map[st
 		}
 	}
 	switch event {
-	case "pretooluse", "beforeshellexecution", "beforemcpexecution", "beforereadfile", "beforetabfileread", "stop":
+	case "pretooluse", "beforeshellexecution", "beforemcpexecution", "beforereadfile", "beforetabfileread":
 		return map[string]interface{}{"continue": true, "permission": "allow"}
 	default:
 		return map[string]interface{}{"continue": true}

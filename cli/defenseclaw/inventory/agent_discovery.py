@@ -1790,15 +1790,22 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
     if not spec.binary_name:
         return ()
     candidates: list[str] = []
-    path = _which(spec.binary_name)
-    if path:
-        candidates.append(path)
+    # Cursor made ``agent`` its primary CLI entrypoint on 2026-01-08 while
+    # retaining ``cursor-agent`` as a compatibility alias. The desktop
+    # ``cursor`` launcher remains useful installation/version evidence. Probe
+    # the official primary name first, then both documented/installed aliases.
+    binary_names = ("agent", "cursor-agent", "cursor") if name == "cursor" else (spec.binary_name,)
+    for binary_name in binary_names:
+        path = _which(binary_name)
+        if path:
+            candidates.append(path)
     if not _is_windows_host():
         return tuple(candidates)
 
-    for candidate in _windows_binary_candidates(name, spec.binary_name):
-        if os.path.isfile(candidate):
-            candidates.append(os.path.abspath(candidate))
+    for binary_name in binary_names:
+        for candidate in _windows_binary_candidates(name, binary_name):
+            if os.path.isfile(candidate):
+                candidates.append(os.path.abspath(candidate))
 
     if name == "codex":
         for local_app_data in _windows_current_user_local_app_data_roots():

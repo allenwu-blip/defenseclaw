@@ -101,17 +101,21 @@ func retryPendingConnectorReconciliation(
 		}
 		seen[identity] = true
 		connectorName := strings.ToLower(failure.Connector)
-		codexHome, claudeHome, copilotHome, geminiHome := "", "", "", ""
+		codexHome, claudeHome, copilotHome, geminiHome, cursorHome := "", "", "", "", ""
 		if connectorName == "codex" {
 			codexHome = failure.ConfigHome
 		} else if connectorName == "claudecode" {
 			claudeHome = failure.ConfigHome
 		} else if connectorName == "copilot" {
 			copilotHome = failure.ConfigHome
-		} else {
+		} else if connectorName == "geminicli" {
 			geminiHome = failure.ConfigHome
+		} else {
+			cursorHome = failure.ConfigHome
 		}
-		env := transactionChildEnvForHomes(transaction, codexHome, claudeHome, copilotHome, geminiHome)
+		env := transactionChildEnvForConnectorHomes(
+			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome,
+		)
 		verify := func() error {
 			return run(gatewayPath, transaction.DataRoot, connectorName, "verify", env)
 		}
@@ -215,6 +219,8 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 			candidates = append(candidates, transaction.PreviousState.CopilotHome)
 		case "geminicli":
 			candidates = append(candidates, transaction.PreviousState.GeminiConfigDir)
+		case "cursor":
+			candidates = append(candidates, transaction.PreviousState.CursorHome)
 		}
 	}
 	candidates = append(candidates, connectorConfigHome(transaction, connectorName, false))
@@ -264,6 +270,8 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 	case "copilot":
 	case "geminicli":
 		logicalName = "config"
+	case "cursor":
+		logicalName = "hooks.json"
 	default:
 		return false
 	}
@@ -286,6 +294,8 @@ func connectorDefaultHomeBesideDataRoot(dataRoot, connectorName string) string {
 		directory = ".copilot"
 	case "geminicli":
 		directory = ".gemini"
+	case "cursor":
+		directory = ".cursor"
 	default:
 		return ""
 	}
@@ -297,6 +307,7 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 	claudeHome := transaction.PreviousClaudeConfigDir
 	copilotHome := transaction.PreviousCopilotHome
 	geminiHome := transaction.PreviousGeminiConfigDir
+	cursorHome := transaction.PreviousCursorHome
 	if connectorName == "codex" {
 		codexHome = configHome
 	} else if connectorName == "claudecode" {
@@ -305,8 +316,12 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		copilotHome = configHome
 	} else if connectorName == "geminicli" {
 		geminiHome = configHome
+	} else if connectorName == "cursor" {
+		cursorHome = configHome
 	}
-	return transactionChildEnvForHomes(transaction, codexHome, claudeHome, copilotHome, geminiHome)
+	return transactionChildEnvForConnectorHomes(
+		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome,
+	)
 }
 
 func reconcilePreservedConnectors(
@@ -487,7 +502,8 @@ func validateConnectorReconciliationState(state *connectorReconciliationState) e
 
 func validateConnectorReconciliationIdentity(connectorName, configHome string) error {
 	if connectorName != "codex" && connectorName != "claudecode" &&
-		connectorName != "copilot" && connectorName != "geminicli" {
+		connectorName != "copilot" && connectorName != "geminicli" &&
+		connectorName != "cursor" {
 		return fmt.Errorf("invalid connector reconciliation target %q", connectorName)
 	}
 	if configHome == "" || !filepath.IsAbs(configHome) || filepath.Clean(configHome) != configHome {
@@ -560,6 +576,11 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousGeminiConfigDir
 		}
 		return transaction.GeminiConfigDir
+	case "cursor":
+		if previous {
+			return transaction.PreviousCursorHome
+		}
+		return transaction.CursorHome
 	default:
 		return ""
 	}

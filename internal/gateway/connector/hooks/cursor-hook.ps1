@@ -1,7 +1,7 @@
 # defenseclaw-managed-hook v8
-# Cursor 3.9.x on Windows delivers command-hook JSON as PowerShell pipeline
-# objects. Native executables receive only encoding preambles on that path, so
-# this adapter materializes the exact JSON bytes for the consoleless launcher.
+# Cursor on Windows delivers command-hook input through the PowerShell object
+# pipeline. This adapter materializes exact UTF-8 JSON bytes for the
+# consoleless native launcher.
 [CmdletBinding()]
 param(
     [Parameter(ValueFromPipeline = $true)]
@@ -22,6 +22,7 @@ process {
 
 end {
     $hook = '{{.HookBinaryPS}}'
+    $failClosed = {{if eq .FailMode "closed"}}$true{{else}}$false{{end}}
     $payloadPath = Join-Path $PSScriptRoot (".cursor-input-" + [Guid]::NewGuid().ToString("N") + ".json")
     $exitCode = 2
     $responseWritten = $false
@@ -97,9 +98,16 @@ end {
     catch {
         [Console]::Error.WriteLine("defenseclaw: Cursor hook adapter failed: " + $_.Exception.Message)
         if (-not $responseWritten) {
-            [Console]::Out.Write('{"continue":true}')
+            if ($failClosed) {
+                [Console]::Out.Write(
+                    '{"continue":true,"permission":"deny","user_message":"DefenseClaw hook unavailable"}'
+                )
+            }
+            else {
+                [Console]::Out.Write('{"continue":true}')
+            }
         }
-        $exitCode = 0
+        $exitCode = if ($failClosed) { 2 } else { 0 }
     }
     finally {
         try {
@@ -113,5 +121,9 @@ end {
             )
         }
     }
-    exit $exitCode
+    # Cursor invokes this adapter from a PowerShell pipeline. `exit N` inside
+    # that nested pipeline is normalized by Windows PowerShell to process exit
+    # code 1. Set the host exit code explicitly so Cursor receives the
+    # documented exit-2 deny signal.
+    $host.SetShouldExit($exitCode)
 }

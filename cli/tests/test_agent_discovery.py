@@ -1060,6 +1060,28 @@ def test_windows_discovery_finds_known_binary_outside_path(
     assert ad._path_key(resolved) == ad._path_key(str(binary))
 
 
+def test_cursor_discovery_prefers_primary_agent_entrypoint(monkeypatch, tmp_path):
+    primary = tmp_path / "agent.exe"
+    compatibility = tmp_path / "cursor-agent.exe"
+    desktop = tmp_path / "cursor.cmd"
+    for path in (primary, compatibility, desktop):
+        path.write_bytes(b"test executable")
+
+    candidates = {
+        "agent": str(primary),
+        "cursor-agent": str(compatibility),
+        "cursor": str(desktop),
+    }
+    monkeypatch.setattr(ad, "_which", lambda name: candidates.get(name, ""))
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: False)
+
+    resolved = ad._binary_candidates_for_agent("cursor", ad._SPECS["cursor"])
+
+    assert tuple(map(ad._path_key, resolved)) == tuple(
+        map(ad._path_key, (str(primary), str(compatibility), str(desktop)))
+    )
+
+
 def test_timeout_sets_error_and_does_not_mark_binary_only_install(monkeypatch, tmp_path):
     _pin_home(monkeypatch, tmp_path)
     monkeypatch.setattr(ad.shutil, "which", lambda name: "/usr/local/bin/codex")

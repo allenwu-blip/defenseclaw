@@ -43,6 +43,7 @@ intact when diagnosing a problem.
 | `%CODEX_HOME%\managed_config.toml` | Effective native Windows Codex hook policy. Default home is `%USERPROFILE%\.codex`. | Do not edit DefenseClaw-managed hooks; use setup/remove. |
 | `%CODEX_HOME%\config.toml` | Codex user config plus DefenseClaw-marked OTLP/notify fields. | Other Codex settings are user-owned; use DefenseClaw teardown to remove managed fields. |
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
+| `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
 
 The installer records the exact connector homes and uses them for later repair,
 upgrade, and cleanup. Connector configuration backups are ownership records,
@@ -50,10 +51,11 @@ not a user-facing rollback directory.
 
 ## Supported path overrides
 
-`CODEX_HOME` and `CLAUDE_CONFIG_DIR` are the supported connector configuration
-overrides. Set them to absolute, normalized native Windows paths before initial
-Setup or connector setup. The installer validates and records them; reparse
-ancestors are refused.
+`CODEX_HOME` and `CLAUDE_CONFIG_DIR` are the supported public connector
+configuration overrides. Set them to absolute, normalized native Windows paths
+before initial Setup or connector setup. The installer validates and records
+them; reparse ancestors are refused. Cursor publishes no equivalent override,
+so Setup records the exact native `.cursor` home that it selected internally.
 
 <Tabs items={['PowerShell', 'cmd']}>
   <Tab value="PowerShell">
@@ -198,17 +200,18 @@ residue automatically.
     registration; repair Setup if it is missing. The watchdog runs only when
     `gateway.watchdog.enabled` is configured and is not a Windows service.
   </Accordion>
-  <Accordion title="Codex or Claude Code hooks do not appear">
-    Confirm both products run natively as the same Windows user. Run
+  <Accordion title="Codex, Claude Code, or Cursor hooks do not appear">
+    Confirm the agent runs natively as the same Windows user. Run
     `defenseclaw guardrail status` and `defenseclaw doctor`, then re-run the
-    supported connector setup in observe mode. Fully restart the agent. Do not
-    copy hook entries between `config.toml`, `managed_config.toml`, and
-    `settings.json` by hand.
+    connector setup in observe mode. Cursor automatically reloads `hooks.json`;
+    restart Cursor if the change is not loaded. Do not copy hook entries between
+    `config.toml`, `managed_config.toml`, `settings.json`, and `hooks.json` by
+    hand.
   </Accordion>
   <Accordion title="A connector is disabled or status disagrees with configuration">
     Use `defenseclaw guardrail status` to compare desired and runtime posture.
     A prior `--no-restart` change may require `defenseclaw-gateway restart`.
-    Use connector-scoped enable/disable so the other supported connector is not
+    Use connector-scoped enable/disable so the other configured connectors are not
     changed unintentionally.
   </Accordion>
   <Accordion title="A disabled skill or plugin still behaves unexpectedly">
@@ -261,8 +264,8 @@ Complete this without real secrets or destructive tools:
   `defenseclaw-gateway` resolve from the product `bin` directory.
 - Run `defenseclaw version`; require the CLI and gateway generation to agree.
 - Run `defenseclaw-gateway status`, `defenseclaw status`, and
-  `defenseclaw guardrail status`; require the intended Codex and/or Claude Code
-  rows, mode, fail mode, and enabled state.
+  `defenseclaw guardrail status`; require the intended Codex, Claude Code,
+  and/or Cursor preview rows, mode, fail mode, and enabled state.
 - Run `defenseclaw config validate` and `defenseclaw doctor`; resolve every
   connector registration or authentication failure.
 - Restart each configured native agent. In an empty disposable directory,
@@ -270,7 +273,7 @@ Complete this without real secrets or destructive tools:
   customer data, credentials, or a destructive tool call.
 - Open `defenseclaw tui` or use `defenseclaw alerts` and confirm new activity is
   attributed only to the agent you exercised.
-- If both connectors are installed, repeat the harmless prompt once in each;
+- If multiple connectors are installed, repeat the harmless prompt once in each;
   one connector's success does not prove the other's hook or OTLP settings.
 
 ## Post-upgrade checklist
@@ -283,13 +286,13 @@ Complete this without real secrets or destructive tools:
   modes, fail modes, enabled state, and optional watchdog state.
 - Confirm the command path still resolves to the installed product directory,
   not a stale checkout or copied binary.
-- Restart Codex and Claude Code, then repeat the harmless per-connector event
-  check above.
+- Confirm Codex, Claude Code, and Cursor have loaded their configuration, then
+  repeat the harmless per-connector event check above.
 - Verify optional destinations with `defenseclaw observability plan` and the
   destination-specific test command. A destination failure does not erase the
   mandatory local audit, but it must be treated as degraded delivery.
 - Keep private receipts and backups untouched until the upgraded gateway and
-  both configured connectors are healthy.
+  every configured connector is healthy.
 
 For broader context, see [CLI reference](/docs/reference/cli),
 [configuration](/docs/reference/configuration), [upgrade](/docs/get-started/upgrade),

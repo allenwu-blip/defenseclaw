@@ -364,6 +364,15 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertNotIn("guardrail.mode=observe", result.output)
                 self.assertNotIn("guardrail.mode:", result.output)
                 self.assertNotIn("set guardrail.mode=action", result.output)
+                if connector == "cursor":
+                    self.assertIn(
+                        "cursor hook failures=open (failClosed=false; vendor default is fail-open)",
+                        result.output,
+                    )
+                    self.assertIn(
+                        "sessionStart/sessionEnd are fire-and-forget and stop is followup-only",
+                        result.output,
+                    )
                 restart_mock.assert_not_called()
 
                 hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
@@ -403,6 +412,15 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertNotIn("guardrail.mode:", result.output)
                 self.assertIn(f"defenseclaw setup {connector} --mode observe", result.output)
                 self.assertNotIn("set guardrail.mode=observe", result.output)
+                if connector == "cursor":
+                    self.assertIn(
+                        "cursor hook failures=closed (failClosed=true; vendor default is fail-open)",
+                        result.output,
+                    )
+                    self.assertIn(
+                        "ask is enforced only for beforeShellExecution and beforeMCPExecution",
+                        result.output,
+                    )
                 version_mock.assert_called_with(
                     connector,
                     mode="action",

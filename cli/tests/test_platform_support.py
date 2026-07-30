@@ -63,8 +63,8 @@ from defenseclaw.tui.services.cli_choices import (
 from tests.helpers import cleanup_app, make_app_context
 
 WINDOWS_SUPPORTED = {"codex", "claudecode"}
-WINDOWS_PREVIEW: set[str] = set()
-WINDOWS_NOT_CERTIFIED = {"cursor", "windsurf", "geminicli", "copilot", "antigravity", "opencode", "hermes"}
+WINDOWS_PREVIEW: set[str] = {"cursor"}
+WINDOWS_NOT_CERTIFIED = {"windsurf", "geminicli", "copilot", "antigravity", "opencode", "hermes"}
 WINDOWS_UNSUPPORTED = {"openhands", "omnigent", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
@@ -173,9 +173,9 @@ def test_non_windows_behavior_is_unchanged() -> None:
             assert support.available
 
 
-def test_supported_connectors_preserves_order_and_certified_windows_scope() -> None:
-    ordered = ["openclaw", "codex", "hermes", "openhands", "claudecode"]
-    assert supported_connectors(ordered, "windows") == ["codex", "claudecode"]
+def test_supported_connectors_preserves_order_and_available_windows_scope() -> None:
+    ordered = ["openclaw", "cursor", "codex", "hermes", "openhands", "claudecode"]
+    assert supported_connectors(ordered, "windows") == ["cursor", "codex", "claudecode"]
     assert supported_connectors(ordered, "linux") == ordered
 
 
@@ -264,14 +264,15 @@ def test_all_connector_lists_share_one_taxonomy() -> None:
     assert set(_HOOK_ENFORCED_CONNECTORS) == ALL_CONNECTORS - set(PROXY_CONNECTORS)
 
 
-def test_windows_views_hide_unsupported_and_have_no_preview() -> None:
-    expected = WINDOWS_SUPPORTED
+def test_windows_views_include_labeled_preview_and_hide_unavailable() -> None:
+    expected = WINDOWS_SUPPORTED | WINDOWS_PREVIEW
     assert set(supported_connector_choices("windows")) == expected
     assert set(visible_connector_choices("windows")) == expected
 
     win_modes = visible_mode_picker_choices("windows")
     assert {choice.wire for choice in win_modes} == expected
-    assert all("preview" not in choice.label.lower() for choice in win_modes)
+    cursor = next(choice for choice in win_modes if choice.wire == "cursor")
+    assert "preview" in cursor.label.lower()
 
 
 def test_non_windows_views_are_unfiltered() -> None:

@@ -68,10 +68,10 @@ type templateData struct {
 // persists to guardrail.hook_fail_mode in config.yaml).
 const defaultHookFailMode = "closed"
 
-// cursorAdapterTimeoutMS matches the existing 10-second Cursor shell-hook
-// request budget while staying inside Cursor's 30-second command-hook timeout.
-// Keeping the adapter bound shorter than the vendor timeout gives it time to
-// terminate the launcher, remove the temporary payload, and emit fail-open JSON.
+// cursorAdapterTimeoutMS stays inside Cursor's configured 30-second
+// command-hook timeout. Keeping the child bound shorter than the vendor
+// timeout gives the adapter time to terminate the launcher, remove the
+// temporary payload, and emit the configured fail-open/fail-closed response.
 const cursorAdapterTimeoutMS = 10_000
 
 // normalizeHookFailMode coerces a caller-supplied string to one of
@@ -391,9 +391,9 @@ func WriteHookScriptsWithToken(hookDir, apiAddr, token string) error {
 	}
 
 	// Never bake the real token into template output — scripts read
-	// the .token file or the env var at runtime. FailMode defaults
-	// to "open" so a fresh setup never bricks the agent on a
-	// gateway outage; see defaultHookFailMode for rationale.
+	// the .token file or the env var at runtime. This legacy all-script
+	// writer uses the product-wide default; connector-aware setup uses
+	// resolveHookFailMode so Cursor can retain its vendor fail-open default.
 	data := templateData{APIAddr: apiAddr, APIToken: "", FailMode: defaultHookFailMode, TokenFile: ".token"}
 
 	for _, name := range hookScripts {
@@ -873,7 +873,9 @@ func WriteHookScriptsForConnectorObject(hookDir, apiAddr, token string, c Connec
 //     overriding their answer would violate the operator-defined
 //     fail-mode contract documented in
 //     “GuardrailConfig.HookFailMode“.
-//  2. EMPTY/unset opts.HookFailMode uses defaultHookFailMode ("closed").
+//  2. EMPTY/unset opts.HookFailMode uses the connector default. Cursor uses
+//     "open" to match the vendor's documented command-hook default; other
+//     connectors use defaultHookFailMode ("closed").
 //  3. Hook-only connectors may use explicit "closed" only when their
 //     documented hook surface supports fail-closed behavior. Unsupported
 //     connectors stay fail-open and rely on their config writer to omit
@@ -918,6 +920,11 @@ func resolveHookFailMode(opts SetupOpts, c Connector) string {
 	}
 	if c != nil {
 		switch c.Name() {
+		case "cursor":
+			// Cursor's host schema is explicitly fail-open unless
+			// failClosed=true. Keep the rendered adapter aligned with the
+			// hooks.json value when no operator choice was supplied.
+			return "open"
 		case "codex":
 			if opts.CodexEnforcement {
 				return "closed"

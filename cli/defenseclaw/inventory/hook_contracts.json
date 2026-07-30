@@ -404,7 +404,7 @@
     "cursor": {
       "kind": "hook",
       "compatibility_gate": "hook-contract",
-      "version_probe": "cursor --version",
+      "version_probe": "agent --version",
       "contracts": [
         {
           "contract_id": "cursor-hooks-v1",
@@ -462,15 +462,18 @@
               "beforeMCPExecution",
               "beforeReadFile",
               "beforeTabFileRead",
-              "beforeSubmitPrompt",
-              "stop"
+              "beforeSubmitPrompt"
             ],
             "supports_fail_closed": true,
             "scope": "user"
           },
           "notes": [
             "Cursor 1.7 introduced beta hooks for the agent loop.",
-            "Cursor native ask is limited to beforeShellExecution and beforeMCPExecution."
+            "Cursor Agent uses agent as its primary CLI command; cursor-agent remains a compatibility alias.",
+            "Cursor native ask is enforced only for beforeShellExecution and beforeMCPExecution; preToolUse accepts ask in the schema but does not enforce it.",
+            "Command hooks fail open by default. An explicit action-mode closed fail mode writes failClosed=true so crashes, timeouts, and invalid JSON block.",
+            "sessionStart and sessionEnd are fire-and-forget, and Stop accepts only followup_message; none of these events is an enforcement gate.",
+            "Every command-hook invocation returns a non-empty JSON object; beforeSubmitPrompt uses continue while permission gates use permission."
           ]
         }
       ]

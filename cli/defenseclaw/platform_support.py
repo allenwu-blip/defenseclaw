@@ -15,11 +15,12 @@ agent/runtime and a DefenseClaw integration that can be wired without WSL are
 both required. The resulting status is one of ``supported``, ``preview``,
 ``not_certified``, or ``unsupported`` and always carries a reason.
 
-DefenseClaw runs hook-only on Windows: agents invoke the native Go hook
-entrypoint (``defenseclaw-gateway hook``) directly, and there is no Windows
-guardrail-proxy lifecycle. The proxy/chat connectors (``openclaw`` and
-``zeptoclaw``) therefore cannot run on Windows, so the TUI/CLI must not offer
-or accept them there.
+DefenseClaw runs hook-only on Windows: most agents invoke the native Go hook
+entrypoint directly. Cursor invokes a native PowerShell adapter first because
+its Windows command-hook transport materializes stdin as PowerShell pipeline
+objects. There is no Windows guardrail-proxy lifecycle. The proxy/chat
+connectors (``openclaw`` and ``zeptoclaw``) therefore cannot run on Windows,
+so the TUI/CLI must not offer or accept them there.
 
 This module mirrors ``internal/gateway/connector/platform_support.go``.  Tests
 pin the two taxonomies and all Python presentation lists together.  macOS and
@@ -75,8 +76,8 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "Claude Code and the DefenseClaw native executable hook entrypoint are certified on native Windows x64.",
     ),
     "cursor": ConnectorPlatformSupport(
-        NOT_CERTIFIED,
-        "The DefenseClaw Cursor integration has not completed native Windows x64 certification.",
+        PREVIEW,
+        "Cursor Agent and the DefenseClaw PowerShell hook adapter are available as a native Windows x64 preview pending integrated packaged and official-client validation.",
     ),
     "windsurf": ConnectorPlatformSupport(
         NOT_CERTIFIED,

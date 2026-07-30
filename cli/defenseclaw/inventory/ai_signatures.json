@@ -209,6 +209,8 @@
       "confidence": 0.95,
       "supported_connector": "cursor",
       "binary_names": [
+        "agent",
+        "cursor-agent",
         "cursor"
       ],
       "process_names": [

@@ -15,11 +15,13 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 	codexHome := filepath.Join(root, "codex")
 	claudeHome := filepath.Join(root, "claude")
 	copilotHome := filepath.Join(root, "copilot")
+	cursorHome := filepath.Join(root, "cursor")
 	env := []string{
 		"UNRELATED=preserved",
 		"codex_home=" + codexHome,
 		"CLAUDE_CONFIG_DIR=" + claudeHome,
 		"COPILOT_HOME=" + copilotHome,
+		"DEFENSECLAW_CURSOR_CONFIG_HOME=" + cursorHome,
 	}
 	for _, test := range []struct {
 		connector string
@@ -28,6 +30,7 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		{connector: "codex", want: codexHome},
 		{connector: "claudecode", want: claudeHome},
 		{connector: "copilot", want: copilotHome},
+		{connector: "cursor", want: cursorHome},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			got, err := connectorLifecycleConfigHome(env, test.connector)
@@ -91,6 +94,31 @@ func TestCopilotLifecycleCommandArgsBindExactHome(t *testing.T) {
 	}
 }
 
+func TestCursorConnectorLifecycleCommandArgsBindsConfigHomeExplicitly(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	cursorHome := filepath.Join(root, "cursor")
+	args, err := connectorLifecycleCommandArgs(
+		dataRoot,
+		"cursor",
+		"reconcile",
+		[]string{"DEFENSECLAW_CURSOR_CONFIG_HOME=" + cursorHome},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"connector", "reconcile",
+		"--connector", "cursor",
+		"--data-dir", dataRoot,
+		"--config-home", cursorHome,
+		"--json",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("connector lifecycle args = %q, want %q", args, want)
+	}
+}
+
 func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "codex")
@@ -108,6 +136,8 @@ func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.
 		{name: "newline", connector: "codex", env: []string{"CODEX_HOME=" + valid + "\nother"}, want: "absolute normalized path"},
 		{name: "missing Copilot", connector: "copilot", env: []string{"UNRELATED=1"}, want: "COPILOT_HOME is empty"},
 		{name: "duplicate Copilot", connector: "copilot", env: []string{"COPILOT_HOME=" + valid, "copilot_home=" + valid}, want: "COPILOT_HOME is duplicated"},
+		{name: "cursor missing", connector: "cursor", env: []string{"UNRELATED=1"}, want: "DEFENSECLAW_CURSOR_CONFIG_HOME is empty"},
+		{name: "cursor duplicate", connector: "cursor", env: []string{"DEFENSECLAW_CURSOR_CONFIG_HOME=" + valid, "defenseclaw_cursor_config_home=" + valid}, want: "DEFENSECLAW_CURSOR_CONFIG_HOME is duplicated"},
 		{name: "unsupported", connector: "openclaw", env: []string{"CODEX_HOME=" + valid}, want: "unsupported native connector"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

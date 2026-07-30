@@ -781,6 +781,26 @@ func TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue(t *testing.T) 
 	}
 }
 
+func TestCursorProfileRespond_StopUsesFollowupInsteadOfPermissionDeny(t *testing.T) {
+	out := hookOnlyProfileRespond(HookRespondInput{
+		Req: HookProfileRequest{
+			ConnectorName: "cursor",
+			HookEventName: "stop",
+		},
+		Action:    "block",
+		RawAction: "block",
+		Reason:    "review the final response",
+		Caps:      NewCursorConnector().HookCapabilities(SetupOpts{}),
+	})
+	want := map[string]interface{}{"followup_message": "review the final response"}
+	if !reflect.DeepEqual(out.Output, want) {
+		t.Errorf("Cursor Stop output mismatch\n got: %#v\nwant: %#v", out.Output, want)
+	}
+	if _, found := out.Output["permission"]; found {
+		t.Fatal("Cursor Stop output must not claim permission-gate enforcement")
+	}
+}
+
 // TestHermesProfileRespond_BlockDefaultReason asserts a hermes block
 // with an empty upstream reason still produces an actionable default
 // reason (rather than an empty string) on the wire.

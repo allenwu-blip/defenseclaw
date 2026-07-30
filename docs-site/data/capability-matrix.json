@@ -1,6 +1,6 @@
 {
   "_source": "Hand-curated from internal/gateway/connector hook profiles plus cli/defenseclaw/inventory/hook_contracts.json. Re-extract on every connector or hook-contract change.",
-  "_lastVerified": "2026-07-01",
+  "_lastVerified": "2026-07-30",
   "_order": "By adoption / popularity — mirrors the hero rotation (lib/hero-connectors.ts) and the docs nav (content/docs/connectors/meta.json).",
   "connectors": [
     {
@@ -74,14 +74,13 @@
           "beforeMCPExecution",
           "beforeReadFile",
           "beforeTabFileRead",
-          "beforeSubmitPrompt",
-          "stop"
+          "beforeSubmitPrompt"
         ],
         "supportsFailClosed": true,
         "scope": "user"
       },
-      "hilt": "Cursor supports native ask only on documented ask-capable hook events (beforeShellExecution, beforeMCPExecution).",
-      "notes": "hooks.json under ~/.cursor; user-global MCP / skills / rules discovery by default, with workspace overlays only when pinned."
+      "hilt": "Cursor enforces native ask only on beforeShellExecution and beforeMCPExecution. preToolUse accepts ask in the schema but does not enforce it.",
+      "notes": "hooks.json under ~/.cursor; command hooks fail open by default and use failClosed=true only for an explicit closed failure mode. sessionStart/sessionEnd are fire-and-forget and Stop is followup-only. Native Windows uses the managed PowerShell stdin adapter."
     },
     {
       "id": "hermes",

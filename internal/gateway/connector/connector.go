@@ -66,6 +66,10 @@ type SetupOpts struct {
 	ProxyAddr string // 127.0.0.1:4000 (guardrail proxy — LLM traffic)
 	APIAddr   string // 127.0.0.1:18970 (API server — inspection endpoints)
 	APIToken  string // gateway bearer token; baked into hook curl -H
+	// ConfigHome is the exact installer-validated user configuration root used
+	// by hidden native-maintenance commands. Ordinary setup leaves it empty and
+	// uses each vendor's documented discovery rules.
+	ConfigHome string
 	// HookAPIToken is the least-privilege credential written beside generated
 	// hook artifacts. Proxy connectors keep APIToken as the master credential
 	// for their in-process/plugin integration while their generic shell hooks

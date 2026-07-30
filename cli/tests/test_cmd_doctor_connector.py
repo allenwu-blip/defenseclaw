@@ -307,6 +307,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
             with open(runtime, "w", encoding="utf-8") as fh:
                 fh.write(
                     "# defenseclaw-managed-hook v8\n"
+                    f"$failClosed = ${str(fail_closed).lower()}\n"
                     "$startInfo = New-Object System.Diagnostics.ProcessStartInfo\n"
                     "$startInfo.RedirectStandardOutput = $true\n"
                     "$process.WaitForExit()\n"
@@ -315,16 +316,42 @@ class TestCheckConnectorHooks(unittest.TestCase):
             command = "& '" + runtime.replace("'", "''") + "'"
         hooks_path = os.path.join(tmp, "hooks.json")
         with open(hooks_path, "w", encoding="utf-8") as fh:
+            events = (
+                "sessionStart",
+                "sessionEnd",
+                "preToolUse",
+                "postToolUse",
+                "postToolUseFailure",
+                "subagentStart",
+                "subagentStop",
+                "beforeShellExecution",
+                "beforeMCPExecution",
+                "afterShellExecution",
+                "afterMCPExecution",
+                "beforeReadFile",
+                "beforeTabFileRead",
+                "afterFileEdit",
+                "afterTabFileEdit",
+                "beforeSubmitPrompt",
+                "afterAgentResponse",
+                "afterAgentThought",
+                "stop",
+                "preCompact",
+                "workspaceOpen",
+            )
             json.dump(
                 {
                     "version": 1,
                     "hooks": {
-                        "beforeSubmitPrompt": [
+                        event: [
                             {
+                                "type": "command",
                                 "command": command,
+                                "timeout": 30,
                                 "failClosed": fail_closed,
                             }
                         ]
+                        for event in events
                     },
                 },
                 fh,
@@ -355,6 +382,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertIn(runtime, r.checks[-1]["detail"])
         self.assertIn("mode=observe", r.checks[-1]["detail"])
         self.assertIn("failClosed=false", r.checks[-1]["detail"])
+        self.assertIn("fail-open (Cursor default)", r.checks[-1]["detail"])
+        self.assertIn("fire-and-forget=sessionStart,sessionEnd", r.checks[-1]["detail"])
         self.assertNotIn("inspect-tool.sh", r.checks[-1]["detail"])
 
     def test_cursor_doctor_rejects_legacy_direct_windows_launcher(self) -> None:
@@ -419,6 +448,32 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertIn("mode=action", r.checks[-1]["detail"])
         self.assertIn("failClosed=true", r.checks[-1]["detail"])
+        self.assertIn("failure=fail-closed", r.checks[-1]["detail"])
+
+    def test_cursor_doctor_rejects_millisecond_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, _runtime = self._cursor_runtime_case(
+                tmp,
+                mode="observe",
+                fail_closed=False,
+            )
+            with open(hooks_path, encoding="utf-8") as fh:
+                hooks = json.load(fh)
+            hooks["hooks"]["preToolUse"][0]["timeout"] = 30000
+            with open(hooks_path, "w", encoding="utf-8") as fh:
+                json.dump(hooks, fh)
+            r = _DoctorResult()
+            _check_cursor_configured_runtime(
+                cfg,
+                hooks_path,
+                "Cursor hooks",
+                r,
+                platform_name="nt",
+                probe_runtime=False,
+            )
+
+        self.assertEqual(r.checks[-1]["status"], "fail")
+        self.assertIn("timeout=30 seconds", r.checks[-1]["detail"])
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch("defenseclaw.commands.cmd_doctor.subprocess.run")

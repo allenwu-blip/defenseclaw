@@ -146,7 +146,6 @@ func NewCursorConnector() *hookOnlyConnector {
 					"beforeReadFile",
 					"beforeTabFileRead",
 					"beforeSubmitPrompt",
-					"stop",
 				},
 				SupportsFailClosed: true,
 				Scope:              "user",
@@ -798,16 +797,19 @@ func (c *hookOnlyConnector) hookCommand(opts SetupOpts) string {
 	return hookInvocationCommand(c.name, filepath.Join(opts.DataDir, "hooks", c.scriptName))
 }
 
-// Teardown restores the host agent's config (or removes our entries
-// when restoration is unsafe) AND replaces the hook script with a
-// disabled tombstone.
+// Teardown restores the host agent's config (or removes our entries when
+// restoration is unsafe). Connectors whose hosts are known to retain hook
+// paths also receive a disabled tombstone.
 //
-// The tombstone step is unconditional and runs even when the config
-// restore path returns early. The reason is symmetric with codex /
-// claudecode: host agents that have been running since before teardown
-// (cursor desktop, copilot IDE session, hermes daemon) cache the
-// absolute hook path at startup and will keep invoking it for the life
-// of the process. Without the tombstone they hit either:
+// Cursor is deliberately different. Its official hook contract says command
+// hooks are spawned processes and hooks.json changes auto-reload; it does not
+// document a cached hook-process/path lifecycle. After restoring hooks.json we
+// therefore remove both Cursor-owned runtime files instead of leaving a POSIX
+// tombstone beside the native PowerShell adapter. Other hook-only connectors
+// retain the established tombstone behavior because their lifecycle is outside
+// this Cursor-specific contract.
+//
+// Without a tombstone where one is required, a retained host path can hit:
 //
 //   - exit-127 ("command not found") if the file was deleted, or
 //   - a strict-availability fail-closed block when
@@ -839,7 +841,11 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		}
 	}
 
-	if err := writeDisabledHookTombstone(opts, c.scriptName, c.name); err != nil {
+	if c.name == "cursor" {
+		if err := removeCursorHookArtifacts(opts); err != nil {
+			errs = append(errs, fmt.Sprintf("remove Cursor hook artifacts: %v", err))
+		}
+	} else if err := writeDisabledHookTombstone(opts, c.scriptName, c.name); err != nil {
 		errs = append(errs, fmt.Sprintf("disabled hook tombstone: %v", err))
 	}
 	// Gemini's exporter cannot attach an Authorization header, so Setup mints
@@ -854,6 +860,34 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 
 	if len(errs) > 0 {
 		return fmt.Errorf("%s teardown: %s", c.name, strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// removeCursorHookArtifacts removes only files that still carry the
+// DefenseClaw ownership marker. A foreign replacement is retained and turns
+// teardown into an actionable error rather than deleting operator data.
+func removeCursorHookArtifacts(opts SetupOpts) error {
+	var errs []string
+	for _, name := range []string{"cursor-hook.sh", "cursor-hook.ps1"} {
+		path := filepath.Join(opts.DataDir, "hooks", name)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+			continue
+		}
+		if !scriptHasMarker(path) {
+			errs = append(errs, fmt.Sprintf("%s: refusing to remove file without DefenseClaw ownership marker", name))
+			continue
+		}
+		if err := os.Remove(path); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -886,9 +920,10 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
-			return err
+		if os.IsNotExist(err) {
+			return c.verifyCursorHookArtifactsClean(opts)
 		}
+		return err
 	} else if c.pluginArtifact {
 		// The bridge plugin is a standalone managed file; a clean
 		// teardown removes it entirely. Any residual DefenseClaw marker
@@ -897,30 +932,25 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return fmt.Errorf("%s teardown incomplete: managed plugin still present at %s", c.name, path)
 		}
 		return nil
-	} else {
-		needle := c.hookCommand(opts)
-		if c.name == "antigravity" {
-			var cfg map[string]interface{}
-			if err := json.Unmarshal(data, &cfg); err == nil &&
-				structuredHookCommandReferences(cfg, []string{
-					needle,
-					legacyAntigravityWindowsHookCommand(),
-					legacyAntigravityNonWaitingWindowsHookCommand(),
-				}) {
-				return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
-			}
-		}
-		if c.name == "copilot" {
-			var cfg map[string]interface{}
-			if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
-				return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
-			}
-		}
-		if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
-			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
-			(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
+	}
+	needle := c.hookCommand(opts)
+	if c.name == "antigravity" || c.name == "cursor" {
+		var cfg map[string]interface{}
+		if err := json.Unmarshal(data, &cfg); err == nil &&
+			structuredHookCommandReferences(cfg, c.verifyHookCommandNeedles(needle)) {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
+	}
+	if c.name == "copilot" {
+		var cfg map[string]interface{}
+		if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
+			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+		}
+	}
+	if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
+		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
+		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
+		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
 	if c.name == "geminicli" {
 		tokenPath, tokenPathErr := OTLPPathTokenFilePath(opts.DataDir, OTLPScopeGeminiCLI)
@@ -931,6 +961,36 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return fmt.Errorf("%s teardown incomplete: scoped OTLP credential still present at %s", c.name, tokenPath)
 		} else if !os.IsNotExist(tokenErr) {
 			return fmt.Errorf("%s inspect scoped OTLP credential: %w", c.name, tokenErr)
+		}
+	}
+	return c.verifyCursorHookArtifactsClean(opts)
+}
+
+func (c *hookOnlyConnector) verifyHookCommandNeedles(current string) []string {
+	if c.name != "antigravity" {
+		return []string{current}
+	}
+	return []string{
+		current,
+		legacyAntigravityWindowsHookCommand(),
+		legacyAntigravityNonWaitingWindowsHookCommand(),
+	}
+}
+
+func (c *hookOnlyConnector) verifyCursorHookArtifactsClean(opts SetupOpts) error {
+	if c.name != "cursor" {
+		return nil
+	}
+	for _, name := range []string{"cursor-hook.sh", "cursor-hook.ps1"} {
+		path := filepath.Join(opts.DataDir, "hooks", name)
+		if _, err := os.Stat(path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return err
+		}
+		if scriptHasMarker(path) {
+			return fmt.Errorf("cursor teardown incomplete: managed runtime still present at %s", path)
 		}
 	}
 	return nil
@@ -1100,9 +1160,12 @@ func opencodePluginPath(SetupOpts) string {
 	return homePath(".config", "opencode", "plugins", "defenseclaw.js")
 }
 
-func cursorHooksPath(SetupOpts) string {
+func cursorHooksPath(opts SetupOpts) string {
 	if CursorHooksPathOverride != "" {
 		return CursorHooksPathOverride
+	}
+	if strings.TrimSpace(opts.ConfigHome) != "" {
+		return filepath.Join(opts.ConfigHome, "hooks.json")
 	}
 	return homePath(".cursor", "hooks.json")
 }
@@ -1487,9 +1550,10 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 		"workspaceOpen",
 	} {
 		entry := map[string]interface{}{
-			"type":       "command",
-			"command":    shellWord(hookScript),
-			"timeout":    30000,
+			"type":    "command",
+			"command": shellWord(hookScript),
+			// Cursor's hook schema defines timeout in seconds.
+			"timeout":    30,
 			"failClosed": failClosed,
 		}
 		// Replace instead of merely appending. This both migrates the previous

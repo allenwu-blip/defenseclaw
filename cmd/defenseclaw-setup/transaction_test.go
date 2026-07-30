@@ -605,7 +605,7 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
 	transaction.PreserveConnectorConfiguration = true
-	transaction.PreviousConnectors = []string{"codex"}
+	transaction.PreviousConnectors = []string{"codex", "cursor"}
 	transaction.TargetServices.Gateway = true
 	transaction.PreviousCodexHome = filepath.Join(filepath.Dir(dataRoot), ".codex")
 	transaction.CodexHome = transaction.PreviousCodexHome
@@ -615,6 +615,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.CopilotHome = transaction.PreviousCopilotHome
 	transaction.PreviousGeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini")
 	transaction.GeminiConfigDir = transaction.PreviousGeminiConfigDir
+	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
+	transaction.CursorHome = transaction.PreviousCursorHome
 	expected := setupTransactionExpectations{
 		InstallRoot:     installRoot,
 		DataRoot:        dataRoot,
@@ -633,6 +635,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	changedGeminiHome.GeminiConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-gemini")
 	if err := validateSetupTransaction(changedGeminiHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Gemini configuration directory")
+	}
+	changedCursorHome := transaction
+	changedCursorHome.CursorHome = filepath.Join(filepath.Dir(dataRoot), "other-cursor")
+	if err := validateSetupTransaction(changedCursorHome, expected); err == nil {
+		t.Fatal("connector-preserving transaction changed its recorded Cursor home")
 	}
 	changedSelection := transaction
 	changedSelection.TargetConnector = "codex"
@@ -1207,7 +1214,7 @@ func TestTeardownSupersededConnectorsSwitchesConnector(t *testing.T) {
 func TestTeardownSupersededConnectorsOptOutRemovesEveryPreviousConnector(t *testing.T) {
 	transaction := setupTransaction{
 		DataRoot:           `C:\Users\tester\.defenseclaw`,
-		PreviousConnectors: []string{"codex", "claudecode"},
+		PreviousConnectors: []string{"codex", "claudecode", "cursor"},
 		TargetConnector:    "none",
 	}
 	var calls []string
@@ -1221,6 +1228,7 @@ func TestTeardownSupersededConnectorsOptOutRemovesEveryPreviousConnector(t *test
 	want := []string{
 		"codex:teardown", "codex:verify",
 		"claudecode:teardown", "claudecode:verify",
+		"cursor:teardown", "cursor:verify",
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("connector opt-out calls = %v, want %v", calls, want)
@@ -1272,6 +1280,36 @@ func TestTeardownSupersededConnectorsMovesSelectedConnectorToNewHome(t *testing.
 	}
 }
 
+func TestTeardownSupersededCursorMovesSelectedConnectorToNewHome(t *testing.T) {
+	transaction := setupTransaction{
+		DataRoot:           `C:\Users\tester\.defenseclaw`,
+		PreviousConnectors: []string{"cursor"},
+		TargetConnector:    "cursor",
+		PreviousCursorHome: `C:\Users\tester\cursor-a`,
+		CursorHome:         `C:\Users\tester\cursor-b`,
+	}
+	var calls []string
+	run := func(_, _, connector, action string, env []string) error {
+		calls = append(calls, connector+":"+action+":"+envValue(env, "DEFENSECLAW_CURSOR_CONFIG_HOME"))
+		return nil
+	}
+	if err := teardownSupersededConnectors(
+		transaction,
+		`C:\DefenseClaw\gateway.exe`,
+		transactionPreviousChildEnv(transaction),
+		run,
+	); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		`cursor:teardown:C:\Users\tester\cursor-a`,
+		`cursor:verify:C:\Users\tester\cursor-a`,
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("Cursor home migration calls = %v, want %v", calls, want)
+	}
+}
+
 func TestInferManagedConnectorHomeUsesBoundTarget(t *testing.T) {
 	dataRoot := t.TempDir()
 	backupPath := filepath.Join(dataRoot, "connector_backups", "codex", "config.toml.json")
@@ -1302,6 +1340,7 @@ func TestResolvePreviousConnectorHomeUsesBackupBindingWithoutInstallState(t *tes
 		{"codex", "config.toml", "codex_config_backup.json"},
 		{"claudecode", "settings.json", "claudecode_backup.json"},
 		{"copilot", "config", ""},
+		{"cursor", "hooks.json", ""},
 	} {
 		t.Run(test.connector, func(t *testing.T) {
 			dataRoot := t.TempDir()
@@ -1404,14 +1443,27 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir} {
+	cursorHome := filepath.Join(clientRoot, "cursor")
+	for _, path := range []string{codexHome, claudeHome, copilotHome, geminiConfigDir, cursorHome} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	cursorBackupPath := filepath.Join(dataRoot, "connector_backups", "cursor", "hooks.json.json")
+	if err := os.MkdirAll(filepath.Dir(cursorBackupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		cursorBackupPath,
+		[]byte(fmt.Sprintf(`{"path":%q}`, filepath.Join(cursorHome, "hooks.json"))),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("CLAUDE_CONFIG_DIR", claudeHome)
 	t.Setenv("COPILOT_HOME", copilotHome)
+	t.Setenv("DEFENSECLAW_CURSOR_CONFIG_HOME", cursorHome)
 
 	legacyState := testInstallState(
 		installRoot,
@@ -1436,17 +1488,20 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
-		!samePath(transaction.PreviousGeminiConfigDir, geminiConfigDir) {
+		!samePath(transaction.PreviousGeminiConfigDir, geminiConfigDir) ||
+		!samePath(transaction.PreviousCursorHome, cursorHome) {
 		t.Fatalf(
-			"legacy transaction homes = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
+			"legacy transaction homes = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
 			transaction.PreviousCodexHome,
 			transaction.PreviousClaudeConfigDir,
 			transaction.PreviousCopilotHome,
 			transaction.PreviousGeminiConfigDir,
+			transaction.PreviousCursorHome,
 			codexHome,
 			claudeHome,
 			copilotHome,
 			geminiConfigDir,
+			cursorHome,
 		)
 	}
 
@@ -1457,6 +1512,7 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	source.ClaudeConfigDir = claudeHome
 	source.CopilotHome = copilotHome
 	source.GeminiConfigDir = geminiConfigDir
+	source.CursorHome = cursorHome
 	source.UninstallHandoffHookStatus = stableHookSnapshotInactive
 	handoff, err := newUninstallHandoffTransaction(
 		source,
@@ -1469,17 +1525,20 @@ func TestLegacyConnectorHomesFollowValidatedOverridesWithoutManagedBinding(t *te
 	if !samePath(handoff.PreviousCodexHome, codexHome) ||
 		!samePath(handoff.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(handoff.PreviousCopilotHome, copilotHome) ||
-		!samePath(handoff.PreviousGeminiConfigDir, geminiConfigDir) {
+		!samePath(handoff.PreviousGeminiConfigDir, geminiConfigDir) ||
+		!samePath(handoff.PreviousCursorHome, cursorHome) {
 		t.Fatalf(
-			"legacy handoff homes = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
+			"legacy handoff homes = (%q, %q, %q, %q, %q), want (%q, %q, %q, %q, %q)",
 			handoff.PreviousCodexHome,
 			handoff.PreviousClaudeConfigDir,
 			handoff.PreviousCopilotHome,
 			handoff.PreviousGeminiConfigDir,
+			handoff.PreviousCursorHome,
 			codexHome,
 			claudeHome,
 			copilotHome,
 			geminiConfigDir,
+			cursorHome,
 		)
 	}
 	if handoff.PreviousStableHookStatus != stableHookSnapshotInactive {

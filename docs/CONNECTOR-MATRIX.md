@@ -129,7 +129,7 @@ represent DefenseClaw Windows support or release certification.
 | --------- | ----- | ----- | -------------- | -------------- |
 | Codex | supported | supported | supported | Current Codex releases run natively on Windows and expose Windows-specific hook commands; DefenseClaw uses its native hook entrypoint. |
 | Claude Code | supported | supported | supported | Anthropic documents direct PowerShell/CMD installation and native command hooks. Git for Windows is recommended, not required; Claude Code uses its PowerShell tool when Git Bash is absent. |
-| Cursor | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. Cursor CLI remains WSL-only. |
+| Cursor | supported | supported | **not certified** (preview) | Cursor publishes a native Windows Agent installer and native desktop installers. DefenseClaw registers `%USERPROFILE%\.cursor\hooks.json` with a synchronous PowerShell adapter and native hook runtime; integrated packaged and official-client validation is still pending. |
 | Windsurf | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
 | Gemini CLI | supported (continuing paid/enterprise product) | supported (continuing paid/enterprise product) | **not certified** | Native Windows and the DefenseClaw adapter exist, but credentialed official-client certification is still required. Gemini CLI now serves enterprise, Google Cloud, and paid API-key users only. |
 | Copilot CLI | supported | supported | **not certified** | Windows setup code exists, but the DefenseClaw native release contract does not certify it. |
@@ -159,7 +159,7 @@ is `not separately documented` rather than an inferred support promise.
 | Codex | WSL2 is documented; WSL1 is no longer supported starting with Codex 0.115. | Native Windows supported; WSL is out of scope. |
 | Claude Code | WSL1 and WSL2 are documented alternatives to the direct native Windows installation. | Native Windows supported; WSL is out of scope. |
 | Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
-| Cursor | Cursor CLI is supported on Windows through WSL; Cursor IDE hooks run on native Windows. | Native IDE hooks are not certified by DefenseClaw; the WSL-only CLI is not configured. |
+| Cursor | Cursor documents both native Windows Agent installation and WSL installation. | Native Windows Agent/IDE hooks are available as a DefenseClaw preview; WSL remains out of scope. |
 | Windsurf | Hook docs publish Linux/WSL configuration locations as well as native Windows locations. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | Gemini CLI | The supported OS matrix includes native Windows 11 24H2+ with PowerShell and Node.js 20+; no compatibility layer is required. | Native adapter implemented but not certified by DefenseClaw; WSL and other compatibility layers are out of scope. |
 | Copilot CLI | Direct PowerShell execution and the version-1 `powershell` hook field are documented for Windows; official 1.0.76 Windows x64/ARM64 ZIP and MSI assets were current on 2026-07-30. | Upstream-eligible and implemented behind the platform gate, but not certified by DefenseClaw until packaged and real-client Windows evidence passes; no WSL support claim. Copilot 1.0.76 also documents that per-path sandbox denials cannot be enforced on Windows. |
@@ -177,7 +177,9 @@ Evidence checked 2026-07-30 against the current upstream documentation:
 [Claude Code settings](https://code.claude.com/docs/en/settings),
 [Claude Code MCP](https://code.claude.com/docs/en/mcp),
 [Cursor CLI installation](https://docs.cursor.com/en/cli/installation),
+[Cursor downloads](https://cursor.com/download),
 [Cursor hooks](https://cursor.com/docs/hooks),
+[Cursor CLI changelog](https://cursor.com/docs/cli/changelog),
 [Windsurf Cascade hooks](https://docs.windsurf.com/windsurf/cascade/hooks),
 [Gemini CLI installation](https://geminicli.com/docs/get-started/installation/),
 [Gemini CLI authentication](https://geminicli.com/docs/get-started/authentication/),
@@ -202,10 +204,12 @@ Evidence checked 2026-07-30 against the current upstream documentation:
 
 Windows DefenseClaw is **hook-only**. The certified Codex and Claude Code
 registrations invoke `defenseclaw-hook.exe` natively, without Git Bash, `jq`,
-shell shims, or WSL. OpenCode's cross-platform JavaScript bridge is not
-certified on native Windows. The Go registry and Python `platform_support`
-module mirror the current supported/not-certified/unsupported statuses and
-reasons, pinned by parity tests.
+shell shims, or WSL. Cursor's native PowerShell adapter is preview-only until
+integrated packaged and official-client validation passes. OpenCode's
+cross-platform JavaScript bridge is not certified on native Windows. The Go
+registry and Python `platform_support` module mirror the current
+supported/preview/not-certified/unsupported statuses and reasons, pinned by
+parity tests.
 
 ## Versioned Hook Contracts
 
@@ -232,7 +236,7 @@ with a warning. Action mode fails closed on that contract mismatch.
 | Codex | hook contract | `>=0.124.0` | `codex-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Claude Code | hook contract | `>=2.1.152` | `claudecode-hooks-v1` / `v7` | prompt, tool_call, tool_result, event_content |
 | Hermes | hook contract | `>=0.11.0` | `hermes-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
-| Cursor | hook contract | `>=1.7.0` | `cursor-hooks-v1` / `v6` | prompt, tool_call, tool_result |
+| Cursor | hook contract | `>=1.7.0` | `cursor-hooks-v1` / `v8` | prompt, tool_call, tool_result |
 | Windsurf | hook contract | `>=1.12.41` | `windsurf-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v7` | prompt, tool_call, tool_result |
 | Copilot CLI | hook contract | `>=1.0.18` | `copilot-hooks-v1` / `v6` | prompt, tool_call, tool_result |
@@ -269,7 +273,7 @@ native-Windows evidence and hook contract were rechecked on 2026-07-30; see the
 | Claude Code | yes | yes | `PreToolUse` | 14 current lifecycle events; exact list is checked against `capability-matrix.json` | yes | user | `~/.claude/settings.json` |
 | Codex | yes | no | none | `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `Stop` | yes | user | `~/.codex/config.toml` |
 | Hermes | yes | no | none | `pre_tool_call` | no | user | `$HERMES_HOME/config.yaml`; defaults to `%LOCALAPPDATA%\hermes\config.yaml` on native Windows and `~/.hermes/config.yaml` elsewhere |
-| Cursor | yes | yes | `beforeShellExecution`, `beforeMCPExecution` | documented pre-action hooks | yes | user | `~/.cursor/hooks.json` |
+| Cursor | yes | yes | `beforeShellExecution`, `beforeMCPExecution` | `preToolUse`, `beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`, `beforeTabFileRead`, `beforeSubmitPrompt` | yes | user | `~/.cursor/hooks.json` (`%USERPROFILE%\.cursor\hooks.json` on Windows) |
 | Windsurf | yes | no | none | `pre_user_prompt`, `pre_read_code`, `pre_write_code`, `pre_run_command`, `pre_mcp_tool_use` | no | user | `~/.codeium/windsurf/hooks.json` |
 | Gemini CLI | yes | no | none | `BeforeAgent`, `BeforeModel`, `BeforeTool`, `AfterTool`, `AfterAgent` | yes | user | `~/.gemini/settings.json` |
 | Copilot CLI | yes | yes | `preToolUse` | `preToolUse`, `permissionRequest`, `agentStop`, `subagentStop`, `postToolUseFailure` | no | user,workspace | `~/.copilot/hooks/defenseclaw.json` or `<workspace>/.github/hooks/defenseclaw.json` |
@@ -302,6 +306,15 @@ with JSON `decision=allow|deny`; alert fallback may add the documented
 nonzero path, whose description in the hook reference differs from v0.53.0 source.
 This guarantee begins after Gemini successfully spawns the adapter: host spawn
 failures and host-enforced timeouts remain Gemini CLI behavior.
+
+Cursor command hooks fail open by default, matching the vendor schema.
+DefenseClaw writes `failClosed: true` only when action mode explicitly selects
+the closed hook failure mode; then crashes, timeouts, and invalid JSON block.
+Cursor accepts `ask` in the `preToolUse` output schema but does not enforce it;
+only `beforeShellExecution` and `beforeMCPExecution` enforce native ask.
+`sessionStart` and `sessionEnd` are fire-and-forget, and `stop` supports only a
+follow-up message, so none of those lifecycle events is presented as a
+synchronous enforcement gate.
 
 ## Local Surface Matrix
 
@@ -381,7 +394,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 | Codex | live | live | live\* (certified) | `codex exec --json --full-auto` | native OTLP asserted |
 | Claude Code | live | live | live\* (certified) | `claude -p` | native OTLP asserted; native-ask is Layer A only |
 | Gemini CLI | live driver (credential-deferred) | live driver (credential-deferred) | staged live driver (not certified) | `gemini -p -o json --approval-mode yolo` | driver asserts `BeforeTool` exit-0 JSON allow/block and native OTLP; certification requires eligible paid/enterprise credentials. Failures before adapter start, host launch/timeout behavior, and collapsed nonzero exits remain live-certification boundaries. |
-| Cursor | live | live | live\* (not certified) | `cursor-agent -p --force` | gated on a one-time headless-hook validation |
+| Cursor | live | live | live\* (preview; certification pending) | `agent -p --force` (`cursor-agent` compatibility alias) | native PowerShell contract coverage is implemented; integrated packaged and official-client validation is pending |
 | Copilot CLI | live\* | live\* | live\* (not certified) | `copilot -p` | user-level hooks only; entitled token |
 | OpenHands | live | — | — | `openhands --headless --json` | Docker runtime, Linux-only |
 | OpenCode | contract-only | contract-only | contract-only (not certified) | — | JS bridge plugin (tool.execute.before blocks); live smoke pending |

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -696,6 +697,19 @@ func replaceDeferredCleanupRecord(t *testing.T, record deferredUninstallCleanupR
 	t.Helper()
 	if err := writeDurableValue(record.RecordPath, record, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeferredCleanupRecordAcceptsCursorInVerifiedConnectorCustody(t *testing.T) {
+	fixture := newDeferredCleanupFixture(t)
+	fixture.record.VerifiedConnectors = []string{"claudecode", "codex", "cursor"}
+	replaceDeferredCleanupRecord(t, fixture.record)
+	stored, err := readDeferredUninstallCleanupRecord(fixture.record.RecordPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || !slices.Equal(stored.VerifiedConnectors, fixture.record.VerifiedConnectors) {
+		t.Fatalf("verified connector custody = %+v", stored)
 	}
 }
 

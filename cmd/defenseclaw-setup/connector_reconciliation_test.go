@@ -407,6 +407,7 @@ func TestConnectorDefaultHomeBesideDataRootIsStrictlyBound(t *testing.T) {
 		"claudecode": filepath.Join(root, ".claude"),
 		"copilot":    filepath.Join(root, ".copilot"),
 		"geminicli":  filepath.Join(root, ".gemini"),
+		"cursor":     filepath.Join(root, ".cursor"),
 	} {
 		if got := connectorDefaultHomeBesideDataRoot(dataRoot, connectorName); !samePath(got, want) {
 			t.Fatalf("%s default home = %q, want %q", connectorName, got, want)
@@ -490,7 +491,7 @@ func TestReconcileRemovedConnectorsRetainsFallbackFailureAtExactHome(t *testing.
 	recorder := reconcileRemovedConnectors(
 		transaction,
 		filepath.Join(root, "gateway.exe"),
-		transactionChildEnvForHomes(transaction, historicalHome, "", "", ""),
+		transactionChildEnvForHomes(transaction, historicalHome, ""),
 		run,
 	)
 	want := []string{
@@ -513,11 +514,12 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 	transaction := setupTransaction{
 		ID:                      strings.Repeat("a", 32),
 		DataRoot:                filepath.Join(root, "data"),
-		PreviousConnectors:      []string{"codex", "claudecode", "copilot", "geminicli"},
+		PreviousConnectors:      []string{"codex", "claudecode", "copilot", "geminicli", "cursor"},
 		PreviousCodexHome:       filepath.Join(root, "codex"),
 		PreviousClaudeConfigDir: filepath.Join(root, "claude"),
 		PreviousCopilotHome:     filepath.Join(root, "copilot"),
 		PreviousGeminiConfigDir: filepath.Join(root, ".gemini"),
+		PreviousCursorHome:      filepath.Join(root, "cursor"),
 	}
 	var calls []string
 	recorder := reconcilePreservedConnectors(
@@ -529,12 +531,57 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 			return nil
 		},
 	)
-	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1,copilot:reconcile:PRESERVED=1,geminicli:reconcile:PRESERVED=1"
+	want := "codex:reconcile:PRESERVED=1,claudecode:reconcile:PRESERVED=1,copilot:reconcile:PRESERVED=1,geminicli:reconcile:PRESERVED=1,cursor:reconcile:PRESERVED=1"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("preserved connector calls = %q, want %q", got, want)
 	}
-	if len(recorder.attempts) != 4 || len(recorder.failures) != 0 {
+	if len(recorder.attempts) != 5 || len(recorder.failures) != 0 {
 		t.Fatalf("preserved connector reconciliation = %+v", recorder)
+	}
+}
+
+func TestRetryPendingCursorReconciliationUsesExactHomeBinding(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	cursorHome := filepath.Join(root, "cursor")
+	transaction := setupTransaction{
+		ID:       strings.Repeat("c", 32),
+		DataRoot: filepath.Join(root, "data"),
+	}
+	recorder := connectorReconciliationRecorder{}
+	state := &connectorReconciliationState{
+		SchemaVersion: connectorReconciliationSchemaVersion,
+		Failures: []connectorReconciliationFailure{{
+			Connector: "cursor", Operation: "verify", ConfigHome: cursorHome,
+			Message: "old failure", TransactionID: strings.Repeat("d", 32),
+		}},
+	}
+	var actions []string
+	err := retryPendingConnectorReconciliation(
+		transaction,
+		filepath.Join(root, "gateway.exe"),
+		&recorder,
+		func() (*connectorReconciliationState, error) { return state, nil },
+		func(_, _, connector, action string, env []string) error {
+			actions = append(actions, connector+":"+action)
+			if got := envValue(env, "DEFENSECLAW_CURSOR_CONFIG_HOME"); got != cursorHome {
+				t.Fatalf("Cursor retry home = %q, want %q", got, cursorHome)
+			}
+			if action == "verify" && len(actions) == 1 {
+				return errors.New("stale registration")
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"cursor:verify", "cursor:teardown", "cursor:verify"}
+	if !reflect.DeepEqual(actions, want) {
+		t.Fatalf("Cursor retry actions = %v, want %v", actions, want)
+	}
+	if len(recorder.failures) != 0 {
+		t.Fatalf("healed Cursor failure was retained: %+v", recorder.failures)
 	}
 }
 

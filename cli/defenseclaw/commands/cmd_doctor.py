@@ -593,7 +593,13 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "copilot":
         _emit("pass", "Human approval", f"Copilot CLI preToolUse ask supported at {min_sev}+", r=r)
     elif connector == "cursor":
-        _emit("warn", "Human approval", "Cursor ask is supported only on documented ask-capable hook events", r=r)
+        _emit(
+            "warn",
+            "Human approval",
+            "Cursor enforces ask only for beforeShellExecution and beforeMCPExecution; "
+            "preToolUse accepts ask in the schema but does not enforce it",
+            r=r,
+        )
     elif connector == "codex":
         _emit(
             "warn",
@@ -1541,7 +1547,7 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     "cursor": (
         (os.path.join(".cursor", "hooks.json"),),
-        ("cursor-hook.sh", "hook --connector cursor", "defenseclaw"),
+        ("cursor-hook.sh", "cursor-hook.ps1", "hook --connector cursor", "defenseclaw"),
     ),
     "windsurf": (
         (os.path.join(".codeium", "windsurf", "hooks.json"),),
@@ -1678,7 +1684,7 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
             fh.write(payload)
             vendor_input = fh.name
 
-        # This mirrors Cursor 3.9's Windows command-hook boundary. Paths are
+        # This mirrors Cursor's Windows PowerShell command-hook boundary. Paths are
         # encoded as PowerShell literals, the whole script is UTF-16LE/base64,
         # and subprocess receives an argv list (never shell=True).
         script = (
@@ -1767,6 +1773,7 @@ def _check_cursor_configured_runtime(
     reachable runtime, and ensure Cursor's host-side failClosed flag agrees
     with the connector's effective observe/action mode.
     """
+    repair = "run `defenseclaw setup cursor --yes --restart` to reconcile the managed registration"
     try:
         with open(path, encoding="utf-8") as fh:
             document = json.load(fh)
@@ -1774,7 +1781,10 @@ def _check_cursor_configured_runtime(
         _emit("fail", label, f"cannot parse configured hook file {path}: {exc}", r=r)
         return
 
-    hooks = document.get("hooks") if isinstance(document, dict) else None
+    if not isinstance(document, dict) or document.get("version") != 1:
+        _emit("fail", label, f"configured hook file must use Cursor hooks schema version 1: {path}", r=r)
+        return
+    hooks = document.get("hooks")
     if not isinstance(hooks, dict):
         _emit("fail", label, f"configured hook file has no hooks object: {path}", r=r)
         return
@@ -1794,9 +1804,60 @@ def _check_cursor_configured_runtime(
         _emit("fail", label, f"{path} has no DefenseClaw Cursor command entries", r=r)
         return
 
+    expected_events = {
+        "sessionStart",
+        "sessionEnd",
+        "preToolUse",
+        "postToolUse",
+        "postToolUseFailure",
+        "subagentStart",
+        "subagentStop",
+        "beforeShellExecution",
+        "beforeMCPExecution",
+        "afterShellExecution",
+        "afterMCPExecution",
+        "beforeReadFile",
+        "beforeTabFileRead",
+        "afterFileEdit",
+        "afterTabFileEdit",
+        "beforeSubmitPrompt",
+        "afterAgentResponse",
+        "afterAgentThought",
+        "stop",
+        "preCompact",
+        "workspaceOpen",
+    }
+    managed_events = {event for event, _entry, _command in managed}
+    missing_events = sorted(expected_events - managed_events)
+    if missing_events:
+        _emit(
+            "fail",
+            label,
+            f"configured Cursor hook coverage is incomplete: {', '.join(missing_events)}; {repair}",
+            r=r,
+        )
+        return
+    malformed = [
+        event
+        for event, entry, _command in managed
+        if entry.get("type") != "command"
+        or isinstance(entry.get("timeout"), bool)
+        or entry.get("timeout") != 30
+    ]
+    if malformed:
+        _emit(
+            "fail",
+            label,
+            "configured Cursor entries must use type=command and timeout=30 seconds: "
+            + ", ".join(sorted(set(malformed)))
+            + f"; {repair}",
+            r=r,
+        )
+        return
+
     commands = {command for _event, _entry, command in managed}
     if len(commands) != 1:
-        _emit("fail", label, "DefenseClaw Cursor entries use inconsistent commands", r=r)
+        _emit("fail", label, f"DefenseClaw Cursor entries use inconsistent commands; {repair}", r=r)
         return
     command = next(iter(commands))
     argv = _split_configured_hook_command(command, platform_name=platform_name)
@@ -1832,7 +1893,7 @@ def _check_cursor_configured_runtime(
 
     resolved = target if os.path.isabs(target) else (shutil.which(target) or "")
     if not resolved or not os.path.isfile(resolved):
-        _emit("fail", label, f"configured Cursor hook runtime is missing: {target}", r=r)
+        _emit("fail", label, f"configured Cursor hook runtime is missing: {target}; {repair}", r=r)
         return
     adapter_markers = (
         "defenseclaw-managed-hook v8",
@@ -1841,9 +1902,15 @@ def _check_cursor_configured_runtime(
         "ProcessStartInfo",
         "RedirectStandardOutput",
         "WaitForExit",
+        "$failClosed",
     )
     if windows_adapter and not all(_file_references_marker(resolved, (marker,)) for marker in adapter_markers):
-        _emit("fail", label, f"configured Cursor Windows adapter is stale or invalid: {resolved}", r=r)
+        _emit(
+            "fail",
+            label,
+            f"configured Cursor Windows adapter is stale or invalid: {resolved}; {repair}",
+            r=r,
+        )
         return
 
     guardrail = getattr(cfg, "guardrail", None)
@@ -1860,10 +1927,22 @@ def _check_cursor_configured_runtime(
             "fail",
             label,
             f"configured failClosed does not match mode={mode or 'observe'} "
-            f"(expected {str(expected_fail_closed).lower()}): {', '.join(sorted(mismatched))}",
+            f"(expected {str(expected_fail_closed).lower()}): {', '.join(sorted(mismatched))}; "
+            f"{repair}",
             r=r,
         )
         return
+    if windows_adapter:
+        expected_adapter_mode = "$failClosed = $true" if expected_fail_closed else "$failClosed = $false"
+        if not _file_references_marker(resolved, (expected_adapter_mode,)):
+            _emit(
+                "fail",
+                label,
+                f"configured Cursor Windows adapter does not match failClosed="
+                f"{str(expected_fail_closed).lower()}: {resolved}; {repair}",
+                r=r,
+            )
+            return
 
     runtime_detail = ""
     if windows_adapter and (platform_name or os.name) == "nt" and probe_runtime:
@@ -1876,7 +1955,10 @@ def _check_cursor_configured_runtime(
         "pass",
         label,
         f"configured runtime={resolved}; entries={len(managed)}; "
-        f"mode={mode or 'observe'}; failClosed={str(expected_fail_closed).lower()}"
+        f"mode={mode or 'observe'}; failClosed={str(expected_fail_closed).lower()}; "
+        f"failure={'fail-closed' if expected_fail_closed else 'fail-open (Cursor default)'}; "
+        "ask=beforeShellExecution,beforeMCPExecution only; "
+        "fire-and-forget=sessionStart,sessionEnd; stop=followup-only"
         + (f"; {runtime_detail}" if runtime_detail else ""),
         r=r,
     )

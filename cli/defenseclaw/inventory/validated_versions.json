@@ -31,7 +31,7 @@
       }
     },
     "cursor": {
-      "version_probe": "cursor-agent --version",
+      "version_probe": "agent --version",
       "live": "pending-validation",
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },

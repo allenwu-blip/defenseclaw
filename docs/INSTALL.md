@@ -43,16 +43,31 @@ connector scope deliberately excludes WSL and requires both the upstream agent
 and the complete DefenseClaw hook path to run directly on Windows.
 
 - **Supported and certified:** Codex and Claude Code.
-- **Not certified:** Cursor, Windsurf, Gemini CLI, Copilot CLI, Antigravity,
-  OpenCode, and Hermes. Their cross-platform setup code is not a native Windows
-  support commitment.
+- **Preview:** Cursor. Its native Windows implementation is available for
+  evaluation, but integrated packaged and official-client validation is still
+  required before certification.
+- **Not certified:** Windsurf, Gemini CLI, Copilot CLI, Antigravity, OpenCode,
+  and Hermes. Their cross-platform setup code is not a native Windows support
+  commitment.
 - **Unsupported:** OpenHands, OmniGent, OpenClaw, and ZeptoClaw. Their required
   WSL, terminal/sandbox, or local-proxy topology is not hosted by native
   Windows DefenseClaw.
 
-The certified connectors invoke the native `defenseclaw-hook.exe` entrypoint;
-they do not add a WSL, Git Bash, `jq`, or POSIX-shell dependency. Upstream
-agent prerequisites still apply, including Git for Windows for Claude Code.
+The certified connectors and the Cursor preview use the native
+`defenseclaw-hook.exe` runtime. Cursor first invokes the managed
+`cursor-hook.ps1` adapter so the JSON objects that Cursor supplies to
+PowerShell reach that runtime byte-for-byte. None adds a WSL, Git Bash, `jq`,
+or POSIX-shell dependency. Upstream agent prerequisites still apply, including
+Git for Windows for Claude Code.
+
+Cursor command hooks retain the vendor's fail-open default
+(`failClosed: false`). An explicit action-mode closed failure policy writes
+`failClosed: true`. Native `ask` is enforceable only for
+`beforeShellExecution` and `beforeMCPExecution`; `sessionStart` and
+`sessionEnd` are fire-and-forget, and `stop` is follow-up-only. Setup repair
+and upgrade reconcile the recorded `%USERPROFILE%\.cursor` home, while
+uninstall restores the exact pre-DefenseClaw `hooks.json` bytes and removes
+only DefenseClaw-owned adapter assets.
 
 WSL availability is tracked for upstream research in
 [`CONNECTOR-MATRIX.md`](CONNECTOR-MATRIX.md), but it is not part of the current
