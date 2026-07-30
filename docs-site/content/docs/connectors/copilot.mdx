@@ -10,6 +10,10 @@ keywords:
 
 The GitHub Copilot CLI connector wires DefenseClaw into [Copilot CLI hooks](https://docs.github.com/copilot/) globally under `~/.copilot/hooks/` by default, with an optional workspace mode for `<workspace>/.github/hooks/`. Native ask is supported on `preToolUse`, so HITL approvals surface inside the agent UI.
 
+<Callout type="warn">
+Direct native Windows is eligible upstream but is not yet certified by DefenseClaw. The current Windows platform gate therefore refuses Copilot setup until the packaged and real official-client certification phase passes. WSL, Git Bash, Cygwin, MSYS, Docker, and VM workarounds are not supported.
+</Callout>
+
 ## Setup
 
 ```bash
@@ -18,6 +22,8 @@ defenseclaw setup copilot --workspace /path/to/repo
 ```
 
 By default this is **global/user-scoped**: DefenseClaw writes hook entries into `~/.copilot/hooks/defenseclaw.json`. Pass `--workspace /path/to/repo` only when you intentionally want repo-local `<workspace>/.github/hooks/defenseclaw.json` wiring. **There is no proxy-enforcement path** for Copilot CLI — blocking happens hook-side via the documented `preToolUse`, `permissionRequest`, `agentStop`, `subagentStop`, and `postToolUseFailure` events. Native ask is supported on `preToolUse`, so HITL approvals surface inside the agent UI for that surface.
+
+If `COPILOT_HOME` is set, DefenseClaw uses that official Copilot configuration root instead of `~/.copilot` for hooks, MCP, skills, and agents.
 
 #### What `setup copilot` actually does
 
@@ -126,8 +132,11 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
   </Folder>
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
-      <File name="copilot-hook.sh" />
+      <File name="copilot-hook.sh (Linux and macOS)" />
     </Folder>
+  </Folder>
+  <Folder name="%LOCALAPPDATA%/DefenseClaw/HookRuntime (native Windows; certification pending)">
+    <File name="defenseclaw-hook.exe" />
   </Folder>
 </Files>
 
@@ -139,10 +148,22 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
 Copilot CLI supports native ask on documented `preToolUse` hooks. The approval prompt surfaces inside the agent UI, not the DefenseClaw TUI.
 </Callout>
 
+On native Windows, Copilot selects the hook's official `powershell` field.
+DefenseClaw's prepared contract invokes the stable `defenseclaw-hook.exe`
+runtime synchronously with inherited stdin/stdout, waits for completion, and
+propagates its exit code. It does not require Bash or WSL. See the
+[recorded upstream Windows contract](https://github.com/cisco-ai-defense/defenseclaw/blob/main/docs/development/copilot-native-windows-contract.md)
+for source URLs, version/date evidence, event semantics, and the current
+certification blocker.
+
+<Callout type="warn">
+GitHub's Copilot CLI 1.0.76 release notes state that per-path sandbox denials cannot be enforced on Windows. Hook enforcement remains event-specific; do not treat Copilot's Windows sandbox as per-path filesystem containment.
+</Callout>
+
 ## Disable
 
 ```bash
 defenseclaw setup guardrail --disable
 ```
 
-The teardown removes `~/.copilot/hooks/defenseclaw.json` or the pinned workspace hook file and leaves any other hook files in the directory untouched.
+The teardown removes `$COPILOT_HOME/hooks/defenseclaw.json` (default `~/.copilot/hooks/defenseclaw.json`) or the pinned workspace hook file and leaves any other hook files in the directory untouched.

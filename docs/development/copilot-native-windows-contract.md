@@ -1,0 +1,121 @@
+# GitHub Copilot CLI native Windows contract
+
+Research was refreshed on **2026-07-30** before implementing the DefenseClaw
+Windows connector path. This is an upstream-eligibility record, not a
+DefenseClaw certification result.
+
+## Eligibility decision
+
+GitHub officially supports running Copilot CLI directly from Windows
+PowerShell. The current stable release inspected for this decision was
+**1.0.76**: its changelog entry is dated **2026-07-29**, and the GitHub release
+published Windows x64/ARM64 ZIP and MSI assets on **2026-07-30 UTC**.
+GitHub documents PowerShell 6+ for the CLI; its Windows hook tutorial requires
+PowerShell 7 (`pwsh`) on `PATH`.
+
+That makes a direct native-Windows DefenseClaw integration eligible. WSL,
+Git Bash, Cygwin, MSYS, Docker, VMs, and Unix shell shims are not part of this
+contract.
+
+DefenseClaw's public platform status remains **not certified** until the
+packaged and real-client Windows certification phase passes. Internal contract
+tests do not promote that status.
+
+## Official sources
+
+- [About GitHub Copilot CLI](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/about-copilot-cli)
+- [Install GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
+- [Use hooks with GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks)
+- [Copilot CLI hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)
+- [PowerShell hook tutorial](https://docs.github.com/en/copilot/tutorials/copilot-cli-hooks)
+- [Copilot CLI configuration directory reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)
+- [Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
+- [Copilot CLI plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference)
+- [Official `github/copilot-cli` repository](https://github.com/github/copilot-cli)
+- [Official releases](https://github.com/github/copilot-cli/releases)
+- [Official changelog](https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md)
+
+## Installation, configuration, and inventory
+
+Official native Windows installation paths include:
+
+- `winget install GitHub.Copilot`;
+- npm with Node.js 22 or later; and
+- the official Windows executable archives/MSI.
+
+Copilot reads user configuration under `%USERPROFILE%\.copilot` by default,
+or under `%COPILOT_HOME%` when that variable is set. The documented inventory
+includes `settings.json`, internal `config.json`, `mcp-config.json`, `agents`,
+`skills`, `hooks`, and `installed-plugins`. Workspace surfaces include
+`.github/mcp.json` or `.mcp.json`, `.github/agents`, `.github/skills`,
+`.agents/skills`, and `.github/hooks`.
+
+DefenseClaw uses a standalone version-1 hook file:
+
+- user scope: `%USERPROFILE%\.copilot\hooks\defenseclaw.json` (or the
+  corresponding `%COPILOT_HOME%\hooks` location);
+- workspace scope: `<workspace>\.github\hooks\defenseclaw.json`.
+
+Repository hooks in programmatic `copilot -p` runs require the documented
+`GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true` opt-in unless the repository is
+already trusted or the run allows all paths/tools. User hooks remain the
+certification driver's default.
+
+## Hook process contract
+
+Version-1 command entries select exactly one of `bash`, `powershell`, or
+`command`. On direct Windows, DefenseClaw writes only `powershell`. Copilot
+starts the hook locally in the same shell context and sends one event object as
+JSON on stdin. The official PowerShell tutorial consumes it with
+`[Console]::In.ReadToEnd() | ConvertFrom-Json`.
+
+Decision hooks are synchronous: stdout is processed after the command exits.
+Progress JSON lines may precede the one final decision object. DefenseClaw's
+PowerShell command starts its no-console launcher with inherited standard
+handles, `-NoNewWindow -Wait -PassThru`, and exits with the launcher's exact
+exit code. It never nests Bash, WSL, or another PowerShell process inside
+Copilot's own `powershell` boundary.
+
+The current documented events are `sessionStart`, `sessionEnd`,
+`userPromptSubmitted`, `userPromptTransformed`, `preToolUse`, `postToolUse`,
+`postToolUseFailure`, `permissionRequest`, `agentStop`, `subagentStart`,
+`subagentStop`, `errorOccurred`, `preCompact`, and `notification`.
+DefenseClaw's versioned `copilot-hooks-v1` contract registers its selected
+13-event enforcement/observation matrix. `notification` is explicitly
+asynchronous and fire-and-forget upstream; the other registered decision
+surfaces are synchronous.
+
+Exit behavior is event-specific:
+
+- exit 0 processes the final JSON decision;
+- exit 2 is a denial for `preToolUse` and `permissionRequest`, a warning for
+  other events, and adds context for `postToolUseFailure`;
+- other nonzero exits fail open except `preToolUse`, which fails closed; and
+- timeouts fail open.
+
+For decision JSON, `preToolUse` uses `allow`, `deny`, or `ask`;
+`permissionRequest` uses `allow` or `deny`; and stop events use block/allow
+behavior. Copilot loads hook configuration changes on its next CLI start.
+
+## Known upstream Windows limitation
+
+The 1.0.76 release notes state that sandbox denials for individual paths cannot
+be enforced on Windows. DefenseClaw hook decisions still operate on their
+documented surfaces, but documentation and certification evidence must not
+claim that Copilot's Windows sandbox provides per-path filesystem enforcement.
+
+## Certification still required
+
+Before changing `not_certified` to `supported`, the later Windows verification
+phase must run the packaged deterministic contract and a real official 1.0.76
+or newer client with an entitled credential. It must prove user-scope setup,
+restart/reconciliation, allow/ask/block/failure behavior, stdin/stdout/exit
+propagation, audit and protected-runtime evidence, tamper repair, exact
+restoration, and teardown without WSL or a Unix shell.
+
+The prepared native driver is
+`scripts/live-connector-e2e/run-windows.ps1 -Connector copilot`. Its live layer
+uses the official `@github/copilot` Windows package (or an explicitly pinned
+official client for release certification), `copilot version`, the documented
+headless `copilot -p` surface, and the official token precedence. The driver is
+not certification evidence until that later run completes successfully.

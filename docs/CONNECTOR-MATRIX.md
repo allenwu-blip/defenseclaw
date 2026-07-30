@@ -162,13 +162,13 @@ is `not separately documented` rather than an inferred support promise.
 | Cursor | Cursor CLI is supported on Windows through WSL; Cursor IDE hooks run on native Windows. | Native IDE hooks are not certified by DefenseClaw; the WSL-only CLI is not configured. |
 | Windsurf | Hook docs publish Linux/WSL configuration locations as well as native Windows locations. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | Gemini CLI | WSL is mentioned as a Unix-compatibility option, but the supported OS matrix already includes native Windows. | Not certified by DefenseClaw on native Windows; WSL is out of scope. |
-| Copilot CLI | Hooks are documented for Windows, Linux, and macOS; WSL is not a separate hook target. | Not certified by DefenseClaw on native Windows; no WSL support claim. |
+| Copilot CLI | Direct PowerShell execution and the version-1 `powershell` hook field are documented for Windows; official 1.0.76 Windows x64/ARM64 ZIP and MSI assets were current on 2026-07-30. | Upstream-eligible and implemented behind the platform gate, but not certified by DefenseClaw until packaged and real-client Windows evidence passes; no WSL support claim. Copilot 1.0.76 also documents that per-path sandbox denials cannot be enforced on Windows. |
 | OpenHands | The CLI explicitly requires WSL on Windows; native Windows is not officially supported. | Unsupported on Windows because WSL-only does not meet the native requirement. |
 | Antigravity | Native Windows CLI/app downloads and local hooks are documented; WSL is not a separate hook target. | Not certified by DefenseClaw on native Windows; no WSL support claim. |
 | OpenCode | Direct Windows execution is available, while upstream recommends WSL for the best experience. | The JavaScript bridge is not certified by DefenseClaw on native Windows; WSL is out of scope. |
 | OmniGent | Linux terminal and sandbox prerequisites are documented; WSL is not explicitly supported as a Windows product path. | Unsupported on native Windows; no WSL connector is implemented or certified. |
 
-Evidence checked 2026-06-30 against the current upstream documentation:
+Evidence checked 2026-07-30 against the current upstream documentation:
 [Codex install](https://github.com/openai/codex#quickstart),
 [Codex Windows](https://developers.openai.com/codex/windows),
 [Codex hooks](https://developers.openai.com/codex/hooks),
@@ -181,6 +181,9 @@ Evidence checked 2026-06-30 against the current upstream documentation:
 [Windsurf Cascade hooks](https://docs.windsurf.com/windsurf/cascade/hooks),
 [Gemini CLI hooks](https://geminicli.com/docs/hooks/reference/),
 [Copilot CLI hooks](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks),
+[Copilot CLI hook reference](https://docs.github.com/en/copilot/reference/hooks-reference),
+[Copilot CLI Windows installation](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli),
+[Copilot CLI releases](https://github.com/github/copilot-cli/releases),
 [Antigravity hooks](https://antigravity.google/docs/hooks),
 [OpenCode Windows](https://opencode.ai/docs/windows-wsl/),
 [OpenCode plugins](https://opencode.ai/docs/plugins/),
