@@ -11,10 +11,10 @@ keywords:
 
 DefenseClaw has a native, per-user Windows x64 (`amd64`) distribution. It installs a
 local gateway, native hook launcher, CLI, TUI, scanners, and managed Python
-runtime. The certified connector scope is deliberately narrow: **Codex** and
-**Claude Code**. **Cursor**, **Windsurf**, **Hermes**, and **OpenCode** are available as
-previews while packaged and authentic official-client validation remains
-pending. **OmniGent 0.7.0** is a narrower native-degraded preview for awaited
+runtime. The certified connector scope is deliberately narrow: **Claude
+Code**. **Codex**, **Cursor**, **Windsurf**, **Hermes**, and **OpenCode** are
+available as previews while packaged and authentic official-client validation
+remains pending. **OmniGent 0.7.0** is a narrower native-degraded preview for awaited
 server/SDK policy calls only.
 
 <Callout type="warning" title="WSL is not supported">
@@ -39,7 +39,7 @@ native agent at a WSL installation, or mix native and WSL connector homes.
 
 | Connector | Setup name | Native Windows x64 | Enforcement topology |
 | --- | --- | --- | --- |
-| Codex | `codex` | **Supported** | Native hooks to the loopback gateway; native OTLP is observation-only. |
+| Codex | `codex` | **Preview** | Native hooks to the loopback gateway; native OTLP is observation-only. Authentic packaged plus official-client certification evidence is not recorded. |
 | Claude Code | `claudecode` | **Supported** | Native hooks to the loopback gateway; native OTLP is observation-only. |
 | Cursor | `cursor` | **Preview** | Native command hooks use a managed PowerShell adapter and the loopback gateway; certification is pending. |
 | Windsurf | `windsurf` | **Preview** | Native PowerShell hook adapter to the loopback gateway; packaged and official-client certification pending. |

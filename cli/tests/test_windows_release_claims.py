@@ -3,6 +3,7 @@
 
 """Consistency gates for the certified native Windows release surface."""
 
+import re
 from pathlib import Path
 
 import yaml
@@ -20,8 +21,15 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_windows_release_metadata_is_exact() -> None:
-    assert WINDOWS_SUPPORTED_CONNECTORS == {"codex", "claudecode"}
-    assert WINDOWS_PREVIEW_CONNECTORS == {"cursor", "hermes", "windsurf", "opencode", "omnigent"}
+    assert WINDOWS_SUPPORTED_CONNECTORS == {"claudecode"}
+    assert WINDOWS_PREVIEW_CONNECTORS == {
+        "codex",
+        "cursor",
+        "hermes",
+        "windsurf",
+        "opencode",
+        "omnigent",
+    }
     assert WINDOWS_NOT_CERTIFIED_CONNECTORS == {
         "copilot",
         "antigravity",
@@ -54,7 +62,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "WSL is not supported" in text
     assert "Windows x64" in text and "`amd64`" in text
     assert "Windows ARM64" in text and "Not certified" in text
-    assert "| Codex | `codex` | **Supported**" in text
+    assert "| Codex | `codex` | **Preview**" in text
     assert "| Claude Code | `claudecode` | **Supported**" in text
     assert "| Windsurf | `windsurf` | **Preview**" in text
     assert "| OpenCode | `opencode` | **Preview**" in text
@@ -121,16 +129,16 @@ def test_release_runtime_custody_splits_certified_x64_from_compatibility_arm64()
 
     installer = (ROOT / "scripts/install.ps1").read_text(encoding="utf-8")
     assert '"ARM64" { Die "Windows ARM64 is not certified' in installer
-    assert (
-        '"antigravity",\n'
-        '    "codex",\n'
-        '    "claudecode",\n'
-        '    "copilot",\n'
-        '    "cursor",\n'
-        '    "opencode",\n'
-        '    "windsurf",\n'
-        '    "none"'
-    ) in installer
+    choices_match = re.search(r"\$ConnectorChoices = @\((.*?)\)", installer, re.DOTALL)
+    assert choices_match is not None
+    choices = tuple(re.findall(r'"([^"]+)"', choices_match.group(1)))
+    assert choices[-1] == "none"
+    assert len(choices) == len(set(choices))
+    assert set(choices[:-1]) == (
+        WINDOWS_SUPPORTED_CONNECTORS
+        | WINDOWS_PREVIEW_CONNECTORS
+        | WINDOWS_NOT_CERTIFIED_CONNECTORS
+    )
 
 
 def test_connector_matrix_preserves_macos_and_linux_support() -> None:

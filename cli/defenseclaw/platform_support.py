@@ -68,8 +68,10 @@ class ConnectorPlatformSupport:
 # upstream Windows binary is not sufficient for DefenseClaw certification.
 WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     "codex": ConnectorPlatformSupport(
-        SUPPORTED,
-        "Codex CLI and the DefenseClaw hook entrypoint are certified on native Windows x64.",
+        PREVIEW,
+        "Codex CLI and the DefenseClaw hook entrypoint are available as a native "
+        "Windows x64 preview; no authentic packaged plus official-client "
+        "release-certification record is available.",
     ),
     "claudecode": ConnectorPlatformSupport(
         SUPPORTED,

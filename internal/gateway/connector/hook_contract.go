@@ -206,7 +206,7 @@ var builtinHookContracts = map[string][]HookContract{
 		SupportsTraceparent: true,
 		NativeOTLP:          true,
 		Notes: []string{
-			"Codex 0.133.0 through 0.144.x expose the certified ten-event DefenseClaw matrix, adding SubagentStart and SubagentStop.",
+			"Codex 0.133.0 through 0.144.x expose the versioned ten-event DefenseClaw matrix, adding SubagentStart and SubagentStop.",
 			"Native release certification verifies hooks/list reports every owned handler enabled and trusted without a manual approval step.",
 			"Codex has no native hook-side ask surface in this contract; confirm verdicts render as alert/systemMessage.",
 		},

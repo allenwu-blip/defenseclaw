@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -5528,14 +5528,16 @@ function Invoke-Contract {
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
     $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'cursor-home')).TrimEnd('\')
+    $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
     $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
     $null = Assert-WindowsNativePathsDisjoint @(
-        $contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome, $openCodeHome
+        $contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome, $hermesHome, $openCodeHome
     )
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
     $unrelatedGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
+    $defaultHermesHome = Join-Path $contractHome 'AppData\Local\hermes'
     $defaultWindsurfConfig = Join-Path $contractHome '.codeium\windsurf\hooks.json'
     $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
@@ -5548,6 +5550,7 @@ function Invoke-Contract {
             $claudeHome,
             $copilotHome,
             $cursorHome,
+            $hermesHome,
             $openCodeHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
@@ -5559,6 +5562,7 @@ function Invoke-Contract {
         $env:CLAUDE_CONFIG_DIR = $claudeHome
         $env:COPILOT_HOME = $copilotHome
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome
+        $env:HERMES_HOME = $hermesHome
         $env:OPENCODE_CONFIG_DIR = $openCodeHome
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
@@ -5594,6 +5598,7 @@ function Invoke-Contract {
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath $defaultCursorHome) -or
+            (Test-Path -LiteralPath $defaultHermesHome) -or
             (Test-Path -LiteralPath $defaultWindsurfConfig) -or
             (Test-Path -LiteralPath $defaultOpenCodeHome)) {
             throw 'contract installation touched a default connector home before connector setup'
@@ -5621,6 +5626,7 @@ function Invoke-Contract {
             $defaultCodexHome,
             $defaultClaudeHome,
             $defaultCursorHome,
+            $defaultHermesHome,
             $defaultWindsurfConfig,
             $defaultOpenCodeHome
         )
@@ -5637,6 +5643,7 @@ function Invoke-Contract {
             claudecode = Join-Path $claudeHome 'settings.json'
             copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
             cursor = Join-Path $cursorHome 'hooks.json'
+            hermes = Join-Path $hermesHome 'config.yaml'
             windsurf = Join-Path $contractHome '.codeium\windsurf\hooks.json'
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
             opencode = Join-Path $openCodeHome 'plugins\defenseclaw.js'

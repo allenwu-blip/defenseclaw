@@ -91,6 +91,7 @@ def make_claudecode_mcp_state(
     mcp_servers: dict[str, Any] | None = None,
 ) -> str:
     """Write a minimal ``<home>/.claude.json`` user MCP state file."""
+    os.makedirs(home, exist_ok=True)
     state_path = os.path.join(home, ".claude.json")
     with open(state_path, "w") as fh:
         json.dump({"mcpServers": mcp_servers or {}}, fh, indent=2)

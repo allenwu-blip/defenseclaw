@@ -31,8 +31,8 @@
 #     approved version (that stays a deliberate human edit of
 #     cli/defenseclaw/inventory/validated_versions.json).
 #
-# Native Windows x64 release certification is intentionally limited to Codex
-# and Claude Code. Cursor and Antigravity Windows cells are preview evidence only.
+# Native Windows x64 release certification currently covers Claude Code.
+# The Codex, Cursor, and Antigravity Windows cells are pending evidence only.
 # Deterministic native Windows x64 contract checks run in windows-native.yml;
 # certification remains closed until the packaged and live gates are integrated.
 # Antigravity's official client uses Windows Credential Manager/browser auth,
@@ -336,7 +336,8 @@ jobs:
         # The reality matrix: which agents have a headless CLI that fires hooks
         # on which OS. Contract-only connectors (hermes, windsurf, antigravity)
         # are absent here — they are covered by Layer A only. Native Windows
-        # Codex/Claude certification is handled by windows-live below.
+        # Candidate Codex/Claude Windows certification evidence is handled by
+        # windows-live below; an unrun or failed cell proves nothing.
         #
         # Currently scoped to the connectors we can authenticate with Azure
         # OpenAI / Amazon Bedrock (Codex, Claude Code, OpenHands). Gemini CLI,

@@ -17,7 +17,7 @@ then use the same local audit and optional outbound observability pipeline.
 
 | Connector | Hook channel | Native telemetry | Configuration surface |
 | --- | --- | --- | --- |
-| Codex | Ten current lifecycle/tool events; the only enforcement path. | OTLP logs, metrics, and traces over HTTP/JSON. | Hooks in `%CODEX_HOME%\managed_config.toml`; marked OTLP/notify fields in `%CODEX_HOME%\config.toml`. |
+| Codex | Ten events on `0.133.x–0.144.x`; eleven on `>=0.145.0` with observation-only `SessionEnd`; hooks are the only enforcement path. | OTLP logs, metrics, and traces over HTTP/JSON. | Hooks in `%CODEX_HOME%\managed_config.toml`; marked OTLP/notify fields in `%CODEX_HOME%\config.toml`. |
 | Claude Code | 28 current lifecycle/tool/configuration events; the only enforcement path. | OTLP logs and metrics over HTTP/JSON; traces are explicitly disabled. | Marked hooks and OTLP environment entries in `%CLAUDE_CONFIG_DIR%\settings.json`. |
 | Cursor preview | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
 | Windsurf preview | Twelve Cascade events; only five pre-hooks can block. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. |

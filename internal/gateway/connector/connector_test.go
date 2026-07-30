@@ -10020,8 +10020,10 @@ func TestConnector_AgentPaths_HookScriptsCoverAll(t *testing.T) {
 		return out
 	}
 	cursorScripts := withVendor("cursor-hook.sh")
+	windsurfScripts := withVendor("windsurf-hook.sh")
 	if runtime.GOOS == "windows" {
 		cursorScripts = append(cursorScripts, "cursor-hook.ps1")
+		windsurfScripts = append(windsurfScripts, "windsurf-hook.ps1")
 	}
 
 	cases := []struct {
@@ -10035,7 +10037,7 @@ func TestConnector_AgentPaths_HookScriptsCoverAll(t *testing.T) {
 		{func() Connector { return NewClaudeCodeConnector() }, "claudecode", withVendor("claude-code-hook.sh")},
 		{func() Connector { return NewHermesConnector() }, "hermes", withVendor("hermes-hook.sh")},
 		{func() Connector { return NewCursorConnector() }, "cursor", cursorScripts},
-		{func() Connector { return NewWindsurfConnector() }, "windsurf", withVendor("windsurf-hook.sh")},
+		{func() Connector { return NewWindsurfConnector() }, "windsurf", windsurfScripts},
 		{func() Connector { return NewGeminiCLIConnector() }, "geminicli", withVendor("geminicli-hook.sh")},
 		{func() Connector { return NewCopilotConnector() }, "copilot", withVendor("copilot-hook.sh")},
 		{func() Connector { return NewOpenHandsConnector() }, "openhands", withVendor("openhands-hook.sh")},

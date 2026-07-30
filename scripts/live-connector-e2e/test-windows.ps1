@@ -266,17 +266,37 @@ private-secret-name = "DefenseClaw must remain redacted"
     $originalUserProfile = [Environment]::GetEnvironmentVariable('USERPROFILE')
     $originalCodexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME')
     $originalClaudeHome = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
+    $originalCopilotHome = [Environment]::GetEnvironmentVariable('COPILOT_HOME')
+    $originalCursorHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_CURSOR_CONFIG_HOME')
+    $originalHermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
+    $originalOpenCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
     try {
         $resolverRoot = Join-Path $temp 'resolver-root'
         $resolverProfile = Join-Path $resolverRoot 'profile'
         $resolverCodexHome = Join-Path $resolverRoot 'codex-home'
         $resolverClaudeHome = Join-Path $resolverRoot 'claude-home'
-        foreach ($path in @($resolverProfile, $resolverCodexHome, $resolverClaudeHome)) {
+        $resolverCopilotHome = Join-Path $resolverRoot 'copilot-home'
+        $resolverCursorHome = Join-Path $resolverRoot 'cursor-home'
+        $resolverHermesHome = Join-Path $resolverRoot 'hermes-home'
+        $resolverOpenCodeHome = Join-Path $resolverRoot 'opencode-home'
+        foreach ($path in @(
+            $resolverProfile,
+            $resolverCodexHome,
+            $resolverClaudeHome,
+            $resolverCopilotHome,
+            $resolverCursorHome,
+            $resolverHermesHome,
+            $resolverOpenCodeHome
+        )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
         }
         $env:USERPROFILE = $resolverProfile
         $env:CODEX_HOME = $resolverCodexHome
         $env:CLAUDE_CONFIG_DIR = $resolverClaudeHome
+        $env:COPILOT_HOME = $resolverCopilotHome
+        $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
+        $env:HERMES_HOME = $resolverHermesHome
+        $env:OPENCODE_CONFIG_DIR = $resolverOpenCodeHome
         Assert-True ((Resolve-EffectiveConnectorHome codex).Equals(
             [IO.Path]::GetFullPath($resolverCodexHome),
             [StringComparison]::OrdinalIgnoreCase
@@ -309,6 +329,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         [Environment]::SetEnvironmentVariable('USERPROFILE', $originalUserProfile)
         [Environment]::SetEnvironmentVariable('CODEX_HOME', $originalCodexHome)
         [Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', $originalClaudeHome)
+        [Environment]::SetEnvironmentVariable('COPILOT_HOME', $originalCopilotHome)
+        [Environment]::SetEnvironmentVariable(
+            'DEFENSECLAW_CURSOR_CONFIG_HOME', $originalCursorHome
+        )
+        [Environment]::SetEnvironmentVariable('HERMES_HOME', $originalHermesHome)
+        [Environment]::SetEnvironmentVariable('OPENCODE_CONFIG_DIR', $originalOpenCodeHome)
     }
     . $nativePathHelpers
     $disjointRoots = @(Assert-WindowsNativePathsDisjoint @(
@@ -817,19 +843,31 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Add-WindowsNativeDiagnosticTail\b.*?(?=\r?\nfunction )'
     ).Value
-    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, copilot, cursor, windsurf, antigravity, opencode\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native connector'
+    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, copilot, cursor, hermes, windsurf, antigravity, opencode\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native hook connector'
     Assert-True ($nativeWorkflowText -match '(?m)^\s+name: Windows Native Required\s*$') 'stable aggregate check name exists'
     foreach ($job in @('windows-go', 'windows-python', 'powershell-static', 'package-artifact', 'packaged-acceptance', 'connector-contract')) {
         Assert-True ($nativeWorkflowText -match "(?m)^\s{6}- $([regex]::Escape($job))\s*$") "aggregate depends on $job"
+        $requiredJob = [regex]::Match(
+            $nativeWorkflowText,
+            "(?ms)^  $([regex]::Escape($job)):.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)"
+        ).Value
+        Assert-True ($requiredJob -notmatch 'continue-on-error') "required Windows job $job is not advisory"
     }
     Assert-True ($nativeWorkflowText -match '(?s)windows-native-required:.*?if: \$\{\{ always\(\) \}\}.*?result -ne ''success''') 'aggregate fails skipped or failed dependencies'
-    Assert-True ($nativeWorkflowText -notmatch 'continue-on-error') 'required Windows jobs are not advisory'
+    $omniGentJob = [regex]::Match(
+        $nativeWorkflowText,
+        '(?ms)^  omnigent-native-degraded:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
+    ).Value
+    Assert-True ($omniGentJob -match "if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}" -and
+        $omniGentJob -match 'continue-on-error:\s*true' -and
+        $omniGentJob -notmatch '(?m)^\s{6}- windows-native-required\s*$') `
+        'OmniGent native-degraded preview remains manual and advisory, outside the required aggregate'
     Assert-True ($nativeWorkflowText -notmatch 'shell:\s*bash') 'dedicated Windows workflow never selects Bash'
     Assert-True ($nativeWorkflowText -notmatch 'secrets\.') 'dedicated deterministic workflow consumes no secrets'
     Assert-True ([regex]::Matches(
         $nativeWorkflowText,
         '(?m)^\s*run: \./scripts/initialize-windows-native-ci-paths\.ps1 '
-    ).Count -eq 7) 'every native Windows job uses the shared isolated-path initializer'
+    ).Count -eq 8) 'every native Windows job uses the shared isolated-path initializer'
     foreach ($leafContract in @(
         '-Leaf go -DiagnosticsLeaf windows-native-diagnostics-go',
         "-Leaf ('py-' + `$env:PYTHON_SHARD) -DiagnosticsLeaf ('windows-native-diagnostics-python-' + `$env:PYTHON_SHARD)",
@@ -837,7 +875,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         '-Leaf pkg -DiagnosticsLeaf windows-native-diagnostics-package -ArtifactLeaf windows-native-dist',
         '-Leaf acc -DiagnosticsLeaf windows-native-diagnostics-acceptance -ArtifactLeaf windows-native-dist',
         '-Leaf bootstrap -DiagnosticsLeaf windows-native-diagnostics-bootstrap -ArtifactLeaf windows-bootstrap-fixture',
-        "-Leaf ('ct-' + `$env:CONNECTOR) -DiagnosticsLeaf ('windows-native-diagnostics-' + `$env:CONNECTOR) -ArtifactLeaf windows-native-dist"
+        "-Leaf ('ct-' + `$env:CONNECTOR) -DiagnosticsLeaf ('windows-native-diagnostics-' + `$env:CONNECTOR) -ArtifactLeaf windows-native-dist",
+        '-Leaf omnigent -DiagnosticsLeaf windows-native-diagnostics-omnigent -ArtifactLeaf windows-native-dist'
     )) {
         Assert-True ($nativeWorkflowText.Contains($leafContract)) `
             "native Windows workflow preserves isolated path contract: $leafContract"
@@ -851,7 +890,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'shared initializer roots short mutable state below the trusted user profile'
     Assert-True ($nativePathInitializerText -match 'Join-Path \$env:RUNNER_TEMP \$DiagnosticsLeaf' -and
         $nativePathInitializerText -match 'Join-Path \$env:RUNNER_TEMP \$ArtifactLeaf' -and
-        [regex]::Matches($nativeWorkflowText, '-ArtifactLeaf windows-native-dist').Count -eq 3) `
+        [regex]::Matches($nativeWorkflowText, '-ArtifactLeaf windows-native-dist').Count -eq 4) `
         'shared initializer keeps diagnostics and artifacts under RUNNER_TEMP'
     Assert-True ($nativeHarnessText -match '\$approvedStateBase' -and
         $nativeHarnessText -match 'interactive setup acceptance requires StateRoot below RUNNER_TEMP or DC_WINDOWS_NATIVE_BASE_ROOT') `
@@ -974,8 +1013,24 @@ private-secret-name = "DefenseClaw must remain redacted"
         $wizardHarnessText -match "Send-WizardCommand \`$window 1 'Finish'") `
         'wizard automation activates Install and verifies the completion page before Finish'
     Assert-True ($nativeHarnessText -match "Invoke-WizardConfigureLaterAcceptance" -and
-        $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'.*?Invoke-WizardConnectorAcceptance.*?'windsurf' 'observe'") `
-        'setup acceptance performs Configure Later, Codex Observe, Claude Code Action, and preview Windsurf Observe wizard installs'
+        $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'" -and
+        $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor', 'windsurf', 'antigravity'\)\)") `
+        'setup acceptance performs Configure Later, reference mode installs, and the established additive connector wizard lifecycle samples'
+    foreach ($wizardChoice in @(
+        'none = 0',
+        'antigravity = 1',
+        'codex = 2',
+        'claudecode = 3',
+        'copilot = 4',
+        'cursor = 5',
+        'hermes = 6',
+        'windsurf = 7',
+        'omnigent = 8',
+        'opencode = 9'
+    )) {
+        Assert-True ($wizardHarnessText.Contains($wizardChoice)) `
+            "wizard driver preserves the integrated selection contract: $wizardChoice"
+    }
     $wizardInstall = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WizardInstall\b.*?(?=\r?\nfunction )'
@@ -1295,7 +1350,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $cleanupFunction -match 'Remove-SafeDisposableTree') `
         'fresh-step cleanup is process-scoped and removes without reparse traversal'
 
-    Assert-True ($liveWorkflowText -match '(?s)windows-live:.*?connector: \[codex, claudecode, cursor\].*?report:') 'manual Windows live matrix contains Codex, Claude, and Cursor'
+    Assert-True ($liveWorkflowText -match '(?s)windows-live:.*?connector: \[codex, claudecode, cursor, opencode\].*?report:') 'manual Windows live matrix contains Codex, Claude, Cursor, and OpenCode'
     Assert-True ($liveWorkflowText -match '(?s)windows-antigravity-live:.*?runs-on: \[self-hosted, Windows, X64, antigravity-authenticated\].*?AuthenticatedAntigravityRunner') 'manual Antigravity live job requires a dedicated authenticated native Windows runner'
     $windowsLiveJob = [regex]::Match($liveWorkflowText, '(?s)  windows-live:.*?(?=\r?\n  # -+\r?\n  # Report)').Value
     Assert-True ($windowsLiveJob -notmatch 'continue-on-error') 'Windows live jobs are not advisory'
@@ -1319,14 +1374,24 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($liveWorkflowText -notmatch '(?m)^  windows-(harness-static|contract):') 'deterministic Windows jobs moved out of live radar'
     Assert-True ($ciWorkflowText -notmatch '(?m)^  windows-(hook-path|installer-smoke):') 'legacy partial Windows jobs were removed'
     Assert-True ($harnessText -notmatch '(?i)\bwsl(?:\.exe)?\b|git bash|/bin/|Get-Command\s+(?:jq|tail|curl)|Invoke-Tool\s+''(?:jq|tail|curl)''') 'native harness has no WSL, Git Bash, or Unix utility dependency'
+    $isolatedHomeBinding = [regex]::Match(
+        $harnessText,
+        '(?s)if \(\[string\]::IsNullOrWhiteSpace\(\$NativeDataRoot\)\) \{.*?\} else \{\s*Assert-PackagedConnectorHomes \$StateRoot \$HomeRoot\s*\}'
+    ).Value
     Assert-True ($harnessText.Contains('$env:DEFENSECLAW_CONFIG = Join-Path $env:DEFENSECLAW_HOME ''config.yaml''') -and
-        $harnessText -match '(?s)if \(\[string\]::IsNullOrWhiteSpace\(\$NativeDataRoot\)\) \{\s*\$env:CODEX_HOME = Join-Path \$env:USERPROFILE ''\.codex''\s*\$env:CLAUDE_CONFIG_DIR = Join-Path \$env:USERPROFILE ''\.claude''\s*\} else \{\s*Assert-PackagedConnectorHomes \$StateRoot \$HomeRoot\s*\}') `
+        $isolatedHomeBinding -match '\$env:CODEX_HOME = Join-Path \$env:USERPROFILE ''\.codex''' -and
+        $isolatedHomeBinding -match '\$env:CLAUDE_CONFIG_DIR = Join-Path \$env:USERPROFILE ''\.claude''' -and
+        $isolatedHomeBinding -match '\$env:COPILOT_HOME = Join-Path \$env:USERPROFILE ''\.copilot''' -and
+        $isolatedHomeBinding -match '\$env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path \$env:USERPROFILE ''\.cursor''' -and
+        $isolatedHomeBinding -match '\$env:HERMES_HOME = Join-Path \$env:USERPROFILE ''AppData\\Local\\hermes''' -and
+        $isolatedHomeBinding -match '\$env:OPENCODE_CONFIG_DIR = Join-Path \$env:USERPROFILE ''\.config\\opencode''') `
         'native harness preserves packaged connector homes and otherwise binds disposable defaults'
     $packagedHomeGuard = [regex]::Match($harnessText, '(?s)function Assert-PackagedConnectorHomes\b.*?\n\}').Value
     Assert-True ($packagedHomeGuard -match 'Assert-WindowsNativePathsDisjoint' -and
         $packagedHomeGuard -match 'Test-PathWithin' -and
         $packagedHomeGuard -match 'Assert-DisposableNoReparseAncestors' -and
-        $packagedHomeGuard -match '-RequireExists') `
+        $packagedHomeGuard -match '-RequireExists' -and
+        $packagedHomeGuard -match '\$env:HERMES_HOME = \$homes\[5\]') `
         'packaged connector homes are disjoint, contained, existing, and non-reparse'
     Assert-True ($harnessText -match 'timeout-handling' -and $harnessText -match 'telemetry pass') 'contract records timeout and telemetry evidence'
     foreach ($rule in @(
@@ -1402,7 +1467,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         [StringComparison]::Ordinal
     )
     $readinessTool = $gatewayHookReadiness.IndexOf(
-        "-ArgumentList @('hook', '--connector', `$Connector, '--event', 'PreToolUse')",
+        "-ArgumentList @('hook', '--connector', `$Connector, '--event', `$toolEvent)",
         [StringComparison]::Ordinal
     )
     $readinessSessionDecision = $gatewayHookReadiness.IndexOf(
@@ -1410,14 +1475,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         [StringComparison]::Ordinal
     )
     $readinessToolDecision = $gatewayHookReadiness.IndexOf(
-        '$beforeTool $decisionDeadline $probeID ''PreToolUse''',
+        '$beforeTool $decisionDeadline $probeID $toolEvent',
         [StringComparison]::Ordinal
     )
     Assert-True ($gatewayHookReadiness -match 'Get-StableHookRuntimeExecutable' -and
         $readinessSession -ge 0 -and $readinessTool -gt $readinessSession -and
         $readinessSessionDecision -gt $readinessSession -and
         $readinessToolDecision -gt $readinessTool) `
-        'gateway restart readiness exercises the stable native SessionStart to PreToolUse path'
+        'gateway restart readiness exercises the stable native SessionStart to connector-specific pre-tool path'
+    Assert-True ($gatewayHookReadiness -match "'--connector', 'hermes', '--event', 'pre_tool_call'" -and
+        $gatewayHookReadiness -match '\$probeID ''pre_tool_call''' -and
+        $gatewayHookReadiness -match 'canonical fail-open allow decision') `
+        'Hermes readiness uses its official event name and forced fail-open effective posture'
     Assert-True ($gatewayHookReadiness -match '\$sessionDecision\.action -cne ''allow''' -and
         $gatewayHookReadiness -match '\$sessionDecision\.raw_action -cne ''allow''' -and
         $gatewayHookReadiness -match '\$sessionDecision\.would_block' -and
@@ -1462,22 +1531,28 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Invoke-WindowsSetupStandardUserProcess $setup',
         [StringComparison]::Ordinal
     )
-    $codexHomeCapture = $contractFunction.IndexOf(
-        '$env:CODEX_HOME = $codexHome',
-        [StringComparison]::Ordinal
-    )
-    $claudeHomeCapture = $contractFunction.IndexOf(
-        '$env:CLAUDE_CONFIG_DIR = $claudeHome',
-        [StringComparison]::Ordinal
-    )
     Assert-True ($nativeHarnessText -match 'Join-Path \$realProfile ''\.defenseclaw-ci-contract''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''codex-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''claude-home''' -and
-        $nativeHarnessText -match 'Assert-WindowsNativePathsDisjoint @\(\$contractHome, \$codexHome, \$claudeHome\)' -and
-        $contractInstall -ge 0 -and
-        $codexHomeCapture -ge 0 -and $codexHomeCapture -lt $contractInstall -and
-        $claudeHomeCapture -ge 0 -and $claudeHomeCapture -lt $contractInstall) `
-        'connector contract captures pairwise disjoint Codex and Claude homes during native Setup'
+        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''copilot-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''cursor-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
+        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$cursorHome, \$hermesHome, \$openCodeHome\s*\)' -and
+        $contractInstall -ge 0) `
+        'connector contract constructs every pairwise-disjoint recorded connector home'
+    foreach ($homeAssignment in @(
+        '$env:CODEX_HOME = $codexHome',
+        '$env:CLAUDE_CONFIG_DIR = $claudeHome',
+        '$env:COPILOT_HOME = $copilotHome',
+        '$env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome',
+        '$env:HERMES_HOME = $hermesHome',
+        '$env:OPENCODE_CONFIG_DIR = $openCodeHome'
+    )) {
+        $homeCapture = $contractFunction.IndexOf($homeAssignment, [StringComparison]::Ordinal)
+        Assert-True ($homeCapture -ge 0 -and $homeCapture -lt $contractInstall) `
+            "connector contract captures recorded home before native Setup: $homeAssignment"
+    }
     $contractCleanupTry = $contractFunction.IndexOf('    try {', [StringComparison]::Ordinal)
     $contractProfileCreate = $contractFunction.IndexOf(
         '[IO.Directory]::CreateDirectory($path)',
@@ -1498,7 +1573,11 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeHarnessText -match 'connector contract wrote to the default agent home' -and
         $nativeHarnessText -match 'connector contract wrote to the unrelated agent home' -and
         $harnessText -match 'function Resolve-EffectiveConnectorHome\b' -and
-        $harnessText -match '\$fileName = if \(\$ConnectorName -eq ''codex''\) \{ ''managed_config\.toml'' \}' -and
+        $harnessText -match '\$fileName = switch \(\$ConnectorName\)' -and
+        $harnessText -match '''codex'' \{ ''managed_config\.toml'' \}' -and
+        $harnessText -match '''claudecode'' \{ ''settings\.json'' \}' -and
+        $harnessText -match '''hermes'' \{ ''config\.yaml'' \}' -and
+        $harnessText -match '''opencode'' \{ ''plugins\\defenseclaw\.js'' \}' -and
         [regex]::Matches($harnessText, 'Get-EffectiveConnectorConfigPath \$Connector').Count -eq 3 -and
         $harnessText -notmatch 'Join-Path \$env:USERPROFILE ''\.codex\\config\.toml''' -and
         $harnessText -notmatch 'Join-Path \$env:USERPROFILE ''\.claude\\settings\.json''') `

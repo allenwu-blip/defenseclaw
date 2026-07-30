@@ -1,13 +1,14 @@
-# Deterministic, fork-safe native Windows x64 certification.
+# Deterministic, fork-safe native Windows x64 acceptance regression suite.
+# A green synthetic/contract job is not connector certification evidence.
 #
 # Branch protection must require the exact aggregate check name:
 #   Windows Native Required
 #
 # Real provider-secret Codex/Claude tests remain in connector-live-e2e.yml and
 # are workflow_dispatch-only. They are regression radar, not a merge gate.
-# Hermes remains preview/not-certified and is intentionally absent from the
-# required packaged connector matrix until the deferred acceptance pass in
-# docs/research/HERMES-NATIVE-WINDOWS.md is implemented and passes.
+# Hermes is included in the required deterministic connector-contract matrix
+# but remains preview/not-certified. Its packaged and official-client gates in
+# docs/research/HERMES-NATIVE-WINDOWS.md are separate and currently unfulfilled.
 
 name: Windows Native CI
 
@@ -727,12 +728,12 @@ jobs:
     env:
       REQUIRED_RESULTS: ${{ toJSON(needs) }}
     steps:
-      - name: Fail unless every deterministic Windows job succeeded
+      - name: Fail unless every deterministic Windows validation job succeeded
         run: |
           $results = $env:REQUIRED_RESULTS | ConvertFrom-Json
           $failed = @($results.PSObject.Properties | Where-Object { $_.Value.result -ne 'success' })
           if ($failed.Count) {
             $summary = $failed | ForEach-Object { "$($_.Name)=$($_.Value.result)" }
-            throw "Required Windows certification did not succeed: $($summary -join ', ')"
+            throw "Required Windows validation did not succeed: $($summary -join ', ')"
           }
-          Write-Host 'Every deterministic native Windows x64 certification job succeeded.'
+          Write-Host 'Every required deterministic native Windows x64 validation job succeeded; this does not certify preview connectors.'

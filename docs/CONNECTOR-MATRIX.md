@@ -135,9 +135,13 @@ surface, DefenseClaw entrypoint, configuration paths, and teardown must all run
 natively. WSL findings are recorded separately below for planning and do not
 represent DefenseClaw Windows support or release certification.
 
+The integration-time cross-surface, feature, and exact hook-inventory audit is
+recorded in
+[`research/NATIVE-WINDOWS-CONNECTOR-ACCEPTANCE.md`](research/NATIVE-WINDOWS-CONNECTOR-ACCEPTANCE.md).
+
 | Connector | macOS | Linux | Native Windows | Windows reason |
 | --------- | ----- | ----- | -------------- | -------------- |
-| Codex | supported | supported | supported | Current Codex releases run natively on Windows and expose Windows-specific hook commands; DefenseClaw uses its native hook entrypoint. |
+| Codex | supported | supported | **preview / not certified** | Current Codex releases run natively on Windows and expose Windows-specific hook commands; DefenseClaw uses its native hook entrypoint. No authentic packaged plus official-client release-certification record is available, so the final status remains preview. |
 | Claude Code | supported | supported | supported | Anthropic documents direct PowerShell/CMD installation and native command hooks. Git for Windows is recommended, not required; Claude Code uses its PowerShell tool when Git Bash is absent. |
 | Cursor | supported | supported | **not certified** (preview) | Cursor publishes a native Windows Agent installer and native desktop installers. DefenseClaw registers `%USERPROFILE%\.cursor\hooks.json` with a synchronous PowerShell adapter and native hook runtime; integrated packaged and official-client validation is still pending. |
 | Windsurf | supported | supported | **preview** | Devin Desktop (Windsurf) ships native Windows x64, and its documented `powershell` hook field runs via `powershell -Command`. DefenseClaw implements a synchronous native PowerShell adapter to the exact packaged hook executable; packaged and interactive official-client certification is still pending. |
@@ -166,7 +170,7 @@ is `not separately documented` rather than an inferred support promise.
 
 | Hook connector | Upstream WSL position | Current DefenseClaw Windows decision |
 | -------------- | --------------------- | ------------------------------------ |
-| Codex | WSL2 is documented; WSL1 is no longer supported starting with Codex 0.115. | Native Windows supported; WSL is out of scope. |
+| Codex | WSL2 is documented; WSL1 is no longer supported starting with Codex 0.115. | Native Windows preview; WSL is out of scope. |
 | Claude Code | WSL1 and WSL2 are documented alternatives to the direct native Windows installation. | Native Windows supported; WSL is out of scope. |
 | Hermes | Linux/WSL2 is upstream Tier 1 and tested on current WSL2; it is a separate installation from native Windows. | Native Windows preview through a direct DefenseClaw executable only; WSL remains out of scope. Hermes's own Windows terminal tool uses installer-managed PortableGit internally and is not a DefenseClaw dependency. |
 | Cursor | Cursor documents both native Windows Agent installation and WSL installation. | Native Windows Agent/IDE hooks are available as a DefenseClaw preview; WSL remains out of scope. |
@@ -417,7 +421,7 @@ contract; an advisory or contract-only probe does not promote a connector.
 
 | Connector | Linux | macOS | Windows | Live driver headless invocation | Notes |
 | --------- | ----- | ----- | ------- | ------------------------------- | ----- |
-| Codex | live | live | live\* (certified) | `codex exec --json --full-auto` | native OTLP asserted |
+| Codex | live | live | live\* (preview; certification evidence pending) | `codex exec --json --full-auto` | The live job is a prepared gate, not recorded certification evidence; native OTLP is asserted only when the gate actually runs. |
 | Claude Code | live | live | live\* (certified) | `claude -p` | native OTLP asserted; native-ask is Layer A only |
 | Gemini CLI | live driver (credential-deferred) | live driver (credential-deferred) | — (excluded) | `gemini -p -o json --approval-mode yolo` on supported non-Windows hosts only | Native Windows validation is intentionally excluded; existing non-Windows behavior and its credential requirements are unchanged. |
 | Cursor | live | live | live\* (preview; certification pending) | `agent -p --force` (`cursor-agent` compatibility alias) | native PowerShell contract coverage is implemented; integrated packaged and official-client validation is pending |

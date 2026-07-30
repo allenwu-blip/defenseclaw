@@ -53,8 +53,8 @@ var proxyConnectors = map[string]struct{}{
 // cli/defenseclaw/platform_support.py WINDOWS_CONNECTOR_SUPPORT mapping.
 var windowsConnectorSupport = map[string]PlatformSupport{
 	"codex": {
-		Status: PlatformSupported,
-		Reason: "Codex CLI and the DefenseClaw hook entrypoint are certified on native Windows x64.",
+		Status: PlatformPreview,
+		Reason: "Codex CLI and the DefenseClaw hook entrypoint are available as a native Windows x64 preview; no authentic packaged plus official-client release-certification record is available.",
 	},
 	"claudecode": {
 		Status: PlatformSupported,

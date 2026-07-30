@@ -83,8 +83,10 @@ class ClaudeCodeMCPReaderTests(unittest.TestCase):
 
     def test_reads_mcp_from_user_state(self):
         with _IsolatedHome() as home:
+            state_path = connector_paths.claude_mcp_state_path()
+            self.assertEqual(Path(state_path), Path(home) / ".claude" / ".claude.json")
             make_claudecode_mcp_state(
-                home,
+                os.path.dirname(state_path),
                 mcp_servers={
                     "playwright": {"command": "npx", "args": ["@playwright/mcp"]},
                     "filesystem": {"command": "uvx", "args": ["mcp-server-filesystem"]},

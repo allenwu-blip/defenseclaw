@@ -437,13 +437,30 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 					wantConfigNeedle = nativeHookFlag + conn.Name()
 				}
 			}
-			if runtime.GOOS == "windows" && conn.Name() == "antigravity" {
+			if runtime.GOOS == "windows" &&
+				(conn.Name() == "antigravity" || conn.Name() == "copilot") {
 				var cfg map[string]interface{}
 				if err := json.Unmarshal(data, &cfg); err != nil {
-					t.Fatalf("parse antigravity config after setup: %v\n%s", err, data)
+					t.Fatalf("parse %s config after setup: %v\n%s", conn.Name(), err, data)
 				}
-				if !structuredHookCommandReferences(cfg, []string{conn.hookCommand(opts)}) {
-					t.Fatalf("config after setup does not reference safe Antigravity command:\n%s", string(data))
+				ownedCommands := []string{conn.hookCommand(opts)}
+				if conn.Name() == "antigravity" {
+					ownedCommands = antigravityOwnedHookCommands(conn.hookCommand(opts))
+					// The first entry is the generic pre-event command retained
+					// only for legacy ownership cleanup. Current Antigravity
+					// registration always carries one of its five trusted
+					// --event bindings.
+					ownedCommands = ownedCommands[1:]
+				}
+				for _, command := range ownedCommands {
+					encodedCommand, err := json.Marshal(command)
+					if err != nil {
+						t.Fatalf("encode %s hook command: %v", conn.Name(), err)
+					}
+					if !strings.Contains(string(data), string(encodedCommand)) {
+						t.Fatalf("config after setup does not reference safe %s command %q:\n%s",
+							conn.Name(), command, string(data))
+					}
 				}
 			} else if !strings.Contains(string(data), wantConfigNeedle) {
 				t.Fatalf("config after setup does not reference %s:\n%s", wantConfigNeedle, string(data))

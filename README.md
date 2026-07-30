@@ -140,7 +140,9 @@ For platform-specific steps, see [docs/INSTALL.md](docs/INSTALL.md).
 
 On native Windows x64, use the native Setup EXE and hook-only connector path in
 the [Native Windows guide](https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/windows/).
-WSL is unsupported. Codex CLI and Claude Code are the only certified Windows connectors.
+WSL is unsupported. Claude Code is the certified Windows connector; Codex and
+the other labeled native implementations remain preview or not certified until
+their authentic packaged plus official-client gates pass.
 
 ---
 

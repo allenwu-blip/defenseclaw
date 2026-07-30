@@ -24,10 +24,9 @@ import (
 
 var windowsSupportedConnectorNames = []string{
 	"claudecode",
-	"codex",
 }
 
-var windowsPreviewConnectorNames = []string{"cursor", "hermes", "omnigent", "opencode", "windsurf"}
+var windowsPreviewConnectorNames = []string{"codex", "cursor", "hermes", "omnigent", "opencode", "windsurf"}
 
 var windowsNotCertifiedConnectorNames = []string{
 	"antigravity", "copilot",

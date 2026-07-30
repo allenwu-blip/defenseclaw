@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -50,7 +50,7 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'windsurf') {
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
@@ -63,6 +63,7 @@ function Resolve-EffectiveConnectorHome(
         'claudecode' { 'CLAUDE_CONFIG_DIR' }
         'copilot' { 'COPILOT_HOME' }
         'cursor' { 'DEFENSECLAW_CURSOR_CONFIG_HOME' }
+        'hermes' { 'HERMES_HOME' }
         'antigravity' { 'ANTIGRAVITY_CONFIG_DIR' }
         'opencode' { 'OPENCODE_CONFIG_DIR' }
     }
@@ -81,6 +82,7 @@ function Resolve-EffectiveConnectorHome(
         'claudecode' { '.claude' }
         'copilot' { '.copilot' }
         'cursor' { '.cursor' }
+        'hermes' { 'AppData\Local\hermes' }
         'antigravity' { '.gemini\config' }
         'opencode' { '.config\opencode' }
     }
@@ -88,7 +90,7 @@ function Resolve-EffectiveConnectorHome(
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'windsurf') {
         return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) '.codeium\windsurf\hooks.json'
@@ -98,6 +100,7 @@ function Get-EffectiveConnectorConfigPath(
         'claudecode' { 'settings.json' }
         'copilot' { 'hooks\defenseclaw.json' }
         'cursor' { 'hooks.json' }
+        'hermes' { 'config.yaml' }
         'antigravity' { 'hooks.json' }
         'opencode' { 'plugins\defenseclaw.js' }
     }
@@ -117,6 +120,11 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         $cursorHome = Join-Path $Root 'cursor-home'
         Protect-TestDirectory $cursorHome
     }
+    $hermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
+    if ([string]::IsNullOrWhiteSpace($hermesHome)) {
+        $hermesHome = Join-Path $Root 'hermes-home'
+        Protect-TestDirectory $hermesHome
+    }
     $openCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
     $homes = @(Assert-WindowsNativePathsDisjoint @(
         $ProfileHome,
@@ -124,6 +132,7 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         $claudeHome,
         $copilotHome,
         $cursorHome,
+        $hermesHome,
         $openCodeHome
     ))
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
@@ -141,7 +150,8 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $env:CLAUDE_CONFIG_DIR = $homes[2]
     $env:COPILOT_HOME = $homes[3]
     $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $homes[4]
-    $env:OPENCODE_CONFIG_DIR = $homes[5]
+    $env:HERMES_HOME = $homes[5]
+    $env:OPENCODE_CONFIG_DIR = $homes[6]
 }
 
 function Get-StableHookRuntimeExecutable {
@@ -777,6 +787,49 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         throw "gateway hook API did not become semantically ready within ${Timeout}s; last probe: $lastError"
     }
 
+    if ($Connector -eq 'hermes') {
+        for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
+            $probeID = "dc-windows-ready-hermes-$([Guid]::NewGuid().ToString('N'))"
+            $toolPath = Join-Path $probeRoot "tool-$attempt.json"
+            $toolPayload = [ordered]@{
+                hook_event_name = 'pre_tool_call'
+                session_id = $probeID
+                turn_id = "$probeID-turn"
+                agent_id = 'hermes-readiness'
+                agent_name = 'Hermes Windows readiness'
+                agent_type = 'hermes-cli'
+                tool_name = 'execute_command'
+                tool_input = [ordered]@{ command = 'Get-ChildItem -LiteralPath .' }
+            }
+            [IO.File]::WriteAllText(
+                $toolPath,
+                ($toolPayload | ConvertTo-Json -Depth 6 -Compress),
+                [Text.UTF8Encoding]::new($false)
+            )
+            try {
+                $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+                $result = Invoke-NativeProcess -FilePath $hookExecutable `
+                    -ArgumentList @('hook', '--connector', 'hermes', '--event', 'pre_tool_call') `
+                    -InputPath $toolPath -TimeoutSeconds 15 -AllowedExitCodes @(0) `
+                    -LogPath (Join-Path $script:LogRoot "gateway-readiness-$attempt-tool.log")
+                $decision = Wait-HookDecisionAfter `
+                    $beforeTool ([DateTime]::UtcNow.AddSeconds(2)) $probeID 'pre_tool_call'
+                if ($result.ExitCode -ne 0 -or $null -eq $decision -or
+                    $decision.action -cne 'allow' -or $decision.raw_action -cne 'allow' -or
+                    $decision.would_block) {
+                    throw 'pre_tool_call readiness did not produce a canonical fail-open allow decision'
+                }
+                Write-Result 'gateway-hook-readiness' pass `
+                    "stable native pre_tool_call allow after $attempt probe(s); effective-failure=fail-open"
+                return
+            } catch {
+                $lastError = Protect-LogText $_.Exception.Message
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "gateway hook API did not become semantically ready within ${Timeout}s; last probe: $lastError"
+    }
+
     for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
         $probeID = "dc-windows-ready-$Connector-$([Guid]::NewGuid().ToString('N'))"
         $sessionPath = Join-Path $probeRoot "session-$attempt.json"
@@ -966,6 +1019,7 @@ function Invoke-Setup([string]$Mode) {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
         'cursor' { 'cursor' }
+        'hermes' { 'hermes' }
         'windsurf' { 'windsurf' }
         'antigravity' { 'antigravity' }
         'opencode' { 'opencode' }
@@ -980,6 +1034,7 @@ function Get-ConnectorHookLabel {
         'claudecode' { 'Claude Code hooks' }
         'copilot' { 'Copilot hooks' }
         'cursor' { 'Cursor hooks' }
+        'hermes' { 'Hermes hooks (preview; fail-open)' }
         'windsurf' { 'Windsurf hooks' }
         'antigravity' { 'Antigravity hooks' }
         'opencode' { 'OpenCode hooks' }
@@ -992,6 +1047,7 @@ function Get-ConnectorRepairSubcommand {
         'claudecode' { 'claude-code' }
         'copilot' { 'copilot' }
         'cursor' { 'cursor' }
+        'hermes' { 'hermes' }
         'windsurf' { 'windsurf' }
         'antigravity' { 'antigravity' }
     }
@@ -1002,6 +1058,7 @@ function Get-ConnectorToolName {
         'claudecode' { 'Bash' }
         'copilot' { 'powershell' }
         'cursor' { 'shell' }
+        'hermes' { 'execute_command' }
         'windsurf' { 'powershell' }
         default { 'shell' }
     }
@@ -1187,6 +1244,89 @@ function Assert-AntigravityWindowsHookCommands([string]$Config) {
     }
 }
 
+function Assert-HermesWindowsHookConfig([string]$ConfigPath, [string]$Context) {
+    $code = @'
+import json
+import re
+import shlex
+import sys
+
+import yaml
+
+expected = {
+    "pre_tool_call": ".*",
+    "post_tool_call": ".*",
+    "transform_terminal_output": None,
+    "transform_tool_result": None,
+    "transform_llm_output": None,
+    "pre_llm_call": None,
+    "post_llm_call": None,
+    "pre_verify": None,
+    "pre_api_request": None,
+    "post_api_request": None,
+    "api_request_error": None,
+    "on_session_start": None,
+    "on_session_end": None,
+    "on_session_finalize": None,
+    "on_session_reset": None,
+    "subagent_start": None,
+    "subagent_stop": None,
+    "pre_gateway_dispatch": None,
+    "pre_approval_request": None,
+    "post_approval_response": None,
+    "kanban_task_claimed": None,
+    "kanban_task_completed": None,
+    "kanban_task_blocked": None,
+}
+with open(sys.argv[1], encoding="utf-8") as stream:
+    document = yaml.safe_load(stream) or {}
+if document.get("hooks_auto_accept") is not True:
+    raise SystemExit("hooks_auto_accept is not true")
+hooks = document.get("hooks")
+if not isinstance(hooks, dict) or set(hooks) != set(expected):
+    raise SystemExit(
+        "Hermes event inventory mismatch: "
+        + json.dumps(sorted(hooks) if isinstance(hooks, dict) else hooks)
+    )
+commands = set()
+for event, matcher in expected.items():
+    entries = hooks[event]
+    if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+        raise SystemExit(f"{event} does not have exactly one mapping entry")
+    entry = entries[0]
+    if type(entry.get("timeout")) is not int or entry["timeout"] != 30:
+        raise SystemExit(f"{event} timeout is not exactly 30")
+    if entry.get("matcher") != matcher:
+        raise SystemExit(f"{event} matcher is not {matcher!r}")
+    command = entry.get("command")
+    if not isinstance(command, str) or "\\" in command:
+        raise SystemExit(f"{event} command is not a forward-slash argv")
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise SystemExit(f"{event} command is not shlex-valid: {exc}") from exc
+    if (
+        len(argv) != 4
+        or not re.fullmatch(r"[A-Za-z]:/.*/defenseclaw-hook\.exe", argv[0], re.IGNORECASE)
+        or argv[1:] != ["hook", "--connector", "hermes"]
+        or not command.startswith('"')
+    ):
+        raise SystemExit(f"{event} command is not the direct absolute native Hermes argv")
+    commands.add(command)
+if len(commands) != 1:
+    raise SystemExit("Hermes handlers do not share one command identity")
+print(json.dumps({"entries": len(expected), "command": next(iter(commands))}))
+'@
+    $probe = Invoke-Tool 'python.exe' @(
+        '-I', '-X', 'utf8', '-c', $code, ([IO.Path]::GetFullPath($ConfigPath))
+    )
+    try { $result = $probe.StdOut | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context validation returned invalid JSON: $($_.Exception.Message)" }
+    if ([int]$result.entries -ne 23) {
+        throw "$Context validated $($result.entries) events instead of 23"
+    }
+}
+
 function Assert-DoctorHookRegistration {
     $doctor = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1)
     try {
@@ -1232,6 +1372,8 @@ function Assert-DoctorHookRegistration {
         if (-not [string]::Equals($adapter, $expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase)) {
             throw "setup-created Cursor registration uses unexpected adapter: $adapter"
         }
+    } elseif ($Connector -eq 'hermes') {
+        Assert-HermesWindowsHookConfig $config 'setup-created Hermes registration'
     } elseif ($Connector -eq 'windsurf') {
         if ($registration -notmatch '(?i)"powershell"\s*:\s*"[^"]*windsurf-hook\.ps1"' -or
             $registration -match '(?i)"command"\s*:\s*"[^"]*windsurf-hook') {
@@ -1265,6 +1407,7 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\claudecode'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\cursor'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\hermes'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\windsurf'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\antigravity'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\opencode'),
@@ -1311,7 +1454,13 @@ function Invoke-Teardown {
 
 function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow', 'block')][string]$Expected, [bool]$RequireGatewayBlock = $false) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $registeredEvent = if ($Connector -eq 'antigravity') { 'PreToolUse' } else { $EventName }
+    $registeredEvent = if ($Connector -eq 'antigravity') {
+        'PreToolUse'
+    } elseif ($Connector -eq 'hermes') {
+        'pre_tool_call'
+    } else {
+        $EventName
+    }
     $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $registeredEvent) @(0, 2) -InputPath $Payload
     Start-Sleep -Milliseconds 800
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw "$EventName did not reach the gateway" }
@@ -1341,7 +1490,7 @@ function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$R
         return $path
     }
     $toolName = if ($Connector -eq 'opencode') { 'bash' } else { Get-ConnectorToolName }
-    $toolEvent = 'PreToolUse'
+    $toolEvent = if ($Connector -eq 'hermes') { 'pre_tool_call' } else { 'PreToolUse' }
     $payload = [ordered]@{
         hook_event_name = $toolEvent
         session_id = "dc-windows-contract-$Connector"
@@ -1365,7 +1514,13 @@ function Invoke-DangerousHook(
     [string]$Sentinel
 ) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $eventName = if ($Connector -eq 'antigravity') { 'PreToolUse' } else { "PreTool-$Name" }
+    $eventName = if ($Connector -eq 'antigravity') {
+        'PreToolUse'
+    } elseif ($Connector -eq 'hermes') {
+        'pre_tool_call'
+    } else {
+        "PreTool-$Name"
+    }
     $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $eventName) @(0, 2) $Payload
 
     $decision = $null
@@ -1577,6 +1732,8 @@ function Assert-DoctorWindowsHookRegistration {
         $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config $true 'Cursor setup'
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $config
+    } elseif ($Connector -eq 'hermes') {
+        Assert-HermesWindowsHookConfig $configPath 'Hermes setup'
     } elseif ($Connector -eq 'codex') {
         $codexCommand = Get-CodexWindowsHookCommand $config
         Assert-CodexSynchronousWindowsHookCommand $codexCommand "$Connector setup"
@@ -1624,6 +1781,7 @@ function Assert-DoctorWindowsHookRegistration {
     $expectedHealthyDetail = switch ($Connector) {
         'copilot' { 'healthy Windows-native Copilot PowerShell registration' }
         'cursor' { 'configured runtime=' }
+        'hermes' { 'healthy Windows-native executable registration' }
         'windsurf' { 'healthy Windows-native PowerShell registration' }
         default { 'healthy Windows-native executable registration' }
     }
@@ -1644,6 +1802,10 @@ function Assert-DoctorWindowsHookRegistration {
     if ($Connector -eq 'cursor' -and
         ($check.detail -notmatch 'failClosed=true' -or $check.detail -notmatch 'failure=fail-closed')) {
         throw "Doctor did not expose Cursor action-mode fail-closed posture: $($check.detail)"
+    }
+    if ($Connector -eq 'hermes' -and
+        ($check.detail -notmatch 'entries=23' -or $label -notmatch 'fail-open')) {
+        throw "Doctor did not expose Hermes's exact event inventory and forced fail-open posture: $($check.detail)"
     }
     if ($check.detail -match '(?i)\x2esh\b|\bbash\b|\bwsl\b|\bchmod\b|\bunset\b|hook script') {
         throw "Doctor returned obsolete shell-hook guidance for native Windows: $($check.detail)"
@@ -1702,6 +1864,7 @@ function Assert-DoctorWindowsHookRegistration {
             'claudecode' { 'does not use the native hook runtime' }
             'copilot' { 'not the DefenseClaw hook launcher' }
             'cursor' { 'configured Cursor hook runtime is missing' }
+            'hermes' { 'does not use the direct native DefenseClaw executable' }
             'windsurf' { 'cannot be resolved' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
         }
@@ -1758,10 +1921,10 @@ function Assert-NativeEnterpriseHooksRequireElevation {
 }
 
 function Install-Agent {
-    if ($Connector -eq 'windsurf') {
+    if ($Connector -in @('hermes', 'windsurf')) {
         throw (
-            'Windsurf official-client E2E requires an interactive native Windows ' +
-            'Desktop runner; this deterministic harness does not substitute a CLI, WSL, or shell workaround.'
+            "$Connector official-client E2E requires a separately prepared native Windows " +
+            'client runner; this deterministic harness does not substitute a shell or compatibility workaround.'
         )
     }
     if ($ReleaseCertification) {
@@ -2165,19 +2328,19 @@ function Assert-Evidence([int]$Since = 0) {
         '--require-event-name', 'hook_decision'
     ) | Out-Null
     Invoke-Tool 'python.exe' @((Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-windows-evidence.py'), '--jsonl', $script:GatewayJsonl, '--audit-db', $script:AuditDb, '--connector', $Connector, '--since', "$Since") | Out-Null
-    if ($Connector -eq 'opencode') {
-        if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $Since)) {
-            throw 'no connector-tagged OpenCode hook telemetry reached the gateway'
+    if ($Connector -in @('codex', 'claudecode')) {
+        if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $Since)) {
+            throw 'no connector-tagged native telemetry event reached the gateway'
         }
-    } elseif (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $Since)) {
-        throw 'no connector-tagged native telemetry event reached the gateway'
+    } elseif (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $Since)) {
+        throw "no connector-tagged $Connector hook/policy telemetry reached the gateway"
     }
     Write-Result schema pass 'canonical observability-v8 JSONL schema valid'
     Write-Result audit-correlation pass 'canonical correlation.request_id matched SQLite audit evidence'
-    if ($Connector -eq 'opencode') {
-        Write-Result telemetry pass 'connector-tagged hook telemetry recorded; native OTLP not claimed'
-    } else {
+    if ($Connector -in @('codex', 'claudecode')) {
         Write-Result telemetry pass 'connector-tagged OTLP event recorded'
+    } else {
+        Write-Result telemetry pass 'connector-tagged hook/policy telemetry recorded; native OTLP not claimed'
     }
 }
 
@@ -2302,9 +2465,11 @@ function Invoke-LiveRun {
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw 'blocked tool hook did not reach the gateway' }
     if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw 'blocked action has no block verdict' }
     Write-Result tool-block:enforced pass 'sentinel absent and block verdict present'
-    if ($Connector -ne 'opencode') {
+    if ($Connector -in @('codex', 'claudecode')) {
         if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $start)) { throw 'no connector-tagged OTLP telemetry reached the gateway' }
         Write-Result otlp pass
+    } else {
+        Write-Result hook-telemetry pass 'connector-tagged hook/policy telemetry recorded; native OTLP not claimed'
     }
     Assert-Evidence $start
     Invoke-Teardown
@@ -2516,13 +2681,14 @@ if (-not $NoRun) {
         $env:CLAUDE_CONFIG_DIR = Join-Path $env:USERPROFILE '.claude'
         $env:COPILOT_HOME = Join-Path $env:USERPROFILE '.copilot'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $env:USERPROFILE '.cursor'
+        $env:HERMES_HOME = Join-Path $env:USERPROFILE 'AppData\Local\hermes'
         $env:OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE '.config\opencode'
     } else {
         Assert-PackagedConnectorHomes $StateRoot $HomeRoot
     }
     if ($Connector -eq 'opencode') {
         # The certification path exercises OpenCode's native PowerShell runner.
-        # Never let an ambient Git Bash override turn this into a workaround.
+        # Never let an ambient compatibility-shell override turn this into a workaround.
         Remove-Item Env:OPENCODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
     }
     if (-not $ReleaseCertification) { Protect-TestDirectory $env:USERPROFILE }

@@ -777,11 +777,12 @@ func main() {
 	}
 }
 
-// TestWindowsNativePowerShellHookCommandPropagatesRealFailClosedBlock runs the
-// actual native hook entrypoint against isolated state. A deliberately absent
-// token under strict availability produces the real action-blocking exit 2
-// without reading an installed profile or contacting a live sidecar.
-func TestWindowsNativePowerShellHookCommandPropagatesRealFailClosedBlock(t *testing.T) {
+// TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse
+// runs the actual native hook entrypoint against isolated state. Antigravity
+// does not use process exit status as an enforcement interface, so even strict
+// availability must retain the connector's event-specific fail-open response
+// when its scoped token is deliberately absent.
+func TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows hook integration is Windows-specific")
 	}
@@ -833,13 +834,16 @@ func TestWindowsNativePowerShellHookCommandPropagatesRealFailClosedBlock(t *test
 		t.Fatalf("fail-closed generated command exceeded %s: %v\ncommand: %s\nstdout: %s\nstderr: %s",
 			windowsNativePowerShellTestTimeout, ctx.Err(), command, stdout.String(), stderr.String())
 	}
-	if got := windowsProcessExitCodeForTest(t, err); got != 2 {
-		t.Fatalf("fail-closed generated command exit = %d, want 2\ncommand: %s\nstdout: %s\nstderr: %s",
+	if got := windowsProcessExitCodeForTest(t, err); got != 0 {
+		t.Fatalf("Antigravity generated command exit = %d, want fail-open 0\ncommand: %s\nstdout: %s\nstderr: %s",
 			got, command, stdout.String(), stderr.String())
 	}
-	if diagnostic := strings.ToLower(stderr.String()); !strings.Contains(diagnostic, "blocking") ||
-		!strings.Contains(diagnostic, "missing gateway token") {
-		t.Fatalf("fail-closed diagnostic was not preserved on stderr: %q", stderr.String())
+	if got := strings.TrimSpace(stdout.String()); got != "{}" {
+		t.Fatalf("Antigravity failure response = %q, want {}", got)
+	}
+	if diagnostic := strings.ToLower(stderr.String()); !strings.Contains(diagnostic, "missing gateway token") ||
+		!strings.Contains(diagnostic, "event-specific failure response") {
+		t.Fatalf("Antigravity fail-open provenance was not preserved on stderr: %q", stderr.String())
 	}
 }
 
@@ -1236,7 +1240,7 @@ func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
 		wantSessionEnd bool
 	}{
 		{
-			name:           "0.144 keeps certified ten-event matrix",
+			name:           "0.144 keeps versioned ten-event matrix",
 			version:        "codex-cli 0.144.0",
 			contractID:     "codex-hooks-v3",
 			wantEventCount: 10,
@@ -1466,7 +1470,6 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 		{"claudecode", NewClaudeCodeConnector(), &ClaudeCodeSettingsPathOverride, ".json"},
 		{"cursor", NewCursorConnector(), &CursorHooksPathOverride, ".json"},
 		{"windsurf", NewWindsurfConnector(), &WindsurfHooksPathOverride, ".json"},
-		{"geminicli", NewGeminiCLIConnector(), &GeminiSettingsPathOverride, ".json"},
 		{"copilot", NewCopilotConnector(), &CopilotHooksPathOverride, ".json"},
 		{"antigravity", NewAntigravityConnector(), &AntigravityHooksPathOverride, ".json"},
 		{"hermes-preview", NewHermesConnector(), &HermesConfigPathOverride, ".yaml"},
@@ -1531,6 +1534,35 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 				} {
 					if !strings.Contains(adapterText, marker) {
 						t.Errorf("Cursor adapter missing hardening marker %q:\n%s", marker, adapter)
+					}
+				}
+			} else if connectorName == "windsurf" {
+				wantCommand := hookInvocationCommand(
+					"windsurf",
+					filepath.Join(dataDir, "hooks", "windsurf-hook.sh"),
+				)
+				encodedCommand, err := json.Marshal(wantCommand)
+				if err != nil {
+					t.Fatalf("encode Windsurf Windows adapter command: %v", err)
+				}
+				if !strings.Contains(text, string(encodedCommand)) {
+					t.Errorf("config missing Windsurf Windows adapter command %q:\n%s", wantCommand, text)
+				}
+				adapter, err := os.ReadFile(filepath.Join(dataDir, "hooks", "windsurf-hook.ps1"))
+				if err != nil {
+					t.Fatalf("read Windsurf Windows adapter: %v", err)
+				}
+				adapterText := string(adapter)
+				for _, marker := range []string{
+					windowsHookBinaryName,
+					"hook --connector windsurf",
+					fmt.Sprintf("$timeoutMS = %d", windowsHookAdapterTimeoutMS),
+					"WaitForExit($remainingMS)",
+					"$process.Kill()",
+					"[Environment]::Exit([int]$exitCode)",
+				} {
+					if !strings.Contains(adapterText, marker) {
+						t.Errorf("Windsurf adapter missing hardening marker %q:\n%s", marker, adapter)
 					}
 				}
 			} else if connectorName == "antigravity" {

@@ -62,8 +62,8 @@ from defenseclaw.tui.services.cli_choices import (
 
 from tests.helpers import cleanup_app, make_app_context
 
-WINDOWS_SUPPORTED = {"codex", "claudecode"}
-WINDOWS_PREVIEW: set[str] = {"cursor", "hermes", "windsurf", "opencode", "omnigent"}
+WINDOWS_SUPPORTED = {"claudecode"}
+WINDOWS_PREVIEW: set[str] = {"codex", "cursor", "hermes", "windsurf", "opencode", "omnigent"}
 WINDOWS_NOT_CERTIFIED = {"copilot", "antigravity"}
 WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED

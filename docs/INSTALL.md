@@ -43,8 +43,8 @@ current Windows connector scope deliberately excludes WSL and requires the
 upstream agent and complete DefenseClaw hook or awaited policy path to run
 directly on Windows.
 
-- **Supported and certified:** Codex and Claude Code.
-- **Preview, not certified:** Cursor, Windsurf, Hermes, and OpenCode. Their native
+- **Supported and certified:** Claude Code.
+- **Preview, not certified:** Codex, Cursor, Windsurf, Hermes, and OpenCode. Their native
   implementations are available for focused validation, but certification
   still requires the integrated packaged and authentic official-client gates.
 - **Native degraded preview, not certified:** OmniGent 0.7.0 server and SDK
@@ -57,7 +57,7 @@ directly on Windows.
 - **Unsupported:** OpenHands, OpenClaw, and ZeptoClaw. Their required WSL or
   local-proxy topology is not hosted by native Windows DefenseClaw.
 
-The certified connectors and the Cursor preview use the native
+The certified Claude Code connector and the Codex/Cursor previews use the native
 `defenseclaw-hook.exe` runtime. Cursor first invokes the managed
 `cursor-hook.ps1` adapter so the JSON objects that Cursor supplies to
 PowerShell reach that runtime byte-for-byte. None adds a WSL, Git Bash, `jq`,
