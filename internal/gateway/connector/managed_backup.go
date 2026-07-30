@@ -90,7 +90,7 @@ func migrateManagedFileBackupLogicalName(
 		if err != nil {
 			return fmt.Errorf("validate canonical managed backup: %w", err)
 		}
-		if !sameManagedBackupCustody(legacy, legacyTarget, canonical, canonicalTarget) {
+		if !sameManagedBackupCustody(&legacy, legacyTarget, &canonical, canonicalTarget) {
 			return fmt.Errorf(
 				"%s has conflicting %s and %s managed backup custody",
 				connectorName, legacyLogicalName, canonicalLogicalName,
@@ -99,7 +99,7 @@ func migrateManagedFileBackupLogicalName(
 		return removeManagedBackupFile(legacyPath)
 	}
 
-	migrated := *legacy
+	migrated := legacy
 	migrated.LogicalName = canonicalLogicalName
 	if err := writeManagedFileBackup(canonicalPath, migrated); err != nil {
 		return fmt.Errorf("write canonical managed backup: %w", err)

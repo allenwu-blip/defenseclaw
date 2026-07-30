@@ -202,7 +202,7 @@ func openCodeManagedPluginPresent(conn Connector, opts SetupOpts) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("read opencode managed plugin: %w", err)
 	}
-	if info == nil || !managedFileBackupMatchesSnapshot(backup, data, true) {
+	if info == nil || !managedFileBackupMatchesSnapshot(&backup, data, true) {
 		return false, nil
 	}
 	for _, marker := range [][]byte{
