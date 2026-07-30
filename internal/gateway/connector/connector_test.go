@@ -3390,10 +3390,11 @@ func readCodexHookDocumentForTest(t *testing.T, configPath string) (string, []by
 }
 
 func verifyInstalledCodexHooksForTest(hooks map[string]interface{}, configPath, hooksDir string) error {
+	opts := SetupOpts{}
 	if runtime.GOOS == "windows" {
-		return verifyManagedCodexHookMatrix(hooks, configPath, hooksDir)
+		return verifyManagedCodexHookMatrix(hooks, configPath, hooksDir, opts)
 	}
-	return verifyTrustedCodexHookMatrix(hooks, configPath, hooksDir)
+	return verifyTrustedCodexHookMatrix(hooks, configPath, hooksDir, opts)
 }
 
 // TestCodex_Setup_DoesNotRewriteProvidersToProxy verifies hook-only Setup
@@ -4241,7 +4242,10 @@ func TestRemoveOwnedCodexHookStatePreservesUserReplacementTrust(t *testing.T) {
 			"trusted_hash": "sha256:unrelated",
 		},
 	}
-	hooks := buildCodexHooksTable(configPath, hookPath)
+	hooks, err := buildCodexHooksTable(SetupOpts{}, configPath, hookPath)
+	if err != nil {
+		t.Fatalf("build Codex hooks: %v", err)
+	}
 	hooks["state"] = state
 	removed, err := removeOwnedCodexHookState(hooks, configPath, filepath.Dir(hookPath))
 	if err != nil {
@@ -4350,14 +4354,14 @@ func TestCodexSetupPreservesUnrelatedStateAndUsesMergedPositions(t *testing.T) {
 		if _, exists := managedHooks["state"]; exists {
 			t.Fatalf("managed source contains private hooks.state: %#v", managedHooks["state"])
 		}
-		if err := verifyManagedCodexHookMatrix(managedHooks, managedPath, filepath.Join(dir, "hooks")); err != nil {
+		if err := verifyManagedCodexHookMatrix(managedHooks, managedPath, filepath.Join(dir, "hooks"), opts); err != nil {
 			t.Fatalf("configured managed hooks are incomplete: %v", err)
 		}
 	} else {
 		if _, ok := state[defenseClawKey]; !ok {
 			t.Fatalf("merged position state key %q missing: %v", defenseClawKey, state)
 		}
-		if err := verifyTrustedCodexHookMatrix(hooks, configPath, filepath.Join(dir, "hooks")); err != nil {
+		if err := verifyTrustedCodexHookMatrix(hooks, configPath, filepath.Join(dir, "hooks"), opts); err != nil {
 			t.Fatalf("configured hooks are not fully trusted: %v", err)
 		}
 	}
@@ -4664,7 +4668,8 @@ func TestVerifyTrustedCodexHookMatrixRejectsIncompleteOrModifiedRegistration(t *
 	}
 	CodexConfigPathOverride = configPath
 	t.Cleanup(func() { CodexConfigPathOverride = "" })
-	if err := NewCodexConnector().Setup(context.Background(), SetupOpts{DataDir: dir, APIAddr: "127.0.0.1:18970"}); err != nil {
+	opts := SetupOpts{DataDir: dir, APIAddr: "127.0.0.1:18970"}
+	if err := NewCodexConnector().Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 	registrationPath := codexHookConfigPathForTest(configPath)
@@ -4696,7 +4701,7 @@ func TestVerifyTrustedCodexHookMatrixRejectsIncompleteOrModifiedRegistration(t *
 			if _, exists := hooks["state"]; exists {
 				t.Fatalf("managed hook config contains synthesized hooks.state: %#v", hooks["state"])
 			}
-			if err := verifyManagedCodexHookMatrix(hooks, registrationPath, hooksDir); err != nil {
+			if err := verifyManagedCodexHookMatrix(hooks, registrationPath, hooksDir, opts); err != nil {
 				t.Fatalf("managed hook matrix is not source-trusted: %v", err)
 			}
 			return
@@ -4704,7 +4709,7 @@ func TestVerifyTrustedCodexHookMatrixRejectsIncompleteOrModifiedRegistration(t *
 		state := hooks["state"].(map[string]interface{})
 		key := codexHookStateKey(codexHookStateKeySource(registrationPath), "stop", 0, 0)
 		state[key].(map[string]interface{})["trusted_hash"] = "sha256:modified"
-		if err := verifyTrustedCodexHookMatrix(hooks, registrationPath, hooksDir); err == nil || !strings.Contains(err.Error(), "not trusted") {
+		if err := verifyTrustedCodexHookMatrix(hooks, registrationPath, hooksDir, opts); err == nil || !strings.Contains(err.Error(), "not trusted") {
 			t.Fatalf("verification error = %v, want modified trust rejection", err)
 		}
 	})
@@ -4772,7 +4777,7 @@ timeout = 7
 		}
 		managedPath, _, managedDocument := readCodexHookDocumentForTest(t, configPath)
 		managedHooks := managedDocument["hooks"].(map[string]interface{})
-		if err := verifyManagedCodexHookMatrix(managedHooks, managedPath, filepath.Join(dir, "hooks")); err != nil {
+		if err := verifyManagedCodexHookMatrix(managedHooks, managedPath, filepath.Join(dir, "hooks"), opts); err != nil {
 			t.Fatalf("Setup managed hooks are incomplete: %v", err)
 		}
 		if _, exists := managedHooks["state"]; exists {
@@ -4782,7 +4787,7 @@ timeout = 7
 		if len(preToolUse) != 2 {
 			t.Fatalf("Setup replaced existing PreToolUse hooks; got %d entries\n%s", len(preToolUse), raw)
 		}
-		if err := verifyTrustedCodexHookMatrix(hooks, configPath, filepath.Join(dir, "hooks")); err != nil {
+		if err := verifyTrustedCodexHookMatrix(hooks, configPath, filepath.Join(dir, "hooks"), opts); err != nil {
 			t.Fatalf("Setup hooks are not fully trusted: %v", err)
 		}
 		state := hooks["state"].(map[string]interface{})
@@ -5344,8 +5349,12 @@ func TestCodex_VerifyCleanDetectsConfigResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render Codex OTLP block: %v", err)
 	}
+	hooks, err := buildCodexHooksTable(SetupOpts{}, configPath, hookPath)
+	if err != nil {
+		t.Fatalf("build Codex hooks: %v", err)
+	}
 	cfg := map[string]interface{}{
-		"hooks": buildCodexHooksTable(configPath, hookPath),
+		"hooks": hooks,
 		"otel":  otelBlock,
 		"notify": []interface{}{
 			"bash",

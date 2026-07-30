@@ -55,7 +55,8 @@ On native Windows, DefenseClaw writes hook policy to
 notify fields in `%CODEX_HOME%\config.toml`. The default Codex home is
 `%USERPROFILE%\.codex`.
 
-The current hook contract registers ten events:
+Codex 0.133 through 0.144 registers ten events. Codex 0.145 and newer
+registers the same matrix plus `SessionEnd`:
 
 | Codex event | Action-mode role |
 | --- | --- |
@@ -67,6 +68,7 @@ The current hook contract registers ten events:
 | `SubagentStart`, `SubagentStop` | Observe lifecycle; not declared block surfaces. |
 | `PreCompact`, `PostCompact` | Observe context compaction; not declared block surfaces. |
 | `Stop` | Can return a block-shaped stop decision. |
+| `SessionEnd` (0.145+) | Best-effort teardown observation with a three-second maximum; not a block or native ask surface. |
 
 Setup selects a hook contract that matches the installed Codex version; older
 supported contracts can have a smaller event set. Verify the detected contract

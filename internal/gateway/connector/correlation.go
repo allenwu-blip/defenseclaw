@@ -611,13 +611,13 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		}
 		return spec, ok
 	case "codex":
-		// The correlation field mapping is unchanged across the three reviewed
+		// The correlation field mapping is unchanged across the reviewed
 		// Codex hook transports. Keep the selected transport contract exact so
 		// lifecycle events and version bounds come from that contract, while an
 		// unknown/future contract continues to fail closed.
 		correlationContractID := hookContractID
 		switch correlationContractID {
-		case "codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3":
+		case "codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4":
 		default:
 			return CorrelationSpec{}, false
 		}

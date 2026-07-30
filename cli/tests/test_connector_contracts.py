@@ -141,6 +141,39 @@ class TestConnectorContractManifest(unittest.TestCase):
                     "Stop",
                 ),
             ),
+            (
+                "0.144.99",
+                "codex-hooks-v3",
+                (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "PermissionRequest",
+                    "PostToolUse",
+                    "SubagentStart",
+                    "SubagentStop",
+                    "PreCompact",
+                    "PostCompact",
+                    "Stop",
+                ),
+            ),
+            (
+                "0.145.0",
+                "codex-hooks-v4",
+                (
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "PreToolUse",
+                    "PermissionRequest",
+                    "PostToolUse",
+                    "SubagentStart",
+                    "SubagentStop",
+                    "PreCompact",
+                    "PostCompact",
+                    "Stop",
+                    "SessionEnd",
+                ),
+            ),
         )
         for version, contract_id, events in expected:
             with self.subTest(version=version):
@@ -151,11 +184,15 @@ class TestConnectorContractManifest(unittest.TestCase):
                 self.assertEqual(known.contract.events, events)
                 self.assertEqual(known.contract.hook_script_version, "v6")
                 self.assertIn("~/.codex/config.toml", known.contract.hook_config_path_templates)
+                self.assertIn(
+                    "~/.codex/managed_config.toml",
+                    known.contract.hook_config_path_templates,
+                )
                 self.assertIn("tool_call", known.contract.aid_surfaces)
 
         unversioned = resolve_connector_contract("codex", "")
         self.assertEqual(unversioned.status, STATUS_UNVERSIONED)
-        self.assertEqual(unversioned.contract.contract_id, "codex-hooks-v3")
+        self.assertEqual(unversioned.contract.contract_id, "codex-hooks-v4")
         self.assertTrue(unversioned.contract.default_for_unversioned)
         self.assertTrue(unversioned.contract.native_otlp)
         self.assertEqual(unversioned.contract.native_otlp_auth, "path-token-loopback")

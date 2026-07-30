@@ -406,7 +406,10 @@ func TestCodexSetupRepairsLegacyNonWaitingPowerShellCommand(t *testing.T) {
 					},
 				},
 			}
-			generated := buildCodexHooksTable(filepath.Join(t.TempDir(), "managed_config.toml"), "")
+			generated, err := buildCodexHooksTable(SetupOpts{}, filepath.Join(t.TempDir(), "managed_config.toml"), "")
+			if err != nil {
+				t.Fatalf("build Codex hooks: %v", err)
+			}
 			replacement := generated["PreToolUse"].([]interface{})
 			repaired, err := replaceOwnedCodexHookInPlace(existing, replacement, t.TempDir())
 			if err != nil {
@@ -1060,13 +1063,21 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 	const configPath = "/home/u/.codex/config.toml"
 	setHookBinaryOverride(t, `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`)
 
-	table := buildCodexHooksTable(configPath, cmd)
+	opts := SetupOpts{}
+	table, err := buildCodexHooksTable(opts, configPath, cmd)
+	if err != nil {
+		t.Fatalf("build Codex hooks: %v", err)
+	}
 	wantCommand := cmd
 	if runtime.GOOS == "windows" {
 		wantCommand = hookInvocationCommandFor("windows", "codex", cmd)
 	}
 
-	for _, group := range codexHookGroups {
+	groups, err := codexHookGroupsForSetup(opts)
+	if err != nil {
+		t.Fatalf("resolve Codex hook groups: %v", err)
+	}
+	for _, group := range groups {
 		raw, ok := table[group.eventType].([]interface{})
 		if !ok || len(raw) == 0 {
 			t.Fatalf("missing event %s", group.eventType)
@@ -1097,6 +1108,97 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 
 	if _, ok := table["state"]; ok {
 		t.Fatal("buildCodexHooksTable added state before final merge positions were known")
+	}
+}
+
+func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
+	tests := []struct {
+		name           string
+		version        string
+		contractID     string
+		wantEventCount int
+		wantSessionEnd bool
+	}{
+		{
+			name:           "0.144 keeps certified ten-event matrix",
+			version:        "codex-cli 0.144.0",
+			contractID:     "codex-hooks-v3",
+			wantEventCount: 10,
+		},
+		{
+			name:           "0.145 adds SessionEnd",
+			version:        "codex-cli 0.145.0",
+			contractID:     "codex-hooks-v4",
+			wantEventCount: 11,
+			wantSessionEnd: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			opts := SetupOpts{
+				AgentVersion:   test.version,
+				HookContractID: test.contractID,
+			}
+			table, err := buildCodexHooksTable(
+				opts,
+				filepath.Join(t.TempDir(), "managed_config.toml"),
+				filepath.Join(t.TempDir(), "codex-hook.sh"),
+			)
+			if err != nil {
+				t.Fatalf("build Codex hook table: %v", err)
+			}
+			if len(table) != test.wantEventCount {
+				t.Fatalf("event count = %d, want %d: %#v", len(table), test.wantEventCount, table)
+			}
+			rawSessionEnd, hasSessionEnd := table["SessionEnd"]
+			if hasSessionEnd != test.wantSessionEnd {
+				t.Fatalf("SessionEnd present = %v, want %v", hasSessionEnd, test.wantSessionEnd)
+			}
+			if !hasSessionEnd {
+				return
+			}
+			groups := rawSessionEnd.([]interface{})
+			group := groups[0].(map[string]interface{})
+			if _, hasMatcher := group["matcher"]; hasMatcher {
+				t.Fatalf("SessionEnd unexpectedly has matcher: %#v", group)
+			}
+			handlers := group["hooks"].([]interface{})
+			handler := handlers[0].(map[string]interface{})
+			if got := handler["timeout"]; got != 3 {
+				t.Fatalf("SessionEnd timeout = %#v, want 3", got)
+			}
+			if _, async := handler["async"]; async {
+				t.Fatalf("SessionEnd handler is asynchronous: %#v", handler)
+			}
+		})
+	}
+}
+
+func TestMergeOwnedCodexHooksReconcilesSessionEndAcrossBoundary(t *testing.T) {
+	root := t.TempDir()
+	hooksDir := filepath.Join(root, "hooks")
+	hookPath := filepath.Join(hooksDir, "codex-hook.sh")
+	configPath := filepath.Join(root, "managed_config.toml")
+	setHookBinaryOverride(t, filepath.Join(root, windowsHookBinaryName))
+
+	hooks := map[string]interface{}{}
+	v4 := SetupOpts{AgentVersion: "codex-cli 0.145.0", HookContractID: "codex-hooks-v4"}
+	if err := mergeOwnedCodexHooks(hooks, configPath, hookPath, hooksDir, v4, false); err != nil {
+		t.Fatalf("merge v4 hooks: %v", err)
+	}
+	if _, ok := hooks["SessionEnd"]; !ok {
+		t.Fatal("v4 merge did not add SessionEnd")
+	}
+
+	v3 := SetupOpts{AgentVersion: "codex-cli 0.144.0", HookContractID: "codex-hooks-v3"}
+	if err := mergeOwnedCodexHooks(hooks, configPath, hookPath, hooksDir, v3, false); err != nil {
+		t.Fatalf("reconcile v3 hooks: %v", err)
+	}
+	if _, ok := hooks["SessionEnd"]; ok {
+		t.Fatal("v3 reconciliation retained the v4 SessionEnd handler")
+	}
+	if err := verifyManagedCodexHookMatrix(hooks, configPath, hooksDir, v3); err != nil {
+		t.Fatalf("verify reconciled v3 hooks: %v", err)
 	}
 }
 
