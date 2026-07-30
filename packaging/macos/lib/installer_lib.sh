@@ -114,7 +114,11 @@ _read_json_field() {
   local path="$1"
   local field="$2"
   local py
-  py="$(command -v python3 || echo /usr/bin/python3)"
+  if [ -x /usr/bin/python3 ]; then
+    py="/usr/bin/python3"
+  else
+    py="$(command -v python3 || echo /usr/bin/python3)"
+  fi
   "${py}" -c '
 import json, sys
 try:
@@ -177,19 +181,27 @@ _native_claudecode_version_from_dir() {
     fi
   fi
 
-  # 2. Highest versions/* dir. Same sort -V idiom used by the codex
-  #    Homebrew Caskroom probe. Handles partial installs where the
-  #    `current` symlink hasn't been flipped yet, and hosts that
-  #    never publish a `current` pointer.
-  local versions_dir="${base}/versions" dir
+  # 2. Highest versions/* entry. The native installer publishes each
+  #    version under versions/<X.Y.Z>. Two on-disk shapes have been seen
+  #    in the wild:
+  #      a) directory:   versions/<X.Y.Z>/{node,claude,...}   (classic)
+  #      b) executable file: versions/<X.Y.Z>                 (newer)
+  #    Discovery must accept both — a QA host was silently reporting
+  #    version="" because it only had shape (b) and no `current`
+  #    symlink. Handles partial installs where the `current` symlink
+  #    hasn't been flipped yet, and hosts that never publish a `current`
+  #    pointer at all.
+  local versions_dir="${base}/versions" entry
   if [[ -d "${versions_dir}" ]]; then
     ver=""
-    for dir in "${versions_dir}"/*/; do
-      [[ -d "${dir}" ]] || continue
-      dname="$(basename "${dir}")"
+    for entry in "${versions_dir}"/*; do
+      # Accept a directory OR a regular file (both shapes documented
+      # above). A dangling symlink or FIFO is skipped — the semver
+      # regex on the basename below is the authoritative filter.
+      [[ -d "${entry}" || -f "${entry}" ]] || continue
+      dname="$(basename "${entry}")"
       [[ "${dname}" =~ ${semver_re} ]] || continue
-      if [[ -z "${ver}" ]] || \
-         [[ "$(printf '%s\n%s\n' "${ver}" "${dname}" | sort -V | tail -1)" == "${dname}" ]]; then
+      if [[ -z "${ver}" ]] || _semver_gt "${dname}" "${ver}"; then
         ver="${dname}"
       fi
     done
@@ -200,154 +212,493 @@ _native_claudecode_version_from_dir() {
   fi
 }
 
+# _semver_gt A B -> exit 0 iff A > B under SemVer 2.0.0 precedence.
+#
+# Ordering is: MAJOR.MINOR.PATCH first (numeric), then prerelease tail.
+# A version WITHOUT a prerelease tail is HIGHER than the same version
+# WITH one (e.g. 2.1.144 > 2.1.144-rc.1 > 2.1.144-alpha). Numeric
+# identifiers in the prerelease tail compare numerically ("2" < "10");
+# alphanumeric identifiers compare lexically; numeric identifiers rank
+# below alphanumeric ones per §11.4.3.
+#
+# This replaces the `sort -V` idiom used previously — BSD sort -V (macOS)
+# treats `1.0.0-alpha` as GREATER than `1.0.0`, which is the opposite of
+# SemVer. `_native_claudecode_version_from_dir` and `_version_ge` both
+# route through here so a supported-stable install is never starved by
+# a same-major-minor prerelease.
+_semver_gt() {
+  local a="$1" b="$2"
+  # Fast path: identical strings are not "greater than".
+  [[ "${a}" == "${b}" ]] && return 1
+  # semver_re elsewhere in this file accepts an optional [._+-]-prefixed
+  # tail after MAJOR.MINOR.PATCH, so a version can arrive as any of
+  # `2.1.144`, `2.1.144-rc.1`, `2.1.144.beta`, `2.1.144_dev`, or
+  # `2.1.144+build.5`. Split the numeric MAJOR.MINOR.PATCH prefix off
+  # every candidate before comparing so the prefix comparison is
+  # apples-to-apples, then treat everything after that first non-digit
+  # boundary as the prerelease/build tail. SemVer §10 says build
+  # metadata (`+…`) MUST be ignored for precedence — strip it after the
+  # prefix split.
+  _semver_gt_split() {
+    # sets `__prefix` and `__tail` from $1
+    local raw="$1"
+    __prefix=""
+    __tail=""
+    local i ch
+    for (( i = 0; i < ${#raw}; i++ )); do
+      ch="${raw:${i}:1}"
+      if [[ "${ch}" =~ [0-9.] ]]; then
+        __prefix+="${ch}"
+      else
+        __tail="${raw:${i}}"
+        break
+      fi
+    done
+    # SemVer §10: build metadata (`+build.5`, `+meta`, …) MUST be
+    # ignored for precedence. Strip it BEFORE peeling the leading
+    # separator so `<main>+build.N` produces an empty tail (making the
+    # whole version rank identically to `<main>`).
+    if [[ "${__tail:0:1}" == "+" ]]; then
+      __tail=""
+    else
+      __tail="${__tail%%+*}"
+    fi
+    # Strip a leading separator character from the tail so downstream
+    # split-by-`.` doesn't see a leading empty element.
+    if [[ -n "${__tail}" ]]; then
+      case "${__tail:0:1}" in
+        -|_|. ) __tail="${__tail:1}" ;;
+      esac
+    fi
+    # Guard trailing dots on __prefix (e.g. splitting "2.0.0.foo").
+    __prefix="${__prefix%.}"
+  }
+  local __prefix __tail
+  _semver_gt_split "${a}"
+  local a_main="${__prefix}" a_pre="${__tail}"
+  _semver_gt_split "${b}"
+  local b_main="${__prefix}" b_pre="${__tail}"
+  # Compare MAJOR.MINOR.PATCH numerically. Use `read -ra` (not the
+  # unquoted `am=(${a_main})` split) so shell globbing can't expand a
+  # `*` in a hostile version string against the working directory
+  # (SC2206). IFS is scoped to the read via env-prefix syntax.
+  local -a am bm
+  IFS=. read -ra am <<< "${a_main}"
+  IFS=. read -ra bm <<< "${b_main}"
+  local i len an bn
+  len=${#am[@]}
+  if (( ${#bm[@]} > len )); then len=${#bm[@]}; fi
+  for (( i = 0; i < len; i++ )); do
+    an="${am[i]:-0}"
+    bn="${bm[i]:-0}"
+    # Guard non-numeric segments (they'd trip arithmetic under set -u).
+    [[ "${an}" =~ ^[0-9]+$ ]] || an=0
+    [[ "${bn}" =~ ^[0-9]+$ ]] || bn=0
+    if (( an > bn )); then return 0; fi
+    if (( an < bn )); then return 1; fi
+  done
+  # Main parts equal — compare prerelease tails per SemVer §11.4.
+  if [[ -z "${a_pre}" && -z "${b_pre}" ]]; then return 1; fi
+  if [[ -z "${a_pre}" ]]; then return 0; fi   # no-prerelease > prerelease
+  if [[ -z "${b_pre}" ]]; then return 1; fi
+  local -a apr bpr
+  IFS=. read -ra apr <<< "${a_pre}"
+  IFS=. read -ra bpr <<< "${b_pre}"
+  local aid bid a_is_num b_is_num
+  len=${#apr[@]}
+  if (( ${#bpr[@]} > len )); then len=${#bpr[@]}; fi
+  for (( i = 0; i < len; i++ )); do
+    aid="${apr[i]:-}"
+    bid="${bpr[i]:-}"
+    if [[ -z "${aid}" ]]; then return 1; fi  # shorter tail loses (§11.4.4)
+    if [[ -z "${bid}" ]]; then return 0; fi
+    a_is_num=false; b_is_num=false
+    [[ "${aid}" =~ ^[0-9]+$ ]] && a_is_num=true
+    [[ "${bid}" =~ ^[0-9]+$ ]] && b_is_num=true
+    if ${a_is_num} && ${b_is_num}; then
+      if (( 10#${aid} > 10#${bid} )); then return 0; fi
+      if (( 10#${aid} < 10#${bid} )); then return 1; fi
+      continue
+    fi
+    if ${a_is_num}; then return 1; fi  # numeric < alphanumeric (§11.4.3)
+    if ${b_is_num}; then return 0; fi
+    # Both alphanumeric — lexicographic.
+    if [[ "${aid}" > "${bid}" ]]; then return 0; fi
+    if [[ "${aid}" < "${bid}" ]]; then return 1; fi
+  done
+  return 1
+}
+
+# _native_claudecode_version_from_bin BIN -> echoes the version or "".
+#
+# Reads the PATH-shim shape published by newer Claude Code native
+# installers where the actual dispatcher lives at
+# `<home>/.local/bin/claude` as a symlink to `../share/claude/versions/
+# <X.Y.Z>` (or the analogous /usr/local/bin/claude,
+# /opt/homebrew/bin/claude, /opt/claude/bin/claude system-wide shims).
+# When no `current` symlink is published and versions/ contains only
+# executable files, this shim is the only trustworthy source of the
+# active version.
+#
+# Metadata-only: readlink + basename; no exec of the binary itself.
+# Handles both absolute and relative symlink targets; a dangling symlink
+# or a non-semver basename returns empty.
+_native_claudecode_version_from_bin() {
+  local bin="$1"
+  [[ -n "${bin}" && -L "${bin}" ]] || return 0
+  # A dangling symlink (aborted upgrade, manual rm of the target) is
+  # treated as absent — the shim exists on disk but points nowhere, so
+  # there's no active install to report. `-e` on the shim itself
+  # follows the symlink and fails when the ultimate target is missing.
+  [[ -e "${bin}" ]] || return 0
+  local -r semver_re='^[0-9]+\.[0-9]+\.[0-9]+([._+-].*)?$'
+  # Resolve the entire symlink chain to the final concrete target.
+  # `readlink -f` walks the chain and prints the canonical path when
+  # available (GNU coreutils and macOS 12+); older BSD `readlink -n`
+  # only returns the immediate target, which for a shim like
+  # `.../.local/bin/claude -> ../share/claude/current`
+  # (which itself points at `versions/<X.Y.Z>`) yields `current`,
+  # basenames to `current`, and fails the semver regex — silently
+  # dropping the version we could have discovered.
+  local resolved
+  resolved="$(readlink -f -- "${bin}" 2>/dev/null || true)"
+  # If `readlink -f` succeeded but the final basename isn't SemVer-
+  # shaped, fall through to the mid-chain walk anyway. Case where
+  # this matters: a shim like
+  #   .../.local/bin/claude -> ../share/claude/versions/<X.Y.Z>/claude
+  # canonicalises to `.../versions/<X.Y.Z>/claude` — final basename
+  # is `claude`, which fails the regex, but the parent directory
+  # `<X.Y.Z>` is what we want. macOS 12.3+ would silently drop this
+  # discovery without the fallback; older macOS would find it via the
+  # walk. Same on-disk layout → different result across macOS versions.
+  if [[ -n "${resolved}" ]]; then
+    local fast_dname
+    fast_dname="$(basename -- "${resolved}")"
+    if ! [[ "${fast_dname}" =~ ${semver_re} ]]; then
+      # Give the mid-chain walk a chance to find a version-labelled
+      # intermediate hop before conceding.
+      resolved=""
+    fi
+  fi
+  if [[ -z "${resolved}" ]]; then
+    # Portable one-hop-at-a-time walk. Stops when we reach a non-
+    # symlink (the concrete target) or after a chain-length guard
+    # to defend against symlink loops. Also stops at a resolved
+    # basename that already matches the semver regex — that means
+    # a mid-chain node is version-labelled (the newer native-installer
+    # shape where `bin/claude` is a symlink into `versions/<X.Y.Z>/`
+    # directly), so we don't need to walk further even if the final
+    # target is an executable named `claude` rather than `<X.Y.Z>`.
+    local cur="${bin}"
+    local step=0
+    local -r max_steps=16
+    local next dname_walk
+    while [[ -L "${cur}" ]] && (( step < max_steps )); do
+      next="$(readlink -n -- "${cur}" 2>/dev/null || true)"
+      [[ -n "${next}" ]] || break
+      # Resolve relative targets against the link's directory.
+      if [[ "${next}" != /* ]]; then
+        next="$(cd -- "$(dirname -- "${cur}")" && pwd -P)/${next}"
+      fi
+      dname_walk="$(basename -- "${next}")"
+      if [[ "${dname_walk}" =~ ${semver_re} ]]; then
+        # Mid-chain version marker — good enough.
+        resolved="${next}"
+        break
+      fi
+      cur="${next}"
+      step=$((step + 1))
+    done
+    if [[ -z "${resolved}" ]]; then
+      resolved="${cur}"
+    fi
+  fi
+  [[ -n "${resolved}" ]] || return 0
+  local dname
+  dname="$(basename -- "${resolved}")"
+  # If the final basename isn't semver-shaped, consult the parent
+  # directory basename — the common newer-installer layout points
+  # directly at the executable inside a version-labelled parent
+  # (`versions/<X.Y.Z>/claude`). Skip this only if the parent's
+  # basename also fails the regex; concede empty rather than guess.
+  if ! [[ "${dname}" =~ ${semver_re} ]]; then
+    local parent_dname
+    parent_dname="$(basename -- "$(dirname -- "${resolved}")")"
+    if [[ "${parent_dname}" =~ ${semver_re} ]]; then
+      echo "${parent_dname}"
+      return
+    fi
+    return 0
+  fi
+  echo "${dname}"
+}
+
+# Minimum-supported agent versions for the hook-contract gate. Values
+# are the ``min_inclusive`` bounds from
+# cli/defenseclaw/inventory/hook_contracts.json and must stay aligned
+# with the ``MinAgentVersion`` constants in
+# internal/gateway/connector/hook_contract.go. If a discovered install
+# is below the minimum but a *higher* install is also present, the
+# higher one wins; when no install meets the minimum the highest
+# overall is still reported so the operator sees an actual version in
+# the discovery output (the Go hook gate then reports "unsupported"
+# rather than "unversioned").
+#
+# Declared conditionally so tests that re-source this library across
+# cases don't trip bash's readonly-variable error on the second source.
+if [[ -z "${MIN_CLAUDECODE_VERSION:-}" ]]; then
+  readonly MIN_CLAUDECODE_VERSION="2.1.144"
+  readonly MIN_CODEX_VERSION="0.124.0"
+  readonly MIN_CURSOR_VERSION="1.7.0"
+fi
+
+# _version_ge A B -> exit 0 iff A >= B under SemVer 2.0.0 precedence.
+# Empty inputs treated as "no answer" — returns 1. Used by
+# _pick_highest_supported below and by direct callers that need to
+# check a single version against a minimum. Routes through _semver_gt
+# so BSD sort -V's inverted prerelease ordering can't feed a stable
+# release below MIN when a same-major-minor prerelease is present.
+_version_ge() {
+  local a="$1" b="$2"
+  [[ -n "${a}" && -n "${b}" ]] || return 1
+  [[ "${a}" == "${b}" ]] && return 0
+  _semver_gt "${a}" "${b}"
+}
+
+# _pick_highest_supported MIN_VERSION VERSION... -> echoes the highest
+# candidate that is >= MIN_VERSION, or (when none clear the minimum)
+# the highest candidate overall. Silent when no candidates are given.
+#
+# Motivation: hosts with multiple installs of the same agent (Homebrew
+# npm-global + NVM, or ChatGPT.app + npm-global for codex) previously
+# stopped at the first hit — often the stale Homebrew install — and
+# reported a version below the hook contract's MinAgentVersion.
+# Enumerating every install and picking the highest supported version
+# fixes that class of bug at the discovery layer.
+_pick_highest_supported() {
+  local min="$1"; shift
+  [[ $# -gt 0 ]] || return 0
+  local best_supported="" best_overall="" v
+  for v in "$@"; do
+    [[ -n "${v}" ]] || continue
+    # Track the overall highest so we always return *something* when
+    # candidates exist. Route through _semver_gt so a same-major-minor
+    # prerelease can never outrank its stable (BSD sort -V's inverted
+    # prerelease order would).
+    if [[ -z "${best_overall}" ]] || _semver_gt "${v}" "${best_overall}"; then
+      best_overall="${v}"
+    fi
+    if _version_ge "${v}" "${min}"; then
+      if [[ -z "${best_supported}" ]] || _semver_gt "${v}" "${best_supported}"; then
+        best_supported="${v}"
+      fi
+    fi
+  done
+  if [[ -n "${best_supported}" ]]; then
+    echo "${best_supported}"
+  elif [[ -n "${best_overall}" ]]; then
+    echo "${best_overall}"
+  fi
+}
+
+# _emit_pkg_version_if_exists FILE -> echoes ".version" from FILE, or
+# nothing if FILE is missing. Small wrapper so the connector loops
+# below stay readable when they iterate 6-10 candidate globs.
+_emit_pkg_version_if_exists() {
+  [[ -f "$1" ]] || return 0
+  _read_json_version "$1"
+}
+
+# _collect_node_manager_pkg_versions HOME NPM_SCOPE PKG -> echoes one
+# version per line for every install of NPM_SCOPE/PKG we can find
+# under the common Node version managers (NVM / Volta / fnm / asdf).
+#
+# QA regression this addresses: users with multiple `node` versions
+# (Homebrew node + NVM node, for instance) have distinct copies of
+# `@anthropic-ai/claude-code` under each Node root. The Homebrew-shipped
+# global was often the stale one and it always won the first-hit loop.
+# Globbing every candidate root and passing the results to
+# _pick_highest_supported ensures the newest supported install wins
+# regardless of `node` install order.
+#
+# Glob costs one readdir per manager root — well under a millisecond
+# even on developer boxes with a dozen node versions.
+_collect_node_manager_pkg_versions() {
+  local home="$1" npm_scope="$2" pkg="$3"
+  local relpath="${npm_scope}/${pkg}/package.json"
+  local -a roots=(
+    "${home}"/.nvm/versions/node/*/lib/node_modules/"${relpath}"
+    "${home}"/.local/share/fnm/node-versions/*/installation/lib/node_modules/"${relpath}"
+    "${home}"/.asdf/installs/nodejs/*/.npm/lib/node_modules/"${relpath}"
+    # Volta's package image layout is:
+    #   ~/.volta/tools/image/packages/<scope>/<pkg>/<version>/lib/node_modules/<scope>/<pkg>/package.json
+    # An earlier iteration stopped at `<version>/package.json` and
+    # silently missed every scoped Volta install.
+    "${home}"/.volta/tools/image/packages/"${npm_scope}"/"${pkg}"/*/lib/node_modules/"${relpath}"
+  )
+  local candidate v
+  for candidate in "${roots[@]}"; do
+    # Bash 3.2 does not set nullglob by default; a missing directory
+    # leaves the literal glob string in the array. `-f` guards.
+    [[ -f "${candidate}" ]] || continue
+    v="$(_read_json_version "${candidate}")"
+    [[ -n "${v}" ]] && echo "${v}"
+  done
+}
+
 discover_agent_version() {
   local connector="$1"
   local home="$2"
+  # New policy (as of state v3 discovery): enumerate every candidate
+  # install for the given connector, then hand the collected versions
+  # to _pick_highest_supported. This replaces the old first-hit-wins
+  # loops (which broke for multi-install hosts — see the QA regressions
+  # documented above the helper).
+  local -a versions=()
+  local v pkg base chatgpt_codex
+
   case "${connector}" in
     codex)
-      # Codex-cli is a Rust binary that ships from three OpenAI-owned
-      # channels on macOS. Probe order picks the first-party
-      # ChatGPT.app bundled copy FIRST because it is the newest
-      # distribution (auto-updated with the desktop app) and it is
-      # what customers actually have on a fresh Mac — stray old
-      # `npm i -g @openai/codex` installs from an earlier engagement
-      # frequently linger and would otherwise win with a stale
-      # version that fails our MinAgentVersion contract gate.
+      # Codex-cli ships from OpenAI through several channels; we
+      # enumerate every visible install rather than short-circuiting on
+      # the first hit so a stale npm-global doesn't win over a newer
+      # ChatGPT.app bundle or a fresh NVM install.
       #
-      # Order:
+      # Channels probed (order does NOT determine which wins — see
+      # _pick_highest_supported):
       #   1. ChatGPT.app bundled binary       (Codex 0.145.0+ current)
       #   2. Homebrew Caskroom                (versioned dir name)
       #   3. npm module package.json         (user-global then system)
-      #   4. `command -v codex` last resort   (arbitrary PATH install)
+      #   4. Node version managers (NVM/Volta/fnm/asdf) package.json
       #
-      # Every probe runs as the target user via sudo -u (not root).
-      # The app bundle is Gatekeeper-signed and world-readable by
-      # design; running its --version as an unprivileged user is
-      # safe. install.sh's outer sudo already dropped privs before
-      # calling this helper, matching the security posture of the
-      # hook guardian's connector.Setup call.
-      local vraw
-
-      # 1. ChatGPT.app bundled codex — /Applications/ChatGPT.app/
-      # Contents/Resources/codex is the current stable location; the
-      # older MacOS/ path is kept as a fallback for pre-2026 builds.
-      local chatgpt_codex
+      # The ChatGPT.app entries still exec the bundled binary because
+      # they don't ship a discoverable metadata file — the app bundle
+      # is Gatekeeper-signed and world-readable and install.sh's outer
+      # sudo already dropped privs before calling this helper.
       for chatgpt_codex in \
         /Applications/ChatGPT.app/Contents/Resources/codex \
         /Applications/ChatGPT.app/Contents/MacOS/codex; do
         [[ -x "${chatgpt_codex}" ]] || continue
+        local vraw
         if [[ -n "${DC_INSTALLER_TARGET_USER:-}" ]]; then
           vraw="$(sudo -n -u "${DC_INSTALLER_TARGET_USER}" "${chatgpt_codex}" --version 2>/dev/null | head -1 || true)"
         else
           vraw="$("${chatgpt_codex}" --version 2>/dev/null | head -1 || true)"
         fi
-        # Codex prints "codex-cli X.Y.Z" (or "codex-cli X.Y.Z-alpha.N");
-        # take the first token that looks like a version.
         vraw="$(printf '%s' "${vraw}" | awk '{for(i=NF;i>=1;i--) if ($i ~ /^[0-9]+\.[0-9]+/) {print $i; exit}}')"
-        if [[ -n "${vraw}" ]]; then echo "${vraw}"; return; fi
+        [[ -n "${vraw}" ]] && versions+=("${vraw}")
       done
 
-      # 2. Homebrew cask keeps the binary under Caskroom with a
-      # version in the path itself:
-      #   /opt/homebrew/Caskroom/codex/<version>/...
-      # Glob-based version pick (avoids shellcheck SC2010 on ls|grep).
-      local caskroom ver dir dname
+      local caskroom dir dname
       for caskroom in /opt/homebrew/Caskroom/codex /usr/local/Caskroom/codex; do
         [[ -d "${caskroom}" ]] || continue
-        ver=""
         for dir in "${caskroom}"/*/; do
           [[ -d "${dir}" ]] || continue
           dname="$(basename "${dir}")"
           [[ "${dname}" =~ ^[0-9]+\.[0-9]+ ]] || continue
-          if [[ -z "${ver}" ]] || \
-             [[ "$(printf '%s\n%s\n' "${ver}" "${dname}" | sort -V | tail -1)" == "${dname}" ]]; then
-            ver="${dname}"
-          fi
+          versions+=("${dname}")
         done
-        if [[ -n "${ver}" ]]; then echo "${ver}"; return; fi
       done
 
-      # 3. npm module package.json — user-global first (most likely
-      # up to date on developer boxes), then system dirs.
-      local pkg
       for pkg in \
         "${home}"/.npm-global/lib/node_modules/@openai/codex/package.json \
         /usr/local/lib/node_modules/@openai/codex/package.json \
         /opt/homebrew/lib/node_modules/@openai/codex/package.json; do
-        [[ -f "${pkg}" ]] || continue
-        local v; v="$(_read_json_version "${pkg}")"
-        if [[ -n "${v}" ]]; then echo "${v}"; return; fi
+        v="$(_emit_pkg_version_if_exists "${pkg}")"
+        [[ -n "${v}" ]] && versions+=("${v}")
       done
 
-      # 4. Last resort: exec codex --version as the target user (not
-      # as root). Requires TARGET_USER to be known to the caller.
-      if [[ -n "${DC_INSTALLER_TARGET_USER:-}" ]] && command -v codex >/dev/null 2>&1; then
-        vraw="$(sudo -n -u "${DC_INSTALLER_TARGET_USER}" codex --version 2>/dev/null | head -1 || true)"
-        vraw="$(printf '%s' "${vraw}" | awk '{for(i=NF;i>=1;i--) if ($i ~ /^[0-9]+\.[0-9]+/) {print $i; exit}}')"
-        if [[ -n "${vraw}" ]]; then echo "${vraw}"; return; fi
-      fi
+      # NVM / Volta / fnm / asdf globs.
+      while IFS= read -r v; do
+        [[ -n "${v}" ]] && versions+=("${v}")
+      done < <(_collect_node_manager_pkg_versions "${home}" "@openai" "codex")
+
+      _pick_highest_supported "${MIN_CODEX_VERSION}" "${versions[@]}"
       ;;
     claudecode)
-      # Claude Code ships through four channels:
+      # Claude Code ships through five channels:
       #
       #   1. Native installer (curl -fsSL https://claude.ai/install.sh
       #      | bash) — per-user under ~/.local/share/claude/versions/
-      #      with a `current` symlink pointer. This is the officially
-      #      recommended installer and what most users have today; the
-      #      `~/.local/bin/claude` shim on PATH resolves through the
-      #      `current` symlink to `.../versions/<X.Y.Z>/claude`.
+      #      with a `current` symlink pointer.
       #   2. System-wide native install — /opt/claude or
       #      /usr/local/share/claude, same {current,versions/*} shape.
-      #      Present when an admin installs Claude for all users.
       #   3. npm-global CLI — @anthropic-ai/claude-code — legacy
-      #      channel, still supported. package.json carries version.
-      #   4. Cursor / VS Code editor extensions — the extension dir
-      #      name embeds the version (matches the codex probe pattern).
+      #      channel; still shipped through Homebrew's `node` and
+      #      manually via `npm i -g`.
+      #   4. Node version managers (NVM/Volta/fnm/asdf) — the same
+      #      npm package installed under a per-node-version root. QA
+      #      regression: previously not probed at all, so a stale
+      #      Homebrew install would beat a supported NVM install.
+      #   5. Cursor / VS Code editor extensions — extension dir name
+      #      embeds the version (matches the codex probe pattern).
       #
-      # Probe order picks native FIRST because it is what customers
-      # actually run today; leaving it for a stale npm-global fallback
-      # to win would surface a stale version to the hook-contract
-      # validator and (in managed_enterprise mode=action) fail the
-      # reconcile for that user's claudecode row.
-
-      # 1. + 2. Native installer layouts. Per-user first, then Linux
-      # system-wide paths. `installer_lib.sh` is macOS-only in
-      # today's shipping bundle, but the render-targets script is
-      # copied into the managed tree and runs against every local
-      # user's home; the extra probes cost one stat each on macOS
-      # (which does not have /opt/claude) and future-proof against
-      # a Linux managed rollout that consumes this helper.
-      local base v
+      # We enumerate everything and pick the highest install that
+      # meets MIN_CLAUDECODE_VERSION; if nothing clears the minimum,
+      # the highest overall is still emitted so the Go hook gate
+      # reports drift rather than the noisier "unversioned".
       for base in \
         "${home}/.local/share/claude" \
         /opt/claude \
         /usr/local/share/claude; do
         v="$(_native_claudecode_version_from_dir "${base}")"
-        if [[ -n "${v}" ]]; then echo "${v}"; return; fi
+        [[ -n "${v}" ]] && versions+=("${v}")
       done
 
-      # 3. + 4. npm module package.json + editor-extension probes.
-      #    Kept intact so operators with a legacy npm install or an
-      #    editor-extension install continue to work.
-      local pkg
+      # PATH-shim probe. Newer native installers publish
+      # `<home>/.local/bin/claude -> ../share/claude/versions/<X.Y.Z>`
+      # without a `current` symlink and with versions/<X.Y.Z> as a
+      # regular executable file. Without this probe the from_dir()
+      # scan above still handles the file variant, but a QA host
+      # reported here had a *stale* versions/ entry pinned by the
+      # shim to an older release; the shim is the source of truth
+      # for the active install, so we surface it explicitly. Handles
+      # per-user and both system shim locations.
+      local bin
+      for bin in \
+        "${home}/.local/bin/claude" \
+        /usr/local/bin/claude \
+        /opt/homebrew/bin/claude \
+        /opt/claude/bin/claude; do
+        v="$(_native_claudecode_version_from_bin "${bin}")"
+        [[ -n "${v}" ]] && versions+=("${v}")
+      done
+
       for pkg in \
         "${home}"/.npm-global/lib/node_modules/@anthropic-ai/claude-code/package.json \
         /usr/local/lib/node_modules/@anthropic-ai/claude-code/package.json \
         /opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/package.json \
         "${home}"/.cursor/extensions/anthropic.claude-code-*/package.json \
         "${home}"/.vscode/extensions/anthropic.claude-code-*/package.json; do
-        [[ -f "${pkg}" ]] || continue
-        v="$(_read_json_version "${pkg}")"
-        if [[ -n "${v}" ]]; then echo "${v}"; return; fi
+        v="$(_emit_pkg_version_if_exists "${pkg}")"
+        [[ -n "${v}" ]] && versions+=("${v}")
       done
+
+      while IFS= read -r v; do
+        [[ -n "${v}" ]] && versions+=("${v}")
+      done < <(_collect_node_manager_pkg_versions "${home}" "@anthropic-ai" "claude-code")
+
+      _pick_highest_supported "${MIN_CLAUDECODE_VERSION}" "${versions[@]}"
       ;;
     cursor)
-      # Cursor.app is a signed macOS bundle; read the Info.plist rather
-      # than exec'ing the binary. PlistBuddy is an Apple system tool.
+      # Cursor.app is a signed macOS bundle. Two metadata sources:
+      #   1. Info.plist ``CFBundleShortVersionString`` — the user-
+      #      visible marketing version.
+      #   2. Contents/Resources/app/package.json ``version`` — the
+      #      Electron/npm layout the bundled agent reports at runtime;
+      #      the two can lag out of sync for a release.
+      # Enumerate both and let _pick_highest_supported pick the one
+      # that meets MIN_CURSOR_VERSION; if both are below, the higher
+      # of the two still ships.
       if [[ -f /Applications/Cursor.app/Contents/Info.plist ]]; then
-        /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
-          /Applications/Cursor.app/Contents/Info.plist 2>/dev/null || true
+        v="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+          /Applications/Cursor.app/Contents/Info.plist 2>/dev/null || true)"
+        [[ -n "${v}" ]] && versions+=("${v}")
       fi
+      v="$(_emit_pkg_version_if_exists /Applications/Cursor.app/Contents/Resources/app/package.json)"
+      [[ -n "${v}" ]] && versions+=("${v}")
+
+      _pick_highest_supported "${MIN_CURSOR_VERSION}" "${versions[@]}"
       ;;
   esac
 }
@@ -631,12 +982,21 @@ _valid_aid_endpoint_url() {
   case "${candidate}" in
     *[[:space:]]*|*'"'*|*'\'*) return 1 ;;
   esac
-  # Bare-origin shape:
-  #   https://<host>[:port]
-  # <host> = one or more hostname labels (letters, digits, hyphen)
-  # separated by dots. No userinfo, no path, no query, no fragment.
-  local re='^https://[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[0-9]+)?$'
-  [[ "${candidate}" =~ ${re} ]]
+  # Bare-origin shape. Host must either end in `.cisco.com` (the
+  # AVC-owned AI Defense hostnames) or be a loopback for local dev.
+  # This mirrors validateAIDefenseEndpoint in internal/config/env_config.go
+  # -- the sync-guard test in TestValidateAIDefenseEndpoint fails CI if
+  # either side loosens its checks.
+  local re_cisco='^https://[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\.cisco\.com(:[0-9]+)?$'
+  # Loopback: IPv4/hostname bare, or IPv6 in bracketed URL form. The Go
+  # validator's u.Hostname() unwraps the brackets, so validateAIDefense
+  # Endpoint accepts https://[::1] and https://[::1]:8080 as loopback;
+  # the shell needs the same coverage or the sync-guard test drifts.
+  local re_loopback='^https://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?$'
+  if [[ "${candidate}" =~ ${re_cisco} ]] || [[ "${candidate}" =~ ${re_loopback} ]]; then
+    return 0
+  fi
+  return 1
 }
 
 # resolve_aid_endpoint OVERRIDE CONFIG_FILE -> stdout effective endpoint

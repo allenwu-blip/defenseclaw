@@ -116,6 +116,14 @@ t_default_aid_endpoint_matches_go() {
     "${REPO_ROOT}/internal/config/config.go" \
     | head -1 \
     | sed -E 's/.*"cisco_ai_defense\.endpoint",[[:space:]]*"([^"]+)".*/\1/')"
+  # If the grep+sed pipeline produces nothing (viper default renamed,
+  # constant relocated, quoting changed) the drift comparison would
+  # silently pass on "" == "". Fail hard so we notice the extraction
+  # bug instead of losing the sync guard.
+  if [[ -z "${go_default}" ]]; then
+    _fail "could not extract cisco_ai_defense.endpoint viper default from internal/config/config.go"
+    return 1
+  fi
   assert_eq "${shell_default}" "${go_default}" \
     "DEFAULT_AID_ENDPOINT in installer_lib.sh matches viper default in config.go"
 }
@@ -238,12 +246,14 @@ t_resolve_aid_endpoint_precedence() {
     "override takes precedence over --config-file"
 
   # Trailing slash stripped from either source for consistent path
-  # joining downstream.
-  out="$(resolve_aid_endpoint "https://host.example.com/" "${cfg}")"
-  assert_eq "${out}" "https://host.example.com" "trailing slash stripped from override"
-  printf '{"cisco_ai_defense_endpoint": "https://host.example.com/"}\n' >"${cfg}"
+  # joining downstream. Use a .cisco.com host so the strict host-suffix
+  # gate accepts it — `_valid_aid_endpoint_url` only allows AI Defense
+  # (.cisco.com) hosts and loopback for local dev.
+  out="$(resolve_aid_endpoint "https://us.api.inspect.aidefense.security.cisco.com/" "${cfg}")"
+  assert_eq "${out}" "https://us.api.inspect.aidefense.security.cisco.com" "trailing slash stripped from override"
+  printf '{"cisco_ai_defense_endpoint": "https://us.api.inspect.aidefense.security.cisco.com/"}\n' >"${cfg}"
   out="$(resolve_aid_endpoint "" "${cfg}")"
-  assert_eq "${out}" "https://host.example.com" "trailing slash stripped from config-file value"
+  assert_eq "${out}" "https://us.api.inspect.aidefense.security.cisco.com" "trailing slash stripped from config-file value"
 
   # HTTPS bare-origin contract (post PR-579 review): the resolver
   # rejects every non-bare-origin shape at rc 3 so a mis-typed
@@ -317,6 +327,27 @@ t_resolve_aid_endpoint_precedence() {
   printf '{"cisco_ai_defense_endpoint": "not-a-url"}\n' >"${cfg}"
   rc=0; resolve_aid_endpoint "" "${cfg}" >/dev/null 2>&1 || rc=$?
   assert_status "${rc}" 2 "config file with malformed URL -> rc 2"
+
+  # Loopback parity with the Go validator's TestValidateAIDefense
+  # Endpoint. Each of these shapes MUST be accepted (rc 0); the Go
+  # side's u.Hostname() unwraps bracketed IPv6, so if either side
+  # loosens or tightens beyond the other the sync-guard fails.
+  for lo in \
+    "https://localhost" \
+    "https://localhost:8080" \
+    "https://127.0.0.1" \
+    "https://127.0.0.1:8080" \
+    "https://[::1]" \
+    "https://[::1]:8080"; do
+    rc=0; out="$(resolve_aid_endpoint "${lo}" "${cfg}" 2>/dev/null)" || rc=$?
+    assert_status "${rc}" 0 "loopback ${lo} accepted (Go/shell parity)"
+    assert_eq "${out}" "${lo}" "loopback ${lo} round-trips unchanged"
+  done
+
+  # And bare cisco.com must be rejected on the shell exactly like Go's
+  # HasSuffix(".cisco.com") — the leading dot IS required.
+  rc=0; resolve_aid_endpoint "https://cisco.com" "${cfg}" >/dev/null 2>&1 || rc=$?
+  assert_status "${rc}" 3 "bare cisco.com (no leading dot subdomain) rejected"
 }
 
 t_managed_enterprise_verdict_sources_locked() {

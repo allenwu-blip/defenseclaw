@@ -23,7 +23,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from defenseclaw.connector_paths import KNOWN_CONNECTORS
+from defenseclaw.connector_paths import KNOWN_AGENT_KINDS, KNOWN_CONNECTORS
 from defenseclaw.inventory import agent_discovery as ad
 
 
@@ -81,7 +81,7 @@ def test_cache_miss_hit_and_ttl_expiry(monkeypatch, tmp_path):
     first = ad.discover_agents()
     assert first.cache_hit is False
     assert first.agents["codex"].installed is True
-    assert len(calls) == len(KNOWN_CONNECTORS)
+    assert len(calls) == len(KNOWN_AGENT_KINDS)
 
     cache_file = Path(os.environ["DEFENSECLAW_HOME"]) / ad.CACHE_FILENAME
     assert cache_file.is_file()
@@ -101,6 +101,85 @@ def test_cache_miss_hit_and_ttl_expiry(monkeypatch, tmp_path):
     assert refreshed.cache_hit is False
     assert refreshed.agents["codex"].installed is False
     assert refreshed.agents["claudecode"].installed is True
+
+
+def test_corrupt_cache_entry_forces_rescan_not_synth_default(monkeypatch, tmp_path):
+    """A present-but-malformed cache entry must reject the whole cache.
+
+    Distinguished from an absent legacy entry (older CLI didn't know
+    about a newly-added discovery-only kind), which is synthesised as
+    ``installed=False`` so upgrade hosts don't rescan every read.
+
+    Before the fix, `raw_agents.get(name)` returned `None` for both
+    cases and the loop treated them identically, so a corrupt on-disk
+    entry (scalar / null where a nested object should be) was silently
+    reported as "not installed" until the TTL expired. Now: absent →
+    synth default; present-but-not-a-dict → return None → rescan.
+    """
+    _pin_home(monkeypatch, tmp_path)
+    data_dir = Path(os.environ["DEFENSECLAW_HOME"])
+    data_dir.mkdir(parents=True)
+    # Populate every KNOWN_CONNECTORS entry with a valid dict so the
+    # loop reaches the discovery-only slice without an earlier
+    # "connector missing → reject" bailout. `aider` (discovery-only,
+    # in KNOWN_AGENT_KINDS but NOT KNOWN_CONNECTORS) is left as a
+    # scalar — that's the corruption the new branch is supposed to
+    # catch. Prior iteration of this test left every connector absent,
+    # so the pre-fix code path would also rescan (for the missing
+    # enforcement connectors) and the assertion would pass without
+    # ever exercising the new corrupt-entry branch.
+    valid_dict = {
+        "name": "placeholder",
+        "installed": False,
+        "config_path": "",
+        "binary_path": "",
+        "version": "",
+        "error": "",
+    }
+    agents_fixture: dict[str, object] = {
+        connector: dict(valid_dict, name=connector) for connector in ad.KNOWN_CONNECTORS
+    }
+    # Fill valid dicts for every OTHER discovery-only kind too, so
+    # `aider` is the only entry that could plausibly force a rescan.
+    for kind in ad.KNOWN_AGENT_KINDS:
+        if kind in ad.KNOWN_CONNECTORS or kind == "aider":
+            continue
+        agents_fixture[kind] = dict(valid_dict, name=kind)
+    # And now the corrupt entry — scalar where a dict is expected.
+    agents_fixture["aider"] = "not-a-dict"
+
+    (data_dir / ad.CACHE_FILENAME).write_text(
+        json.dumps(
+            {
+                "version": ad.CACHE_SCHEMA_VERSION,
+                "scanned_at": "2026-05-04T18:21:00Z",
+                "ttl_seconds": ad.CACHE_TTL_SECONDS,
+                "agents": agents_fixture,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(ad, "_now_utc", lambda: datetime(2026, 5, 4, 18, 22, tzinfo=timezone.utc))
+    scanned: list[str] = []
+
+    def fake_scan(name: str, **_kwargs) -> ad.AgentSignal:
+        scanned.append(name)
+        return _signal(name)
+
+    monkeypatch.setattr(ad, "_scan_agent", fake_scan)
+
+    disc = ad.discover_agents()
+
+    # Only the corrupt `aider` entry can invalidate the cache in this
+    # fixture — every other kind has a valid dict. cache_hit=False +
+    # a full rescan proves the new branch fires.
+    assert disc.cache_hit is False, (
+        "corrupt discovery-only entry silently accepted "
+        "(all other kinds have valid dict entries; only `aider` is malformed)"
+    )
+    assert set(scanned) == set(ad.KNOWN_AGENT_KINDS), (
+        f"corrupt cache did NOT trigger a full rescan: scanned={scanned}"
+    )
 
 
 def test_schema_version_mismatch_rescans(monkeypatch, tmp_path):
@@ -128,8 +207,15 @@ def test_schema_version_mismatch_rescans(monkeypatch, tmp_path):
 
 
 def test_timeout_sets_error_and_does_not_mark_binary_only_install(monkeypatch, tmp_path):
+    # Retargeted from codex → openclaw: codex now uses the metadata-only
+    # collector (_collect_codex_versions) rather than shutil.which +
+    # --version exec, so the "timeout on exec" branch is only reachable
+    # from connectors that stayed on the legacy path (openclaw, hermes,
+    # zeptoclaw, geminicli, etc.). Everything the assertion cares about
+    # — timeout produces an error, binary_only-install stays false —
+    # applies identically to any legacy-path connector.
     _pin_home(monkeypatch, tmp_path)
-    monkeypatch.setattr(ad.shutil, "which", lambda name: "/usr/local/bin/codex")
+    monkeypatch.setattr(ad.shutil, "which", lambda name: "/usr/local/bin/openclaw")
     # M-4: bypass the trusted-prefix file-existence check so we can
     # exercise the timeout branch with a path the test doesn't have to
     # actually create on disk.
@@ -140,18 +226,21 @@ def test_timeout_sets_error_and_does_not_mark_binary_only_install(monkeypatch, t
 
     monkeypatch.setattr(ad.subprocess, "run", timeout)
 
-    signal = ad._scan_agent("codex")
+    signal = ad._scan_agent("openclaw")
 
-    assert signal.binary_path == "/usr/local/bin/codex"
+    assert signal.binary_path == "/usr/local/bin/openclaw"
     assert signal.config_path == ""
     assert signal.installed is False
     assert "timed out" in signal.error
 
 
 def test_version_probe_uses_no_shell_and_list_args(monkeypatch, tmp_path):
+    # Retargeted from codex → openclaw (same reason as
+    # test_timeout_sets_error_and_does_not_mark_binary_only_install:
+    # codex no longer takes the exec path).
     _pin_home(monkeypatch, tmp_path)
     calls = []
-    monkeypatch.setattr(ad.shutil, "which", lambda name: "/opt/bin/codex")
+    monkeypatch.setattr(ad.shutil, "which", lambda name: "/opt/bin/openclaw")
     # M-4: this fake binary lives in /opt/bin (not a default trusted
     # prefix); waive the trust check so the test focuses on subprocess
     # invocation contract.
@@ -159,16 +248,16 @@ def test_version_probe_uses_no_shell_and_list_args(monkeypatch, tmp_path):
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="codex 1.2.3\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="openclaw 1.2.3\n", stderr="")
 
     monkeypatch.setattr(ad.subprocess, "run", fake_run)
 
-    signal = ad._scan_agent("codex")
+    signal = ad._scan_agent("openclaw")
 
     assert signal.installed is True
-    assert signal.version == "codex 1.2.3"
+    assert signal.version == "openclaw 1.2.3"
     args, kwargs = calls[0]
-    assert args == ["/opt/bin/codex", "--version"]
+    assert args == ["/opt/bin/openclaw", "--version"]
     assert kwargs["shell"] is False
     assert kwargs["timeout"] == 2.0
     assert kwargs["capture_output"] is True
@@ -257,8 +346,15 @@ def test_omnigent_discovery_does_not_fall_back_when_config_home_is_set(monkeypat
 # binary that lives outside the canonical install prefixes (an attacker
 # who can prepend a hostile directory to PATH could otherwise have us
 # run their binary as part of a passive discovery scan).
+#
+# NOTE (2026-07): retargeted from codex → openclaw. codex now uses the
+# metadata-only collector (_collect_codex_versions) which never
+# shutil.which's the binary, so the trust-prefix gate isn't reachable
+# from that connector. The gate still applies identically to every
+# legacy-path connector (openclaw, hermes, zeptoclaw, geminicli,
+# copilot, opencode) — these tests cover it via openclaw.
 def test_version_probe_probes_untrusted_prefix_by_default(monkeypatch, tmp_path):
-    hostile = tmp_path / "hostile_bin" / "codex"
+    hostile = tmp_path / "hostile_bin" / "openclaw"
     hostile.parent.mkdir(parents=True, exist_ok=True)
     hostile.write_text("#!/bin/sh\nexit 0\n")
     hostile.chmod(0o755)
@@ -268,21 +364,21 @@ def test_version_probe_probes_untrusted_prefix_by_default(monkeypatch, tmp_path)
 
     def fake_run(*args, **kwargs):
         called.append((args, kwargs))
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="codex 0.0\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="openclaw 0.0\n", stderr="")
 
     monkeypatch.setattr(ad.subprocess, "run", fake_run)
     monkeypatch.delenv("DEFENSECLAW_TRUSTED_BIN_PREFIXES", raising=False)
 
-    signal = ad._scan_agent("codex")
+    signal = ad._scan_agent("openclaw")
 
     assert called, "default discovery should probe without trusted-prefix enforcement"
     assert signal.binary_path == str(hostile)
-    assert signal.version == "codex 0.0"
+    assert signal.version == "openclaw 0.0"
     assert signal.error == ""
 
 
 def test_version_probe_refuses_binary_outside_trusted_prefix_when_enabled(monkeypatch, tmp_path):
-    hostile = tmp_path / "hostile_bin" / "codex"
+    hostile = tmp_path / "hostile_bin" / "openclaw"
     hostile.parent.mkdir(parents=True, exist_ok=True)
     hostile.write_text("#!/bin/sh\nexit 0\n")
     hostile.chmod(0o755)
@@ -297,7 +393,7 @@ def test_version_probe_refuses_binary_outside_trusted_prefix_when_enabled(monkey
     monkeypatch.setattr(ad.subprocess, "run", fake_run)
     monkeypatch.delenv("DEFENSECLAW_TRUSTED_BIN_PREFIXES", raising=False)
 
-    signal = ad._scan_agent("codex", require_trusted_binary_paths=True)
+    signal = ad._scan_agent("openclaw", require_trusted_binary_paths=True)
 
     assert called == [], "version probe exec'd a binary outside the trusted prefix"
     assert signal.binary_path == str(hostile)
@@ -333,9 +429,11 @@ def test_trust_check_canonicalises_operator_prefix_symlink(monkeypatch, tmp_path
 
 
 def test_trust_check_accepts_config_prefix_when_required(monkeypatch, tmp_path):
+    # Retargeted from codex → openclaw: same reason as
+    # test_version_probe_probes_untrusted_prefix_by_default.
     data_dir = tmp_path / ".defenseclaw"
     data_dir.mkdir()
-    binary = tmp_path / "tools" / "codex"
+    binary = tmp_path / "tools" / "openclaw"
     binary.parent.mkdir(parents=True, exist_ok=True)
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
@@ -347,17 +445,17 @@ def test_trust_check_accepts_config_prefix_when_required(monkeypatch, tmp_path):
     monkeypatch.setattr(ad.shutil, "which", lambda name: str(binary))
 
     def fake_run(args, **kwargs):
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="codex 1.2.3\n", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="openclaw 1.2.3\n", stderr="")
 
     monkeypatch.setattr(ad.subprocess, "run", fake_run)
     signal = ad._scan_agent(
-        "codex",
+        "openclaw",
         data_dir=data_dir,
         require_trusted_binary_paths=True,
     )
 
     assert signal.installed is True
-    assert signal.version == "codex 1.2.3"
+    assert signal.version == "openclaw 1.2.3"
 
 
 def test_trust_check_accepts_homebrew_symlink_targets(monkeypatch, tmp_path):
@@ -557,3 +655,140 @@ def test_render_discovery_table_includes_connectors_and_cache_state():
     assert "cached" in rendered
     assert "codex" in rendered
     assert "yes" in rendered
+
+
+def test_semver_regex_matches_across_files():
+    """Drift guard for the two _VERSION_RE definitions.
+
+    ``defenseclaw/inventory/_semver.py`` and
+    ``scripts/connector-version-radar.py`` intentionally keep separate
+    copies of the semver regex (the radar is a standalone lab script
+    outside the CLI import path), but the two compiled patterns MUST
+    stay identical — a drift means one side accepts a version shape
+    the other rejects, which produces hard-to-reproduce ``ValueError``s
+    on the radar path or the reverse.
+
+    Uses ``ast`` to find the ``_VERSION_RE = re.compile(...)`` node in
+    each file and concatenates every string argument literal. A prior
+    version of this test scanned for the first `)` byte after the
+    marker, which stopped inside the lookbehind ``(?<![0-9A-Za-z])``
+    and only compared the prefix — CodeRabbit caught that during PR
+    review. AST parsing is the robust way to grab the full pattern
+    argument regardless of formatting.
+    """
+    import ast
+
+    repo_root = Path(__file__).resolve().parents[2]
+    semver_py = (repo_root / "cli" / "defenseclaw" / "inventory" / "_semver.py").read_text()
+    radar_py = (repo_root / "scripts" / "connector-version-radar.py").read_text()
+
+    def _eval_string_expr(node: ast.AST) -> str | None:
+        """Evaluate a string-typed constant-fold expression to its value.
+
+        Handles bare string literals plus BinOp trees whose leaves are
+        string constants and whose operators are `+`. Returns None if
+        the node contains anything else (a non-string constant, an
+        arithmetic op, a name reference, …). Both Python source shapes
+
+            _VERSION_RE = re.compile("abc")
+            _VERSION_RE = re.compile("a" + "b" + "c")
+
+        resolve to the same "abc"; the two files can therefore diverge
+        in formatting without spuriously tripping the drift guard, and
+        a real drift in the pattern content still trips it because
+        we're comparing the evaluated string not the source syntax.
+        Implicit adjacent-literal concatenation (``"a" "b"``) is
+        already collapsed to a single ``ast.Constant`` by the parser
+        so no extra handling is needed for that shape.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = _eval_string_expr(node.left)
+            right = _eval_string_expr(node.right)
+            if left is None or right is None:
+                return None
+            return left + right
+        return None
+
+    def _extract(source: str, source_path: str) -> str:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not (len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "_VERSION_RE"):
+                continue
+            value = node.value
+            if not (isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Attribute)
+                    and value.func.attr == "compile"):
+                continue
+            # `re.compile(...)` accepts (pattern, flags). We care only
+            # about the pattern arg.
+            pattern_arg = value.args[0]
+            evaluated = _eval_string_expr(pattern_arg)
+            if evaluated is None:
+                raise AssertionError(
+                    f"{source_path}: unsupported _VERSION_RE literal shape "
+                    f"{ast.dump(pattern_arg)} — extend _eval_string_expr "
+                    f"if you added dynamic construction."
+                )
+            return evaluated
+        raise AssertionError(f"{source_path}: _VERSION_RE = re.compile(...) not found")
+
+    semver_pat = _extract(semver_py, "_semver.py")
+    radar_pat = _extract(radar_py, "connector-version-radar.py")
+    assert semver_pat == radar_pat, (
+        "_VERSION_RE in _semver.py has drifted from "
+        "scripts/connector-version-radar.py:\n"
+        f"  _semver.py:      {semver_pat!r}\n"
+        f"  version-radar:   {radar_pat!r}\n"
+        "Keep the two byte-for-byte identical or route both through a "
+        "shared import."
+    )
+
+
+def test_known_agent_kinds_matches_go_promoted_agent_kinds():
+    """Drift guard for the KNOWN_AGENT_KINDS ↔ promotedAgentKinds contract.
+
+    The Python-side ``KNOWN_AGENT_KINDS`` (this file's neighbour
+    ``defenseclaw/connector_paths.py``) lists discovery-only agents that
+    the CLI treats as first-class for inventory / TUI purposes but that
+    have no DefenseClaw enforcement path. The Go side promotes the same
+    set via ``promotedAgentKinds`` in
+    ``internal/inventory/ai_catalog.go``; the connector-slug VALUES on
+    both sides must agree, otherwise dashboards that join on
+    ``agent_kind`` will silently miss surfaces on one side.
+
+    The Go map keys are signature IDs (``claude-desktop``) whose
+    Python analogue in ``KNOWN_AGENT_KINDS`` is the *normalised* slug
+    (``claudedesktop``); this test compares the two sides after
+    stripping the documented `-` → `` normalisation. Any drift —
+    add/remove/rename on either side — trips the assertion.
+    """
+    import re
+
+    repo_root = Path(__file__).resolve().parents[2]
+    catalog_go = (repo_root / "internal" / "inventory" / "ai_catalog.go").read_text()
+
+    # Extract the map body between the opening `{` and matching `}` on
+    # promotedAgentKinds. `\A(?:.|\n)*?` skips ahead lazily; keeping
+    # this pattern tight avoids matching later map blocks.
+    match = re.search(
+        r"promotedAgentKinds\s*=\s*map\[string\]string\{([^}]+)\}",
+        catalog_go,
+    )
+    assert match, "promotedAgentKinds map not found in ai_catalog.go"
+    entries = re.findall(r'"([^"]+)"\s*:\s*"([^"]+)"', match.group(1))
+    assert entries, "promotedAgentKinds body parsed to zero entries — regex drift?"
+
+    # Every Go-side connector-slug value must appear in KNOWN_AGENT_KINDS.
+    go_slugs = {slug for _, slug in entries}
+    python_promoted = set(KNOWN_AGENT_KINDS) - set(KNOWN_CONNECTORS)
+    assert go_slugs == python_promoted, (
+        f"KNOWN_AGENT_KINDS ↔ promotedAgentKinds drift: "
+        f"Go-only={sorted(go_slugs - python_promoted)}, "
+        f"Python-only={sorted(python_promoted - go_slugs)}"
+    )
