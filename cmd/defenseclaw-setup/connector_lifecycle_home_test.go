@@ -156,6 +156,31 @@ func TestCursorConnectorLifecycleCommandArgsBindsConfigHomeExplicitly(t *testing
 	}
 }
 
+func TestOpenCodeLifecycleCommandArgsBindExactConfigDir(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	openCodeConfigDir := filepath.Join(root, "opencode")
+	args, err := connectorLifecycleCommandArgs(
+		dataRoot,
+		"opencode",
+		"reconcile",
+		[]string{"OPENCODE_CONFIG_DIR=" + openCodeConfigDir},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"connector", "reconcile",
+		"--connector", "opencode",
+		"--data-dir", dataRoot,
+		"--config-home", openCodeConfigDir,
+		"--json",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("OpenCode lifecycle args = %q, want %q", args, want)
+	}
+}
+
 func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.T) {
 	root := t.TempDir()
 	valid := filepath.Join(root, "codex")
@@ -177,6 +202,8 @@ func TestConnectorLifecycleConfigHomeRejectsAmbiguousOrUnsafeBinding(t *testing.
 		{name: "cursor duplicate", connector: "cursor", env: []string{"DEFENSECLAW_CURSOR_CONFIG_HOME=" + valid, "defenseclaw_cursor_config_home=" + valid}, want: "DEFENSECLAW_CURSOR_CONFIG_HOME is duplicated"},
 		{name: "windsurf missing", connector: "windsurf", env: []string{"USERPROFILE=" + valid}, want: "WINDSURF_USER_HOME is empty"},
 		{name: "hermes missing", connector: "hermes", env: []string{"USERPROFILE=" + valid}, want: "HERMES_HOME is empty"},
+		{name: "OpenCode missing", connector: "opencode", env: []string{"USERPROFILE=" + valid}, want: "OPENCODE_CONFIG_DIR is empty"},
+		{name: "OpenCode duplicate", connector: "opencode", env: []string{"OPENCODE_CONFIG_DIR=" + valid, "opencode_config_dir=" + valid}, want: "OPENCODE_CONFIG_DIR is duplicated"},
 		{name: "unsupported", connector: "openclaw", env: []string{"CODEX_HOME=" + valid}, want: "unsupported native connector"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

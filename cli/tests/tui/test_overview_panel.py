@@ -624,9 +624,11 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     hermes_home = tmp_path / "hermes-home"
     claude_home = tmp_path / "claude-home"
     codex_home = tmp_path / "codex-home"
+    opencode_home = tmp_path / "opencode-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(opencode_home))
     cases = {
         "hermes": "Hermes",
         "cursor": "Cursor",
@@ -652,7 +654,14 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     # advertises "unmanaged in v1".
     opencode_mcps = connector_source_label("opencode", "mcps")
     assert ".config/opencode/opencode.json" in opencode_mcps
+    assert str(opencode_home / "opencode.json") in opencode_mcps
     assert "unmanaged" not in opencode_mcps
+    assert str(opencode_home / "plugins" / "defenseclaw.js") in connector_source_label(
+        "opencode", "config"
+    )
+    assert str(opencode_home / "plugins" / "defenseclaw.js") in connector_source_label(
+        "opencode", "plugins"
+    )
     antigravity_mcps = connector_source_label("antigravity", "mcps")
     assert ".gemini/config/mcp_config.json" in antigravity_mcps
     assert ".agents/mcp_config.json" in antigravity_mcps

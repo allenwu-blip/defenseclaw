@@ -12,6 +12,22 @@ if (!pluginPath || !scratchPath || !["allow", "block"].includes(expected) || !co
 }
 
 await copyFile(pluginPath, scratchPath);
+const nativeFetch = globalThis.fetch;
+let observedAfterPayload;
+globalThis.fetch = async (url, init) => {
+  const payload = JSON.parse(init?.body || "{}");
+  if (payload.hook_event_name === "tool.execute.after") {
+    observedAfterPayload = payload;
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { hook_output: { decision: "allow" } };
+      },
+    };
+  }
+  return nativeFetch(url, init);
+};
 try {
   const module = await import(`${pathToFileURL(scratchPath).href}?v=${Date.now()}`);
   if (typeof module.DefenseClaw !== "function") {
@@ -57,9 +73,25 @@ try {
       tool: "bash",
       sessionID: "defenseclaw-windows-contract",
       callID: "defenseclaw-windows-contract-call",
+      args: { command },
     },
-    { args: { command } },
+    {
+      title: "synthetic OpenCode tool result",
+      output: "synthetic OpenCode output",
+      metadata: { source: "DefenseClaw contract fixture" },
+    },
   );
+  if (
+    observedAfterPayload?.tool_input?.command !== command ||
+    observedAfterPayload?.tool_result?.title !== "synthetic OpenCode tool result" ||
+    observedAfterPayload?.tool_result?.output !== "synthetic OpenCode output" ||
+    observedAfterPayload?.tool_result?.metadata?.source !== "DefenseClaw contract fixture"
+  ) {
+    throw new Error(
+      `OpenCode after payload does not preserve official input args and result output: ${JSON.stringify(observedAfterPayload)}`,
+    );
+  }
 } finally {
+  globalThis.fetch = nativeFetch;
   await rm(scratchPath, { force: true });
 }

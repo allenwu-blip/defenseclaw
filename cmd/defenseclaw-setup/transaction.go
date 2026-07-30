@@ -916,7 +916,11 @@ func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback st
 		}
 		home = filepath.Dir(home)
 	}
-	if connectorName == "opencode" && strings.EqualFold(filepath.Base(home), "plugins") {
+	if connectorName == "opencode" {
+		if !strings.EqualFold(filepath.Base(target), "defenseclaw.js") ||
+			!strings.EqualFold(filepath.Base(home), "plugins") {
+			return "", errors.New("opencode managed backup has an invalid plugin target path")
+		}
 		home = filepath.Dir(home)
 	}
 	return home, nil

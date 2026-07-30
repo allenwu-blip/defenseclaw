@@ -116,7 +116,7 @@
         "scope": "user"
       },
       "hilt": "No native human-approval surface; blocks by throwing in the bridge plugin's tool.execute.before. confirm verdicts fall back to allow.",
-      "notes": "Governed by a DefenseClaw JS bridge plugin auto-loaded from ~/.config/opencode/plugins/defenseclaw.js (no opencode.json edit). tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) to abort the tool on a block decision; tool.execute.after is observe-only. Fail-closed is genuine — the bridge throws when the gateway is unreachable and FAIL_MODE=closed."
+      "notes": "Native Windows is preview pending integrated packaged Setup and pinned official-client validation. Governed by a DefenseClaw JS bridge plugin auto-loaded from OPENCODE_CONFIG_DIR/plugins/defenseclaw.js or the default ~/.config/opencode/plugins/defenseclaw.js (no opencode.json edit). tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) to abort the tool on a block decision; tool.execute.after is best-effort observe-only. Fail-closed applies only to the awaited before hook: the bridge throws there when the gateway is unreachable and FAIL_MODE=closed."
     },
     {
       "id": "omnigent",

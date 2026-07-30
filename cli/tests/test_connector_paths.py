@@ -700,6 +700,37 @@ class TestOpenCodeMCPReader:
         names = {e.name for e in connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))}
         assert names == {"g", "p"}
 
+    def test_custom_config_layers_last_and_overrides_same_name(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        self._write_global(
+            home,
+            {
+                "shared": {"type": "local", "command": ["global-command"]},
+                "global-only": {"type": "local", "command": ["global-only-command"]},
+            },
+        )
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / "opencode.json").write_text(
+            json.dumps({"mcp": {"shared": {"type": "local", "command": ["project-command"]}}})
+        )
+        custom = tmp_path / "custom-opencode"
+        custom.mkdir()
+        (custom / "opencode.jsonc").write_text(
+            json.dumps({"mcp": {"shared": {"type": "local", "command": ["custom-command"]}}})
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        entries = {
+            entry.name: entry
+            for entry in connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))
+        }
+
+        assert set(entries) == {"shared", "global-only"}
+        assert entries["shared"].command == "custom-command"
+
     def test_no_config_returns_empty(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         home.mkdir()

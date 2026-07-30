@@ -148,6 +148,7 @@ _TOKEN_ROTATION_CHILD_ENV_ALLOWLIST = (
     # connector homes; preserve that binding across every rotation child.
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
+    "OPENCODE_CONFIG_DIR",
     "HERMES_HOME",
 )
 _NATIVE_SPLUNK_CONFIG_SNAPSHOT_ATTR = "_native_splunk_config_snapshot"

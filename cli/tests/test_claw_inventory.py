@@ -2324,6 +2324,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")
         home = self.tmp
         root = os.path.join(home, ".config", "opencode")
+        custom = os.path.join(home, "custom-opencode")
         _seed_skill(os.path.join(root, "skills"), "oc-skill")
         _seed_plugin(os.path.join(root, "plugins"), "oc-plugin", manifest="package.json")
         tool_dir = os.path.join(root, "tools")
@@ -2335,10 +2336,20 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
                 {"tool": {"config-tool": {"description": "configured tool"}}},
                 f,
             )
+        os.makedirs(custom)
+        with open(os.path.join(custom, "opencode.json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {"mcp": {"proven-mcp": {"type": "local", "command": ["mcp-demo"]}}},
+                f,
+            )
 
         with patch.dict(
             os.environ,
-            {"HOME": home, "USERPROFILE": home},
+            {
+                "HOME": home,
+                "USERPROFILE": home,
+                "OPENCODE_CONFIG_DIR": custom,
+            },
             clear=False,
         ):
             inv = build_claw_aibom(cfg, live=True)
@@ -2347,6 +2358,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(inv["skills"], [])
         self.assertEqual(inv["plugins"], [])
         self.assertEqual(inv["tools"], [])
+        self.assertEqual([row["id"] for row in inv["mcp"]], ["proven-mcp"])
 
     def test_antigravity_catalog_surfaces_skills_plugins_and_commands(self):
         cfg = _make_cfg_for_connector(self.tmp, "antigravity")

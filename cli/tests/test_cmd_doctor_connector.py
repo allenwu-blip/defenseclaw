@@ -910,6 +910,7 @@ class TestCheckHookHealth(unittest.TestCase):
             _check_hook_health(self._cfg(tmp, "opencode", [hook]), "opencode", r)
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertEqual(r.checks[-1]["label"], "OpenCode hooks")
+        self.assertIn("does not revalidate the Windows DACL", r.checks[-1]["detail"])
         self.assertIn("not tamper-proof", r.checks[-1]["detail"])
 
     def test_opencode_tamper_fails_digest_check(self) -> None:
@@ -936,6 +937,37 @@ class TestCheckHookHealth(unittest.TestCase):
             _check_hook_health(self._cfg(tmp, "opencode", [str(hook)]), "opencode", r)
         self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertIn("drift detected", r.checks[-1]["detail"])
+
+    def test_opencode_lockless_fallback_honors_custom_config_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_home = Path(tmp) / "custom-opencode"
+            hook = config_home / "plugins" / "defenseclaw.js"
+            hook.parent.mkdir(parents=True)
+            body = b"// defenseclaw managed plugin\n"
+            hook.write_bytes(body)
+            data_dir = Path(tmp) / "data"
+            backup = data_dir / "connector_backups" / "opencode" / "config.json"
+            backup.parent.mkdir(parents=True)
+            backup.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "connector": "opencode",
+                        "logical_name": "config",
+                        "path": str(hook),
+                        "post_sha256": hashlib.sha256(body).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            cfg = MagicMock()
+            cfg.data_dir = str(data_dir)
+            r = _DoctorResult()
+            with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(config_home)}):
+                _check_hook_health(cfg, "opencode", r)
+
+        self.assertEqual(r.checks[-1]["status"], "pass")
+        self.assertIn(str(hook), r.checks[-1]["detail"])
 
     def test_unknown_connector_is_noop(self) -> None:
         r = _DoctorResult()

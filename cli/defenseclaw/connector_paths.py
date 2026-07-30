@@ -1133,12 +1133,14 @@ def _read_antigravity_mcp_config(path: str) -> list[MCPServerEntry]:
 
 
 def _opencode_config_paths(workspace_dir: str | None) -> list[str]:
-    """Return opencode's MCP config search paths, global-first.
+    """Return opencode's MCP config search paths in effective merge order.
 
     The global ``~/.config/opencode/opencode.json`` (and ``.jsonc``) is
     always consulted; the project ``<workspace>/opencode.json`` (and
     ``.jsonc``) is added only when an explicit workspace is pinned, so
-    the daemon never infers a project file from its own cwd.
+    the daemon never infers a project file from its own cwd. OpenCode
+    v1.18.10 then merges ``OPENCODE_CONFIG_DIR/opencode.json{,c}`` after
+    the project layer, so the active custom directory is last here too.
     """
     home = str(Path.home())
     paths = [
@@ -1149,7 +1151,11 @@ def _opencode_config_paths(workspace_dir: str | None) -> list[str]:
     if root:
         paths.append(os.path.join(root, "opencode.json"))
         paths.append(os.path.join(root, "opencode.jsonc"))
-    return paths
+    custom = _opencode_config_dir()
+    if custom:
+        paths.append(os.path.join(custom, "opencode.json"))
+        paths.append(os.path.join(custom, "opencode.jsonc"))
+    return _dedup(paths)
 
 
 def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
@@ -1158,35 +1164,57 @@ def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEnt
     opencode stores MCP servers under a top-level ``mcp`` map in its
     JSON/JSONC config — a different schema from the ``mcpServers`` shape
     every other connector uses. Global servers are read first, then the
-    pinned project file layers on top, matching how opencode itself
-    loads them at runtime.
+    pinned project and active custom-directory files layer on top, matching
+    how opencode itself loads them at runtime.
     """
-    entries: list[MCPServerEntry] = []
+    order: list[str] = []
+    entries: dict[str, dict[str, Any]] = {}
     for path in _opencode_config_paths(workspace_dir):
-        entries.extend(_read_opencode_mcp(path))
-    return _dedup_mcp_entries(entries)
+        for name, cfg in _read_opencode_mcp_block(path).items():
+            if name not in entries:
+                order.append(name)
+            # OpenCode deep-merges config objects. Merge the raw entry before
+            # projecting it into MCPServerEntry so a higher-precedence
+            # enabled-only override preserves the lower command/url.
+            entries[name] = _merge_opencode_mcp_config(entries.get(name, {}), cfg)
+    return [_opencode_entry_to_mcp(name, entries[name]) for name in order]
 
 
-def _read_opencode_mcp(path: str) -> list[MCPServerEntry]:
-    """Parse opencode's top-level ``mcp`` map into MCPServerEntry list.
+def _read_opencode_mcp_block(path: str) -> dict[str, dict[str, Any]]:
+    """Parse opencode's top-level ``mcp`` map without losing partial overrides.
 
     Tolerates JSONC (``//`` and ``/* */`` comments) via the optional
     ``json5`` backport — mirroring the OpenClaw reader — so a
     hand-authored ``opencode.jsonc`` still parses. A missing file,
-    unparseable content, or missing ``mcp`` block all yield ``[]``.
+    unparseable content, or missing ``mcp`` block all yield ``{}``.
     """
     data = _load_json_or_jsonc(path)
     if not isinstance(data, dict):
-        return []
+        return {}
     servers = data.get("mcp")
     if not isinstance(servers, dict):
-        return []
-    out: list[MCPServerEntry] = []
+        return {}
+    out: dict[str, dict[str, Any]] = {}
     for name, cfg in servers.items():
         if not isinstance(cfg, dict):
             continue
-        out.append(_opencode_entry_to_mcp(str(name), cfg))
+        out[str(name)] = cfg
     return out
+
+
+def _merge_opencode_mcp_config(
+    base: dict[str, Any],
+    override: dict[str, Any],
+) -> dict[str, Any]:
+    """Deep-merge one OpenCode MCP config layer over another."""
+    merged = dict(base)
+    for key, value in override.items():
+        previous = merged.get(key)
+        if isinstance(previous, dict) and isinstance(value, dict):
+            merged[key] = _merge_opencode_mcp_config(previous, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
@@ -1200,8 +1228,9 @@ def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
     kind = str(cfg.get("type", "") or "").strip().lower()
     url = str(cfg.get("url", "") or "")
     command_list = cfg.get("command")
+    disabled = cfg.get("enabled", True) is False
     if kind == "remote" or (not kind and url and not command_list):
-        return MCPServerEntry(name=name, url=url, transport="remote")
+        return MCPServerEntry(name=name, url=url, transport="remote", disabled=disabled)
     command = ""
     args: list[str] = []
     if isinstance(command_list, list) and command_list:
@@ -1210,7 +1239,14 @@ def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
     elif isinstance(command_list, str):
         command = command_list
     env = {str(k): str(v) for k, v in (cfg.get("environment", {}) or {}).items()}
-    return MCPServerEntry(name=name, command=command, args=args, env=env, transport="local")
+    return MCPServerEntry(
+        name=name,
+        command=command,
+        args=args,
+        env=env,
+        transport="local",
+        disabled=disabled,
+    )
 
 
 def _load_json_or_jsonc(path: str) -> Any:
@@ -2002,9 +2038,9 @@ def _unset_antigravity_mcp_server(
 # where each entry is ``{type: local, command: [...], environment: {...},
 # enabled: bool}`` or ``{type: remote, url: ..., enabled: bool}`` — a
 # different shape from the ``mcpServers`` schema the other JSON connectors
-# use. Writes default to the global ``~/.config/opencode/opencode.json``
-# and only touch a project ``<workspace>/opencode.json`` when an explicit
-# workspace is pinned.
+# use. Writes target an explicitly pinned project first, then the active
+# ``OPENCODE_CONFIG_DIR/opencode.json``, and otherwise the documented global
+# ``~/.config/opencode/opencode.json``.
 #
 # Write policy is plain JSON (documented, mcp.md M5 open decision): every
 # unrelated key is round-tripped by value, but JSONC comments are NOT
@@ -2016,9 +2052,18 @@ def _unset_antigravity_mcp_server(
 
 def _opencode_write_path(workspace_dir: str | None) -> str:
     root = _workspace_dir(workspace_dir)
-    if root:
-        return os.path.join(root, "opencode.json")
-    return os.path.join(str(Path.home()), ".config", "opencode", "opencode.json")
+    config_root = root or _opencode_config_dir() or os.path.join(
+        str(Path.home()),
+        ".config",
+        "opencode",
+    )
+    # OpenCode loads .jsonc after .json in component directories. Update the
+    # existing higher-precedence document when present so a same-name entry in
+    # it cannot silently override a newly written lower-precedence JSON file.
+    jsonc = os.path.join(config_root, "opencode.jsonc")
+    if os.path.lexists(jsonc):
+        return jsonc
+    return os.path.join(config_root, "opencode.json")
 
 
 def _opencode_mcp_entry_from_generic(entry: dict[str, Any]) -> dict[str, Any]:
@@ -2102,19 +2147,25 @@ def _unset_opencode_mcp_server(
     *,
     workspace_dir: str | None = None,
 ) -> bool:
-    path = _opencode_write_path(workspace_dir)
-    if not os.path.lexists(path):
-        return False
-    _reject_symlink_config(path)
-    data = _read_opencode_doc_for_write(path)
-    mcp = data.get("mcp")
-    if not isinstance(mcp, dict) or name not in mcp:
-        return False
-    del mcp[name]
-    data["mcp"] = mcp
-    _capture_managed_mcp_backup(path)
-    _atomic_write_json(path, data)
-    return True
+    updates: list[tuple[str, dict[str, Any]]] = []
+    # OpenCode merges every active layer. Removing only the winning custom or
+    # project declaration would let a same-name lower layer silently resurface,
+    # so validate first and then remove the name from every active config file.
+    for path in _opencode_config_paths(workspace_dir):
+        if not os.path.lexists(path):
+            continue
+        _reject_symlink_config(path)
+        data = _read_opencode_doc_for_write(path)
+        mcp = data.get("mcp")
+        if not isinstance(mcp, dict) or name not in mcp:
+            continue
+        del mcp[name]
+        data["mcp"] = mcp
+        updates.append((path, data))
+    for path, data in updates:
+        _capture_managed_mcp_backup(path)
+        _atomic_write_json(path, data)
+    return bool(updates)
 
 
 # ---------------------------------------------------------------------------

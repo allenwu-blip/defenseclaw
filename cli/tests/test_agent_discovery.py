@@ -245,9 +245,32 @@ def test_opencode_discovery_honors_custom_config_dir(monkeypatch, tmp_path):
 
     signal = ad._scan_agent("opencode")
 
-    assert signal.installed is True
+    # Config evidence alone does not manufacture a verified installation;
+    # discovery schema v3 keeps those states separate.
+    assert signal.installed is False
     assert signal.configured is True
     assert signal.config_path == str(plugin)
+
+
+@pytest.mark.parametrize("filename", ["opencode.json", "opencode.jsonc", "tui.json", "tui.jsonc"])
+def test_opencode_discovery_honors_config_files_in_custom_dir(
+    monkeypatch,
+    tmp_path,
+    filename,
+):
+    _pin_home(monkeypatch, tmp_path / "ambient-home")
+    monkeypatch.chdir(tmp_path)
+    custom = tmp_path / "custom-opencode"
+    config = custom / filename
+    config.parent.mkdir(parents=True)
+    config.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("opencode")
+
+    assert signal.configured is True
+    assert signal.config_path == str(config)
 
 
 def test_config_evidence_helper_rejects_directories(tmp_path):

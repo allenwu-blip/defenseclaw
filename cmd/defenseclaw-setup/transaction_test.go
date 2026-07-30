@@ -1518,6 +1518,47 @@ func TestInferManagedOpenCodeHomeUsesPluginParent(t *testing.T) {
 	}
 }
 
+func TestInferManagedOpenCodeHomeRejectsMalformedPluginTarget(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target func(string) string
+	}{
+		{
+			name: "wrong plugin filename",
+			target: func(home string) string {
+				return filepath.Join(home, "plugins", "operator.js")
+			},
+		},
+		{
+			name: "missing plugins directory",
+			target: func(home string) string {
+				return filepath.Join(home, "defenseclaw.js")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataRoot := t.TempDir()
+			backupPath := filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")
+			if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := test.target(filepath.Join(t.TempDir(), "opencode"))
+			if err := os.WriteFile(
+				backupPath,
+				[]byte(fmt.Sprintf(`{"path":%q}`, target)),
+				0o600,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := inferManagedConnectorHome(dataRoot, "opencode", "config", filepath.Join(t.TempDir(), "fallback"))
+			if err == nil || !strings.Contains(err.Error(), "invalid plugin target path") {
+				t.Fatalf("malformed OpenCode backup error = %v", err)
+			}
+		})
+	}
+}
+
 func TestResolvePreviousConnectorHomeUsesBackupBindingWithoutInstallState(t *testing.T) {
 	for _, test := range []struct {
 		connector, logicalName, legacyBackup string
@@ -1904,6 +1945,88 @@ func TestHermesManagedHomeSurvivesRepairEnvironmentDriftAndHandoff(t *testing.T)
 			"Hermes handoff homes = (%q, %q), want managed binding %q",
 			handoff.PreviousHermesHome,
 			handoff.HermesHome,
+			managedHome,
+		)
+	}
+}
+
+func TestOpenCodeManagedHomeSurvivesRepairEnvironmentDriftAndHandoff(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows setup transaction connector-home resolution")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	managedHome := filepath.Join(filepath.Dir(dataRoot), "OpenCode Managed")
+	ambientHome := filepath.Join(filepath.Dir(dataRoot), "ambient-opencode")
+	backupPath := filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binding := fmt.Sprintf(
+		`{"path":%q}`,
+		filepath.Join(managedHome, "plugins", "defenseclaw.js"),
+	)
+	if err := os.WriteFile(backupPath, []byte(binding), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ambientHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_CONFIG_DIR", ambientHome)
+
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"0.8.6",
+	)
+	previous.OpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), "stale-opencode-state")
+	transaction, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"0.8.6",
+		"0.8.7",
+		&previous,
+		options{
+			Action:                         "repair",
+			Connector:                      "none",
+			Mode:                           "observe",
+			PreserveConnectorConfiguration: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(transaction.PreviousOpenCodeConfigDir, managedHome) ||
+		!samePath(transaction.OpenCodeConfigDir, managedHome) {
+		t.Fatalf(
+			"OpenCode repair homes = (%q, %q), want managed binding %q",
+			transaction.PreviousOpenCodeConfigDir,
+			transaction.OpenCodeConfigDir,
+			managedHome,
+		)
+	}
+	if got := envValue(transactionChildEnv(transaction), "OPENCODE_CONFIG_DIR"); !samePath(got, managedHome) {
+		t.Fatalf("OpenCode repair child env = %q, want %q", got, managedHome)
+	}
+
+	transaction.UninstallHandoffHookStatus = stableHookSnapshotInactive
+	handoff, err := newUninstallHandoffTransaction(
+		transaction,
+		&previous,
+		options{Action: "uninstall", Connector: "none", Mode: "observe"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(handoff.PreviousOpenCodeConfigDir, managedHome) ||
+		!samePath(handoff.OpenCodeConfigDir, managedHome) {
+		t.Fatalf(
+			"OpenCode handoff homes = (%q, %q), want managed binding %q",
+			handoff.PreviousOpenCodeConfigDir,
+			handoff.OpenCodeConfigDir,
 			managedHome,
 		)
 	}

@@ -755,8 +755,8 @@ func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
 		return fmt.Errorf("%s render plugin template: %w", c.name, err)
 	}
 	path := c.configPath(opts)
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return fmt.Errorf("%s create plugin dir: %w", c.name, err)
+	if err := prepareOpenCodePluginArtifactDestination(path); err != nil {
+		return fmt.Errorf("%s prepare plugin destination: %w", c.name, err)
 	}
 	if err := captureManagedFileBackup(opts.DataDir, c.name, "config", path); err != nil {
 		return fmt.Errorf("%s capture plugin backup: %w", c.name, err)

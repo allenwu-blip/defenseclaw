@@ -49,6 +49,7 @@ from defenseclaw.connector_paths import (
     KNOWN_CONNECTORS,
     _expand,
     connector_config_files,
+    connector_home,
     hermes_config_path,
     omnigent_config_path,
 )
@@ -1008,8 +1009,13 @@ def _scan_agent(
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)
     elif name == "opencode":
+        config_home = connector_home("opencode")
         config_candidates = (
             connector_config_files("opencode")[0],
+            os.path.join(config_home, "opencode.json"),
+            os.path.join(config_home, "opencode.jsonc"),
+            os.path.join(config_home, "tui.json"),
+            os.path.join(config_home, "tui.jsonc"),
             *spec.config_candidates,
         )
     elif name == "omnigent":

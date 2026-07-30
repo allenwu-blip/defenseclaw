@@ -2160,9 +2160,15 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
     # Prefer the lock-file's recorded paths; fall back to the static map.
     candidates = _hook_health_paths_from_lock(cfg, connector)
     if not candidates:
-        candidates = (
-            [hermes_config_path()] if connector == "hermes" else [os.path.join(home, rel) for rel in rel_candidates]
-        )
+        if connector == "hermes":
+            candidates = [hermes_config_path()]
+        elif connector == "opencode":
+            # The official custom config directory is also a plugin search
+            # root. Match Setup/discovery instead of silently inspecting the
+            # unrelated default home when the lock is unavailable.
+            candidates = connector_config_files("opencode")
+        else:
+            candidates = [os.path.join(home, rel) for rel in rel_candidates]
     present = [p for p in candidates if os.path.isfile(p)]
     if not present:
         _emit("fail", label, "hook file not found: " + ", ".join(candidates), r=r)
@@ -2179,7 +2185,8 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
                         "pass",
                         label,
                         f"managed plugin digest current at {path}; "
-                        "access is restricted to the user/administrators, not tamper-proof",
+                        "Setup targets user/administrator-only access, but this row "
+                        "does not revalidate the Windows DACL and is not tamper-proof",
                         r=r,
                     )
             else:

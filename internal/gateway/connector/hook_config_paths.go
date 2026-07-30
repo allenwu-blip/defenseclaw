@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/defenseclaw/defenseclaw/internal/safefile"
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 )
@@ -198,6 +199,12 @@ func openCodeManagedPluginPresent(conn Connector, opts SetupOpts) (bool, error) 
 	if err != nil {
 		return false, fmt.Errorf("validate opencode managed plugin receipt: %w", err)
 	}
+	if err := safefile.ValidatePrivateFile(boundPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("validate opencode managed plugin protection: %w", err)
+	}
 	data, info, err := readManagedTarget(boundPath)
 	if err != nil {
 		return false, fmt.Errorf("read opencode managed plugin: %w", err)
@@ -211,7 +218,8 @@ func openCodeManagedPluginPresent(conn Connector, opts SetupOpts) (bool, error) 
 		[]byte(`"tool.execute.before": async`),
 		[]byte(`if (verdict) throw new Error(verdict.reason);`),
 		[]byte(`"tool.execute.after": async`),
-		[]byte(`output && output.output`),
+		[]byte(`input && input.args`),
+		[]byte(`payload.tool_result = toolResult`),
 	} {
 		if !bytes.Contains(data, marker) {
 			return false, nil

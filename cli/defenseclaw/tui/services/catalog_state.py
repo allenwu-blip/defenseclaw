@@ -1640,6 +1640,9 @@ def mcp_unset_target_for_connector(connector: str) -> str:
             return "~/.openhands/mcp.json"
         case "antigravity":
             return "~/.gemini/config/mcp_config.json / <workspace>/.agents/mcp_config.json"
+        case "opencode":
+            user_target = os.path.join(connector_home("opencode"), "opencode.json")
+            return f"{user_target} / <workspace>/opencode.json"
         case "omnigent":
             return "unsupported (OmniGent manages MCP configuration)"
         case _:
@@ -1702,6 +1705,15 @@ def connector_source_label(connector: str, category: str) -> str:
     codex_root = connector_home("codex")
     claude_config = connector_config_files("claudecode")[0]
     codex_config = connector_config_files("codex")[0]
+    opencode_plugin = connector_config_files("opencode")[0]
+    opencode_mcp_sources = [
+        "~/.config/opencode/opencode.json (mcp)",
+        "<workspace>/opencode.json (mcp; explicit workspace)",
+    ]
+    if os.environ.get("OPENCODE_CONFIG_DIR", "").strip():
+        opencode_mcp_sources.append(
+            os.path.join(connector_home("opencode"), "opencode.json") + " (mcp; custom override)"
+        )
     sources = {
         ("openclaw", "skills"): ("./skills", "~/.openclaw/skills"),
         ("claudecode", "skills"): (os.path.join(claude_root, "skills"), "./.claude/skills"),
@@ -1712,6 +1724,7 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/skills/<skill>/SKILL.md",
             "~/.gemini/antigravity-cli/skills/*.md (discovery-only)",
         ),
+        ("opencode", "skills"): ("unsupported by the OpenCode connector",),
         ("omnigent", "skills"): ("unsupported by the OmniGent connector",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
         ("claudecode", "mcps"): (f"{claude_config} (mcpServers)", "./.mcp.json"),
@@ -1722,6 +1735,7 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/mcp_config.json",
             "<plugin>/mcp_config.json (discovery-only)",
         ),
+        ("opencode", "mcps"): tuple(opencode_mcp_sources),
         ("omnigent", "mcps"): ("managed by OmniGent; not modified by DefenseClaw",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("antigravity", "plugins"): (
@@ -1729,7 +1743,9 @@ def connector_source_label(connector: str, category: str) -> str:
             "~/.gemini/antigravity-cli/plugins/<plugin>/ (discovery-only)",
             "<workspace>/.agents/plugins/<plugin>/ (read/write)",
         ),
+        ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),
+        ("opencode", "config"): (opencode_plugin,),
         ("omnigent", "config"): ("$OMNIGENT_CONFIG_HOME/config.yaml or ~/.omnigent/config.yaml",),
     }
     return ", ".join(sources.get((connector, category), ()))

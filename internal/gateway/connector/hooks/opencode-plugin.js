@@ -25,25 +25,27 @@ const DC_API_TOKEN = "{{.APIToken}}";
 const DC_FAIL_MODE = "{{.FailMode}}"; // "open" or "closed"
 const DC_TIMEOUT_MS = 10000;
 
-async function defenseclawPost(event, toolName, toolInput, cwd, context) {
+async function defenseclawPost(event, toolName, toolInput, cwd, context, toolResult) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DC_TIMEOUT_MS);
   const headers = { "Content-Type": "application/json", "X-DefenseClaw-Client": "opencode-plugin/1.0" };
   if (DC_API_TOKEN) headers["Authorization"] = "Bearer " + DC_API_TOKEN;
   try {
+    const payload = {
+      hook_event_name: event,
+      tool_name: toolName || "",
+      tool_input: toolInput || {},
+      session_id: context && (context.sessionID || context.sessionId) || "",
+      turn_id: context && (context.messageID || context.messageId) || "",
+      tool_call_id: context && (context.callID || context.callId) || "",
+      agent_name: context && context.agent || "",
+      cwd: cwd || "",
+    };
+    if (toolResult !== undefined) payload.tool_result = toolResult;
     const res = await fetch("http://" + DC_API_ADDR + "/api/v1/opencode/hook", {
       method: "POST",
       headers,
-      body: JSON.stringify({
-        hook_event_name: event,
-        tool_name: toolName || "",
-        tool_input: toolInput || {},
-        session_id: context && (context.sessionID || context.sessionId) || "",
-        turn_id: context && (context.messageID || context.messageId) || "",
-        tool_call_id: context && (context.callID || context.callId) || "",
-        agent_name: context && context.agent || "",
-        cwd: cwd || "",
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -86,6 +88,7 @@ async function defenseclawPostLifecycle(event, cwd) {
       body: JSON.stringify({
         hook_event_name: event.type,
         event_type: event.type,
+        source_event_id: event.id || "",
         session_id: properties.sessionID || properties.sessionId || info.id || "",
         parent_session_id: properties.parentID || properties.parentId || info.parentID || info.parentId || "",
         agent_id: properties.agentID || properties.agentId || info.agentID || info.agentId || "",
@@ -132,15 +135,22 @@ export const DefenseClaw = async ({ directory, worktree }) => {
       );
       if (verdict) throw new Error(verdict.reason);
     },
-    // tool.execute.after is observe-only telemetry: fire-and-forget so it
-    // never adds latency to (or blocks) the tool result.
+    // tool.execute.after is observe-only telemetry: it does not await the
+    // gateway response and cannot turn telemetry failure into a tool block.
     "tool.execute.after": async (input, output) => {
       const result = output && {
         title: output.title,
         output: output.output,
         metadata: output.metadata,
       };
-      defenseclawPost("tool.execute.after", input && input.tool, result, cwd, input).catch(() => {});
+      defenseclawPost(
+        "tool.execute.after",
+        input && input.tool,
+        input && input.args,
+        cwd,
+        input,
+        result,
+      ).catch(() => {});
     },
   };
 };

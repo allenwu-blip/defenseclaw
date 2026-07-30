@@ -134,7 +134,7 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 		t.Fatal("tool.execute.before must await the gateway verdict and throw synchronously on block")
 	}
 	afterStart := strings.Index(text, `"tool.execute.after": async`)
-	afterPost := strings.Index(text[afterStart:], `defenseclawPost("tool.execute.after"`)
+	afterPost := strings.Index(text[afterStart:], `"tool.execute.after",`)
 	if afterStart < 0 || afterPost < 0 {
 		t.Fatal("tool.execute.after observe path is missing")
 	}
@@ -151,11 +151,28 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 			t.Fatalf("tool.execute.after omits official result field %q", field)
 		}
 	}
+	if !strings.Contains(afterBody[:afterEnd], "input && input.args") {
+		t.Fatal("tool.execute.after must read tool args from the official input object")
+	}
 	if strings.Contains(afterBody[:afterEnd], "output.args") {
 		t.Fatal("tool.execute.after must not read before-hook args from its result object")
 	}
+	if !strings.Contains(text, "payload.tool_result = toolResult") {
+		t.Fatal("tool.execute.after result must use the gateway's inspectable tool_result field")
+	}
 	if !strings.Contains(text, "OpenCode does not await this hook dispatch") {
 		t.Fatal("lifecycle hook must document best-effort upstream dispatch")
+	}
+	if !strings.Contains(text, `source_event_id: event.id || ""`) {
+		t.Fatal("lifecycle hook must preserve OpenCode's official event ID")
+	}
+	spec := DefaultCorrelationSpec("opencode")
+	source, ok := spec.HookValue(
+		map[string]interface{}{"source_event_id": "event-123"},
+		CorrelationTargetSourceEvent,
+	)
+	if !ok || source.Value != "event-123" || source.IDKind != "source_event" {
+		t.Fatalf("source event correlation = (%+v, %v), want event-123", source, ok)
 	}
 }
 

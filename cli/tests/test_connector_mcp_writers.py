@@ -2390,9 +2390,10 @@ class TestHermesWrites:
 
 
 # ---------------------------------------------------------------------------
-# opencode — full read+write parity (mcp.md M2/M5). Writes the global
-# ~/.config/opencode/opencode.json (project file under explicit workspace),
-# mapping into opencode's `mcp` schema (type/command-argv/environment).
+# opencode — full read+write parity (mcp.md M2/M5). Writes an explicitly
+# pinned project, then OPENCODE_CONFIG_DIR when active, otherwise the global
+# ~/.config/opencode/opencode.json, mapping into opencode's `mcp` schema
+# (type/command-argv/environment).
 # ---------------------------------------------------------------------------
 
 
@@ -2503,6 +2504,135 @@ class TestOpenCodeWrites:
         assert not self._global(tmp_path / "home").exists()
         names = {e.name for e in connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))}
         assert names == {"demo"}
+
+    def test_custom_config_dir_is_default_user_write_target(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        custom = tmp_path / "custom-opencode"
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        set_mcp_server("opencode", "demo", {"command": "npx"})
+
+        target = custom / "opencode.json"
+        assert target.is_file()
+        assert not self._global(tmp_path / "home").exists()
+        assert [entry.name for entry in connector_paths.mcp_servers("opencode")] == ["demo"]
+        unset_mcp_server("opencode", "demo")
+        assert connector_paths.mcp_servers("opencode") == []
+
+    def test_custom_jsonc_is_updated_in_place_as_higher_precedence(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        custom = tmp_path / "custom-opencode"
+        custom.mkdir()
+        custom_jsonc = custom / "opencode.jsonc"
+        custom_jsonc.write_text(
+            json.dumps(
+                {
+                    "theme": "tokyonight",
+                    "mcp": {"demo": {"type": "local", "command": ["old-command"]}},
+                }
+            )
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        set_mcp_server("opencode", "demo", {"command": "new-command"})
+
+        data = json.loads(custom_jsonc.read_text())
+        assert data["theme"] == "tokyonight"
+        assert data["mcp"]["demo"]["command"] == ["new-command"]
+        assert not (custom / "opencode.json").exists()
+
+        unset_mcp_server("opencode", "demo")
+        data = json.loads(custom_jsonc.read_text())
+        assert "demo" not in data["mcp"]
+        assert data["theme"] == "tokyonight"
+
+    def test_unset_removes_shadowed_name_from_all_active_layers(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        global_path = self._global(home)
+        global_path.parent.mkdir(parents=True)
+        global_path.write_text(
+            json.dumps({"mcp": {"demo": {"type": "local", "command": ["global-command"]}}})
+        )
+        custom = tmp_path / "custom-opencode"
+        custom.mkdir()
+        custom_jsonc = custom / "opencode.jsonc"
+        custom_jsonc.write_text(
+            json.dumps({"mcp": {"demo": {"type": "local", "command": ["custom-command"]}}})
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+        assert connector_paths.mcp_servers("opencode")[0].command == "custom-command"
+
+        unset_mcp_server("opencode", "demo")
+
+        assert connector_paths.mcp_servers("opencode") == []
+        assert "demo" not in json.loads(global_path.read_text())["mcp"]
+        assert "demo" not in json.loads(custom_jsonc.read_text())["mcp"]
+
+    def test_project_enabled_only_override_preserves_global_local_entry(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        global_path = self._global(home)
+        global_path.parent.mkdir(parents=True)
+        global_path.write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "demo": {
+                            "type": "local",
+                            "command": ["global-command", "--serve"],
+                            "environment": {"API_KEY": "secret"},
+                        }
+                    }
+                }
+            )
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "opencode.json").write_text(
+            json.dumps({"mcp": {"demo": {"enabled": True}}})
+        )
+
+        [entry] = connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))
+
+        assert entry.command == "global-command"
+        assert entry.args == ["--serve"]
+        assert entry.env == {"API_KEY": "secret"}
+        assert entry.disabled is False
+
+    def test_custom_enabled_only_override_disables_global_remote_entry(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        global_path = self._global(home)
+        global_path.parent.mkdir(parents=True)
+        global_path.write_text(
+            json.dumps(
+                {
+                    "mcp": {
+                        "demo": {
+                            "type": "remote",
+                            "url": "https://example.test/mcp",
+                        }
+                    }
+                }
+            )
+        )
+        custom = tmp_path / "custom-opencode"
+        custom.mkdir()
+        (custom / "opencode.jsonc").write_text(
+            json.dumps({"mcp": {"demo": {"enabled": False}}})
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        [entry] = connector_paths.mcp_servers("opencode")
+
+        assert entry.url == "https://example.test/mcp"
+        assert entry.transport == "remote"
+        assert entry.disabled is True
 
     def test_set_fails_closed_on_unparseable_existing(self, tmp_path, monkeypatch):
         """A config we can't safely parse must NOT be clobbered — the
