@@ -80,8 +80,8 @@ func correlationContractSources(name string) []CorrelationContractSource {
 		return source("geminicli-source-fa975395",
 			"https://github.com/google-gemini/gemini-cli", "fa975395bcc6b609e44735e47320e54f51535d47")
 	case "copilot":
-		return source("copilot-hooks-doc-7d1b4045",
-			"https://docs.github.com/en/copilot/reference/hooks-reference", "sha256:7d1b404551d6f91bb96fce7452b22ead4505374b79d8906a49652d1fae47d224")
+		return source("copilot-hooks-doc-d39949a7",
+			"https://github.com/github/docs/blob/2f383aa194327fbe933682cbe01dd4c5625f5239/content/copilot/reference/hooks-reference.md", "sha256:d39949a728947c06d1745133aa95dfaabac72c4d45918eed20ec13cbc0fb1d67")
 	case "openhands":
 		return source("openhands-source-a55f1ded",
 			"https://github.com/All-Hands-AI/OpenHands", "a55f1ded61cac85d6e42aee9e460320ead93ae6a")

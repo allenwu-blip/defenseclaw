@@ -556,10 +556,26 @@ func windowsCopilotPowerShellHookCommand() string {
 }
 
 func windowsCopilotPowerShellHookCommandForBinary(hookBinary string) string {
+	return windowsCopilotPowerShellHookCommandForEvent("", hookBinary)
+}
+
+// windowsCopilotPowerShellHookCommandForEvent returns the PowerShell program
+// stored directly in Copilot's documented `powershell` hook field. Copilot
+// selects and evaluates that field itself, so unlike the Antigravity bridge the
+// command must not launch a second powershell.exe process. Each registration
+// binds its official camelCase event out-of-band because those stdin bodies do
+// not carry an event discriminator.
+func windowsCopilotPowerShellHookCommandForEvent(event, hookBinary string) string {
 	arguments := []string{
 		powershellQuoteLiteral("hook"),
 		powershellQuoteLiteral("--connector"),
 		powershellQuoteLiteral("copilot"),
+	}
+	if strings.TrimSpace(event) != "" {
+		arguments = append(arguments,
+			powershellQuoteLiteral("--event"),
+			powershellQuoteLiteral(event),
+		)
 	}
 	return strings.Join([]string{
 		"$ErrorActionPreference='Stop'",
@@ -664,6 +680,11 @@ func isNativeHookCommand(cmd string) bool {
 			cmd == legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
 			cmd == legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary) {
 			return true
+		}
+		for _, event := range copilotCurrentHookEvents {
+			if cmd == windowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
+				return true
+			}
 		}
 	}
 	// Codex's Windows command uses PATH with current-directory lookup disabled;

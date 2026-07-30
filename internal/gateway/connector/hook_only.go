@@ -219,7 +219,6 @@ func NewCopilotConnector() *hookOnlyConnector {
 					"permissionRequest",
 					"agentStop",
 					"subagentStop",
-					"postToolUseFailure",
 				},
 				SupportsFailClosed: false,
 				Scope:              "user,workspace",
@@ -314,15 +313,15 @@ func (c *hookOnlyConnector) HookCapabilities(opts SetupOpts) HookCapability {
 	return c.Capabilities(opts).Hooks
 }
 
-// HookProfile implements HookProfileProvider for the 6 generic
-// hook-only connectors. Today only geminicli emits native OTLP (via
-// the JSON-block telemetry section in settings.json with a scoped
-// path-token); copilot returns an env-block spec that mirrors the
-// NativeOTLP capability advertised to doctor/setup; cursor, windsurf,
-// hermes, and openhands return spec=nil because their CLIs do not
-// expose a native OTel exporter. When a future cursor release adds
-// native OTLP support, that connector can flip its branch here to
-// return a non-nil spec without changing the dispatcher.
+// HookProfile implements HookProfileProvider for the generic hook-only
+// connectors. Today only geminicli has a DefenseClaw-integrated native OTLP
+// path (via the JSON-block telemetry section in settings.json with a scoped
+// path-token). Copilot upstream documents an optional OTel exporter, but
+// DefenseClaw does not configure or certify that surface; its profile remains
+// hook-only until a scoped-auth, custody, correlation, and teardown contract
+// is implemented. Cursor, Windsurf, Hermes, and OpenHands likewise return
+// spec=nil. A future reviewed integration can return a non-nil spec without
+// changing the dispatcher.
 //
 // SupportsTraceparent is true for the entire generic family: every
 // shipped hook script (cursor-hook.sh, windsurf-hook.sh,
@@ -648,7 +647,12 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			InstallTargets: []string{"rule"},
 			RequiresOptIn:  true,
 		}
-		caps.Plugins = pluginsAreOpenClawOnly()
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			DiscoveryOnly: true,
+			Notes:         []string{"Read-only discovery uses the official `copilot plugins list --kind plugin --json` command; DefenseClaw does not install, enable, disable, or remove Copilot plugins."},
+		}
 		caps.Agents = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
@@ -662,7 +666,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Telemetry = TelemetryCapability{
 			HookSignals: []string{"logs", "metrics", "traces"},
 			SourceModes: []string{"hook"},
-			Notes:       []string{"GitHub documents the hook event bus used for DefenseClaw telemetry; no official Copilot CLI native OTLP exporter is claimed."},
+			Notes:       []string{"DefenseClaw derives Copilot telemetry from the documented hook bus. Copilot upstream documents optional OTel traces and metrics, but DefenseClaw does not configure or certify that native surface."},
 		}
 	case "antigravity":
 		caps.MCP = SurfaceCapability{
@@ -1068,7 +1072,7 @@ func (c *hookOnlyConnector) RequiredEnv() []EnvRequirement {
 	if c.name == "copilot" {
 		return append([]EnvRequirement{{
 			Scope:       EnvScopeNone,
-			Description: "Hooks and managed workspace config do not require shell environment variables; native Copilot OTLP uses optional process env vars.",
+			Description: "DefenseClaw's Copilot hook integration requires no shell environment variables; upstream OTel process variables are not configured or managed by this connector.",
 		}}, c.Capabilities(SetupOpts{APIAddr: "127.0.0.1:18970"}).Telemetry.Env...)
 	}
 	return []EnvRequirement{{
@@ -1135,7 +1139,11 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			err = patchGeminiTelemetry(path, opts)
 		}
 	case "copilot":
-		err = patchCopilotHooks(path, hookScript)
+		events := c.HookProfile(opts).SupportedEvents
+		if len(events) == 0 {
+			events = copilotCurrentHookEvents
+		}
+		err = patchCopilotHooksForOS(path, hookScript, events, runtime.GOOS)
 	case "openhands":
 		err = patchOpenHandsHooks(path, hookScript)
 	case "antigravity":
@@ -1962,42 +1970,59 @@ func patchGeminiTelemetry(path string, opts SetupOpts) error {
 }
 
 func patchCopilotHooks(path, hookScript string) error {
+	return patchCopilotHooksForOS(path, hookScript, copilotCurrentHookEvents, runtime.GOOS)
+}
+
+func patchCopilotHooksForOS(path, hookScript string, events []string, goos string) error {
 	cfg, err := readJSONObject(path)
 	if err != nil {
 		return err
 	}
 	hooks := ensureJSONObject(cfg, "hooks")
 	cfg["version"] = 1
-	for _, event := range []string{
-		"sessionStart",
-		"sessionEnd",
-		"userPromptSubmitted",
-		"preToolUse",
-		"postToolUse",
-		"postToolUseFailure",
-		"permissionRequest",
-		"agentStop",
-		"subagentStart",
-		"subagentStop",
-		"errorOccurred",
-		"preCompact",
-		"notification",
-	} {
+	selected := make(map[string]bool, len(events))
+	for _, event := range events {
+		if !ValidCopilotHookEvent(event) {
+			return fmt.Errorf("copilot: unsupported hook event %q in resolved contract", event)
+		}
+		selected[event] = true
 		entry := map[string]interface{}{
 			"type":       "command",
 			"timeoutSec": 30,
 		}
-		if runtime.GOOS == "windows" {
+		eventCommand := copilotHookInvocationCommandForEvent(goos, event, hookScript)
+		if goos == "windows" {
 			// Copilot selects this field itself and evaluates it with PowerShell.
-			// hookScript is therefore the complete vendor-specific program: do
-			// not prepend a call operator or another PowerShell process.
-			entry["powershell"] = hookScript
+			// eventCommand is therefore the complete vendor-specific program:
+			// do not prepend a call operator or another PowerShell process.
+			entry["powershell"] = eventCommand
 		} else {
-			entry["bash"] = shellWord(hookScript)
+			entry["bash"] = eventCommand
 		}
 		hooks[event] = reconcileCopilotFlatHook(hooks[event], hookScript, entry)
 	}
+	// A version downgrade must remove only the now-out-of-contract managed
+	// handler (currently userPromptTransformed), while retaining operator hooks
+	// registered for that event and every unknown/future event verbatim.
+	for _, event := range copilotCurrentHookEvents {
+		if selected[event] {
+			continue
+		}
+		remaining := removeOwnedFlatHooks(hooks[event], hookScript)
+		if len(remaining) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = remaining
+		}
+	}
 	return writeJSONObject(path, cfg)
+}
+
+func copilotHookInvocationCommandForEvent(goos, event, hookScript string) string {
+	if goos == "windows" {
+		return windowsCopilotPowerShellHookCommandForEvent(event, defenseclawHookBinary())
+	}
+	return shellWord(hookScript) + " --event " + shellWord(event)
 }
 
 func patchOpenHandsHooks(path, hookScript string) error {
@@ -2380,6 +2405,9 @@ func managedHookCommandEntry(raw interface{}, hookScript string) bool {
 		if isCopilotNativeHookCommand(hookScript) && isCopilotNativeHookCommand(command) {
 			return true
 		}
+		if isCopilotShellHookScript(hookScript) && isCopilotEventBoundShellCommand(command, hookScript) {
+			return true
+		}
 	}
 	return false
 }
@@ -2390,6 +2418,26 @@ func isCopilotNativeHookCommand(command string) bool {
 		if command == windowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
 			command == legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary) ||
 			command == legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary) {
+			return true
+		}
+		for _, event := range copilotCurrentHookEvents {
+			if command == windowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isCopilotShellHookScript(command string) bool {
+	command = strings.Trim(strings.TrimSpace(command), `"'`)
+	return filepath.Base(filepath.FromSlash(command)) == "copilot-hook.sh"
+}
+
+func isCopilotEventBoundShellCommand(command, hookScript string) bool {
+	command = strings.TrimSpace(command)
+	for _, event := range copilotCurrentHookEvents {
+		if command == copilotHookInvocationCommandForEvent("linux", event, hookScript) {
 			return true
 		}
 	}

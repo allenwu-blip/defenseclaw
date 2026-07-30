@@ -310,6 +310,13 @@ func sendHookRequest(
 		// gateway can decode the body without rewriting it here.
 		req.Header.Set("X-DefenseClaw-Antigravity-Event", opts.Event)
 	}
+	if opts.Connector == "copilot" && validCopilotEvent(opts.Event) {
+		// Native camelCase Copilot bodies likewise omit event identity. Keep
+		// the official stdin bytes intact and forward only the reviewed
+		// event-specific registration argument through an authenticated
+		// DefenseClaw header.
+		req.Header.Set("X-DefenseClaw-Copilot-Event", opts.Event)
+	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -326,6 +333,18 @@ func sendHookRequest(
 func validAntigravityEvent(event string) bool {
 	switch strings.TrimSpace(event) {
 	case "PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func validCopilotEvent(event string) bool {
+	switch strings.TrimSpace(event) {
+	case "sessionStart", "sessionEnd", "userPromptSubmitted", "userPromptTransformed",
+		"preToolUse", "postToolUse", "permissionRequest", "agentStop",
+		"subagentStart", "subagentStop", "postToolUseFailure", "errorOccurred",
+		"preCompact", "notification":
 		return true
 	default:
 		return false
@@ -690,9 +709,11 @@ func resolveHookEvent(explicit string, payload []byte) string {
 }
 
 func hookRequestTimeout(connector, event string) time.Duration {
-	if strings.EqualFold(strings.TrimSpace(connector), "antigravity") {
-		// Setup registers every official Antigravity handler with timeout=30.
-		// Keep one second for the parent runtime to receive and parse stdout.
+	if strings.EqualFold(strings.TrimSpace(connector), "antigravity") ||
+		strings.EqualFold(strings.TrimSpace(connector), "copilot") {
+		// Setup registers every official Antigravity and Copilot handler with
+		// timeout=30. Keep one second for the parent runtime to receive and
+		// parse stdout.
 		return 29 * time.Second
 	}
 	if !strings.EqualFold(strings.TrimSpace(connector), "claudecode") {

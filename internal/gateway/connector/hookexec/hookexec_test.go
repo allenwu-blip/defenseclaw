@@ -1035,7 +1035,12 @@ func TestNativeConnectorEndpointMatrix(t *testing.T) {
 	for connector, endpoint := range tests {
 		t.Run(connector, func(t *testing.T) {
 			rt := ok(`{"action":"allow"}`)
-			r := run(t, connector, rt, nil)
+			r := run(t, connector, rt, func(opts *Options) {
+				if connector == "copilot" {
+					opts.Event = "preToolUse"
+					opts.Stdin = strings.NewReader(`{"sessionId":"s","timestamp":1,"cwd":"C:\\work","toolName":"powershell","toolArgs":{"command":"Get-ChildItem"}}`)
+				}
+			})
 			if r.code != 0 {
 				t.Fatalf("allow exit = %d, want 0", r.code)
 			}
@@ -1048,13 +1053,39 @@ func TestNativeConnectorEndpointMatrix(t *testing.T) {
 			if got := rt.gotReq.Header.Get("Authorization"); got != "Bearer tkn" {
 				t.Errorf("authorization = %q", got)
 			}
-			if got := string(rt.gotBody); got != `{"event":"x"}` {
-				t.Errorf("JSON stdin body = %q", got)
+			wantBody := `{"event":"x"}`
+			if connector == "copilot" {
+				wantBody = `{"sessionId":"s","timestamp":1,"cwd":"C:\\work","toolName":"powershell","toolArgs":{"command":"Get-ChildItem"}}`
+			}
+			if got := string(rt.gotBody); got != wantBody {
+				t.Errorf("JSON stdin body = %q, want %q", got, wantBody)
 			}
 			if connector == "antigravity" {
 				if got := rt.gotReq.Header.Get("X-DefenseClaw-Antigravity-Event"); got != "PreToolUse" {
 					t.Errorf("Antigravity event header = %q", got)
 				}
+			}
+			if connector == "copilot" {
+				if got := rt.gotReq.Header.Get("X-DefenseClaw-Copilot-Event"); got != "preToolUse" {
+					t.Errorf("Copilot event header = %q", got)
+				}
+				if strings.Contains(string(rt.gotBody), "hook_event_name") {
+					t.Errorf("Copilot bridge rewrote official body: %s", rt.gotBody)
+				}
+			}
+		})
+	}
+}
+
+func TestCopilotEventHeaderRequiresReviewedExactEvent(t *testing.T) {
+	for _, event := range []string{"PreToolUse", "futureEvent", ""} {
+		t.Run(fmt.Sprintf("event_%s", event), func(t *testing.T) {
+			rt := ok(`{"action":"allow"}`)
+			run(t, "copilot", rt, func(opts *Options) {
+				opts.Event = event
+			})
+			if got := rt.gotReq.Header.Get("X-DefenseClaw-Copilot-Event"); got != "" {
+				t.Fatalf("unreviewed event %q produced trusted header %q", event, got)
 			}
 		})
 	}

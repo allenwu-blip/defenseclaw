@@ -371,6 +371,73 @@ func TestCursorLegacyHookOutputUsesEventSpecificSchemas(t *testing.T) {
 	}
 }
 
+func TestCopilotOfficialCamelCaseSubagentIdentity(t *testing.T) {
+	profile := connector.NewCopilotConnector().HookProfile(connector.SetupOpts{
+		APIAddr:      "127.0.0.1:18970",
+		AgentVersion: "GitHub Copilot CLI 1.0.76",
+	})
+	startPayload := map[string]interface{}{
+		"sessionId":        "session-1",
+		"timestamp":        float64(1),
+		"cwd":              `C:\workspace`,
+		"transcriptPath":   `C:\state\transcript.jsonl`,
+		"agentName":        "security-review",
+		"agentDisplayName": "Security review",
+	}
+	start := normalizeAgentHookRequestWithProfileEvent("copilot", startPayload, profile, "subagentStart")
+	if start.HookEventName != "subagentStart" || start.SessionID != "session-1" ||
+		start.AgentName != "security-review" || start.ChildAgentID != "" ||
+		start.AgentID == "" {
+		t.Fatalf("official subagentStart identity was not preserved: %+v", start)
+	}
+	if _, invented := start.Payload["hook_event_name"]; invented {
+		t.Fatalf("trusted event binding mutated official start payload: %#v", start.Payload)
+	}
+
+	stopPayload := map[string]interface{}{
+		"sessionId":      "session-1",
+		"timestamp":      float64(2),
+		"cwd":            `C:\workspace`,
+		"transcriptPath": `C:\state\transcript.jsonl`,
+		"agentId":        "agent-42",
+		"agentType":      "custom",
+		"agentName":      "security-review",
+		"response":       "done",
+		"stopReason":     "end_turn",
+	}
+	stop := normalizeAgentHookRequestWithProfileEvent("copilot", stopPayload, profile, "subagentStop")
+	if stop.HookEventName != "subagentStop" || stop.ChildAgentID != "agent-42" ||
+		stop.AgentID != "agent-42" || stop.AgentName != "security-review" ||
+		stop.AgentType != "custom" {
+		t.Fatalf("official subagentStop identity was not preserved: %+v", stop)
+	}
+	if _, invented := stop.Payload["hookEventName"]; invented {
+		t.Fatalf("trusted event binding mutated official stop payload: %#v", stop.Payload)
+	}
+}
+
+func TestCopilotResponseSemanticsRemainEventScoped(t *testing.T) {
+	caps := connector.NewCopilotConnector().HookCapabilities(connector.SetupOpts{})
+	if action, wouldBlock := mapHookAction("block", "action", "postToolUseFailure", caps); action != "allow" || !wouldBlock {
+		t.Fatalf("postToolUseFailure block mapping=(%q,%v), want advisory allow/would-block", action, wouldBlock)
+	}
+	advisory := copilotHookOutput("postToolUseFailure", "allow", "block", "policy", "recovery guidance")
+	if advisory["additionalContext"] != "recovery guidance" {
+		t.Fatalf("postToolUseFailure output=%#v, want recovery additionalContext", advisory)
+	}
+	permission := copilotHookOutput("permissionRequest", "block", "block", "denied", "")
+	if permission["behavior"] != "deny" {
+		t.Fatalf("permissionRequest output=%#v, want deny", permission)
+	}
+	if _, interruptsAgent := permission["interrupt"]; interruptsAgent {
+		t.Fatalf("ordinary permission denial stops the entire agent: %#v", permission)
+	}
+	transformed := copilotHookOutput("userPromptTransformed", "allow", "block", "policy", "warning")
+	if len(transformed) != 0 {
+		t.Fatalf("mutation-only userPromptTransformed output=%#v, want no-op {}", transformed)
+	}
+}
+
 // capsForConnector resolves real HookCapability values for the
 // hook-only connectors so the table test exercises the same caps
 // flow that production uses (rather than hand-crafting capability

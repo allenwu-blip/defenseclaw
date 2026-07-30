@@ -228,7 +228,7 @@ class TestConnectorContractManifest(unittest.TestCase):
     def test_copilot_contract_does_not_claim_native_otlp(self) -> None:
         compat = resolve_connector_contract("copilot", "")
 
-        self.assertEqual(compat.contract.contract_id, "copilot-hooks-v1")
+        self.assertEqual(compat.contract.contract_id, "copilot-hooks-v2")
         self.assertFalse(compat.contract.native_otlp)
         self.assertEqual(compat.contract.native_otlp_auth, "")
         self.assertEqual(compat.contract.native_otlp_signals, ())

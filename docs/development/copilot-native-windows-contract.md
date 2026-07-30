@@ -35,6 +35,7 @@ continues to reject Copilot on Windows while its public status is
 - [Install GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli)
 - [Use hooks with GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks)
 - [Copilot CLI hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)
+- [Pinned hooks-reference source snapshot (GitHub Docs commit `2f383aa`, 2026-07-28)](https://github.com/github/docs/blob/2f383aa194327fbe933682cbe01dd4c5625f5239/content/copilot/reference/hooks-reference.md)
 - [PowerShell hook tutorial](https://docs.github.com/en/copilot/tutorials/copilot-cli-hooks)
 - [Copilot CLI configuration directory reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference)
 - [Copilot CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference)
@@ -57,6 +58,11 @@ includes `settings.json`, internal `config.json`, `mcp-config.json`, `agents`,
 `skills`, `hooks`, and `installed-plugins`. Workspace surfaces include
 `.github/mcp.json` or `.mcp.json`, `.github/agents`, `.github/skills`,
 `.agents/skills`, and `.github/hooks`.
+
+The official read-only inventory command is
+`copilot plugins list --kind plugin --json`. DefenseClaw uses it only to
+discover Copilot-owned plugins. It does not install, enable, disable, remove,
+back up, or restore plugins through that command.
 
 DefenseClaw uses a standalone version-1 hook file:
 
@@ -88,10 +94,13 @@ The current documented events are `sessionStart`, `sessionEnd`,
 `userPromptSubmitted`, `userPromptTransformed`, `preToolUse`, `postToolUse`,
 `postToolUseFailure`, `permissionRequest`, `agentStop`, `subagentStart`,
 `subagentStop`, `errorOccurred`, `preCompact`, and `notification`.
-DefenseClaw's versioned `copilot-hooks-v1` contract registers its selected
-13-event enforcement/observation matrix. `notification` is explicitly
-asynchronous and fire-and-forget upstream; the other registered decision
-surfaces are synchronous.
+DefenseClaw's `copilot-hooks-v2` contract registers that exact 14-event matrix
+for reviewed versions `>=1.0.76`; the bounded `copilot-hooks-v1` contract
+retains the earlier 13-event matrix for `>=1.0.18, <1.0.76`.
+`userPromptTransformed` is mutation-only, so DefenseClaw observes its
+`transformedPrompt` but returns no modification. `notification` is explicitly
+asynchronous and fire-and-forget upstream; the other registered command hooks
+are synchronously awaited under the event-specific output and exit rules.
 
 Exit behavior is event-specific:
 
@@ -104,6 +113,21 @@ Exit behavior is event-specific:
 For decision JSON, `preToolUse` uses `allow`, `deny`, or `ask`;
 `permissionRequest` uses `allow` or `deny`; and stop events use block/allow
 behavior. Copilot loads hook configuration changes on its next CLI start.
+
+## Telemetry boundary
+
+Current upstream documentation says Copilot CLI can export OTel **traces and
+metrics** when its documented `COPILOT_OTEL_ENABLED`,
+`OTEL_EXPORTER_OTLP_ENDPOINT`, or `COPILOT_OTEL_FILE_EXPORTER_PATH` controls
+enable monitoring. This is upstream capability evidence, not a DefenseClaw
+integration claim.
+
+The current DefenseClaw Copilot connector does not configure those variables,
+does not place a gateway credential in Copilot's process environment, and does
+not claim native OTLP custody or correlation. Its connector status and API
+therefore expose hook-derived telemetry only. Implementing a native path later
+requires a separate reviewed scoped-auth, signal-binding, content-capture,
+rotation, repair, and exact-teardown contract.
 
 ## Known upstream Windows limitation
 

@@ -106,8 +106,8 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 		},
 		{
 			connector:      "copilot",
-			event:          "PreToolUse",
-			toolName:       "shell",
+			event:          "preToolUse",
+			toolName:       "powershell",
 			topLevelOutput: "hook_output",
 			expectAction:   "block",
 		},
@@ -175,6 +175,17 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 					},
 				}
 			}
+			if sh.connector == "copilot" {
+				// Exact native camelCase body: event identity is intentionally
+				// absent and comes only from the trusted registration header.
+				payload = map[string]interface{}{
+					"sessionId": "session-copilot",
+					"timestamp": float64(1),
+					"cwd":       `C:\workspace`,
+					"toolName":  sh.toolName,
+					"toolArgs":  map[string]interface{}{"command": "rm -rf /"},
+				}
+			}
 			body, err := json.Marshal(payload)
 			if err != nil {
 				t.Fatalf("marshal request: %v", err)
@@ -187,6 +198,9 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 			if sh.connector == "antigravity" {
 				req.Header.Set("X-DefenseClaw-Antigravity-Event", sh.event)
+			}
+			if sh.connector == "copilot" {
+				req.Header.Set("X-DefenseClaw-Copilot-Event", sh.event)
 			}
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)

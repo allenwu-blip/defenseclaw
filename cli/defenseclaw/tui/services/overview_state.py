@@ -1316,7 +1316,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("cursor", "plugins"): ("unsupported",),
         ("windsurf", "plugins"): ("unsupported",),
         ("geminicli", "plugins"): ("./.gemini/extensions",),
-        ("copilot", "plugins"): ("copilot plugin list",),
+        ("copilot", "plugins"): ("copilot plugins list --kind plugin --json",),
         ("openhands", "plugins"): ("unsupported",),
         ("antigravity", "plugins"): (
             "~/.gemini/config/plugins/<plugin>/ (read/write)",

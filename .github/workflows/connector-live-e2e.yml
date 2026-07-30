@@ -343,7 +343,7 @@ jobs:
         # OpenAI / Amazon Bedrock (Codex, Claude Code, OpenHands). Gemini CLI,
         # Cursor, and Copilot are deferred until their native keys exist — add
         # their cells back here when GOOGLE_API_KEY / CURSOR_API_KEY /
-        # COPILOT_CLI_TOKEN are configured.
+        # COPILOT_GITHUB_TOKEN are configured.
         include:
           - { connector: codex,      os: ubuntu-latest,  dcos: linux }
           - { connector: codex,      os: macos-latest,   dcos: macos }
@@ -370,9 +370,9 @@ jobs:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-      # GitHub Copilot CLI authenticates with an entitled token.
-      COPILOT_CLI_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
-      GH_TOKEN: ${{ secrets.COPILOT_CLI_TOKEN }}
+      # GitHub Copilot CLI authenticates with an entitled token through its
+      # documented highest-precedence environment variable.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       # Generic fallback key for the guardrail/judge if a connector needs it.
       LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       # --- Alternative auth backends -----------------------------------------

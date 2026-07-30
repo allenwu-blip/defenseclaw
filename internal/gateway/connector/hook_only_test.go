@@ -277,7 +277,7 @@ func TestHookOnlyConnector_SurfaceCapabilities(t *testing.T) {
 		{NewCursorConnector(), []string{"skill", "rule"}, false, true, true},
 		{NewWindsurfConnector(), []string{"rule"}, false, false, true},
 		{NewGeminiCLIConnector(), []string{"skill"}, true, false, true},
-		{NewCopilotConnector(), []string{"skill", "rule"}, true, false, true},
+		{NewCopilotConnector(), []string{"skill", "rule"}, false, true, true},
 		{NewOpenHandsConnector(), []string{"skill"}, false, false, true},
 		{NewAntigravityConnector(), nil, false, true, true},
 	}
@@ -535,6 +535,13 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 					// registration always carries one of its five trusted
 					// --event bindings.
 					ownedCommands = ownedCommands[1:]
+				} else if conn.Name() == "copilot" {
+					ownedCommands = make([]string, 0, len(copilotCurrentHookEvents))
+					for _, event := range copilotCurrentHookEvents {
+						ownedCommands = append(ownedCommands, copilotHookInvocationCommandForEvent(
+							"windows", event, conn.hookCommand(opts),
+						))
+					}
 				}
 				for _, command := range ownedCommands {
 					encodedCommand, err := json.Marshal(command)
@@ -1624,10 +1631,11 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 	for event, raw := range hooks {
 		entries := raw.([]interface{})
 		managed := 0
+		wantEventCommand := windowsCopilotPowerShellHookCommandForEvent(event, hookBinary)
 		for _, rawEntry := range entries {
 			entry := rawEntry.(map[string]interface{})
 			command, _ := entry["powershell"].(string)
-			if command == current {
+			if command == wantEventCommand {
 				managed++
 				if entry["type"] != "command" || fmt.Sprint(entry["timeoutSec"]) != "30" {
 					t.Errorf("%s canonical entry drifted: %#v", event, entry)
@@ -1657,13 +1665,80 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 		t.Fatalf("read config after teardown: %v", err)
 	}
 	after := string(afterData)
-	for _, owned := range []string{current, legacy, duplicated, historic} {
+	ownedCommands := []string{current, legacy, duplicated, historic}
+	for _, event := range copilotCurrentHookEvents {
+		ownedCommands = append(ownedCommands, windowsCopilotPowerShellHookCommandForEvent(event, hookBinary))
+	}
+	for _, owned := range ownedCommands {
 		if strings.Contains(after, owned) {
 			t.Errorf("owned Copilot command survived teardown: %q", owned)
 		}
 	}
 	if !strings.Contains(after, foreign) {
 		t.Fatal("teardown removed the operator-owned hook")
+	}
+}
+
+func TestCopilotHookContractReconciliationIsEventBoundAndVersionExact(t *testing.T) {
+	const hookScript = `/opt/defenseclaw/hooks/copilot-hook.sh`
+	path := filepath.Join(t.TempDir(), "defenseclaw.json")
+	if err := os.WriteFile(path, []byte(`{
+  "version": 1,
+  "hooks": {
+    "userPromptTransformed": [
+      {"type":"command","bash":"/opt/operator/transform.sh","timeoutSec":15}
+    ],
+    "futureEvent": [
+      {"type":"command","bash":"/opt/operator/future.sh","timeoutSec":15}
+    ]
+  }
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := patchCopilotHooksForOS(path, hookScript, copilotCurrentHookEvents, "linux"); err != nil {
+		t.Fatalf("patch current contract: %v", err)
+	}
+	current, err := readJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := current["hooks"].(map[string]interface{})
+	if len(hooks) != len(copilotCurrentHookEvents)+1 {
+		t.Fatalf("current hook count=%d, want 14 managed event keys plus foreign future event: %v", len(hooks), mapKeys(hooks))
+	}
+	for _, event := range copilotCurrentHookEvents {
+		entries := hooks[event].([]interface{})
+		want := copilotHookInvocationCommandForEvent("linux", event, hookScript)
+		found := false
+		for _, raw := range entries {
+			entry := raw.(map[string]interface{})
+			if entry["bash"] == want {
+				found = true
+				if fmt.Sprint(entry["timeoutSec"]) != "30" {
+					t.Fatalf("%s timeout=%#v, want 30", event, entry["timeoutSec"])
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("%s missing event-bound command %q: %#v", event, want, entries)
+		}
+	}
+
+	if err := patchCopilotHooksForOS(path, hookScript, copilotLegacyHookEvents, "linux"); err != nil {
+		t.Fatalf("reconcile legacy contract: %v", err)
+	}
+	legacy, err := readJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyHooks := legacy["hooks"].(map[string]interface{})
+	transformed := legacyHooks["userPromptTransformed"].([]interface{})
+	if len(transformed) != 1 || transformed[0].(map[string]interface{})["bash"] != "/opt/operator/transform.sh" {
+		t.Fatalf("v2-to-v1 reconciliation did not preserve only foreign transformed handler: %#v", transformed)
+	}
+	if future := legacyHooks["futureEvent"].([]interface{}); len(future) != 1 {
+		t.Fatalf("unknown future event was changed: %#v", future)
 	}
 }
 

@@ -249,19 +249,23 @@ func copilotHookOutputForProfile(event, action, rawAction, reason, additional st
 		}
 	case "permissionrequest":
 		if action == "block" {
-			return map[string]interface{}{"behavior": "deny", "message": reason, "interrupt": true}
+			// interrupt=true stops the entire Copilot agent. An ordinary
+			// DefenseClaw tool denial must short-circuit only this permission
+			// request, so leave the optional interrupt field absent.
+			return map[string]interface{}{"behavior": "deny", "message": reason}
 		}
 	case "agentstop", "stop", "subagentstop":
 		if action == "block" {
 			return map[string]interface{}{"decision": "block", "reason": reason}
 		}
-	case "posttoolusefailure", "notification":
+	case "sessionstart", "subagentstart", "posttooluse", "posttoolusefailure", "notification":
 		if additional != "" {
 			return map[string]interface{}{"additionalContext": additional}
 		}
-	}
-	if rawAction == "confirm" && additional != "" {
-		return map[string]interface{}{"additionalContext": additional}
+	case "userprompttransformed":
+		// This event is mutation-only. DefenseClaw observes and audits the
+		// transformed prompt but never rewrites model-facing content.
+		return map[string]interface{}{}
 	}
 	return nil
 }

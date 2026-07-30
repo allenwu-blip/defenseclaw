@@ -2078,7 +2078,7 @@ def _list_host_plugins(connector: str, cfg) -> list[dict[str, Any]]:
         # binary (see _list_openclaw_plugins). Don't double-count.
         return []
     if name == "copilot":
-        return _list_copilot_plugins()
+        return _list_copilot_plugins(data_dir=getattr(cfg, "data_dir", None))
     try:
         dirs = cfg.plugin_dirs(connector)
     except Exception:
@@ -2098,14 +2098,34 @@ def _list_host_plugins(connector: str, cfg) -> list[dict[str, Any]]:
     return out
 
 
-def _list_copilot_plugins() -> list[dict[str, Any]]:
+def _trusted_copilot_binary(
+    data_dir: str | os.PathLike[str] | None = None,
+) -> str:
+    """Resolve Copilot through the passive inventory's executable trust gate."""
+    from defenseclaw.inventory.agent_discovery import (
+        _SPECS,
+        _binary_candidates_for_agent,
+        _is_trusted_binary_path,
+    )
+
+    spec = _SPECS["copilot"]
+    for candidate in _binary_candidates_for_agent("copilot", spec):
+        if _is_trusted_binary_path(candidate, data_dir=data_dir):
+            return candidate
+    return ""
+
+
+def _list_copilot_plugins(
+    *,
+    data_dir: str | os.PathLike[str] | None = None,
+) -> list[dict[str, Any]]:
     """Best-effort Copilot CLI plugin listing via documented CLI flow."""
-    copilot = shutil.which("copilot")
+    copilot = _trusted_copilot_binary(data_dir)
     if not copilot:
         return []
     try:
         proc = subprocess.run(
-            [copilot, "plugin", "list", "--json"],
+            [copilot, "plugins", "list", "--kind", "plugin", "--json"],
             capture_output=True,
             text=True,
             timeout=15,

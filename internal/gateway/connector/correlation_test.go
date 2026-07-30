@@ -277,7 +277,7 @@ func TestNativeTelemetryRegistryIsExplicit(t *testing.T) {
 		"openclaw": NativeTelemetryNone, "zeptoclaw": NativeTelemetryNone,
 		"codex": NativeTelemetryStable, "claudecode": NativeTelemetryBeta,
 		"hermes": NativeTelemetryNone, "cursor": NativeTelemetryNone, "windsurf": NativeTelemetryNone,
-		"geminicli": NativeTelemetryStable, "copilot": NativeTelemetryStable,
+		"geminicli": NativeTelemetryStable, "copilot": NativeTelemetryNone,
 		"openhands": NativeTelemetryNone, "antigravity": NativeTelemetryNone,
 		"opencode": NativeTelemetryNone, "omnigent": NativeTelemetryExperimental,
 	}
@@ -641,7 +641,7 @@ func TestCopilotDocumentedHookIDsStayOnTheirRail(t *testing.T) {
 		}
 	}
 	if len(spec.NativeOTLPBindings) != 0 {
-		t.Fatalf("Copilot gained undocumented native OTLP bindings: %v", spec.NativeOTLPBindings)
+		t.Fatalf("Copilot gained unintegrated native OTLP bindings: %v", spec.NativeOTLPBindings)
 	}
 	if len(spec.MirrorIdentityTargets) != 0 {
 		t.Fatalf("Copilot undocumented hook/native mirrors remain enabled: %v", spec.MirrorIdentityTargets)

@@ -1403,7 +1403,13 @@ def _windows_native_hook_check(
         elif connector == "codex":
             config_path = os.path.join(codex_home(), "managed_config.toml")
         elif connector == "copilot":
-            config_path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
+            workspace = _workspace_dir(cfg)
+            data_dir = getattr(cfg, "data_dir", "") or ""
+            config_path = (
+                os.path.join(workspace, ".github", "hooks", "defenseclaw.json")
+                if workspace and not _path_is_inside(workspace, data_dir)
+                else os.path.join(copilot_home(), "hooks", "defenseclaw.json")
+            )
         elif connector == "antigravity":
             config_path = os.path.join(connector_home("antigravity"), "hooks.json")
         else:
@@ -2467,6 +2473,16 @@ def _check_copilot_hooks(
     search_path: str | None = None,
     pathext: str | None = None,
 ) -> None:
+    workspace = _workspace_dir(cfg)
+    data_dir = getattr(cfg, "data_dir", "") or ""
+    if workspace and _path_is_inside(workspace, data_dir):
+        _emit(
+            "fail",
+            "Copilot hooks",
+            f"workspace_dir points inside DefenseClaw data dir ({workspace}); run setup from the target repository",
+            r=r,
+        )
+        return
     if (platform_name or os.name) == "nt":
         _check_windows_native_hooks(
             cfg,
@@ -2479,8 +2495,6 @@ def _check_copilot_hooks(
             pathext=pathext,
         )
         return
-    workspace = _workspace_dir(cfg)
-    data_dir = getattr(cfg, "data_dir", "") or ""
     if not workspace:
         path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
         if not os.path.isfile(path):
@@ -2490,14 +2504,6 @@ def _check_copilot_hooks(
             _emit("pass", "Copilot hooks", f"reachable at {path}", r=r)
             return
         _emit("fail", "Copilot hooks", f"{path} does not reference DefenseClaw hook script", r=r)
-        return
-    if _path_is_inside(workspace, data_dir):
-        _emit(
-            "fail",
-            "Copilot hooks",
-            f"workspace_dir points inside DefenseClaw data dir ({workspace}); run setup from the target repository",
-            r=r,
-        )
         return
     path = os.path.join(workspace, ".github", "hooks", "defenseclaw.json")
     if not os.path.isfile(path):

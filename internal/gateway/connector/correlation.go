@@ -506,8 +506,6 @@ func nativeTelemetryForConnector(name string) NativeTelemetrySpec {
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryMetrics, NativeTelemetryTraces}, Stability: NativeTelemetryBeta, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
 	case "geminicli":
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
-	case "copilot":
-		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
 	case "omnigent":
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryExperimental, AcceptsW3C: true, PropagatesW3C: true}
 	default:
@@ -718,11 +716,24 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		)
 		return makeSpec(CorrelationProfileGeminiCLIV1, "geminicli-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP}, bindings, native, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceModelBoundary, CorrelationInferenceUniquePendingTool, CorrelationInferenceTraceLink}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessComplete, "hook tool payloads may omit prompt and tool-call IDs; native tool IDs require trace or pending-operation correlation"))
 	case "copilot":
+		correlationContractID := hookContractID
+		switch correlationContractID {
+		case "copilot-hooks-v1", "copilot-hooks-v2":
+		default:
+			return CorrelationSpec{}, false
+		}
 		bindings := appendBindings(base,
 			reported(CorrelationTargetSession, ns, "session", "sessionId"),
-			reported(CorrelationTargetChildAgent, ns, "subagent", "subagent_id", "subagentId"),
+			// subagentStart reports only agentName; subagentStop adds the
+			// stable agentId and agentType. Bind the stable child identity only
+			// where the official field exists. The start event may derive a
+			// local agent identity from agentName for span grouping, but must
+			// not promote that display/name field to a reported child ID.
+			reported(CorrelationTargetChildAgent, ns, "subagent", "agentId"),
+			reported(CorrelationTargetAgentName, ns, "agent_name", "agentName"),
+			reported(CorrelationTargetAgentType, ns, "agent_type", "agentType"),
 		)
-		return makeSpec(CorrelationProfileCopilotV1, "copilot-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "documented hooks expose session membership but not stable turn, interaction, response, or tool-call IDs; no official native OTLP surface is claimed"))
+		return makeSpec(CorrelationProfileCopilotV1, correlationContractID, []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "documented hooks expose session membership but not stable turn, interaction, response, or tool-call IDs; DefenseClaw does not integrate Copilot's upstream native OTel surface"))
 	case "openhands":
 		bindings := appendBindings(base,
 			reported(CorrelationTargetSession, ns, "conversation", "conversation_id", "conversationId"),

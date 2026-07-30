@@ -1716,13 +1716,13 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					t.Fatalf("parse Copilot config: %v", err)
 				}
 				hooks, _ := cfg["hooks"].(map[string]interface{})
-				want := hookInvocationCommand("copilot", "")
 				for event, raw := range hooks {
 					entries, _ := raw.([]interface{})
 					if len(entries) == 0 {
 						t.Fatalf("Copilot %s hook has no entries", event)
 					}
 					entry, _ := entries[0].(map[string]interface{})
+					want := copilotHookInvocationCommandForEvent("windows", event, "")
 					if got, _ := entry["powershell"].(string); got != want {
 						t.Errorf("Copilot %s powershell command = %q, want %q", event, got, want)
 					}

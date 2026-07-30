@@ -40,12 +40,14 @@
       }
     },
     "copilot": {
-      "version_probe": "copilot --version",
-      "live": true,
+      "version_probe": "copilot version",
+      "live": "pending-validation",
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
-        "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
-      }
+        "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
+        "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
+      },
+      "notes": "Native Windows implementation is present but not certified; official-client Windows evidence remains pending."
     },
     "openhands": {
       "version_probe": "openhands --version",

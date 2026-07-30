@@ -13,8 +13,7 @@
 #   - install:  npm i -g @github/copilot@${COPILOT_VERSION:-latest}
 #   - headless: copilot -p "<prompt>" --allow-all-tools
 #   - auth:     an ENTITLED GitHub token (Copilot subscription). Provide it via
-#               the COPILOT_CLI_TOKEN secret; the driver maps it to the current
-#               official COPILOT_GITHUB_TOKEN token-precedence variable.
+#               the official COPILOT_GITHUB_TOKEN token-precedence variable.
 #   - hooks:    USER-LEVEL by default. Programmatic `-p` repo hooks require the
 #               documented GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS=true opt-in
 #               unless the repository is already trusted or the run allows all
@@ -36,8 +35,7 @@ agent_install() {
   npm install -g "@github/copilot@${COPILOT_VERSION:-latest}" || return 1
   DC_E2E_AGENT_VERSION="$(dc_capture_version copilot copilot version)"
   export DC_E2E_AGENT_VERSION
-  # Copilot CLI reads an entitled token from the environment.
-  export COPILOT_GITHUB_TOKEN="${COPILOT_CLI_TOKEN:-${COPILOT_GITHUB_TOKEN:-}}"
+  # Copilot CLI reads the inherited official COPILOT_GITHUB_TOKEN directly.
 }
 
 agent_run() {

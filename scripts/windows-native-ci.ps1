@@ -3120,17 +3120,20 @@ function Assert-WizardHookRegistration(
             'agentStop', 'errorOccurred', 'notification', 'permissionRequest',
             'postToolUse', 'postToolUseFailure', 'preCompact', 'preToolUse',
             'sessionEnd', 'sessionStart', 'subagentStart', 'subagentStop',
-            'userPromptSubmitted'
+            'userPromptSubmitted', 'userPromptTransformed'
         )
+        if ([int]$hookDocument.version -ne 1 -or [bool]$hookDocument.disableAllHooks) {
+            throw 'wizard-selected Copilot registration does not use enabled schema version 1'
+        }
         $registeredEvents = @($hookDocument.hooks.PSObject.Properties.Name | Sort-Object)
         if (($registeredEvents -join "`0") -cne (($requiredEvents | Sort-Object) -join "`0")) {
             throw 'wizard-selected Copilot registration does not contain the exact required hook event set'
         }
-        $commandPattern = '(?i)^\$ErrorActionPreference=''Stop''; ' +
+        $commandPattern = '^\$ErrorActionPreference=''Stop''; ' +
             '\$env:NoDefaultCurrentDirectoryInExePath=''1''; ' +
             '\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process ' +
             '-FilePath ''(?<path>(?:[^'']|'''')+)'' ' +
-            '-ArgumentList @\(''hook'',''--connector'',''copilot''\) ' +
+            '-ArgumentList @\(''hook'',''--connector'',''copilot'',''--event'',''(?<event>[^'']+)''\) ' +
             '-NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode$'
         foreach ($eventName in $requiredEvents) {
             $entries = @($hookDocument.hooks.$eventName)
@@ -3140,8 +3143,14 @@ function Assert-WizardHookRegistration(
             }
             $command = [string]$entries[0].powershell
             $match = [regex]::Match($command, $commandPattern)
-            if (-not $match.Success -or $command.Contains('&amp;')) {
+            if (-not $match.Success -or
+                $match.Groups['event'].Value -cne $eventName -or
+                $command.Contains('&amp;')) {
                 throw "wizard-selected Copilot $eventName hook is not the exact synchronous PowerShell contract"
+            }
+            if ($entries[0].PSObject.Properties.Name -contains 'bash' -or
+                $entries[0].PSObject.Properties.Name -contains 'command') {
+                throw "wizard-selected Copilot $eventName hook is not PowerShell-only"
             }
             $runtimePath = $match.Groups['path'].Value.Replace("''", "'")
             if (-not [IO.Path]::GetFullPath($runtimePath).Equals(

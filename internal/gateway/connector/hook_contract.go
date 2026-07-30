@@ -96,6 +96,40 @@ var proxyConnectorsWithoutHookGate = map[string]bool{
 	"zeptoclaw": true,
 }
 
+var copilotLegacyHookEvents = []string{
+	"sessionStart",
+	"sessionEnd",
+	"userPromptSubmitted",
+	"preToolUse",
+	"postToolUse",
+	"permissionRequest",
+	"agentStop",
+	"subagentStart",
+	"subagentStop",
+	"postToolUseFailure",
+	"errorOccurred",
+	"preCompact",
+	"notification",
+}
+
+var copilotCurrentHookEvents = append(
+	append([]string(nil), copilotLegacyHookEvents[:3]...),
+	append([]string{"userPromptTransformed"}, copilotLegacyHookEvents[3:]...)...,
+)
+
+// ValidCopilotHookEvent accepts only event identities which DefenseClaw binds
+// to a concrete Copilot registration. Native camelCase Copilot payloads do not
+// carry an event discriminator, so the launcher forwards one of these values
+// out-of-band after Setup has selected a reviewed, versioned hook contract.
+func ValidCopilotHookEvent(event string) bool {
+	for _, candidate := range copilotCurrentHookEvents {
+		if event == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 var builtinHookContracts = map[string][]HookContract{
 	"codex": {{
 		Connector:               "codex",
@@ -537,51 +571,69 @@ var builtinHookContracts = map[string][]HookContract{
 			"Gemini CLI consumer/free/Google AI Pro/Ultra service ended on 2026-06-18; this contract applies only to continuing enterprise, Google Cloud, and paid API-key access.",
 		},
 	}},
-	"copilot": {{
-		Connector:               "copilot",
-		ContractID:              "copilot-hooks-v1",
-		MinAgentVersion:         "1.0.18",
-		DefaultForUnversioned:   true,
-		HookScriptVersion:       "v6",
-		HookConfigPathTemplates: []string{"~/.copilot/hooks/defenseclaw.json", "<workspace>/.github/hooks/defenseclaw.json"},
-		ResponseFieldName:       "hook_output",
-		Events: []string{
-			"sessionStart",
-			"sessionEnd",
-			"userPromptSubmitted",
-			"preToolUse",
-			"postToolUse",
-			"permissionRequest",
-			"agentStop",
-			"subagentStart",
-			"subagentStop",
-			"postToolUseFailure",
-			"errorOccurred",
-			"preCompact",
-			"notification",
-		},
-		AIDSurfaces: []string{"prompt", "tool_call", "tool_result"},
-		Capabilities: HookCapability{
-			CanBlock:     true,
-			CanAskNative: true,
-			AskEvents:    []string{"preToolUse"},
-			BlockEvents: []string{
-				"preToolUse",
-				"permissionRequest",
-				"agentStop",
-				"subagentStop",
-				"postToolUseFailure",
+	"copilot": {
+		{
+			Connector:               "copilot",
+			ContractID:              "copilot-hooks-v1",
+			MinAgentVersion:         "1.0.18",
+			MaxAgentVersion:         "1.0.76",
+			HookScriptVersion:       "v7",
+			HookConfigPathTemplates: []string{"~/.copilot/hooks/defenseclaw.json", "<workspace>/.github/hooks/defenseclaw.json"},
+			ResponseFieldName:       "hook_output",
+			Events:                  append([]string(nil), copilotLegacyHookEvents...),
+			AIDSurfaces:             []string{"prompt", "tool_call", "tool_result"},
+			Capabilities: HookCapability{
+				CanBlock:     true,
+				CanAskNative: true,
+				AskEvents:    []string{"preToolUse"},
+				BlockEvents: []string{
+					"preToolUse",
+					"permissionRequest",
+					"agentStop",
+					"subagentStop",
+				},
+				SupportsFailClosed: false,
+				Scope:              "user,workspace",
 			},
-			SupportsFailClosed: false,
-			Scope:              "user,workspace",
+			SupportsTraceparent: true,
+			Notes: []string{
+				"GitHub Copilot CLI shipped preToolUse earlier, but the full DefenseClaw contract also needs postToolUseFailure, permissionRequest, and notification hooks; notification landed in 1.0.18.",
+				"Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
+				"postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool.",
+			},
 		},
-		SupportsTraceparent: true,
-		Notes: []string{
-			"GitHub Copilot CLI shipped preToolUse earlier, but the full DefenseClaw contract also needs postToolUseFailure, permissionRequest, and notification hooks; notification landed in 1.0.18.",
-			"Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
-			"DefenseClaw derives Copilot telemetry from the documented hook bus; no official Copilot CLI native OTLP exporter is claimed.",
+		{
+			Connector:               "copilot",
+			ContractID:              "copilot-hooks-v2",
+			MinAgentVersion:         "1.0.76",
+			DefaultForUnversioned:   true,
+			HookScriptVersion:       "v7",
+			HookConfigPathTemplates: []string{"~/.copilot/hooks/defenseclaw.json", "<workspace>/.github/hooks/defenseclaw.json"},
+			ResponseFieldName:       "hook_output",
+			Events:                  append([]string(nil), copilotCurrentHookEvents...),
+			AIDSurfaces:             []string{"prompt", "tool_call", "tool_result"},
+			Capabilities: HookCapability{
+				CanBlock:     true,
+				CanAskNative: true,
+				AskEvents:    []string{"preToolUse"},
+				BlockEvents: []string{
+					"preToolUse",
+					"permissionRequest",
+					"agentStop",
+					"subagentStop",
+				},
+				SupportsFailClosed: false,
+				Scope:              "user,workspace",
+			},
+			SupportsTraceparent: true,
+			Notes: []string{
+				"Current GitHub Copilot CLI documentation includes the mutation-only userPromptTransformed event; DefenseClaw returns no modification.",
+				"GitHub Copilot CLI 1.0.76 is the conservative reviewed floor for this current 14-event contract.",
+				"Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
+				"postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool.",
+			},
 		},
-	}},
+	},
 	"antigravity": {{
 		Connector:               "antigravity",
 		ContractID:              "antigravity-hooks-v2",

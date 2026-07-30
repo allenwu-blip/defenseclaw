@@ -1,5 +1,5 @@
 #!/bin/bash
-# defenseclaw-managed-hook v6
+# defenseclaw-managed-hook v7
 # DefenseClaw Copilot CLI hook — forwards Copilot CLI hook payloads to the
 # DefenseClaw gateway.
 set -euo pipefail
@@ -57,6 +57,23 @@ FAIL_MODE="${DEFENSECLAW_FAIL_MODE:-{{.FailMode}}}"
 DEFENSECLAW_HOOK_CONNECTOR="copilot"
 DEFENSECLAW_HOOK_NAME="copilot-hook"
 export DEFENSECLAW_HOOK_CONNECTOR DEFENSECLAW_HOOK_NAME
+
+# Native camelCase Copilot payloads intentionally omit an event discriminator.
+# Setup binds every reviewed registration to this exact argv pair and the bridge
+# carries it in an authenticated, DefenseClaw-only HTTP header without rewriting
+# the official stdin body.
+if [ "$#" -ne 2 ] || [ "$1" != "--event" ]; then
+  echo "defenseclaw: copilot hook requires --event <event>" >&2
+  exit 2
+fi
+COPILOT_HOOK_EVENT="$2"
+case "$COPILOT_HOOK_EVENT" in
+  sessionStart|sessionEnd|userPromptSubmitted|userPromptTransformed|preToolUse|postToolUse|permissionRequest|agentStop|subagentStart|subagentStop|postToolUseFailure|errorOccurred|preCompact|notification) ;;
+  *)
+    echo "defenseclaw: copilot hook received unsupported event" >&2
+    exit 2
+    ;;
+esac
 
 if [ ! -f "${HOOK_DIR}/{{.TokenFile}}" ] && [ -z "${DEFENSECLAW_GATEWAY_TOKEN:-}" ]; then
   defenseclaw_handle_missing_token copilot copilot-hook "copilot tool"
@@ -116,10 +133,11 @@ fi
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "http://${API_ADDR}/api/v1/copilot/hook" \
   -H "Content-Type: application/json" \
   -H "X-DefenseClaw-Client: copilot-hook/1.0" \
+  -H "X-DefenseClaw-Copilot-Event: ${COPILOT_HOOK_EVENT}" \
   "${AUTH_HEADER_ARGS[@]+"${AUTH_HEADER_ARGS[@]}"}" \
   "${TRACE_HEADER_ARGS[@]+"${TRACE_HEADER_ARGS[@]}"}" \
   --connect-timeout 2 \
-  --max-time 10 \
+  --max-time 29 \
   -d "$PAYLOAD" 2>/dev/null) || {
   fail_unreachable "gateway unreachable"
 }

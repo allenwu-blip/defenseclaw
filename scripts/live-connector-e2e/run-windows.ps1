@@ -33,7 +33,7 @@ function Get-SecretValues {
         'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN', 'LLM_API_KEY', 'DC_E2E_TEST_SECRET',
         'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN',
-        'COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN', 'COPILOT_CLI_TOKEN',
+        'COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN',
         'CURSOR_API_KEY'
     )
     @($names | ForEach-Object { [Environment]::GetEnvironmentVariable($_) } |
@@ -941,43 +941,25 @@ function Set-IsolatedGatewayPort {
     }
 
     $configPath = Join-Path $env:DEFENSECLAW_HOME 'config.yaml'
+    $jsonlPath = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
+    Invoke-Tool 'python.exe' @(
+        (Join-Path $WorkspaceRoot 'scripts\prepare-windows-contract-v8.py'),
+        '--config', $configPath,
+        '--data-dir', $env:DEFENSECLAW_HOME,
+        '--jsonl-path', $jsonlPath
+    ) @(0) -Timeout 60 | Out-Null
+
+    # The canonical observability writer intentionally owns only v8
+    # observability paths. Set the isolated gateway port with a bounded edit
+    # that accepts at most one existing scalar or one existing gateway block.
     $config = [IO.File]::ReadAllText($configPath)
     $newline = if ($config.Contains("`r`n")) { "`r`n" } else { "`n" }
-
-    # Fresh v8 intentionally has no implicit gateway.jsonl side channel. The
-    # contract consumes canonical v8 records, so opt this isolated profile
-    # into an explicit, state-rooted JSONL destination before the gateway
-    # starts. Keep the mutation fail-closed against the fresh-v8 shape instead
-    # of accidentally changing an operator-authored destination graph.
-    $observabilityPattern = '(?m)^observability:[ \t]*\{\}[ \t]*(?=\r?$)'
-    $observabilityMatches = [regex]::Matches($config, $observabilityPattern)
-    if ($observabilityMatches.Count -ne 1) {
-        throw "expected one empty fresh-v8 observability block in $configPath, found $($observabilityMatches.Count)"
-    }
-    $jsonlPath = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
-    $jsonlLiteral = $jsonlPath | ConvertTo-Json -Compress
-    $observability = @(
-        'observability:'
-        '  destinations:'
-        '    - name: windows-contract-jsonl'
-        '      kind: jsonl'
-        "      path: $jsonlLiteral"
-    ) -join $newline
-    $observabilityMatch = $observabilityMatches[0]
-    $config = $config.Remove($observabilityMatch.Index, $observabilityMatch.Length).Insert(
-        $observabilityMatch.Index,
-        $observability
-    )
-
     $pattern = '(?m)^(?<indent>[ \t]*)api_port:[ \t]*\d+[ \t]*(?=\r?$)'
     $matches = [regex]::Matches($config, $pattern)
     if ($matches.Count -gt 1) { throw "expected at most one gateway api_port in $configPath, found $($matches.Count)" }
     if ($matches.Count -eq 1) {
         $updated = [regex]::Replace($config, $pattern, "`${indent}api_port: $port")
     } else {
-        # Fresh v8 configs omit default-valued fields, including
-        # gateway.api_port. Add the field to an existing gateway block or
-        # create that block without falling back to the shared default port.
         $gatewayPattern = '(?m)^gateway:[ \t]*(?:#[^\r\n]*)?(?=\r?$)'
         $gatewayMatches = [regex]::Matches($config, $gatewayPattern)
         if ($gatewayMatches.Count -gt 1) {
@@ -2667,11 +2649,6 @@ if (-not $NoRun) {
     $script:ToolRoot = Join-Path $StateRoot 'tools'
     $script:CommandIndex = 0; $script:AgentVersion = 'unversioned'
     $env:USERPROFILE = $HomeRoot; $env:HOME = $env:USERPROFILE
-    if ($Connector -eq 'copilot' -and
-        [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('COPILOT_GITHUB_TOKEN')) -and
-        -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable('COPILOT_CLI_TOKEN'))) {
-        $env:COPILOT_GITHUB_TOKEN = [Environment]::GetEnvironmentVariable('COPILOT_CLI_TOKEN')
-    }
     $env:DEFENSECLAW_HOME = if (-not [string]::IsNullOrWhiteSpace($NativeDataRoot)) {
         if ($Layer -ne 'contract' -or -not $AllowNativeDataRoot) {
             throw 'NativeDataRoot is restricted to an explicitly authorized packaged contract run'

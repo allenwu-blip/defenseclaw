@@ -622,10 +622,10 @@
           "contract_id": "copilot-hooks-v1",
           "agent_version": {
             "min_inclusive": "1.0.18",
-            "max_exclusive": ""
+            "max_exclusive": "1.0.76"
           },
-          "default_for_unversioned": true,
-          "hook_script_version": "v6",
+          "default_for_unversioned": false,
+          "hook_script_version": "v7",
           "hook_script": "copilot-hook.sh",
           "hook_config_path_templates": [
             "~/.copilot/hooks/defenseclaw.json",
@@ -664,8 +664,7 @@
               "preToolUse",
               "permissionRequest",
               "agentStop",
-              "subagentStop",
-              "postToolUseFailure"
+              "subagentStop"
             ],
             "supports_fail_closed": false,
             "scope": "user,workspace"
@@ -673,7 +672,66 @@
           "notes": [
             "GitHub Copilot CLI shipped preToolUse earlier, but the full DefenseClaw contract also needs postToolUseFailure, permissionRequest, and notification hooks; notification landed in 1.0.18.",
             "Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
-            "DefenseClaw derives Copilot telemetry from the documented hook bus; no official Copilot CLI native OTLP exporter is claimed."
+            "postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool."
+          ]
+        },
+        {
+          "contract_id": "copilot-hooks-v2",
+          "agent_version": {
+            "min_inclusive": "1.0.76",
+            "max_exclusive": ""
+          },
+          "default_for_unversioned": true,
+          "hook_script_version": "v7",
+          "hook_script": "copilot-hook.sh",
+          "hook_config_path_templates": [
+            "~/.copilot/hooks/defenseclaw.json",
+            "<workspace>/.github/hooks/defenseclaw.json"
+          ],
+          "response_field": "hook_output",
+          "events": [
+            "sessionStart",
+            "sessionEnd",
+            "userPromptSubmitted",
+            "userPromptTransformed",
+            "preToolUse",
+            "postToolUse",
+            "permissionRequest",
+            "agentStop",
+            "subagentStart",
+            "subagentStop",
+            "postToolUseFailure",
+            "errorOccurred",
+            "preCompact",
+            "notification"
+          ],
+          "aid_surfaces": [
+            "prompt",
+            "tool_call",
+            "tool_result"
+          ],
+          "supports_traceparent": true,
+          "native_otlp": false,
+          "capabilities": {
+            "can_block": true,
+            "can_ask_native": true,
+            "ask_events": [
+              "preToolUse"
+            ],
+            "block_events": [
+              "preToolUse",
+              "permissionRequest",
+              "agentStop",
+              "subagentStop"
+            ],
+            "supports_fail_closed": false,
+            "scope": "user,workspace"
+          },
+          "notes": [
+            "Current GitHub Copilot CLI documentation includes the mutation-only userPromptTransformed event; DefenseClaw returns no modification.",
+            "GitHub Copilot CLI 1.0.76 is the conservative reviewed floor for this current 14-event contract.",
+            "Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
+            "postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool."
           ]
         }
       ]

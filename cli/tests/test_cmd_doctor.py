@@ -879,7 +879,7 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             cfg = self._cfg(tmp, "copilot")
             cfg.claw.workspace_dir = cfg.data_dir
             result = _DoctorResult()
-            _check_copilot_hooks(cfg, result)
+            _check_copilot_hooks(cfg, result, platform_name="posix")
             self.assertEqual(result.failed, 1, result.checks)
             self.assertIn("inside DefenseClaw data dir", result.checks[0]["detail"])
 
@@ -906,7 +906,7 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             cfg = self._cfg(tmp, "copilot")
             cfg.claw.workspace_dir = workspace
             result = _DoctorResult()
-            _check_copilot_hooks(cfg, result)
+            _check_copilot_hooks(cfg, result, platform_name="posix")
             self.assertEqual(result.failed, 0, result.checks)
             self.assertEqual(result.passed, 1)
 

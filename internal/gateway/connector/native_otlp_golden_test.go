@@ -359,12 +359,12 @@ func TestClaudeCodeManagedSettingsProjectionIsStableAcrossGatewayMasterRotation(
 	}
 }
 
-func TestNativeOTLPShape_CopilotIsUnsupported(t *testing.T) {
+func TestNativeOTLPShape_CopilotIsNotIntegrated(t *testing.T) {
 	t.Parallel()
 	opts := fixedSetupOpts(t)
 
 	if spec := NewCopilotConnector().HookProfile(opts).NativeOTLP; spec != nil {
-		t.Fatalf("Copilot gained an undocumented native OTLP spec: %+v", spec)
+		t.Fatalf("Copilot gained an unintegrated native OTLP spec: %+v", spec)
 	}
 }
 
