@@ -144,10 +144,7 @@ def test_release_installers_track_known_connector_choices() -> None:
     assert shell_choices == (*CONNECTOR_CHOICES, "none")
 
     windows_choices = tuple(supported_connectors(CONNECTOR_CHOICES, "windows"))
-    # Gemini is intentionally staged in the native Setup executable for the
-    # continuing enterprise/Cloud/paid-key audience while its platform status
-    # remains not_certified pending credentialed official-client validation.
-    assert ps_choices == (*windows_choices, "geminicli", "none")
+    assert ps_choices == (*windows_choices, "none")
     assert hook_choices == ()
 
 

@@ -434,7 +434,6 @@ func TestConnectorDefaultHomeBesideDataRootIsStrictlyBound(t *testing.T) {
 		"codex":      filepath.Join(root, ".codex"),
 		"claudecode": filepath.Join(root, ".claude"),
 		"copilot":    filepath.Join(root, ".copilot"),
-		"geminicli":  filepath.Join(root, ".gemini"),
 		"cursor":     filepath.Join(root, ".cursor"),
 	} {
 		if got := connectorDefaultHomeBesideDataRoot(dataRoot, connectorName); !samePath(got, want) {
@@ -520,7 +519,7 @@ func TestReconcileRemovedConnectorsRetainsFallbackFailureAtExactHome(t *testing.
 	recorder := reconcileRemovedConnectors(
 		transaction,
 		filepath.Join(root, "gateway.exe"),
-		transactionChildEnvForHomes(transaction, historicalHome, "", ""),
+		transactionChildEnvForHomes(transaction, historicalHome, ""),
 		run,
 	)
 	want := []string{

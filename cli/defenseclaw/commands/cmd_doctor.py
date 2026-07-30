@@ -2222,9 +2222,9 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "omnigent":
         _check_omnigent_policy_health(cfg, r)
     elif connector in _HOOK_HEALTH_FALLBACK:
-        # Hermes / Cursor / Windsurf / Gemini CLI / OpenCode use the
-        # lock-file-driven health row. Cursor and native-Windows Gemini CLI
-        # then perform connector-specific command/schema validation.
+        # Hermes / Cursor / Gemini CLI / OpenCode use the lock-file-driven
+        # health row; Windows-native connectors with richer contracts dispatch
+        # to their dedicated checks above.
         _check_hook_health(cfg, connector, r)
         if connector == "hermes":
             _check_hermes_legacy_config(r)
@@ -4423,7 +4423,6 @@ def _check_hook_contract_lock(
         "codex",
         "claudecode",
         "copilot",
-        "geminicli",
         "windsurf",
     }:
         native_runtime = _windows_native_hook_check(

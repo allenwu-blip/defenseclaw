@@ -188,25 +188,11 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 		adapter := strings.TrimSuffix(unixCommand, ".sh") + ".ps1"
 		return "& " + powershellQuoteLiteral(adapter)
 	}
-	// Gemini CLI's Windows hook runner launches command strings through
-	// PowerShell, writes the JSON payload to that process's stdin, and waits for
-	// close before interpreting stdout and the exit status. Keep the command as
-	// one synchronous PowerShell invocation of the absolute native launcher.
-	// The call operator is required because a quoted executable path alone is a
-	// PowerShell string expression. Do not insert Start-Process here: its
-	// default stdin/stdout handling would break Gemini's JSON hook protocol.
-	if connector == "geminicli" {
-		return windowsGeminiCLIHookCommand()
-	}
 	// Claude Code evaluates hook command strings with PowerShell on Windows.
 	// A quoted executable path alone is only a string expression there; the
 	// call operator is required to invoke it. Use a single-quoted literal so an
 	// install path cannot introduce PowerShell interpolation.
 	return "& " + powershellQuoteLiteral(defenseclawHookBinary()) + " " + nativeHookFlag + connector
-}
-
-func windowsGeminiCLIHookCommand() string {
-	return "& " + powershellQuoteLiteral(defenseclawHookBinary()) + " " + nativeHookFlag + "geminicli"
 }
 
 // defenseclawHookBinary returns the stable native HookRuntime launcher on

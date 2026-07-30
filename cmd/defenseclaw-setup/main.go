@@ -177,7 +177,6 @@ type options struct {
 	CodexHome            string
 	ClaudeConfigDir      string
 	CopilotHome          string
-	GeminiConfigDir      string
 	CursorHome           string
 	WindsurfUserHome     string
 	AntigravityConfigDir string
@@ -257,7 +256,6 @@ type installState struct {
 	CodexHome              string            `json:"codex_home,omitempty"`
 	ClaudeConfigDir        string            `json:"claude_config_dir,omitempty"`
 	CopilotHome            string            `json:"copilot_home,omitempty"`
-	GeminiConfigDir        string            `json:"gemini_config_dir,omitempty"`
 	CursorHome             string            `json:"cursor_home,omitempty"`
 	WindsurfUserHome       string            `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
@@ -502,7 +500,6 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.CodexHome = transaction.CodexHome
 	opts.ClaudeConfigDir = transaction.ClaudeConfigDir
 	opts.CopilotHome = transaction.CopilotHome
-	opts.GeminiConfigDir = transaction.GeminiConfigDir
 	opts.CursorHome = transaction.CursorHome
 	opts.WindsurfUserHome = transaction.WindsurfUserHome
 	opts.AntigravityConfigDir = transaction.AntigravityConfigDir
@@ -946,9 +943,6 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "copilot", "config.json")) {
 		add("copilot")
 	}
-	if pathExists(filepath.Join(dataRoot, "connector_backups", "geminicli", "config.json")) {
-		add("geminicli")
-	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "cursor", "hooks.json.json")) {
 		add("cursor")
 	}
@@ -1231,11 +1225,6 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "CLAUDE_CONFIG_DIR"
 	case "copilot":
 		variable = "COPILOT_HOME"
-	case "geminicli":
-		// This installer-private binding is consumed only by the hidden
-		// --config-home maintenance flag. Gemini CLI itself has no documented
-		// home override and continues to read %USERPROFILE%\.gemini.
-		variable = "DEFENSECLAW_GEMINI_CONFIG_DIR"
 	case "cursor":
 		variable = "DEFENSECLAW_CURSOR_CONFIG_HOME"
 	case "windsurf":
@@ -1574,7 +1563,6 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		CodexHome:              opts.CodexHome,
 		ClaudeConfigDir:        opts.ClaudeConfigDir,
 		CopilotHome:            opts.CopilotHome,
-		GeminiConfigDir:        opts.GeminiConfigDir,
 		CursorHome:             opts.CursorHome,
 		WindsurfUserHome:       opts.WindsurfUserHome,
 		AntigravityConfigDir:   opts.AntigravityConfigDir,

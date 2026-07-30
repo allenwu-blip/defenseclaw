@@ -22,7 +22,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-wizard-smoke-$PID"),
     [ValidateRange(1, 60)]
     [int]$TimeoutSeconds = 15,
-    [ValidateSet('none', 'antigravity', 'codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')]
+    [ValidateSet('none', 'antigravity', 'codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'omnigent', 'opencode')]
     [string]$Connector = 'claudecode',
     [ValidateSet('observe', 'action')]
     [string]$Mode = 'observe',
@@ -364,7 +364,17 @@ function Get-WizardObservation(
     }
 }
 
-$connectorIndices = @{ none = 0; antigravity = 1; codex = 2; claudecode = 3; copilot = 4; geminicli = 5; cursor = 6; windsurf = 7 }
+$connectorIndices = @{
+    none = 0
+    antigravity = 1
+    codex = 2
+    claudecode = 3
+    copilot = 4
+    cursor = 5
+    windsurf = 6
+    omnigent = 7
+    opencode = 8
+}
 $modeIndices = @{ observe = 0; action = 1 }
 $process = $null
 $finished = $false

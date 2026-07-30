@@ -341,8 +341,7 @@ func (sp spec) decide(opts Options, body []byte) int {
 
 	action, ok := rawString(fields, "action")
 	if !ok || (action != "allow" && action != "block" && action != "confirm") {
-		if sp.style == styleClaudeCode || sp.style == styleCodex ||
-			sp.style == styleGeminiJSON || sp.style == styleActionStderr {
+		if sp.style == styleClaudeCode || sp.style == styleCodex || sp.style == styleActionStderr {
 			return failResponse(opts, sp, normalizeFailMode(opts.FailMode), "invalid or missing action in gateway response")
 		}
 		action = "allow"
@@ -394,20 +393,6 @@ func (sp spec) decide(opts Options, body []byte) int {
 		}
 		return 0
 
-	case styleGeminiJSON:
-		if output != "" {
-			fmt.Fprintln(opts.Stdout, output)
-			return 0
-		}
-		if action == "block" {
-			if reason == "" {
-				reason = sp.defaultBlockReason
-			}
-			fmt.Fprintf(opts.Stdout, "{\"decision\":\"deny\",\"reason\":%s}\n", mustJSONString(reason))
-			return 0
-		}
-		return emit(opts.Stdout, sp.openAllow)
-
 	case styleHookEchoDecision:
 		if output != "" {
 			fmt.Fprintln(opts.Stdout, output)
@@ -433,7 +418,8 @@ func (sp spec) decide(opts Options, body []byte) int {
 }
 
 // handleMissingToken mirrors defenseclaw_handle_missing_token: log the bypass,
-// then emit the connector-specific allow or fail-closed response.
+// then allow (exit 0) by default or block (exit 2) under strict availability.
+// No connector-specific JSON body is emitted on this path.
 func handleMissingToken(opts Options, sp spec, failMode string) int {
 	const reason = "missing gateway token (connector-scoped and legacy token sidecars absent; DEFENSECLAW_GATEWAY_TOKEN unset)"
 	logHookFailure(opts, sp, reason, "transport", failMode)

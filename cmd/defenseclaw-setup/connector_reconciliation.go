@@ -101,15 +101,13 @@ func retryPendingConnectorReconciliation(
 		}
 		seen[identity] = true
 		connectorName := strings.ToLower(failure.Connector)
-		codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome := "", "", "", "", "", "", "", "", ""
+		codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome := "", "", "", "", "", "", "", ""
 		if connectorName == "codex" {
 			codexHome = failure.ConfigHome
 		} else if connectorName == "claudecode" {
 			claudeHome = failure.ConfigHome
 		} else if connectorName == "copilot" {
 			copilotHome = failure.ConfigHome
-		} else if connectorName == "geminicli" {
-			geminiHome = failure.ConfigHome
 		} else if connectorName == "cursor" {
 			cursorHome = failure.ConfigHome
 		} else if connectorName == "windsurf" {
@@ -122,7 +120,7 @@ func retryPendingConnectorReconciliation(
 			omnigentHome = failure.ConfigHome
 		}
 		env := transactionChildEnvForConnectorHomes(
-			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
+			transaction, codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
 		)
 		verify := func() error {
 			return run(gatewayPath, transaction.DataRoot, connectorName, "verify", env)
@@ -225,8 +223,6 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 			candidates = append(candidates, transaction.PreviousState.ClaudeConfigDir)
 		case "copilot":
 			candidates = append(candidates, transaction.PreviousState.CopilotHome)
-		case "geminicli":
-			candidates = append(candidates, transaction.PreviousState.GeminiConfigDir)
 		case "cursor":
 			candidates = append(candidates, transaction.PreviousState.CursorHome)
 		case "windsurf":
@@ -287,7 +283,7 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		logicalName = "config.toml"
 	case "claudecode":
 		logicalName = "settings.json"
-	case "copilot", "geminicli", "omnigent":
+	case "copilot", "omnigent":
 		logicalName = "config"
 	case "cursor":
 		logicalName = "hooks.json"
@@ -317,8 +313,6 @@ func connectorDefaultHomeBesideDataRoot(dataRoot, connectorName string) string {
 		directory = ".claude"
 	case "copilot":
 		directory = ".copilot"
-	case "geminicli":
-		directory = ".gemini"
 	case "cursor":
 		directory = ".cursor"
 	case "antigravity":
@@ -337,7 +331,6 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 	codexHome := transaction.PreviousCodexHome
 	claudeHome := transaction.PreviousClaudeConfigDir
 	copilotHome := transaction.PreviousCopilotHome
-	geminiHome := transaction.PreviousGeminiConfigDir
 	cursorHome := transaction.PreviousCursorHome
 	windsurfHome := transaction.PreviousWindsurfUserHome
 	antigravityHome := transaction.PreviousAntigravityConfigDir
@@ -349,8 +342,6 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		claudeHome = configHome
 	} else if connectorName == "copilot" {
 		copilotHome = configHome
-	} else if connectorName == "geminicli" {
-		geminiHome = configHome
 	} else if connectorName == "cursor" {
 		cursorHome = configHome
 	} else if connectorName == "windsurf" {
@@ -363,7 +354,7 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		omnigentHome = configHome
 	}
 	return transactionChildEnvForConnectorHomes(
-		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
+		transaction, codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
 	)
 }
 
@@ -612,11 +603,6 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousCopilotHome
 		}
 		return transaction.CopilotHome
-	case "geminicli":
-		if previous {
-			return transaction.PreviousGeminiConfigDir
-		}
-		return transaction.GeminiConfigDir
 	case "cursor":
 		if previous {
 			return transaction.PreviousCursorHome

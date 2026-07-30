@@ -479,7 +479,7 @@ var builtinHookContracts = map[string][]HookContract{
 		ContractID:              "geminicli-hooks-v1",
 		MinAgentVersion:         "0.26.0",
 		DefaultForUnversioned:   true,
-		HookScriptVersion:       "v7",
+		HookScriptVersion:       "v6",
 		HookConfigPathTemplates: []string{"~/.gemini/settings.json"},
 		ResponseFieldName:       "hook_output",
 		Events: []string{
@@ -514,8 +514,6 @@ var builtinHookContracts = map[string][]HookContract{
 		Notes: []string{
 			"Gemini CLI 0.26.0 enabled hooks by default.",
 			"Gemini CLI consumer/free/Google AI Pro/Ultra service ended on 2026-06-18; this contract applies only to continuing enterprise, Google Cloud, and paid API-key access.",
-			"DefenseClaw emits exit-0 Gemini JSON allow/deny responses. It does not rely on the legacy nonzero path described differently by Gemini CLI documentation and v0.53.0 source.",
-			"Adapter failure handling applies only after Gemini successfully spawns the DefenseClaw hook. Failures before adapter start, host-side launch failures, host-enforced timeouts, and collapsed nonzero process exits remain upstream/live-certification boundaries.",
 		},
 	}},
 	"copilot": {{

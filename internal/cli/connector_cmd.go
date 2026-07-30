@@ -332,9 +332,10 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
-	if name != "claudecode" && name != "codex" && name != "copilot" &&
-		name != "geminicli" && name != "cursor" && name != "windsurf" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, geminicli, cursor, and windsurf")
+	if name != "antigravity" && name != "claudecode" && name != "codex" &&
+		name != "copilot" && name != "cursor" && name != "omnigent" &&
+		name != "opencode" && name != "windsurf" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for antigravity, claudecode, codex, copilot, cursor, omnigent, opencode, and windsurf")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		// Transactional Windows Setup must be able to preserve and repair a

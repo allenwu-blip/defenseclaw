@@ -34,13 +34,8 @@ const (
 	styleCodex
 	// styleHookEcho: echo hook_output and exit 0 — the gateway already
 	// encoded the decision in the agent-native hook_output. (cursor / copilot
-	// / hermes)
+	// / geminicli / hermes)
 	styleHookEcho
-	// styleGeminiJSON: echo hook_output when present; otherwise synthesize a
-	// documented Gemini JSON allow/deny decision and always exit 0. Gemini's
-	// hook docs and v0.53.0 legacy nonzero converter disagree about the exact
-	// nonzero mapping, while the exit-0 JSON decision path is unambiguous.
-	styleGeminiJSON
 	// styleHookEchoDecision: echo hook_output, then exit 2 if its
 	// `decision` is deny/block. (openhands-hook.sh)
 	styleHookEchoDecision
@@ -120,12 +115,10 @@ var specs = map[string]spec{
 	"geminicli": {
 		connector: "geminicli", hookName: "geminicli-hook", errLabel: "geminicli",
 		subject: "geminicli tool", endpoint: "/api/v1/geminicli/hook",
-		outputField: "hook_output", style: styleGeminiJSON,
-		defaultBlockReason: "Blocked by DefenseClaw Gemini CLI policy.",
-		openAllow:          failResult{body: geminiAllow(), exit: 0},
-		oversizedClosed:    failResult{body: geminiDeny(tooLarge), exit: 0},
-		unreachableStrict:  failResult{body: geminiDeny(failedClosed), exit: 0},
-		responseClosed:     failResult{body: geminiDeny(failedClosed), exit: 0},
+		outputField: "hook_output", style: styleHookEcho,
+		oversizedClosed:   failResult{exit: blockExit},
+		unreachableStrict: failResult{exit: blockExit},
+		responseClosed:    failResult{exit: blockExit},
 	},
 	// Antigravity consumes per-event JSON on stdout. PreToolUse decision=deny is
 	// the only documented hard block; hookexec converts generic failure results
@@ -171,14 +164,6 @@ func cursorDeny(msg string) string {
 
 func cursorAllow() string {
 	return `{"continue":true}`
-}
-
-func geminiDeny(msg string) string {
-	return `{"decision":"deny","reason":"` + msg + `"}`
-}
-
-func geminiAllow() string {
-	return `{"decision":"allow"}`
 }
 
 func specFor(connector string) (spec, bool) {

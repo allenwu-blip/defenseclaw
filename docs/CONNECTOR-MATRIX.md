@@ -259,7 +259,7 @@ with a warning. Action mode fails closed on that contract mismatch.
 | Hermes | hook contract | `>=0.11.0` | `hermes-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
 | Cursor | hook contract | `>=1.7.0` | `cursor-hooks-v1` / `v8` | prompt, tool_call, tool_result |
 | Windsurf | hook contract | `>=1.12.41` | `windsurf-hooks-v1` / `v6` | prompt, tool_call, tool_result |
-| Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v7` | prompt, tool_call, tool_result |
+| Gemini CLI | hook contract | `>=0.26.0` | `geminicli-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | Copilot CLI | hook contract | `>=1.0.18` | `copilot-hooks-v1` / `v6` | prompt, tool_call, tool_result |
 | OpenHands | hook contract | unversioned / documented hooks; tested with `OpenHands CLI 1.16.0` | `openhands-hooks-v1` / `v6` | prompt, tool_call, tool_result, event_content |
 | Antigravity | hook contract | `>=1.1.8` | `antigravity-hooks-v2` / `v8` | tool_call, event_content |
@@ -305,30 +305,21 @@ native-Windows evidence and hook contract were rechecked on 2026-07-30; see the
 | OpenCode | yes | no | none | `tool.execute.before` only; `tool.execute.after` and generic lifecycle dispatch are best-effort observation | yes, for `tool.execute.before` only | user | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` on Windows (default `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`); `~/.config/opencode/plugins/defenseclaw.js` elsewhere |
 | OmniGent | yes | yes | `UserPromptSubmit`, `PreToolUse`, `BeforeModel` | all six mapped policy phases | yes | user | `$OMNIGENT_CONFIG_HOME/config.yaml` when set, otherwise `~/.omnigent/config.yaml`, plus installed Python policy |
 
-Gemini CLI and Antigravity share the `~/.gemini` parent directory but not
-DefenseClaw ownership. Gemini lifecycle custody is limited to marked fields in
-`~/.gemini/settings.json`, its connector-specific managed backup, and its
-scoped OTLP token. Antigravity content under `~/.gemini/config/` and
-`~/.gemini/antigravity-cli/`, plus unrelated Google credentials and agent
-assets, is excluded from Gemini reconciliation, deferred uninstall, teardown,
-and backup discovery. Native Setup passes the persisted `.gemini` directory
-only through DefenseClaw's hidden maintenance `--config-home` binding; it does
-not create a Gemini client environment override or delete the shared parent.
+Gemini CLI native Windows support is excluded. Native Setup, reconciliation,
+deferred uninstall, and teardown therefore do not claim or mutate
+`%USERPROFILE%\.gemini\settings.json`, a Gemini connector backup, or a Gemini
+OTLP token. Antigravity's distinct Windows custody remains limited to
+`%USERPROFILE%\.gemini\config`; unrelated Gemini settings, credentials,
+extensions, skills, agents, and other Google state remain outside that
+connector's ownership.
 
 `confirm` verdicts are rendered as native ask only when the event is listed in
 `ask_events`. Every other event takes its connector-specific alert, allow, or
 context fallback immediately while preserving `raw_action: "confirm"` for
 audit. The DefenseClaw TUI can review those records but cannot resume the call.
 
-Gemini CLI registers all 11 documented lifecycle events. `SessionEnd` is
-upstream best-effort and not awaited; `Notification` and `PreCompress` are
-observation-only. The five events listed above are the declared block surfaces.
-For policy decisions and DefenseClaw adapter failures, Gemini receives exit 0
-with JSON `decision=allow|deny`; alert fallback may add the documented
-`systemMessage` field to an allow response. This deliberately avoids the legacy
-nonzero path, whose description in the hook reference differs from v0.53.0 source.
-This guarantee begins after Gemini successfully spawns the adapter: host spawn
-failures and host-enforced timeouts remain Gemini CLI behavior.
+The existing supported non-Windows Gemini CLI connector remains unchanged and
+is audited independently of the excluded Windows lifecycle.
 
 Cursor command hooks fail open by default, matching the vendor schema.
 DefenseClaw writes `failClosed: true` only when action mode explicitly selects

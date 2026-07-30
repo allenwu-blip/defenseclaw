@@ -821,7 +821,6 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		return c.teardownPluginArtifact(opts)
 	}
 	var errs []string
-	configClean := false
 
 	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
 	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, "config", path)
@@ -829,13 +828,11 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 	case err != nil:
 		errs = append(errs, fmt.Sprintf("restore config backup: %v", err))
 	case restored:
-		configClean = true
 	case !restored:
 		if err := c.removeConfigEntries(path, c.hookCommand(opts)); err != nil {
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
 			discardManagedFileBackup(opts.DataDir, c.name, "config")
-			configClean = true
 		}
 	}
 
@@ -845,15 +842,6 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		}
 	} else if err := writeDisabledHookTombstone(opts, c.scriptName, c.name); err != nil {
 		errs = append(errs, fmt.Sprintf("disabled hook tombstone: %v", err))
-	}
-	// Gemini's exporter cannot attach an Authorization header, so Setup mints
-	// a connector-scoped credential in its OTLP URL. Revoke it only after the
-	// corresponding settings reference is gone; otherwise teardown would
-	// strand Gemini on a configured endpoint that can no longer authenticate.
-	if c.name == "geminicli" && configClean {
-		if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); err != nil {
-			errs = append(errs, fmt.Sprintf("revoke scoped OTLP credential: %v", err))
-		}
 	}
 	if c.name == "windsurf" && runtime.GOOS == "windows" {
 		if err := writeDisabledPowerShellHookTombstone(opts, "windsurf-hook.ps1", c.name); err != nil {
@@ -978,17 +966,6 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		(c.name == "windsurf" && bytes.Contains(data, []byte(legacyWindsurfWindowsHookCommand()))) {
 		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
-	if c.name == "geminicli" {
-		tokenPath, tokenPathErr := OTLPPathTokenFilePath(opts.DataDir, OTLPScopeGeminiCLI)
-		if tokenPathErr != nil {
-			return tokenPathErr
-		}
-		if _, tokenErr := os.Lstat(tokenPath); tokenErr == nil {
-			return fmt.Errorf("%s teardown incomplete: scoped OTLP credential still present at %s", c.name, tokenPath)
-		} else if !os.IsNotExist(tokenErr) {
-			return fmt.Errorf("%s inspect scoped OTLP credential: %w", c.name, tokenErr)
-		}
-	}
 	return c.verifyCursorHookArtifactsClean(opts)
 }
 
@@ -1035,17 +1012,11 @@ func (c *hookOnlyConnector) SetCredentials(gatewayToken, masterKey string) {
 func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	caps := c.Capabilities(opts)
 	patched := uniqueNonEmptyStrings(append([]string{c.configPath(opts)}, caps.Telemetry.ConfigPaths...))
-	paths := AgentPaths{
+	return AgentPaths{
 		PatchedFiles: patched,
 		BackupFiles:  []string{managedFileBackupPath(opts.DataDir, c.name, "config")},
 		HookScripts:  hookScriptPathsForConnector(opts, c),
 	}
-	if c.name == "geminicli" && opts.DataDir != "" {
-		paths.GeneratedFiles = []string{
-			filepath.Join(opts.DataDir, "hooks", otlpPathTokenFileName(OTLPScopeGeminiCLI)),
-		}
-	}
-	return paths
 }
 
 func (c *hookOnlyConnector) HookScripts(opts SetupOpts) []string {

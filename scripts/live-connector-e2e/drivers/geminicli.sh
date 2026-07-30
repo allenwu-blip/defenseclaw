@@ -12,10 +12,11 @@
 # Live driver for Google Gemini CLI.
 #   - install:  npm i -g @google/gemini-cli@${GEMINI_VERSION:-latest}
 #   - headless: gemini -p "<prompt>" -o json --approval-mode yolo
-#   - auth:     continuing enterprise/Google Cloud/paid API-key audience only;
-#               GEMINI_API_KEY (or GOOGLE_API_KEY)
-#   - hooks:    BeforeTool is an awaited, block-capable event. DefenseClaw
-#               returns the documented exit-0 JSON decision shape.
+#   - auth:     GEMINI_API_KEY (or GOOGLE_API_KEY)
+#   - hooks:    Gemini's hook events are advisory (SessionStart / PreCompress /
+#               Notification / BeforeTool) — the harness records them but does
+#               not honor a deny verdict, so we assert fires + observe + OTLP
+#               only and skip the block assertion (DC_DRIVER_SUPPORTS_BLOCK=0).
 #   - OTLP:     native exporter wired by `defenseclaw setup geminicli`.
 
 set -euo pipefail
@@ -26,8 +27,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${HERE}/_driver_common.sh"
 
 DC_DRIVER_MODE=action
-DC_DRIVER_SUPPORTS_BLOCK=1
+DC_DRIVER_SUPPORTS_BLOCK=0   # advisory events cannot block
 DC_DRIVER_SUPPORTS_OTLP=1
+
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-2.5-flash}"
 
 agent_install() {
   npm install -g "@google/gemini-cli@${GEMINI_VERSION:-latest}" || return 1
@@ -39,6 +42,7 @@ agent_install() {
 agent_run() {
   local prompt="$1"
   dc_timeout 180 gemini -p "${prompt}" -o json \
+    --model "${GEMINI_MODEL}" \
     --approval-mode yolo
 }
 

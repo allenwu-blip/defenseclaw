@@ -23,14 +23,11 @@ paths. It does not restore consumer Gemini CLI access. See
 and the [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration).
 </Callout>
 
-<Callout type="warning" title="Native Windows is implemented but not certified">
-Gemini CLI itself documents native Windows 11 24H2+, Node.js 20+, and
-PowerShell. DefenseClaw keeps this connector `not_certified` on Windows until a
-credentialed official-client run proves hooks, enforcement, OTLP, Doctor, and
-teardown end to end. Native Setup labels the staged Gemini lifecycle choice as
-enterprise/Cloud/paid-key and certification-pending; that selection is not a
-support or certification claim, and runtime activation remains platform-gated.
-Do not use WSL, Git Bash, Docker, or another compatibility layer as a workaround.
+<Callout type="warning" title="Native Windows is excluded">
+DefenseClaw does not include Gemini CLI in its native Windows connector roster,
+Setup wizard, lifecycle custody, Doctor checks, or Windows validation jobs.
+Existing Gemini CLI support is limited to supported non-Windows hosts. Do not
+use WSL, Git Bash, Docker, or another compatibility layer as a workaround.
 </Callout>
 
 ## Setup
@@ -149,28 +146,7 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
       <File name=".otlp-geminicli.token (connector-scoped OTLP credential)" />
     </Folder>
   </Folder>
-  <Folder name="%LOCALAPPDATA%\DefenseClaw\HookRuntime" defaultOpen>
-    <File name="defenseclaw-hook.exe (native Windows runtime; staged, not yet certified)" />
-  </Folder>
 </Files>
-
-### Coexistence with Antigravity
-
-Gemini CLI and Antigravity share the `%USERPROFILE%\.gemini` parent directory,
-but they do not share DefenseClaw custody. The Gemini CLI connector owns only
-its marked entries in `.gemini\settings.json`, its
-`.defenseclaw\connector_backups\geminicli\config.json` restoration record, and
-its `.otlp-geminicli.token`. Antigravity hook and MCP state beneath
-`.gemini\config\`, Antigravity CLI state beneath `.gemini\antigravity-cli\`,
-credentials, extensions, agents, skills, and unrelated Google files are
-outside Gemini teardown authority.
-
-Setup, repair, deferred uninstall, and reconciliation persist the exact
-`.gemini` configuration directory only so the hidden DefenseClaw
-`--config-home` maintenance command can resolve `settings.json`. DefenseClaw
-does not define or export a Gemini client home variable. Teardown restores or
-removes only DefenseClaw-owned Gemini CLI fields and then revokes the Gemini
-OTLP path token; it never deletes the shared `.gemini` directory.
 
 ## Hook capabilities
 
@@ -179,29 +155,6 @@ OTLP path token; it never deletes the shared `.gemini` directory.
 <Callout>
 Gemini CLI has no native human-approval surface. Confirm verdicts fall back to an alert/context response with `raw_action` preserved in the audit log; the TUI is review-only.
 </Callout>
-
-### Synchronous response and failure boundary
-
-For awaited events, Gemini CLI writes one JSON object to hook stdin, waits for
-the configured process, and parses JSON from stdout. `SessionEnd` is an
-upstream best-effort event and is not awaited; `Notification` and
-`PreCompress` are observation-only. DefenseClaw intentionally returns exit 0
-with `{"decision":"allow"}` or `{"decision":"deny","reason":"..."}`; an
-alert fallback may add Gemini's documented `systemMessage` field alongside
-`decision:"allow"`. This is the documented JSON decision path and avoids
-relying on a contradiction between Gemini's hook reference and the v0.53.0
-legacy nonzero-result conversion.
-
-The configured Gemini timeout is 30,000 ms. DefenseClaw fail-open/fail-closed
-handling covers adapter failures after the native launcher starts, including
-gateway authentication, transport, invalid responses, and oversized input. If
-Gemini itself cannot spawn the launcher, or kills it at the host timeout before
-it can reply, no adapter can manufacture stdout. Failures before adapter start,
-host launch failures, host-enforced timeouts, and host-side collapse of
-arbitrary nonzero process exits remain upstream/live-certification boundaries;
-they are not covered by DefenseClaw's fail-closed claim. Doctor therefore
-validates the exact launcher, every event, timeout, OTLP credential, and
-contract evidence before reporting a healthy native registration.
 
 ## Telemetry channels
 

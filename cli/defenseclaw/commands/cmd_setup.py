@@ -3291,10 +3291,7 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "~/.gemini/settings.json hooks (continuing enterprise/Google Cloud/paid API-key product only)",
         "~/.gemini/settings.json native OTLP telemetry and MCP entries",
         "<workspace>/.gemini/skills, extensions, and agents install surfaces",
-        (
-            "Native Windows uses the installer-managed defenseclaw-hook.exe; "
-            "POSIX uses ~/.defenseclaw/hooks/geminicli-hook.sh"
-        ),
+        "~/.defenseclaw/hooks/geminicli-hook.sh (supported non-Windows hosts only)",
     ),
     "copilot": (
         "~/.copilot/hooks/defenseclaw.json hooks by default",

@@ -292,7 +292,7 @@ func runConnectorCmd(t *testing.T, args ...string) (stdout, stderr string, exitC
 func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	seedCodexSelectionForTest(t, dataDir)
-	home := t.TempDir()
+	home := testenv.PrivateTempDir(t)
 	codexPath := filepath.Join(home, ".codex", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(codexPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -366,7 +366,7 @@ func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *tes
 		t.Skip("native Windows Setup maintenance contract")
 	}
 	dataDir := testenv.PrivateTempDir(t)
-	home := filepath.Join(t.TempDir(), ".copilot")
+	home := filepath.Join(testenv.PrivateTempDir(t), ".copilot")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *tes
 func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	seedCodexSelectionForTest(t, dataDir)
-	home := t.TempDir()
+	home := testenv.PrivateTempDir(t)
 	testenv.SetHome(t, home)
 	claudePath := filepath.Join(home, ".claude", "settings.json")
 	codexPath := filepath.Join(home, ".codex", "config.toml")

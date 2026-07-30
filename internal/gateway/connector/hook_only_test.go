@@ -839,56 +839,6 @@ func TestGeminiSetup_PatchesNativeTelemetryPathToken(t *testing.T) {
 	if !strings.Contains(text, "/otlp/geminicli/"+scoped) {
 		t.Fatalf("gemini settings missing scoped path-token config:\n%s", text)
 	}
-	if runtime.GOOS == "windows" {
-		var settings map[string]interface{}
-		if err := json.Unmarshal(data, &settings); err != nil {
-			t.Fatalf("parse Gemini Windows settings: %v", err)
-		}
-		hooks, ok := settings["hooks"].(map[string]interface{})
-		if !ok {
-			t.Fatalf("Gemini Windows settings missing hooks object: %#v", settings["hooks"])
-		}
-		wantCommand := windowsGeminiCLIHookCommand()
-		for _, event := range []string{
-			"SessionStart",
-			"SessionEnd",
-			"BeforeAgent",
-			"AfterAgent",
-			"BeforeModel",
-			"AfterModel",
-			"BeforeToolSelection",
-			"BeforeTool",
-			"AfterTool",
-			"PreCompress",
-			"Notification",
-		} {
-			groups, ok := hooks[event].([]interface{})
-			if !ok || len(groups) != 1 {
-				t.Fatalf("Gemini Windows event %s groups = %#v, want one managed group", event, hooks[event])
-			}
-			group, ok := groups[0].(map[string]interface{})
-			if !ok || group["matcher"] != "*" {
-				t.Fatalf("Gemini Windows event %s group = %#v, want matcher *", event, groups[0])
-			}
-			handlers, ok := group["hooks"].([]interface{})
-			if !ok || len(handlers) != 1 {
-				t.Fatalf("Gemini Windows event %s handlers = %#v, want one managed handler", event, group["hooks"])
-			}
-			handler, ok := handlers[0].(map[string]interface{})
-			if !ok || handler["type"] != "command" || handler["command"] != wantCommand ||
-				handler["timeout"] != float64(30_000) {
-				t.Fatalf("Gemini Windows event %s handler = %#v, want native synchronous command %q", event, handlers[0], wantCommand)
-			}
-		}
-	}
-	paths := conn.AgentPaths(opts)
-	tokenPath, err := OTLPPathTokenFilePath(opts.DataDir, OTLPScopeGeminiCLI)
-	if err != nil {
-		t.Fatalf("OTLPPathTokenFilePath: %v", err)
-	}
-	if !stringInSlice(paths.GeneratedFiles, tokenPath) {
-		t.Fatalf("Gemini AgentPaths.GeneratedFiles = %v, want scoped credential %s", paths.GeneratedFiles, tokenPath)
-	}
 }
 
 func TestGeminiSetup_MigratesLegacySchemaInPlace(t *testing.T) {
@@ -992,11 +942,6 @@ func TestGeminiTeardown_DriftedConfigRemovesManagedTelemetry(t *testing.T) {
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
 	}
-	if token, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); err != nil {
-		t.Fatalf("LoadOTLPPathToken after teardown: %v", err)
-	} else if token != "" {
-		t.Fatal("teardown did not revoke the scoped Gemini OTLP credential")
-	}
 	restored, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read config after teardown: %v", err)
@@ -1011,75 +956,6 @@ func TestGeminiTeardown_DriftedConfigRemovesManagedTelemetry(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("teardown did not preserve user edit %q:\n%s", want, text)
 		}
-	}
-}
-
-func TestGeminiSetupTeardownPreservesAntigravityAndUnrelatedGoogleState(t *testing.T) {
-	root := testenv.PrivateTempDir(t)
-	geminiDir := filepath.Join(root, ".gemini")
-	cfgPath := filepath.Join(geminiDir, "settings.json")
-	antigravityPath := filepath.Join(geminiDir, "config", "hooks.json")
-	googleStatePath := filepath.Join(geminiDir, "oauth_creds.json")
-	for _, path := range []string{cfgPath, antigravityPath, googleStatePath} {
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	pristineSettings := []byte("{\n  \"theme\": \"ansi\"\n}\n")
-	pristineAntigravity := []byte("{\"hooks\":{\"PreToolUse\":[{\"command\":\"agy-owned\"}]}}\n")
-	pristineGoogleState := []byte("{\"account\":\"unrelated-google-state\"}\n")
-	for path, body := range map[string][]byte{
-		cfgPath:         pristineSettings,
-		antigravityPath: pristineAntigravity,
-		googleStatePath: pristineGoogleState,
-	} {
-		if err := os.WriteFile(path, body, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	previous := GeminiSettingsPathOverride
-	GeminiSettingsPathOverride = cfgPath
-	t.Cleanup(func() { GeminiSettingsPathOverride = previous })
-
-	conn := NewGeminiCLIConnector()
-	opts := SetupOpts{
-		DataDir:  filepath.Join(root, ".defenseclaw"),
-		APIAddr:  "127.0.0.1:18970",
-		APIToken: "gateway-token-must-not-enter-settings",
-	}
-	if err := conn.Setup(context.Background(), opts); err != nil {
-		t.Fatalf("Setup: %v", err)
-	}
-	if err := conn.Teardown(context.Background(), opts); err != nil {
-		t.Fatalf("Teardown: %v", err)
-	}
-	if err := conn.VerifyClean(opts); err != nil {
-		t.Fatalf("VerifyClean: %v", err)
-	}
-
-	for label, fixture := range map[string]struct {
-		path string
-		want []byte
-	}{
-		"Gemini CLI settings": {path: cfgPath, want: pristineSettings},
-		"Antigravity hooks":   {path: antigravityPath, want: pristineAntigravity},
-		"unrelated Google":    {path: googleStatePath, want: pristineGoogleState},
-	} {
-		got, err := os.ReadFile(fixture.path)
-		if err != nil {
-			t.Fatalf("read %s after Gemini teardown: %v", label, err)
-		}
-		if string(got) != string(fixture.want) {
-			t.Fatalf("%s changed by Gemini lifecycle:\ngot  %q\nwant %q", label, got, fixture.want)
-		}
-	}
-	if _, err := os.Lstat(
-		filepath.Join(opts.DataDir, "connector_backups", "geminicli", "config.json"),
-	); err == nil {
-		t.Fatal("Gemini managed backup survived exact restoration")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("inspect Gemini managed backup after restoration: %v", err)
 	}
 }
 
