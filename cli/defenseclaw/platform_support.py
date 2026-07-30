@@ -79,7 +79,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "cursor": ConnectorPlatformSupport(
         PREVIEW,
-        "Cursor Agent and the DefenseClaw PowerShell hook adapter are available as a native Windows x64 preview pending integrated packaged and official-client validation.",
+        "Cursor Agent and the DefenseClaw PowerShell hook adapter are available "
+        "as a native Windows x64 preview pending integrated packaged and "
+        "official-client validation.",
     ),
     "windsurf": ConnectorPlatformSupport(
         PREVIEW,
@@ -102,7 +104,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "opencode": ConnectorPlatformSupport(
         PREVIEW,
-        "OpenCode native Windows support is preview pending integrated packaged Setup and official-client validation; OpenCode recommends WSL but does not require it.",
+        "OpenCode native Windows support is preview pending integrated packaged "
+        "Setup and official-client validation; OpenCode recommends WSL but does "
+        "not require it.",
     ),
     "hermes": ConnectorPlatformSupport(
         PREVIEW,
@@ -115,7 +119,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "omnigent": ConnectorPlatformSupport(
         PREVIEW,
-        "OmniGent 0.7.0 supports native Windows server and SDK harnesses in degraded mode; DefenseClaw uses its awaited in-process policy API without terminal wrapping or filesystem/network sandbox parity.",
+        "OmniGent 0.7.0 supports native Windows server and SDK harnesses in "
+        "degraded mode; DefenseClaw uses its awaited in-process policy API "
+        "without terminal wrapping or filesystem/network sandbox parity.",
     ),
     "openclaw": ConnectorPlatformSupport(
         UNSUPPORTED,
