@@ -218,6 +218,7 @@ var (
 			Value: "geminicli",
 		},
 		{Label: "Cursor Agent", Value: "cursor"},
+		{Label: "Windsurf", Value: "windsurf"},
 	}
 	wizardModeChoices = []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -744,6 +745,8 @@ func wizardCompletionDescription(connector string) string {
 		return "Gemini CLI is configured for its continuing enterprise, Google Cloud, or paid API-key audience; native Windows certification remains pending." + installed
 	case "cursor":
 		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
+	case "windsurf":
+		return "Windsurf native Windows support is configured as preview with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
 	default:
 		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
 	}

@@ -80,6 +80,34 @@ func WithUserHomeDir(home string, fn func() error) error {
 	return fn()
 }
 
+// BindUserHomeDir holds an explicit user-home binding until the returned
+// restore function is called. Native Windows Setup uses this for maintenance
+// commands whose connector config lives below the profile root (for example,
+// Windsurf's .codeium/windsurf/hooks.json). The caller validates the path
+// before binding it; this function deliberately never falls back to an ambient
+// profile.
+func BindUserHomeDir(home string) (func(), error) {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil, fmt.Errorf("connector: user home binding is empty")
+	}
+	userHomeOverrideSessionMu.Lock()
+	userHomeOverrideMu.Lock()
+	previous := userHomeOverride
+	userHomeOverride = home
+	userHomeOverrideMu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			userHomeOverrideMu.Lock()
+			userHomeOverride = previous
+			userHomeOverrideMu.Unlock()
+			userHomeOverrideSessionMu.Unlock()
+		})
+	}, nil
+}
+
 // nativeHookFlag is the distinctive argument fragment that marks a command as
 // the DefenseClaw native Go hook entrypoint (`defenseclaw-hook hook
 // --connector <name>`). It is used both when writing an agent's hook command on
@@ -152,13 +180,11 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 	if connector == "copilot" {
 		return windowsCopilotPowerShellHookCommand()
 	}
-	// Cursor 3.9.x writes the hook payload to a temporary file and then feeds
-	// it through Windows PowerShell's object pipeline. A native executable on
-	// that boundary receives encoding preambles instead of the JSON. The
-	// generated PowerShell adapter accepts the object pipeline, writes UTF-8
-	// without a BOM into the secured hooks directory, then invokes the
-	// consoleless launcher with a validated --input-file path.
-	if connector == "cursor" {
+	// Cursor requires an adapter for its object-pipeline transport. Windsurf
+	// documents a `powershell` command field and JSON stdin; its adapter uses
+	// byte streams so the payload and response streams reach the exact packaged
+	// launcher unchanged, synchronously preserving exit 2.
+	if connector == "cursor" || connector == "windsurf" {
 		adapter := strings.TrimSuffix(unixCommand, ".sh") + ".ps1"
 		return "& " + powershellQuoteLiteral(adapter)
 	}

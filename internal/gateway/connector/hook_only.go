@@ -167,7 +167,7 @@ func NewWindsurfConnector() *hookOnlyConnector {
 				CanBlock:           true,
 				CanAskNative:       false,
 				BlockEvents:        []string{"pre_user_prompt", "pre_read_code", "pre_write_code", "pre_run_command", "pre_mcp_tool_use"},
-				SupportsFailClosed: false,
+				SupportsFailClosed: true,
 				Scope:              "user",
 				ConfigPath:         windsurfHooksPath(opts),
 			}
@@ -290,10 +290,16 @@ func (c *hookOnlyConnector) HookAPIPath() string                    { return c.a
 func (c *hookOnlyConnector) ToolInspectionMode() ToolInspectionMode { return ToolModeBoth }
 func (c *hookOnlyConnector) SubprocessPolicy() SubprocessPolicy     { return SubprocessNone }
 func (c *hookOnlyConnector) HookScriptNames(SetupOpts) []string {
-	// Cursor's PowerShell adapter is required only for its native Windows
-	// transport. Unix and macOS continue to use the existing shell hook.
-	if c.name == "cursor" && runtime.GOOS == "windows" {
-		return []string{c.scriptName, "cursor-hook.ps1"}
+	// Cursor and Windsurf require connector-specific PowerShell adapters only
+	// for their native Windows transports. Unix and macOS continue to use the
+	// existing shell hooks.
+	if runtime.GOOS == "windows" {
+		switch c.name {
+		case "cursor":
+			return []string{c.scriptName, "cursor-hook.ps1"}
+		case "windsurf":
+			return []string{c.scriptName, "windsurf-hook.ps1"}
+		}
 	}
 	return []string{c.scriptName}
 }
@@ -789,10 +795,10 @@ func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
 
 // hookCommand returns the command an agent runs for this connector's hook. On
 // Unix it is the bundled .sh path. Most Windows connectors use the native
-// DefenseClaw `hook` subcommand; Cursor uses a PowerShell adapter because its
-// object pipeline does not preserve native stdin JSON. The same value is used
-// at setup, teardown, and VerifyClean so the JSON/YAML hook removers (which
-// match on the exact command string) recognize the entries DefenseClaw added.
+// DefenseClaw `hook` subcommand; Cursor and Windsurf use PowerShell adapters
+// for their documented Windows transports. The same value is used at setup,
+// teardown, and VerifyClean so the JSON/YAML hook removers (which match on the
+// exact command string) recognize the entries DefenseClaw added.
 func (c *hookOnlyConnector) hookCommand(opts SetupOpts) string {
 	return hookInvocationCommand(c.name, filepath.Join(opts.DataDir, "hooks", c.scriptName))
 }
@@ -855,6 +861,11 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 	if c.name == "geminicli" && configClean {
 		if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); err != nil {
 			errs = append(errs, fmt.Sprintf("revoke scoped OTLP credential: %v", err))
+		}
+	}
+	if c.name == "windsurf" && runtime.GOOS == "windows" {
+		if err := writeDisabledPowerShellHookTombstone(opts, "windsurf-hook.ps1", c.name); err != nil {
+			errs = append(errs, fmt.Sprintf("disabled PowerShell hook tombstone: %v", err))
 		}
 	}
 
@@ -947,9 +958,20 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
 	}
+	if c.name == "windsurf" {
+		var cfg map[string]interface{}
+		if err := json.Unmarshal(data, &cfg); err == nil &&
+			structuredHookCommandReferences(cfg, []string{
+				needle,
+				legacyWindsurfWindowsHookCommand(),
+			}) {
+			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+		}
+	}
 	if bytes.Contains(data, []byte(needle)) || bytes.Contains(data, []byte(c.scriptName)) ||
 		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityWindowsHookCommand()))) ||
-		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) {
+		(c.name == "antigravity" && bytes.Contains(data, []byte(legacyAntigravityNonWaitingWindowsHookCommand()))) ||
+		(c.name == "windsurf" && bytes.Contains(data, []byte(legacyWindsurfWindowsHookCommand()))) {
 		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
 	if c.name == "geminicli" {
@@ -1097,7 +1119,11 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			c.effectiveFailClosed(opts),
 		)
 	case "windsurf":
-		err = patchWindsurfHooks(path, hookScript)
+		err = patchWindsurfHooks(
+			path,
+			hookScript,
+			filepath.Join(opts.DataDir, "hooks", c.scriptName),
+		)
 	case "geminicli":
 		if err = patchGeminiHooks(path, hookScript); err == nil {
 			err = patchGeminiTelemetry(path, opts)
@@ -1123,8 +1149,10 @@ func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string) error {
 		return removeHermesHooks(path, hookScript)
 	case "geminicli":
 		return removeGeminiConfigEntries(path, hookScript)
-	case "cursor", "windsurf", "copilot", "openhands":
+	case "cursor", "copilot", "openhands":
 		return removeJSONHookReferences(path, hookScript)
+	case "windsurf":
+		return removeJSONHookReferences(path, hookScript, legacyWindsurfWindowsHookCommand())
 	case "antigravity":
 		return removeJSONHookReferences(
 			path,
@@ -1589,7 +1617,11 @@ func managedCursorNativeHookEntry(raw interface{}) bool {
 	return strings.HasSuffix(command, nativeHookFlag+"cursor") && isNativeHookCommand(command)
 }
 
-func patchWindsurfHooks(path, hookScript string) error {
+func patchWindsurfHooks(path, hookScript, legacyShellScript string) error {
+	return patchWindsurfHooksForOS(path, hookScript, legacyShellScript, runtime.GOOS)
+}
+
+func patchWindsurfHooksForOS(path, hookScript, legacyShellScript, goos string) error {
 	cfg, err := readJSONObject(path)
 	if err != nil {
 		return err
@@ -1609,13 +1641,38 @@ func patchWindsurfHooks(path, hookScript string) error {
 		"post_cascade_response_with_transcript",
 		"post_setup_worktree",
 	} {
-		entry := map[string]interface{}{
-			"command":     shellWord(hookScript),
-			"show_output": true,
+		entry := map[string]interface{}{"show_output": true}
+		if goos == "windows" {
+			// Windsurf executes this field with `powershell -Command`. Do not
+			// provide `command`: the documented fallback would use bash -c on
+			// other platforms and obscures whether native Windows enforcement
+			// is actually active.
+			entry["powershell"] = hookScript
+		} else {
+			entry["command"] = shellWord(hookScript)
 		}
-		hooks[event] = appendUniqueFlatHook(hooks[event], hookScript, entry)
+		hooks[event] = replaceManagedWindsurfHooks(
+			hooks[event],
+			hookScript,
+			legacyShellScript,
+			entry,
+		)
 	}
 	return writeJSONObject(path, cfg)
+}
+
+func replaceManagedWindsurfHooks(raw interface{}, hookScript, legacyShellScript string, entry map[string]interface{}) []interface{} {
+	list, _ := raw.([]interface{})
+	out := make([]interface{}, 0, len(list)+1)
+	for _, item := range list {
+		if managedHookCommandEntry(item, hookScript) ||
+			managedHookCommandEntry(item, legacyShellScript) ||
+			managedHookCommandEntry(item, legacyWindsurfWindowsHookCommand()) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return append(out, entry)
 }
 
 func patchGeminiHooks(path, hookScript string) error {
@@ -2163,6 +2220,10 @@ func legacyAntigravityWindowsHookCommand() string {
 
 func legacyAntigravityNonWaitingWindowsHookCommand() string {
 	return legacyWindowsNativePowerShellHookCommandForBinary("antigravity", defenseclawHookBinary())
+}
+
+func legacyWindsurfWindowsHookCommand() string {
+	return "& " + powershellQuoteLiteral(defenseclawHookBinary()) + " " + nativeHookFlag + "windsurf"
 }
 
 func managedHookCommandEntry(raw interface{}, hookScript string) bool {

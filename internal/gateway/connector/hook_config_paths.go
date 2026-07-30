@@ -107,10 +107,11 @@ func ownedHookCommandNeedles(opts SetupOpts, conn Connector) []string {
 //     (`"C:\...\defenseclaw-hook.exe" hook --connector <name>`). The absolute
 //     exe path's backslashes and surrounding quotes are escaped during config
 //     serialization, so their stable marker is `hook --connector <name>`.
-//     Cursor is matched exactly because its native transport requires the
-//     generated cursor-hook.ps1 adapter. Antigravity is also matched exactly
-//     because its direct-exec tokenizer requires a PowerShell encoded-command
-//     wrapper rather than a visibly quoted absolute executable path.
+//     Cursor and Windsurf are matched exactly because their native transports
+//     require generated PowerShell adapters. Antigravity is also matched
+//     exactly because its direct-exec tokenizer requires a PowerShell
+//     encoded-command wrapper rather than a visibly quoted absolute executable
+//     path.
 func ownedHookCommandNeedlesFor(goos string, opts SetupOpts, conn Connector) []string {
 	if owner, ok := conn.(HookConfigReferenceOwner); ok {
 		return uniqueNonEmptyStrings(owner.HookConfigReferenceNeedles(opts))
@@ -120,8 +121,8 @@ func ownedHookCommandNeedlesFor(goos string, opts SetupOpts, conn Connector) []s
 		return nil
 	}
 	if goos == "windows" {
-		if conn.Name() == "cursor" {
-			unixCommand := filepath.Join(opts.DataDir, "hooks", "cursor-hook.sh")
+		if conn.Name() == "cursor" || conn.Name() == "windsurf" {
+			unixCommand := filepath.Join(opts.DataDir, "hooks", conn.Name()+"-hook.sh")
 			return []string{hookInvocationCommandFor("windows", conn.Name(), unixCommand)}
 		}
 		return []string{nativeHookFlag + conn.Name()}
@@ -220,7 +221,7 @@ func structuredHookCommandReferences(raw interface{}, needles []string) bool {
 			return true
 		}
 		for key, item := range value {
-			if key == "command" || key == "bash" || key == "powershell" || key == "handler" {
+			if key == "command" || key == "bash" || key == "handler" || key == "powershell" {
 				command := strings.TrimSpace(stringValue(item))
 				for _, needle := range needles {
 					needle = strings.TrimSpace(needle)

@@ -1527,6 +1527,13 @@ def _check_codex_hooks(
         _emit("fail", "Codex hooks", f"hook script not found at {hook_script}", r=r)
 
 
+def _check_windsurf_hooks(cfg, r: _DoctorResult, *, platform_name: str | None = None) -> None:
+    if (platform_name or os.name) == "nt":
+        _check_windows_native_hooks(cfg, "windsurf", "Windsurf hooks", r)
+        return
+    _check_hook_health(cfg, "windsurf", r)
+
+
 # ---------------------------------------------------------------------------
 # Generic per-connector hook-health (D4)
 # ---------------------------------------------------------------------------
@@ -1551,7 +1558,7 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     "windsurf": (
         (os.path.join(".codeium", "windsurf", "hooks.json"),),
-        ("windsurf-hook.sh", "hook --connector windsurf", "defenseclaw"),
+        ("windsurf-hook.ps1", "windsurf-hook.sh", "hook --connector windsurf", "defenseclaw"),
     ),
     "geminicli": (
         (os.path.join(".gemini", "settings.json"),),
@@ -2165,6 +2172,8 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         _check_claudecode_hooks(cfg, r)
     elif connector == "codex":
         _check_codex_hooks(cfg, r)
+    elif connector == "windsurf":
+        _check_windsurf_hooks(cfg, r)
     elif connector == "zeptoclaw":
         _check_zeptoclaw_config(cfg, r)
     elif connector == "copilot":
@@ -4433,6 +4442,7 @@ def _check_hook_contract_lock(
         "claudecode",
         "copilot",
         "geminicli",
+        "windsurf",
     }:
         native_runtime = _windows_native_hook_check(
             cfg,

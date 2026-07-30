@@ -43,7 +43,7 @@ func TestHookOnlyConnector_CapabilityMatrix(t *testing.T) {
 	}{
 		{NewHermesConnector(), false, false, "user", "config.yaml"},
 		{NewCursorConnector(), true, true, "user", "hooks.json"},
-		{NewWindsurfConnector(), false, false, "user", "hooks.json"},
+		{NewWindsurfConnector(), false, true, "user", "hooks.json"},
 		{NewGeminiCLIConnector(), false, true, "user", "settings.json"},
 		{NewCopilotConnector(), true, false, "user,workspace", "defenseclaw.json"},
 		{NewOpenHandsConnector(), false, true, "user,workspace", "hooks.json"},
@@ -431,8 +431,8 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 			}
 			wantConfigNeedle := conn.scriptName
 			if runtime.GOOS == "windows" {
-				if conn.Name() == "cursor" {
-					wantConfigNeedle = "cursor-hook.ps1"
+				if conn.Name() == "cursor" || conn.Name() == "windsurf" {
+					wantConfigNeedle = conn.Name() + "-hook.ps1"
 				} else {
 					wantConfigNeedle = nativeHookFlag + conn.Name()
 				}

@@ -67,6 +67,38 @@ func TestBindConnectorLifecycleConfigHomeTargetsGeminiSettingsAndRestoresIt(t *t
 	}
 }
 
+func TestBindWindsurfLifecycleProfileOverridesAmbientAndRestoresIt(t *testing.T) {
+	root := t.TempDir()
+	ambient := filepath.Join(root, "ambient-profile")
+	bound := filepath.Join(root, "bound-profile")
+	for _, path := range []string{ambient, bound} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("USERPROFILE", ambient)
+	connectorFlagConfigHome = bound
+	t.Cleanup(func() { connectorFlagConfigHome = "" })
+
+	restore, err := bindConnectorLifecycleConfigHome("windsurf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBound := filepath.Join(bound, ".codeium", "windsurf", "hooks.json")
+	if got := connector.NewWindsurfConnector().Capabilities(
+		connector.SetupOpts{},
+	).Hooks.ConfigPath; filepath.Clean(got) != filepath.Clean(wantBound) {
+		t.Fatalf("bound Windsurf hooks path = %q, want %q", got, wantBound)
+	}
+	restore()
+	wantAmbient := filepath.Join(ambient, ".codeium", "windsurf", "hooks.json")
+	if got := connector.NewWindsurfConnector().Capabilities(
+		connector.SetupOpts{},
+	).Hooks.ConfigPath; filepath.Clean(got) != filepath.Clean(wantAmbient) {
+		t.Fatalf("restored Windsurf hooks path = %q, want ambient %q", got, wantAmbient)
+	}
+}
+
 func TestBindConnectorLifecycleConfigHomeRejectsUnsafeTargets(t *testing.T) {
 	root := t.TempDir()
 	unnormalized := root + string(filepath.Separator) + "child" + string(filepath.Separator) + ".." + string(filepath.Separator) + "codex"

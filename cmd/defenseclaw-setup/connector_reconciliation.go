@@ -101,7 +101,7 @@ func retryPendingConnectorReconciliation(
 		}
 		seen[identity] = true
 		connectorName := strings.ToLower(failure.Connector)
-		codexHome, claudeHome, copilotHome, geminiHome, cursorHome := "", "", "", "", ""
+		codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome := "", "", "", "", "", ""
 		if connectorName == "codex" {
 			codexHome = failure.ConfigHome
 		} else if connectorName == "claudecode" {
@@ -110,11 +110,13 @@ func retryPendingConnectorReconciliation(
 			copilotHome = failure.ConfigHome
 		} else if connectorName == "geminicli" {
 			geminiHome = failure.ConfigHome
-		} else {
+		} else if connectorName == "cursor" {
 			cursorHome = failure.ConfigHome
+		} else if connectorName == "windsurf" {
+			windsurfHome = failure.ConfigHome
 		}
 		env := transactionChildEnvForConnectorHomes(
-			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome,
+			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome,
 		)
 		verify := func() error {
 			return run(gatewayPath, transaction.DataRoot, connectorName, "verify", env)
@@ -221,16 +223,22 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 			candidates = append(candidates, transaction.PreviousState.GeminiConfigDir)
 		case "cursor":
 			candidates = append(candidates, transaction.PreviousState.CursorHome)
+		case "windsurf":
+			candidates = append(candidates, transaction.PreviousState.WindsurfUserHome)
 		}
 	}
 	candidates = append(candidates, connectorConfigHome(transaction, connectorName, false))
-	if !connectorManagedBackupExists(transaction.DataRoot, connectorName) {
+	if connectorName != "windsurf" &&
+		!connectorManagedBackupExists(transaction.DataRoot, connectorName) {
 		// A predecessor or concurrent reconcile can discard its exact managed
 		// backup after detecting config drift while retaining the field-level
 		// cleanup authority. Installer state from a pre-home-binding release can
 		// then name only a stale override. The native data root is already bound
 		// to %USERPROFILE%\.defenseclaw, so its finite sibling is the only safe
-		// default-home fallback. Verification runs before any mutation, and the
+		// default-home fallback. Windsurf is deliberately excluded: it has no
+		// vendor home override and maintenance may target only the profile root
+		// captured in installer state or managed backup, never an inferred
+		// ambient profile. Verification runs before any mutation, and the
 		// lifecycle command still rejects reparse points and unsafe ownership.
 		candidates = append(candidates, connectorDefaultHomeBesideDataRoot(
 			transaction.DataRoot,
@@ -267,11 +275,12 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		logicalName = "config.toml"
 	case "claudecode":
 		logicalName = "settings.json"
-	case "copilot":
-	case "geminicli":
+	case "copilot", "geminicli":
 		logicalName = "config"
 	case "cursor":
 		logicalName = "hooks.json"
+	case "windsurf":
+		logicalName = "config"
 	default:
 		return false
 	}
@@ -308,6 +317,7 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 	copilotHome := transaction.PreviousCopilotHome
 	geminiHome := transaction.PreviousGeminiConfigDir
 	cursorHome := transaction.PreviousCursorHome
+	windsurfHome := transaction.PreviousWindsurfUserHome
 	if connectorName == "codex" {
 		codexHome = configHome
 	} else if connectorName == "claudecode" {
@@ -318,9 +328,11 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		geminiHome = configHome
 	} else if connectorName == "cursor" {
 		cursorHome = configHome
+	} else if connectorName == "windsurf" {
+		windsurfHome = configHome
 	}
 	return transactionChildEnvForConnectorHomes(
-		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome,
+		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome,
 	)
 }
 
@@ -503,7 +515,7 @@ func validateConnectorReconciliationState(state *connectorReconciliationState) e
 func validateConnectorReconciliationIdentity(connectorName, configHome string) error {
 	if connectorName != "codex" && connectorName != "claudecode" &&
 		connectorName != "copilot" && connectorName != "geminicli" &&
-		connectorName != "cursor" {
+		connectorName != "cursor" && connectorName != "windsurf" {
 		return fmt.Errorf("invalid connector reconciliation target %q", connectorName)
 	}
 	if configHome == "" || !filepath.IsAbs(configHome) || filepath.Clean(configHome) != configHome {
@@ -581,6 +593,11 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousCursorHome
 		}
 		return transaction.CursorHome
+	case "windsurf":
+		if previous {
+			return transaction.PreviousWindsurfUserHome
+		}
+		return transaction.WindsurfUserHome
 	default:
 		return ""
 	}

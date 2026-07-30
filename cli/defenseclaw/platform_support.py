@@ -80,8 +80,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "Cursor Agent and the DefenseClaw PowerShell hook adapter are available as a native Windows x64 preview pending integrated packaged and official-client validation.",
     ),
     "windsurf": ConnectorPlatformSupport(
-        NOT_CERTIFIED,
-        "The DefenseClaw Windsurf integration has not completed native Windows x64 certification.",
+        PREVIEW,
+        "Windsurf Cascade hooks and the native PowerShell adapter are implemented; "
+        "packaged and official-client Windows x64 certification is pending.",
     ),
     "geminicli": ConnectorPlatformSupport(
         NOT_CERTIFIED,

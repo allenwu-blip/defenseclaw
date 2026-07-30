@@ -47,6 +47,16 @@ def test_ai_signature_catalog_contains_supported_and_shadow_agents():
         assert expected in ids
 
 
+def test_windsurf_signature_tracks_official_devin_desktop_rename():
+    signatures = {sig.id: sig for sig in load_ai_signatures()}
+    windsurf = signatures["windsurf"]
+
+    assert {"devin-desktop", "windsurf"} <= set(windsurf.binary_names)
+    assert {"Devin Desktop", "Windsurf"} <= set(windsurf.process_names)
+    assert "Devin Desktop" in windsurf.application_names
+    assert "devin.ai" in windsurf.domain_patterns
+
+
 def test_lemonade_signature_tracks_server_surface():
     signatures = {sig.id: sig for sig in load_ai_signatures()}
     lemonade = signatures["lemonade"]

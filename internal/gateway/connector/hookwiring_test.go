@@ -464,6 +464,9 @@ func TestWindowsHookContractLockIncludesNativeLauncherDigest(t *testing.T) {
 // path; Windows Cursor uses the PowerShell object-pipeline adapter, Copilot
 // receives a synchronous program in its native powershell field, and other
 // connectors invoke the native Go `hook` subcommand directly.
+// path; Windows Cursor and Windsurf use PowerShell adapters while other
+// connectors invoke the native Go `hook` subcommand directly. PowerShell
+// shell-string connectors include its call operator.
 func TestHookInvocationCommand(t *testing.T) {
 	const unix = "/home/u/.defenseclaw/hooks/codex-hook.sh"
 	const windowsExe = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
@@ -491,6 +494,16 @@ func TestHookInvocationCommand(t *testing.T) {
 	}
 	if isNativeHookCommand(unix) {
 		t.Errorf("isNativeHookCommand(%q) = true, want false for a .sh path", unix)
+	}
+
+	windsurf := hookInvocationCommandFor("windows", "windsurf", unix)
+	wantWindsurf := "& " + powershellQuoteLiteral(strings.TrimSuffix(unix, ".sh")+".ps1")
+	if windsurf != wantWindsurf {
+		t.Errorf("windsurf command = %q, want %q", windsurf, wantWindsurf)
+	}
+	if strings.Contains(windsurf, "bash") || strings.Contains(windsurf, "wsl") ||
+		strings.Contains(windsurf, nativeHookFlag) {
+		t.Errorf("windsurf command bypasses its documented PowerShell adapter: %q", windsurf)
 	}
 
 	// Codex passes this string to cmd.exe /C as one argument. The outer command

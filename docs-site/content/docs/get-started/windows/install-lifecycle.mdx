@@ -141,6 +141,7 @@ Public Setup properties are:
 | UI | interactive or `/quiet` (`/qn` alias); `/norestart` is accepted |
 | Scope | `INSTALLSCOPE=user` only |
 | Connector | `CONNECTOR=codex`, `claudecode`, `cursor` (preview), or `none` |
+| Connector | `CONNECTOR=codex`, `claudecode`, `windsurf` (preview), or `none` |
 | Policy mode | `MODE=observe` or `action` |
 | Gateway | `STARTGATEWAY=1` or `0`, subject to the connector rule above |
 | User data on uninstall | `DELETEUSERDATA=0` (default) or `1` |
@@ -166,6 +167,15 @@ defenseclaw setup cursor --mode observe
 
 One local gateway can host all three. Add connectors without removing the
 existing roster:
+For the not-yet-certified Windsurf preview:
+
+```powershell
+defenseclaw setup windsurf --mode observe
+defenseclaw doctor
+```
+
+One local gateway can host both. Add the second connector without removing the
+first:
 
 ```powershell
 defenseclaw setup `
@@ -183,6 +193,11 @@ recorded homes instead of following later profile or environment drift. Cursor
 does not publish a configuration-home environment variable; the installer
 records its exact `%USERPROFILE%\.cursor` path internally. The packaged data
 root itself is fixed to the current Windows profile; see
+Setup records validated `CODEX_HOME` and `CLAUDE_CONFIG_DIR` values when they
+are used. For Windsurf it records the exact Windows Profile Known Folder; no
+vendor home override exists. Repair and upgrade preserve those recorded homes
+instead of following later environment drift. The packaged data root itself is
+fixed to the current Windows profile; see
 [Path and override rules](/docs/get-started/windows/paths-troubleshooting#supported-path-overrides).
 
 ## Startup behavior

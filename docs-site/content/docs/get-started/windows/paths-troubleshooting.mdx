@@ -44,6 +44,7 @@ intact when diagnosing a problem.
 | `%CODEX_HOME%\config.toml` | Codex user config plus DefenseClaw-marked OTLP/notify fields. | Other Codex settings are user-owned; use DefenseClaw teardown to remove managed fields. |
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
+| `%USERPROFILE%\.codeium\windsurf\hooks.json` | Windsurf user hook configuration. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
 
 The installer records the exact connector homes and uses them for later repair,
 upgrade, and cleanup. Connector configuration backups are ownership records,
@@ -79,6 +80,13 @@ set "CLAUDE_CONFIG_DIR=D:\Agent Profiles\Claude"
 Changing an environment value after installation does not authorize lifecycle
 commands to abandon the recorded home. Re-run supported connector setup or
 repair deliberately; do not move the directory and edit installer state.
+
+Windsurf has no supported user-home override. Setup resolves the signed-in
+user's Windows Profile Known Folder, validates it, and persists that exact
+profile-root binding. Repair, upgrade, reconciliation, and uninstall use only
+the persisted binding or the exact target in DefenseClaw's managed backup.
+They do not inherit a maintenance process's `USERPROFILE`, infer a profile
+from the data directory, or scan other users' `.codeium` trees.
 
 The generic runtime recognizes `DEFENSECLAW_HOME`, but the native packaged
 Setup, launchers, logon helper, repair, and upgrade lifecycle deliberately pin
@@ -288,6 +296,9 @@ Complete this without real secrets or destructive tools:
   not a stale checkout or copied binary.
 - Confirm Codex, Claude Code, and Cursor have loaded their configuration, then
   repeat the harmless per-connector event check above.
+- Restart Codex and Claude Code, then repeat the harmless per-connector event
+  check above. For the Windsurf preview, use an interactive native Windows
+  desktop session; a CLI, WSL, or shell substitute is not valid evidence.
 - Verify optional destinations with `defenseclaw observability plan` and the
   destination-specific test command. A destination failure does not erase the
   mandatory local audit, but it must be treated as degraded delivery.

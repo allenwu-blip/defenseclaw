@@ -464,12 +464,14 @@ var builtinHookContracts = map[string][]HookContract{
 			CanBlock:           true,
 			CanAskNative:       false,
 			BlockEvents:        []string{"pre_user_prompt", "pre_read_code", "pre_write_code", "pre_run_command", "pre_mcp_tool_use"},
-			SupportsFailClosed: false,
+			SupportsFailClosed: true,
 			Scope:              "user",
 		},
 		SupportsTraceparent: true,
 		Notes: []string{
 			"Windsurf 1.12.41 added Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
+			"Only the five pre_* events are blocking, and Windsurf treats exit code 2 as the blocking decision; other non-zero exit codes continue.",
+			"Post hooks do not block Cascade, post_cascade_response hooks run asynchronously, and Restricted Mode disables hooks.",
 		},
 	}},
 	"geminicli": {{

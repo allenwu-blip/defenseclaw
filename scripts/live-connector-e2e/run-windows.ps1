@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -50,8 +50,14 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$ConnectorName
 ) {
+    if ($ConnectorName -eq 'windsurf') {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+            throw 'USERPROFILE is unavailable for the Windsurf profile-root binding'
+        }
+        return [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+    }
     $environmentName = switch ($ConnectorName) {
         'codex' { 'CODEX_HOME' }
         'claudecode' { 'CLAUDE_CONFIG_DIR' }
@@ -80,8 +86,11 @@ function Resolve-EffectiveConnectorHome(
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$ConnectorName
 ) {
+    if ($ConnectorName -eq 'windsurf') {
+        return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) '.codeium\windsurf\hooks.json'
+    }
     $fileName = switch ($ConnectorName) {
         'codex' { 'managed_config.toml' }
         'claudecode' { 'settings.json' }
@@ -917,6 +926,7 @@ function Invoke-Setup([string]$Mode) {
         'claudecode' { 'claude-code' }
         'geminicli' { 'geminicli' }
         'cursor' { 'cursor' }
+        'windsurf' { 'windsurf' }
     }
     Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
     Wait-Gateway
@@ -929,6 +939,7 @@ function Get-ConnectorHookLabel {
         'copilot' { 'Copilot hooks' }
         'geminicli' { 'Gemini CLI hooks' }
         'cursor' { 'Cursor hooks' }
+        'windsurf' { 'Windsurf hooks' }
     }
 }
 
@@ -939,6 +950,7 @@ function Get-ConnectorRepairSubcommand {
         'copilot' { 'copilot' }
         'geminicli' { 'geminicli' }
         'cursor' { 'cursor' }
+        'windsurf' { 'windsurf' }
     }
 }
 
@@ -948,6 +960,7 @@ function Get-ConnectorToolName {
         'copilot' { 'powershell' }
         'geminicli' { 'RunShellCommand' }
         'cursor' { 'shell' }
+        'windsurf' { 'powershell' }
         default { 'shell' }
     }
 }
@@ -1104,6 +1117,8 @@ function Assert-DoctorHookRegistration {
     if ($rows[0].status -ne 'pass') { throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)" }
     $expectedHookExecutable = if ($Connector -eq 'cursor') {
         Join-Path $env:DEFENSECLAW_HOME 'hooks\cursor-hook.ps1'
+    } elseif ($Connector -eq 'windsurf') {
+        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
     } else {
         Get-StableHookRuntimeExecutable
     }
@@ -1127,6 +1142,11 @@ function Assert-DoctorHookRegistration {
         if (-not [string]::Equals($adapter, $expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase)) {
             throw "setup-created Cursor registration uses unexpected adapter: $adapter"
         }
+    } elseif ($Connector -eq 'windsurf') {
+        if ($registration -notmatch '(?i)"powershell"\s*:\s*"[^"]*windsurf-hook\.ps1"' -or
+            $registration -match '(?i)"command"\s*:\s*"[^"]*windsurf-hook') {
+            throw 'setup-created Windsurf registration is not powershell-only'
+        }
     } elseif ($registration -notmatch '(?i)defenseclaw-hook(?:\.exe|\.cmd)') {
         throw "setup-created $Connector registration does not use a native DefenseClaw hook launcher"
     }
@@ -1148,6 +1168,7 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\geminicli'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\cursor'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\windsurf'),
         (Join-Path $env:DEFENSECLAW_HOME 'hooks')
     )
     foreach ($directory in $privateDirectories) { Protect-TestDirectory $directory }
@@ -1461,6 +1482,38 @@ function Assert-DoctorWindowsHookRegistration {
     } elseif ($Connector -eq 'codex') {
         $codexCommand = Get-CodexWindowsHookCommand $config
         Assert-CodexSynchronousWindowsHookCommand $codexCommand "$Connector setup"
+    } elseif ($Connector -eq 'windsurf') {
+        try { $settings = $config | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "Windsurf hook config is not valid JSON: $($_.Exception.Message)" }
+        $expectedEvents = @(
+            'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
+            'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
+            'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
+            'post_setup_worktree'
+        )
+        if ($null -eq $settings.hooks) { throw 'Windsurf setup did not create a hooks object' }
+        $actualEvents = @($settings.hooks.PSObject.Properties.Name)
+        $actualEventKey = (@($actualEvents | Sort-Object) -join "`0")
+        $expectedEventKey = (@($expectedEvents | Sort-Object) -join "`0")
+        if ($actualEventKey -cne $expectedEventKey) {
+            throw "Windsurf setup registered an unexpected event matrix: $($actualEvents -join ', ')"
+        }
+        foreach ($eventName in $expectedEvents) {
+            $handlers = @($settings.hooks.$eventName)
+            $managed = @(
+                $handlers |
+                    Where-Object { [string]$_.powershell -match '(?i)windsurf-hook\.ps1' }
+            )
+            if ($managed.Count -ne 1) {
+                throw "Windsurf setup registered $($managed.Count) managed PowerShell handlers for $eventName, expected one"
+            }
+            if ($null -ne $managed[0].PSObject.Properties['command']) {
+                throw "Windsurf setup registered a command fallback for $eventName"
+            }
+            if ($managed[0].show_output -ne $true) {
+                throw "Windsurf setup did not enable show_output for $eventName"
+            }
+        }
     } else {
         Assert-CopilotSynchronousWindowsHookConfig $config "$Connector setup"
     }
@@ -1473,14 +1526,21 @@ function Assert-DoctorWindowsHookRegistration {
     $expectedHealthyDetail = switch ($Connector) {
         'copilot' { 'healthy Windows-native Copilot PowerShell registration' }
         'cursor' { 'configured runtime=' }
+        'windsurf' { 'healthy Windows-native PowerShell registration' }
         default { 'healthy Windows-native executable registration' }
     }
     if ($check.status -ne 'pass' -or
         $check.detail -notmatch [regex]::Escape($expectedHealthyDetail)) {
         throw "Doctor did not validate the registered $Connector Windows hook: $($check.status) $($check.detail)"
     }
-    $hookExecutable = if ($Connector -eq 'cursor') { $cursorAdapter } else { Get-StableHookRuntimeExecutable }
-    if ($check.detail.IndexOf($hookExecutable, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+    $hookTarget = if ($Connector -eq 'cursor') {
+        $cursorAdapter
+    } elseif ($Connector -eq 'windsurf') {
+        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
+    } else {
+        Get-StableHookRuntimeExecutable
+    }
+    if ($check.detail.IndexOf($hookTarget, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "Doctor validated an unexpected hook target: $($check.detail)"
     }
     if ($Connector -eq 'cursor' -and
@@ -1490,7 +1550,7 @@ function Assert-DoctorWindowsHookRegistration {
     if ($check.detail -match '(?i)\x2esh\b|\bbash\b|\bwsl\b|\bchmod\b|\bunset\b|hook script') {
         throw "Doctor returned obsolete shell-hook guidance for native Windows: $($check.detail)"
     }
-    Write-Result 'doctor:windows-hook-registration' pass "label=$label target=$hookExecutable obsolete-shell-guidance=absent"
+    Write-Result 'doctor:windows-hook-registration' pass "label=$label target=$hookTarget obsolete-shell-guidance=absent"
 
     # Pause the isolated gateway's connector self-heal while the registration
     # is deliberately corrupted. Otherwise it can repair the fixture before
@@ -1512,6 +1572,12 @@ function Assert-DoctorWindowsHookRegistration {
             }
         }
         $tamperedConfig = $cursorSettings | ConvertTo-Json -Depth 12
+    } elseif ($Connector -eq 'windsurf') {
+        $tamperedConfig = [regex]::Replace(
+            $config,
+            '(?i)windsurf-hook\.ps1',
+            'windsurf-hook-tampered.ps1'
+        )
     } else {
         $tamperedConfig = [regex]::Replace($config, '(?i)defenseclaw-hook\.exe', 'defenseclaw-gateway.exe')
     }
@@ -1532,6 +1598,7 @@ function Assert-DoctorWindowsHookRegistration {
             'copilot' { 'not the DefenseClaw hook launcher' }
             'geminicli' { 'cannot be resolved' }
             'cursor' { 'configured Cursor hook runtime is missing' }
+            'windsurf' { 'cannot be resolved' }
         }
         if ($tamperedCheck.status -ne 'fail' -or
             $tamperedCheck.detail -notmatch [regex]::Escape($expectedTamperDetail)) {
@@ -1590,6 +1657,12 @@ function Assert-NativeEnterpriseHooksRequireElevation {
 }
 
 function Install-Agent {
+    if ($Connector -eq 'windsurf') {
+        throw (
+            'Windsurf official-client E2E requires an interactive native Windows ' +
+            'Desktop runner; this deterministic harness does not substitute a CLI, WSL, or shell workaround.'
+        )
+    }
     if ($ReleaseCertification) {
         if ([string]::IsNullOrWhiteSpace($AgentPath) -or
             [string]::IsNullOrWhiteSpace($ExpectedAgentVersion)) {

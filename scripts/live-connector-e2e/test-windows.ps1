@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Cisco Systems, Inc. and its affiliates
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
 [CmdletBinding()]
@@ -817,7 +817,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Add-WindowsNativeDiagnosticTail\b.*?(?=\r?\nfunction )'
     ).Value
-    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, cursor\].*?windows-native-required:') 'required Windows contract matrix contains Codex, Claude, and Cursor'
+    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, copilot, geminicli, cursor, windsurf\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native connector'
     Assert-True ($nativeWorkflowText -match '(?m)^\s+name: Windows Native Required\s*$') 'stable aggregate check name exists'
     foreach ($job in @('windows-go', 'windows-python', 'powershell-static', 'package-artifact', 'packaged-acceptance', 'connector-contract')) {
         Assert-True ($nativeWorkflowText -match "(?m)^\s{6}- $([regex]::Escape($job))\s*$") "aggregate depends on $job"
@@ -964,7 +964,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($wizardHarnessText -match "Get-WizardControl \`$window 1 'primary action'" -and
         $wizardHarnessText -match "Send-WizardCommand \`$window 2 'Cancel'") `
         'wizard automation uses standard Win32 IDOK and IDCANCEL semantics'
-    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.2\)' -and
+    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.3\)' -and
         $wizardHarnessText -match 'foreach \(\$index in 0\.\.1\)' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$false' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$true') `
@@ -974,8 +974,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $wizardHarnessText -match "Send-WizardCommand \`$window 1 'Finish'") `
         'wizard automation activates Install and verifies the completion page before Finish'
     Assert-True ($nativeHarnessText -match "Invoke-WizardConfigureLaterAcceptance" -and
-        $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'") `
-        'setup acceptance performs Configure Later, Codex Observe, and Claude Code Action wizard installs'
+        $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'.*?Invoke-WizardConnectorAcceptance.*?'windsurf' 'observe'") `
+        'setup acceptance performs Configure Later, Codex Observe, Claude Code Action, and preview Windsurf Observe wizard installs'
     $wizardInstall = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WizardInstall\b.*?(?=\r?\nfunction )'

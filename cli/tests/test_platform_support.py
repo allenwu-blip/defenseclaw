@@ -63,8 +63,8 @@ from defenseclaw.tui.services.cli_choices import (
 from tests.helpers import cleanup_app, make_app_context
 
 WINDOWS_SUPPORTED = {"codex", "claudecode"}
-WINDOWS_PREVIEW: set[str] = {"cursor"}
-WINDOWS_NOT_CERTIFIED = {"windsurf", "geminicli", "copilot", "antigravity", "opencode", "hermes"}
+WINDOWS_PREVIEW: set[str] = {"cursor", "windsurf"}
+WINDOWS_NOT_CERTIFIED = {"geminicli", "copilot", "antigravity", "opencode", "hermes"}
 WINDOWS_UNSUPPORTED = {"openhands", "omnigent", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
@@ -271,8 +271,13 @@ def test_windows_views_include_labeled_preview_and_hide_unavailable() -> None:
 
     win_modes = visible_mode_picker_choices("windows")
     assert {choice.wire for choice in win_modes} == expected
-    cursor = next(choice for choice in win_modes if choice.wire == "cursor")
-    assert "preview" in cursor.label.lower()
+    labels = {choice.wire: choice.label.lower() for choice in win_modes}
+    assert all("preview" in labels[connector] for connector in WINDOWS_PREVIEW)
+    assert all(
+        "preview" not in label
+        for connector, label in labels.items()
+        if connector not in WINDOWS_PREVIEW
+    )
 
 
 def test_non_windows_views_are_unfiltered() -> None:

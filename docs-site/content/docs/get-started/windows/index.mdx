@@ -14,6 +14,8 @@ local gateway, native hook launcher, CLI, TUI, scanners, and managed Python
 runtime. The certified connector scope is deliberately narrow: **Codex** and
 **Claude Code**. **Cursor** is available as a preview while packaged and
 official-client validation remains pending.
+**Claude Code**. **Windsurf** is available as a preview implementation pending
+the packaged and interactive official-client certification gates.
 
 <Callout type="warning" title="WSL is not supported">
 This guide is for DefenseClaw, the agent, and its configuration running in the
@@ -50,6 +52,18 @@ through its documented hook and native telemetry surfaces.
 <Cards>
   <Card title="Install and maintain" href="/docs/get-started/windows/install-lifecycle" description="Requirements, signed Setup, repair, upgrade qualification, recovery, and uninstall." />
   <Card title="Connectors and enforcement" href="/docs/get-started/windows/connectors-enforcement" description="Exact Codex, Claude Code, and Cursor preview events, observe/action behavior, fail modes, and enable/disable controls." />
+| Windsurf | `windsurf` | **Preview** | Native PowerShell hook adapter to the loopback gateway; packaged and official-client certification pending. |
+| Cursor, Gemini CLI, Copilot CLI, Antigravity, OpenCode, Hermes | — | **Not certified** | Their setup code is not a Windows support commitment. |
+| OpenHands, OmniGent, OpenClaw, ZeptoClaw | — | **Unsupported** | Their required sandbox, terminal, or proxy topology is not hosted by native Windows DefenseClaw. |
+
+The supported and preview connectors remain connected directly to their normal upstream
+service. DefenseClaw does **not** insert a model proxy on Windows. It can only
+protect and observe events the installed agent emits through its documented
+hook and native telemetry surfaces.
+
+<Cards>
+  <Card title="Install and maintain" href="/docs/get-started/windows/install-lifecycle" description="Requirements, signed Setup, repair, upgrade qualification, recovery, and uninstall." />
+  <Card title="Connectors and enforcement" href="/docs/get-started/windows/connectors-enforcement" description="Exact Codex, Claude Code, and Windsurf events, observe/action behavior, fail modes, and enable/disable controls." />
   <Card title="Capabilities and commands" href="/docs/get-started/windows/capabilities-commands" description="Windows-specific capability and complete public command-family matrices." />
   <Card title="Telemetry and security" href="/docs/get-started/windows/telemetry-security" description="Native OTLP, local audit, scoped credentials, loopback boundaries, signing, and recovery guarantees." />
   <Card title="Paths and troubleshooting" href="/docs/get-started/windows/paths-troubleshooting" description="Filesystem reference, safe diagnostics, terminal guidance, and verification checklists." />
@@ -61,8 +75,9 @@ The normal installation is one current-user application:
 
 1. `DefenseClawSetup-x64.exe` installs product-owned files and an embedded
    runtime below the current user's Programs directory.
-2. Connector setup registers `defenseclaw-hook.exe` in the selected agent's
-   user-level configuration.
+2. Connector setup registers `defenseclaw-hook.exe` directly for Codex and
+   Claude Code. Windsurf receives a generated native PowerShell adapter that
+   synchronously launches that exact packaged executable.
 3. The hook sends supported lifecycle events to an authenticated gateway API
    on loopback. Action mode can return a decision only where that agent event
    supports one.
@@ -104,6 +119,10 @@ Cursor Agent natively for the same Windows user, then run native connector
 setup. Do not copy a WSL data directory, hook scripts, tokens, virtual
 environment, gateway binary, or connector configuration into the Windows
 profile.
+From WSL, perform a fresh native install. Install Codex, Claude Code, or
+Windsurf natively for the same Windows user, then run native connector setup.
+Do not copy a WSL data directory, hook scripts, tokens, virtual environment,
+gateway binary, or connector configuration into the Windows profile.
 
 Continue with [Install and maintain](/docs/get-started/windows/install-lifecycle),
 then use the [post-install checklist](/docs/get-started/windows/paths-troubleshooting#post-install-checklist).

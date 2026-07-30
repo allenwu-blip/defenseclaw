@@ -52,7 +52,7 @@ type templateData struct {
 	ScopedToken   bool
 	ConnectorName string
 	HookBinaryPS  string // absolute launcher path, escaped for a PowerShell single-quoted literal
-	HookTimeoutMS int    // Cursor adapter child timeout; zero for templates that do not use it
+	HookTimeoutMS int    // Native PowerShell adapter child timeout; zero for templates that do not use it
 }
 
 // defaultHookFailMode is injected into every hook when the caller does not
@@ -68,11 +68,11 @@ type templateData struct {
 // persists to guardrail.hook_fail_mode in config.yaml).
 const defaultHookFailMode = "closed"
 
-// cursorAdapterTimeoutMS stays inside Cursor's configured 30-second
-// command-hook timeout. Keeping the child bound shorter than the vendor
-// timeout gives the adapter time to terminate the launcher, remove the
-// temporary payload, and emit the configured fail-open/fail-closed response.
-const cursorAdapterTimeoutMS = 10_000
+// windowsHookAdapterTimeoutMS matches the existing 10-second connector hook
+// request budget and stays inside Cursor's configured 30-second command-hook
+// timeout. Keeping adapters bounded lets them terminate a stuck launcher and
+// return the selected availability posture to the host.
+const windowsHookAdapterTimeoutMS = 10_000
 
 // normalizeHookFailMode coerces a caller-supplied string to one of
 // the two values the hook scripts understand. Anything other than
@@ -469,7 +469,7 @@ func writeHookScriptsCommonWithOptions(hookDir, apiAddr, token, failMode string,
 		ScopedToken:   scopedToken,
 		ConnectorName: strings.ToLower(strings.TrimSpace(connectorName)),
 		HookBinaryPS:  strings.ReplaceAll(defenseclawHookBinary(), "'", "''"),
-		HookTimeoutMS: cursorAdapterTimeoutMS,
+		HookTimeoutMS: windowsHookAdapterTimeoutMS,
 	}
 	// The inspect-* family has one physical copy per data directory.  Its
 	// bytes must therefore depend only on install-wide inputs; connector mode,
@@ -1137,6 +1137,29 @@ func writeDisabledHookTombstone(opts SetupOpts, scriptName, vendorLabel string) 
 		"# " + vendorLabel + " connector was torn down. Existing host processes may\n" +
 		"# keep this hook path cached until restart, so exit successfully\n" +
 		"# without forwarding stale payloads.\n" +
+		"exit 0\n"
+	return atomicWriteFile(filepath.Join(hookDir, scriptName), []byte(body), 0o700)
+}
+
+// writeDisabledPowerShellHookTombstone is the native Windows equivalent used
+// by connector adapters cached by long-running desktop hosts. It emits no
+// protocol output and succeeds, so teardown cannot leave a stale adapter
+// forwarding payloads to a connector that is no longer active.
+func writeDisabledPowerShellHookTombstone(opts SetupOpts, scriptName, vendorLabel string) error {
+	if strings.TrimSpace(scriptName) == "" {
+		return fmt.Errorf("PowerShell tombstone: empty scriptName")
+	}
+	hookDir := filepath.Join(opts.DataDir, "hooks")
+	if err := os.MkdirAll(hookDir, 0o700); err != nil {
+		return fmt.Errorf("ensure hook dir: %w", err)
+	}
+	if vendorLabel == "" {
+		vendorLabel = "DefenseClaw connector"
+	}
+	body := "# DefenseClaw native Windows hook adapter\n" +
+		"# defenseclaw-managed-hook v0 (disabled tombstone)\n" +
+		"# " + vendorLabel + " connector was torn down; cached host processes\n" +
+		"# must succeed without forwarding stale payloads.\n" +
 		"exit 0\n"
 	return atomicWriteFile(filepath.Join(hookDir, scriptName), []byte(body), 0o700)
 }

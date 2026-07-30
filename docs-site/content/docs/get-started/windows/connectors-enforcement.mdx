@@ -5,6 +5,11 @@ keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
   - DefenseClaw Windows Gemini CLI
+description: Exact native Windows Codex, Claude Code, and Windsurf hook coverage, action boundaries, fail modes, and runtime controls.
+keywords:
+  - DefenseClaw Windows Codex
+  - DefenseClaw Windows Claude Code
+  - DefenseClaw Windows Windsurf
   - DefenseClaw Windows action mode
   - DefenseClaw Windows fail closed
   - DefenseClaw Windows hooks
@@ -32,6 +37,10 @@ certification passes. Native Setup exposes only a clearly labeled
 certification-pending lifecycle choice; runtime activation remains
 platform-gated. WSL, Docker, VMs, Git Bash, Cygwin, and MSYS are not
 substitutes.
+DefenseClaw does not proxy Codex, Claude Code, or Windsurf model traffic on Windows. A
+prompt, tool, subprocess, file change, or response that the agent does not emit
+through a registered hook or native telemetry surface is not silently
+intercepted by DefenseClaw.
 </Callout>
 
 ## Observe and action
@@ -47,6 +56,7 @@ Start with observe:
 defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
+defenseclaw setup windsurf --mode observe
 ```
 
 After reviewing the event inventory and policy, promote one connector at a
@@ -56,6 +66,7 @@ time:
 defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
 defenseclaw setup cursor --mode action
+defenseclaw setup windsurf --mode action
 defenseclaw guardrail status
 ```
 
@@ -189,6 +200,41 @@ writes `failClosed: false`. An explicit closed failure policy writes
 and exit code `2` as a deny path. This is a connector-specific exception to the
 fresh-install default described below. Cursor remains preview-only until its
 packaged Setup and official-client Windows validation passes.
+## Windsurf
+
+DefenseClaw binds Windsurf to the signed-in user's Windows Profile Known
+Folder and manages only
+`<bound-profile>\.codeium\windsurf\hooks.json`. The binding is persisted for
+repair, upgrade, reconciliation, and uninstall; maintenance never guesses from
+an ambient `USERPROFILE`. Existing top-level values, events, and foreign hook
+handlers are preserved.
+
+Windsurf's documented Windows transport runs a hook's `powershell` field via
+`powershell -Command`. DefenseClaw writes no `command` fallback. Its generated
+`windsurf-hook.ps1` adapter uses only native Windows processes, forwards the
+vendor JSON stdin and child stdout/stderr, waits for the exact packaged
+`defenseclaw-hook.exe`, and returns the child status unchanged. There is no
+Bash, Git Bash, Cygwin/MSYS, WSL, Docker, VM, or PATH-resolved executable in
+this path.
+
+The registration covers all twelve documented Cascade events:
+
+| Role | Events |
+| --- | --- |
+| Blocking pre-hooks | `pre_user_prompt`, `pre_read_code`, `pre_write_code`, `pre_run_command`, `pre_mcp_tool_use` |
+| Non-blocking post-hooks | `post_read_code`, `post_write_code`, `post_run_command`, `post_mcp_tool_use`, `post_setup_worktree` |
+| Asynchronous response hooks | `post_cascade_response`, `post_cascade_response_with_transcript` |
+
+Windsurf's exit contract is exact: exit `0` proceeds, exit `2` blocks only the
+five pre-hooks and shows stderr to the agent, and every other exit proceeds.
+Post-hooks cannot block; the two Cascade response hooks run asynchronously.
+Restricted Mode disables hooks entirely, so DefenseClaw cannot claim
+enforcement while that workspace mode is active. `defenseclaw doctor` reports
+these boundaries with adapter/hash/registration drift.
+
+Windsurf has no native hook ask/HITL response. A `confirm` verdict uses the
+connector's configured immediate fallback and remains visible as `raw_action`
+in audit; it cannot be approved and resumed from the DefenseClaw TUI.
 
 ## Fail behavior
 
@@ -212,8 +258,15 @@ defenseclaw guardrail fail-mode
 defenseclaw guardrail fail-mode closed --connector codex --yes
 defenseclaw guardrail fail-mode closed --connector claudecode --yes
 defenseclaw guardrail fail-mode closed --connector cursor --yes
+defenseclaw guardrail fail-mode closed --connector windsurf --yes
 defenseclaw guardrail status
 ```
+
+For Windsurf, “closed” means DefenseClaw adapter availability or invalid
+response failures become the vendor's blocking exit `2`. It does not broaden
+Windsurf's semantics: arbitrary non-`2` hook errors still fail open, only the
+five documented pre-hooks can block, and Restricted Mode still disables all
+hooks.
 
 Changing fail mode normally restarts the gateway and reconciles the native
 runtime. `--no-restart` only persists desired state; the running connector can

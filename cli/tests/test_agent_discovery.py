@@ -59,6 +59,30 @@ def _pin_home(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
 
+def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(monkeypatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        ad,
+        "_windows_file_version_for_binary",
+        lambda path, **_kwargs: (calls.append(path) or "3.6.22", ""),
+    )
+    monkeypatch.setattr(
+        ad,
+        "_version_for_binary",
+        lambda *_args, **_kwargs: pytest.fail("GUI version discovery must not launch Devin Desktop"),
+    )
+
+    result = ad._version_for_agent_binary(
+        "windsurf",
+        r"C:\Users\tester\AppData\Local\Programs\Windsurf\bin\devin-desktop.exe",
+        ("--version",),
+    )
+
+    assert result == ("3.6.22", "")
+    assert calls == [r"C:\Users\tester\AppData\Local\Programs\Windsurf\bin\devin-desktop.exe"]
+
+
 @pytest.fixture
 def windows_host_no_path(monkeypatch) -> None:
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)

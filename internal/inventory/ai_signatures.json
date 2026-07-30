@@ -259,9 +259,12 @@
       "confidence": 0.95,
       "supported_connector": "windsurf",
       "binary_names": [
+        "devin-desktop",
         "windsurf"
       ],
       "process_names": [
+        "devin-desktop",
+        "Devin Desktop",
         "windsurf",
         "Windsurf"
       ],
@@ -286,6 +289,7 @@
         "CODEIUM_API_KEY"
       ],
       "domain_patterns": [
+        "devin.ai",
         "codeium.com",
         "windsurf.com"
       ],
@@ -294,6 +298,7 @@
         "codeium"
       ],
       "application_names": [
+        "Devin Desktop",
         "Windsurf.app",
         "Windsurf"
       ],

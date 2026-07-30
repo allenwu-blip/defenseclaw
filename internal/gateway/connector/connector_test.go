@@ -10334,8 +10334,10 @@ func TestOpenClaw_AgentPaths_Specifics(t *testing.T) {
 //   - zeptoclaw  owns no vendor template (config-only)
 func TestHookScriptOwner_BuiltinSurface(t *testing.T) {
 	cursorHooks := []string{"cursor-hook.sh"}
+	windsurfHooks := []string{"windsurf-hook.sh"}
 	if runtime.GOOS == "windows" {
 		cursorHooks = append(cursorHooks, "cursor-hook.ps1")
+		windsurfHooks = append(windsurfHooks, "windsurf-hook.ps1")
 	}
 	cases := []struct {
 		name string
@@ -10346,7 +10348,7 @@ func TestHookScriptOwner_BuiltinSurface(t *testing.T) {
 		{"codex", func() Connector { return NewCodexConnector() }, []string{"codex-hook.sh"}},
 		{"hermes", func() Connector { return NewHermesConnector() }, []string{"hermes-hook.sh"}},
 		{"cursor", func() Connector { return NewCursorConnector() }, cursorHooks},
-		{"windsurf", func() Connector { return NewWindsurfConnector() }, []string{"windsurf-hook.sh"}},
+		{"windsurf", func() Connector { return NewWindsurfConnector() }, windsurfHooks},
 		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []string{"geminicli-hook.sh"}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []string{"copilot-hook.sh"}},
 		{"openhands", func() Connector { return NewOpenHandsConnector() }, []string{"openhands-hook.sh"}},

@@ -158,13 +158,13 @@ func validateDeferredUninstallCleanupRecord(
 	if record.RunValueName != runValueName || record.RunCommand != runCommand {
 		return errors.New("deferred uninstall cleanup does not match the owned startup command")
 	}
-	if len(record.VerifiedConnectors) > 3 || !slices.IsSorted(record.VerifiedConnectors) {
+	if len(record.VerifiedConnectors) > 6 || !slices.IsSorted(record.VerifiedConnectors) {
 		return errors.New("deferred uninstall cleanup has an invalid verified connector set")
 	}
 	for index, connector := range record.VerifiedConnectors {
 		if connector != "claudecode" && connector != "codex" &&
 			connector != "copilot" && connector != "geminicli" &&
-			connector != "cursor" {
+			connector != "cursor" && connector != "windsurf" {
 			return fmt.Errorf("deferred uninstall cleanup has an invalid connector %q", connector)
 		}
 		if index > 0 && record.VerifiedConnectors[index-1] == connector {

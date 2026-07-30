@@ -232,11 +232,11 @@
           "pre_run_command",
           "pre_mcp_tool_use"
         ],
-        "supportsFailClosed": false,
+        "supportsFailClosed": true,
         "scope": "user"
       },
       "hilt": "Can block supported hook events but has no native human-approval surface; confirm verdicts fall back explicitly.",
-      "notes": "Cascade hooks under ~/.codeium/windsurf/hooks.json. Existing MCP/rules discovered, never auto-created."
+      "notes": "Cascade hooks under ~/.codeium/windsurf/hooks.json. DefenseClaw can map its configured availability failures to Windsurf's blocking exit 2 on the five documented pre-hooks; Windsurf itself fails open on other non-zero exits. Post hooks are non-blocking, Cascade response post hooks are asynchronous, and Restricted Mode disables hooks. Existing MCP/rules are discovered, never auto-created."
     },
     {
       "id": "zeptoclaw",

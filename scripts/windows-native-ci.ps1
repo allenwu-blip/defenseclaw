@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Cisco Systems, Inc. and its affiliates
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
 <#
@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -2546,92 +2546,60 @@ function Remove-WizardAgentFixtures([AllowNull()][object]$Fixtures) {
 }
 
 function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserProfile) {
-    if ($ConnectorName -eq 'codex') {
-        return [pscustomobject]@{
-            Connector = 'codex'
-            OtherConnectors = @('claudecode', 'copilot', 'geminicli', 'cursor')
+    $definitions = [ordered]@{
+        codex = @{
             HookScript = 'codex-hook.sh'
-            OtherHookScripts = @('claude-code-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.codex\managed_config.toml'
-            OtherConfigPaths = @(
-                (Join-Path $UserProfile '.claude\settings.json'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
-                (Join-Path $UserProfile '.gemini\settings.json'),
-                (Join-Path $UserProfile '.cursor\hooks.json')
-            )
             DoctorLabel = 'Codex hooks'
-            OtherDoctorLabels = @('Claude Code hooks', 'Copilot hooks', 'Gemini CLI hooks', 'Cursor hooks')
+            DoctorRuntimePattern = 'healthy Windows-native executable registration'
         }
-    }
-    if ($ConnectorName -eq 'claudecode') {
-        return [pscustomobject]@{
-            Connector = 'claudecode'
-            OtherConnectors = @('codex', 'copilot', 'geminicli', 'cursor')
+        claudecode = @{
             HookScript = 'claude-code-hook.sh'
-            OtherHookScripts = @('codex-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.claude\settings.json'
-            OtherConfigPaths = @(
-                (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
-                (Join-Path $UserProfile '.gemini\settings.json'),
-                (Join-Path $UserProfile '.cursor\hooks.json')
-            )
             DoctorLabel = 'Claude Code hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Copilot hooks', 'Gemini CLI hooks', 'Cursor hooks')
+            DoctorRuntimePattern = 'healthy Windows-native executable registration'
         }
-    }
-    if ($ConnectorName -eq 'copilot') {
-        return [pscustomobject]@{
-            Connector = 'copilot'
-            OtherConnectors = @('codex', 'claudecode', 'geminicli', 'cursor')
+        copilot = @{
             HookScript = 'copilot-hook.sh'
-            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'geminicli-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'
-            OtherConfigPaths = @(
-                (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.claude\settings.json'),
-                (Join-Path $UserProfile '.gemini\settings.json'),
-                (Join-Path $UserProfile '.cursor\hooks.json')
-            )
             DoctorLabel = 'Copilot hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Gemini CLI hooks', 'Cursor hooks')
+            DoctorRuntimePattern = 'healthy Windows-native Copilot PowerShell registration'
         }
-    }
-    if ($ConnectorName -eq 'geminicli') {
-        return [pscustomobject]@{
-            Connector = 'geminicli'
-            OtherConnectors = @('codex', 'claudecode', 'copilot', 'cursor')
+        geminicli = @{
             HookScript = 'geminicli-hook.sh'
-            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'copilot-hook.sh', 'cursor-hook.ps1')
             ConfigPath = Join-Path $UserProfile '.gemini\settings.json'
-            OtherConfigPaths = @(
-                (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.claude\settings.json'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
-                (Join-Path $UserProfile '.cursor\hooks.json')
-            )
             DoctorLabel = 'Gemini CLI hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Copilot hooks', 'Cursor hooks')
+            DoctorRuntimePattern = 'healthy Windows-native executable registration'
         }
-    }
-    if ($ConnectorName -eq 'cursor') {
-        return [pscustomobject]@{
-            Connector = 'cursor'
-            OtherConnectors = @('codex', 'claudecode', 'copilot', 'geminicli')
+        cursor = @{
             HookScript = 'cursor-hook.ps1'
-            OtherHookScripts = @('codex-hook.sh', 'claude-code-hook.sh', 'copilot-hook.sh', 'geminicli-hook.sh')
             ConfigPath = Join-Path $UserProfile '.cursor\hooks.json'
-            OtherConfigPaths = @(
-                (Join-Path $UserProfile '.codex\managed_config.toml'),
-                (Join-Path $UserProfile '.claude\settings.json'),
-                (Join-Path $UserProfile '.copilot\hooks\defenseclaw.json'),
-                (Join-Path $UserProfile '.gemini\settings.json')
-            )
             DoctorLabel = 'Cursor hooks'
-            OtherDoctorLabels = @('Codex hooks', 'Claude Code hooks', 'Copilot hooks', 'Gemini CLI hooks')
+            DoctorRuntimePattern = 'configured runtime=.*cursor-hook\.ps1.*failClosed='
+        }
+        windsurf = @{
+            HookScript = 'windsurf-hook.ps1'
+            ConfigPath = Join-Path $UserProfile '.codeium\windsurf\hooks.json'
+            DoctorLabel = 'Windsurf hooks'
+            DoctorRuntimePattern = 'healthy Windows-native PowerShell registration'
         }
     }
-    throw "unsupported wizard connector specification: $ConnectorName"
+    if (-not $definitions.Contains($ConnectorName)) {
+        throw "unsupported wizard connector specification: $ConnectorName"
+    }
+    $selected = $definitions[$ConnectorName]
+    $otherNames = @($definitions.Keys | Where-Object { $_ -cne $ConnectorName })
+    return [pscustomobject]@{
+        Connector = $ConnectorName
+        HookScript = [string]$selected.HookScript
+        OtherConnectors = $otherNames
+        OtherHookScripts = @($otherNames | ForEach-Object { [string]$definitions[$_].HookScript })
+        ConfigPath = [string]$selected.ConfigPath
+        OtherConfigPaths = @($otherNames | ForEach-Object { [string]$definitions[$_].ConfigPath })
+        DoctorLabel = [string]$selected.DoctorLabel
+        OtherDoctorLabels = @($otherNames | ForEach-Object { [string]$definitions[$_].DoctorLabel })
+        DoctorRuntimePattern = [string]$selected.DoctorRuntimePattern
+    }
 }
 
 function Assert-NoDefenseClawRegistration([string[]]$Paths) {
@@ -2675,6 +2643,9 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
                 'connector_backups\cursor\hooks.json.json'
             )
         }
+        'windsurf' {
+            @('connector_backups\windsurf\config.json')
+        }
         default { throw "unsupported native connector backup marker: $Connector" }
     }
     return @($relativePaths | Where-Object {
@@ -2688,7 +2659,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')) {
+        if ([string]$name -notin @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
@@ -2706,6 +2677,9 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
         @(Get-NativeConnectorBackupMarkers $DataRoot 'cursor').Count -ne 0) {
         $required += 'cursor'
     }
+    if (@(Get-NativeConnectorBackupMarkers $DataRoot 'windsurf').Count -ne 0) {
+        $required += 'windsurf'
+    }
     foreach ($connector in $required) {
         # Setup intentionally classifies uninstall work from the configured
         # roster as well as active state and backup markers. Exact connector
@@ -2716,11 +2690,15 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
             throw "native Setup acceptance lost $connector cleanup authority before uninstall"
         }
     }
+    if ($configured.Contains('windsurf') -and
+        @(Get-NativeConnectorBackupMarkers $DataRoot 'windsurf').Count -eq 0) {
+        throw 'native Setup acceptance lost windsurf cleanup authority before uninstall'
+    }
 }
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor')) {
+    foreach ($connector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -2918,6 +2896,16 @@ function Assert-SetupInstallState(
     $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$state.connector -ne $ConnectorName -or [string]$state.mode -ne $Mode) {
         throw "setup install state did not preserve wizard selections: connector=$($state.connector) mode=$($state.mode)"
+    }
+    if ($ConnectorName -eq 'windsurf') {
+        $expectedProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        if (-not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$state.windsurf_user_home),
+            [IO.Path]::GetFullPath($expectedProfile),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'setup install state did not preserve the explicit Windsurf profile binding'
+        }
     }
 }
 
@@ -3156,6 +3144,31 @@ function Assert-WizardHookRegistration(
                 throw "wizard-selected Cursor adapter is missing required marker $marker"
             }
         }
+    } elseif ($Specification.Connector -eq 'windsurf') {
+        try { $settings = $registration | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "wizard-selected Windsurf registration is not valid JSON: $($_.Exception.Message)" }
+        $expectedEvents = @(
+            'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
+            'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
+            'pre_user_prompt', 'post_cascade_response',
+            'post_cascade_response_with_transcript', 'post_setup_worktree'
+        )
+        $actualEvents = @($settings.hooks.PSObject.Properties.Name | Sort-Object)
+        if (($actualEvents -join "`n") -cne (@($expectedEvents | Sort-Object) -join "`n")) {
+            throw "wizard-selected Windsurf registration has an incomplete event matrix: $($actualEvents -join ', ')"
+        }
+        $expectedCommand = "& '" + $expectedHook.Replace("'", "''") + "'"
+        foreach ($event in $expectedEvents) {
+            $handlers = @($settings.hooks.PSObject.Properties[$event].Value)
+            $managedHandlers = @($handlers | Where-Object {
+                [string]$_.powershell -ceq $expectedCommand
+            })
+            if ($managedHandlers.Count -ne 1 -or
+                $managedHandlers[0].PSObject.Properties.Name -contains 'command' -or
+                [bool]$managedHandlers[0].show_output -ne $true) {
+                throw "wizard-selected Windsurf $event registration is not the exact PowerShell-only managed handler"
+            }
+        }
     } else {
         throw "unsupported wizard connector registration contract: $($Specification.Connector)"
     }
@@ -3269,29 +3282,24 @@ function Assert-WizardConnectorHealth(
     $hookRows = @($doctor.checks | Where-Object {
         [string]::Equals([string]$_.label, $Specification.DoctorLabel, [StringComparison]::Ordinal)
     })
-    $detailPattern = if ($Specification.Connector -eq 'cursor') {
-        'configured runtime=.*cursor-hook\.ps1.*failClosed='
-    } else {
-        'healthy Windows-native executable registration'
-    }
     if ($hookRows.Count -ne 1 -or [string]$hookRows[0].status -ne 'pass' -or
-        [string]$hookRows[0].detail -notmatch $detailPattern) {
+        [string]$hookRows[0].detail -notmatch [string]$Specification.DoctorRuntimePattern) {
         throw "wizard doctor did not validate the selected native hook: $($hookRows | ConvertTo-Json -Compress -Depth 5)"
     }
-    $expectedHookRuntime = if ($Specification.Connector -eq 'cursor') {
+    $expectedHookTarget = if ($Specification.Connector -eq 'cursor') {
         Join-Path ([Environment]::GetEnvironmentVariable('DEFENSECLAW_HOME')) 'hooks\cursor-hook.ps1'
+    } elseif ($Specification.Connector -eq 'windsurf') {
+        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
     } else {
         Get-StableHookRuntimeExecutable
     }
     if (([string]$hookRows[0].detail).IndexOf(
-        $expectedHookRuntime,
+        $expectedHookTarget,
         [StringComparison]::OrdinalIgnoreCase
     ) -lt 0) {
-        throw "wizard doctor validated an unexpected hook executable: $($hookRows[0].detail)"
+        throw "wizard doctor validated an unexpected hook target: $($hookRows[0].detail)"
     }
-    $wrongRows = @($doctor.checks | Where-Object {
-        [string]$_.label -in @($Specification.OtherDoctorLabels)
-    })
+    $wrongRows = @($doctor.checks | Where-Object { [string]$_.label -in @($Specification.OtherDoctorLabels) })
     if ($wrongRows.Count -ne 0) {
         throw "wizard doctor reported a hook row for the unselected connector"
     }
@@ -3395,6 +3403,16 @@ function Invoke-WizardConnectorAcceptance(
     $launcher = Join-Path $InstallRoot 'bin\defenseclaw.exe'
     $gateway = Join-Path $InstallRoot 'bin\defenseclaw-gateway.exe'
     $python = Join-Path $InstallRoot 'runtime\python\python.exe'
+    $originalConfigBytes = $null
+    if ($ConnectorName -eq 'windsurf') {
+        [IO.Directory]::CreateDirectory((Split-Path -Parent $specification.ConfigPath)) | Out-Null
+        $originalConfigBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+            "{`r`n  `"vendor`": {`"preserve`": true},`r`n  `"hooks`": {`r`n" +
+            "    `"pre_read_code`": [{`"powershell`": `"& 'C:\Vendor\audit.ps1'`", `"show_output`": false}]`r`n" +
+            "  }`r`n}`r`n"
+        )
+        [IO.File]::WriteAllBytes($specification.ConfigPath, $originalConfigBytes)
+    }
     Invoke-WizardInstall $Setup $Root $ConnectorName $Mode $true `
         (Join-Path $Logs "wizard-$ConnectorName-$Mode-install.json")
     $env:DEFENSECLAW_HOME = $DataRoot
@@ -3484,6 +3502,13 @@ function Invoke-WizardConnectorAcceptance(
     Assert-NoDefenseClawRegistration (
         @($specification.ConfigPath) + @($specification.OtherConfigPaths)
     )
+    if ($null -ne $originalConfigBytes) {
+        if (-not (Test-Path -LiteralPath $specification.ConfigPath -PathType Leaf) -or
+            [Convert]::ToBase64String([IO.File]::ReadAllBytes($specification.ConfigPath)) -cne
+                [Convert]::ToBase64String($originalConfigBytes)) {
+            throw 'wizard Windsurf uninstall did not restore the unrelated config bytes exactly'
+        }
+    }
     Assert-NoGatewayAutoStart
     Assert-NoInstalledGatewayProcess $gateway
     Assert-UserPathRegistrySnapshot $UserPathBefore `
@@ -3533,7 +3558,8 @@ function Invoke-SetupAcceptance {
         (Join-Path $userProfile '.claude\settings.json'),
         (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
         (Join-Path $userProfile '.gemini\settings.json'),
-        (Join-Path $userProfile '.cursor\hooks.json')
+        (Join-Path $userProfile '.cursor\hooks.json'),
+        (Join-Path $userProfile '.codeium\windsurf\hooks.json')
     )
     if (Test-Path -LiteralPath $installRoot) { throw "refusing to overwrite an existing current-user install: $installRoot" }
     if (Test-Path -LiteralPath $dataRoot) { throw "refusing to overwrite existing current-user data: $dataRoot" }
@@ -3592,16 +3618,13 @@ function Invoke-SetupAcceptance {
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = "$fixtureSearchPath;$processPathBefore"
 
-            Invoke-WizardConnectorAcceptance `
-                $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
-                $fixtureSearchPath $userPathBefore 'copilot' 'observe'
-            Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
-            $env:PATH = "$fixtureSearchPath;$processPathBefore"
-
-            Invoke-WizardConnectorAcceptance `
-                $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
-                $fixtureSearchPath $userPathBefore 'cursor' 'observe'
-            Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
+            foreach ($wizardConnector in @('copilot', 'geminicli', 'cursor', 'windsurf')) {
+                Invoke-WizardConnectorAcceptance `
+                    $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
+                    $fixtureSearchPath $userPathBefore $wizardConnector 'observe'
+                Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
+                $env:PATH = "$fixtureSearchPath;$processPathBefore"
+            }
             $env:PATH = $processPathBefore
         }
 
@@ -4154,7 +4177,7 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
             catch { Write-Warning "setup acceptance watchdog cleanup failed: $($_.Exception.Message)" }
             try { Invoke-Installed $gateway @('stop') @(0, 1) 60 | Out-Null }
             catch { Write-Warning "setup acceptance gateway cleanup failed: $($_.Exception.Message)" }
-            foreach ($configuredConnector in @('codex', 'claudecode', 'cursor')) {
+            foreach ($configuredConnector in @('codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')) {
                 try {
                     Invoke-Installed $gateway @('connector', 'teardown', '--connector', $configuredConnector) `
                         @(0, 1) 120 | Out-Null
@@ -5430,12 +5453,14 @@ function Invoke-Contract {
     $contractHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'home')).TrimEnd('\')
     $codexHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'codex-home')).TrimEnd('\')
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
+    $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'cursor-home')).TrimEnd('\')
-    $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome, $cursorHome)
+    $null = Assert-WindowsNativePathsDisjoint @($contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome)
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
     $defaultGeminiHome = Join-Path $contractHome '.gemini'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
+    $defaultWindsurfConfig = Join-Path $contractHome '.codeium\windsurf\hooks.json'
     try {
         foreach ($path in @(
             $contractHome,
@@ -5444,6 +5469,7 @@ function Invoke-Contract {
             (Join-Path $contractRoot 'temp'),
             $codexHome,
             $claudeHome,
+            $copilotHome,
             $cursorHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
@@ -5453,6 +5479,7 @@ function Invoke-Contract {
         # launcher intentionally rejects later ambient overrides.
         $env:CODEX_HOME = $codexHome
         $env:CLAUDE_CONFIG_DIR = $claudeHome
+        $env:COPILOT_HOME = $copilotHome
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
@@ -5488,7 +5515,8 @@ function Invoke-Contract {
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath $defaultGeminiHome) -or
-            (Test-Path -LiteralPath $defaultCursorHome)) {
+            (Test-Path -LiteralPath $defaultCursorHome) -or
+            (Test-Path -LiteralPath $defaultWindsurfConfig)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
 
@@ -5510,38 +5538,36 @@ function Invoke-Contract {
             -AllowNativeDataRoot -ResultsPath (Join-Path $root 'results.jsonl') `
             -ArtifactPath (Join-Path $root 'contract-diagnostics')
 
-        foreach ($defaultHome in @($defaultCodexHome, $defaultClaudeHome, $defaultGeminiHome, $defaultCursorHome)) {
+        $defaultConnectorHomes = @(
+            $defaultCodexHome,
+            $defaultClaudeHome,
+            $defaultGeminiHome,
+            $defaultCursorHome,
+            $defaultWindsurfConfig
+        )
+        if ($Connector -eq 'geminicli') {
+            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultGeminiHome })
+        } elseif ($Connector -eq 'windsurf') {
+            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultWindsurfConfig })
+        }
+        foreach ($defaultHome in $defaultConnectorHomes) {
             if (Test-Path -LiteralPath $defaultHome) {
                 throw "connector contract wrote to the default agent home: $defaultHome"
             }
         }
-        $unrelatedConfigs = switch ($Connector) {
-            'codex' {
-                @(
-                    (Join-Path $claudeHome 'settings.json'),
-                    (Join-Path $cursorHome 'hooks.json')
-                )
-            }
-            'claudecode' {
-                @(
-                    (Join-Path $codexHome 'config.toml'),
-                    (Join-Path $cursorHome 'hooks.json')
-                )
-            }
-            'cursor' {
-                @(
-                    (Join-Path $codexHome 'config.toml'),
-                    (Join-Path $claudeHome 'settings.json')
-                )
-            }
-            default {
-                @(
-                    (Join-Path $codexHome 'config.toml'),
-                    (Join-Path $claudeHome 'settings.json'),
-                    (Join-Path $cursorHome 'hooks.json')
-                )
-            }
+        $connectorConfigTargets = [ordered]@{
+            codex = Join-Path $codexHome 'config.toml'
+            claudecode = Join-Path $claudeHome 'settings.json'
+            copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
+            geminicli = Join-Path $contractHome '.gemini\settings.json'
+            cursor = Join-Path $cursorHome 'hooks.json'
+            windsurf = Join-Path $contractHome '.codeium\windsurf\hooks.json'
         }
+        $unrelatedConfigs = @(
+            $connectorConfigTargets.Keys |
+                Where-Object { $_ -cne $Connector } |
+                ForEach-Object { [string]$connectorConfigTargets[$_] }
+        )
         foreach ($unrelatedConfig in $unrelatedConfigs) {
             if (Test-Path -LiteralPath $unrelatedConfig) {
                 throw "connector contract wrote to the unrelated agent home: $unrelatedConfig"

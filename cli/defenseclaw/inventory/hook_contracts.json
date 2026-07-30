@@ -481,7 +481,7 @@
     "windsurf": {
       "kind": "hook",
       "compatibility_gate": "hook-contract",
-      "version_probe": "windsurf --version",
+      "version_probe": "",
       "contracts": [
         {
           "contract_id": "windsurf-hooks-v1",
@@ -528,11 +528,13 @@
               "pre_run_command",
               "pre_mcp_tool_use"
             ],
-            "supports_fail_closed": false,
+            "supports_fail_closed": true,
             "scope": "user"
           },
           "notes": [
-            "Windsurf 1.12.41 added Cascade hooks on user prompts, completing the pre-hook set used by this contract."
+            "Windsurf 1.12.41 added Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
+            "Windsurf blocks only the five documented pre-hooks when a hook exits 2. Other non-zero exits fail open, post hooks never block, Cascade response post hooks are asynchronous, and Restricted Mode disables hooks.",
+            "Devin Desktop is a GUI and has no non-interactive version command; native Windows discovery reads trusted executable file-version metadata without launching it."
           ]
         }
       ]

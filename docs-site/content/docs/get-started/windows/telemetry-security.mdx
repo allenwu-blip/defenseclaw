@@ -28,6 +28,16 @@ not in the interactive shell. Cursor's managed hook uses its own protected
 connector credential for the hook gateway route. A scoped credential is
 accepted only for its connector and route; it cannot authenticate the
 management API, another connector, or a non-loopback request.
+| Windsurf | Twelve Cascade events; only five pre-hooks can block. | None; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. |
+
+Codex and Claude Code configure a connector-scoped bearer and source/client identity
+for native OTLP. Codex does not place the credential in the endpoint URL.
+Claude Code stores the managed exporter settings in its configuration, not in
+the interactive shell. A scoped credential is accepted only for its connector
+and OTLP route; it cannot authenticate the management API, another connector,
+or a non-loopback request. Windsurf's adapter invokes the same protected
+connector-scoped hook runtime and does not place the credential in its user
+hook JSON.
 
 <Callout type="info" title="Native OTLP is observation-only">
 A native OTLP log, metric, or trace can enrich audit and dashboards, but it
@@ -144,7 +154,8 @@ A production native Windows release requires:
 3. a valid Authenticode signature from `Cisco Systems, Inc.` on Setup;
 4. signed and verified inner product executables; and
 5. release-pipeline certification of that exact signed Setup with pinned real
-   Codex and Claude Code versions.
+   Codex and Claude Code versions. Windsurf remains preview until the packaged
+   lifecycle gate and interactive official-client gate are added and pass.
 
 Pull-request and local Setup artifacts are unsigned test builds. Passing the
 deterministic PR suite proves code and lifecycle behavior, not production

@@ -49,6 +49,12 @@ and the complete DefenseClaw hook path to run directly on Windows.
 - **Not certified:** Windsurf, Gemini CLI, Copilot CLI, Antigravity, OpenCode,
   and Hermes. Their cross-platform setup code is not a native Windows support
   commitment.
+- **Preview, not yet certified:** Windsurf. Its native implementation is
+  available for focused validation, but release certification requires the
+  deferred packaged and interactive official-client gates.
+- **Not certified:** Cursor, Gemini CLI, Copilot CLI, Antigravity,
+  OpenCode, and Hermes. Their cross-platform setup code is not a native Windows
+  support commitment.
 - **Unsupported:** OpenHands, OmniGent, OpenClaw, and ZeptoClaw. Their required
   WSL, terminal/sandbox, or local-proxy topology is not hosted by native
   Windows DefenseClaw.
@@ -68,6 +74,12 @@ Cursor command hooks retain the vendor's fail-open default
 and upgrade reconcile the recorded `%USERPROFILE%\.cursor` home, while
 uninstall restores the exact pre-DefenseClaw `hooks.json` bytes and removes
 only DefenseClaw-owned adapter assets.
+Codex and Claude Code invoke the native `defenseclaw-hook.exe` entrypoint.
+Windsurf invokes a generated native PowerShell adapter through its documented
+`powershell` hook field; the adapter synchronously launches the exact packaged
+hook executable and preserves JSON stdin, stdout/stderr, and exit status. None
+of these paths adds WSL, Git Bash, `jq`, or a POSIX-shell dependency. Upstream
+agent prerequisites still apply, including Git for Windows for Claude Code.
 
 WSL availability is tracked for upstream research in
 [`CONNECTOR-MATRIX.md`](CONNECTOR-MATRIX.md), but it is not part of the current

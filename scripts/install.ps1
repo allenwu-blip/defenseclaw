@@ -82,11 +82,14 @@ $CosignAsset = "cosign-windows-amd64.exe"
 $CosignSha256 = "DD6C61E510DA627BCAED4CD9DB844EC11CACD09826D814D89F7F68D40FEB07BE"
 $CosignMaximumBytes = 268435456
 $CosignUrl = "https://github.com/sigstore/cosign/releases/download/v$CosignVersion/$CosignAsset"
-$ConnectorChoices = @(
-    "codex",
-    "claudecode",
-    "geminicli",
-    "none"
+  $ConnectorChoices = @(
+      "codex",
+      "claudecode",
+      "copilot",
+      "geminicli",
+      "cursor",
+      "windsurf",
+      "none"
 )
 $HookConnectors = @()
 

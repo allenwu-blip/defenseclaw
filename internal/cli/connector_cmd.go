@@ -243,6 +243,11 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		// The hidden maintenance flag is carried through SetupOpts.ConfigHome
 		// instead of inventing an upstream-facing override.
 		return func() {}, nil
+	case "windsurf":
+		// Windsurf has no vendor home override variable. Bind DefenseClaw's
+		// connector path resolver directly to Setup's validated profile root;
+		// never inherit a maintenance process's ambient USERPROFILE.
+		return connector.BindUserHomeDir(home)
 	default:
 		return nil, fmt.Errorf("explicit config home is unsupported for connector %q", connectorName)
 	}
@@ -334,8 +339,8 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("connector reconcile: unknown connector %q", name)
 	}
 	if name != "claudecode" && name != "codex" && name != "copilot" &&
-		name != "geminicli" && name != "cursor" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, geminicli, and cursor")
+		name != "geminicli" && name != "cursor" && name != "windsurf" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for claudecode, codex, copilot, geminicli, cursor, and windsurf")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		// Transactional Windows Setup must be able to preserve and repair a

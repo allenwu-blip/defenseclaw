@@ -1,4 +1,4 @@
-"""Windows-native Codex, Claude Code, and Gemini CLI Doctor regressions."""
+"""Windows-native Codex, Claude, Gemini CLI, and Windsurf Doctor regressions."""
 
 from __future__ import annotations
 
@@ -155,6 +155,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 "codex": "codex-hooks-v1",
                 "claudecode": "claudecode-hooks-v1",
                 "geminicli": "geminicli-hooks-v1",
+                "windsurf": "windsurf-hooks-v1",
             }[connector]
         normalized_agent_version = {
             "codex-hooks-v1": "0.124.0",
@@ -163,6 +164,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.152",
             "geminicli-hooks-v1": "0.53.0",
+            "windsurf-hooks-v1": "1.12.41",
         }[contract]
         locations = {"hook_config_paths": [str(config)]}
         if runtime_paths is not None:
@@ -185,6 +187,33 @@ class WindowsHookDoctorTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def _windsurf_config(self, *, foreign: bool = False) -> tuple[Path, Path]:
+        adapter = self.data / "hooks" / "windsurf-hook.ps1"
+        adapter.parent.mkdir(parents=True, exist_ok=True)
+        adapter.write_text(
+            "# DefenseClaw Windsurf native Windows hook adapter.\n"
+            "# defenseclaw-managed-hook v6\n",
+            encoding="utf-8",
+        )
+        command = "& '" + str(adapter).replace("'", "''") + "'"
+        events: dict[str, list[dict[str, object]]] = {}
+        for event in doctor_hooks._WINDSURF_EVENTS:
+            handlers: list[dict[str, object]] = [{"powershell": command, "show_output": True}]
+            if foreign and event == "pre_read_code":
+                handlers.insert(
+                    0,
+                    {
+                        "powershell": r"& 'C:\Vendor\windsurf-hook.ps1'",
+                        "vendor": {"keep": True},
+                    },
+                )
+            events[event] = handlers
+        config = self.profile / ".codeium" / "windsurf" / "hooks.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"hooks": events, "foreign_top_level": {"keep": True}}), encoding="utf-8")
+        self._lock("windsurf", config)
+        return config, adapter
 
     def _config(
         self,
@@ -416,6 +445,45 @@ class WindowsHookDoctorTests(unittest.TestCase):
             check = self._validate("geminicli", config)
         self.assertEqual(check.state, "stale")
         self.assertIn("credential does not match", check.detail)
+
+    def test_healthy_windsurf_powershell_matrix_reports_exact_limitations(self) -> None:
+        config, adapter = self._windsurf_config(foreign=True)
+
+        check = self._validate("windsurf", config, pathext=".EXE;.CMD;.PS1")
+
+        self.assertEqual(check.state, "healthy", check.detail)
+        self.assertEqual(os.path.normcase(check.target), os.path.normcase(str(adapter)))
+        self.assertIn("Windows-native PowerShell", check.detail)
+        self.assertIn("entries=12", check.detail)
+        self.assertIn("exit 2 blocks only five documented pre-hooks", check.detail)
+        self.assertIn("non-2 hook errors fail open", check.detail)
+        self.assertIn("post hooks are non-blocking", check.detail)
+        self.assertIn("Restricted Mode disables hooks", check.detail)
+
+    def test_windsurf_rejects_command_fallback_and_incomplete_matrix(self) -> None:
+        for mutation, expected in (
+            (
+                lambda document: document["hooks"]["pre_run_command"][0].update(
+                    {"command": r"C:\Vendor\fallback.exe"}
+                ),
+                "command fallback",
+            ),
+            (
+                lambda document: document["hooks"].pop("post_setup_worktree"),
+                "missing post_setup_worktree",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                config, _adapter = self._windsurf_config()
+                document = json.loads(config.read_text(encoding="utf-8"))
+                mutation(document)
+                config.write_text(json.dumps(document), encoding="utf-8")
+
+                check = self._validate("windsurf", config, pathext=".EXE;.CMD;.PS1")
+
+                self.assertEqual(check.state, "stale", check.detail)
+                self.assertIn(expected, check.detail)
+                self.assertIn("setup windsurf --yes --restart", check.detail)
 
     def test_native_stable_hook_runtime_is_accepted_for_codex_and_claude(self) -> None:
         local_app_data = self.root / "Local AppData"

@@ -234,7 +234,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli", "cursor"} {
+	for _, connector := range []string{"none", "codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -309,7 +309,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"codex", "claudecode", "copilot", "geminicli", "cursor"} {
+	for _, connectorName := range []string{"codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -562,6 +562,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 		filepath.Join("connector_backups", "copilot", "config.json"),
 		filepath.Join("connector_backups", "geminicli", "config.json"),
 		filepath.Join("connector_backups", "cursor", "hooks.json.json"),
+		filepath.Join("connector_backups", "windsurf", "config.json"),
 	}
 	for _, marker := range markers {
 		path := filepath.Join(dataRoot, marker)
@@ -577,7 +578,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "copilot", "geminicli", "cursor"}
+	want := []string{"codex", "claudecode", "copilot", "geminicli", "cursor", "windsurf"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}

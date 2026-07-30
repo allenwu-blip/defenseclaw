@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Cisco Systems, Inc. and its affiliates
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
 # SPDX-License-Identifier: Apache-2.0
 
 <#
@@ -22,7 +22,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-wizard-smoke-$PID"),
     [ValidateRange(1, 60)]
     [int]$TimeoutSeconds = 15,
-    [ValidateSet('none', 'codex', 'claudecode', 'copilot', 'geminicli', 'cursor')]
+    [ValidateSet('none', 'codex', 'claudecode', 'copilot', 'geminicli', 'cursor', 'windsurf')]
     [string]$Connector = 'claudecode',
     [ValidateSet('observe', 'action')]
     [string]$Mode = 'observe',
@@ -364,7 +364,7 @@ function Get-WizardObservation(
     }
 }
 
-$connectorIndices = @{ none = 0; codex = 1; claudecode = 2; copilot = 3; geminicli = 4; cursor = 5 }
+$connectorIndices = @{ none = 0; codex = 1; claudecode = 2; copilot = 3; geminicli = 4; cursor = 5; windsurf = 6 }
 $modeIndices = @{ observe = 0; action = 1 }
 $process = $null
 $finished = $false

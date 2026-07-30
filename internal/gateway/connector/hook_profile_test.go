@@ -54,7 +54,7 @@ func TestHookProfileMatrix(t *testing.T) {
 		{"copilot", true, NativeOTLPEnvBlock, true, true, false, true},
 		{"openhands", true, "", true, false, true, true},
 		{"cursor", true, "", true, true, true, true},
-		{"windsurf", true, "", true, false, false, true},
+		{"windsurf", true, "", true, false, true, true},
 		{"hermes", true, "", true, false, false, true},
 		// opencode's JS bridge does not propagate W3C traceparent, so
 		// SupportsTraceparent is false; it can block and fail closed.

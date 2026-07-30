@@ -1646,7 +1646,15 @@ def _version_for_agent_binary(
 ) -> tuple[str, str]:
     """Probe a CLI, or read metadata for a GUI that must not be launched."""
 
-    if name == "antigravity" and _binary_command_name(binary_path) == "antigravity":
+    command_name = _binary_command_name(binary_path)
+    if (
+        (name == "antigravity" and command_name == "antigravity")
+        or (
+            name == "windsurf"
+            and _is_windows_host()
+            and command_name in {"devin-desktop", "windsurf"}
+        )
+    ):
         return _windows_file_version_for_binary(
             binary_path,
             require_trusted_binary_paths=require_trusted_binary_paths,
@@ -1794,7 +1802,14 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
     # retaining ``cursor-agent`` as a compatibility alias. The desktop
     # ``cursor`` launcher remains useful installation/version evidence. Probe
     # the official primary name first, then both documented/installed aliases.
-    binary_names = ("agent", "cursor-agent", "cursor") if name == "cursor" else (spec.binary_name,)
+    binary_names = (spec.binary_name,)
+    if name == "cursor":
+        binary_names = ("agent", "cursor-agent", "cursor")
+    if name == "windsurf":
+        # Devin Desktop is the official renamed GUI. Its optional terminal
+        # launcher is `devin-desktop`; retain `windsurf` for pre-rename and OTA
+        # installations that preserve the old launcher.
+        binary_names = ("devin-desktop", "windsurf")
     for binary_name in binary_names:
         path = _which(binary_name)
         if path:

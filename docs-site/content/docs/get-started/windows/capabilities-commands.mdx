@@ -19,6 +19,9 @@ the release actually qualifies.
 | Codex and Claude Code connector setup | **Supported** | Same-user native agent, native hook executable, authenticated loopback gateway. |
 | Cursor connector setup | **Preview** | Same-user native Cursor Agent, managed PowerShell adapter, native hook executable, and authenticated loopback gateway; packaged and official-client certification is pending. |
 | Windsurf, Gemini CLI, Copilot CLI, Antigravity, OpenCode, and Hermes setup | **Not certified** | Cross-platform setup code exists, but the native Windows release does not qualify it. |
+| Codex and Claude Code connector setup | **Supported** | Same-user native agent, packaged hook executable, authenticated loopback gateway. |
+| Windsurf connector setup | **Preview** | Native PowerShell transport and full Setup lifecycle are implemented; packaged and interactive official-client certification is pending. |
+| Cursor, Gemini CLI, Copilot CLI, Antigravity, OpenCode, and Hermes setup | **Not certified** | Cross-platform setup code exists, but the native Windows release does not qualify it. |
 | OpenHands, OmniGent, OpenClaw, and ZeptoClaw setup | **Unsupported** | Their required WSL, terminal/sandbox, or proxy topology is not hosted by native Windows DefenseClaw. |
 | Python CLI | **Supported** | Packaged launcher and embedded runtime; PowerShell and cmd. Individual optional/network subcommands retain their caveats below. |
 | TUI | **Supported** | Native console input, UTF-8 output, clipboard support, managed process cancellation, and safe fallback when redraw is unavailable. |
@@ -29,6 +32,8 @@ the release actually qualifies.
 | Fail open/fail closed | **Supported** | Effective connector setting covers transport and invalid response failures. Internal evaluator panic remains a reported fail-open boundary. |
 | Native hooks | **Supported; Cursor preview** | `defenseclaw-hook.exe`; Cursor first uses its managed `cursor-hook.ps1` adapter. No Bash, cmd wrapper, `jq`, or proxy is required. |
 | Native OTLP ingress | **Supported** | Codex logs/metrics/traces; Claude Code logs/metrics with traces disabled. Observation only. |
+| Native hooks | **Supported** for Codex/Claude Code; **Preview** for Windsurf | Codex/Claude Code use `defenseclaw-hook.exe`; Windsurf uses a generated PowerShell adapter that waits for that exact packaged executable. No Bash, cmd wrapper, `jq`, WSL, or proxy is required. |
+| Native OTLP ingress | **Supported** | Codex logs/metrics/traces; Claude Code logs/metrics with traces disabled. Windsurf remains hook-only. Observation only. |
 | Mandatory local audit | **Supported** | SQLite persists locally even without an outbound destination. |
 | Remote telemetry destinations | **Limited** | Supported when explicitly configured and reachable; credentials, network policy, and destination capabilities remain operator responsibilities. |
 | Skills, plugins, MCPs, agents, and command discovery | **Supported** | Scans the supported connectors' documented native roots. Discovery is not proof an asset is safe. |
@@ -67,7 +72,7 @@ or an advanced operation; it does not mean every listed subcommand is broken.
 | `codeguard` | `install`, `install-skill`, `status` | **Limited** explicit opt-in; agent/network requirements apply. |
 | `config` | `path`, `reference`, `show`, `validate` | **Supported**. Do not use `config show --reveal` in diagnostics. |
 | `doctor` | no subcommands | **Supported**. Use `--fix --dry-run` before approving fixes. |
-| `guardrail` | `block-message`, `disable`, `enable`, `fail-mode`, `hilt`; `judge add/list/remove`; `list-packs`; `status` | **Supported** for Codex/Claude Code; event limits still apply. |
+| `guardrail` | `block-message`, `disable`, `enable`, `fail-mode`, `hilt`; `judge add/list/remove`; `list-packs`; `status` | **Supported** for Codex/Claude Code and **Preview** for Windsurf; event limits still apply. |
 | `init` | no subcommands | **Limited** to supported native connector choices; sandbox setup is unsupported. |
 | `keys` | `check`, `fill-missing`, `list`, `set` | **Supported**, but secret values must not be pasted into support output. |
 | `mcp` | `allow`, `block`, `list`, `scan`, `set`, `unblock`, `unset` | **Supported** for certified connector roots; remote scans are optional network operations. |
@@ -115,6 +120,11 @@ aliases; `cursor` is preview. The other aliases remain visible because this is
 one cross-platform CLI; their presence does not override the platform gate.
 Local observability, Splunk, providers, webhooks, Galileo, registries, and
 remote destinations are optional and retain their own prerequisites.
+On native Windows, `codex` and `claude-code` are certified connector aliases;
+`windsurf` is preview pending integrated certification. The other aliases remain visible because this is one cross-platform
+CLI; their presence does not override the platform gate. Local observability,
+Splunk, providers, webhooks, Galileo, registries, and remote destinations are
+optional and retain their own prerequisites.
 
 ## Public `defenseclaw-gateway` command inventory
 
@@ -124,6 +134,7 @@ remote destinations are optional and retain their own prerequisites.
 | `watchdog` | `start`, `status`, `stop` | **Limited** config-enabled detached monitor, not an OS service. |
 | `audit` | `export` | **Supported**. Exported content can be sensitive; handle it as audit data. |
 | `connector` | `list-backups`, `reconcile`, `teardown`, `verify` | **Supported** for Codex and Claude Code; **preview** for Cursor; low-level operator/recovery surface. |
+| `connector` | `list-backups`, `reconcile`, `teardown`, `verify` | **Supported** for Codex/Claude Code and **Preview** for Windsurf; low-level operator/recovery surface. |
 | `policy` | `domains`, `evaluate`, `evaluate-firewall`, `reload`, `show`, `validate` | **Supported**. |
 | `provenance` | `show` | **Supported**. |
 | `scan` | `code` | **Supported** CodeGuard/ClawShield source scan. |

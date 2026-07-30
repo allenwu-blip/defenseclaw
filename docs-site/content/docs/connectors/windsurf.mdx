@@ -7,7 +7,11 @@ keywords:
   - Windsurf observability
 ---
 
-The Windsurf connector wires DefenseClaw into [Codeium's Cascade hooks](https://codeium.com/) so every prompt, code read, code write, command run, and MCP tool call is scored before it lands.
+The Windsurf connector wires DefenseClaw into the official
+[Cascade hooks](https://docs.devin.ai/desktop/cascade/hooks) surface so every
+prompt, code read, code write, command run, and MCP tool call can be scored
+before it lands. Windsurf is now named Devin Desktop; the official download
+page states that the IDE and settings remain available through the rename.
 
 ## Setup
 
@@ -16,6 +20,33 @@ defenseclaw setup windsurf
 ```
 
 `setup windsurf` is shorthand for `setup guardrail --connector windsurf`: it adds or reconfigures Windsurf and wires hooks against `~/.codeium/windsurf/hooks.json`. DefenseClaw discovers existing MCP / rules but never auto-creates workspace configuration. **There is no proxy-enforcement path** for Windsurf — blocking happens hook-side via Cascade's `pre_user_prompt`, `pre_read_code`, `pre_write_code`, `pre_run_command`, and `pre_mcp_tool_use` events. Windsurf has no native ask surface, so confirm verdicts use its explicit non-pausing fallback with `raw_action` preserved for audit.
+
+### Native Windows x64 preview
+
+The native Windows implementation is available as a preview. Install the
+official [Devin Desktop/Windsurf Windows x64 build](https://devin.ai/download)
+for the same signed-in user, then run this from PowerShell or cmd:
+
+```powershell
+defenseclaw setup windsurf --mode observe
+defenseclaw doctor
+```
+
+Setup binds the Windows Profile Known Folder explicitly and manages only
+`<bound-profile>\.codeium\windsurf\hooks.json`. That exact profile root is
+persisted for repair, upgrade, reconciliation, and uninstall. DefenseClaw does
+not inherit a maintenance process's `USERPROFILE`, guess from the data
+directory, or inspect another user's configuration.
+
+Windsurf runs the documented `powershell` hook field through
+`powershell -Command`. DefenseClaw writes no `command` fallback. The generated
+native PowerShell adapter forwards JSON stdin and stdout/stderr, waits for the
+exact packaged `defenseclaw-hook.exe`, and propagates its exit status,
+including blocking exit `2`. This path uses no Bash, Git Bash, Cygwin/MSYS,
+WSL, Docker, or VM.
+
+Packaged Windows and interactive official-client validation remain release
+gates. Do not treat preview availability as certification.
 
 #### What `setup windsurf` actually does
 
@@ -87,6 +118,12 @@ connector_hooks:
 
 Then `defenseclaw setup guardrail --restart` to re-wire. With `mode: action`, Cascade hooks block when policy returns `block`. Because Windsurf has no native ask surface, `confirm` uses its explicit fallback; operators can review the result in audit or the TUI, but cannot resume it there.
 
+`fail_mode: closed` maps DefenseClaw adapter availability failures to
+Windsurf's blocking exit `2`; it does not change the vendor contract. Exit `2`
+can block only the five documented pre-hooks. Every other non-zero exit
+proceeds, all post-hooks are non-blocking, the two Cascade response hooks run
+asynchronously, and Restricted Mode disables hooks entirely.
+
 </Tab>
 
 </Tabs>
@@ -112,7 +149,8 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
   </Folder>
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
-      <File name="windsurf-hook.sh" />
+      <File name="windsurf-hook.sh (macOS/Linux)" />
+      <File name="windsurf-hook.ps1 (native Windows)" />
     </Folder>
   </Folder>
 </Files>
@@ -123,6 +161,13 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
 
 <Callout>
 Windsurf has no native human-approval surface. Confirm verdicts use an immediate fallback with `raw_action` preserved; operators can review them in the TUI or audit log, but cannot approve and resume them there.
+</Callout>
+
+<Callout type="warning" title="Know the vendor enforcement limits">
+Only `pre_user_prompt`, `pre_read_code`, `pre_write_code`,
+`pre_run_command`, and `pre_mcp_tool_use` can block, and only with exit `2`.
+Other errors fail open. Post-hooks cannot block, Cascade response post-hooks
+are asynchronous, and Restricted Mode disables all hooks.
 </Callout>
 
 ## Subprocess policy
