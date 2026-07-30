@@ -862,7 +862,7 @@ class TestCheckHookHealth(unittest.TestCase):
             r = _DoctorResult()
             _check_hook_health(self._cfg(tmp, "hermes", [hook]), "hermes", r)
         self.assertEqual(r.checks[-1]["status"], "pass")
-        self.assertEqual(r.checks[-1]["label"], "Hermes hooks")
+        self.assertEqual(r.checks[-1]["label"], "Hermes hooks (preview; fail-open)")
         self.assertIn(hook, r.checks[-1]["detail"])
 
     def test_lock_path_without_marker_fails(self) -> None:
@@ -1112,7 +1112,7 @@ class TestCheckHookHealth(unittest.TestCase):
         """``_check_connector_hooks`` must dispatch each generic connector
         unhandled connectors to the generic hook-health row."""
         for connector, label in (
-            ("hermes", "Hermes hooks"),
+            ("hermes", "Hermes hooks (preview; fail-open)"),
             ("cursor", "Cursor hooks"),
             ("windsurf", "Windsurf hooks"),
             ("geminicli", "Gemini CLI hooks"),

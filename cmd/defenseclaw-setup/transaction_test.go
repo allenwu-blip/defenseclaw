@@ -1455,6 +1455,44 @@ func TestInferManagedConnectorHomeUsesBoundTarget(t *testing.T) {
 	}
 }
 
+func TestInferManagedAntigravityHomeUsesLegacyRuntimeBackupBinding(t *testing.T) {
+	dataRoot := t.TempDir()
+	backupPath := filepath.Join(dataRoot, "connector_backups", "antigravity", "config.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(t.TempDir(), "antigravity-custom-home")
+	if err := os.WriteFile(
+		backupPath,
+		[]byte(fmt.Sprintf(`{"path":%q}`, filepath.Join(want, "hooks.json"))),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	previous, err := connectorsForNativeUninstall(nil, dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(previous, "antigravity") {
+		t.Fatalf("legacy Antigravity backup was not discovered: %v", previous)
+	}
+	got, err := resolvePreviousConnectorHome(
+		"",
+		previous,
+		dataRoot,
+		"antigravity",
+		"hooks.json",
+		filepath.Join(t.TempDir(), "fallback"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(got, want) {
+		t.Fatalf("resolved Antigravity home = %q, want legacy binding %q", got, want)
+	}
+}
+
 func TestInferManagedOpenCodeHomeUsesPluginParent(t *testing.T) {
 	dataRoot := t.TempDir()
 	backupPath := filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")

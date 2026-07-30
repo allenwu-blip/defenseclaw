@@ -135,7 +135,12 @@ export const DefenseClaw = async ({ directory, worktree }) => {
     // tool.execute.after is observe-only telemetry: fire-and-forget so it
     // never adds latency to (or blocks) the tool result.
     "tool.execute.after": async (input, output) => {
-      defenseclawPost("tool.execute.after", input && input.tool, output && output.args, cwd, input).catch(() => {});
+      const result = output && {
+        title: output.title,
+        output: output.output,
+        metadata: output.metadata,
+      };
+      defenseclawPost("tool.execute.after", input && input.tool, result, cwd, input).catch(() => {});
     },
   };
 };

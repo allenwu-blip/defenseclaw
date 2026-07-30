@@ -26,9 +26,6 @@ being present in Setup and CI does not itself promote a certified release
 claim.
 </Callout>
 
-Native Windows x64 setup rejects this connector; use a supported macOS or
-Linux host.
-
 ## Setup
 
 ```powershell title="Native Windows PowerShell"
@@ -86,7 +83,7 @@ itself record a validated version.
 | Event | When it fires | DefenseClaw role | Action verdict → behavior |
 | --- | --- | --- | --- |
 | `tool.execute.before` | Right before a tool (`bash`, `read`, `edit`, …) executes | Inspect tool args; intercept risky commands | `block` → gateway returns `{decision: "deny", reason}`; the bridge `throw`s `new Error(reason)`, aborting the tool |
-| `tool.execute.after` | Immediately after a tool returns | Capture diagnostics / flag secrets in output. **Cannot block** — tool already ran. | Best-effort observe/telemetry; the bridge does not await delivery |
+| `tool.execute.after` | Immediately after a tool returns | Capture the official `title`, `output`, and `metadata` result fields for diagnostics. **Cannot block** — tool already ran. | Best-effort observe/telemetry; the bridge does not await delivery |
 
 OpenCode has no hook-driven ask or context-injection surface, so `confirm`
 verdicts fall back to allow. Findings on `tool.execute.after` are telemetry

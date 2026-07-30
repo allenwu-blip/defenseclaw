@@ -119,8 +119,8 @@ _CODEX_TRUSTED_CONTRACTS = frozenset(
 _CODEX_POLICY_TIMEOUT_SECONDS = 20.0
 _CODEX_POLICY_MESSAGE_LIMIT = 2 * 1024 * 1024
 _CLAUDE_FILE_CHANGED_MATCHER = (
-    "CLAUDE.md|.claude/settings.json|.claude/settings.local.json|.mcp.json|.env|.envrc|"
-    "package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
+    "CLAUDE.md|CLAUDE.local.md|settings.json|settings.local.json|.claude.json|.mcp.json|"
+    ".env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
 )
 _REPAIR = {
     "codex": "defenseclaw setup codex --yes --restart",
@@ -2257,13 +2257,15 @@ def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise
                     f"Claude Code event {event} {label} has a narrowing if condition",
                 )
         command = _handler_command_line(handler, "claudecode", windows=True)
-        target, _args, _kind = _command_target(command, "claudecode", allow_enterprise_managed=managed_enterprise)
-        if ntpath.basename(target).casefold() not in {
-            "defenseclaw-hook",
-            "defenseclaw-hook.exe",
-            "defenseclaw-hook.cmd",
-            "defenseclaw-hook.ps1",
-        }:
+        target, _args, kind = _command_target(
+            command,
+            "claudecode",
+            allow_enterprise_managed=managed_enterprise,
+        )
+        basename = ntpath.basename(target).casefold()
+        direct_exec = kind == "direct" and basename == "defenseclaw-hook.exe"
+        powershell_exec = kind == "powershell" and basename == "defenseclaw-hook.ps1"
+        if not (direct_exec or powershell_exec):
             raise _InspectionError("stale", f"Claude Code event {event} does not use the native hook runtime")
         commands.add(command)
         count += 1
@@ -2837,6 +2839,11 @@ def validate_windows_hook_registration(
         target = resolved
         basename = ntpath.basename(resolved).casefold()
         evidence, expected_runtime_version, contract_id = _contract_evidence(data_dir, connector, config_path)
+        if connector == "antigravity" and basename != "defenseclaw-hook.exe":
+            raise _InspectionError(
+                "foreign",
+                f"Antigravity requires the protected native defenseclaw-hook.exe PE target: {resolved}",
+            )
         if basename in {"defenseclaw-gateway.exe", "defenseclaw-gateway.cmd"}:
             _stable_regular_file(resolved, install_root, read_limit=64 * 1024)
             raise _InspectionError("stale", f"registered hook uses the obsolete gateway launcher: {resolved}")

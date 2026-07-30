@@ -589,6 +589,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
             "USERPROFILE": "D:\\foreign-user-profile",
             "CODEX_HOME": "D:\\authoritative-codex-home",
             "CLAUDE_CONFIG_DIR": "D:\\authoritative-claude-home",
+            "HERMES_HOME": "D:\\authoritative-hermes-home",
             "DEFENSECLAW_INSTALL_ROOT": "D:\\ambient-install-root",
             "UNRELATED_SENTINEL": "sentinel-value",
             "UNRELATED_SECRET": "private-fixture-value",
@@ -618,6 +619,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
         self.assertEqual(child_env["USERPROFILE"], ambient["USERPROFILE"])
         self.assertEqual(child_env["CODEX_HOME"], ambient["CODEX_HOME"])
         self.assertEqual(child_env["CLAUDE_CONFIG_DIR"], ambient["CLAUDE_CONFIG_DIR"])
+        self.assertEqual(child_env["HERMES_HOME"], ambient["HERMES_HOME"])
         self.assertEqual(child_env[cmd_setup._DEFENSECLAW_HOME_ENV], os.path.abspath(data_dir))
         self.assertEqual(child_env[cmd_setup._DEFENSECLAW_DATA_DIR_ENV], os.path.abspath(data_dir))
         self.assertEqual(child_env[CONFIG_PATH_ENV], os.path.abspath(config_file))
@@ -634,12 +636,29 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
                 "USERPROFILE",
                 "CODEX_HOME",
                 "CLAUDE_CONFIG_DIR",
+                "HERMES_HOME",
                 CONFIG_PATH_ENV,
                 cmd_setup._DEFENSECLAW_HOME_ENV,
                 cmd_setup._DEFENSECLAW_DATA_DIR_ENV,
                 cmd_setup._GATEWAY_TOKEN_ENV,
             },
         )
+
+    def test_lifecycle_child_environment_does_not_invent_hermes_home(self) -> None:
+        completed = subprocess.CompletedProcess([], 0)
+        with (
+            mock.patch.dict(os.environ, {"PATH": "D:\\fixture-bin"}, clear=True),
+            mock.patch.object(cmd_setup, "_gateway_lifecycle_executable", return_value="gateway-fixture"),
+            mock.patch.object(cmd_setup.subprocess, "run", return_value=completed) as run,
+        ):
+            cmd_setup._run_rotate_token_lifecycle(
+                "D:\\fixture-data",
+                "stop",
+                token="explicit-a-value",
+                config_file="D:\\fixture-data\\config.yaml",
+            )
+
+        self.assertNotIn("HERMES_HOME", run.call_args.kwargs["env"])
 
     def test_start_b_failure_restores_exact_snapshot_and_ready_a(self) -> None:
         from tempfile import TemporaryDirectory

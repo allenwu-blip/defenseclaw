@@ -303,7 +303,11 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		return false
 	}
 	backupName := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_").Replace(logicalName)
-	return pathExists(filepath.Join(dataRoot, "connector_backups", connectorName, backupName+".json"))
+	if pathExists(filepath.Join(dataRoot, "connector_backups", connectorName, backupName+".json")) {
+		return true
+	}
+	return connectorName == "antigravity" &&
+		pathExists(filepath.Join(dataRoot, "connector_backups", connectorName, "config.json"))
 }
 
 func connectorDefaultHomeBesideDataRoot(dataRoot, connectorName string) string {

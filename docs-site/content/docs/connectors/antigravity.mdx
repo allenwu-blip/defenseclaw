@@ -35,7 +35,7 @@ Google installs `agy.exe` under
 Credential Manager for secure token profiles, with browser authentication as
 the fallback.
 
-After the integrated certification gate is promoted, native Setup will support:
+Native Setup exposes this implementation as a preview/not-certified choice:
 
 ```powershell
 defenseclaw setup antigravity --yes
@@ -54,7 +54,7 @@ synchronously, and propagates the launcher status. Enforcement does not depend
 on that status: Google documents structured stdout, not non-zero hook exit
 codes, as the policy interface.
 
-The pending native Setup implementation writes five DefenseClaw-owned registrations to
+Native Setup writes five DefenseClaw-owned registrations to
 `%USERPROFILE%\.gemini\config\hooks.json`. It backs up the original file,
 reconciles stale DefenseClaw commands on repair/upgrade, preserves unrelated
 hooks, writes connector-scoped gateway credentials into the protected

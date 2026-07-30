@@ -73,10 +73,10 @@ All three managed files are backed up. Teardown restores unchanged files byte-fo
 | --- | --- | --- |
 | `request` | `UserPromptSubmit` | ALLOW, native ASK, or DENY |
 | `tool_call` | `PreToolUse` | ALLOW, native ASK, or DENY before execution |
-| `tool_result` | `PostToolUse` | scan and block/replace; ASK falls back because execution already occurred |
-| `response` | `AfterAgentResponse` | scan and block/replace; ASK falls back |
+| `tool_result` | `PostToolUse` | attributed observation after execution; cannot replace or reverse the result |
+| `response` | `AfterAgentResponse` | attributed observation; cannot replace or reverse the response |
 | `llm_request` | `BeforeModel` | ALLOW, native ASK, or DENY |
-| `llm_response` | `AfterModel` | scan and block/replace; ASK falls back |
+| `llm_response` | `AfterModel` | attributed observation; cannot replace or reverse the response |
 
 OmniGent parks only its pre-action `request`, `tool_call`, and `llm_request` phases for approval. DefenseClaw therefore advertises native human approval only for those events. The bridge also honors fail-open or fail-closed behavior when the gateway is unavailable.
 
@@ -107,7 +107,11 @@ export OMNIGENT_OTEL_CAPTURE_CONTENT="false"
 omnigent server --config ~/.omnigent/config.yaml
 ```
 
-Logs and metrics work with OmniGent's base dependencies; native traces require its optional `tracing` extra. The status API reports only channels configured by DefenseClaw, so it continues to show `hooks`; native OTLP remains a separately documented capability because setup cannot verify another process's environment.
+Logs, metrics, and traces use OpenTelemetry packages present in OmniGent's
+base/default dependency set; no separate tracing extra is required. The status
+API reports only channels configured by DefenseClaw, so it continues to show
+`hooks`; native OTLP remains a separately documented capability because setup
+cannot verify another process's environment.
 
 ## Local surfaces
 

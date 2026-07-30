@@ -79,6 +79,13 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 			t.Errorf("plugin mode = %o, want 600 (carries the gateway token, never executable)", perm)
 		}
 	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil {
+		t.Fatalf("OwnedHooksPresent: %v", err)
+	}
+	if !present {
+		t.Fatal("managed OpenCode plugin was not recognized after Setup")
+	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
@@ -139,8 +146,51 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 	if strings.Contains(afterBody[:afterEnd], "await defenseclawPost") {
 		t.Fatal("tool.execute.after must remain best-effort and observe-only")
 	}
+	for _, field := range []string{"output.title", "output.output", "output.metadata"} {
+		if !strings.Contains(afterBody[:afterEnd], field) {
+			t.Fatalf("tool.execute.after omits official result field %q", field)
+		}
+	}
+	if strings.Contains(afterBody[:afterEnd], "output.args") {
+		t.Fatal("tool.execute.after must not read before-hook args from its result object")
+	}
 	if !strings.Contains(text, "OpenCode does not await this hook dispatch") {
 		t.Fatal("lifecycle hook must document best-effort upstream dispatch")
+	}
+}
+
+func TestOpenCodeOwnedHooksPresentRejectsManagedPluginDrift(t *testing.T) {
+	dir := t.TempDir()
+	pluginPath := filepath.Join(dir, "OpenCode Config", "plugins", "defenseclaw.js")
+	previous := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = pluginPath
+	t.Cleanup(func() { OpenCodePluginPathOverride = previous })
+	conn := NewOpenCodeConnector()
+	opts := SetupOpts{
+		DataDir:  filepath.Join(dir, ".defenseclaw"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-opencode-receipt",
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil || !present {
+		t.Fatalf("healthy plugin present=%v err=%v", present, err)
+	}
+	data, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pluginPath, append(data, []byte("\n// operator edit\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	present, err = OwnedHooksPresent(conn, opts)
+	if err != nil {
+		t.Fatalf("drift inspection: %v", err)
+	}
+	if present {
+		t.Fatal("digest-drifted OpenCode plugin was accepted as owned and healthy")
 	}
 }
 

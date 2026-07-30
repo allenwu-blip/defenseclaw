@@ -716,6 +716,9 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 	if c.pluginArtifact {
 		return c.setupPluginArtifact(opts)
 	}
+	if err := c.migrateManagedBackup(opts); err != nil {
+		return fmt.Errorf("%s managed backup migration: %w", c.name, err)
+	}
 	hookDir := filepath.Join(opts.DataDir, "hooks")
 	if err := WriteHookScriptsForConnectorObjectWithOpts(hookDir, opts, c); err != nil {
 		return fmt.Errorf("%s hook script: %w", c.name, err)
@@ -799,10 +802,14 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 	if c.pluginArtifact {
 		return c.teardownPluginArtifact(opts)
 	}
+	if err := c.migrateManagedBackup(opts); err != nil {
+		return fmt.Errorf("%s managed backup migration: %w", c.name, err)
+	}
 	var errs []string
 
-	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
-	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, "config", path)
+	logicalName := c.managedBackupLogicalName()
+	path := managedFileBackupTargetPath(opts.DataDir, c.name, logicalName, c.configPath(opts))
+	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, logicalName, path)
 	switch {
 	case err != nil:
 		errs = append(errs, fmt.Sprintf("restore config backup: %v", err))
@@ -811,7 +818,7 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		if err := c.removeConfigEntries(path, c.hookCommand(opts)); err != nil {
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
-			discardManagedFileBackup(opts.DataDir, c.name, "config")
+			discardManagedFileBackup(opts.DataDir, c.name, logicalName)
 		}
 	}
 
@@ -887,7 +894,8 @@ func (c *hookOnlyConnector) teardownPluginArtifact(opts SetupOpts) error {
 }
 
 func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
-	path := managedFileBackupTargetPath(opts.DataDir, c.name, "config", c.configPath(opts))
+	logicalName := c.managedBackupLogicalName()
+	path := managedFileBackupTargetPath(opts.DataDir, c.name, logicalName, c.configPath(opts))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -993,7 +1001,7 @@ func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	patched := uniqueNonEmptyStrings(append([]string{c.configPath(opts)}, caps.Telemetry.ConfigPaths...))
 	return AgentPaths{
 		PatchedFiles: patched,
-		BackupFiles:  []string{managedFileBackupPath(opts.DataDir, c.name, "config")},
+		BackupFiles:  []string{managedFileBackupPath(opts.DataDir, c.name, c.managedBackupLogicalName())},
 		HookScripts:  hookScriptPathsForConnector(opts, c),
 	}
 }
@@ -1046,7 +1054,8 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("%s setup could not resolve a hook config path", c.name)
 	}
-	if err := captureManagedFileBackup(opts.DataDir, c.name, "config", path); err != nil {
+	logicalName := c.managedBackupLogicalName()
+	if err := captureManagedFileBackup(opts.DataDir, c.name, logicalName, path); err != nil {
 		return err
 	}
 
@@ -1083,7 +1092,26 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 	if err != nil {
 		return err
 	}
-	return updateManagedFileBackupPostHash(opts.DataDir, c.name, "config", path)
+	return updateManagedFileBackupPostHash(opts.DataDir, c.name, logicalName, path)
+}
+
+func (c *hookOnlyConnector) managedBackupLogicalName() string {
+	if c.name == "antigravity" {
+		return "hooks.json"
+	}
+	return "config"
+}
+
+func (c *hookOnlyConnector) migrateManagedBackup(opts SetupOpts) error {
+	if c.name != "antigravity" {
+		return nil
+	}
+	return migrateManagedFileBackupLogicalName(
+		opts.DataDir,
+		c.name,
+		"config",
+		c.managedBackupLogicalName(),
+	)
 }
 
 func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string) error {

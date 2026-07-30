@@ -1000,14 +1000,18 @@ def _scan_agent(
     if name == "codex":
         config_candidates = (connector_config_files("codex")[0],)
     elif name == "claudecode":
-        config_candidates = (
-            *connector_config_files("claudecode"),
-            ".claude/settings.json",
-            ".claude/settings.local.json",
-            ".mcp.json",
-        )
+        claude_paths = connector_config_files("claudecode")
+        # MCP state is inventory, not generic configuration evidence. Prefer
+        # project/local settings over the user settings file while preserving
+        # CLAUDE_CONFIG_DIR-aware user resolution.
+        config_candidates = (claude_paths[2], claude_paths[3], claude_paths[0])
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)
+    elif name == "opencode":
+        config_candidates = (
+            connector_config_files("opencode")[0],
+            *spec.config_candidates,
+        )
     elif name == "omnigent":
         config_path = omnigent_config_path()
         config_candidates = (config_path,)

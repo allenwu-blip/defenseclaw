@@ -409,7 +409,7 @@
           "notes": [
             "Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event extra envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
             "pre_tool_call is the only blockable event; pre_llm_call injects context; pre_verify can continue the bounded verification loop. Transform hooks require Python string returns, pre_gateway_dispatch requires plugin skip/rewrite/allow results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output; Hermes never blocks on exit code or hook timeout so there is no fail-closed surface.",
-            "Multi-event registration requires hooks_auto_accept in cli-config.yaml on non-TTY/gateway runs; Setup writes it and the managed-backup heals it."
+            "Multi-event registration requires hooks_auto_accept in the effective config.yaml on non-TTY/gateway runs (the upstream hook guide calls this cli-config.yaml); Setup writes it and the managed-backup heals it."
           ]
         }
       ]
@@ -737,7 +737,7 @@
         {
           "contract_id": "openhands-hooks-v1",
           "agent_version": {
-            "min_inclusive": "0.0.0",
+            "min_inclusive": "0.7.0",
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
@@ -884,10 +884,7 @@
             "block_events": [
               "UserPromptSubmit",
               "PreToolUse",
-              "PostToolUse",
-              "AfterAgentResponse",
-              "BeforeModel",
-              "AfterModel"
+              "BeforeModel"
             ],
             "supports_fail_closed": true,
             "scope": "user"
@@ -895,9 +892,9 @@
           "notes": [
             "OmniGent invokes DefenseClaw through its documented custom Python policy API; the installed callable translates DefenseClaw allow, confirm, and block verdicts to ALLOW, ASK, and DENY.",
             "The bridge covers request, tool_call, tool_result, response, llm_request, and llm_response phases exposed by OmniGent's PolicyEvent schema.",
-            "ASK is native only for OmniGent's pre-action request, tool_call, and llm_request phases; post-action confirm verdicts use DefenseClaw's explicit fallback.",
+            "ASK and DENY are authoritative only for OmniGent's pre-action request, tool_call, and llm_request phases; post phases are attributed observation and cannot replace or reverse completed results.",
             "The in-process Python bridge forwards an active OpenTelemetry W3C trace context when present; otherwise DefenseClaw starts a new trace.",
-            "Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; native traces require its optional tracing extra.",
+            "Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; the base/default dependency set includes the required OpenTelemetry packages.",
             "On Windows, OmniGent 0.7.0 server and SDK harnesses are a native degraded preview. Terminal wrappers and filesystem/network/L7 sandbox isolation are unavailable, and no WSL or POSIX shell path is used."
           ]
         }

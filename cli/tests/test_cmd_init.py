@@ -340,6 +340,24 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
         self.selection_mock.assert_not_called()
 
+    def test_windows_omnigent_init_records_required_executable_receipt(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "omnigent",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
+                "--json-summary",
+            ])
+
+        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+        self.selection_mock.assert_called_once_with(self.tmp_dir, ["omnigent"])
+
     def test_windows_copilot_remains_publicly_not_certified(self):
         with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
             result = self._invoke([
@@ -389,6 +407,60 @@ class TestInitFirstRunBackend(unittest.TestCase):
                 "--connector",
                 "copilot",
                 "--native-setup-copilot",
+            ])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("reserved for the exact non-interactive native Windows Setup invocation", result.output)
+
+    def test_windows_antigravity_remains_publicly_not_certified(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "antigravity",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
+            ])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("not_certified", result.output)
+
+    def test_native_setup_antigravity_bootstrap_seeds_canonical_config(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "antigravity",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
+                "--native-setup-antigravity",
+                "--json-summary",
+            ])
+
+        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+        summary = json.loads(result.output)
+        self.assertEqual(summary["connector"], "antigravity")
+        import yaml
+
+        with open(os.path.join(self.tmp_dir, "config.yaml"), encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
+        self.assertEqual(cfg["claw"]["mode"], "antigravity")
+        self.assertEqual(cfg["guardrail"]["connector"], "antigravity")
+
+    def test_native_setup_antigravity_escape_hatch_rejects_non_setup_shape(self):
+        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+            result = self._invoke([
+                "--connector",
+                "antigravity",
+                "--native-setup-antigravity",
             ])
 
         self.assertNotEqual(result.exit_code, 0)

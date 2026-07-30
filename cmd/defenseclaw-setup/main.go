@@ -952,7 +952,8 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "windsurf", "config.json")) {
 		add("windsurf")
 	}
-	if pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")) {
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")) ||
+		pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "config.json")) {
 		add("antigravity")
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "opencode", "config.json")) {
@@ -1780,11 +1781,16 @@ func initialConfigurationArgs(opts options) []string {
 		"--profile", opts.Mode,
 		"--no-start-gateway", "--no-verify",
 	}
-	if opts.Connector == "copilot" {
+	switch opts.Connector {
+	case "copilot":
 		// This hidden, installer-shaped escape hatch permits the staged native
 		// implementation to be exercised without changing Copilot's public
 		// not_certified platform classification.
 		args = append(args, "--native-setup-copilot")
+	case "antigravity":
+		// Antigravity remains publicly not_certified. Native Setup alone may
+		// seed canonical state before the home-bound maintenance reconcile.
+		args = append(args, "--native-setup-antigravity")
 	}
 	return args
 }

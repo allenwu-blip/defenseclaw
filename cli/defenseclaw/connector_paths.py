@@ -425,7 +425,7 @@ def connector_home(
         # opencode keeps its config under ~/.config/opencode/ (XDG-style).
         # Surfaced so inventory/doctor render a truthful home label rather
         # than an empty string or — worse — OpenClaw's path.
-        return os.path.join(home, ".config", "opencode")
+        return _opencode_config_dir() or os.path.join(home, ".config", "opencode")
     if name == "omnigent":
         return _omnigent_config_home()
     if name == "openclaw":
@@ -509,7 +509,7 @@ def connector_config_files(
         # DefenseClaw installs a single bridge plugin there. There is no
         # command-hook config file to patch.
         paths = [
-            os.path.join(home, ".config", "opencode", "plugins", "defenseclaw.js"),
+            os.path.join(connector_home("opencode"), "plugins", "defenseclaw.js"),
         ]
     elif name == "omnigent":
         paths = [omnigent_config_path()]
@@ -579,7 +579,7 @@ def skill_dirs(
     if name == "antigravity":
         return _antigravity_skill_dirs(workspace_dir)
     if name == "opencode":
-        return _opencode_skill_dirs(workspace_dir)
+        return []
     if name == "omnigent":
         return []
     return _openclaw_skill_dirs(openclaw_home, openclaw_config)
@@ -622,7 +622,7 @@ def plugin_dirs(
     if name == "antigravity":
         return _antigravity_plugin_dirs(workspace_dir)
     if name == "opencode":
-        return _opencode_plugin_dirs(workspace_dir)
+        return []
     if name == "omnigent":
         return []
     return _openclaw_plugin_dirs(openclaw_home)

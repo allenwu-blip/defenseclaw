@@ -626,7 +626,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "pass",
             "Human approval",
-            "Antigravity supports native PreToolUse ask; decision=ask overrides --dangerously-skip-permissions",
+            "Antigravity documents native PreToolUse ask; no override of permission-bypass flags is claimed",
             r=r,
         )
     elif connector == "omnigent":

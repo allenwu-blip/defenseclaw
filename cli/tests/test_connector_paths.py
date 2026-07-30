@@ -121,14 +121,7 @@ class TestSkillDirs:
         assert os.path.join(str(tmp_path / "home"), ".gemini", "antigravity-cli", "skills") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in antigravity
-        opencode = connector_paths.skill_dirs("opencode", workspace_dir=str(tmp_path))
-        assert os.path.join(str(tmp_path), ".opencode", "skills") in opencode
-        assert os.path.join(str(tmp_path), ".claude", "skills") in opencode
-        assert os.path.join(str(tmp_path), ".agents", "skills") in opencode
-        assert os.path.join(str(tmp_path / "home"), ".config", "opencode", "skills") in opencode
-        assert os.path.join(str(tmp_path / "home"), ".claude", "skills") in opencode
-        assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in opencode
-        assert os.path.join(str(tmp_path), "opencode-custom", "skills") in opencode
+        assert connector_paths.skill_dirs("opencode", workspace_dir=str(tmp_path)) == []
         assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") in connector_paths.skill_dirs("geminicli")
         assert os.path.join(str(tmp_path), ".gemini", "skills") in connector_paths.skill_dirs(
             "geminicli",
@@ -255,10 +248,7 @@ class TestPluginDirs:
         assert os.path.join(str(tmp_path), "_agents", "plugins") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".gemini", "config", "plugins") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".gemini", "antigravity-cli", "plugins") in antigravity
-        opencode = connector_paths.plugin_dirs("opencode", workspace_dir=str(tmp_path))
-        assert os.path.join(str(tmp_path), ".opencode", "plugins") in opencode
-        assert os.path.join(str(tmp_path / "home"), ".config", "opencode", "plugins") in opencode
-        assert os.path.join(str(tmp_path), "opencode-custom", "plugins") in opencode
+        assert connector_paths.plugin_dirs("opencode", workspace_dir=str(tmp_path)) == []
 
     def test_no_overlap_between_connectors(self, tmp_path, monkeypatch):
         """Switching connectors must change the path set — pins the
@@ -770,6 +760,15 @@ class TestConnectorHome:
     def test_opencode_home_is_xdg_config(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
         assert connector_paths.connector_home("opencode") == os.path.join(str(tmp_path), ".config", "opencode")
+
+    def test_opencode_home_and_managed_plugin_honor_config_override(self, monkeypatch, tmp_path):
+        configured = tmp_path / "custom-opencode"
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(configured))
+
+        assert connector_paths.connector_home("opencode") == str(configured)
+        assert connector_paths.connector_config_files("opencode") == [
+            str(configured / "plugins" / "defenseclaw.js")
+        ]
 
     def test_antigravity_home(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))

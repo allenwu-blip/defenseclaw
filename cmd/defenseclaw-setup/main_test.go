@@ -347,6 +347,20 @@ func TestCopilotInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
 	}
 }
 
+func TestAntigravityInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
+	args := initialConfigurationArgs(options{Connector: "antigravity", Mode: "action"})
+	want := []string{
+		"init", "--skip-install", "--non-interactive", "--yes",
+		"--connector", "antigravity",
+		"--profile", "action",
+		"--no-start-gateway", "--no-verify",
+		"--native-setup-antigravity",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("Antigravity initialization args = %v, want %v", args, want)
+	}
+}
+
 func TestCanonicalStateValidationUsesPackagedRuntimeAndManifest(t *testing.T) {
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "profile", ".defenseclaw")

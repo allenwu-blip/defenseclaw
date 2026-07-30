@@ -2320,7 +2320,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(len(inv["skills"]), 1)
         self.assertEqual(inv["skills"][0]["id"], "alpha")
 
-    def test_opencode_catalog_surfaces_skills_plugins_and_tools(self):
+    def test_opencode_catalog_limits_unproven_asset_surfaces(self):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")
         home = self.tmp
         root = os.path.join(home, ".config", "opencode")
@@ -2344,11 +2344,9 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             inv = build_claw_aibom(cfg, live=True)
 
         self.assertEqual(inv["connector"], "opencode")
-        self.assertIn("oc-skill", {row["id"] for row in inv["skills"]})
-        self.assertIn("oc-plugin", {row["id"] for row in inv["plugins"]})
-        self.assertIn("file-tool", {row["id"] for row in inv["tools"]})
-        self.assertIn("config-tool", {row["id"] for row in inv["tools"]})
-        self.assertNotIn("opencode:tools", {e["command"] for e in inv["errors"]})
+        self.assertEqual(inv["skills"], [])
+        self.assertEqual(inv["plugins"], [])
+        self.assertEqual(inv["tools"], [])
 
     def test_antigravity_catalog_surfaces_skills_plugins_and_commands(self):
         cfg = _make_cfg_for_connector(self.tmp, "antigravity")

@@ -479,7 +479,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 
 // TestHermesSetup_WritesFullLifecycleAndAutoAccept pins the
 // hermes-hooks-v1 setup contract: Setup must register all 23 v0.19 hooks
-// event in the cli-config.yaml `hooks:` block AND set hooks_auto_accept
+// event in the effective config.yaml `hooks:` block AND set hooks_auto_accept
 // so the hooks actually register on non-TTY/gateway runs (Hermes
 // silently skips un-accepted hooks there). Teardown must heal a
 // previously-missing config back to absent.
@@ -684,6 +684,57 @@ func TestAntigravitySetup_WritesOfficialMixedSchema(t *testing.T) {
 		} else if !strings.HasSuffix(eventCommand, "antigravity-hook.sh "+event) {
 			t.Errorf("%s Unix command is not event-bound: %q", event, eventCommand)
 		}
+	}
+}
+
+func TestAntigravityTeardownMigratesLegacyBackupAndRestoresExactBytes(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "custom-antigravity-home")
+	configPath := filepath.Join(configHome, "hooks.json")
+	pristine := []byte("{\r\n  \"operator-hook\": {\"enabled\": true}\r\n}\r\n")
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, pristine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := AntigravityHooksPathOverride
+	AntigravityHooksPathOverride = configPath
+	t.Cleanup(func() { AntigravityHooksPathOverride = previous })
+
+	conn := NewAntigravityConnector()
+	opts := SetupOpts{
+		DataDir:  filepath.Join(root, ".defenseclaw"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-test",
+	}
+	if err := captureManagedFileBackup(opts.DataDir, "antigravity", "config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchAntigravityHooks(configPath, conn.hookCommand(opts)); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateManagedFileBackupPostHash(opts.DataDir, "antigravity", "config", configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(pristine) {
+		t.Fatalf("restored hooks.json bytes changed:\n got %q\nwant %q", got, pristine)
+	}
+	for _, logicalName := range []string{"config", "hooks.json"} {
+		if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "antigravity", logicalName)); !os.IsNotExist(err) {
+			t.Fatalf("%s backup survived exact restoration: %v", logicalName, err)
+		}
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean: %v", err)
 	}
 }
 

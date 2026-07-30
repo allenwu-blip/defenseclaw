@@ -152,6 +152,9 @@ func OwnedHooksPresent(conn Connector, opts SetupOpts) (bool, error) {
 	if inspector, ok := conn.(ownedHookContractInspector); ok {
 		return inspector.ownedHookContractPresent(opts)
 	}
+	if conn != nil && conn.Name() == "opencode" {
+		return openCodeManagedPluginPresent(conn, opts)
+	}
 	paths := HookConfigPathsForConnector(conn, opts)
 	if len(paths) == 0 {
 		return true, nil
@@ -166,6 +169,51 @@ func OwnedHooksPresent(conn Connector, opts SetupOpts) (bool, error) {
 			return false, err
 		}
 		if !present {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// openCodeManagedPluginPresent validates the standalone JavaScript artifact
+// that OpenCode auto-loads. It deliberately does not route .js through the
+// generic JSON/YAML/TOML hook-config parser: the managed-file receipt is the
+// ownership and digest authority for this whole-file plugin.
+func openCodeManagedPluginPresent(conn Connector, opts SetupOpts) (bool, error) {
+	paths := HookConfigPathsForConnector(conn, opts)
+	if len(paths) != 1 {
+		return false, fmt.Errorf("opencode managed plugin path count is %d; want 1", len(paths))
+	}
+	path := paths[0]
+	backup, err := loadManagedFileBackupPath(
+		managedFileBackupPath(opts.DataDir, "opencode", "config"),
+	)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("load opencode managed plugin receipt: %w", err)
+	}
+	boundPath, err := validateManagedFileBackupTarget(backup, "opencode", "config", path)
+	if err != nil {
+		return false, fmt.Errorf("validate opencode managed plugin receipt: %w", err)
+	}
+	data, info, err := readManagedTarget(boundPath)
+	if err != nil {
+		return false, fmt.Errorf("read opencode managed plugin: %w", err)
+	}
+	if info == nil || !managedFileBackupMatchesSnapshot(backup, data, true) {
+		return false, nil
+	}
+	for _, marker := range [][]byte{
+		[]byte("// defenseclaw-managed-plugin v6"),
+		[]byte(`"/api/v1/opencode/hook"`),
+		[]byte(`"tool.execute.before": async`),
+		[]byte(`if (verdict) throw new Error(verdict.reason);`),
+		[]byte(`"tool.execute.after": async`),
+		[]byte(`output && output.output`),
+	} {
+		if !bytes.Contains(data, marker) {
 			return false, nil
 		}
 	}

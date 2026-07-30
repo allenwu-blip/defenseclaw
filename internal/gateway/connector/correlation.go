@@ -756,21 +756,30 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		)
 		return makeSpec(CorrelationProfileOpenCodeV1, "opencode-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "no authenticated server-event adapter or reviewed native exporter is installed"))
 	case "omnigent":
-		bindings := appendBindings(base,
-			reported(CorrelationTargetSession, ns, "conversation", "conversation_id", "conversationId"),
-			reported(CorrelationTargetRootSession, ns, "root_conversation", "root_conversation_id", "rootConversationId"),
-			reported(CorrelationTargetParentSession, ns, "parent_conversation", "parent_conversation_id", "parentConversationId"),
-			reported(CorrelationTargetTurn, ns, "response", "response_id", "responseId"),
-			reported(CorrelationTargetAgent, ns, "agent", "agent_id", "agentId"),
-			reported(CorrelationTargetTool, ns, "tool_invocation", "call_id", "callId"),
-			reported(CorrelationTargetModelRequest, ns, "model_request", "request_id", "requestId"),
-			reported(CorrelationTargetSourceEvent, ns, "item", "item_id", "itemId"),
+		// PolicyEvent v0.7.0 exposes type, target, data, context,
+		// session_state, llm_client, and request_data. It does not promise the
+		// conversation/response/item/call IDs previously attributed here.
+		// Accept only exact canonical DefenseClaw fields if a future explicit
+		// adapter adds them, and retain only standard OTel bindings on the
+		// separately authenticated native surface.
+		return makeSpec(
+			CorrelationProfileOmniGentV1,
+			"omnigent-custom-policy-v1",
+			[]CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP},
+			base,
+			nativeStandard(ns),
+			nil,
+			complete(
+				CorrelationCompletenessAbsent,
+				CorrelationCompletenessAbsent,
+				CorrelationCompletenessAbsent,
+				CorrelationCompletenessAbsent,
+				CorrelationCompletenessAbsent,
+				CorrelationCompletenessPartial,
+				"OmniGent v0.7.0 PolicyEvent does not publish stable connector/session/turn/tool/model IDs",
+				"native OTel correlation is limited to standard authenticated resource and trace fields",
+			),
 		)
-		native := appendBindings(nativeStandard(ns),
-			reported(CorrelationTargetTurn, ns, "response", "omnigent.response.id", "response.id"),
-			reported(CorrelationTargetSourceEvent, ns, "item", "omnigent.item.id", "item.id"),
-		)
-		return makeSpec(CorrelationProfileOmniGentV1, "omnigent-custom-policy-v1", []CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP}, bindings, native, []CorrelationInferenceRule{CorrelationInferenceModelBoundary, CorrelationInferenceUniquePendingTool, CorrelationInferenceTraceLink}, complete(CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessComplete))
 	default:
 		return CorrelationSpec{}, false
 	}

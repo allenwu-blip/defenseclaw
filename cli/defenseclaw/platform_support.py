@@ -74,8 +74,10 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "release-certification record is available.",
     ),
     "claudecode": ConnectorPlatformSupport(
-        SUPPORTED,
-        "Claude Code and the DefenseClaw native executable hook entrypoint are certified on native Windows x64.",
+        PREVIEW,
+        "Claude Code and the DefenseClaw native executable hook entrypoint are "
+        "available as a native Windows x64 preview; no immutable packaged plus "
+        "official-client certification record is persisted.",
     ),
     "cursor": ConnectorPlatformSupport(
         PREVIEW,

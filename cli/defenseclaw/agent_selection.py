@@ -217,6 +217,7 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
     names = {
         "codex": ("codex.exe", "codex.cmd", "codex.bat", "codex.com"),
         "claudecode": ("claude.exe", "claude.cmd", "claude.bat", "claude.com"),
+        "omnigent": ("omnigent.exe", "omni.exe"),
     }[connector]
     for root in roots:
         for name in names:

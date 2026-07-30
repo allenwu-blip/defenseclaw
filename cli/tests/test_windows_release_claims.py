@@ -21,8 +21,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_windows_release_metadata_is_exact() -> None:
-    assert WINDOWS_SUPPORTED_CONNECTORS == {"claudecode"}
+    assert WINDOWS_SUPPORTED_CONNECTORS == set()
     assert WINDOWS_PREVIEW_CONNECTORS == {
+        "claudecode",
         "codex",
         "cursor",
         "hermes",
@@ -62,7 +63,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "Windows x64" in text and "`amd64`" in text
     assert "Windows ARM64" in text and "Not certified" in text
     assert "| Codex | `codex` | **Preview**" in text
-    assert "| Claude Code | `claudecode` | **Supported**" in text
+    assert "| Claude Code | `claudecode` | **Preview**" in text
     assert "| Windsurf | `windsurf` | **Preview**" in text
     assert "| OpenCode | `opencode` | **Preview**" in text
     assert "| OmniGent | `omnigent` | **Preview — native degraded**" in text

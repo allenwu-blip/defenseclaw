@@ -489,7 +489,6 @@ func TestAllBuiltinCorrelationProfilesUseConnectorExactIDs(t *testing.T) {
 		{"openhands", map[string]interface{}{"conversation_id": "s", "message_id": "t", "event_id": "e", "tool_call_id": "tc", "llm_response_id": "rs"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "t", CorrelationTargetSourceEvent: "e", CorrelationTargetTool: "tc", CorrelationTargetModelResponse: "rs"}},
 		{"antigravity", map[string]interface{}{"conversationId": "s", "stepIdx": 4, "invocationNum": 8, "toolCall": map[string]interface{}{"id": "tc"}}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetStep: "4", CorrelationTargetExecution: "8", CorrelationTargetTool: "tc"}},
 		{"opencode", map[string]interface{}{"session_id": "s", "parentID": "ps", "messageId": "t", "part_id": "e", "callID": "tc"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetParentSession: "ps", CorrelationTargetTurn: "t", CorrelationTargetSourceEvent: "e", CorrelationTargetTool: "tc"}},
-		{"omnigent", map[string]interface{}{"conversation_id": "s", "root_conversation_id": "rs", "response_id": "t", "item_id": "e", "call_id": "tc"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetRootSession: "rs", CorrelationTargetTurn: "t", CorrelationTargetSourceEvent: "e", CorrelationTargetTool: "tc"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -501,6 +500,31 @@ func TestAllBuiltinCorrelationProfilesUseConnectorExactIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOmniGentOfficialPolicyEventDoesNotInventCorrelationIDs(t *testing.T) {
+	payload := map[string]interface{}{
+		"type":   "tool_result",
+		"target": "shell",
+		"data": map[string]interface{}{
+			"result": map[string]interface{}{"stdout": "/workspace\n", "exit_code": 0},
+		},
+		"context":       map[string]interface{}{"model": "test-model"},
+		"session_state": map[string]interface{}{},
+		"llm_client":    map[string]interface{}{},
+		"request_data": map[string]interface{}{
+			"name": "shell", "arguments": map[string]interface{}{"command": "pwd"},
+		},
+	}
+	spec := DefaultCorrelationSpec("omnigent")
+	if got := spec.HookValues(payload); len(got) != 0 {
+		t.Fatalf("official OmniGent PolicyEvent produced unsupported correlation IDs: %+v", got)
+	}
+	if spec.Completeness.Session != CorrelationCompletenessAbsent ||
+		spec.Completeness.Turn != CorrelationCompletenessAbsent ||
+		spec.Completeness.Tool != CorrelationCompletenessAbsent {
+		t.Fatalf("OmniGent correlation completeness is overstated: %+v", spec.Completeness)
 	}
 }
 

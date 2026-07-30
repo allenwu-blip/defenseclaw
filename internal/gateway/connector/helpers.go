@@ -725,7 +725,7 @@ func isDefenseClawHookExecutable(exe string) bool {
 		filepath.Join(userHomeDir(), ".local", "bin", windowsHookBinaryName),
 		filepath.Join(userHomeDir(), ".local", "bin", windowsGatewayBinaryName),
 	} {
-		if strings.TrimSpace(owned) != "" && pathidentity.Same(exe, owned) {
+		if strings.TrimSpace(owned) != "" && sameOwnedHookExecutablePath(exe, owned) {
 			return true
 		}
 	}
@@ -741,6 +741,37 @@ func isDefenseClawHookExecutable(exe string) bool {
 		strings.EqualFold(normalized, "defenseclaw-hook") ||
 		strings.EqualFold(normalized, windowsGatewayBinaryName) ||
 		strings.EqualFold(normalized, "defenseclaw-gateway")
+}
+
+// sameOwnedHookExecutablePath compares only exact managed executable
+// candidates. The Hermes direct argv contract serializes Windows separators as
+// forward slashes for shlex.split while the installer receipt retains native
+// backslashes. Tests and maintenance tooling can inspect that Windows contract
+// from another host, so recognize the two strict absolute-drive spellings
+// without falling back to a basename or host-dependent filepath cleaning.
+func sameOwnedHookExecutablePath(candidate, owned string) bool {
+	if pathidentity.Same(candidate, owned) {
+		return true
+	}
+	normalizeWindowsDrivePath := func(value string) (string, bool) {
+		value = strings.TrimSpace(value)
+		if len(value) < 3 ||
+			!((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) ||
+			value[1] != ':' || (value[2] != '\\' && value[2] != '/') {
+			return "", false
+		}
+		value = strings.ReplaceAll(value, `\`, "/")
+		parts := strings.Split(value[3:], "/")
+		for _, part := range parts {
+			if part == "" || part == "." || part == ".." || strings.ContainsRune(part, '\x00') {
+				return "", false
+			}
+		}
+		return strings.ToLower(value[:1]) + ":" + "/" + strings.Join(parts, "/"), true
+	}
+	candidateNormalized, candidateOK := normalizeWindowsDrivePath(candidate)
+	ownedNormalized, ownedOK := normalizeWindowsDrivePath(owned)
+	return candidateOK && ownedOK && strings.EqualFold(candidateNormalized, ownedNormalized)
 }
 
 // isDefenseClawManagedHookExecutable recognizes only the exact current

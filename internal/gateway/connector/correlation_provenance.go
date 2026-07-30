@@ -92,8 +92,8 @@ func correlationContractSources(name string) []CorrelationContractSource {
 		return source("opencode-source-75cf4cc8",
 			"https://github.com/anomalyco/opencode", "75cf4cc8a83a5b5f99ba974f135f690a1f9b5a76")
 	case "omnigent":
-		return source("omnigent-source-9ee53ece",
-			"https://github.com/omnigent-ai/omnigent", "9ee53ecea9ceaab679f84c0c5f15695c8ccd0c3d")
+		return source("omnigent-source-35519fb",
+			"https://github.com/omnigent-ai/omnigent", "35519fb04743f66b30cac8a40695d5d72fa163ea")
 	default:
 		return nil
 	}

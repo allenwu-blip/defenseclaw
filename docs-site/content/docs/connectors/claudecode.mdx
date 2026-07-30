@@ -37,10 +37,17 @@ Git for Windows is optional and is not part of the connector contract. WSL,
 Git Bash, Cygwin, MSYS, containers, and virtual machines are not certification
 paths for this connector.
 
+Claude Code native Windows support is a preview. The hook and lifecycle
+contract is implemented, but no immutable packaged plus official-client
+Windows certification record is persisted.
+
 Native OTLP uses managed loopback exporter settings with a Claude-scoped
 Authorization bearer. Logs and metrics are enabled; traces are explicitly
-disabled. The scoped credential cannot authenticate management or another
-connector and must never be printed or copied.
+disabled. Prompt and assistant-response content logging are independent
+vendor opt-ins and DefenseClaw explicitly defaults both off; downstream
+redaction settings do not silently authorize source capture. The scoped
+credential cannot authenticate management or another connector and must never
+be printed or copied.
 
 Redaction is configured through the v8 bucket/profile policy: edit
 `observability.destinations[].routes[].selector.buckets` and

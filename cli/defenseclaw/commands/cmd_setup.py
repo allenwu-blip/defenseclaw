@@ -148,6 +148,7 @@ _TOKEN_ROTATION_CHILD_ENV_ALLOWLIST = (
     # connector homes; preserve that binding across every rotation child.
     "CODEX_HOME",
     "CLAUDE_CONFIG_DIR",
+    "HERMES_HOME",
 )
 _NATIVE_SPLUNK_CONFIG_SNAPSHOT_ATTR = "_native_splunk_config_snapshot"
 _NATIVE_SPLUNK_DOTENV_SNAPSHOT_ATTR = "_native_splunk_dotenv_snapshot"
@@ -3206,8 +3207,8 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     "antigravity": {
         "label": "Antigravity",
         "description": (
-            "five lifecycle hooks in ~/.gemini/config/hooks.json; PreToolUse "
-            "native ask is empirically verified to override --dangerously-skip-permissions"
+            "five lifecycle hooks in ~/.gemini/config/hooks.json; only "
+            "PreToolUse has documented native ask and deny responses"
         ),
         "tool_mode": "both",
         "subprocess_policy": "none",
@@ -3315,9 +3316,10 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
     ),
     "antigravity": (
         (
-            "~/.gemini/config/hooks.json — single global hook entry in agy's "
-            "Claude-Code-compatible nested schema; agy merges every discovered "
-            "hooks file, so DefenseClaw never patches workspace-local copies"
+            "~/.gemini/config/hooks.json — five DefenseClaw-owned registrations "
+            "using agy's documented direct-list and matcher-group shapes; agy "
+            "merges every discovered hooks file, so DefenseClaw never patches "
+            "workspace-local copies"
         ),
         "~/.defenseclaw/hooks/antigravity-hook.sh",
     ),
@@ -3826,10 +3828,7 @@ def _hilt_support_note(connector: str) -> str:
     if connector == "cursor":
         return "Cursor supports native ask only on documented ask-capable hook events."
     if connector == "antigravity":
-        return (
-            "Antigravity supports native PreToolUse ask; returning decision=ask "
-            "from a hook overrides agy's --dangerously-skip-permissions flag."
-        )
+        return "Antigravity documents native ask only for PreToolUse."
     if connector == "omnigent":
         return (
             "OmniGent parks request, tool_call, and llm_request policy phases for native ASK approval; "

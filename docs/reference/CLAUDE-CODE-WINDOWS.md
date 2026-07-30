@@ -1,7 +1,9 @@
 # Claude Code native Windows reference
 
 This is the evidence gate and reusable coverage checklist for the DefenseClaw
-Claude Code connector on native Windows. It was reverified on **2026-07-30**.
+Claude Code connector preview on native Windows. It was reverified on
+**2026-07-30**. No immutable packaged plus official-client Windows validation
+record is persisted, so this document does not establish certification.
 The eligible platform is a Windows process launched directly from PowerShell
 or CMD with Windows paths and native executables. WSL, Docker, virtual
 machines, Bash, Git Bash, Cygwin, MSYS, and compatibility shims are not valid
@@ -175,7 +177,9 @@ publishes that contract.
 - `PostToolUse` and other post-result events cannot undo a side effect that
   already occurred.
 
-DefenseClaw marks `MessageDisplay` async because it is observational. It keeps
+Anthropic waits synchronously by default and makes async execution opt-in.
+DefenseClaw deliberately marks `MessageDisplay` async because it is
+observational; its output therefore cannot affect the current action. It keeps
 the remaining registered handlers in synchronous command form so every
 decision-capable event waits for the gateway verdict; host-defined
 non-blocking events remain observational.
@@ -226,7 +230,9 @@ must be concise.
   changes. Token revocation follows clean verification.
 - Native telemetry uses Claude Code's documented OTel environment settings and
   a connector-scoped authorization header. Logs and metrics are enabled;
-  traces are deliberately disabled in the current connector.
+  traces are deliberately disabled in the current connector. Prompt and
+  assistant-response content flags are explicitly off by default; downstream
+  routing or redaction is not treated as informed source-capture opt-in.
 
 ## Reusable golden coverage checklist
 
@@ -248,7 +254,7 @@ test layer.
 | Teardown/uninstall | exact restore when unchanged; surgical cleanup after drift; revoke credential only after clean state | implemented | restoration and uninstall matrix |
 | Audit/telemetry | hook decision audit, `would_block`, correlation, scoped OTLP auth, no credential logging | implemented | focused audit tests plus native OTLP integration |
 | Deterministic Windows CI | PowerShell-only packaged fixture with native `.exe`; no Bash/WSL/container dependency | present | run the packaged Windows workflow |
-| Official-client E2E | official native installer/client, protected gateway, allow/block/ask/fail and cleanup | present but not run in this audit | required in later integration/verification phase |
+| Official-client E2E | official native installer/client, protected gateway, allow/block/ask/fail and cleanup | defined but no immutable qualifying run is persisted | required before any certification promotion |
 | Documentation | platform matrix, native prerequisites, limitations, version floor, sources | corrected in this audit | docs build/link check |
 
 ## Comparison with the Codex reference
@@ -282,8 +288,9 @@ blocking rules, trust behavior, or configuration paths between hosts.
   synthesize a resumable ask for other events.
 - WinGet does not auto-update, so release automation must upgrade it
   explicitly before compatibility verification.
-- ARM64 is supported upstream but DefenseClaw's current native Windows release
-  certification is x64; ARM64 requires its own packaged and real-client run.
+- ARM64 is supported upstream but DefenseClaw has no current native Windows
+  connector certification; every architecture requires its own packaged and
+  real-client run.
 - Any upstream change to events, decision JSON, exit behavior, managed paths,
   `CLAUDE_CONFIG_DIR`, MCP scopes, or PowerShell/direct-exec behavior reopens
   the research gate before implementation.

@@ -1605,7 +1605,7 @@ def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
             os.path.join(home, ".zeptoclaw", "agents.json"),
         )
     if name == "opencode":
-        return _tools_from_opencode(cfg)
+        return []
     if name == "antigravity":
         return _tools_from_antigravity(cfg)
     return []

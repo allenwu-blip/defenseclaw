@@ -354,11 +354,9 @@ func (c *ClaudeCodeConnector) HookCapabilities(opts SetupOpts) HookCapability {
 // buildClaudeCodeOtelEnv renders this spec via spec.EnvBlock()
 // instead of computing the map by hand.
 //
-// ExtraEnv carries the connector-specific vars that the OTel
-// renderer does not emit: CLAUDE_CODE_ENABLE_TELEMETRY (the
-// vendor's master switch), DEFENSECLAW_FAIL_MODE (read by the hook
-// script for fail-closed handling), and OTEL_LOG_USER_PROMPTS when
-// redaction is disabled.
+// ExtraEnv carries connector-specific vars that the OTel renderer does not
+// emit. Content capture remains explicitly disabled: downstream redaction is
+// not informed consent to collect prompts or responses at the source.
 func (c *ClaudeCodeConnector) HookProfile(opts SetupOpts) HookProfile {
 	otlpToken := strings.TrimSpace(opts.OTLPPathToken)
 	if otlpToken == "" && opts.DataDir != "" {
@@ -384,11 +382,12 @@ func (c *ClaudeCodeConnector) HookProfile(opts SetupOpts) HookProfile {
 		"OTEL_METRICS_EXPORTER": "otlp",
 		"OTEL_LOGS_EXPORTER":    "otlp",
 		"OTEL_TRACES_EXPORTER":  "none",
+		"OTEL_LOG_USER_PROMPTS": "0",
+		// Claude inherits assistant-response capture from the prompt flag when
+		// this setting is absent. Pin it off independently so a later operator
+		// prompt opt-in cannot silently broaden response capture.
+		"OTEL_LOG_ASSISTANT_RESPONSES": "0",
 	}
-	// Capture schema-supported prompt facts at the source. The unified v8
-	// router owns destination-specific redaction; a connector-local privacy
-	// switch would irreversibly discard content before routing.
-	extra["OTEL_LOG_USER_PROMPTS"] = "1"
 	profile := HookProfile{
 		Name:                "claudecode",
 		Capabilities:        c.HookCapabilities(opts),
@@ -403,7 +402,7 @@ func (c *ClaudeCodeConnector) HookProfile(opts SetupOpts) HookProfile {
 			ServiceName:        "claudecode",
 			ResourceAttributes: map[string]string{"service.name": "claudecode", "defenseclaw.connector": "claudecode"},
 			ExtraEnv:           extra,
-			LogUserPrompts:     true,
+			LogUserPrompts:     false,
 		},
 		// Profile-driven callbacks are the canonical shape for
 		// claudecode hook decode / verdict mapping / response. The
@@ -567,7 +566,7 @@ func ClaudeCodeMCPStatePath() string {
 // behavior or the sandbox's trust boundary. Regular source file writes
 // are already covered by PostToolUse — narrowing FileChanged keeps the
 // hook bus from thundering on every edit.
-const fileChangedMatcher = "CLAUDE.md|CLAUDE.local.md|.claude/CLAUDE.md|.claude/rules/.*|.claude/settings.json|.claude/settings.local.json|.claude.json|.mcp.json|.env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
+const fileChangedMatcher = "CLAUDE.md|CLAUDE.local.md|settings.json|settings.local.json|.claude.json|.mcp.json|.env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
 
 // hookGroups defines the full Claude Code event coverage. Mirrors the
 // _CLAUDE_CODE_EVENTS list established by PR #140 so every server case
@@ -1076,6 +1075,7 @@ var claudeCodeOtelEnvKeys = []string{
 	"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
 	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
 	"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+	"OTEL_LOG_ASSISTANT_RESPONSES",
 	"OTEL_LOG_USER_PROMPTS",
 	"OTEL_RESOURCE_ATTRIBUTES",
 	"OTEL_SERVICE_NAME",
@@ -1088,11 +1088,10 @@ var claudeCodeOtelEnvKeys = []string{
 // telemetry as originating from a Claude Code process so the gateway
 // can fan out to per-connector dashboards.
 //
-// Privacy note: Claude Code redacts prompt content by default. When
-// DefenseClaw redaction is explicitly disabled, we set
-// OTEL_LOG_USER_PROMPTS=1 so Claude's native OTel follows the same raw
-// prompt contract as DefenseClaw's own hook telemetry. Teardown restores
-// unchanged managed values and preserves operator edits made afterward.
+// Privacy note: prompt and assistant-response content capture are independent
+// vendor opt-ins. DefenseClaw pins both off; routing/redaction choices do not
+// silently authorize collection at the source. Teardown restores unchanged
+// managed values and preserves operator edits made afterward.
 func buildClaudeCodeOtelEnv(opts SetupOpts) map[string]string {
 	// Spec-driven: render from the connector's declarative
 	// NativeOTLPSpec via spec.EnvBlock(). Returning an empty map on

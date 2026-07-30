@@ -233,6 +233,23 @@ def test_empty_connector_home_does_not_detect_opencode(monkeypatch, tmp_path):
     assert signal.binary_path == ""
 
 
+def test_opencode_discovery_honors_custom_config_dir(monkeypatch, tmp_path):
+    _pin_home(monkeypatch, tmp_path / "ambient-home")
+    monkeypatch.chdir(tmp_path)
+    custom = tmp_path / "custom-opencode"
+    plugin = custom / "plugins" / "defenseclaw.js"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("// defenseclaw-managed-plugin v6\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("opencode")
+
+    assert signal.installed is True
+    assert signal.configured is True
+    assert signal.config_path == str(plugin)
+
+
 def test_config_evidence_helper_rejects_directories(tmp_path):
     directory = tmp_path / "config-parent"
     directory.mkdir()
@@ -376,7 +393,7 @@ def test_codex_and_claude_discovery_honor_client_config_homes(
     assert signal.config_path == str(config)
 
 
-def test_claude_discovery_honors_overridden_mcp_state(
+def test_claude_discovery_does_not_count_mcp_only_state_as_generic_config(
     monkeypatch,
     tmp_path,
 ):
@@ -390,8 +407,30 @@ def test_claude_discovery_honors_overridden_mcp_state(
 
     signal = ad._scan_agent("claudecode")
 
+    assert signal.configured is False
+    assert signal.config_path == ""
+
+
+def test_claude_discovery_prefers_project_settings_over_user_settings(
+    monkeypatch,
+    tmp_path,
+):
+    _pin_home(monkeypatch, tmp_path / "default-home")
+    configured_home = tmp_path / "custom-claudecode"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured_home))
+    user_settings = configured_home / "settings.json"
+    user_settings.parent.mkdir(parents=True)
+    user_settings.write_text("{}\n", encoding="utf-8")
+    project_settings = tmp_path / ".claude" / "settings.local.json"
+    project_settings.parent.mkdir(parents=True)
+    project_settings.write_text("{}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("claudecode")
+
     assert signal.configured is True
-    assert signal.config_path == str(state)
+    assert signal.config_path == str(project_settings)
 
 
 def test_hermes_legacy_windows_config_is_not_current_configuration_evidence(

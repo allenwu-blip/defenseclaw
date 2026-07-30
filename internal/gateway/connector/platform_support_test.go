@@ -22,11 +22,11 @@ import (
 	"testing"
 )
 
-var windowsSupportedConnectorNames = []string{
-	"claudecode",
-}
+var windowsSupportedConnectorNames = []string{}
 
-var windowsPreviewConnectorNames = []string{"codex", "cursor", "hermes", "omnigent", "opencode", "windsurf"}
+var windowsPreviewConnectorNames = []string{
+	"claudecode", "codex", "cursor", "hermes", "omnigent", "opencode", "windsurf",
+}
 
 var windowsNotCertifiedConnectorNames = []string{
 	"antigravity", "copilot",

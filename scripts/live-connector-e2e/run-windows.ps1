@@ -1055,7 +1055,7 @@ function Get-ConnectorRepairSubcommand {
 
 function Get-ConnectorToolName {
     switch ($Connector) {
-        'claudecode' { 'Bash' }
+        'claudecode' { 'PowerShell' }
         'copilot' { 'powershell' }
         'cursor' { 'shell' }
         'hermes' { 'execute_command' }
@@ -2302,7 +2302,7 @@ function Invoke-Agent([string]$Label, [string]$Prompt, [int[]]$AllowedExitCodes 
             @('exec', '--json', '--full-auto', '--model', ($env:CODEX_MODEL ?? 'gpt-5-mini'), $Prompt)
         }
         'claudecode' {
-            @('-p', $Prompt, '--output-format', 'json', '--model', ($env:CLAUDE_MODEL ?? 'claude-haiku-4-5'), '--permission-mode', 'acceptEdits', '--allowedTools', 'Bash')
+            @('-p', $Prompt, '--output-format', 'json', '--model', ($env:CLAUDE_MODEL ?? 'claude-haiku-4-5'), '--permission-mode', 'acceptEdits', '--allowedTools', 'PowerShell')
         }
         'copilot' {
             @('-p', $Prompt, '--allow-all-tools', '--no-ask-user')

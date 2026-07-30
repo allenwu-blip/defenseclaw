@@ -390,7 +390,7 @@ var builtinHookContracts = map[string][]HookContract{
 		Notes: []string{
 			"Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event `extra` envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
 			"pre_tool_call is the only blockable event: Hermes accepts both {\"action\":\"block\",\"message\"} (canonical) and {\"decision\":\"block\",\"reason\"} (Claude-Code style) and normalizes internally. pre_llm_call injects {\"context\":...}; pre_verify accepts {\"action\":\"continue\",\"message\"} to keep the bounded verification loop going. Transform hooks require Python string returns, pre_gateway_dispatch requires skip/rewrite/allow plugin results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output. Non-zero exit codes and hook timeouts only warn upstream, so there is no fail-closed surface; Hermes remains live-smoke pending (https://cisco-ai-defense.github.io/defenseclaw/docs/connectors/hermes/).",
-			"Multi-event registration requires hooks_auto_accept in cli-config.yaml on non-TTY/gateway runs; otherwise Hermes prompts for per-(event,command) consent on first use and silently skips unaccepted hooks. Setup writes hooks_auto_accept so all events register, and the managed-backup heals it.",
+			"Multi-event registration requires hooks_auto_accept in the effective config.yaml on non-TTY/gateway runs (the upstream hook guide calls this cli-config.yaml); otherwise Hermes prompts for per-(event,command) consent on first use and silently skips unaccepted hooks. Setup writes hooks_auto_accept so all events register, and the managed-backup heals it.",
 		},
 	}},
 	"cursor": {{
@@ -692,7 +692,7 @@ var builtinHookContracts = map[string][]HookContract{
 	"omnigent": {{
 		Connector:               "omnigent",
 		ContractID:              "omnigent-custom-policy-v1",
-		MinAgentVersion:         "0.0.0",
+		MinAgentVersion:         "0.7.0",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v1",
 		HookConfigPathTemplates: []string{"$OMNIGENT_CONFIG_HOME/config.yaml", "~/.omnigent/config.yaml"},
@@ -710,7 +710,7 @@ var builtinHookContracts = map[string][]HookContract{
 			CanBlock:           true,
 			CanAskNative:       true,
 			AskEvents:          []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
-			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "AfterAgentResponse", "BeforeModel", "AfterModel"},
+			BlockEvents:        []string{"UserPromptSubmit", "PreToolUse", "BeforeModel"},
 			SupportsFailClosed: true,
 			Scope:              "user",
 		},
@@ -719,9 +719,9 @@ var builtinHookContracts = map[string][]HookContract{
 		Notes: []string{
 			"OmniGent invokes DefenseClaw through its documented custom Python policy API; the installed callable translates DefenseClaw allow, confirm, and block verdicts to ALLOW, ASK, and DENY.",
 			"The bridge covers request, tool_call, tool_result, response, llm_request, and llm_response phases exposed by OmniGent's PolicyEvent schema.",
-			"ASK is native only for OmniGent's pre-action request, tool_call, and llm_request phases; post-action confirm verdicts use DefenseClaw's explicit fallback.",
+			"ASK and DENY are authoritative only for OmniGent's pre-action request, tool_call, and llm_request phases; post phases are attributed observation and cannot replace or reverse completed results.",
 			"The in-process Python bridge forwards an active OpenTelemetry W3C trace context when present; otherwise DefenseClaw starts a new trace.",
-			"Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; native traces require its optional tracing extra.",
+			"Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; the base/default dependency set includes the required OpenTelemetry packages.",
 		},
 	}},
 }

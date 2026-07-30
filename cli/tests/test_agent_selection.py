@@ -77,6 +77,59 @@ def test_record_setup_agent_selection_accepts_omnigent(
     assert errors == {}
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable fixture; Windows aliases are enumerated separately")
+@pytest.mark.parametrize("alias", ["omnigent.exe", "omni.exe"])
+def test_omnigent_official_alias_selection_records_real_version_and_digest(
+    tmp_path: Path,
+    monkeypatch,
+    alias: str,
+) -> None:
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    executable = trusted / alias
+    executable.write_text("#!/bin/sh\nprintf 'omnigent 0.7.0\\n'\n", encoding="utf-8")
+    executable.chmod(0o700)
+    monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(trusted),))
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_binary_candidates_for_agent",
+        lambda *_args: (),
+    )
+
+    selected = agent_selection._select_agent_executable(str(tmp_path / "state"), "omnigent")
+
+    assert selected.executable == str(executable.resolve())
+    assert selected.raw_version == "omnigent 0.7.0"
+    assert selected.normalized_version == "0.7.0"
+    assert selected.sha256 == hashlib.sha256(executable.read_bytes()).hexdigest()
+
+
+def test_omnigent_candidate_aliases_do_not_raise_or_accept_unlisted_names(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    expected = {str(trusted / "omnigent.exe"), str(trusted / "omni.exe")}
+    for candidate in expected:
+        Path(candidate).write_bytes(b"MZ")
+    (trusted / "omnigent.cmd").write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(trusted),))
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_binary_candidates_for_agent",
+        lambda *_args: (),
+    )
+
+    candidates = agent_selection._setup_agent_candidates(
+        "omnigent",
+        agent_selection.agent_discovery._SPECS["omnigent"],
+        str(tmp_path / "state"),
+    )
+
+    assert set(candidates) == expected
+
+
 def test_explicit_selection_probes_candidates_instead_of_discovery_cache(
     tmp_path: Path,
     monkeypatch,

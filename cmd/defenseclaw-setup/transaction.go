@@ -871,14 +871,28 @@ func transactionConfigHome(name, fallback string) (string, error) {
 }
 
 func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback string) (string, error) {
-	backupName := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_").Replace(logicalName)
-	path := filepath.Join(dataRoot, "connector_backups", connectorName, backupName+".json")
-	data, err := os.ReadFile(path)
+	logicalNames := []string{logicalName}
+	if connectorName == "antigravity" && logicalName == "hooks.json" {
+		// Runtime builds before the Setup custody model used the generic
+		// logical name "config". Read that binding for upgrade/repair home
+		// inference; gateway reconciliation migrates it to hooks.json.
+		logicalNames = append(logicalNames, "config")
+	}
+	var data []byte
+	var err error
+	for _, candidate := range logicalNames {
+		backupName := strings.NewReplacer("/", "_", `\`, "_", ":", "_", " ", "_").Replace(candidate)
+		path := filepath.Join(dataRoot, "connector_backups", connectorName, backupName+".json")
+		data, err = os.ReadFile(path)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("read %s managed backup binding: %w", connectorName, err)
+		}
+	}
 	if errors.Is(err, os.ErrNotExist) {
 		return fallback, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("read %s managed backup binding: %w", connectorName, err)
 	}
 	var binding struct {
 		Path string `json:"path"`

@@ -645,17 +645,19 @@ func TestClaudeCode_ComponentTargetsHonorMCPStateScope(t *testing.T) {
 
 func TestClaudeCode_FileChangedMatcherCoversNativeConfigSurfaces(t *testing.T) {
 	for _, expected := range []string{
+		"CLAUDE.md",
 		"CLAUDE.local.md",
-		".claude/CLAUDE.md",
-		".claude/rules/.*",
-		".claude/settings.json",
-		".claude/settings.local.json",
+		"settings.json",
+		"settings.local.json",
 		".claude.json",
 		".mcp.json",
 	} {
 		if !strings.Contains(fileChangedMatcher, expected) {
 			t.Errorf("fileChangedMatcher = %q, missing %q", fileChangedMatcher, expected)
 		}
+	}
+	if strings.Contains(fileChangedMatcher, "/") || strings.Contains(fileChangedMatcher, ".*") {
+		t.Fatalf("FileChanged matcher must be a literal basename watch list, got %q", fileChangedMatcher)
 	}
 }
 
@@ -7624,8 +7626,11 @@ func TestClaudeCode_Setup_WritesOtelEnv(t *testing.T) {
 	if env["OTEL_LOGS_EXPORTER"] != "otlp" {
 		t.Errorf("OTEL_LOGS_EXPORTER = %v, want \"otlp\"", env["OTEL_LOGS_EXPORTER"])
 	}
-	if env["OTEL_LOG_USER_PROMPTS"] != "1" {
-		t.Errorf("OTEL_LOG_USER_PROMPTS = %v, want \"1\" for v8 source capture", env["OTEL_LOG_USER_PROMPTS"])
+	if env["OTEL_LOG_USER_PROMPTS"] != "0" {
+		t.Errorf("OTEL_LOG_USER_PROMPTS = %v, want privacy-safe default \"0\"", env["OTEL_LOG_USER_PROMPTS"])
+	}
+	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "0" {
+		t.Errorf("OTEL_LOG_ASSISTANT_RESPONSES = %v, want independent privacy-safe default \"0\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
 	}
 	if env["OTEL_METRICS_EXPORTER"] != "otlp" {
 		t.Errorf("OTEL_METRICS_EXPORTER = %v, want \"otlp\"", env["OTEL_METRICS_EXPORTER"])
@@ -7770,7 +7775,7 @@ func TestClaudeCodeOtelHeadersAreDefenseClawOnlyRecognizesScopedBearers(t *testi
 	}
 }
 
-func TestClaudeCode_Setup_SourceCaptureEnablesPromptLoggingAndTeardownRestores(t *testing.T) {
+func TestClaudeCode_Setup_ContentCaptureDefaultsOffAndTeardownRestores(t *testing.T) {
 
 	dir := t.TempDir()
 	settingsDir := filepath.Join(dir, "claude-settings")
@@ -7780,7 +7785,8 @@ func TestClaudeCode_Setup_SourceCaptureEnablesPromptLoggingAndTeardownRestores(t
 	settingsPath := filepath.Join(settingsDir, "settings.json")
 	pristine := `{
 		"env": {
-			"OTEL_LOG_USER_PROMPTS": "0",
+			"OTEL_LOG_USER_PROMPTS": "1",
+			"OTEL_LOG_ASSISTANT_RESPONSES": "1",
 			"PATH": "/custom/bin:/usr/bin"
 		}
 	}`
@@ -7810,12 +7816,15 @@ func TestClaudeCode_Setup_SourceCaptureEnablesPromptLoggingAndTeardownRestores(t
 		t.Fatalf("parse patched settings: %v", err)
 	}
 	env, _ := settings["env"].(map[string]interface{})
-	if env["OTEL_LOG_USER_PROMPTS"] != "1" {
-		t.Fatalf("OTEL_LOG_USER_PROMPTS = %v, want \"1\" for v8 source capture", env["OTEL_LOG_USER_PROMPTS"])
+	if env["OTEL_LOG_USER_PROMPTS"] != "0" {
+		t.Fatalf("OTEL_LOG_USER_PROMPTS = %v, want privacy-safe default \"0\"", env["OTEL_LOG_USER_PROMPTS"])
+	}
+	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "0" {
+		t.Fatalf("OTEL_LOG_ASSISTANT_RESPONSES = %v, want privacy-safe default \"0\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
 	}
 
-	// Force the backup-driven restore path. The prompt logging setting should
-	// still return to the operator's original value.
+	// Force the backup-driven restore path. Both independent content settings
+	// must return to the operator's original values.
 	discardManagedFileBackup(dir, c.Name(), "settings.json")
 	if err := c.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
@@ -7830,8 +7839,11 @@ func TestClaudeCode_Setup_SourceCaptureEnablesPromptLoggingAndTeardownRestores(t
 		t.Fatalf("parse restored settings: %v", err)
 	}
 	env, _ = settings["env"].(map[string]interface{})
-	if env["OTEL_LOG_USER_PROMPTS"] != "0" {
-		t.Fatalf("OTEL_LOG_USER_PROMPTS = %v after teardown, want restored \"0\"", env["OTEL_LOG_USER_PROMPTS"])
+	if env["OTEL_LOG_USER_PROMPTS"] != "1" {
+		t.Fatalf("OTEL_LOG_USER_PROMPTS = %v after teardown, want restored \"1\"", env["OTEL_LOG_USER_PROMPTS"])
+	}
+	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "1" {
+		t.Fatalf("OTEL_LOG_ASSISTANT_RESPONSES = %v after teardown, want restored \"1\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
 	}
 	if env["PATH"] != "/custom/bin:/usr/bin" {
 		t.Fatalf("PATH = %v after teardown, want pristine value", env["PATH"])
@@ -8289,6 +8301,7 @@ func TestClaudeCode_Teardown_RestoresPreExistingOtelEnvKeys(t *testing.T) {
 			"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "grpc",
 			"OTEL_EXPORTER_OTLP_TRACES_HEADERS": "Authorization=secret",
 			"OTEL_LOG_USER_PROMPTS": "1",
+			"OTEL_LOG_ASSISTANT_RESPONSES": "1",
 			"OTEL_SERVICE_NAME": "operator-claude",
 			"PATH": "/custom/bin:/usr/bin"
 		}
@@ -8367,6 +8380,7 @@ func TestClaudeCode_Teardown_RestoresPreExistingOtelEnvKeys(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "grpc",
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":   "Authorization=secret",
 		"OTEL_LOG_USER_PROMPTS":               "1",
+		"OTEL_LOG_ASSISTANT_RESPONSES":        "1",
 	} {
 		if env[key] != want {
 			t.Errorf("%s = %v, want pristine value %v", key, env[key], want)

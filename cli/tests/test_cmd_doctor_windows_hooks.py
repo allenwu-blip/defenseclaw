@@ -175,6 +175,31 @@ class WindowsHookDoctorTests(unittest.TestCase):
         with self.assertRaisesRegex(_InspectionError, "direct handler"):
             _validate_antigravity_hook_matrix(malformed)
 
+    def test_antigravity_rejects_managed_cmd_instead_of_protected_pe(self) -> None:
+        runtime = self._runtime("defenseclaw-hook.cmd")
+        document: dict[str, object] = {}
+        for event in ("PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop"):
+            handler = {
+                "type": "command",
+                "command": self._encoded_hook_command(runtime, "antigravity", event=event),
+                "timeout": 30,
+            }
+            entries: list[object]
+            if event in {"PreToolUse", "PostToolUse"}:
+                entries = [{"matcher": "*", "hooks": [handler]}]
+            else:
+                entries = [handler]
+            document[f"defenseclaw-antigravity-{event.lower()}"] = {event: entries}
+        config = self.profile / ".gemini" / "config" / "hooks.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps(document), encoding="utf-8")
+        self._lock("antigravity", config, version="v8")
+
+        check = self._validate("antigravity", config, pathext=".EXE;.CMD")
+
+        self.assertEqual(check.state, "foreign", check.detail)
+        self.assertIn("protected native defenseclaw-hook.exe PE target", check.detail)
+
     def _lock(
         self,
         connector: str,
@@ -186,6 +211,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
     ) -> None:
         if contract is None:
             contract = {
+                "antigravity": "antigravity-hooks-v2",
                 "codex": "codex-hooks-v1",
                 "claudecode": "claudecode-hooks-v1",
                 "hermes": "hermes-hooks-v1",
@@ -199,6 +225,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "claudecode-hooks-v1": "2.1.152",
             "windsurf-hooks-v1": "1.12.41",
             "hermes-hooks-v1": "0.19.0",
+            "antigravity-hooks-v2": "1.1.8",
         }[contract]
         locations = {"hook_config_paths": [str(config)]}
         if runtime_paths is not None:
@@ -1074,12 +1101,13 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertEqual(check.state, "stale", check.detail)
         self.assertIn("obsolete gateway launcher", check.detail)
 
-    def test_healthy_managed_cmd_registration(self) -> None:
+    def test_claude_rejects_managed_cmd_registration(self) -> None:
         runtime = self._runtime("defenseclaw-hook.cmd")
         config = self._config("claudecode", f'"{runtime}" hook --connector claudecode')
         check = self._validate("claudecode", config)
-        self.assertEqual(check.state, "healthy", check.detail)
-        self.assertIn("Windows-native CMD", check.detail)
+        self.assertEqual(check.state, "stale", check.detail)
+        self.assertIn("native hook runtime", check.detail)
+        self.assertIn("repair", check.detail)
 
     def test_healthy_managed_powershell_registration(self) -> None:
         runtime = self._runtime(
