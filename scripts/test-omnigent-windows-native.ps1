@@ -33,7 +33,6 @@ if (-not (Test-Path -LiteralPath $artifacts -PathType Container)) {
 }
 [IO.Directory]::CreateDirectory($state) | Out-Null
 
-$env:DEFENSECLAW_HOME = Join-Path $state 'defenseclaw'
 $env:OMNIGENT_CONFIG_HOME = Join-Path $state 'omnigent-config'
 $env:OMNIGENT_DATA_DIR = Join-Path $state 'omnigent-data'
 $env:UV_TOOL_DIR = Join-Path $state 'uv-tools'
@@ -42,7 +41,6 @@ $env:UV_CACHE_DIR = Join-Path $state 'uv-cache'
 $env:OMNIGENT_ACCOUNTS_AUTO_OPEN = '0'
 $env:PATH = $env:UV_TOOL_BIN_DIR + ';' + $env:PATH
 foreach ($directory in @(
-    $env:DEFENSECLAW_HOME,
     $env:OMNIGENT_CONFIG_HOME,
     $env:OMNIGENT_DATA_DIR,
     $env:UV_TOOL_DIR,
@@ -78,19 +76,56 @@ if ($LASTEXITCODE -ne 0 -or $version -notmatch '\b0\.7\.0\b') {
     throw "official OmniGent version probe was not 0.7.0: $version"
 }
 
+$defenseclawData = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.defenseclaw'
+$nativeInstallRoot = Join-Path $env:LOCALAPPDATA 'Programs\DefenseClaw'
+if ((Test-Path -LiteralPath $nativeInstallRoot) -or
+    (Test-Path -LiteralPath (Join-Path $defenseclawData 'active_connector.json'))) {
+    throw 'OmniGent advisory Setup lifecycle requires a clean disposable Windows user'
+}
+$config = Join-Path $env:OMNIGENT_CONFIG_HOME 'config.yaml'
+$module = Join-Path $defenseclawData 'hooks\defenseclaw_omnigent_policy.py'
+$pth = Join-Path $env:UV_TOOL_DIR 'omnigent\Lib\site-packages\defenseclaw_omnigent.pth'
+foreach ($parent in @(
+    (Split-Path -Parent $config),
+    (Split-Path -Parent $module),
+    (Split-Path -Parent $pth)
+)) {
+    [IO.Directory]::CreateDirectory($parent) | Out-Null
+}
+$utf8 = [Text.UTF8Encoding]::new($false)
+[IO.File]::WriteAllText($config, "policy_modules: []`npolicies: []`n", $utf8)
+[IO.File]::WriteAllText($module, "# operator-owned preexisting module`n", $utf8)
+[IO.File]::WriteAllText($pth, "C:\operator-owned-python-path`n", $utf8)
+$originalHashes = @{}
+foreach ($path in @($config, $module, $pth)) {
+    $originalHashes[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+}
+
 $install = Join-Path $PSScriptRoot 'install.ps1'
 $pwsh = (Get-Process -Id $PID).Path
 Invoke-NativeChecked $pwsh @(
     '-NoLogo', '-NoProfile', '-File', $install,
-    '-Local', $artifacts, '-Connector', 'none', '-Yes', '-NoPersistPath'
+    '-Local', $artifacts, '-Connector', 'omnigent', '-Yes',
+    '-Quickstart', '-QuickstartMode', 'action'
 )
 
-$defenseclaw = Join-Path $env:DEFENSECLAW_HOME '.venv\Scripts\defenseclaw.exe'
-$gateway = Join-Path $env:UV_TOOL_BIN_DIR 'defenseclaw-gateway.exe'
-foreach ($required in @($defenseclaw, $gateway)) {
+$defenseclaw = Join-Path $nativeInstallRoot 'bin\defenseclaw.exe'
+$gateway = Join-Path $nativeInstallRoot 'bin\defenseclaw-gateway.exe'
+$installStatePath = Join-Path $nativeInstallRoot 'installer\install-state.json'
+foreach ($required in @($defenseclaw, $gateway, $installStatePath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "packaged DefenseClaw installation is incomplete: $required"
     }
+}
+$installState = Get-Content -LiteralPath $installStatePath -Raw | ConvertFrom-Json
+if ([string]$installState.connector -cne 'omnigent' -or
+    [IO.Path]::GetFullPath([string]$installState.omnigent_config_home) -cne
+        [IO.Path]::GetFullPath($env:OMNIGENT_CONFIG_HOME)) {
+    throw 'native Setup did not persist the OmniGent connector and exact config-home custody'
+}
+$setup = [string]$installState.maintenance_path
+if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
+    throw "native Setup maintenance executable is missing: $setup"
 }
 
 Invoke-NativeChecked $defenseclaw @(
@@ -98,13 +133,18 @@ Invoke-NativeChecked $defenseclaw @(
     '--fail-mode', 'closed', '--restart'
 )
 
-$config = Join-Path $env:OMNIGENT_CONFIG_HOME 'config.yaml'
-$module = Join-Path $env:DEFENSECLAW_HOME 'hooks\defenseclaw_omnigent_policy.py'
-$pth = Join-Path $env:UV_TOOL_DIR 'omnigent\Lib\site-packages\defenseclaw_omnigent.pth'
 foreach ($required in @($config, $module, $pth)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "OmniGent policy setup did not create required state: $required"
     }
+}
+Invoke-NativeChecked $setup @('/repair', '/quiet', '/norestart')
+Invoke-NativeChecked $setup @('/upgrade', '/quiet', '/norestart')
+$preservedState = Get-Content -LiteralPath $installStatePath -Raw | ConvertFrom-Json
+if ([string]$preservedState.connector -cne 'omnigent' -or
+    [IO.Path]::GetFullPath([string]$preservedState.omnigent_config_home) -cne
+        [IO.Path]::GetFullPath($env:OMNIGENT_CONFIG_HOME)) {
+    throw 'native Setup repair/upgrade did not preserve the OmniGent custody ledger'
 }
 
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -160,14 +200,6 @@ print(json.dumps(policy.defenseclaw_policy({
         throw 'OmniGent managed policy did not fail closed after the gateway stopped'
     }
 
-    Invoke-NativeChecked $defenseclaw @('setup', 'remove', 'omnigent', '--yes', '--restart')
-    if ((Test-Path -LiteralPath $module) -or (Test-Path -LiteralPath $pth)) {
-        throw 'OmniGent teardown left a managed policy runtime artifact'
-    }
-    if ((Test-Path -LiteralPath $config) -and
-        (Get-Content -LiteralPath $config -Raw).Contains('defenseclaw_omnigent')) {
-        throw 'OmniGent teardown left the DefenseClaw policy registration'
-    }
 } finally {
     if (-not $server.HasExited) {
         Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
@@ -176,4 +208,19 @@ print(json.dumps(policy.defenseclaw_policy({
     $server.Dispose()
 }
 
-Write-Host 'OmniGent 0.7.0 packaged native-Windows degraded-mode contract passed.'
+& $setup '/uninstall' '/quiet' '/norestart'
+$uninstallExit = $LASTEXITCODE
+if ($uninstallExit -notin @(0, 3010)) {
+    throw "native Setup uninstall failed with exit code $uninstallExit"
+}
+foreach ($path in @($config, $module, $pth)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "native Setup uninstall did not restore the preexisting OmniGent file: $path"
+    }
+    $restoredHash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+    if ($restoredHash -cne $originalHashes[$path]) {
+        throw "native Setup uninstall did not restore exact OmniGent bytes: $path"
+    }
+}
+
+Write-Host 'OmniGent 0.7.0 packaged native-Windows degraded Setup lifecycle contract passed.'

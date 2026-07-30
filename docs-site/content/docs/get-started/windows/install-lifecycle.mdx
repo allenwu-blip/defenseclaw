@@ -22,7 +22,7 @@ runtime, and maintenance copy as one transaction.
 | User context | A signed-in, **non-elevated interactive user**. Setup rejects Run as administrator, service identities, session zero, and background/batch launch for every state-changing action, including `/quiet`. |
 | Install scope | Current user only. There is no machine-scope Setup or MSI. |
 | Terminal | The installed commands run from PowerShell or cmd. Windows Terminal and PowerShell 7 are optional hosts, not prerequisites. |
-| Agent | A supported or preview agent installed natively for the same Windows user. Claude Code retains its Git for Windows requirement. OpenCode supports direct Windows execution while recommending, but not requiring, WSL; the DefenseClaw preview uses only direct native execution. |
+| Agent | A supported or preview agent installed natively for the same Windows user. Claude Code retains its Git for Windows requirement. OpenCode supports direct Windows execution while recommending, but not requiring, WSL; the DefenseClaw preview uses only direct native execution. The OmniGent preview requires OmniGent 0.7.0 or newer in its official same-user `uv tool` layout. |
 | Included runtime | Setup includes the CLI/TUI runtime, gateway, hook launcher, scanners, and pinned packages. No separate Python, `uv`, Go, Node.js, or global scanner install is required. |
 | Networking | Release download needs network unless staged offline. At runtime, the certified DefenseClaw path is authenticated loopback, normally `127.0.0.1:18970`; each agent still reaches its own upstream normally. |
 | Disk and memory | No exact minimum is published. Setup checks and stages the packaged transaction; an allocation or publication failure is reported and recovered rather than converted into an invented requirement. |
@@ -84,6 +84,8 @@ Double-click the EXE without **Run as administrator**. Choose one of:
 - **Cursor Agent** or **Windsurf** to configure their native Windows previews.
 - **OpenCode (preview)** to configure the direct native bridge while its
   integrated packaged-Setup and official-client release gates remain pending.
+- **OmniGent (native degraded preview)** for its server/SDK custom-policy
+  surface without terminal or sandbox parity.
 - **Copilot CLI** or **Antigravity** to exercise their clearly labeled
   certification-pending lifecycles; Setup presence is not certification.
 - **Configure later** for a CLI-only installation with no agent changes.
@@ -131,8 +133,8 @@ DefenseClawSetup-x64.exe /quiet /norestart INSTALLSCOPE=user CONNECTOR=codex MOD
   </Tab>
 </Tabs>
 
-Use `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=cursor`, `windsurf`, or
-`opencode` for a preview, and `copilot` or `antigravity` for a
+Use `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=cursor`, `windsurf`,
+`opencode`, or `omnigent` for a preview, and `copilot` or `antigravity` for a
 certification-pending lifecycle. Gemini CLI is not a Windows Setup choice. To
 install without configuring an agent or starting the gateway, use
 `CONNECTOR=none STARTGATEWAY=0`. Every configured connector requires gateway
@@ -145,7 +147,7 @@ Public Setup properties are:
 | Action | fresh install, `/repair`, `/upgrade`, or `/uninstall` |
 | UI | interactive or `/quiet` (`/qn` alias); `/norestart` is accepted |
 | Scope | `INSTALLSCOPE=user` only |
-| Connector | `CONNECTOR=antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `opencode`, `windsurf`, or `none` |
+| Connector | `CONNECTOR=antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `omnigent`, `opencode`, `windsurf`, or `none` |
 | Policy mode | `MODE=observe` or `action` |
 | Gateway | `STARTGATEWAY=1` or `0`, subject to the connector rule above |
 | User data on uninstall | `DELETEUSERDATA=0` (default) or `1` |
@@ -168,10 +170,11 @@ defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
+defenseclaw setup omnigent --mode observe
 defenseclaw setup opencode --mode observe
 ```
 
-One local gateway can host all five. Add connectors without removing the
+One local gateway can host all six. Add connectors without removing the
 first:
 
 ```powershell
@@ -180,6 +183,7 @@ defenseclaw setup `
   --connector claudecode `
   --connector cursor `
   --connector windsurf `
+  --connector omnigent `
   --connector opencode `
   --mode observe `
   --restart `
@@ -187,7 +191,8 @@ defenseclaw setup `
 ```
 
 Setup records validated `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
-`ANTIGRAVITY_CONFIG_DIR`, and `OPENCODE_CONFIG_DIR` values when they are used.
+`ANTIGRAVITY_CONFIG_DIR`, `OMNIGENT_CONFIG_HOME`, and `OPENCODE_CONFIG_DIR`
+values when they are used.
 Cursor publishes no configuration-home environment variable, so Setup records
 its exact configuration home internally. Windsurf likewise uses the exact
 Windows Profile Known Folder rather than an invented vendor override. Repair

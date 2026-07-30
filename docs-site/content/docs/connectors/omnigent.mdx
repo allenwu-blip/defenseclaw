@@ -52,11 +52,13 @@ layout and a fresh protected executable selection; discovery, setup, repair,
 and later reconciliation bind the exact `omnigent.exe` digest to the connector
 lock.
 
-The preview currently covers packaged CLI setup, restart reconciliation,
-Doctor, connector teardown, and clean-state verification. It is not evidence
-that the Windows Setup executable's installer-driven repair, upgrade, or
-deferred-uninstall transaction has qualified OmniGent; those shared installer
-paths remain part of the later integrated validation and promotion gate.
+The native Windows Setup executable accepts the explicit
+`CONNECTOR=omnigent` preview selection. Its transaction ledger records the
+exact previous and current `OMNIGENT_CONFIG_HOME`, carries that binding through
+repair and upgrade, reconciles all three managed backup identities, and retains
+failed teardown evidence for retry or deferred uninstall. This implemented
+lifecycle remains preview-only until the advisory packaged Setup and official
+client validation completes successfully.
 
 All three managed files are backed up. Teardown restores unchanged files byte-for-byte and removes only DefenseClaw-owned YAML entries when the operator has edited the config.
 

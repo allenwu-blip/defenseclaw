@@ -371,6 +371,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Windsurf", Value: "windsurf"},
+		{Label: "OmniGent (native degraded preview)", Value: "omnigent"},
 		{Label: "OpenCode (preview)", Value: "opencode"},
 	}
 	modes := []wizardChoice{
@@ -414,7 +415,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "cursor", "windsurf", "opencode"} {
+	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "cursor", "windsurf", "omnigent", "opencode"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode
@@ -505,6 +506,7 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "cursor", want: "Cursor Agent is configured", reject: "certified"},
 		{connector: "windsurf", want: "preview", reject: "certified"},
 		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
+		{connector: "omnigent", want: "native degraded policy preview", reject: "trusted automatically"},
 		{connector: "opencode", want: "OpenCode preview is configured", reject: "certified"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},
 	} {

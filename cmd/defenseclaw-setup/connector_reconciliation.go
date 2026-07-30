@@ -101,7 +101,7 @@ func retryPendingConnectorReconciliation(
 		}
 		seen[identity] = true
 		connectorName := strings.ToLower(failure.Connector)
-		codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome := "", "", "", "", "", "", "", ""
+		codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome := "", "", "", "", "", "", "", "", ""
 		if connectorName == "codex" {
 			codexHome = failure.ConfigHome
 		} else if connectorName == "claudecode" {
@@ -118,9 +118,11 @@ func retryPendingConnectorReconciliation(
 			antigravityHome = failure.ConfigHome
 		} else if connectorName == "opencode" {
 			openCodeHome = failure.ConfigHome
+		} else if connectorName == "omnigent" {
+			omnigentHome = failure.ConfigHome
 		}
 		env := transactionChildEnvForConnectorHomes(
-			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome,
+			transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
 		)
 		verify := func() error {
 			return run(gatewayPath, transaction.DataRoot, connectorName, "verify", env)
@@ -233,6 +235,8 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 			candidates = append(candidates, transaction.PreviousState.AntigravityConfigDir)
 		case "opencode":
 			candidates = append(candidates, transaction.PreviousState.OpenCodeConfigDir)
+		case "omnigent":
+			candidates = append(candidates, transaction.PreviousState.OmnigentConfigHome)
 		}
 	}
 	candidates = append(candidates, connectorConfigHome(transaction, connectorName, false))
@@ -283,7 +287,7 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		logicalName = "config.toml"
 	case "claudecode":
 		logicalName = "settings.json"
-	case "copilot", "geminicli":
+	case "copilot", "geminicli", "omnigent":
 		logicalName = "config"
 	case "cursor":
 		logicalName = "hooks.json"
@@ -321,6 +325,8 @@ func connectorDefaultHomeBesideDataRoot(dataRoot, connectorName string) string {
 		return filepath.Join(filepath.Dir(cleanDataRoot), ".gemini", "config")
 	case "opencode":
 		directory = filepath.Join(".config", "opencode")
+	case "omnigent":
+		directory = ".omnigent"
 	default:
 		return ""
 	}
@@ -336,6 +342,7 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 	windsurfHome := transaction.PreviousWindsurfUserHome
 	antigravityHome := transaction.PreviousAntigravityConfigDir
 	openCodeHome := transaction.PreviousOpenCodeConfigDir
+	omnigentHome := transaction.PreviousOmnigentConfigHome
 	if connectorName == "codex" {
 		codexHome = configHome
 	} else if connectorName == "claudecode" {
@@ -352,9 +359,11 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		antigravityHome = configHome
 	} else if connectorName == "opencode" {
 		openCodeHome = configHome
+	} else if connectorName == "omnigent" {
+		omnigentHome = configHome
 	}
 	return transactionChildEnvForConnectorHomes(
-		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome,
+		transaction, codexHome, claudeHome, copilotHome, geminiHome, cursorHome, windsurfHome, antigravityHome, openCodeHome, omnigentHome,
 	)
 }
 
@@ -628,6 +637,11 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousOpenCodeConfigDir
 		}
 		return transaction.OpenCodeConfigDir
+	case "omnigent":
+		if previous {
+			return transaction.PreviousOmnigentConfigHome
+		}
+		return transaction.OmnigentConfigHome
 	default:
 		return ""
 	}

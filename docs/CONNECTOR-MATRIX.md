@@ -51,6 +51,13 @@ Windows for `omnigent server` and SDK harnesses. In PowerShell, install it with
 The tmux/PTY terminal wrappers and Linux/macOS filesystem, network, and L7
 sandbox backends remain unavailable.
 
+Native Windows Setup also accepts `CONNECTOR=omnigent`. Repair and upgrade
+preserve the exact recorded `OMNIGENT_CONFIG_HOME`; connector switching and
+uninstall reconcile the config, policy module, and `.pth` backup custody before
+discarding installer state. This is implemented preview behavior, not
+certification: the manual `continue-on-error` packaged/official-client cell
+must still qualify it before promotion.
+
 `~/.omnigent/config.yaml` is the default. When `OMNIGENT_CONFIG_HOME` is set,
 both OmniGent and DefenseClaw use `OMNIGENT_CONFIG_HOME/config.yaml` instead
 (`$OMNIGENT_CONFIG_HOME/config.yaml` on POSIX or

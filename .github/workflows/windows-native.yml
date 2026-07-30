@@ -686,7 +686,7 @@ jobs:
         with:
           name: windows-native-package
           path: ${{ env.DC_ARTIFACT_ROOT }}
-      - name: Official OmniGent 0.7.0 packaged server/policy contract
+      - name: Official OmniGent 0.7.0 packaged Setup lifecycle and server/policy contract
         run: >-
           ./scripts/test-omnigent-windows-native.ps1
           -StateRoot $env:DC_STATE_ROOT

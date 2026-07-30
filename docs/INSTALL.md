@@ -549,10 +549,13 @@ interactive desktop session:
 Setup installs the CLI/TUI, native gateway, no-console hook launcher, and
 managed Python runtime under `%LOCALAPPDATA%\Programs\DefenseClaw`, and adds its
 managed `bin` directory to the current user's `PATH`. Use
-`CONNECTOR=claudecode` for Claude Code, `CONNECTOR=opencode` for OpenCode, or
-`CONNECTOR=none` to configure a connector later. The installer also exposes the
-staged Copilot, Cursor, Windsurf, and Antigravity lifecycles without claiming
-certification. Gemini CLI is intentionally not a Windows Setup choice. OpenCode uses
+`CONNECTOR=claudecode` for Claude Code, `CONNECTOR=opencode` for OpenCode,
+`CONNECTOR=omnigent` for the native-degraded OmniGent preview, or
+`CONNECTOR=none` to configure a connector later. OmniGent must already be
+installed for the same user with the official native `uv tool` layout. The
+installer also exposes the staged Copilot, Cursor, Windsurf, and Antigravity
+lifecycles without claiming certification. Gemini CLI is intentionally not a
+Windows Setup choice. OpenCode uses
 `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, defaulting to
 `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`; restart OpenCode after
 Setup or teardown.

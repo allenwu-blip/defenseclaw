@@ -216,6 +216,7 @@ var (
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Windsurf", Value: "windsurf"},
+		{Label: "OmniGent (native degraded preview)", Value: "omnigent"},
 		{Label: "OpenCode (preview)", Value: "opencode"},
 	}
 	wizardModeChoices = []wizardChoice{
@@ -747,6 +748,8 @@ func wizardCompletionDescription(connector string) string {
 		return "Google Antigravity is configured with its native Windows hooks." + installed
 	case "opencode":
 		return "OpenCode preview is configured with the native Windows bridge plugin. Restart OpenCode to load it." + installed
+	case "omnigent":
+		return "OmniGent's native degraded policy preview is configured; terminal and sandbox parity are not included." + installed
 	default:
 		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
 	}
