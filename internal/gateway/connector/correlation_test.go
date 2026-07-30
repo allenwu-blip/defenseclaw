@@ -575,7 +575,7 @@ func TestOpenClawNativeTelemetryFailsClosedWithoutReviewedExporter(t *testing.T)
 	}
 }
 
-func TestCopilotDocumentedHookAndNativeIDsStayOnTheirRails(t *testing.T) {
+func TestCopilotDocumentedHookIDsStayOnTheirRail(t *testing.T) {
 	spec := DefaultCorrelationSpec("copilot")
 	hook := map[string]interface{}{
 		"sessionId":      "session-1",
@@ -590,16 +590,8 @@ func TestCopilotDocumentedHookAndNativeIDsStayOnTheirRails(t *testing.T) {
 			t.Errorf("undocumented Copilot hook identity populated %s: %+v", target, value)
 		}
 	}
-
-	native, ok := spec.NativeOTLPValue(map[string]interface{}{"github.copilot.interaction_id": "interaction-1"}, CorrelationTargetModelRequest)
-	if !ok || native.Value != "interaction-1" || native.IDKind != "interaction" {
-		t.Fatalf("Copilot native interaction=(%+v,%v)", native, ok)
-	}
-	if message, found := spec.NativeOTLPValue(map[string]interface{}{"github.copilot.interaction_id": "interaction-1"}, CorrelationTargetMessage); found {
-		t.Fatalf("Copilot interaction was mislabeled as a message: %+v", message)
-	}
-	if spec.NativeTelemetry.IsAuthoritative(CorrelationTargetModelRequest) {
-		t.Fatal("Copilot native interaction gained cross-rail authority without paired field proof")
+	if len(spec.NativeOTLPBindings) != 0 {
+		t.Fatalf("Copilot gained undocumented native OTLP bindings: %v", spec.NativeOTLPBindings)
 	}
 	if len(spec.MirrorIdentityTargets) != 0 {
 		t.Fatalf("Copilot undocumented hook/native mirrors remain enabled: %v", spec.MirrorIdentityTargets)

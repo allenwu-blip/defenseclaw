@@ -1,5 +1,11 @@
 # Antigravity MCP and Customization Contract
 
+> **Status: implementation research contract.** Antigravity is implemented
+> under `internal/gateway/connector/`; use the
+> [published Antigravity guide](https://cisco-ai-defense.github.io/defenseclaw/docs/connectors/antigravity/)
+> and current connector tests for supported behavior. This contract records the
+> official-source decisions and native Windows eligibility refreshed below.
+
 Scope: Google's Antigravity (`agy`) connector. This pins native Windows eligibility, hook enforcement, file paths, and JSON shapes DefenseClaw relies on.
 
 Research refreshed: 2026-07-30.

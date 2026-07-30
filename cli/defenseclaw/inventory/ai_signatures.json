@@ -392,9 +392,7 @@
         ".mcp.json"
       ],
       "package_names": [],
-      "env_var_names": [
-        "COPILOT_OTEL_ENABLED"
-      ],
+      "env_var_names": [],
       "domain_patterns": [
         "api.githubcopilot.com",
         "copilot-proxy.githubusercontent.com"

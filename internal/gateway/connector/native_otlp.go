@@ -103,7 +103,7 @@ func AllNativeOTLPSignals() []NativeOTLPSignal {
 //   - FilePath: for NativeOTLPFileSink kinds. The local path the agent
 //     writes OTLP-JSON to. Mutually exclusive with Endpoint.
 //   - ExtraEnv: connector-specific env vars (e.g.
-//     CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1, COPILOT_OTEL_ENABLED=true)
+//     CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1)
 //     that the connector needs in addition to the standard OTEL_*
 //     family. Merged into the env block in deterministic key order.
 //   - ServiceName / ResourceAttributes: identify the source connector

@@ -389,7 +389,7 @@ var builtinHookContracts = map[string][]HookContract{
 		ContentEnvelopeKey: "extra",
 		Notes: []string{
 			"Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event `extra` envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
-			"pre_tool_call is the only blockable event: Hermes accepts both {\"action\":\"block\",\"message\"} (canonical) and {\"decision\":\"block\",\"reason\"} (Claude-Code style) and normalizes internally. pre_llm_call injects {\"context\":...}; pre_verify accepts {\"action\":\"continue\",\"message\"} to keep the bounded verification loop going. Transform hooks require Python string returns, pre_gateway_dispatch requires skip/rewrite/allow plugin results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output. Non-zero exit codes and hook timeouts only warn upstream, so there is no fail-closed surface; Hermes remains live-smoke pending (docs/CONNECTOR-MATRIX.md).",
+			"pre_tool_call is the only blockable event: Hermes accepts both {\"action\":\"block\",\"message\"} (canonical) and {\"decision\":\"block\",\"reason\"} (Claude-Code style) and normalizes internally. pre_llm_call injects {\"context\":...}; pre_verify accepts {\"action\":\"continue\",\"message\"} to keep the bounded verification loop going. Transform hooks require Python string returns, pre_gateway_dispatch requires skip/rewrite/allow plugin results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output. Non-zero exit codes and hook timeouts only warn upstream, so there is no fail-closed surface; Hermes remains live-smoke pending (https://cisco-ai-defense.github.io/defenseclaw/docs/connectors/hermes/).",
 			"Multi-event registration requires hooks_auto_accept in cli-config.yaml on non-TTY/gateway runs; otherwise Hermes prompts for per-(event,command) consent on first use and silently skips unaccepted hooks. Setup writes hooks_auto_accept so all events register, and the managed-backup heals it.",
 		},
 	}},
@@ -574,6 +574,7 @@ var builtinHookContracts = map[string][]HookContract{
 		Notes: []string{
 			"GitHub Copilot CLI shipped preToolUse earlier, but the full DefenseClaw contract also needs postToolUseFailure, permissionRequest, and notification hooks; notification landed in 1.0.18.",
 			"Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
+			"DefenseClaw derives Copilot telemetry from the documented hook bus; no official Copilot CLI native OTLP exporter is claimed.",
 		},
 	}},
 	"antigravity": {{

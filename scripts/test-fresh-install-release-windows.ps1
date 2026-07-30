@@ -235,16 +235,31 @@ function Assert-PrivatePathCustody {
         if ([int64]$rule.FileSystemRights -eq 0) {
             continue
         }
+        $inheritOnly = (
+            $rule.PropagationFlags -band
+            [Security.AccessControl.PropagationFlags]::InheritOnly
+        ) -ne [Security.AccessControl.PropagationFlags]::None
+        # CREATOR OWNER is only a template for inherited child ACEs and
+        # provides no access to this directory. Permit that template without
+        # treating it as the effective owner grant required below.
+        if ($sid -ceq $creatorOwnerSid) {
+            if (-not $Directory -or -not $inheritOnly) {
+                throw "Deferred uninstall authority grants access to an unexpected SID ($sid): $Path"
+            }
+            continue
+        }
         # OWNER RIGHTS is owner-relative, so it is safe only after the
         # concrete current-user owner and protected DACL checks above.
-        if ($sid -ceq $owner -or
-            $sid -ceq $creatorOwnerSid -or
-            $sid -ceq $ownerRightsSid) {
-            $foundOwner = $true
+        if ($sid -ceq $owner -or $sid -ceq $ownerRightsSid) {
+            if (-not $inheritOnly) {
+                $foundOwner = $true
+            }
             continue
         }
         if ($sid -ceq $systemSid) {
-            $foundSystem = $true
+            if (-not $inheritOnly) {
+                $foundSystem = $true
+            }
             continue
         }
         throw "Deferred uninstall authority grants access to an unexpected SID ($sid): $Path"
@@ -292,6 +307,50 @@ function Wait-ForPathRemoval {
     # wait.
     for ($attempt = 0; $attempt -lt 520 -and (Test-Path -LiteralPath $Path); $attempt++) {
         Start-Sleep -Milliseconds 250
+    }
+}
+
+function Get-OptionalJsonPropertyValue {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string]$PropertyName
+    )
+
+    $property = $InputObject.PSObject.Properties[$PropertyName]
+    if ($null -eq $property) {
+        return
+    }
+    return $property.Value
+}
+
+function Get-OptionalJsonStringValue {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string]$PropertyName
+    )
+
+    $value = Get-OptionalJsonPropertyValue `
+        -InputObject $InputObject `
+        -PropertyName $PropertyName
+    if ($null -eq $value) {
+        return ""
+    }
+    return [string]$value
+}
+
+function Get-OptionalJsonStringArrayValue {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string]$PropertyName
+    )
+
+    $value = Get-OptionalJsonPropertyValue `
+        -InputObject $InputObject `
+        -PropertyName $PropertyName
+    foreach ($item in @($value)) {
+        if ($null -ne $item) {
+            [string]$item
+        }
     }
 }
 
@@ -348,15 +407,26 @@ function Assert-ExactDeferredUninstallState {
         throw "Release provenance has an inconsistent Windows signing posture"
     }
 
-    if ([int]$cleanupRecord.schema_version -ne 1 -or
-        [string]$cleanupRecord.status -cne "pending-reboot" -or
-        [string]$cleanupRecord.transaction_id -cnotmatch "^[0-9a-f]{32}$" -or
-        [string]$cleanupRecord.cleanup_boot_identifier -cne "" -or
-        [string]$cleanupRecord.uninstall_boot_identifier -cnotmatch (
+    $cleanupBootIdentifier = Get-OptionalJsonStringValue `
+        -InputObject $cleanupRecord `
+        -PropertyName "cleanup_boot_identifier"
+    if ([int]$cleanupRecord.schema_version -ne 1) {
+        throw "Same-boot uninstall retained an unsupported cleanup record schema"
+    }
+    if ([string]$cleanupRecord.status -cne "pending-reboot") {
+        throw "Same-boot uninstall cleanup record is not pending reboot"
+    }
+    if ([string]$cleanupRecord.transaction_id -cnotmatch "^[0-9a-f]{32}$") {
+        throw "Same-boot uninstall cleanup record has an invalid transaction identity"
+    }
+    if ($cleanupBootIdentifier -cne "") {
+        throw "Same-boot uninstall cleanup record prematurely names a cleanup boot"
+    }
+    if ([string]$cleanupRecord.uninstall_boot_identifier -cnotmatch (
             "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-" +
             "[0-9a-f]{4}-[0-9a-f]{12}$"
         )) {
-        throw "Same-boot uninstall did not retain the exact pending cleanup record"
+        throw "Same-boot uninstall cleanup record has an invalid uninstall boot identity"
     }
     $transactionID = [string]$cleanupRecord.transaction_id
     foreach ($pathBinding in @(
@@ -398,6 +468,9 @@ function Assert-ExactDeferredUninstallState {
         throw "Same-boot uninstall cleanup record does not bind the exact release Setup digest"
     }
     $transaction = $transactionJournal.transaction
+    $transactionMaintenanceSHA256 = Get-OptionalJsonStringValue `
+        -InputObject $transaction `
+        -PropertyName "maintenance_sha256"
     if ([int]$transactionJournal.schema_version -ne 2 -or
         [string]$transactionJournal.phase -cne "converged" -or
         [int]$transaction.schema_version -ne 1 -or
@@ -408,7 +481,7 @@ function Assert-ExactDeferredUninstallState {
         [string]$transaction.previous_maintenance_sha256 -cne (
             [string]$cleanupRecord.maintenance_sha256
         ) -or
-        [string]$transaction.maintenance_sha256 -cne "" -or
+        $transactionMaintenanceSHA256 -cne "" -or
         [bool]$transaction.had_install -ne $true -or
         $null -eq $transaction.previous_state -or
         [bool]$transaction.delete_user_data -ne $true -or
@@ -472,17 +545,34 @@ function Assert-ExactDeferredUninstallState {
             throw "Converged uninstall retained a transaction artifact: $transactionArtifact"
         }
     }
-    $recordConnectors = @($cleanupRecord.verified_connectors | ForEach-Object { [string]$_ })
-    $journalConnectors = @($transaction.previous_connectors | ForEach-Object { [string]$_ })
+    $journalConnectors = @(
+        Get-OptionalJsonStringArrayValue `
+            -InputObject $transaction `
+            -PropertyName "previous_connectors"
+    )
+    $recordConnectors = @(
+        Get-OptionalJsonStringArrayValue `
+            -InputObject $cleanupRecord `
+            -PropertyName "verified_connectors"
+    )
     if ($recordConnectors.Count -ne 0 -or $journalConnectors.Count -ne 0) {
         throw "Connector-none release uninstall retained connector cleanup authority"
     }
+    $hookDataRoot = Get-OptionalJsonStringValue `
+        -InputObject $hookState `
+        -PropertyName "data_root"
+    $hookGatewayPath = Get-OptionalJsonStringValue `
+        -InputObject $hookState `
+        -PropertyName "gateway_path"
+    $hookGatewaySHA256 = Get-OptionalJsonStringValue `
+        -InputObject $hookState `
+        -PropertyName "gateway_sha256"
     if ([int]$hookState.schema_version -ne 2 -or
         [string]$hookState.status -cne "disabled" -or
         [string]$hookState.transaction_id -cne $transactionID -or
-        [string]$hookState.data_root -cne "" -or
-        [string]$hookState.gateway_path -cne "" -or
-        [string]$hookState.gateway_sha256 -cne "") {
+        $hookDataRoot -cne "" -or
+        $hookGatewayPath -cne "" -or
+        $hookGatewaySHA256 -cne "") {
         throw "Same-boot uninstall did not retain the exact disabled HookRuntime state"
     }
     $expectedHookLauncherDigest = [string]$provenance.inputs.hook_launcher_sha256
@@ -511,12 +601,15 @@ function Assert-ExactDeferredUninstallState {
             $false
         )
     }
+    $signerThumbprintSHA256 = Get-OptionalJsonStringValue `
+        -InputObject $cleanupRecord `
+        -PropertyName "signer_thumbprint_sha256"
     if ($releaseUnsigned) {
         if ($hookSignature.Status -ne [System.Management.Automation.SignatureStatus]::NotSigned -or
             $null -ne $hookSignature.SignerCertificate -or
             [bool]$cleanupRecord.launcher_signed -ne $false -or
             [bool]$cleanupRecord.unsigned_local_artifact -ne $true -or
-            [string]$cleanupRecord.signer_thumbprint_sha256 -cne "") {
+            $signerThumbprintSHA256 -cne "") {
             throw "Explicitly unverified release retained inconsistent unsigned-local HookRuntime authority"
         }
     } else {
@@ -532,7 +625,7 @@ function Assert-ExactDeferredUninstallState {
                 $hookSignature.SignerCertificate.RawData
             )
         ).ToLowerInvariant()
-        if ([string]$cleanupRecord.signer_thumbprint_sha256 -cne $actualSignerDigest) {
+        if ($signerThumbprintSHA256 -cne $actualSignerDigest) {
             throw "Same-boot uninstall HookRuntime signer differs from the authenticated cleanup record"
         }
     }

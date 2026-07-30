@@ -26,6 +26,9 @@ being present in Setup and CI does not itself promote a certified release
 claim.
 </Callout>
 
+Native Windows x64 setup rejects this connector; use a supported macOS or
+Linux host.
+
 ## Setup
 
 ```powershell title="Native Windows PowerShell"
@@ -60,6 +63,11 @@ Do not substitute WSL, Docker, a VM, Git Bash, Cygwin, or MSYS. OpenCode's
 [installation page](https://opencode.ai/docs/) documents direct Windows
 installation through Chocolatey, Scoop, npm, Mise, or the release binary; the
 Bun install path is still described there as work in progress on Windows.
+
+`setup opencode` is the dedicated OpenCode alias. See the
+[quick-alias reference](/docs/setup/guardrail/aliases) for its common setup
+options and [full guardrail setup](/docs/setup/guardrail) for advanced scanner
+and judge configuration.
 
 #### Version contract
 
@@ -129,7 +137,7 @@ DefenseClaw v1 governs opencode tool execution via the bridge plugin. opencode's
 ## Disable
 
 ```bash
-defenseclaw setup guardrail --disable
+defenseclaw guardrail disable --connector opencode --yes
 ```
 
 Teardown removes the managed plugin when it is unchanged since Setup. If the

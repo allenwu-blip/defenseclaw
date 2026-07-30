@@ -722,13 +722,7 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 			reported(CorrelationTargetSession, ns, "session", "sessionId"),
 			reported(CorrelationTargetChildAgent, ns, "subagent", "subagent_id", "subagentId"),
 		)
-		native := appendBindings(nativeStandard(ns),
-			reported(CorrelationTargetTurn, ns, "turn", "github.copilot.turn_id"),
-			// interaction_id identifies one native chat/LLM request, not a user
-			// message. Documented hook payloads do not carry this ID.
-			reported(CorrelationTargetModelRequest, ns, "interaction", "github.copilot.interaction_id"),
-		)
-		return makeSpec(CorrelationProfileCopilotV1, "copilot-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP}, bindings, native, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool, CorrelationInferenceTraceLink}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessComplete, "documented hooks expose session membership but not native turn, interaction, response, or tool-call IDs"))
+		return makeSpec(CorrelationProfileCopilotV1, "copilot-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "documented hooks expose session membership but not stable turn, interaction, response, or tool-call IDs; no official native OTLP surface is claimed"))
 	case "openhands":
 		bindings := appendBindings(base,
 			reported(CorrelationTargetSession, ns, "conversation", "conversation_id", "conversationId"),

@@ -339,9 +339,6 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 	if c.name == "geminicli" {
 		profile.NativeOTLP = geminiCLINativeOTLPSpec(opts)
 	}
-	if c.name == "copilot" {
-		profile.NativeOTLP = copilotNativeOTLPSpec(opts)
-	}
 	if c.name == "antigravity" {
 		// Antigravity's documented stdin is camelCase and intentionally omits
 		// the event name. Setup binds each handler to a distinct --event
@@ -399,25 +396,6 @@ func windsurfProfileDecode(payload map[string]interface{}) HookProfileRequest {
 			"turn_id", "turnId", "turnID",
 		),
 		Payload: payload,
-	}
-}
-
-func copilotNativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
-	headers := map[string]string{
-		"x-defenseclaw-source": "copilot",
-		"x-defenseclaw-client": "copilot-otel/1.0",
-	}
-	if opts.APIToken != "" {
-		headers["x-defenseclaw-token"] = opts.APIToken
-	}
-	return &NativeOTLPSpec{
-		Kind:               NativeOTLPEnvBlock,
-		Endpoint:           "http://" + strings.TrimSpace(opts.APIAddr),
-		Protocol:           "http/json",
-		Headers:            headers,
-		ServiceName:        "copilot",
-		ResourceAttributes: map[string]string{"service.name": "copilot", "defenseclaw.connector": "copilot"},
-		ExtraEnv:           map[string]string{"COPILOT_OTEL_ENABLED": "true"},
 	}
 }
 
@@ -646,18 +624,9 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
 		caps.Telemetry = TelemetryCapability{
-			NativeOTLP:    true,
-			NativeSignals: []string{"traces", "metrics"},
-			HookSignals:   []string{"logs", "metrics", "traces"},
-			Env: []EnvRequirement{
-				{Name: "COPILOT_OTEL_ENABLED", Scope: EnvScopeProcess, Required: false, Description: "Set to true in the Copilot CLI process environment to enable native OpenTelemetry."},
-				{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point Copilot native OTLP at the DefenseClaw gateway /v1 endpoints."},
-				{Name: "OTEL_EXPORTER_OTLP_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry x-defenseclaw-token and x-defenseclaw-source headers for native OTLP authentication."},
-			},
-			AuthMode:         "header-token",
-			EndpointTemplate: "http://" + opts.APIAddr,
-			SourceModes:      []string{"native", "hook"},
-			Notes:            []string{"DefenseClaw reports the required environment variables but does not mutate shell rc files."},
+			HookSignals: []string{"logs", "metrics", "traces"},
+			SourceModes: []string{"hook"},
+			Notes:       []string{"GitHub documents the hook event bus used for DefenseClaw telemetry; no official Copilot CLI native OTLP exporter is claimed."},
 		}
 	case "antigravity":
 		caps.MCP = SurfaceCapability{
