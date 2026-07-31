@@ -966,6 +966,79 @@ with open(sys.argv[2], encoding="utf-8") as fh:
 	}
 }
 
+func TestOmnigentOfficialSixPhaseFixturePreservesBoundedForensics(t *testing.T) {
+	python := omnigentTestPython(t)
+	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modulePath := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
+	if err := os.WriteFile(modulePath, templateBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixturePath := filepath.Join("testdata", "omnigent-policy-six-phase.json")
+	script := `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("defenseclaw_omnigent_policy", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+with open(sys.argv[2], encoding="utf-8") as fh:
+    events = json.load(fh)
+payloads = [module._payload(event) for event in events]
+partial = module._payload({
+    "type": "request",
+    "data": "bounded labels",
+    "context": {"labels": {str(i): "value" for i in range(module._MAX_LABELS + 1)}},
+})
+print(json.dumps({"payloads": payloads, "partial": partial}, sort_keys=True))
+`
+	output, err := exec.Command(python, "-c", script, modulePath, fixturePath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("normalize official six-phase fixture: %v\n%s", err, output)
+	}
+	var result struct {
+		Payloads []map[string]interface{} `json:"payloads"`
+		Partial  map[string]interface{}   `json:"partial"`
+	}
+	if err := json.Unmarshal(output, &result); err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{"UserPromptSubmit", "PreToolUse", "PostToolUse", "AfterAgentResponse", "BeforeModel", "AfterModel"}
+	if len(result.Payloads) != len(wantEvents) {
+		t.Fatalf("normalized phase count = %d, want %d", len(result.Payloads), len(wantEvents))
+	}
+	for i, want := range wantEvents {
+		if got := result.Payloads[i]["hook_event_name"]; got != want {
+			t.Fatalf("phase[%d] event = %v, want %s", i, got, want)
+		}
+	}
+	beforeModel := result.Payloads[4]
+	prompt, _ := beforeModel["prompt"].(string)
+	for _, want := range []string{
+		"[OmniGent system_prompt_preview]\nFollow the system safety policy.",
+		"[OmniGent last_user_message]\nDo not skip the user request.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("BeforeModel prompt %q missing %q", prompt, want)
+		}
+	}
+	usage, _ := beforeModel["usage"].(map[string]interface{})
+	labels, _ := beforeModel["omnigent_labels"].(map[string]interface{})
+	if beforeModel["model"] != "test-model" || beforeModel["omnigent_harness"] != "codex-native" ||
+		usage["total_cost_usd"] != 0.0012 || labels["environment"] != "fixture" {
+		t.Fatalf("bounded forensic metadata = %#v", beforeModel)
+	}
+	if _, invented := beforeModel["session_id"]; invented {
+		t.Fatalf("v0.7 PolicyEvent does not expose a session id: %#v", beforeModel)
+	}
+	if beforeModel["omnigent_session_id_status"] != "unavailable_in_v0.7_policy_event" {
+		t.Fatalf("missing truthful session-correlation status: %#v", beforeModel)
+	}
+	if result.Partial["omnigent_label_projection_partial"] != true {
+		t.Fatalf("oversized label projection was not marked partial: %#v", result.Partial)
+	}
+}
+
 func TestOmnigentOfficialShapedRequestSchemaFixture(t *testing.T) {
 	python := omnigentTestPython(t)
 	templateBytes, err := hookFS.ReadFile("hooks/omnigent-policy.py")
@@ -1075,10 +1148,49 @@ func TestOmnigentConfigPathMatchesUpstreamGlobalConfigResolution(t *testing.T) {
 	OmnigentConfigPathOverride = ""
 	t.Cleanup(func() { OmnigentConfigPathOverride = previous })
 	configHome := t.TempDir()
+	t.Setenv("OMNIGENT_CONFIG", "")
 	t.Setenv("OMNIGENT_CONFIG_HOME", configHome)
 	t.Setenv("OMNIGENT_DATA_DIR", filepath.Join(t.TempDir(), "state-only"))
 	if got, want := omnigentConfigPath(), filepath.Join(configHome, "config.yaml"); got != want {
 		t.Fatalf("omnigentConfigPath() = %q, want %q", got, want)
+	}
+}
+
+func TestOmnigentExplicitConfigPathTakesPrecedence(t *testing.T) {
+	previous := OmnigentConfigPathOverride
+	OmnigentConfigPathOverride = ""
+	t.Cleanup(func() { OmnigentConfigPathOverride = previous })
+	explicit := filepath.Join(t.TempDir(), "server.yaml")
+	t.Setenv("OMNIGENT_CONFIG", explicit)
+	t.Setenv("OMNIGENT_CONFIG_HOME", t.TempDir())
+	if got := omnigentConfigPath(); got != explicit {
+		t.Fatalf("omnigentConfigPath() = %q, want explicit %q", got, explicit)
+	}
+}
+
+func TestOmnigentTelemetryAndInventoryCapabilitiesMatchV07(t *testing.T) {
+	spec := omnigentNativeOTLPSpec(SetupOpts{APIAddr: "127.0.0.1:18970"})
+	if spec.ExtraEnv["OMNIGENT_TELEMETRY_ENABLED"] != "true" ||
+		spec.ExtraEnv["OMNIGENT_OTEL_CAPTURE_CONTENT"] != "false" {
+		t.Fatalf("native OTLP environment = %#v", spec.ExtraEnv)
+	}
+	conn := NewOmnigentConnector()
+	if conn.SupportsComponentScanning() {
+		t.Fatal("OmniGent component inventory must remain unsupported until bounded vendor sources are implemented")
+	}
+	if targets := conn.ComponentTargets(""); len(targets) != 0 {
+		t.Fatalf("unsupported OmniGent inventory advertised targets: %#v", targets)
+	}
+}
+
+func TestOmnigentReviewedVersionRangeIsOnlyV07(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{{"0.6.99", false}, {"0.7.0", true}, {"0.7.99", true}, {"0.8.0", false}} {
+		if got := omnigentVersionInReviewedRange(tc.version); got != tc.want {
+			t.Errorf("omnigentVersionInReviewedRange(%q) = %v, want %v", tc.version, got, tc.want)
+		}
 	}
 }
 

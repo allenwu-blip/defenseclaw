@@ -10,7 +10,8 @@ keywords:
 
 The OmniGent connector uses OmniGent's documented custom Python policy API. It does not proxy OmniGent's model traffic. A small in-process policy bridge sends each policy event to the local DefenseClaw gateway, then maps the result back to OmniGent `ALLOW`, `ASK`, or `DENY`.
 
-On Windows this is a **native degraded preview** for OmniGent 0.7.0 or newer.
+On Windows this is a **native degraded preview** for the reviewed OmniGent
+0.7.x range (`>=0.7.0,<0.8.0`).
 Only `omnigent server` and SDK-based harnesses are in scope. Native
 tmux/PTY terminal wrappers, filesystem/network sandboxing, and the L7 egress
 proxy are unavailable; DefenseClaw does not emulate them with WSL or a shell
@@ -45,9 +46,14 @@ Restart OmniGent after setup so it reloads the policy registry. DefenseClaw:
 options and [full guardrail setup](/docs/setup/guardrail) for advanced scanner
 and judge configuration.
 
-When `OMNIGENT_CONFIG_HOME` is set, DefenseClaw and OmniGent both use
-`$OMNIGENT_CONFIG_HOME/config.yaml`; otherwise they use
-`~/.omnigent/config.yaml`.
+DefenseClaw patches the explicit `OMNIGENT_CONFIG` path when set, then
+`$OMNIGENT_CONFIG_HOME/config.yaml`, and finally `~/.omnigent/config.yaml`.
+OmniGent's CLI server loads an empty configuration when `--config` is omitted,
+so always pass the same patched file to `omnigent server --config`. Hosted
+server entrypoints can instead consume `OMNIGENT_CONFIG`. Doctor reports PASS
+only when the recorded live server process proves the same effective path via
+`--config` or readable process-environment evidence; a valid file without that
+binding is reported as unverified rather than healthy.
 
 The connector must write the `.pth` file into the Python environment that owns
 the `omnigent` executable. Use an isolated environment that your user can
@@ -98,6 +104,13 @@ The bridge connects directly to the configured gateway with ambient
 HTTP(S)/Windows proxies disabled and rejects redirects so its scoped credential
 and inspected content stay on that origin.
 
+For `llm_request`, the bridge inspects both separately labeled
+`system_prompt_preview` and `last_user_message` fields within fixed bounds.
+It also forwards bounded cumulative token usage and cost, model, harness,
+actor client ID, and label metadata. Oversized or invalid label projections are
+marked partial. OmniGent v0.7 policy callbacks expose no session identifier, so
+the bridge records that field as unavailable rather than inventing correlation.
+
 The official extension is an awaited in-process Python function. It does not
 read policy events from stdin, write verdicts to stdout, or communicate an
 enforcement result through a process exit code. A bridge exception is
@@ -118,6 +131,7 @@ Setup creates the owner-only token and successful teardown revokes it.
 ```powershell
 $tokenPath = Join-Path $env:USERPROFILE '.defenseclaw\hooks\.otlp-omnigent.token'
 $otlpToken = [IO.File]::ReadAllText($tokenPath).Trim()
+$env:OMNIGENT_TELEMETRY_ENABLED = 'true'
 $env:OTEL_EXPORTER_OTLP_ENDPOINT = 'http://127.0.0.1:18970'
 $env:OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf'
 $env:OTEL_EXPORTER_OTLP_HEADERS = "authorization=Bearer%20$otlpToken,x-defenseclaw-source=omnigent,x-defenseclaw-client=omnigent-otel%2F1.0"
@@ -137,8 +151,8 @@ cannot verify another process's environment.
 OmniGent 0.7.0 policy events do not publish stable session, turn, tool-call, or
 model-request IDs. Native spans can carry OmniGent's `session.id`, but there is
 no source-proven field that joins that native session to a policy event.
-DefenseClaw therefore records native session correlation as partial and does
-not infer missing cross-rail identities.
+DefenseClaw therefore labels policy-event session correlation unavailable and
+does not infer missing cross-rail identities.
 
 ## Local surfaces
 
@@ -151,7 +165,10 @@ not infer missing cross-rail identities.
   </Folder>
 </Files>
 
-DefenseClaw v1 does not modify OmniGent MCP, skill, rule, plugin, or agent-bundle configuration.
+Official OmniGent agent YAML can declare local functions, MCP tools, and
+subagents. DefenseClaw v1 neither modifies nor scans those sources, so MCP,
+function, subagent, skill, rule, plugin, and agent-bundle inventory remains
+unsupported and unverified instead of appearing as an empty live inventory.
 
 ## Hook capabilities
 

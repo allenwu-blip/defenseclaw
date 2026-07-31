@@ -100,7 +100,10 @@ func omnigentNativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
 		PerSignal:          true,
 		ServiceName:        "omnigent",
 		ResourceAttributes: map[string]string{"service.name": "omnigent", "defenseclaw.connector": "omnigent"},
-		ExtraEnv:           map[string]string{"OMNIGENT_OTEL_CAPTURE_CONTENT": "false"},
+		ExtraEnv: map[string]string{
+			"OMNIGENT_TELEMETRY_ENABLED":    "true",
+			"OMNIGENT_OTEL_CAPTURE_CONTENT": "false",
+		},
 	}
 }
 
@@ -118,7 +121,7 @@ func (c *OmnigentConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Scope:              "user",
 			ConfigPath:         configPath,
 		},
-		MCP:     unsupportedSurface("OmniGent MCP configuration is managed by OmniGent and is not modified by this connector."),
+		MCP:     unsupportedSurface("OmniGent agent YAML can declare functions, MCP tools, and subagents, but this connector does not scan those sources; inventory is unsupported and unverified."),
 		Skills:  unsupported,
 		Rules:   unsupported,
 		Plugins: unsupported,
@@ -132,6 +135,8 @@ func (c *OmnigentConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			HookSignals:   []string{"logs", "metrics", "traces"},
 			ConfigPaths:   []string{configPath},
 			Env: []EnvRequirement{
+				{Name: "OMNIGENT_TELEMETRY_ENABLED", Scope: EnvScopeProcess, Required: false, Description: "Set to true to opt in to OmniGent native telemetry."},
+				{Name: "OMNIGENT_OTEL_CAPTURE_CONTENT", Scope: EnvScopeProcess, Required: false, Description: "Keep false so native telemetry does not capture prompt or completion content."},
 				{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point OmniGent native OTLP at the DefenseClaw gateway."},
 				{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Scope: EnvScopeProcess, Required: false, Description: "Set to http/protobuf for DefenseClaw OTLP ingestion."},
 				{Name: "OTEL_EXPORTER_OTLP_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry the connector-scoped Authorization bearer plus x-defenseclaw-source and x-defenseclaw-client headers for native OTLP authentication and attribution."},
@@ -502,7 +507,7 @@ func (c *OmnigentConnector) RequiredEnv() []EnvRequirement {
 	}}, c.Capabilities(SetupOpts{APIAddr: "127.0.0.1:18970"}).Telemetry.Env...)
 }
 
-func (c *OmnigentConnector) SupportsComponentScanning() bool { return true }
+func (c *OmnigentConnector) SupportsComponentScanning() bool { return false }
 func (c *OmnigentConnector) ComponentTargets(string) map[string][]string {
 	return map[string][]string{}
 }
@@ -515,6 +520,15 @@ func omnigentPolicyModulePath(opts SetupOpts) string {
 func omnigentConfigPath() string {
 	if OmnigentConfigPathOverride != "" {
 		return OmnigentConfigPathOverride
+	}
+	if explicit := strings.TrimSpace(os.Getenv("OMNIGENT_CONFIG")); explicit != "" {
+		if strings.HasPrefix(explicit, "~/") || strings.HasPrefix(explicit, `~\`) {
+			return filepath.Join(homePath(), explicit[2:])
+		}
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return filepath.Clean(absolute)
+		}
+		return filepath.Clean(explicit)
 	}
 	if home := strings.TrimSpace(os.Getenv("OMNIGENT_CONFIG_HOME")); home != "" {
 		return filepath.Join(home, "config.yaml")
@@ -591,8 +605,8 @@ func omnigentSitePackages(ctx context.Context, opts SetupOpts) (string, error) {
 	if installedVersion == "" {
 		return "", fmt.Errorf("omnigent connector: Python returned invalid OmniGent package version %q", lines[len(lines)-2])
 	}
-	if runtime.GOOS == "windows" && compareVersion(installedVersion, "0.7.0") < 0 {
-		return "", fmt.Errorf("omnigent connector: native Windows degraded mode requires OmniGent 0.7.0 or newer, found %s", installedVersion)
+	if runtime.GOOS == "windows" && !omnigentVersionInReviewedRange(installedVersion) {
+		return "", fmt.Errorf("omnigent connector: native Windows degraded mode supports the reviewed OmniGent 0.7.x range, found %s", installedVersion)
 	}
 	if selectedVersion := NormalizeAgentVersion("omnigent", opts.AgentVersion); selectedVersion != "" && selectedVersion != installedVersion {
 		return "", fmt.Errorf("omnigent connector: selected executable version %s does not match its Python environment version %s", selectedVersion, installedVersion)
@@ -602,6 +616,10 @@ func omnigentSitePackages(ctx context.Context, opts SetupOpts) (string, error) {
 		return "", fmt.Errorf("omnigent connector: Python returned a non-absolute site-packages path %q", path)
 	}
 	return filepath.Clean(path), nil
+}
+
+func omnigentVersionInReviewedRange(version string) bool {
+	return compareVersion(version, "0.7.0") >= 0 && compareVersion(version, "0.8.0") < 0
 }
 
 func resolveOmnigentExecutable(opts SetupOpts) (string, error) {

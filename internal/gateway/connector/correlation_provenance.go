@@ -104,6 +104,12 @@ func correlationContractSources(name string) []CorrelationContractSource {
 					AgentVersion: "0.7.0", EvidenceKind: "provider-source-derived",
 				},
 				{
+					ID: "omnigent-policy-six-phase-35519fb", Surface: CorrelationSurfaceHook,
+					Path:         "internal/gateway/connector/testdata/omnigent-policy-six-phase.json",
+					SHA256:       "sha256:34739a7e016f8792c6a27af61e9def2e9676e69595e0051a9a6da3c28b9c25a4",
+					AgentVersion: "0.7.0", EvidenceKind: "provider-source-derived",
+				},
+				{
 					ID: "omnigent-otel-span-35519fb", Surface: CorrelationSurfaceNativeOTLP,
 					Path:         "internal/gateway/connector/testdata/omnigent-otel-span.json",
 					SHA256:       "sha256:4a801230dcb078821cdbde81269ac558532fc55de1525a67d29993b32e245ca7",

@@ -947,11 +947,15 @@ def hermes_legacy_config_path() -> str:
 def omnigent_config_path() -> str:
     """Return OmniGent's effective user-level ``config.yaml`` path.
 
-    OmniGent resolves ``OMNIGENT_CONFIG_HOME/config.yaml`` before its
-    ``~/.omnigent/config.yaml`` default. Keeping this in one resolver ensures
-    discovery, bootstrap, doctor, inventory, and setup all inspect the file
-    that OmniGent itself loads.
+    OmniGent's hosted server entrypoints resolve an explicit
+    ``OMNIGENT_CONFIG`` file before ``OMNIGENT_CONFIG_HOME/config.yaml`` and
+    the ``~/.omnigent/config.yaml`` default. The CLI server still needs that
+    selected path passed with ``--config``; Doctor verifies that separately
+    from this setup-time resolver.
     """
+    explicit = (os.environ.get("OMNIGENT_CONFIG") or "").strip()
+    if explicit:
+        return os.path.abspath(_expand(explicit))
     return os.path.join(_omnigent_config_home(), "config.yaml")
 
 
@@ -3215,8 +3219,8 @@ def set_mcp_server(
         return
     if name_n == "omnigent":
         raise MCPWriteUnsupportedError(
-            "omnigent MCP configuration is managed by OmniGent; the DefenseClaw "
-            "connector only installs a custom policy bridge.",
+            "omnigent MCP configuration is unsupported and unverified by the "
+            "DefenseClaw connector; only the custom policy bridge is installed.",
         )
     if name_n == "zeptoclaw":
         raise MCPWriteUnsupportedError(
@@ -3316,8 +3320,8 @@ def unset_mcp_server(
         return
     if name_n == "omnigent":
         raise MCPWriteUnsupportedError(
-            "omnigent MCP configuration is managed by OmniGent; the DefenseClaw "
-            "connector only installs a custom policy bridge.",
+            "omnigent MCP configuration is unsupported and unverified by the "
+            "DefenseClaw connector; only the custom policy bridge is installed.",
         )
     if name_n == "zeptoclaw":
         raise MCPWriteUnsupportedError(

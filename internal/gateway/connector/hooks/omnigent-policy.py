@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import urllib.error
 import urllib.request
 from typing import Any
@@ -40,6 +41,12 @@ _MAX_ATTACHMENTS = 16
 _MAX_ATTACHMENT_TEXT_CHARS = 32 * 1024
 _MAX_ATTACHMENT_TOTAL_TEXT_CHARS = 128 * 1024
 _MAX_ATTACHMENT_METADATA_CHARS = 1024
+_MAX_LLM_PREVIEW_CHARS = 30 * 1024
+_MAX_CONTEXT_TEXT_CHARS = 1024
+_MAX_LABELS = 32
+_MAX_LABEL_KEY_CHARS = 128
+_MAX_LABEL_VALUE_CHARS = 1024
+_MAX_USAGE_VALUE = 10**15
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -156,6 +163,78 @@ def _request_inspection_text(
     return "\n\n".join(parts)
 
 
+def _llm_request_inspection_text(data: Any) -> tuple[str, bool]:
+    """Keep both official v0.7 LLM-request previews visible and bounded."""
+    if not isinstance(data, dict):
+        return "", False
+    parts: list[str] = []
+    truncated = False
+    for field in ("system_prompt_preview", "last_user_message"):
+        value = data.get(field)
+        if not isinstance(value, str) or not value:
+            continue
+        bounded = value[:_MAX_LLM_PREVIEW_CHARS]
+        truncated = truncated or len(value) > len(bounded)
+        parts.append(f"[OmniGent {field}]\n{bounded}")
+    return "\n\n".join(parts), truncated
+
+
+def _bounded_text(value: Any) -> tuple[str, bool]:
+    if value is None:
+        return "", False
+    text = value if isinstance(value, str) else str(value)
+    return text[:_MAX_CONTEXT_TEXT_CHARS], len(text) > _MAX_CONTEXT_TEXT_CHARS
+
+
+def _bounded_usage(value: Any) -> tuple[dict[str, int | float], bool]:
+    """Project only the documented cumulative v0.7 usage counters."""
+    if value is None:
+        return {}, False
+    if not isinstance(value, dict):
+        return {}, True
+    result: dict[str, int | float] = {}
+    partial = False
+    for key in ("input_tokens", "output_tokens", "total_tokens", "total_cost_usd"):
+        candidate = value.get(key)
+        if candidate is None:
+            continue
+        if (
+            isinstance(candidate, bool)
+            or not isinstance(candidate, (int, float))
+            or not math.isfinite(float(candidate))
+            or float(candidate) < 0
+            or float(candidate) > _MAX_USAGE_VALUE
+        ):
+            partial = True
+            continue
+        result[key] = candidate
+    return result, partial
+
+
+def _bounded_labels(value: Any) -> tuple[dict[str, str], bool]:
+    """Bound OmniGent labels before forwarding operator-controlled metadata."""
+    if value is None:
+        return {}, False
+    if not isinstance(value, dict):
+        return {}, True
+    result: dict[str, str] = {}
+    partial = len(value) > _MAX_LABELS
+    for index, (key, item) in enumerate(value.items()):
+        if index >= _MAX_LABELS:
+            break
+        if not isinstance(key, str) or not isinstance(item, str):
+            partial = True
+            continue
+        bounded_key = key[:_MAX_LABEL_KEY_CHARS]
+        bounded_value = item[:_MAX_LABEL_VALUE_CHARS]
+        if not bounded_key or bounded_key in result:
+            partial = True
+            continue
+        partial = partial or bounded_key != key or bounded_value != item
+        result[bounded_key] = bounded_value
+    return result, partial
+
+
 def _payload(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(event.get("type") or "")
     data = event.get("data")
@@ -168,6 +247,7 @@ def _payload(event: dict[str, Any]) -> dict[str, Any]:
     prompt = ""
     attachments: list[dict[str, Any]] = []
     tool_response: Any = None
+    content_truncated = False
 
     if event_type == "tool_call" and isinstance(data, dict):
         tool_name = str(data.get("name") or tool_name)
@@ -183,17 +263,23 @@ def _payload(event: dict[str, Any]) -> dict[str, Any]:
             user_content, prompt_truncated = _request_user_text(data)
             attachments, attachments_truncated = _request_attachments(data)
             prompt = _request_inspection_text(user_content, attachments)
+            content_truncated = prompt_truncated or attachments_truncated
         else:
             tool_response = data
     elif isinstance(data, dict):
         if event_type == "llm_request":
-            prompt = str(data.get("last_user_message") or data.get("system_prompt_preview") or "")
+            prompt, content_truncated = _llm_request_inspection_text(data)
         elif event_type == "llm_response":
             tool_response = data.get("text_preview", data)
 
     actor = context.get("actor")
     if not isinstance(actor, dict):
         actor = {}
+    actor_client_id, actor_partial = _bounded_text(actor.get("client_id"))
+    model, model_partial = _bounded_text(context.get("model"))
+    harness, harness_partial = _bounded_text(context.get("harness"))
+    usage, usage_partial = _bounded_usage(context.get("usage"))
+    labels, labels_partial = _bounded_labels(context.get("labels"))
 
     payload: dict[str, Any] = {
         "hook_event_name": _EVENT_NAMES.get(event_type, event_type or "PolicyEvaluation"),
@@ -203,16 +289,27 @@ def _payload(event: dict[str, Any]) -> dict[str, Any]:
         # OmniGent documents this as the calling actor/client identity, not as
         # an agent identity. Keep the exact meaning for audit without letting
         # the generic correlation decoder reinterpret it as ``agent_id``.
-        "omnigent_actor_client_id": str(actor.get("client_id") or ""),
-        "model": str(context.get("model") or ""),
+        "omnigent_actor_client_id": actor_client_id,
+        "model": model,
+        "omnigent_session_id_status": "unavailable_in_v0.7_policy_event",
         "tool_name": tool_name,
         "tool_input": _safe(tool_input),
     }
+    if harness:
+        payload["omnigent_harness"] = harness
+    if usage:
+        payload["usage"] = usage
+    if labels:
+        payload["omnigent_labels"] = labels
+    if labels_partial:
+        payload["omnigent_label_projection_partial"] = True
+    if actor_partial or model_partial or harness_partial or usage_partial:
+        payload["omnigent_metadata_projection_partial"] = True
     if prompt:
         payload["prompt"] = prompt
     if attachments:
         payload["omnigent_attachments"] = attachments
-    if event_type == "request" and (prompt_truncated or attachments_truncated):
+    if content_truncated:
         payload["omnigent_content_truncated"] = True
     if tool_response is not None:
         payload["tool_response"] = _safe(tool_response)

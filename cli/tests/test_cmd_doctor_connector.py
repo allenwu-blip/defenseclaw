@@ -67,6 +67,7 @@ from defenseclaw.commands.cmd_doctor import (
     _doctor_label_suffix,
     _DoctorResult,
     _fix_plugin_registry_required,
+    _omnigent_live_config_evidence,
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
     _windows_native_hook_check,
@@ -1316,7 +1317,11 @@ class TestCheckHookHealth(unittest.TestCase):
                     fh,
                 )
             r = _DoctorResult()
-            _check_omnigent_policy_health(cfg, r)
+            with patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_live_config_evidence",
+                return_value=("pass", f"live effective config verified through --config={config}"),
+            ):
+                _check_omnigent_policy_health(cfg, r)
         self.assertEqual(r.checks[-1]["status"], "pass")
 
     def test_omnigent_missing_import_shim_fails(self) -> None:
@@ -1395,9 +1400,149 @@ class TestCheckHookHealth(unittest.TestCase):
             cfg.data_dir = tmp
             with patch.dict(os.environ, {"OMNIGENT_CONFIG_HOME": config_home}):
                 r = _DoctorResult()
-                _check_omnigent_policy_health(cfg, r)
+                with patch(
+                    "defenseclaw.commands.cmd_doctor._omnigent_live_config_evidence",
+                    return_value=("pass", f"live effective config verified through --config={config}"),
+                ):
+                    _check_omnigent_policy_health(cfg, r)
 
         self.assertEqual(r.checks[-1]["status"], "pass")
+
+    def test_omnigent_valid_artifacts_without_live_server_warn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = os.path.join(tmp, "config.yaml")
+            module = os.path.join(tmp, "defenseclaw_omnigent_policy.py")
+            pth = os.path.join(tmp, "defenseclaw_omnigent.pth")
+            with open(config, "w", encoding="utf-8") as fh:
+                fh.write("policy_modules: [defenseclaw_omnigent_policy]\npolicies: {defenseclaw_guardrail: {}}\n")
+            with open(module, "w", encoding="utf-8") as fh:
+                fh.write("defenseclaw_policy = None\nPOLICY_REGISTRY = []\n")
+            with open(pth, "w", encoding="utf-8") as fh:
+                fh.write(tmp + "\n")
+            for logical, path in (("config", config), ("module", module), ("pth", pth)):
+                self._write_omnigent_backup(tmp, logical, path)
+            cfg = MagicMock()
+            cfg.data_dir = tmp
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump({"connectors": {"omnigent": {"locations": {
+                    "hook_config_paths": [config],
+                    "hook_script_paths": [module, pth],
+                }}}}, fh)
+            r = _DoctorResult()
+            with patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(0, "no recorded server"),
+            ):
+                _check_omnigent_policy_health(cfg, r)
+
+        self.assertEqual(r.checks[-1]["status"], "warn")
+        self.assertIn("unverified", r.checks[-1]["detail"])
+
+    def test_omnigent_live_config_evidence_matches_explicit_argument(self) -> None:
+        config = os.path.abspath("managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("omnigent.exe", "server", "--config", config),
+            ),
+        ):
+            status, detail = _omnigent_live_config_evidence(config)
+
+        self.assertEqual(status, "pass")
+        self.assertIn("--config", detail)
+
+    def test_omnigent_live_config_evidence_fails_on_mismatch(self) -> None:
+        managed = os.path.abspath("managed-omnigent-config.yaml")
+        other = os.path.abspath("other-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("omnigent.exe", "server", "--config", other),
+            ),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "fail")
+        self.assertIn("not managed", detail)
+
+    def test_omnigent_live_config_evidence_expands_user_path(self) -> None:
+        managed = os.path.join(os.path.expanduser("~"), "managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("omnigent.exe", "server", "--config", "~/managed-omnigent-config.yaml"),
+            ),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "pass")
+        self.assertIn("--config", detail)
+
+    def test_omnigent_live_config_evidence_warns_without_source(self) -> None:
+        managed = os.path.abspath("managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("omnigent.exe", "server", "--host", "127.0.0.1"),
+            ),
+            patch("defenseclaw.commands.cmd_doctor._read_process_env_var", return_value=""),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "warn")
+        self.assertIn("empty/default configuration", detail)
+
+    def test_omnigent_live_config_evidence_accepts_process_environment(self) -> None:
+        managed = os.path.abspath("managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("python", "-m", "omnigent", "server"),
+            ),
+            patch("defenseclaw.commands.cmd_doctor.sys.platform", "linux"),
+            patch("defenseclaw.commands.cmd_doctor._read_process_env_var", return_value=managed),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "pass")
+        self.assertIn("OMNIGENT_CONFIG", detail)
+
+    def test_omnigent_live_config_evidence_warns_for_relative_source(self) -> None:
+        managed = os.path.abspath("managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=("omnigent.exe", "server", "--config", "relative-config.yaml"),
+            ),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "warn")
+        self.assertIn("working directory", detail)
 
     def test_omnigent_policy_module_tamper_fails_digest_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

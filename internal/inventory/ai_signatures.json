@@ -659,6 +659,7 @@
         "omni"
       ],
       "config_paths": [
+        "$OMNIGENT_CONFIG",
         "$OMNIGENT_CONFIG_HOME/config.yaml",
         "$OMNIGENT_CONFIG_HOME",
         "~/.omnigent/config.yaml",
@@ -670,6 +671,7 @@
         "omnigent"
       ],
       "env_var_names": [
+        "OMNIGENT_CONFIG",
         "OMNIGENT_CONFIG_HOME",
         "OMNIGENT_DATA_DIR"
       ],

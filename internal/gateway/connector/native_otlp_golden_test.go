@@ -430,6 +430,7 @@ func TestNativeOTLPShape_Omnigent(t *testing.T) {
 		"OTEL_TRACES_EXPORTER",
 		"OTEL_RESOURCE_ATTRIBUTES",
 		"OTEL_SERVICE_NAME",
+		"OMNIGENT_TELEMETRY_ENABLED",
 		"OMNIGENT_OTEL_CAPTURE_CONTENT",
 	} {
 		if _, ok := env[want]; !ok {
@@ -444,6 +445,9 @@ func TestNativeOTLPShape_Omnigent(t *testing.T) {
 	}
 	if env["OMNIGENT_OTEL_CAPTURE_CONTENT"] != "false" {
 		t.Errorf("OMNIGENT_OTEL_CAPTURE_CONTENT = %q; want false", env["OMNIGENT_OTEL_CAPTURE_CONTENT"])
+	}
+	if env["OMNIGENT_TELEMETRY_ENABLED"] != "true" {
+		t.Errorf("OMNIGENT_TELEMETRY_ENABLED = %q; want true", env["OMNIGENT_TELEMETRY_ENABLED"])
 	}
 	for _, signal := range []string{"LOGS", "METRICS", "TRACES"} {
 		if got := env["OTEL_"+signal+"_EXPORTER"]; got != "otlp" {

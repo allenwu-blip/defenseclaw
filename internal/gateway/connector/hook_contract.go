@@ -754,9 +754,10 @@ var builtinHookContracts = map[string][]HookContract{
 		Connector:               "omnigent",
 		ContractID:              "omnigent-custom-policy-v1",
 		MinAgentVersion:         "0.7.0",
+		MaxAgentVersion:         "0.8.0",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v1",
-		HookConfigPathTemplates: []string{"$OMNIGENT_CONFIG_HOME/config.yaml", "~/.omnigent/config.yaml"},
+		HookConfigPathTemplates: []string{"$OMNIGENT_CONFIG", "$OMNIGENT_CONFIG_HOME/config.yaml", "~/.omnigent/config.yaml"},
 		ResponseFieldName:       "",
 		Events: []string{
 			"UserPromptSubmit",
@@ -783,7 +784,8 @@ var builtinHookContracts = map[string][]HookContract{
 			"DENY is authoritative on all six phases. Pre-action DENY prevents the action; post-phase DENY uses OmniGent's denial/sentinel behavior to suppress or replace onward-visible content but cannot roll back completed tool or model work. The bridge does not return custom replacement data.",
 			"ASK is native only for OmniGent's pre-action request, tool_call, and llm_request phases; post-phase confirm findings remain attributed audit and continue without an approval pause.",
 			"The in-process Python bridge forwards an active OpenTelemetry W3C trace context when present; otherwise DefenseClaw starts a new trace.",
-			"Optional native OTLP is inactive until the OmniGent launch process exports the standard environment variables; the base/default dependency set includes the required OpenTelemetry packages.",
+			"Optional native OTLP is inactive until the OmniGent launch process exports OMNIGENT_TELEMETRY_ENABLED=true and the standard OTLP variables; content capture remains disabled.",
+			"The v0.7 PolicyEvent context exposes bounded usage, cost, model, harness, actor, and labels but no session identifier; the bridge marks that correlation gap and marks partial label projections.",
 		},
 	}},
 }

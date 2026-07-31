@@ -594,6 +594,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
             "WINDSURF_USER_HOME": "D:\\authoritative-windsurf-profile",
             "WINDSURF_HOOK_CONFIG_PATH": "D:\\authoritative-windsurf-hooks.json",
             "OPENCODE_CONFIG_DIR": "D:\\authoritative-opencode-home",
+            "OMNIGENT_CONFIG": "D:\\authoritative-omnigent-config.yaml",
             "OMNIGENT_CONFIG_HOME": "D:\\authoritative-omnigent-home",
             "HERMES_HOME": "D:\\authoritative-hermes-home",
             "DEFENSECLAW_INSTALL_ROOT": "D:\\ambient-install-root",
@@ -636,6 +637,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
             ambient["WINDSURF_HOOK_CONFIG_PATH"],
         )
         self.assertEqual(child_env["OPENCODE_CONFIG_DIR"], ambient["OPENCODE_CONFIG_DIR"])
+        self.assertEqual(child_env["OMNIGENT_CONFIG"], ambient["OMNIGENT_CONFIG"])
         self.assertEqual(child_env["OMNIGENT_CONFIG_HOME"], ambient["OMNIGENT_CONFIG_HOME"])
         self.assertEqual(child_env["HERMES_HOME"], ambient["HERMES_HOME"])
         self.assertEqual(child_env[cmd_setup._DEFENSECLAW_HOME_ENV], os.path.abspath(data_dir))
@@ -659,6 +661,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
                 "WINDSURF_USER_HOME",
                 "WINDSURF_HOOK_CONFIG_PATH",
                 "OPENCODE_CONFIG_DIR",
+                "OMNIGENT_CONFIG",
                 "OMNIGENT_CONFIG_HOME",
                 "HERMES_HOME",
                 CONFIG_PATH_ENV,
@@ -720,6 +723,7 @@ class RotateTokenCommandFlowTests(unittest.TestCase):
             "DEFENSECLAW_CURSOR_CONFIG_HOME",
             "WINDSURF_USER_HOME",
             "WINDSURF_HOOK_CONFIG_PATH",
+            "OMNIGENT_CONFIG",
             "OMNIGENT_CONFIG_HOME",
         ):
             self.assertNotIn(name, child_env)

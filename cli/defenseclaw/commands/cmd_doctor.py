@@ -38,6 +38,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import click
 
@@ -2221,8 +2222,182 @@ def _omnigent_managed_artifact_drift(cfg, logical: str, path: str) -> str:
     return ""
 
 
+def _omnigent_local_server_pid() -> tuple[int, str]:
+    """Return OmniGent's live canonical server PID plus diagnostic detail."""
+    data_dir = (os.environ.get("OMNIGENT_DATA_DIR") or "").strip()
+    if data_dir:
+        data_dir = os.path.abspath(os.path.expanduser(data_dir))
+    else:
+        data_dir = os.path.join(os.path.abspath(str(Path.home())), ".omnigent")
+    pid_path = os.path.join(data_dir, "local_server.pid")
+    try:
+        if os.path.islink(pid_path) or not os.path.isfile(pid_path):
+            return 0, f"no trustworthy OmniGent server record at {pid_path}"
+        with open(pid_path, encoding="utf-8") as fh:
+            raw = fh.read(257)
+    except (OSError, UnicodeError):
+        return 0, f"OmniGent server record is unreadable: {pid_path}"
+    if len(raw) > 256:
+        return 0, f"OmniGent server record is oversized: {pid_path}"
+    lines = raw.strip().splitlines()
+    try:
+        pid = int(lines[0]) if len(lines) >= 2 else 0
+        port = int(lines[1]) if len(lines) >= 2 else 0
+    except ValueError:
+        pid = 0
+        port = 0
+    if pid <= 0 or port < 1 or port > 65535:
+        return 0, f"OmniGent server record is malformed: {pid_path}"
+    from defenseclaw.process_liveness import pid_alive
+
+    if not pid_alive(pid):
+        return 0, f"OmniGent server record is stale: {pid_path}"
+    return pid, f"recorded live OmniGent server pid={pid} port={port}"
+
+
+def _windows_command_line_argv(command_line: str) -> tuple[str, ...] | None:
+    """Parse one Windows process command line with CommandLineToArgvW."""
+    if not command_line or len(command_line) > 64 * 1024:
+        return None
+    try:  # pragma: no cover - native Windows API, callers test via seams
+        import ctypes
+        from ctypes import wintypes
+
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        command_line_to_argv = shell32.CommandLineToArgvW
+        command_line_to_argv.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int))
+        command_line_to_argv.restype = ctypes.POINTER(wintypes.LPWSTR)
+        local_free = ctypes.WinDLL("kernel32", use_last_error=True).LocalFree
+        local_free.argtypes = (ctypes.c_void_p,)
+        local_free.restype = ctypes.c_void_p
+        count = ctypes.c_int()
+        parsed = command_line_to_argv(command_line, ctypes.byref(count))
+        if not parsed:
+            return None
+        try:
+            return tuple(str(parsed[index]) for index in range(count.value))
+        finally:
+            local_free(ctypes.cast(parsed, ctypes.c_void_p))
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _omnigent_process_argv(pid: int) -> tuple[str, ...] | None:
+    """Read bounded argv evidence for a recorded OmniGent server process."""
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":  # pragma: no cover - exercised via mocks
+        script = (
+            "$targetPid = [int]$args[0]; "
+            "$process = Get-CimInstance -ClassName Win32_Process "
+            "-Filter ('ProcessId = ' + $targetPid); "
+            "if ($null -eq $process) { exit 3 }; "
+            "[Console]::Out.Write([string]$process.CommandLine)"
+        )
+        try:
+            proc = subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script, str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        return _windows_command_line_argv(proc.stdout)
+
+    proc_path = f"/proc/{pid}/cmdline"
+    try:
+        with open(proc_path, "rb") as fh:
+            raw = fh.read(64 * 1024 + 1)
+        if len(raw) > 64 * 1024:
+            return None
+        argv = tuple(part.decode("utf-8", "replace") for part in raw.split(b"\x00") if part)
+        return argv or None
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return None
+    if proc.returncode != 0 or len(proc.stdout) > 64 * 1024:
+        return None
+    try:
+        return tuple(shlex.split(proc.stdout.strip())) or None
+    except ValueError:
+        return None
+
+
+def _omnigent_server_command(argv: tuple[str, ...]) -> bool:
+    """Recognize official CLI and ``python -m omnigent server`` shapes."""
+    if len(argv) < 2:
+        return False
+    executable = os.path.basename(argv[0]).lower()
+    if executable in {"omnigent", "omnigent.exe", "omni", "omni.exe"}:
+        return argv[1] == "server"
+    return any(argv[index : index + 3] == ("-m", "omnigent", "server") for index in range(len(argv) - 2))
+
+
+def _omnigent_config_argument(argv: tuple[str, ...]) -> str:
+    for index, argument in enumerate(argv):
+        if argument in {"--config", "-c"}:
+            return argv[index + 1] if index + 1 < len(argv) else ""
+        if argument.startswith("--config="):
+            return argument.split("=", 1)[1]
+    return ""
+
+
+def _omnigent_live_config_evidence(config_path: str) -> tuple[str, str]:
+    """Bind a patched config to the recorded live official server."""
+    pid, record_detail = _omnigent_local_server_pid()
+    if pid <= 0:
+        return "warn", record_detail + "; effective policy config is unverified"
+    argv = _omnigent_process_argv(pid)
+    if not argv:
+        return "warn", record_detail + "; process command line is unreadable, so effective policy config is unverified"
+    if not _omnigent_server_command(argv):
+        return "warn", record_detail + "; recorded process is not a recognized OmniGent server command"
+
+    configured = _omnigent_config_argument(argv)
+    source = "--config"
+    if not configured and sys.platform != "win32":
+        configured = _read_process_env_var(pid, "OMNIGENT_CONFIG") or ""
+        source = "OMNIGENT_CONFIG"
+    if not configured:
+        return (
+            "warn",
+            record_detail
+            + "; server exposes neither a readable --config argument nor OMNIGENT_CONFIG evidence; "
+            "the official server may therefore be using its empty/default configuration",
+        )
+    configured_path = os.path.abspath(os.path.expanduser(configured))
+    if not os.path.isabs(os.path.expanduser(configured)):
+        return (
+            "warn",
+            f"{record_detail}; live {source} is relative, so Doctor cannot bind it "
+            "without the server's working directory",
+        )
+    if canonical_path(configured_path) != canonical_path(config_path):
+        return (
+            "fail",
+            f"{record_detail}; live {source} selects {configured_path}, not managed {config_path}",
+        )
+    return "pass", f"{record_detail}; live effective config verified through {source}={config_path}"
+
+
 def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
-    """Verify the config, policy module, and Python import shim as one unit."""
+    """Verify managed artifacts and bind them to the live server config."""
     config_paths = _hook_health_paths_from_lock(cfg, "omnigent") or [omnigent_config_path()]
     config_path = next((p for p in config_paths if os.path.isfile(p)), "")
     config_ok = bool(config_path) and all(
@@ -2261,10 +2436,11 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
         if drift := _omnigent_managed_artifact_drift(cfg, logical, path):
             _emit("fail", "OmniGent policy", drift, r=r)
             return
+    live_status, live_detail = _omnigent_live_config_evidence(config_path)
     _emit(
-        "pass",
+        live_status,
         "OmniGent policy",
-        f"native-degraded preview; config={config_path}; module={module_path}; import={pth_path}",
+        f"native-degraded preview; {live_detail}; module={module_path}; import={pth_path}",
         r=r,
     )
 

@@ -1329,7 +1329,7 @@ def connector_source_label(connector: str, category: str) -> str:
             "<plugin>/mcp_config.json (discovery-only)",
         ),
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
-        ("omnigent", "mcps"): ("managed by OmniGent; not modified by DefenseClaw",),
+        ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("claudecode", "plugins"): (os.path.join(claude_root, "plugins"),),
         ("codex", "plugins"): (
@@ -1367,7 +1367,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("openhands", "config"): ("~/.openhands/hooks.json",),
         ("antigravity", "config"): ("~/.gemini/config/hooks.json",),
         ("opencode", "config"): (opencode_plugin,),
-        ("omnigent", "config"): ("$OMNIGENT_CONFIG_HOME/config.yaml or ~/.omnigent/config.yaml",),
+        ("omnigent", "config"): ("$OMNIGENT_CONFIG, $OMNIGENT_CONFIG_HOME/config.yaml, or ~/.omnigent/config.yaml; CLI server requires --config",),
     }
     return ", ".join(sources.get((connector, category), ()))
 

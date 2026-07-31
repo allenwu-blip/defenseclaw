@@ -306,6 +306,26 @@ func TestHermesSignatureIncludesNativeWindowsPaths(t *testing.T) {
 	}
 }
 
+func TestOmnigentSignatureIncludesExplicitServerConfig(t *testing.T) {
+	sigs, err := LoadAISignatures()
+	if err != nil {
+		t.Fatalf("LoadAISignatures: %v", err)
+	}
+	for _, signature := range sigs {
+		if signature.ID != "omnigent" {
+			continue
+		}
+		if !stringSliceContains(signature.ConfigPaths, "$OMNIGENT_CONFIG") {
+			t.Errorf("OmniGent config paths omit OMNIGENT_CONFIG: %v", signature.ConfigPaths)
+		}
+		if !stringSliceContains(signature.EnvVarNames, "OMNIGENT_CONFIG") {
+			t.Errorf("OmniGent environment variables omit OMNIGENT_CONFIG: %v", signature.EnvVarNames)
+		}
+		return
+	}
+	t.Fatal("OmniGent signature missing")
+}
+
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -109,6 +109,52 @@ function Invoke-NativeChecked {
     }
 }
 
+function Invoke-LoopbackJson {
+    param(
+        [Parameter(Mandatory)][ValidateSet('GET', 'POST')][string]$Method,
+        [Parameter(Mandatory)][Uri]$Uri,
+        [object]$Body = $null
+    )
+    if ($Uri.Scheme -cne 'http' -or $Uri.Host -notin @('127.0.0.1', 'localhost')) {
+        throw "policy probe refused non-loopback URI: $Uri"
+    }
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
+    $handler.AllowAutoRedirect = $false
+    $client = [Net.Http.HttpClient]::new($handler, $true)
+    $client.Timeout = [TimeSpan]::FromSeconds(30)
+    $request = [Net.Http.HttpRequestMessage]::new(
+        [Net.Http.HttpMethod]::new($Method),
+        $Uri
+    )
+    try {
+        if ($null -ne $Body) {
+            $json = $Body | ConvertTo-Json -Depth 12 -Compress
+            $request.Content = [Net.Http.StringContent]::new(
+                $json,
+                [Text.Encoding]::UTF8,
+                'application/json'
+            )
+        }
+        $response = $client.SendAsync($request).GetAwaiter().GetResult()
+        try {
+            $responseBody = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if (-not $response.IsSuccessStatusCode) {
+                throw "loopback policy request failed with HTTP $([int]$response.StatusCode)"
+            }
+            if ([string]::IsNullOrWhiteSpace($responseBody)) {
+                return $null
+            }
+            return $responseBody | ConvertFrom-Json
+        } finally {
+            $response.Dispose()
+        }
+    } finally {
+        $request.Dispose()
+        $client.Dispose()
+    }
+}
+
 $uv = (Get-Command uv.exe -CommandType Application -ErrorAction Stop).Source
 Invoke-NativeChecked $uv @(
     'tool', 'install', '--python', '3.12', '--force', 'omnigent==0.7.0'
@@ -132,6 +178,7 @@ if ((Test-Path -LiteralPath $nativeInstallRoot) -or
     throw 'OmniGent advisory Setup lifecycle requires a clean disposable Windows user'
 }
 $config = Join-Path $env:OMNIGENT_CONFIG_HOME 'config.yaml'
+$env:OMNIGENT_CONFIG = $config
 $module = Join-Path $defenseclawData 'hooks\defenseclaw_omnigent_policy.py'
 $pth = Join-Path $env:UV_TOOL_DIR 'omnigent\Lib\site-packages\defenseclaw_omnigent.pth'
 foreach ($parent in @(
@@ -200,11 +247,17 @@ $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $listener.Start()
 $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
 $listener.Stop()
+$agent = Join-Path $state 'defenseclaw-policy-probe.yaml'
+[IO.File]::WriteAllText(
+    $agent,
+    "name: defenseclaw-policy-probe`ndescription: Unauthenticated advisory policy-path fixture.`nexecutor:`n  model: gpt-4o`nprompt: Exercise the configured server policy path without invoking a model.`n",
+    $utf8
+)
 $serverOut = Join-Path $state 'omnigent-server.stdout.log'
 $serverErr = Join-Path $state 'omnigent-server.stderr.log'
 $server = Start-Process -FilePath $omnigent -ArgumentList @(
     'server', '--host', '127.0.0.1', '--port', [string]$port,
-    '--config', $config, '--no-open'
+    '--config', $config, '--agent', $agent, '--no-open'
 ) -PassThru -WindowStyle Hidden -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
 
 try {
@@ -228,25 +281,48 @@ try {
         throw 'official OmniGent server did not bind its native loopback listener'
     }
 
-    $policyProbe = @'
-import json
-import defenseclaw_omnigent_policy as policy
-print(json.dumps(policy.defenseclaw_policy({
-    "type": "tool_call",
-    "target": "read_file",
-    "data": {"name": "read_file", "arguments": {"path": "README.md"}},
-    "context": {"actor": {"client_id": "windows-native-contract"}},
-})))
-'@
-    $liveVerdict = (Invoke-NativeChecked $omnigentPython @('-I', '-c', $policyProbe) -TimeoutSeconds 30).Trim() | ConvertFrom-Json
-    if ([string]$liveVerdict.result -notin @('ALLOW', 'ASK', 'DENY')) {
-        throw 'official OmniGent Python environment did not execute the managed policy'
+    $baseUri = "http://127.0.0.1:$port"
+    $agents = Invoke-LoopbackJson -Method GET -Uri "$baseUri/v1/agents?limit=1000"
+    $probeAgent = @($agents.data | Where-Object { [string]$_.name -ceq 'defenseclaw-policy-probe' })
+    if ($probeAgent.Count -cne 1 -or [string]::IsNullOrWhiteSpace([string]$probeAgent[0].id)) {
+        throw 'official OmniGent server did not register the advisory policy-path agent'
+    }
+    $session = Invoke-LoopbackJson -Method POST -Uri "$baseUri/v1/sessions" -Body @{
+        agent_id = [string]$probeAgent[0].id
+        initial_items = @()
+        title = 'DefenseClaw advisory policy path'
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$session.id)) {
+        throw 'official OmniGent server did not create the advisory policy-path session'
+    }
+    $policyRequest = @{
+        event = @{
+            type = 'PHASE_TOOL_RESULT'
+            target = 'read_file'
+            data = @{
+                result = @{ text = 'deterministic advisory result' }
+            }
+            context = @{ harness = 'windows-native-advisory' }
+            request_data = @{
+                name = 'read_file'
+                arguments = @{ path = 'README.md' }
+            }
+        }
+    }
+    $policyUri = "$baseUri/v1/sessions/$([Uri]::EscapeDataString([string]$session.id))/policies/evaluate"
+    $liveVerdict = Invoke-LoopbackJson -Method POST -Uri $policyUri -Body $policyRequest
+    if ([string]$liveVerdict.result -notin @(
+        'POLICY_ACTION_ALLOW',
+        'POLICY_ACTION_ASK',
+        'POLICY_ACTION_DENY'
+    )) {
+        throw 'official OmniGent server policy endpoint returned no recognized policy action'
     }
 
     Invoke-NativeChecked $gateway @('stop')
-    $closedVerdict = (Invoke-NativeChecked $omnigentPython @('-I', '-c', $policyProbe) -TimeoutSeconds 30).Trim() | ConvertFrom-Json
-    if ([string]$closedVerdict.result -cne 'DENY') {
-        throw 'OmniGent managed policy did not fail closed after the gateway stopped'
+    $closedVerdict = Invoke-LoopbackJson -Method POST -Uri $policyUri -Body $policyRequest
+    if ([string]$closedVerdict.result -cne 'POLICY_ACTION_DENY') {
+        throw 'official OmniGent server policy path did not fail closed after the gateway stopped'
     }
 
 } finally {
@@ -269,4 +345,4 @@ foreach ($path in @($config, $module, $pth)) {
     }
 }
 
-Write-Host 'OmniGent 0.7.0 packaged native-Windows degraded Setup lifecycle contract passed.'
+Write-Host 'OmniGent 0.7.0 advisory native-Windows degraded checks passed; this is not certification evidence.'

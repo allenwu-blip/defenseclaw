@@ -92,6 +92,7 @@ func TestHookContractResolution(t *testing.T) {
 		{"cursor_desktop_version_not_agent_contract", "cursor", "cursor 3.13.21", HookCompatibilityUnknown, "", "3.13.21"},
 		{"omnigent_before_proven_floor", "omnigent", "omnigent 0.6.99", HookCompatibilityUnknown, "", "0.6.99"},
 		{"omnigent_proven_floor", "omnigent", "omnigent 0.7.0", HookCompatibilityKnown, "omnigent-custom-policy-v1", "0.7.0"},
+		{"omnigent_after_reviewed_range", "omnigent", "omnigent 0.8.0", HookCompatibilityUnknown, "", "0.8.0"},
 		{"omnigent_unversioned_requires_override", "omnigent", "", HookCompatibilityUnversioned, "omnigent-custom-policy-v1", ""},
 		{"opencode_reviewed_pin", "opencode", "opencode 1.18.10", HookCompatibilityKnown, "opencode-hooks-v1", "1.18.10"},
 		{"opencode_next_patch_unknown", "opencode", "opencode 1.18.11", HookCompatibilityUnknown, "", "1.18.11"},
@@ -300,6 +301,9 @@ func TestOmniGentV070ContractPreservesPostPhaseDenyWithoutPostPhaseAsk(t *testin
 	contract := resolution.Contract
 	if contract.MinAgentVersion != "0.7.0" {
 		t.Fatalf("OmniGent minimum version = %q, want 0.7.0", contract.MinAgentVersion)
+	}
+	if contract.MaxAgentVersion != "0.8.0" {
+		t.Fatalf("OmniGent maximum version = %q, want exclusive 0.8.0", contract.MaxAgentVersion)
 	}
 	if got, want := contract.Events, []string{
 		"UserPromptSubmit", "PreToolUse", "PostToolUse",

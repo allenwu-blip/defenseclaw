@@ -1644,7 +1644,7 @@ def mcp_unset_target_for_connector(connector: str) -> str:
             user_target = os.path.join(connector_home("opencode"), "opencode.json")
             return f"{user_target} / <workspace>/opencode.json"
         case "omnigent":
-            return "unsupported (OmniGent manages MCP configuration)"
+            return "unsupported/unverified by the OmniGent connector"
         case _:
             return "OpenClaw config" if normalized_connector(connector) == "openclaw" else "connector MCP config"
 
@@ -1756,7 +1756,7 @@ def connector_source_label(connector: str, category: str) -> str:
             "<plugin>/mcp_config.json (discovery-only)",
         ),
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
-        ("omnigent", "mcps"): ("managed by OmniGent; not modified by DefenseClaw",),
+        ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("codex", "plugins"): (
             "./.agents/plugins/marketplace.json",
@@ -1772,7 +1772,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),
         ("opencode", "config"): (opencode_plugin,),
-        ("omnigent", "config"): ("$OMNIGENT_CONFIG_HOME/config.yaml or ~/.omnigent/config.yaml",),
+        ("omnigent", "config"): ("$OMNIGENT_CONFIG, $OMNIGENT_CONFIG_HOME/config.yaml, or ~/.omnigent/config.yaml; CLI server requires --config",),
     }
     return ", ".join(sources.get((connector, category), ()))
 

@@ -1996,6 +1996,7 @@ class TestConnectorConfigFiles:
 
     def test_omnigent_honors_config_home(self, tmp_path, monkeypatch):
         config_home = tmp_path / "isolated-omnigent"
+        monkeypatch.delenv("OMNIGENT_CONFIG", raising=False)
         monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(config_home))
 
         assert connector_paths.omnigent_config_path() == str(config_home / "config.yaml")
@@ -2004,11 +2005,20 @@ class TestConnectorConfigFiles:
 
     def test_omnigent_relative_config_home_is_resolved_consistently(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OMNIGENT_CONFIG", raising=False)
         monkeypatch.setenv("OMNIGENT_CONFIG_HOME", "relative-omnigent")
         config_home = tmp_path / "relative-omnigent"
 
         assert connector_paths.omnigent_config_path() == str(config_home / "config.yaml")
         assert connector_paths.connector_home("omnigent") == str(config_home)
+
+    def test_omnigent_explicit_config_path_takes_precedence(self, tmp_path, monkeypatch):
+        config_path = tmp_path / "explicit" / "server.yaml"
+        monkeypatch.setenv("OMNIGENT_CONFIG", str(config_path))
+        monkeypatch.setenv("OMNIGENT_CONFIG_HOME", str(tmp_path / "ignored-home"))
+
+        assert connector_paths.omnigent_config_path() == str(config_path)
+        assert connector_paths.connector_config_files("omnigent") == [str(config_path)]
 
     @pytest.mark.parametrize(
         ("connector", "variable", "directory", "file_name"),

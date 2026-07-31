@@ -282,7 +282,9 @@ def test_catalog_empty_connector_stays_unowned_and_hook_connector_labels_contrac
     assert ".gemini/config/plugins" in antigravity_plugins
     assert "read/write" in antigravity_plugins
     assert "OMNIGENT_CONFIG_HOME" in connector_source_label("omnigent", "config")
-    assert "managed by OmniGent" in connector_source_label("omnigent", "mcps")
+    assert "OMNIGENT_CONFIG" in connector_source_label("omnigent", "config")
+    assert "--config" in connector_source_label("omnigent", "config")
+    assert "unsupported/unverified" in connector_source_label("omnigent", "mcps")
     assert "unsupported" in mcp_unset_target_for_connector("omnigent")
 
     opencode_home = tmp_path / "opencode-config"
