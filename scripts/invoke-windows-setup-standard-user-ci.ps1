@@ -996,6 +996,7 @@ try {
         $harnessFiles += @(
             'assert-gateway-jsonl.py',
             'assert-observability-v8-jsonl.py',
+            'prepare-windows-contract-v8.py',
             'live-connector-e2e\run-windows.ps1',
             'live-connector-e2e\assert-opencode-plugin.mjs',
             'live-connector-e2e\assert-windows-evidence.py',
