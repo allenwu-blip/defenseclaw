@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import builtins
 import importlib.util
+import json
 import os
 import sys
 from pathlib import Path
@@ -130,6 +131,211 @@ def test_regular_plugin_root_still_returns_immediate_plugins(tmp_path: Path) -> 
     assert [(entry.id, entry.path) for entry in entries] == [
         ("real-plugin", str(root / "real-plugin"))
     ]
+
+
+def test_claude_cache_discovers_versions_and_resolves_scoped_enablement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude_home = tmp_path / ".claude"
+    cache = claude_home / "plugins" / "cache"
+    old = cache / "team-tools" / "formatter" / "1.0.0"
+    current = cache / "team-tools" / "formatter" / "2.0.0"
+    disabled = cache / "team-tools" / "analyzer" / "1.0.0"
+    for path, name, version, default_enabled in (
+        (old, "formatter", "1.0.0", True),
+        (current, "formatter", "2.0.0", True),
+        (disabled, "analyzer", "1.0.0", True),
+    ):
+        manifest = path / ".claude-plugin" / "plugin.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": version,
+                    "defaultEnabled": default_enabled,
+                }
+            ),
+            encoding="utf-8",
+        )
+    workspace = tmp_path / "workspace"
+    (workspace / ".claude").mkdir(parents=True)
+    claude_home.mkdir(exist_ok=True)
+    (claude_home / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "formatter@team-tools": False,
+                    "analyzer@team-tools": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "formatter@team-tools": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (workspace / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {
+                "enabledPlugins": {
+                    "analyzer@team-tools": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    entries = discover_plugin_directories(
+        str(cache),
+        connector="claudecode",
+        workspace_dir=str(workspace),
+        claude_managed_settings_paths=(),
+    )
+    by_id = {entry.id: entry for entry in entries}
+    assert set(by_id) == {
+        "analyzer@team-tools",
+        "formatter@team-tools#1.0.0",
+        "formatter@team-tools#2.0.0",
+    }
+    assert by_id["formatter@team-tools#1.0.0"].path == str(old)
+    assert by_id["formatter@team-tools#2.0.0"].path == str(current)
+    # Two cache versions are ambiguous because Claude retains orphaned copies
+    # after update/uninstall. Filesystem-only discovery must not call either
+    # copy active.
+    assert all(
+        not entry.enabled
+        and not entry.activation_verified
+        and entry.logical_id == "formatter@team-tools"
+        for entry in entries
+        if entry.id.startswith("formatter@team-tools#")
+    )
+    assert by_id["analyzer@team-tools"].enabled is False
+    assert by_id["analyzer@team-tools"].activation_verified is True
+    assert all(entry.manifest == ".claude-plugin/plugin.json" for entry in entries)
+
+
+def test_claude_cache_accepts_optional_manifest_but_requires_explicit_enablement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude_home = tmp_path / ".claude"
+    cache = claude_home / "plugins" / "cache"
+    plugin = cache / "official" / "manifestless" / "sha-123"
+    plugin.mkdir(parents=True)
+    (plugin / "skills").mkdir()
+    claude_home.mkdir(exist_ok=True)
+    (claude_home / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"manifestless@official": True}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    entries = discover_plugin_directories(
+        str(cache),
+        connector="claudecode",
+        claude_managed_settings_paths=(),
+    )
+
+    assert len(entries) == 1
+    assert entries[0].id == "manifestless@official"
+    assert entries[0].path == str(plugin)
+    assert entries[0].manifest == ""
+    assert entries[0].enabled is True
+    assert entries[0].activation_verified is True
+
+
+def test_claude_skills_root_classifies_only_manifest_plugins(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude_home = tmp_path / ".claude"
+    skills = claude_home / "skills"
+    plain = skills / "plain-skill"
+    plain.mkdir(parents=True)
+    (plain / "SKILL.md").write_text("# Plain\n", encoding="utf-8")
+    plugin = skills / "release-tools"
+    manifest = plugin / ".claude-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps(
+            {
+                "name": "release-tools",
+                "version": "3.2.1",
+                "defaultEnabled": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    entries = discover_plugin_directories(
+        str(skills),
+        connector="claudecode",
+        claude_managed_settings_paths=(),
+    )
+    assert len(entries) == 1
+    assert entries[0].id == "release-tools@skills-dir"
+    assert entries[0].path == str(plugin)
+    assert entries[0].enabled is False
+    assert entries[0].registry == "skills-dir"
+
+
+def test_claude_managed_plugin_state_overrides_local_and_policy_helper_is_unverified(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    claude_home = tmp_path / ".claude"
+    cache = claude_home / "plugins" / "cache"
+    plugin = cache / "official" / "guard" / "1.0.0"
+    plugin.mkdir(parents=True)
+    claude_home.mkdir(exist_ok=True)
+    (claude_home / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"guard@official": True}}),
+        encoding="utf-8",
+    )
+    managed = tmp_path / "managed-settings.json"
+    managed.write_text(
+        json.dumps({"enabledPlugins": {"guard@official": False}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    entries = discover_plugin_directories(
+        str(cache),
+        connector="claudecode",
+        claude_managed_settings_paths=(str(managed),),
+    )
+    assert len(entries) == 1
+    assert entries[0].enabled is False
+    assert entries[0].activation_verified is True
+
+    managed.write_text(
+        json.dumps(
+            {
+                "policyHelper": {"path": r"C:\Program Files\Corp\policy.exe"},
+                "enabledPlugins": {"guard@official": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    entries = discover_plugin_directories(
+        str(cache),
+        connector="claudecode",
+        claude_managed_settings_paths=(str(managed),),
+    )
+    assert len(entries) == 1
+    assert entries[0].enabled is False
+    assert entries[0].activation_verified is False
 
 
 def test_plugin_directory_entries_missing_root(tmp_path: Path) -> None:

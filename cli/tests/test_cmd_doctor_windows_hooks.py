@@ -437,7 +437,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v2": "0.129.0",
             "codex-hooks-v3": "0.133.0",
             "codex-hooks-v4": "0.145.0",
-            "claudecode-hooks-v1": "2.1.152",
+            "claudecode-hooks-v1": "2.1.154",
             "windsurf-hooks-v1": "1.12.41",
             "hermes-hooks-v1": "0.19.0",
             "antigravity-hooks-v2": "1.1.8",
@@ -563,12 +563,30 @@ class WindowsHookDoctorTests(unittest.TestCase):
         elif connector == "claudecode":
             path = self.profile / ".claude" / "settings.json"
             path.parent.mkdir(exist_ok=True)
-            bare_exec = not any(token in command for token in (" hook ", "-File ", "-EncodedCommand "))
+            command_parts = _split_windows(command)
+            command_basename = Path(command_parts[0]).name.casefold() if command_parts else ""
+            exec_form = command_basename in {
+                "defenseclaw-hook.exe",
+                "defenseclaw-hook.cmd",
+                "defenseclaw-hook.bat",
+                "powershell",
+                "powershell.exe",
+                "pwsh",
+                "pwsh.exe",
+            }
+            handler_command = command_parts[0] if exec_form else command
+            handler_args = command_parts[1:] if exec_form else []
+            if exec_form and command_basename.startswith("defenseclaw-hook") and not handler_args:
+                handler_args = ["hook", "--connector", "claudecode"]
             events: dict[str, object] = {}
             for event, (matcher, timeout) in _CLAUDE_REQUIRED_HOOKS.items():
-                handler: dict[str, object] = {"type": "command", "command": command, "timeout": timeout}
-                if bare_exec:
-                    handler["args"] = ["hook", "--connector", "claudecode"]
+                handler: dict[str, object] = {
+                    "type": "command",
+                    "command": handler_command,
+                    "timeout": timeout,
+                }
+                if exec_form:
+                    handler["args"] = handler_args
                 if event == "MessageDisplay":
                     handler["async"] = True
                 entry: dict[str, object] = {"hooks": [handler]}
@@ -1316,15 +1334,17 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertEqual(check.state, "stale", check.detail)
         self.assertIn("obsolete gateway launcher", check.detail)
 
-    def test_claude_rejects_managed_cmd_registration(self) -> None:
-        runtime = self._runtime("defenseclaw-hook.cmd")
-        config = self._config("claudecode", f'"{runtime}" hook --connector claudecode')
-        check = self._validate("claudecode", config)
-        self.assertEqual(check.state, "stale", check.detail)
-        self.assertIn("native hook runtime", check.detail)
-        self.assertIn("repair", check.detail)
+    def test_claude_rejects_cmd_and_bat_exec_registrations(self) -> None:
+        for extension in (".cmd", ".bat"):
+            with self.subTest(extension=extension):
+                runtime = self._runtime(f"defenseclaw-hook{extension}")
+                config = self._config("claudecode", f'"{runtime}" hook --connector claudecode')
+                check = self._validate("claudecode", config, pathext=".EXE;.CMD;.BAT")
+                self.assertEqual(check.state, "stale", check.detail)
+                self.assertIn(extension, check.detail)
+                self.assertIn("repair", check.detail)
 
-    def test_healthy_managed_powershell_registration(self) -> None:
+    def test_healthy_powershell_exec_registration(self) -> None:
         runtime = self._runtime(
             "defenseclaw-hook.ps1",
             b"# defenseclaw-managed-hook v6\n# passive wrapper fixture\n",
@@ -1334,6 +1354,60 @@ class WindowsHookDoctorTests(unittest.TestCase):
         check = self._validate("claudecode", config)
         self.assertEqual(check.state, "healthy", check.detail)
         self.assertIn("Windows-native PowerShell", check.detail)
+
+    def test_claude_shell_form_requires_explicit_powershell(self) -> None:
+        runtime = self._runtime(
+            "defenseclaw-hook.ps1",
+            b"# defenseclaw-managed-hook v6\n# passive wrapper fixture\n",
+        )
+        command = f"& '{runtime}' hook --connector claudecode"
+        config = self._config("claudecode", command)
+
+        unqualified = self._validate("claudecode", config)
+        self.assertEqual(unqualified.state, "stale", unqualified.detail)
+        self.assertIn("Git Bash", unqualified.detail)
+
+        document = json.loads(config.read_text(encoding="utf-8"))
+        for entries in document["hooks"].values():
+            entries[0]["hooks"][0]["shell"] = "powershell"
+        config.write_text(json.dumps(document), encoding="utf-8")
+
+        explicit = self._validate("claudecode", config)
+        self.assertEqual(explicit.state, "healthy", explicit.detail)
+        self.assertIn("Windows-native PowerShell", explicit.detail)
+
+    def test_claude_explicit_powershell_shell_requires_call_operator(self) -> None:
+        runtime = self._runtime()
+        config = self._config("claudecode", f'"{runtime}" hook --connector claudecode')
+        document = json.loads(config.read_text(encoding="utf-8"))
+        for entries in document["hooks"].values():
+            handler = entries[0]["hooks"][0]
+            handler["command"] = f'"{runtime}" hook --connector claudecode'
+            handler.pop("args")
+            handler["shell"] = "powershell"
+        config.write_text(json.dumps(document), encoding="utf-8")
+
+        check = self._validate("claudecode", config)
+        self.assertEqual(check.state, "stale", check.detail)
+        self.assertIn("native hook runtime", check.detail)
+
+    def test_claude_rejects_unqualified_powershell_shell_form(self) -> None:
+        runtime = self._runtime(
+            "defenseclaw-hook.ps1",
+            b"# defenseclaw-managed-hook v6\n# passive wrapper fixture\n",
+        )
+        command = f'powershell.exe -NoProfile -NonInteractive -File "{runtime}" hook --connector claudecode'
+        config = self._config("claudecode", command)
+        document = json.loads(config.read_text(encoding="utf-8"))
+        for entries in document["hooks"].values():
+            handler = entries[0]["hooks"][0]
+            handler["command"] = command
+            handler.pop("args")
+        config.write_text(json.dumps(document), encoding="utf-8")
+
+        check = self._validate("claudecode", config)
+        self.assertEqual(check.state, "stale", check.detail)
+        self.assertIn("Git Bash", check.detail)
 
     def test_powershell_registration_rejects_unsafe_launcher_switches(self) -> None:
         runtime = self._runtime(
@@ -1442,6 +1516,30 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 check = self._validate("claudecode", config)
 
                 self.assertEqual(check.state, "healthy", check.detail)
+
+    def test_claude_doctor_requires_fork_and_dynamic_file_filter(self) -> None:
+        runtime = self._runtime()
+        config = self._config("claudecode", f'"{runtime}"')
+        document = json.loads(config.read_text(encoding="utf-8"))
+        self.assertEqual(
+            document["hooks"]["SessionStart"][0]["matcher"],
+            "startup|resume|clear|compact|fork",
+        )
+        self.assertEqual(document["hooks"]["FileChanged"][0]["matcher"], ".+")
+
+        document["hooks"]["SessionStart"][0]["matcher"] = "startup|resume|clear|compact"
+        document["hooks"]["FileChanged"][0]["matcher"] = "CLAUDE.md|settings.json"
+        config.write_text(json.dumps(document), encoding="utf-8")
+
+        check = self._validate("claudecode", config)
+        self.assertEqual(check.state, "stale", check.detail)
+        self.assertIn("SessionStart matcher", check.detail)
+
+        document["hooks"]["SessionStart"][0]["matcher"] = "startup|resume|clear|compact|fork"
+        config.write_text(json.dumps(document), encoding="utf-8")
+        file_filter_check = self._validate("claudecode", config)
+        self.assertEqual(file_filter_check.state, "stale", file_filter_check.detail)
+        self.assertIn("FileChanged matcher", file_filter_check.detail)
 
     def test_claude_reports_disable_all_hooks_as_policy_blocked(self) -> None:
         runtime = self._runtime()

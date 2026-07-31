@@ -263,6 +263,27 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:   2,
 		},
 		{
+			name:       "claudecode TaskCreated block uses exit 2 feedback",
+			connector:  "claudecode",
+			respBody:   `{"action":"block","reason":"TaskCreated denied","hook_event_name":"TaskCreated"}`,
+			wantStderr: "TaskCreated denied",
+			wantCode:   2,
+		},
+		{
+			name:       "claudecode TaskCompleted block uses exit 2 feedback",
+			connector:  "claudecode",
+			respBody:   `{"action":"block","reason":"TaskCompleted denied","hook_event_name":"TaskCompleted"}`,
+			wantStderr: "TaskCompleted denied",
+			wantCode:   2,
+		},
+		{
+			name:       "claudecode TeammateIdle block uses exit 2 feedback",
+			connector:  "claudecode",
+			respBody:   `{"action":"block","reason":"TeammateIdle feedback","hook_event_name":"TeammateIdle"}`,
+			wantStderr: "TeammateIdle feedback",
+			wantCode:   2,
+		},
+		{
 			name:       "claudecode block without output or reason uses default",
 			connector:  "claudecode",
 			respBody:   `{"action":"block"}`,

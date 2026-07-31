@@ -3156,7 +3156,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "claudecode": {
         "label": "Claude Code",
-        "description": "env var + PreToolUse hook script",
+        "description": "native owned hook matrix + OTLP env",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -6821,7 +6821,7 @@ def setup_claude_code(
     Wires two telemetry channels at gateway boot:
 
     \b
-      • Hooks — the supported Claude Code 2.1.152+ contract's 28
+      • Hooks — the supported Claude Code 2.1.154+ contract's 28
                 lifecycle, prompt, tool, subagent, task, compact,
                 elicitation, configuration, and notification events
       • OTel  — native Claude Code OTel exporter (env-driven) pointing

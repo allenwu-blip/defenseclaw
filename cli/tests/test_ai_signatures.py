@@ -110,6 +110,22 @@ def test_packaged_catalog_matches_go_catalog():
     assert py_catalog == go_catalog
 
 
+def test_claude_signature_separates_settings_mcp_and_plugin_surfaces():
+    signatures = {sig.id: sig for sig in load_ai_signatures()}
+    claude = signatures["claudecode"]
+
+    assert "~/.claude/settings.json" in claude.config_paths
+    assert "~/.claude/settings.local.json" not in claude.config_paths
+    assert "~/.claude.json" not in claude.config_paths
+    assert ".mcp.json" not in claude.config_paths
+    assert "~/.claude.json" in claude.mcp_paths
+    assert ".mcp.json" in claude.mcp_paths
+    assert "~/.claude/plugins/cache" in claude.config_paths
+    assert ".claude/plugins" not in claude.config_paths
+    assert "CLAUDE_CONFIG_DIR" in claude.env_var_names
+    assert "CLAUDE_CODE_PLUGIN_CACHE_DIR" in claude.env_var_names
+
+
 def test_antigravity_signature_tracks_mcp_and_customization_paths():
     signatures = {sig.id: sig for sig in load_ai_signatures()}
     antigravity = signatures["antigravity"]

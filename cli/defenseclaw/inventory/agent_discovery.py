@@ -48,6 +48,7 @@ from defenseclaw.config import config_path_for_data_dir, default_data_path
 from defenseclaw.connector_paths import (
     KNOWN_CONNECTORS,
     _expand,
+    claude_settings_paths,
     connector_config_files,
     connector_home,
     hermes_config_path,
@@ -1014,11 +1015,10 @@ def _scan_agent(
     if name == "codex":
         config_candidates = (connector_config_files("codex")[0],)
     elif name == "claudecode":
-        claude_paths = connector_config_files("claudecode")
-        # MCP state is inventory, not generic configuration evidence. Prefer
-        # project/local settings over the user settings file while preserving
-        # CLAUDE_CONFIG_DIR-aware user resolution.
-        config_candidates = (claude_paths[2], claude_paths[3], claude_paths[0])
+        # MCP state is inventory, not generic configuration evidence. Use the
+        # current workspace for project scopes and apply Anthropic's effective
+        # settings precedence: local, project, then user.
+        config_candidates = tuple(reversed(claude_settings_paths(os.getcwd())))
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)
     elif name == "antigravity":

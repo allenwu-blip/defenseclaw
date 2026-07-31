@@ -34,11 +34,15 @@ executable, so Git Bash is not in the enforcement path.
 | [Hooks reference](https://code.claude.com/docs/en/hooks) | checked 2026-07-30 | hook config, input, command execution, output, exit, timeout, event, and blocking semantics |
 | [Settings](https://code.claude.com/docs/en/settings) | checked 2026-07-30 | native paths, scopes, Windows managed policy, and MCP/settings separation |
 | [`.claude` directory](https://code.claude.com/docs/en/claude-directory) | checked 2026-07-30 | skills, agents, rules, commands, plugins, and `CLAUDE_CONFIG_DIR` layout |
+| [Skills](https://code.claude.com/docs/en/slash-commands) | checked 2026-07-30 | launch-directory ancestors through repository root, lazy nested skill roots, skill-over-command precedence, directory symlinks, and `--add-dir` exception |
+| [Subagents](https://code.claude.com/docs/en/sub-agents) | checked 2026-07-30 | recursive agent roots, frontmatter identity, closest-project precedence, and managed/session/plugin scopes |
+| [Memory](https://code.claude.com/docs/en/memory) | checked 2026-07-30 | project-derived auto-memory path, linked-worktree sharing, and `autoMemoryDirectory` override |
 | [Environment variables](https://code.claude.com/docs/en/env-vars) | checked 2026-07-30 | `CLAUDE_CONFIG_DIR` relocates settings/state/plugins; native PowerShell behavior |
 | [MCP](https://code.claude.com/docs/en/mcp) | checked 2026-07-30 | user/local `~/.claude.json`, project `.mcp.json`, approval, and precedence |
 | [Monitoring](https://code.claude.com/docs/en/monitoring-usage) | checked 2026-07-30 | native OpenTelemetry environment contract |
 | [v2.1.139](https://github.com/anthropics/claude-code/releases/tag/v2.1.139) | 2026-05-11 | introduced hook `args: string[]` direct-exec form |
-| [v2.1.152](https://github.com/anthropics/claude-code/releases/tag/v2.1.152) | 2026-05-27 | introduced `MessageDisplay`; DefenseClaw's current minimum contract version |
+| [v2.1.152](https://github.com/anthropics/claude-code/releases/tag/v2.1.152) | 2026-05-27 | introduced `MessageDisplay` |
+| [v2.1.154](https://github.com/anthropics/claude-code/releases/tag/v2.1.154) | 2026-05-28 | added plugin `defaultEnabled`; DefenseClaw's current minimum contract version |
 | [v2.1.214](https://github.com/anthropics/claude-code/releases/tag/v2.1.214) | 2026-07-18 | fixed exit-code 2 blocking when stdout JSON fails schema validation |
 | [v2.1.219](https://github.com/anthropics/claude-code/releases/tag/v2.1.219) | 2026-07-24 | release notes mention `DirectoryAdded`; current hooks reference has no published schema |
 | [v2.1.220](https://github.com/anthropics/claude-code/releases/tag/v2.1.220) | 2026-07-25 | latest official non-prerelease observed during this audit |
@@ -74,18 +78,21 @@ and the exact `claude --version` result.
 `~/.claude` resolves to `%USERPROFILE%\.claude` on Windows. When
 `CLAUDE_CONFIG_DIR` is set, Claude Code stores its settings, session history,
 plugins, and Windows credentials under that configured directory; DefenseClaw
-uses that same effective root.
+uses that same effective root. `CLAUDE_CODE_PLUGIN_CACHE_DIR` independently
+overrides the plugin parent (despite the variable name); its `cache`
+subdirectory holds marketplace copies.
 
 | Surface | User/native path | Project/local path |
 | --- | --- | --- |
 | Hook and environment settings | `%USERPROFILE%\.claude\settings.json` | `<repo>\.claude\settings.json`, `<repo>\.claude\settings.local.json` |
 | MCP user/local state | `%USERPROFILE%\.claude.json` | local scope is nested by project in that file |
 | MCP project state | n/a | `<repo>\.mcp.json` |
-| Skills | `%USERPROFILE%\.claude\skills\` | `<repo>\.claude\skills\` |
-| Agents | `%USERPROFILE%\.claude\agents\` | `<repo>\.claude\agents\` |
-| Rules/memory | `%USERPROFILE%\.claude\CLAUDE.md`, `%USERPROFILE%\.claude\rules\` | `CLAUDE.md`, `CLAUDE.local.md`, `.claude\CLAUDE.md`, `.claude\rules\` |
+| Skills | `%USERPROFILE%\.claude\skills\` | launch directory and every parent through the repository root, plus nested `<subdir>\.claude\skills\` after file activity; documented skill-directory symlinks are resolved and canonical targets de-duplicated |
+| Agents | recursive `%USERPROFILE%\.claude\agents\` | recursive `.claude\agents\` in every directory from the launch directory through the repository root; identity is required `name` frontmatter and the closest project definition wins |
+| Rules | `%USERPROFILE%\.claude\CLAUDE.md`, `%USERPROFILE%\.claude\rules\` | `CLAUDE.md`, `CLAUDE.local.md`, `.claude\CLAUDE.md`, `.claude\rules\` |
+| Auto memory | `%USERPROFILE%\.claude\projects\<project>\memory\` by default | the project identity is derived from the repository; all linked worktrees resolve to the main repository identity; `autoMemoryDirectory` can override the path from any settings scope |
 | Commands | `%USERPROFILE%\.claude\commands\` | `<repo>\.claude\commands\` |
-| Plugin cache/state | `%USERPROFILE%\.claude\plugins\` plus scoped settings | project/local enablement is in scoped settings |
+| Plugin cache/state | `%USERPROFILE%\.claude\plugins\cache\` plus scoped settings | project/local enablement is in scoped settings; manifest-bearing project skills-directory plugins live under `<repo>\.claude\skills\` |
 
 With `CLAUDE_CONFIG_DIR=C:\ClaudeProfile`, the user settings path is
 `C:\ClaudeProfile\settings.json` and the relocated user/local state path is
@@ -120,7 +127,7 @@ On Windows, DefenseClaw registers:
 ```json
 {
   "type": "command",
-  "command": "C:\\absolute\\path\\to\\defenseclaw.exe",
+  "command": "C:\\absolute\\path\\to\\defenseclaw-hook.exe",
   "args": ["hook", "--connector", "claudecode"]
 }
 ```
@@ -130,11 +137,42 @@ for Windows exec form: `.cmd` and `.bat` files cannot be used as the direct
 `command`. A native PowerShell hook is also supported by specifying the
 `powershell` shell or invoking `powershell.exe` with fixed arguments and an
 absolute `.ps1` path. DefenseClaw does not need a PowerShell wrapper.
+Doctor rejects owned `.cmd` and `.bat` targets. It also rejects a shell-form
+registration unless `shell` is explicitly `powershell`; otherwise Claude Code
+can select Git Bash when it is installed. A quoted executable in explicit
+PowerShell shell form must use PowerShell's `&` call operator. The canonical
+DefenseClaw registration remains the shell-free executable form above.
 
 All matching hooks run in parallel, and identical handlers are deduplicated.
 The process working directory is the session directory. DefenseClaw therefore
 uses an absolute executable and fixed arguments; it never constructs a shell
 command from hook input.
+
+`FileChanged` has a two-stage matcher contract: Claude Code first splits the
+matcher on `|` and registers each segment as a literal filename in the current
+working directory, then applies the same matcher to the basename of a changed
+file. DefenseClaw uses `.+`, which is both a valid literal Windows filename and
+a regular expression matching every non-empty basename. It does not put user
+or project paths in that matcher. Instead, it returns absolute `watchPaths`
+from:
+
+- `SessionStart` in nested `hookSpecificOutput` (for
+  `startup|resume|clear|compact|fork`);
+- `CwdChanged` as a top-level field; and
+- `FileChanged` as a top-level field, refreshing the list after each change.
+
+The dynamic list uses the same `CLAUDE_CONFIG_DIR`-aware path model as setup
+and inventory. It covers user settings, user MCP state, resolved project auto-memory
+and rule files, project `.mcp.json`, project settings, selected project
+manifest/environment files, and existing `SKILL.md` entrypoints from the user,
+launch-ancestor, and lazily discoverable nested skill roots. It also includes
+recursive user/project agent Markdown files. The component scanner covers the
+full skill/plugin directories plus commands, agents, and resolved memory.
+Rule, skill, agent, and memory topic files are included only when they exist;
+all returned paths are absolute. Passive memory attribution is marked
+unverified because session `--settings`, remote managed settings, and native
+registry/MDM policy are not observable from filesystem state alone; operators
+confirm the active source with Claude Code `/memory` or `/status`.
 
 ### Documented events
 
@@ -199,7 +237,8 @@ deterministic response before Claude Code terminates it.
 | block `PreToolUse` | `hookSpecificOutput.permissionDecision="deny"` |
 | ask `PreToolUse` | `hookSpecificOutput.permissionDecision="ask"` |
 | deny `PermissionRequest` | event-specific nested deny decision |
-| block supported prompt/lifecycle event | documented top-level block decision, `continue:false`, or event-specific decline |
+| block `TaskCreated`, `TaskCompleted`, or `TeammateIdle` | stderr feedback and exit 2; never `continue:false`, which stops the teammate |
+| block other supported prompt/lifecycle event | documented top-level block decision or event-specific decline |
 | transport/parse failure in fail-closed mode | stderr reason and exit 2 |
 | observe mode policy hit | non-blocking response with `would_block` audit evidence |
 
@@ -230,9 +269,10 @@ must be concise.
   changes. Token revocation follows clean verification.
 - Native telemetry uses Claude Code's documented OTel environment settings and
   a connector-scoped authorization header. Logs and metrics are enabled;
-  traces are deliberately disabled in the current connector. Prompt and
-  assistant-response content flags are explicitly off by default; downstream
-  routing or redaction is not treated as informed source-capture opt-in.
+  traces are deliberately disabled in the current connector. Every documented
+  content gate is explicitly off: user prompts, assistant responses, tool
+  details, tool input/output content, and raw API bodies. Downstream routing or
+  redaction is not treated as informed source-capture opt-in.
 
 ## Reusable golden coverage checklist
 
@@ -244,17 +284,17 @@ test layer.
 | --- | --- | --- | --- |
 | Research gate | official direct native support, paths, and hook interface; no compatibility layer | eligible, sources above | recheck on every upstream contract/release change |
 | Discovery/version | documented native binary candidates; trusted path; exact version normalization | implemented | focused unit plus packaged native discovery |
-| Hook config | absolute `.exe`, `args` exec form, no shell, exact event/matcher/timeout/async matrix | implemented | unit, packaged setup, real-client settings inspection |
+| Hook config | absolute `.exe`, `args` exec form, no shell, exact event/matcher/timeout/async matrix; dynamic absolute watch paths | implemented | focused unit, packaged setup, real-client settings inspection |
 | Synchronous enforcement | stdin JSON, bounded wait, exit 0 JSON, exit 2 stderr, exit propagation | implemented | hookexec unit, packaged fake client, real-client block |
-| Modes | observe, action allow/block, native ask, fail-open/closed boundaries | implemented | per-mode integration and real-client E2E |
+| Modes | observe, action allow/block, native ask, fail-open/closed boundaries | implementation exists; the PowerShell-only official-client allow/block lane is defined but unexecuted, while official-client ask/fail cases are still pending | per-mode integration and real-client E2E |
 | Auth/runtime | connector bearer, route binding, protected HookRuntime ACL/digest/identity, cold start | implemented | Windows ACL/auth/tamper tests |
-| Inventory | skills, MCP, plugins, rules/memory, agents, commands; correct user/project attribution | corrected for MCP/settings/config override in this audit | focused path tests plus inventory integration |
+| Inventory | skills, MCP, plugins, rules/memory, agents, commands; correct user/project attribution | user skills plus launch-ancestor and bounded lazy nested project skill roots, commands, recursive user/project Markdown agents, settings, rules, local/project/user MCP, auto memory, and skills-directory plugins are implemented. Nested skills remain `discoverable-unverified` until file activity proves activation; true skills precede legacy commands, and documented skill-directory symlinks are canonicalized/de-duplicated. Auto-memory uses bounded stable settings reads and shared linked-worktree identity, but session/remote/native-policy activation is unverified. Managed `enabledPlugins` overrides lower scopes; dynamic `policyHelper` and retained-version ambiguity remain unverified rather than falsely active. Marketplace cache artifacts honor the cache-parent override. Managed/plugin agents, session `--agents`, plugin-provided MCP, claude.ai connector MCP, and runtime `/add-dir` roots require authoritative client/session evidence and are not claimed by the filesystem inventory. | focused path/precedence tests; later official-client semantic inventory |
 | Setup/repair/upgrade | idempotent reconciliation; stale owned handlers removed; operator handlers preserved | implemented | setup refresh and packaged upgrade/repair |
 | Doctor/recovery | detect version, matrix, token, ACL, digest, config, telemetry, and drift; repair safely | implemented | focused unit plus tamper/drift/recovery matrix |
 | Teardown/uninstall | exact restore when unchanged; surgical cleanup after drift; revoke credential only after clean state | implemented | restoration and uninstall matrix |
 | Audit/telemetry | hook decision audit, `would_block`, correlation, scoped OTLP auth, no credential logging | implemented | focused audit tests plus native OTLP integration |
-| Deterministic Windows CI | PowerShell-only packaged fixture with native `.exe`; no Bash/WSL/container dependency | present | run the packaged Windows workflow |
-| Official-client E2E | official native installer/client, protected gateway, allow/block/ask/fail and cleanup | defined but no immutable qualifying run is persisted | required before any certification promotion |
+| Deterministic Windows CI | PowerShell-only packaged fixture with native `.exe`; no Bash/WSL/container dependency | definition present; it is not certification evidence until run and persisted | run the packaged Windows workflow |
+| Official-client E2E | official native installer/client, protected gateway, allow/block/ask/fail and cleanup | PowerShell-only lifecycle plus allow/block cases are defined but have no persisted qualifying run; ask/fail cases are not yet defined | define missing cases and persist a qualifying run before any certification promotion |
 | Documentation | platform matrix, native prerequisites, limitations, version floor, sources | corrected in this audit | docs build/link check |
 
 ## Comparison with the Codex reference
@@ -286,6 +326,11 @@ blocking rules, trust behavior, or configuration paths between hosts.
   observational or otherwise non-blocking according to host semantics.
 - Native ask exists only where Anthropic documents it; DefenseClaw does not
   synthesize a resumable ask for other events.
+- The current official-client Windows harness definition statically requires
+  Claude's `PowerShell` tool and rejects captured Bash/Git-Bash/MSYS/Cygwin
+  processes for its allow/block cases. It has not produced immutable
+  qualifying evidence, and official-client ask/fail cases remain to be
+  defined and run.
 - WinGet does not auto-update, so release automation must upgrade it
   explicitly before compatibility verification.
 - ARM64 is supported upstream but DefenseClaw has no current native Windows

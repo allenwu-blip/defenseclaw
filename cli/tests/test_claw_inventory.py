@@ -2372,6 +2372,121 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
 
         self.assertEqual({row["id"] for row in agents}, {"global-reviewer"})
 
+    def test_claudecode_legacy_command_markdown_is_inventory_skill(self):
+        cfg = _make_cfg_for_connector(self.tmp, "claudecode")
+        commands = os.path.join(self.tmp, ".claude", "commands")
+        os.makedirs(commands, exist_ok=True)
+        command = os.path.join(commands, "deploy.md")
+        with open(command, "w", encoding="utf-8") as handle:
+            handle.write("# Deploy safely\n")
+        with self._patch_skill_dirs([commands]), \
+             self._patch_plugin_dirs([]), \
+             self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        row = next(entry for entry in inv["skills"] if entry["id"] == "deploy")
+        self.assertEqual(row["path"], command)
+        self.assertTrue(row["eligible"])
+
+    def test_claudecode_preserves_directory_qualified_nested_skill_variant(self):
+        cfg = _make_cfg_for_connector(self.tmp, "claudecode")
+        workspace = os.path.join(self.tmp, "repo")
+        root_skills = os.path.join(workspace, ".claude", "skills")
+        nested_skills = os.path.join(
+            workspace,
+            "apps",
+            "web",
+            ".claude",
+            "skills",
+        )
+        _seed_skill(root_skills, "deploy")
+        _seed_skill(nested_skills, "deploy")
+        cfg.claw.workspace_dir = workspace
+        with self._patch_skill_dirs([root_skills, nested_skills]), \
+             self._patch_plugin_dirs([]), \
+             self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        assert {entry["id"] for entry in inv["skills"]} == {
+            "deploy",
+            "apps/web:deploy",
+        }
+        root_row = next(entry for entry in inv["skills"] if entry["id"] == "deploy")
+        nested_row = next(entry for entry in inv["skills"] if entry["id"] == "apps/web:deploy")
+        assert root_row["enabled"] is True
+        assert root_row["activation_verified"] is True
+        assert nested_row["enabled"] is False
+        assert nested_row["activation_verified"] is False
+        assert nested_row["activation_state"] == "discoverable-unverified"
+
+    def test_claudecode_skill_overrides_same_name_legacy_command(self):
+        cfg = _make_cfg_for_connector(self.tmp, "claudecode")
+        project_skills = os.path.join(self.tmp, "repo", ".claude", "skills")
+        user_commands = os.path.join(self.tmp, ".claude", "commands")
+        skill = _seed_skill(project_skills, "deploy")
+        os.makedirs(user_commands, exist_ok=True)
+        command = os.path.join(user_commands, "deploy.md")
+        with open(command, "w", encoding="utf-8") as handle:
+            handle.write("# Legacy deploy\n")
+
+        with self._patch_skill_dirs([project_skills, user_commands]), \
+             self._patch_plugin_dirs([]), \
+             self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        rows = [entry for entry in inv["skills"] if entry["id"] == "deploy"]
+        assert len(rows) == 1
+        assert rows[0]["path"] == skill
+
+    def test_claudecode_ancestor_and_nested_skills_plugins_are_inventory_plugins(self):
+        cfg = _make_cfg_for_connector(self.tmp, "claudecode")
+        repository = os.path.join(self.tmp, "repo")
+        launch = os.path.join(repository, "apps", "web")
+        roots = [
+            os.path.join(repository, ".claude", "skills"),
+            os.path.join(launch, "packages", "ui", ".claude", "skills"),
+        ]
+        for root, folder, identity in (
+            (roots[0], "root-tools", "root-tools"),
+            (roots[1], "ui-tools", "ui-tools"),
+        ):
+            manifest = os.path.join(root, folder, ".claude-plugin", "plugin.json")
+            os.makedirs(os.path.dirname(manifest), exist_ok=True)
+            with open(manifest, "w", encoding="utf-8") as handle:
+                json.dump({"name": identity, "defaultEnabled": True}, handle)
+        cfg.claw.workspace_dir = launch
+
+        with self._patch_skill_dirs([]), \
+             self._patch_plugin_dirs(roots), \
+             self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        assert {entry["id"] for entry in inv["plugins"]} == {
+            "root-tools@skills-dir",
+            "ui-tools@skills-dir",
+        }
+
+    def test_claudecode_duplicate_skills_plugin_identity_is_ambiguous(self):
+        cfg = _make_cfg_for_connector(self.tmp, "claudecode")
+        repository = os.path.join(self.tmp, "repo")
+        roots = [
+            os.path.join(repository, ".claude", "skills"),
+            os.path.join(repository, "apps", "web", ".claude", "skills"),
+        ]
+        for index, root in enumerate(roots):
+            manifest = os.path.join(root, f"folder-{index}", ".claude-plugin", "plugin.json")
+            os.makedirs(os.path.dirname(manifest), exist_ok=True)
+            with open(manifest, "w", encoding="utf-8") as handle:
+                json.dump({"name": "duplicate", "defaultEnabled": True}, handle)
+
+        with self._patch_skill_dirs([]), \
+             self._patch_plugin_dirs(roots), \
+             self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        assert inv["plugins"] == []
+        assert any("ambiguous plugin identity" in error["error"] for error in inv["errors"])
+
     def test_zeptoclaw_walks_disk(self):
         cfg = _make_cfg_for_connector(self.tmp, "zeptoclaw")
         skill_root = os.path.join(self.tmp, ".zeptoclaw", "skills")

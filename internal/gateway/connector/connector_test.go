@@ -608,7 +608,7 @@ func TestClaudeCode_ImplementsComponentScanner(t *testing.T) {
 		t.Error("expected SupportsComponentScanning to be true")
 	}
 	targets := c.ComponentTargets("/tmp/workspace")
-	expectedTypes := []string{"skill", "plugin", "mcp", "agent", "command", "config"}
+	expectedTypes := []string{"skill", "plugin", "mcp", "agent", "command", "memory", "config"}
 	for _, tp := range expectedTypes {
 		if _, ok := targets[tp]; !ok {
 			t.Errorf("missing component type %q", tp)
@@ -618,8 +618,10 @@ func TestClaudeCode_ImplementsComponentScanner(t *testing.T) {
 
 func TestClaudeCode_ComponentTargetsHonorMCPStateScope(t *testing.T) {
 	configDir := filepath.Join(t.TempDir(), "claude-config")
+	pluginParent := filepath.Join(t.TempDir(), "claude-plugins")
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	t.Setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", pluginParent)
 	previous := ClaudeCodeSettingsPathOverride
 	ClaudeCodeSettingsPathOverride = ""
 	t.Cleanup(func() { ClaudeCodeSettingsPathOverride = previous })
@@ -628,6 +630,17 @@ func TestClaudeCode_ComponentTargetsHonorMCPStateScope(t *testing.T) {
 	settingsPath := filepath.Join(configDir, "settings.json")
 	mcpStatePath := filepath.Join(configDir, ".claude.json")
 	projectMCPPath := filepath.Join(workspace, ".mcp.json")
+	if !slices.Contains(targets["plugin"], filepath.Join(pluginParent, "cache")) {
+		t.Errorf("ComponentTargets(plugin) = %v, missing plugin parent override", targets["plugin"])
+	}
+	for _, commandDir := range []string{
+		filepath.Join(configDir, "commands"),
+		filepath.Join(workspace, ".claude", "commands"),
+	} {
+		if !slices.Contains(targets["skill"], commandDir) {
+			t.Errorf("ComponentTargets(skill) = %v, missing legacy command skills %q", targets["skill"], commandDir)
+		}
+	}
 
 	for _, expected := range []string{mcpStatePath, projectMCPPath} {
 		if !slices.Contains(targets["mcp"], expected) {
@@ -643,21 +656,192 @@ func TestClaudeCode_ComponentTargetsHonorMCPStateScope(t *testing.T) {
 	}
 }
 
-func TestClaudeCode_FileChangedMatcherCoversNativeConfigSurfaces(t *testing.T) {
-	for _, expected := range []string{
-		"CLAUDE.md",
-		"CLAUDE.local.md",
-		"settings.json",
-		"settings.local.json",
-		".claude.json",
-		".mcp.json",
+func TestClaudeCode_FileChangedUsesDynamicMatchAllMatcher(t *testing.T) {
+	if fileChangedMatcher != ".+" {
+		t.Fatalf("fileChangedMatcher = %q, want Windows-valid dynamic-path filter .+", fileChangedMatcher)
+	}
+}
+
+func TestClaudeCode_ComponentAndWatchTargetsIncludeAncestorAndNestedSkills(t *testing.T) {
+	repository := filepath.Join(t.TempDir(), "repo")
+	launch := filepath.Join(repository, "apps", "web")
+	ancestorSkill := filepath.Join(repository, ".claude", "skills", "root-policy", "SKILL.md")
+	nestedSkill := filepath.Join(launch, "packages", "ui", ".claude", "skills", "ui-policy", "SKILL.md")
+	for _, path := range []string{
+		filepath.Join(repository, ".git", "keep"),
+		ancestorSkill,
+		nestedSkill,
 	} {
-		if !strings.Contains(fileChangedMatcher, expected) {
-			t.Errorf("fileChangedMatcher = %q, missing %q", fileChangedMatcher, expected)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("# fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
 		}
 	}
-	if strings.Contains(fileChangedMatcher, "/") || strings.Contains(fileChangedMatcher, ".*") {
-		t.Fatalf("FileChanged matcher must be a literal basename watch list, got %q", fileChangedMatcher)
+
+	targets := NewClaudeCodeConnector().ComponentTargets(launch)
+	for _, want := range []string{
+		filepath.Dir(filepath.Dir(ancestorSkill)),
+		filepath.Dir(filepath.Dir(nestedSkill)),
+	} {
+		if !slices.Contains(targets["skill"], want) {
+			t.Errorf("ComponentTargets(skill) = %v, missing %q", targets["skill"], want)
+		}
+	}
+	watchPaths := ClaudeCodeWatchPaths(launch)
+	for _, want := range []string{ancestorSkill, nestedSkill} {
+		if !slices.Contains(watchPaths, want) {
+			t.Errorf("ClaudeCodeWatchPaths() = %v, missing %q", watchPaths, want)
+		}
+	}
+}
+
+func TestClaudeCode_ComponentAndWatchTargetsIncludeRecursiveAncestorAgents(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-home")
+	repository := filepath.Join(t.TempDir(), "repo")
+	launch := filepath.Join(repository, "apps", "web")
+	userAgent := filepath.Join(configDir, "agents", "review", "user.md")
+	ancestorAgent := filepath.Join(repository, ".claude", "agents", "security", "reviewer.md")
+	for _, path := range []string{
+		filepath.Join(repository, ".git", "keep"),
+		userAgent,
+		ancestorAgent,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("---\nname: reviewer\ndescription: Reviews code\n---\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	targets := NewClaudeCodeConnector().ComponentTargets(launch)
+	for _, want := range []string{
+		filepath.Join(launch, ".claude", "agents"),
+		filepath.Join(repository, "apps", ".claude", "agents"),
+		filepath.Join(repository, ".claude", "agents"),
+		filepath.Join(configDir, "agents"),
+	} {
+		if !slices.Contains(targets["agent"], want) {
+			t.Errorf("ComponentTargets(agent) = %v, missing %q", targets["agent"], want)
+		}
+	}
+	watchPaths := ClaudeCodeWatchPaths(launch)
+	for _, want := range []string{userAgent, ancestorAgent} {
+		if !slices.Contains(watchPaths, want) {
+			t.Errorf("ClaudeCodeWatchPaths() = %v, missing %q", watchPaths, want)
+		}
+	}
+}
+
+func TestClaudeCode_ComponentAndWatchTargetsIncludeEffectiveAutoMemory(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "claude-home")
+	project := filepath.Join(root, "project")
+	memory := filepath.Join(root, "custom-memory")
+	memoryIndex := filepath.Join(memory, "MEMORY.md")
+	for _, path := range []string{
+		filepath.Join(project, ".git", "keep"),
+		memoryIndex,
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings := []byte(fmt.Sprintf(`{"autoMemoryDirectory":%q}`, memory))
+	if err := os.WriteFile(filepath.Join(configDir, "settings.json"), settings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	targets := NewClaudeCodeConnector().ComponentTargets(project)
+	if !slices.Contains(targets["memory"], memory) {
+		t.Errorf("ComponentTargets(memory) = %v, missing %q", targets["memory"], memory)
+	}
+	if watch := ClaudeCodeWatchPaths(project); !slices.Contains(watch, memoryIndex) {
+		t.Errorf("ClaudeCodeWatchPaths() = %v, missing %q", watch, memoryIndex)
+	}
+}
+
+func TestClaudeCode_ContentTelemetryGatesAreExplicitlyOffAndManaged(t *testing.T) {
+	spec := NewClaudeCodeConnector().HookProfile(SetupOpts{APIAddr: "127.0.0.1:18970"}).NativeOTLP
+	if spec == nil {
+		t.Fatal("Claude Code native OTLP specification is missing")
+	}
+	managedKeys := make(map[string]struct{}, len(claudeCodeOtelEnvKeys))
+	for _, key := range claudeCodeOtelEnvKeys {
+		managedKeys[key] = struct{}{}
+	}
+	for _, key := range []string{
+		"OTEL_LOG_USER_PROMPTS",
+		"OTEL_LOG_ASSISTANT_RESPONSES",
+		"OTEL_LOG_TOOL_DETAILS",
+		"OTEL_LOG_TOOL_CONTENT",
+		"OTEL_LOG_RAW_API_BODIES",
+	} {
+		if got := spec.ExtraEnv[key]; got != "0" {
+			t.Errorf("NativeOTLP.ExtraEnv[%q] = %q, want explicit-off value 0", key, got)
+		}
+		if _, ok := managedKeys[key]; !ok {
+			t.Errorf("%q is not in Claude Code teardown custody", key)
+		}
+	}
+}
+
+func TestClaudeCode_WatchPathsHonorConfigDirAndExistingRules(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	previous := ClaudeCodeSettingsPathOverride
+	ClaudeCodeSettingsPathOverride = ""
+	t.Cleanup(func() { ClaudeCodeSettingsPathOverride = previous })
+
+	userRule := filepath.Join(configDir, "rules", "user-rule.md")
+	projectRule := filepath.Join(workspace, ".claude", "rules", "nested", "project-rule.MD")
+	ignoredRule := filepath.Join(workspace, ".claude", "rules", "ignored.txt")
+	for _, path := range []string{userRule, projectRule, ignoredRule} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := ClaudeCodeWatchPaths(workspace)
+	for _, want := range []string{
+		filepath.Join(configDir, "settings.json"),
+		filepath.Join(configDir, ".claude.json"),
+		filepath.Join(configDir, "CLAUDE.md"),
+		filepath.Join(workspace, "CLAUDE.md"),
+		filepath.Join(workspace, "CLAUDE.local.md"),
+		filepath.Join(workspace, ".mcp.json"),
+		filepath.Join(workspace, ".env"),
+		filepath.Join(workspace, "package.json"),
+		filepath.Join(workspace, "pyproject.toml"),
+		filepath.Join(workspace, ".claude", "settings.json"),
+		filepath.Join(workspace, ".claude", "settings.local.json"),
+		filepath.Join(workspace, ".claude", "CLAUDE.md"),
+		userRule,
+		projectRule,
+	} {
+		if !slices.Contains(got, want) {
+			t.Errorf("ClaudeCodeWatchPaths() = %v, missing %q", got, want)
+		}
+		if !filepath.IsAbs(want) {
+			t.Fatalf("test fixture is not absolute: %q", want)
+		}
+	}
+	if slices.Contains(got, ignoredRule) {
+		t.Errorf("ClaudeCodeWatchPaths() = %v, included non-Markdown rule %q", got, ignoredRule)
 	}
 }
 
@@ -1393,7 +1577,7 @@ func TestClaudeCode_Setup_HonorsClaudeConfigDir(t *testing.T) {
 	mcpStatePath := filepath.Join(claudeConfigDir, ".claude.json")
 	for component, expected := range map[string]string{
 		"skill":   filepath.Join(claudeConfigDir, "skills"),
-		"plugin":  filepath.Join(claudeConfigDir, "plugins"),
+		"plugin":  filepath.Join(claudeConfigDir, "plugins", "cache"),
 		"mcp":     mcpStatePath,
 		"agent":   filepath.Join(claudeConfigDir, "agents"),
 		"command": filepath.Join(claudeConfigDir, "commands"),
@@ -2157,16 +2341,15 @@ func TestClaudeCode_Setup_RegistersFullEventCoverage(t *testing.T) {
 		}
 	}
 
-	// SessionStart has distinct phases — matcher selects which to
-	// observe. All four are worth inspecting for lifecycle events.
-	if m := firstMatcher(hooks["SessionStart"]); m != "startup|resume|clear|compact" {
-		t.Errorf("SessionStart matcher = %q, want startup|resume|clear|compact", m)
+	// SessionStart has distinct phases — matcher selects which to observe.
+	if m := firstMatcher(hooks["SessionStart"]); m != "startup|resume|clear|compact|fork" {
+		t.Errorf("SessionStart matcher = %q, want startup|resume|clear|compact|fork", m)
 	}
 
-	// FileChanged narrows to config files only; generic file writes
-	// are already covered by PostToolUse.
-	if m := firstMatcher(hooks["FileChanged"]); !strings.Contains(m, "CLAUDE.md") {
-		t.Errorf("FileChanged matcher = %q, want config-file matcher including CLAUDE.md", m)
+	// FileChanged's matcher also filters dynamically watched paths by basename,
+	// so it must not narrow the absolute watchPaths returned by the hook.
+	if m := firstMatcher(hooks["FileChanged"]); m != ".+" {
+		t.Errorf("FileChanged matcher = %q, want Windows-valid dynamic-path filter .+", m)
 	}
 }
 
@@ -7632,6 +7815,11 @@ func TestClaudeCode_Setup_WritesOtelEnv(t *testing.T) {
 	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "0" {
 		t.Errorf("OTEL_LOG_ASSISTANT_RESPONSES = %v, want independent privacy-safe default \"0\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
 	}
+	for _, key := range []string{"OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES"} {
+		if env[key] != "0" {
+			t.Errorf("%s = %v, want privacy-safe default \"0\"", key, env[key])
+		}
+	}
 	if env["OTEL_METRICS_EXPORTER"] != "otlp" {
 		t.Errorf("OTEL_METRICS_EXPORTER = %v, want \"otlp\"", env["OTEL_METRICS_EXPORTER"])
 	}
@@ -7787,6 +7975,9 @@ func TestClaudeCode_Setup_ContentCaptureDefaultsOffAndTeardownRestores(t *testin
 		"env": {
 			"OTEL_LOG_USER_PROMPTS": "1",
 			"OTEL_LOG_ASSISTANT_RESPONSES": "1",
+			"OTEL_LOG_TOOL_DETAILS": "1",
+			"OTEL_LOG_TOOL_CONTENT": "1",
+			"OTEL_LOG_RAW_API_BODIES": "1",
 			"PATH": "/custom/bin:/usr/bin"
 		}
 	}`
@@ -7822,6 +8013,11 @@ func TestClaudeCode_Setup_ContentCaptureDefaultsOffAndTeardownRestores(t *testin
 	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "0" {
 		t.Fatalf("OTEL_LOG_ASSISTANT_RESPONSES = %v, want privacy-safe default \"0\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
 	}
+	for _, key := range []string{"OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES"} {
+		if env[key] != "0" {
+			t.Fatalf("%s = %v, want privacy-safe default \"0\"", key, env[key])
+		}
+	}
 
 	// Force the backup-driven restore path. Both independent content settings
 	// must return to the operator's original values.
@@ -7844,6 +8040,11 @@ func TestClaudeCode_Setup_ContentCaptureDefaultsOffAndTeardownRestores(t *testin
 	}
 	if env["OTEL_LOG_ASSISTANT_RESPONSES"] != "1" {
 		t.Fatalf("OTEL_LOG_ASSISTANT_RESPONSES = %v after teardown, want restored \"1\"", env["OTEL_LOG_ASSISTANT_RESPONSES"])
+	}
+	for _, key := range []string{"OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES"} {
+		if env[key] != "1" {
+			t.Fatalf("%s = %v after teardown, want restored \"1\"", key, env[key])
+		}
 	}
 	if env["PATH"] != "/custom/bin:/usr/bin" {
 		t.Fatalf("PATH = %v after teardown, want pristine value", env["PATH"])

@@ -59,6 +59,13 @@ def _pin_home(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
 
+def _pin_claude_home(monkeypatch, tmp_path: Path) -> None:
+    """Bind Claude's platform home without activating its optional override."""
+
+    _pin_home(monkeypatch, tmp_path)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
 def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(monkeypatch) -> None:
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
@@ -478,11 +485,10 @@ def test_claude_discovery_does_not_count_mcp_only_state_as_generic_config(
     monkeypatch,
     tmp_path,
 ):
-    _pin_home(monkeypatch, tmp_path / "default-home")
-    configured_home = tmp_path / "custom-claudecode"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured_home))
-    state = configured_home / ".claude.json"
-    state.parent.mkdir(parents=True)
+    home = tmp_path / "default-home"
+    _pin_claude_home(monkeypatch, home)
+    state = home / ".claude.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
     state.write_text('{"mcpServers": {}}\n', encoding="utf-8")
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
 
@@ -492,17 +498,12 @@ def test_claude_discovery_does_not_count_mcp_only_state_as_generic_config(
     assert signal.config_path == ""
 
 
-def test_claude_discovery_prefers_project_settings_over_user_settings(
+def test_claude_discovery_finds_project_settings_without_user_settings(
     monkeypatch,
     tmp_path,
 ):
-    _pin_home(monkeypatch, tmp_path / "default-home")
-    configured_home = tmp_path / "custom-claudecode"
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(configured_home))
-    user_settings = configured_home / "settings.json"
-    user_settings.parent.mkdir(parents=True)
-    user_settings.write_text("{}\n", encoding="utf-8")
-    project_settings = tmp_path / ".claude" / "settings.local.json"
+    _pin_claude_home(monkeypatch, tmp_path / "default-home")
+    project_settings = tmp_path / ".claude" / "settings.json"
     project_settings.parent.mkdir(parents=True)
     project_settings.write_text("{}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -512,6 +513,42 @@ def test_claude_discovery_prefers_project_settings_over_user_settings(
 
     assert signal.configured is True
     assert signal.config_path == str(project_settings)
+
+
+def test_claude_discovery_prefers_local_over_project_and_user_settings(
+    monkeypatch,
+    tmp_path,
+):
+    home = tmp_path / "default-home"
+    _pin_claude_home(monkeypatch, home)
+    user_settings = home / ".claude" / "settings.json"
+    project_settings = tmp_path / ".claude" / "settings.json"
+    local_settings = tmp_path / ".claude" / "settings.local.json"
+    for settings in (user_settings, project_settings, local_settings):
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text("{}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("claudecode")
+
+    assert signal.configured is True
+    assert signal.config_path == str(local_settings)
+
+
+def test_claude_discovery_falls_back_to_user_settings(monkeypatch, tmp_path):
+    home = tmp_path / "default-home"
+    _pin_claude_home(monkeypatch, home)
+    user_settings = home / ".claude" / "settings.json"
+    user_settings.parent.mkdir(parents=True)
+    user_settings.write_text("{}\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("claudecode")
+
+    assert signal.configured is True
+    assert signal.config_path == str(user_settings)
 
 
 def test_hermes_legacy_windows_config_is_not_current_configuration_evidence(

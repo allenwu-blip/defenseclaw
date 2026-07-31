@@ -121,14 +121,17 @@ class ClaudeCodeSkillAndPluginDirsTests(unittest.TestCase):
     def test_plugin_dirs_default_to_home(self):
         with _IsolatedHome() as home:
             dirs = connector_paths.plugin_dirs("claudecode")
-            self.assertIn(os.path.join(home, ".claude", "plugins"), dirs)
+            self.assertIn(os.path.join(home, ".claude", "plugins", "cache"), dirs)
+            self.assertIn(os.path.join(home, ".claude", "skills"), dirs)
             self.assertNotIn(os.path.join(os.getcwd(), ".claude", "plugins"), dirs)
 
     def test_plugin_dirs_include_workspace_when_explicit(self):
         with _IsolatedHome() as home:
             dirs = connector_paths.plugin_dirs("claudecode", workspace_dir=os.getcwd())
-            self.assertIn(os.path.join(home, ".claude", "plugins"), dirs)
-            self.assertIn(os.path.join(os.getcwd(), ".claude", "plugins"), dirs)
+            self.assertIn(os.path.join(home, ".claude", "plugins", "cache"), dirs)
+            self.assertIn(os.path.join(home, ".claude", "skills"), dirs)
+            self.assertIn(os.path.join(os.getcwd(), ".claude", "skills"), dirs)
+            self.assertNotIn(os.path.join(os.getcwd(), ".claude", "plugins"), dirs)
 
 
 class ClaudeCodeHooksRoundTripTests(unittest.TestCase):

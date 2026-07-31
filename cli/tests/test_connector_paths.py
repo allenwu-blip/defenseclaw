@@ -32,6 +32,15 @@ import pytest
 from defenseclaw import connector_paths
 from defenseclaw.connector_paths import MCPServerEntry
 
+
+def _pin_claude_home(monkeypatch, home: Path) -> None:
+    """Bind both platform home selectors, then disable Claude's override."""
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # normalize / is_known
 # ---------------------------------------------------------------------------
@@ -48,6 +57,9 @@ class TestNormalize:
             ("OpenClaw", "openclaw"),
             ("  CODEX  ", "codex"),
             ("Claudecode", "claudecode"),
+            ("claude-code", "claudecode"),
+            ("claude_code", "claudecode"),
+            ("gemini-cli", "geminicli"),
             ("zeptoclaw", "zeptoclaw"),
             ("future-connector", "future-connector"),
         ],
@@ -135,11 +147,144 @@ class TestSkillDirs:
         workspace_dirs = connector_paths.skill_dirs("claudecode", workspace_dir=str(tmp_path))
         assert os.path.join(str(tmp_path), ".claude", "skills") in workspace_dirs
 
+    def test_claudecode_includes_launch_ancestors_and_lazy_nested_skill_roots(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        repository = tmp_path / "repo"
+        launch = repository / "apps" / "web"
+        nested = launch / "packages" / "ui" / ".claude" / "skills"
+        (repository / ".git").mkdir(parents=True)
+        nested.mkdir(parents=True)
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude-home"))
+
+        dirs = connector_paths.skill_dirs(
+            "claudecode",
+            workspace_dir=str(launch),
+        )
+
+        for expected in (
+            launch / ".claude" / "skills",
+            repository / "apps" / ".claude" / "skills",
+            repository / ".claude" / "skills",
+            nested,
+        ):
+            assert str(expected) in dirs
+
+        user_skills = os.path.join(str(tmp_path / "claude-home"), "skills")
+        user_commands = os.path.join(str(tmp_path / "claude-home"), "commands")
+        assert dirs.index(user_skills) < dirs.index(str(repository / ".claude" / "skills"))
+        assert dirs.index(str(repository / ".claude" / "skills")) < dirs.index(user_commands)
+
     def test_codex(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         dirs = connector_paths.skill_dirs("codex")
         home = str(Path.home())
         assert os.path.join(home, ".codex", "skills") in dirs
+
+
+class TestClaudeAgentDirs:
+    def test_closest_first_launch_ancestors_then_user(self, tmp_path, monkeypatch):
+        repository = tmp_path / "repo"
+        launch = repository / "apps" / "web"
+        (repository / ".git").mkdir(parents=True)
+        launch.mkdir(parents=True)
+        config_dir = tmp_path / "claude-home"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+        assert connector_paths.claude_agent_dirs(str(launch)) == [
+            str(launch / ".claude" / "agents"),
+            str(repository / "apps" / ".claude" / "agents"),
+            str(repository / ".claude" / "agents"),
+            str(config_dir / "agents"),
+        ]
+
+
+class TestClaudeAutoMemory:
+    def test_default_uses_shared_linked_worktree_project_root(self, tmp_path, monkeypatch):
+        main = tmp_path / "main"
+        git_dir = main / ".git"
+        worktree = tmp_path / "worktree"
+        worktree_git = git_dir / "worktrees" / "feature"
+        worktree.mkdir(parents=True)
+        worktree_git.mkdir(parents=True)
+        (worktree / ".git").write_text(
+            f"gitdir: {worktree_git}\n",
+            encoding="utf-8",
+        )
+        (worktree_git / "commondir").write_text("../..\n", encoding="utf-8")
+        config_dir = tmp_path / "claude-home"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+        resolution = connector_paths.claude_auto_memory_resolution(
+            str(worktree),
+            managed_settings_paths=[],
+        )
+
+        assert resolution.project_root == str(main)
+        assert resolution.path == os.path.join(
+            str(config_dir),
+            "projects",
+            connector_paths._claude_project_storage_key(str(main)),
+            "memory",
+        )
+        assert resolution.source == "derived-project-default"
+        assert resolution.activation_verified is False
+        assert "--settings" in resolution.limitation
+
+    def test_file_settings_precedence_and_tilde_override(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        config_dir = tmp_path / "claude-home"
+        managed = tmp_path / "managed-settings.json"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+        for path, value in (
+            (config_dir / "settings.json", str(tmp_path / "user-memory")),
+            (project / ".claude" / "settings.json", str(tmp_path / "project-memory")),
+            (project / ".claude" / "settings.local.json", str(tmp_path / "local-memory")),
+            (managed, "~/managed-memory"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"autoMemoryDirectory": value}),
+                encoding="utf-8",
+            )
+
+        resolution = connector_paths.claude_auto_memory_resolution(
+            str(project),
+            managed_settings_paths=[str(managed)],
+        )
+
+        assert resolution.path == os.path.join(str(Path.home()), "managed-memory")
+        assert resolution.source == str(managed)
+
+    def test_memory_files_are_bounded_to_regular_markdown(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        (project / ".git").mkdir(parents=True)
+        memory = tmp_path / "memory"
+        (memory / "topics").mkdir(parents=True)
+        (memory / "MEMORY.md").write_text("index\n", encoding="utf-8")
+        (memory / "topics" / "debugging.md").write_text("topic\n", encoding="utf-8")
+        (memory / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+        config_dir = tmp_path / "claude-home"
+        config_dir.mkdir()
+        (config_dir / "settings.json").write_text(
+            json.dumps({"autoMemoryDirectory": str(memory)}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
+
+        resolution, files = connector_paths.claude_auto_memory_files(
+            str(project),
+            managed_settings_paths=[],
+        )
+
+        assert resolution.path == str(memory)
+        assert files == [
+            str(memory / "MEMORY.md"),
+            str(memory / "topics" / "debugging.md"),
+        ]
 
     def test_zeptoclaw(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -312,7 +457,47 @@ class TestPluginDirs:
         monkeypatch.chdir(tmp_path)
         dirs = connector_paths.plugin_dirs("claudecode")
         home = str(Path.home())
-        assert os.path.join(home, ".claude", "plugins") in dirs
+        assert os.path.join(home, ".claude", "plugins", "cache") in dirs
+        assert os.path.join(home, ".claude", "skills") in dirs
+        assert os.path.join(str(tmp_path), ".claude", "plugins") not in dirs
+
+    def test_claudecode_includes_only_official_workspace_skills_plugin_root(
+        self,
+        tmp_path,
+    ):
+        dirs = connector_paths.plugin_dirs(
+            "claudecode",
+            workspace_dir=str(tmp_path),
+        )
+        assert os.path.join(str(tmp_path), ".claude", "skills") in dirs
+        assert os.path.join(str(tmp_path), ".claude", "plugins") not in dirs
+
+    def test_claudecode_plugins_include_ancestor_and_nested_skills_roots(
+        self,
+        tmp_path,
+    ):
+        repository = tmp_path / "repo"
+        launch = repository / "apps" / "web"
+        nested = launch / "packages" / "ui" / ".claude" / "skills"
+        (repository / ".git").mkdir(parents=True)
+        nested.mkdir(parents=True)
+
+        dirs = connector_paths.plugin_dirs(
+            "claudecode",
+            workspace_dir=str(launch),
+        )
+
+        assert str(repository / ".claude" / "skills") in dirs
+        assert str(nested) in dirs
+
+    def test_claudecode_honors_plugin_parent_override(self, tmp_path, monkeypatch):
+        plugin_parent = tmp_path / "claude-plugin-parent"
+        monkeypatch.setenv("CLAUDE_CODE_PLUGIN_CACHE_DIR", str(plugin_parent))
+
+        dirs = connector_paths.plugin_dirs("claudecode")
+
+        assert str(plugin_parent / "cache") in dirs
+        assert os.path.join(str(Path.home()), ".claude", "plugins", "cache") not in dirs
 
     def test_codex(self):
         dirs = connector_paths.plugin_dirs("codex")
@@ -659,9 +844,9 @@ class TestMCPServers:
         tmp_path,
         monkeypatch,
     ):
-        # Override $HOME so we can write a fake user MCP state file.
         fake_home = tmp_path / "home"
         fake_home.mkdir()
+        _pin_claude_home(monkeypatch, fake_home)
         (fake_home / ".claude.json").write_text(
             json.dumps(
                 {
@@ -672,7 +857,6 @@ class TestMCPServers:
                 }
             )
         )
-        monkeypatch.setenv("HOME", str(fake_home))
 
         cwd = tmp_path / "project"
         cwd.mkdir()
@@ -687,10 +871,97 @@ class TestMCPServers:
 
         entries = connector_paths.mcp_servers("claudecode", workspace_dir=str(cwd))
         names = [entry.name for entry in entries]
-        assert "from-user-state" in names
-        assert "from-mcp-json" in names
-        assert names.count("shared") == 1
+        assert names == ["shared", "from-mcp-json", "from-user-state"]
         assert next(entry for entry in entries if entry.name == "shared").command == "project-command"
+
+    def test_claudecode_local_project_user_precedence_and_workspace_attribution(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        _pin_claude_home(monkeypatch, fake_home)
+        workspace = tmp_path / "project" / ".." / "project"
+        workspace.resolve().mkdir(parents=True)
+        other_workspace = tmp_path / "other-project"
+        other_workspace.mkdir()
+        state_workspace_key = os.path.join(str(tmp_path), "project", ".")
+
+        (fake_home / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "projects": {
+                        state_workspace_key: {
+                            "mcpServers": {
+                                "shared": {"command": "local-command"},
+                                "local-only": {"command": "local-only-command"},
+                            }
+                        },
+                        str(other_workspace): {
+                            "mcpServers": {
+                                "other-local": {"command": "must-not-appear"},
+                            }
+                        },
+                    },
+                    "mcpServers": {
+                        "shared": {"command": "user-command"},
+                        "user-only": {"command": "user-only-command"},
+                    },
+                }
+            )
+        )
+        self._write_mcp_json(
+            workspace.resolve(),
+            {
+                "shared": {"command": "project-command"},
+                "project-only": {"command": "project-only-command"},
+            },
+        )
+
+        entries = connector_paths.mcp_servers(
+            "claudecode",
+            workspace_dir=str(workspace),
+        )
+        assert [entry.name for entry in entries] == [
+            "shared",
+            "local-only",
+            "project-only",
+            "user-only",
+        ]
+        assert entries[0].command == "local-command"
+        assert all(entry.name != "other-local" for entry in entries)
+
+    def test_claudecode_does_not_infer_local_scope_from_process_cwd(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        _pin_claude_home(monkeypatch, fake_home)
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        monkeypatch.chdir(workspace)
+        (fake_home / ".claude.json").write_text(
+            json.dumps(
+                {
+                    "projects": {
+                        str(workspace): {
+                            "mcpServers": {
+                                "local-only": {"command": "must-not-appear"},
+                            }
+                        }
+                    },
+                    "mcpServers": {
+                        "user-only": {"command": "user-command"},
+                    },
+                }
+            )
+        )
+
+        entries = connector_paths.mcp_servers("claudecode")
+        assert [entry.name for entry in entries] == ["user-only"]
 
     def test_zeptoclaw_reads_config_json(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
@@ -945,6 +1216,24 @@ class TestConnectorHome:
         assert connector_paths.claude_mcp_state_path() == str(configured / ".claude.json")
         assert str(configured / ".claude.json") in connector_paths.connector_config_files("claudecode")
 
+    def test_claude_paths_default_to_platform_home_without_override(self, monkeypatch, tmp_path):
+        home = tmp_path / "claude-home"
+        _pin_claude_home(monkeypatch, home)
+
+        assert connector_paths.claude_config_dir() == str(home / ".claude")
+        assert connector_paths.claude_mcp_state_path() == str(home / ".claude.json")
+
+    def test_claude_settings_paths_are_separate_and_scope_ordered(self, monkeypatch, tmp_path):
+        home = tmp_path / "claude-home"
+        workspace = tmp_path / "workspace"
+        _pin_claude_home(monkeypatch, home)
+
+        assert connector_paths.claude_settings_paths(str(workspace)) == [
+            str(home / ".claude" / "settings.json"),
+            str(workspace / ".claude" / "settings.json"),
+            str(workspace / ".claude" / "settings.local.json"),
+        ]
+
     def test_opencode_home_is_xdg_config(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
         assert connector_paths.connector_home("opencode") == os.path.join(str(tmp_path), ".config", "opencode")
@@ -1148,7 +1437,8 @@ class TestConfigDispatch:
         cfg.guardrail.connector = "claudecode"
         dirs = cfg.plugin_dirs()
         home = str(Path.home())
-        assert os.path.join(home, ".claude", "plugins") in dirs
+        assert os.path.join(home, ".claude", "plugins", "cache") in dirs
+        assert os.path.join(home, ".claude", "skills") in dirs
 
     def test_config_active_connector_precedence(self):
         from defenseclaw import config

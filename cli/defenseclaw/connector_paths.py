@@ -41,7 +41,8 @@ Public surface
   (trim, lowercase, default to ``"openclaw"``). Mirrors
   ``Config.activeConnector`` semantics in claw.go.
 * :func:`is_known` — connector-name allow-list check.
-* :func:`skill_dirs` / :func:`plugin_dirs` / :func:`mcp_servers` —
+* :func:`skill_dirs` / :func:`plugin_dirs` / :func:`mcp_servers` /
+  :func:`claude_agent_dirs` —
   polymorphic dispatchers; pass a connector name and they return the
   paths or MCP entries for that connector.
 """
@@ -55,6 +56,7 @@ import hashlib
 import json
 import ntpath
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -80,6 +82,7 @@ from defenseclaw.file_permissions import (
     open_regular_file_no_follow,
     reject_reparse_path,
 )
+from defenseclaw.safety import is_symlink
 
 # ---------------------------------------------------------------------------
 # Public constants
@@ -160,6 +163,17 @@ class MCPServerEntry:
     disabled_tools: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ClaudeAutoMemoryResolution:
+    """One offline resolution of Claude Code's project auto-memory path."""
+
+    path: str = ""
+    source: str = ""
+    project_root: str = ""
+    activation_verified: bool = False
+    limitation: str = ""
+
+
 def infer_mcp_transport(
     transport: Any = "",
     *,
@@ -200,6 +214,10 @@ def normalize(connector: str | None) -> str:
     name = connector.strip().lower()
     if name in {"open-hands", "open_hands"}:
         return "openhands"
+    if name in {"claude-code", "claude_code"}:
+        return "claudecode"
+    if name in {"gemini-cli", "gemini_cli", "gemini"}:
+        return "geminicli"
     return name or "openclaw"
 
 
@@ -282,6 +300,182 @@ def claude_mcp_state_path() -> str:
     if configured:
         return os.path.join(claude_config_dir(), ".claude.json")
     return os.path.join(os.path.abspath(str(Path.home())), ".claude.json")
+
+
+def claude_settings_paths(workspace_dir: str | None = None) -> list[str]:
+    """Return Claude Code settings files without mixing in MCP state.
+
+    Structural callers keep user, project, then local order. Callers that need
+    effective-precedence order can reverse the three entries to obtain
+    local, project, then user.
+    """
+
+    return _dedup(
+        [
+            os.path.join(claude_config_dir(), "settings.json"),
+            _workspace_path(workspace_dir, ".claude", "settings.json"),
+            _workspace_path(workspace_dir, ".claude", "settings.local.json"),
+        ]
+    )
+
+
+def claude_agent_dirs(workspace_dir: str | None = None) -> list[str]:
+    """Return Claude agent roots in effective precedence order.
+
+    Project roots are ordered from the launch directory through the nearest
+    repository root, then the user root. Claude identifies definitions by
+    frontmatter ``name`` and lets the closest project definition win.
+    """
+
+    return _dedup(
+        [
+            *_claudecode_project_agent_dirs(workspace_dir),
+            os.path.join(claude_config_dir(), "agents"),
+        ]
+    )
+
+
+def claude_auto_memory_resolution(
+    workspace_dir: str | None,
+    *,
+    managed_settings_paths: list[str] | None = None,
+) -> ClaudeAutoMemoryResolution:
+    """Resolve Claude's documented auto-memory path without session guessing.
+
+    File-based settings are read in user → project → local → managed override
+    order so the last valid scalar wins. Session-only ``--settings``, remote
+    managed settings, registry/MDM policies, and policy-helper output are not
+    observable from a passive filesystem inventory, so the result is always
+    labelled unverified and carries that limitation.
+    """
+
+    workspace = _workspace_dir(workspace_dir)
+    if not workspace:
+        return ClaudeAutoMemoryResolution(
+            limitation=(
+                "Claude auto-memory project identity is unresolved because no "
+                "connector workspace/session CWD is available"
+            ),
+        )
+    project_root, project_limitation = _claude_project_root(workspace)
+    if not project_root:
+        return ClaudeAutoMemoryResolution(limitation=project_limitation)
+
+    sources = [
+        os.path.join(claude_config_dir(), "settings.json"),
+        os.path.join(project_root, ".claude", "settings.json"),
+        os.path.join(project_root, ".claude", "settings.local.json"),
+    ]
+    managed = (
+        list(managed_settings_paths)
+        if managed_settings_paths is not None
+        else _claude_file_managed_settings_paths()
+    )
+    sources.extend(managed)
+
+    override = ""
+    override_source = ""
+    limitations = [project_limitation] if project_limitation else []
+    for source in sources:
+        document, error = _read_bounded_json_object_no_follow(source)
+        if error:
+            limitations.append(error)
+            continue
+        if document is None:
+            continue
+        if source in managed and document.get("policyHelper"):
+            limitations.append(
+                f"{source} configures policyHelper; dynamic managed settings "
+                "cannot be resolved by passive inventory",
+            )
+        value = document.get("autoMemoryDirectory")
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            limitations.append(
+                f"{source} has non-string autoMemoryDirectory and cannot "
+                "establish an effective memory path",
+            )
+            continue
+        candidate = value.strip()
+        if candidate.startswith("~/") or candidate.startswith("~\\"):
+            candidate = os.path.join(str(Path.home()), candidate[2:])
+        elif not os.path.isabs(candidate):
+            limitations.append(
+                f"{source} has non-absolute autoMemoryDirectory; Claude "
+                "requires an absolute path or ~/ prefix",
+            )
+            continue
+        override = os.path.abspath(candidate)
+        override_source = source
+
+    if override:
+        path = override
+        source = override_source
+    else:
+        project_key = _claude_project_storage_key(project_root)
+        if not project_key:
+            return ClaudeAutoMemoryResolution(
+                project_root=project_root,
+                limitation="Claude auto-memory project storage identity could not be derived",
+            )
+        path = os.path.join(
+            claude_config_dir(),
+            "projects",
+            project_key,
+            "memory",
+        )
+        source = "derived-project-default"
+
+    limitations.append(
+        "passive inventory cannot observe session --settings, remote managed "
+        "settings, or native registry/MDM policy; confirm the active path with "
+        "Claude Code /memory or /status",
+    )
+    return ClaudeAutoMemoryResolution(
+        path=os.path.abspath(path),
+        source=source,
+        project_root=project_root,
+        activation_verified=False,
+        limitation="; ".join(item for item in limitations if item),
+    )
+
+
+def claude_auto_memory_files(
+    workspace_dir: str | None,
+    *,
+    managed_settings_paths: list[str] | None = None,
+) -> tuple[ClaudeAutoMemoryResolution, list[str]]:
+    """Return bounded regular Markdown files under the resolved memory path."""
+
+    resolution = claude_auto_memory_resolution(
+        workspace_dir,
+        managed_settings_paths=managed_settings_paths,
+    )
+    root = resolution.path
+    if not root or not os.path.isdir(root) or is_symlink(root):
+        return resolution, []
+    files: list[str] = []
+    visited = 0
+    for current, dirs, names in os.walk(root, topdown=True, followlinks=False):
+        dirs[:] = [
+            name
+            for name in sorted(dirs, key=str.casefold)
+            if not is_symlink(os.path.join(current, name))
+        ]
+        visited += 1
+        if visited > _CLAUDE_SKILL_DISCOVERY_DIR_LIMIT:
+            dirs[:] = []
+            break
+        for name in sorted(names, key=str.casefold):
+            path = os.path.join(current, name)
+            if (
+                name.lower().endswith(".md")
+                and os.path.isfile(path)
+                and not is_symlink(path)
+            ):
+                files.append(os.path.abspath(path))
+    return resolution, _dedup(files)
 
 
 def codex_home() -> str:
@@ -498,11 +692,11 @@ def connector_config_files(
     home = str(Path.home())
     paths: list[str] = []
     if name == "claudecode":
+        settings_paths = claude_settings_paths(workspace_dir)
         paths = [
-            os.path.join(claude_config_dir(), "settings.json"),
+            settings_paths[0],
             claude_mcp_state_path(),
-            _workspace_path(workspace_dir, ".claude", "settings.json"),
-            _workspace_path(workspace_dir, ".claude", "settings.local.json"),
+            *settings_paths[1:],
             _workspace_path(workspace_dir, ".mcp.json"),
         ]
     elif name == "codex":
@@ -635,7 +829,8 @@ def plugin_dirs(
 
     Uses each framework's documented plugin location:
 
-    * Claude Code: ``~/.claude/plugins`` and ``./.claude/plugins``
+    * Claude Code: ``~/.claude/plugins/cache`` plus manifest-bearing
+                   user/project skills-directory plugins
     * Codex:       ``~/.codex/plugins`` (+ ``cache`` subdir)
     * ZeptoClaw:   ``~/.zeptoclaw/plugins`` (+ ``cache`` subdir)
     * OpenClaw:    ``<home_dir>/extensions``
@@ -704,7 +899,8 @@ def mcp_servers(
 
     Reads each framework's canonical config:
 
-    * Claude Code: user ``~/.claude.json`` plus explicit workspace ``.mcp.json``
+    * Claude Code: local/user ``~/.claude.json`` plus explicit workspace
+                   ``.mcp.json``, in local → project → user precedence
     * Codex:       ``~/.codex/config.toml`` then explicit workspace ``.mcp.json``
     * ZeptoClaw:   ``~/.zeptoclaw/config.json`` then explicit workspace ``.mcp.json``
     * Antigravity: ``~/.gemini/config/mcp_config.json`` then explicit workspace
@@ -758,13 +954,226 @@ def mcp_servers(
 # ---------------------------------------------------------------------------
 
 
+_CLAUDE_SKILL_DISCOVERY_DIR_LIMIT = 32768
+
+
 def _claudecode_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    # Claude resolves true skills before legacy commands. Personal skills have
+    # higher precedence than project skills; command roots come only after all
+    # skill roots so a same-name command never hides a skill.
     return _dedup(
         [
             os.path.join(claude_config_dir(), "skills"),
-            _workspace_path(workspace_dir, ".claude", "skills"),
+            *_claudecode_project_skill_dirs(workspace_dir),
+            os.path.join(claude_config_dir(), "commands"),
+            _workspace_path(workspace_dir, ".claude", "commands"),
         ]
     )
+
+
+def _claudecode_project_skill_dirs(workspace_dir: str | None) -> list[str]:
+    """Return Claude's launch-ancestor and lazy nested project skill roots."""
+
+    raw = (workspace_dir or "").strip()
+    if not raw:
+        return []
+    start = os.path.abspath(os.path.expanduser(raw))
+    repository_root = _claudecode_repository_root(start)
+    roots: list[str] = []
+    current = start
+    while True:
+        roots.append(os.path.join(current, ".claude", "skills"))
+        if (
+            not repository_root
+            or os.path.normcase(current) == os.path.normcase(repository_root)
+        ):
+            break
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            break
+        current = parent
+
+    visited = 0
+    if os.path.isdir(start) and not is_symlink(start):
+        for current, dirs, _files in os.walk(
+            start,
+            topdown=True,
+            followlinks=False,
+        ):
+            dirs[:] = [
+                name
+                for name in sorted(dirs, key=str.casefold)
+                if name != ".git"
+                and not is_symlink(os.path.join(current, name))
+            ]
+            visited += 1
+            if visited > _CLAUDE_SKILL_DISCOVERY_DIR_LIMIT:
+                dirs[:] = []
+                break
+            if (
+                os.path.basename(current).casefold() == "skills"
+                and os.path.basename(os.path.dirname(current)).casefold()
+                == ".claude"
+            ):
+                roots.append(os.path.abspath(current))
+    return _dedup(roots)
+
+
+def _claudecode_project_agent_dirs(workspace_dir: str | None) -> list[str]:
+    """Return closest-first project agent roots through the repository root."""
+
+    raw = (workspace_dir or "").strip()
+    if not raw:
+        return []
+    start = os.path.abspath(os.path.expanduser(raw))
+    repository_root = _claudecode_repository_root(start)
+    roots: list[str] = []
+    current = start
+    while True:
+        roots.append(os.path.join(current, ".claude", "agents"))
+        if (
+            not repository_root
+            or os.path.normcase(current) == os.path.normcase(repository_root)
+        ):
+            break
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            break
+        current = parent
+    return _dedup(roots)
+
+
+def _claudecode_repository_root(start: str) -> str:
+    current = os.path.abspath(start)
+    while True:
+        marker = os.path.join(current, ".git")
+        try:
+            info = os.lstat(marker)
+        except OSError:
+            info = None
+        if info is not None and (
+            stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+        ):
+            return current
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            return ""
+        current = parent
+
+
+def _claude_project_root(workspace: str) -> tuple[str, str]:
+    """Resolve the shared main-checkout root without invoking Git."""
+
+    root = _claudecode_repository_root(workspace)
+    if not root:
+        return workspace, (
+            "workspace is outside a discoverable Git repository; Claude's "
+            "documented outside-repository project-root identity is assumed "
+            "to be the explicit connector workspace"
+        )
+    marker = os.path.join(root, ".git")
+    try:
+        marker_info = os.lstat(marker)
+    except (OSError, ValueError, UnsafePathError) as exc:
+        return root, f"cannot inspect Git project marker {marker}: {exc}"
+    if stat.S_ISDIR(marker_info.st_mode):
+        return root, ""
+    if not stat.S_ISREG(marker_info.st_mode) or is_symlink(marker):
+        return "", f"Git project marker {marker} is not a stable regular file"
+    marker_text, error = _read_bounded_text_no_follow(marker, 8192)
+    if error:
+        return "", error
+    prefix = "gitdir:"
+    if not marker_text.lower().startswith(prefix):
+        return "", f"Git project marker {marker} has an unsupported format"
+    git_dir = marker_text[len(prefix) :].strip()
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.abspath(os.path.join(root, git_dir))
+    common_path = os.path.join(git_dir, "commondir")
+    common_text, common_error = _read_bounded_text_no_follow(common_path, 8192)
+    if common_error:
+        return root, (
+            f"linked-worktree project identity is unresolved: {common_error}"
+        )
+    common_dir = common_text.strip()
+    if not common_dir:
+        return root, (
+            f"linked-worktree project identity is unresolved: {common_path} is empty"
+        )
+    if not os.path.isabs(common_dir):
+        common_dir = os.path.abspath(os.path.join(git_dir, common_dir))
+    if os.path.basename(common_dir).casefold() != ".git":
+        return root, (
+            "linked-worktree common Git directory does not identify a main "
+            f"checkout root: {common_dir}"
+        )
+    return os.path.dirname(common_dir), ""
+
+
+def _claude_project_storage_key(project_root: str) -> str:
+    """Mirror Claude's on-disk project-key encoding for absolute paths."""
+
+    return re.sub(r"[^A-Za-z0-9_-]", "-", os.path.abspath(project_root))
+
+
+def _claude_file_managed_settings_paths() -> list[str]:
+    if os.name == "nt":
+        program_files = os.environ.get("ProgramFiles") or r"C:\Program Files"
+        parent = os.path.join(program_files, "ClaudeCode")
+    elif sys.platform == "darwin":
+        parent = "/Library/Application Support/ClaudeCode"
+    else:
+        parent = "/etc/claude-code"
+    paths = [os.path.join(parent, "managed-settings.json")]
+    dropins = os.path.join(parent, "managed-settings.d")
+    if os.path.isdir(dropins) and not is_symlink(dropins):
+        try:
+            names = sorted(os.listdir(dropins), key=str.casefold)
+        except OSError:
+            names = []
+        for name in names[:256]:
+            path = os.path.join(dropins, name)
+            if (
+                name.lower().endswith(".json")
+                and not name.startswith(".")
+                and os.path.isfile(path)
+                and not is_symlink(path)
+            ):
+                paths.append(path)
+    return paths
+
+
+def _read_bounded_text_no_follow(path: str, limit: int) -> tuple[str, str]:
+    try:
+        descriptor = open_regular_file_no_follow(path)
+        with os.fdopen(descriptor, "rb") as source:
+            raw = source.read(limit + 1)
+    except OSError as exc:
+        return "", f"cannot read stable file {path}: {exc}"
+    if len(raw) > limit:
+        return "", f"stable file {path} exceeds the {limit}-byte inventory limit"
+    try:
+        return raw.decode("utf-8"), ""
+    except UnicodeDecodeError as exc:
+        return "", f"stable file {path} is not UTF-8: {exc}"
+
+
+def _read_bounded_json_object_no_follow(
+    path: str,
+    limit: int = 1024 * 1024,
+) -> tuple[dict[str, Any] | None, str]:
+    if not os.path.exists(path):
+        return None, ""
+    text, error = _read_bounded_text_no_follow(path, limit)
+    if error:
+        return None, error
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"settings file {path} is invalid JSON: {exc}"
+    if not isinstance(document, dict):
+        return None, f"settings file {path} is not a JSON object"
+    return document, ""
 
 
 def _codex_skill_dirs(workspace_dir: str | None = None) -> list[str]:
@@ -995,10 +1404,18 @@ def _openclaw_skill_dirs(
 
 
 def _claudecode_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
+    user_skills = os.path.join(claude_config_dir(), "skills")
+    plugin_parent = os.path.abspath(
+        os.path.expanduser(
+            (os.environ.get("CLAUDE_CODE_PLUGIN_CACHE_DIR") or "").strip()
+            or os.path.join(claude_config_dir(), "plugins")
+        )
+    )
     return _dedup(
         [
-            os.path.join(claude_config_dir(), "plugins"),
-            _workspace_path(workspace_dir, ".claude", "plugins"),
+            os.path.join(plugin_parent, "cache"),
+            user_skills,
+            *_claudecode_project_skill_dirs(workspace_dir),
         ]
     )
 
@@ -1096,21 +1513,63 @@ def _openclaw_plugin_dirs(openclaw_home: str | None) -> list[str]:
 
 def _claudecode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
     entries: list[MCPServerEntry] = []
-    # Claude's documented precedence is local, project, then user. This reader
-    # inventories project and user scope, so put project entries first before
-    # the stable first-wins de-duplicator. Local entries share the user state
-    # file but are nested below the active project's path and are left to
-    # Claude's own project-aware CLI.
+    # Claude's documented precedence is local, project, then user. Local and
+    # user entries share one state document, so parse it once and select only
+    # the local entry whose project key resolves to the explicitly pinned
+    # workspace. Never infer a project from DefenseClaw's daemon cwd.
+    local_entries, user_entries = _read_claude_mcp_state(
+        claude_mcp_state_path(),
+        workspace_dir=workspace_dir,
+    )
+    entries.extend(local_entries)
     project_mcp = _workspace_path(workspace_dir, ".mcp.json")
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
-    entries.extend(
-        _read_mcp_settings_block(
-            claude_mcp_state_path(),
-            keys=("mcpServers",),
-        )
-    )
+    entries.extend(user_entries)
     return _dedup_mcp_entries(entries)
+
+
+def _read_claude_mcp_state(
+    path: str,
+    *,
+    workspace_dir: str | None = None,
+) -> tuple[list[MCPServerEntry], list[MCPServerEntry]]:
+    """Return Claude Code ``(local, user)`` MCP entries from one state file.
+
+    Local entries live at ``projects[<absolute workspace>].mcpServers`` and
+    user entries at top-level ``mcpServers``. Project keys are compared using
+    the host filesystem's native normalization rules (including case folding
+    on Windows). An unpinned workspace intentionally yields no local entries.
+    """
+
+    try:
+        with open(path) as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return [], []
+    if not isinstance(data, dict):
+        return [], []
+
+    local_entries: list[MCPServerEntry] = []
+    workspace = _workspace_dir(workspace_dir)
+    projects = data.get("projects")
+    if workspace and isinstance(projects, dict):
+        normalized_workspace = os.path.normcase(os.path.normpath(workspace))
+        for project_key, project_state in projects.items():
+            if not isinstance(project_key, str) or not isinstance(project_state, dict):
+                continue
+            normalized_key = os.path.normcase(
+                os.path.normpath(
+                    os.path.abspath(os.path.expanduser(_expand(project_key)))
+                )
+            )
+            if normalized_key != normalized_workspace:
+                continue
+            local_entries = _parse_mcp_servers_value(project_state.get("mcpServers"))
+            break
+
+    user_entries = _parse_mcp_servers_value(data.get("mcpServers"))
+    return local_entries, user_entries
 
 
 def _codex_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:

@@ -21,6 +21,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from defenseclaw.safety import is_symlink
+
 _SKILL_MARKERS = ("SKILL.md", "skill.json", "README.md")
 
 
@@ -65,12 +67,44 @@ def discover_skill_directories(
 
     normalized_connector = (connector or "").strip().lower().replace("-", "")
     system_containers = {".system"} if normalized_connector == "codex" else set()
+    claude_skills = normalized_connector in {"claude", "claudecode"}
+    claude_commands = claude_skills and os.path.basename(
+        os.path.normpath(skill_root)
+    ).casefold() == "commands"
 
     regular: list[SkillDirectory] = []
     bundled: list[SkillDirectory] = []
+    claude_targets: set[str] = set()
     for entry in entries:
         full = os.path.join(skill_root, entry)
+        if (
+            claude_commands
+            and entry.casefold().endswith(".md")
+            and not is_symlink(full)
+            and os.path.isfile(full)
+        ):
+            regular.append(
+                SkillDirectory(
+                    os.path.splitext(entry)[0],
+                    full,
+                    skill_root,
+                )
+            )
+            continue
         if not os.path.isdir(full):
+            continue
+        if claude_skills:
+            resolved = os.path.realpath(full)
+            target_key = os.path.normcase(resolved)
+            if target_key in claude_targets:
+                continue
+            claude_targets.add(target_key)
+            full = resolved
+        if claude_skills and os.path.isfile(
+            os.path.join(full, ".claude-plugin", "plugin.json")
+        ):
+            # Anthropic assigns this exact child to the @skills-dir plugin
+            # namespace. It must not also appear as a plain skill.
             continue
         if entry not in system_containers:
             regular.append(SkillDirectory(entry, full, skill_root))

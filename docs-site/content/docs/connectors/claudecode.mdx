@@ -100,6 +100,26 @@ Claude Code keeps user/local MCP registration state in `~/.claude.json`
 (`%CLAUDE_CONFIG_DIR%\.claude.json` when that override is set) and project MCP
 state in `<workspace>/.mcp.json`; these are inventory surfaces, not hook setup
 files. See Anthropic's [MCP scope reference](https://code.claude.com/docs/en/mcp).
+The current preview inventories those local, project, and user manual scopes.
+Plugin-provided MCP and claude.ai connector MCP are not attributed from these
+files. Marketplace plugin cache artifacts honor
+`CLAUDE_CODE_PLUGIN_CACHE_DIR`; retained versions are not presented as active
+without semantic client evidence. Managed `enabledPlugins` takes precedence
+over user, project, and local preferences; a dynamic `policyHelper` is reported
+as unverified instead of guessed. Skill inventory covers the launch directory,
+every parent through the repository root, and existing nested
+`.claude/skills` roots that Claude can lazily activate after file activity.
+Nested skills remain discoverable-unverified until session activity proves
+activation; true skills take precedence over legacy commands, and documented
+skill-directory symlinks are canonicalized and de-duplicated. Recursive
+user/project agents use required frontmatter identity and closest-project
+precedence. Managed/plugin agents and session `--agents` remain unverified.
+Auto-memory resolves file-based `autoMemoryDirectory` precedence or the shared
+repository/worktree default under `~/.claude/projects/<project>/memory`; it is
+marked unverified when session `--settings`, remote settings, or native policy
+could change the active path.
+Runtime `/add-dir` roots remain outside passive inventory until the
+release-only `DirectoryAdded` event has a published hook schema.
 
 ## Hook capabilities
 
@@ -120,7 +140,7 @@ its schema, ordering, or blocking behavior, so DefenseClaw does not register it.
 <Flow
   direction="LR"
   compact
-  caption="Two telemetry channels: hooks for per-tool-call decisions and native OTel for raw model/token telemetry."
+  caption="Two telemetry channels: hooks for per-tool-call decisions and native OTel for model/token metrics plus privacy-gated events."
 >
   <Node id="cc" kind="agent">Claude Code</Node>
   <Node id="hooks" kind="connector">{`Current 28-event\nhook contract`}</Node>

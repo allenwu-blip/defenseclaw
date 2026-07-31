@@ -121,10 +121,7 @@ _CODEX_TRUSTED_CONTRACTS = frozenset(
 )
 _CODEX_POLICY_TIMEOUT_SECONDS = 20.0
 _CODEX_POLICY_MESSAGE_LIMIT = 2 * 1024 * 1024
-_CLAUDE_FILE_CHANGED_MATCHER = (
-    "CLAUDE.md|CLAUDE.local.md|settings.json|settings.local.json|.claude.json|.mcp.json|"
-    ".env|.envrc|package.json|pyproject.toml|go.mod|Cargo.toml|requirements.txt"
-)
+_CLAUDE_FILE_CHANGED_MATCHER = ".+"
 _REPAIR = {
     "codex": "defenseclaw setup codex --yes --restart",
     "claudecode": "defenseclaw setup claude-code --yes --restart",
@@ -151,7 +148,7 @@ _WINDSURF_EVENTS = frozenset(
 )
 
 _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
-    "SessionStart": ("startup|resume|clear|compact", 30),
+    "SessionStart": ("startup|resume|clear|compact|fork", 30),
     "InstructionsLoaded": ("*", 30),
     "UserPromptSubmit": (None, 30),
     "UserPromptExpansion": (None, 30),
@@ -1327,15 +1324,20 @@ def _is_codex_managed_hook_config(config_path: str) -> bool:
 
 
 def _default_claude_managed_settings_paths() -> tuple[str, ...]:
-    """Return locally inspectable Windows file-policy sources in merge order."""
-    # FOLDERID_ProgramFiles = {905E63B6-C1BF-494E-B29C-65B732D3D21A}
-    program_files = _windows_known_folder_path("905e63b6-c1bf-494e-b29c-65b732d3d21a")
-    if not program_files:
-        raise _InspectionError(
-            "policy-blocked",
-            "cannot resolve the trusted Windows Program Files Known Folder for Claude Code managed policy",
-        )
-    root = os.path.join(program_files, "ClaudeCode")
+    """Return locally inspectable file-policy sources in merge order."""
+    if os.name == "nt":
+        # FOLDERID_ProgramFiles = {905E63B6-C1BF-494E-B29C-65B732D3D21A}
+        program_files = _windows_known_folder_path("905e63b6-c1bf-494e-b29c-65b732d3d21a")
+        if not program_files:
+            raise _InspectionError(
+                "policy-blocked",
+                "cannot resolve the trusted Windows Program Files Known Folder for Claude Code managed policy",
+            )
+        root = os.path.join(program_files, "ClaudeCode")
+    elif sys.platform == "darwin":
+        root = "/Library/Application Support/ClaudeCode"
+    else:
+        root = "/etc/claude-code"
     paths = [os.path.join(root, "managed-settings.json")]
     dropins = os.path.join(root, "managed-settings.d")
     try:
@@ -1562,6 +1564,54 @@ def _claude_managed_sources(
     return remote, None, file_source, None
 
 
+def inspect_claude_managed_enabled_plugins(
+    config_path: str,
+    *,
+    managed_settings_paths: tuple[str, ...] | None = None,
+    remote_settings_path: str | None = None,
+) -> tuple[dict[str, bool], bool]:
+    """Return the winning managed ``enabledPlugins`` map and evidence status.
+
+    Claude uses exactly one managed source. A dynamic ``policyHelper`` replaces
+    every passive source, so filesystem inventory must remain unverified rather
+    than infer activation from lower user/project/local settings.
+    """
+
+    try:
+        remote, os_managed, file_managed, hkcu = _claude_managed_sources(
+            config_path,
+            managed_settings_paths,
+            remote_settings_path,
+        )
+    except _InspectionError:
+        return {}, False
+
+    active_managed = next(
+        (source for source in (remote, os_managed, file_managed, hkcu) if source is not None and source.settings),
+        None,
+    )
+    if (
+        active_managed is not None
+        and (active_managed is os_managed or active_managed is file_managed)
+        and active_managed.settings.get("policyHelper") is not None
+    ):
+        return {}, False
+    if active_managed is None:
+        return {}, True
+
+    enabled = active_managed.settings.get("enabledPlugins")
+    if enabled is None:
+        return {}, True
+    if not isinstance(enabled, dict):
+        return {}, False
+    resolved: dict[str, bool] = {}
+    for plugin_id, value in enabled.items():
+        if not isinstance(plugin_id, str) or not isinstance(value, bool):
+            return {}, False
+        resolved[plugin_id.casefold()] = value
+    return resolved, True
+
+
 def _validate_claude_managed_controls(source: _ClaudeSettingsSource | None, managed_hook: bool) -> None:
     if source is None:
         return
@@ -1697,6 +1747,7 @@ def _managed_hook_command(command: str, connector: str) -> bool:
         "defenseclaw-hook",
         "defenseclaw-hook.exe",
         "defenseclaw-hook.cmd",
+        "defenseclaw-hook.bat",
         "defenseclaw-hook.ps1",
         "defenseclaw-gateway",
         "defenseclaw-gateway.exe",
@@ -1853,12 +1904,14 @@ def _matcher_covers(event: str, actual: Any, required: str | None) -> bool:
         actual = ""
     if not isinstance(actual, str):
         return False
+    if event == "FileChanged":
+        # The canonical `.+` segment matches every non-empty basename returned by the
+        # dynamic watch list. Additional literal/static segments do not narrow
+        # that filter. Unlike `.*`, `.+` is also a valid literal Windows filename
+        # when Claude builds its initial CWD watch list from the same matcher.
+        return set(required.split("|")).issubset(actual.split("|"))
     if actual in {"", "*", required}:
         return True
-    if event == "FileChanged":
-        # FileChanged is a pipe-separated literal watch list. Additional
-        # filenames broaden coverage without weakening the required set.
-        return set(required.split("|")).issubset(actual.split("|"))
     return False
 
 
@@ -2173,6 +2226,7 @@ def _handler_targets_defenseclaw(handler: Any, connector: str) -> bool:
         if ntpath.basename(target).casefold() in {
             "defenseclaw-hook.exe",
             "defenseclaw-hook.cmd",
+            "defenseclaw-hook.bat",
             "defenseclaw-hook.ps1",
             "defenseclaw-gateway.exe",
             "defenseclaw-gateway.cmd",
@@ -2341,6 +2395,109 @@ def _validate_codex_hook_matrix(
     return count
 
 
+def _claude_native_handler_identity(
+    handler: dict[str, Any],
+    event: str,
+    *,
+    managed_enterprise: bool,
+) -> str:
+    """Validate Claude's native Windows command form without flattening away its schema."""
+    raw_command = handler.get("command")
+    if not isinstance(raw_command, str) or not raw_command.strip():
+        raise _InspectionError("malformed", f"Claude Code event {event} has no executable command")
+
+    shell = handler.get("shell")
+    if shell is not None and (not isinstance(shell, str) or shell.casefold() != "powershell"):
+        raise _InspectionError(
+            "stale",
+            f"Claude Code event {event} uses unsupported shell {shell!r}; expected powershell",
+        )
+    has_exec_args = "args" in handler
+    if not has_exec_args and shell is None:
+        raise _InspectionError(
+            "stale",
+            f"Claude Code event {event} uses unqualified shell form, which can route through Git Bash; "
+            "use command plus args exec form or shell='powershell'",
+        )
+
+    command = _handler_command_line(handler, "claudecode", windows=True)
+    target, _args, kind = _command_target(
+        command,
+        "claudecode",
+        allow_enterprise_managed=managed_enterprise,
+    )
+    target_basename = ntpath.basename(target).casefold()
+    target_extension = ntpath.splitext(target_basename)[1]
+    if target_extension in {".cmd", ".bat"}:
+        raise _InspectionError(
+            "stale",
+            f"Claude Code event {event} uses {target_extension} as a native hook target; "
+            "Windows exec form requires a real .exe",
+        )
+
+    if has_exec_args:
+        # Exec-form `command` is one executable path, not a shell command line.
+        # Treating a Program Files path as shell text would split it at spaces
+        # and falsely reject the canonical native registration.
+        raw_parts = [raw_command.strip().strip('"')]
+        call_operator = False
+        raw_basename = ntpath.basename(raw_parts[0]).casefold()
+    else:
+        raw_parts = _split_windows(raw_command.strip())
+        call_operator = bool(raw_parts and raw_parts[0] == "&")
+        raw_target_index = 1 if call_operator else 0
+        raw_basename = (
+            ntpath.basename(raw_parts[raw_target_index]).casefold()
+            if raw_target_index < len(raw_parts)
+            else ""
+        )
+    direct_exec = (
+        has_exec_args
+        and kind == "direct"
+        and raw_basename == "defenseclaw-hook.exe"
+        and target_basename == "defenseclaw-hook.exe"
+    )
+    powershell_exec = (
+        has_exec_args
+        and raw_basename in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+        and kind == "powershell"
+        and target_basename == "defenseclaw-hook.ps1"
+    )
+    explicit_powershell = (
+        not has_exec_args
+        and isinstance(shell, str)
+        and shell.casefold() == "powershell"
+        and (
+            (
+                call_operator
+                and kind == "direct"
+                and target_basename == "defenseclaw-hook.exe"
+            )
+            or (
+                kind == "powershell"
+                and target_basename == "defenseclaw-hook.ps1"
+                and (
+                    call_operator
+                    or raw_basename
+                    in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}
+                )
+            )
+        )
+    )
+    if not (direct_exec or powershell_exec or explicit_powershell):
+        raise _InspectionError("stale", f"Claude Code event {event} does not use the native hook runtime")
+
+    return json.dumps(
+        {
+            "command": raw_command,
+            "args": handler.get("args") if has_exec_args else None,
+            "shell": shell,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise: bool = False) -> int:
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
@@ -2400,18 +2557,13 @@ def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise
                     "stale",
                     f"Claude Code event {event} {label} has a narrowing if condition",
                 )
-        command = _handler_command_line(handler, "claudecode", windows=True)
-        target, _args, kind = _command_target(
-            command,
-            "claudecode",
-            allow_enterprise_managed=managed_enterprise,
+        commands.add(
+            _claude_native_handler_identity(
+                handler,
+                event,
+                managed_enterprise=managed_enterprise,
+            )
         )
-        basename = ntpath.basename(target).casefold()
-        direct_exec = kind == "direct" and basename == "defenseclaw-hook.exe"
-        powershell_exec = kind == "powershell" and basename == "defenseclaw-hook.ps1"
-        if not (direct_exec or powershell_exec):
-            raise _InspectionError("stale", f"Claude Code event {event} does not use the native hook runtime")
-        commands.add(command)
         count += 1
     if len(commands) != 1:
         raise _InspectionError("stale", "Claude Code DefenseClaw hook events use inconsistent commands")

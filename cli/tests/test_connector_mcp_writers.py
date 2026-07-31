@@ -59,6 +59,14 @@ def _claude_released_names(data_home: Path) -> set[str]:
     return set(json.loads(metadata[0].read_text(encoding="utf-8"))["released"])
 
 
+def _pin_claude_home(monkeypatch, home: Path) -> None:
+    """Bind both platform home selectors, then disable Claude's override."""
+
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+
 # ---------------------------------------------------------------------------
 # OpenClaw — delegation to injected setter/unsetter
 # ---------------------------------------------------------------------------
@@ -130,14 +138,20 @@ class TestZeptoClawUnsupported:
 class TestClaudeCodeWrites:
     @pytest.fixture(autouse=True)
     def _isolate_claude_and_defenseclaw_homes(self, tmp_path, monkeypatch):
-        # pathlib follows USERPROFILE on Windows and HOME on POSIX. Bind the
-        # host-real selector so tests exercise the production resolver without
-        # ever touching the runner profile.
-        if os.name == "nt":
-            monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        else:
-            monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        # The suite-wide Windows fixture mirrors later HOME changes into
+        # connector-specific override variables. Keep that safety behavior,
+        # but clear Claude's optional override after this class's legacy HOME
+        # assignments so these tests exercise the documented default root.
+        original_setenv = monkeypatch.setenv
+
+        def setenv(name: str, value: str, prepend: str | None = None) -> None:
+            original_setenv(name, value, prepend=prepend)
+            if name == "HOME":
+                original_setenv("USERPROFILE", value)
+                monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+        monkeypatch.setattr(monkeypatch, "setenv", setenv)
+        _pin_claude_home(monkeypatch, tmp_path)
         monkeypatch.setenv(
             "DEFENSECLAW_HOME",
             str(tmp_path / "d"),

@@ -295,7 +295,7 @@ var builtinHookContracts = map[string][]HookContract{
 	"claudecode": {{
 		Connector:               "claudecode",
 		ContractID:              "claudecode-hooks-v1",
-		MinAgentVersion:         "2.1.152",
+		MinAgentVersion:         "2.1.154",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v7",
 		HookConfigPathTemplates: []string{"~/.claude/settings.json"},
@@ -357,7 +357,7 @@ var builtinHookContracts = map[string][]HookContract{
 		SupportsTraceparent: true,
 		NativeOTLP:          true,
 		Notes: []string{
-			"Pinned to the documented Claude Code hook surface as of 2.1.152, which introduced MessageDisplay; older releases exposed smaller hook event sets.",
+			"Pinned to Claude Code 2.1.154: 2.1.152 introduced MessageDisplay and 2.1.154 added the plugin defaultEnabled semantics required by inventory.",
 			"Claude Code PreToolUse supports native HITL via permissionDecision=ask.",
 			"PostToolUse findings are advisory because the inspected tool side effects have already occurred.",
 			"PostToolBatch can block continuation before the next model call, but cannot undo completed batch side effects.",

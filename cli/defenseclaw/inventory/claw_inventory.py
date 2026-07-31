@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,14 +34,18 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, NamedTuple, TypedDict
 
+import yaml
+
 from defenseclaw import connector_paths
 from defenseclaw.config import Config, SkillActionsConfig, _expand
+from defenseclaw.file_permissions import open_regular_file_no_follow
 from defenseclaw.inventory.plugin_directories import discover_plugin_directories
 from defenseclaw.inventory.plugin_identity import (
     AmbiguousPluginIdentityError,
     filesystem_identity_key,
 )
 from defenseclaw.models import ActionEntry, Finding, ScanResult
+from defenseclaw.safety import is_symlink
 
 INVENTORY_VERSION = 3
 
@@ -80,6 +85,7 @@ class InventoryCapabilityStatus(str, Enum):
     """Machine-readable availability of an inventory surface."""
 
     UNSUPPORTED = "unsupported"
+    UNVERIFIED = "unverified"
 
 
 class InventoryLimitation(TypedDict):
@@ -1590,7 +1596,8 @@ def _collect_filesystem_category(
 def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     """Per-connector agent enumeration.
 
-    * claudecode — ``agents/*.md`` below the precedence-aware connector home
+    * claudecode — recursive user/project Markdown agents, identified by YAML
+      frontmatter with closest-project-over-user precedence
     * codex      — ``agents/*`` below the precedence-aware connector home
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` array
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
@@ -1600,9 +1607,12 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * antigravity — global/workspace custom agents plus plugin agent components
     """
     home = os.path.expanduser("~")
-    name = (connector or "").lower()
+    name = connector_paths.normalize(connector)
     if name == "claudecode":
-        return _agents_from_md_dir(os.path.join(connector_paths.connector_home(name), "agents"))
+        workspace = _connector_workspace_dir(cfg)
+        return _claude_agents_from_dirs(
+            connector_paths.claude_agent_dirs(workspace),
+        )
     if name == "codex":
         return _agents_from_md_dir(os.path.join(connector_paths.connector_home(name), "agents"))
     if name == "zeptoclaw":
@@ -1700,16 +1710,19 @@ def _model_providers_for_connector(
 def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     """Per-connector memory backend enumeration.
 
-    Memory backends are rarely declarative across these frameworks;
-    the conservative shape is "report the directory if present". Claude Code
-    and Codex memory/history paths are resolved below their precedence-aware
-    connector homes.
+    Memory backends are rarely declarative across these frameworks; the
+    conservative shape is "report the directory if present". Claude Code uses
+    its effective autoMemoryDirectory setting or project-derived default.
     """
     home = os.path.expanduser("~")
     name = (connector or "").lower()
     candidates: list[str] = []
+    claude_resolution: connector_paths.ClaudeAutoMemoryResolution | None = None
     if name == "claudecode":
-        candidates = [os.path.join(connector_paths.connector_home(name), "memory")]
+        claude_resolution = connector_paths.claude_auto_memory_resolution(
+            _connector_workspace_dir(cfg),
+        )
+        candidates = [claude_resolution.path] if claude_resolution.path else []
     elif name == "codex":
         connector_home = connector_paths.connector_home(name)
         candidates = [
@@ -1723,21 +1736,28 @@ def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for path in candidates:
-        if not os.path.isdir(path):
+        if not os.path.isdir(path) or is_symlink(path):
             continue
         try:
             entry_count = sum(1 for _ in os.scandir(path))
         except OSError:
             entry_count = 0
-        rows.append(
-            {
-                "id": os.path.basename(path) or path,
-                "name": path,
-                "source": path,
-                "kind": "filesystem",
-                "entry_count": entry_count,
-            }
-        )
+        row: dict[str, Any] = {
+            "id": os.path.basename(path) or path,
+            "name": path,
+            "source": path,
+            "kind": "filesystem",
+            "entry_count": entry_count,
+        }
+        if claude_resolution is not None:
+            row.update(
+                {
+                    "settings_source": claude_resolution.source,
+                    "project_root": claude_resolution.project_root,
+                    "activation_verified": claude_resolution.activation_verified,
+                }
+            )
+        rows.append(row)
     return rows
 
 
@@ -1745,7 +1765,7 @@ def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
 
 def _agents_from_md_dir(agents_dir: str) -> list[dict[str, Any]]:
-    """Each *.md (or *.txt) file under *agents_dir* is one agent."""
+    """Each documented Markdown file under *agents_dir* is one agent."""
     if not os.path.isdir(agents_dir):
         return []
     rows: list[dict[str, Any]] = []
@@ -1757,7 +1777,7 @@ def _agents_from_md_dir(agents_dir: str) -> list[dict[str, Any]]:
         full = os.path.join(agents_dir, entry)
         if not os.path.isfile(full):
             continue
-        if not entry.endswith((".md", ".txt", ".json", ".yaml", ".yml")):
+        if not entry.lower().endswith(".md"):
             continue
         agent_id = os.path.splitext(entry)[0]
         rows.append(
@@ -1852,6 +1872,82 @@ def _agents_from_copilot_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+class AmbiguousClaudeAgentIdentityError(ValueError):
+    """Raised when one Claude agent scope contains duplicate identities."""
+
+
+_CLAUDE_AGENT_NAME_PATTERN = re.compile(r"[a-z]+(?:-[a-z]+)*\Z")
+_CLAUDE_AGENT_WALK_LIMIT = 32768
+_CLAUDE_AGENT_FRONTMATTER_LIMIT = 65536
+
+
+def _claude_agents_from_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
+    """Resolve Claude agents by documented identity and scope precedence."""
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for agent_dir in agent_dirs:
+        scope_rows = _claude_agents_from_dir(agent_dir)
+        scope_names: set[str] = set()
+        for row in scope_rows:
+            identity = str(row["id"])
+            if identity in scope_names:
+                raise AmbiguousClaudeAgentIdentityError(
+                    f"Claude agent identity {identity!r} is duplicated under {agent_dir}",
+                )
+            scope_names.add(identity)
+        for row in scope_rows:
+            identity = str(row["id"])
+            if identity in seen:
+                continue
+            seen.add(identity)
+            rows.append(row)
+    return rows
+
+
+def _claude_agents_from_dir(agents_dir: str) -> list[dict[str, Any]]:
+    if (
+        not os.path.isdir(agents_dir)
+        or is_symlink(agents_dir)
+    ):
+        return []
+    rows: list[dict[str, Any]] = []
+    visited = 0
+    for current, dirs, files in os.walk(
+        agents_dir,
+        topdown=True,
+        followlinks=False,
+    ):
+        dirs[:] = [
+            name
+            for name in sorted(dirs, key=str.casefold)
+            if not is_symlink(os.path.join(current, name))
+        ]
+        visited += 1
+        if visited > _CLAUDE_AGENT_WALK_LIMIT:
+            dirs[:] = []
+            break
+        for filename in sorted(files, key=str.casefold):
+            if not filename.lower().endswith(".md"):
+                continue
+            path = os.path.join(current, filename)
+            if is_symlink(path):
+                continue
+            metadata = _read_claude_agent_frontmatter(path)
+            if metadata is None:
+                continue
+            rows.append(
+                {
+                    "id": metadata["name"],
+                    "name": metadata["name"],
+                    "description": metadata["description"],
+                    "source": path,
+                    "kind": "subagent",
+                }
+            )
+    return rows
+
+
 def _agents_from_antigravity_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
     """Read Antigravity's direct ``*.md`` and ``<name>/agent.md`` forms."""
 
@@ -1878,6 +1974,39 @@ def _agents_from_antigravity_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]
                 }
             )
     return rows
+
+
+def _read_claude_agent_frontmatter(path: str) -> dict[str, str] | None:
+    try:
+        descriptor = open_regular_file_no_follow(path)
+        with os.fdopen(descriptor, "rb") as source:
+            raw = source.read(_CLAUDE_AGENT_FRONTMATTER_LIMIT + 1)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > _CLAUDE_AGENT_FRONTMATTER_LIMIT:
+        raw = raw[:_CLAUDE_AGENT_FRONTMATTER_LIMIT]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return None
+    try:
+        end = next(index for index, line in enumerate(lines[1:], start=1) if line.strip() == "---")
+    except StopIteration:
+        return None
+    try:
+        metadata = yaml.safe_load("\n".join(lines[1:end])) or {}
+    except yaml.YAMLError:
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    name = str(metadata.get("name") or "").strip()
+    description = str(metadata.get("description") or "").strip()
+    if not _CLAUDE_AGENT_NAME_PATTERN.fullmatch(name) or not description:
+        return None
+    return {"name": name, "description": description}
 
 
 def _agents_from_zeptoclaw_json(path: str) -> list[dict[str, Any]]:
@@ -2305,6 +2434,19 @@ def _build_aibom_from_filesystem(
                 "reason": note,
             }
         )
+    if connector_paths.normalize(connector) == "claudecode" and "memory" in cats:
+        memory_resolution = connector_paths.claude_auto_memory_resolution(
+            _connector_workspace_dir(cfg),
+        )
+        if memory_resolution.limitation:
+            limitations.append(
+                {
+                    "connector": connector,
+                    "category": "memory",
+                    "status": InventoryCapabilityStatus.UNVERIFIED,
+                    "reason": memory_resolution.limitation,
+                }
+            )
     for cat_key, note in _FILESYSTEM_ONLY_CONNECTOR_NOTES.items():
         if cat_key not in cats:
             continue
@@ -2313,6 +2455,8 @@ def _build_aibom_from_filesystem(
         if connector == "cursor" and cat_key == "agents":
             continue
         result = results.get(cat_key)
+        if connector_paths.normalize(connector) == "claudecode" and cat_key == "memory":
+            continue
         if result is None or result.error is not None:
             continue
         if (connector, cat_key) in _PARTIAL_CONNECTOR_NOTES:
@@ -2377,6 +2521,15 @@ def _enumerate_skills_filesystem(
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+    normalized_connector = (connector or cfg.active_connector()).strip().lower().replace(
+        "-",
+        "",
+    )
+    claude_workspace = (
+        cfg.connector_workspace_dir()
+        if normalized_connector in {"claude", "claudecode"}
+        else ""
+    )
     for skill_dir in cfg.skill_dirs(connector):
         if not os.path.isdir(skill_dir):
             continue
@@ -2385,22 +2538,55 @@ def _enumerate_skills_filesystem(
             if _is_openhands_installed_container(skill_dir, entry):
                 continue
             full = discovered.path
-            if entry in seen:
-                continue
-            seen.add(entry)
+            row_id = entry
+            nested_prefix = _claude_nested_skill_prefix(
+                skill_dir,
+                claude_workspace,
+            )
+            if row_id in seen:
+                if not nested_prefix:
+                    continue
+                row_id = f"{nested_prefix}:{entry}"
+                if row_id in seen:
+                    continue
+            seen.add(row_id)
             row: dict[str, Any] = {
-                "id": entry,
+                "id": row_id,
                 "source": discovered.source,
                 "eligible": _skill_dir_is_eligible(full),
-                "enabled": True,
+                "enabled": not bool(nested_prefix),
+                "activation_verified": not bool(nested_prefix),
                 "bundled": discovered.bundled,
                 "path": full,
             }
+            if nested_prefix:
+                row["activation_state"] = "discoverable-unverified"
             description = _read_skill_description(full)
             if description:
                 row["description"] = description
             rows.append(row)
     return rows
+
+
+def _claude_nested_skill_prefix(skill_dir: str, workspace_dir: str) -> str:
+    """Return Claude's directory qualifier for a nested project skill root."""
+
+    if not workspace_dir:
+        return ""
+    normalized = os.path.normpath(skill_dir)
+    if (
+        os.path.basename(normalized).casefold() != "skills"
+        or os.path.basename(os.path.dirname(normalized)).casefold() != ".claude"
+    ):
+        return ""
+    project_dir = os.path.dirname(os.path.dirname(normalized))
+    try:
+        relative = os.path.relpath(project_dir, workspace_dir)
+    except ValueError:
+        return ""
+    if relative in {"", "."} or relative == ".." or relative.startswith(f"..{os.sep}"):
+        return ""
+    return relative.replace(os.sep, "/")
 
 
 def _is_openhands_installed_container(skill_dir: str, entry: str) -> bool:
@@ -2412,6 +2598,12 @@ def _is_openhands_installed_container(skill_dir: str, entry: str) -> bool:
 
 
 def _skill_dir_is_eligible(path: str) -> bool:
+    if (
+        os.path.isfile(path)
+        and not os.path.islink(path)
+        and os.path.splitext(path)[1].casefold() == ".md"
+    ):
+        return True
     for marker in ("SKILL.md", "skill.json", "README.md"):
         if os.path.isfile(os.path.join(path, marker)):
             return True
@@ -2424,8 +2616,12 @@ def _read_skill_description(path: str) -> str:
     Bounded to 2 KiB so we don't accidentally slurp a multi-MB README
     into the inventory dict.
     """
-    for marker in ("SKILL.md", "README.md"):
-        marker_path = os.path.join(path, marker)
+    marker_paths = (
+        [path]
+        if os.path.isfile(path)
+        else [os.path.join(path, marker) for marker in ("SKILL.md", "README.md")]
+    )
+    for marker_path in marker_paths:
         # F-0424: a skill directory is attacker-influenced content. A
         # ``SKILL.md``/``README.md`` that is a symlink could point at an
         # arbitrary readable file (``~/.ssh/id_rsa``, ``/etc/passwd``, …)
@@ -2497,17 +2693,22 @@ def _enumerate_plugins_filesystem(
     rows: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
     resolved_connector = connector or cfg.active_connector()
+    workspace_dir = _connector_workspace_dir(cfg)
     plugin_dirs = (
         connector_paths.plugin_inventory_dirs(
             resolved_connector,
             openclaw_home=cfg.claw.home_dir,
-            workspace_dir=cfg.connector_workspace_dir(),
+            workspace_dir=workspace_dir,
         )
-        if resolved_connector == "cursor"
+        if connector_paths.normalize(resolved_connector) == "cursor"
         else cfg.plugin_dirs(connector)
     )
     for plugin_dir in plugin_dirs:
-        for discovered in discover_plugin_directories(plugin_dir, connector=resolved_connector):
+        for discovered in discover_plugin_directories(
+            plugin_dir,
+            connector=resolved_connector,
+            workspace_dir=workspace_dir,
+        ):
             entry = discovered.id
             entry_key = filesystem_identity_key(entry, plugin_dir)
             full = discovered.path
@@ -2524,7 +2725,13 @@ def _enumerate_plugins_filesystem(
                 "version": discovered.version,
                 "origin": discovered.origin or plugin_dir,
                 "enabled": discovered.enabled,
-                "status": ("loaded" if manifest and discovered.enabled else "disabled" if manifest else "no-manifest"),
+                "status": (
+                    "loaded"
+                    if discovered.enabled
+                    else "cache-unverified"
+                    if discovered.cached and not discovered.activation_verified
+                    else "disabled"
+                ),
                 "path": full,
             }
             if manifest:
@@ -2535,6 +2742,9 @@ def _enumerate_plugins_filesystem(
                 row["registry"] = discovered.registry
             if discovered.cached:
                 row["cached"] = True
+                row["activation_verified"] = discovered.activation_verified
+            if discovered.logical_id and discovered.logical_id != discovered.id:
+                row["logical_id"] = discovered.logical_id
             rows.append(row)
     return rows
 

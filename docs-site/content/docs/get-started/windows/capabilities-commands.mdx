@@ -16,7 +16,7 @@ the release actually qualifies.
 
 | Capability | Status | Native Windows boundary |
 | --- | --- | --- |
-| Claude Code connector setup | **Supported** | Same-user native agent, native hook executable, authenticated loopback gateway. |
+| Claude Code connector setup | **Preview** | Same-user native agent, native hook executable, and authenticated loopback gateway are implemented; packaged and official-client certification evidence is pending. |
 | Codex connector setup | **Preview** | The same native architecture is implemented, but authentic packaged plus official-client release-certification evidence is not recorded. |
 | Cursor connector setup | **Preview** | Same-user native Cursor Agent, managed PowerShell adapter, native hook executable, and authenticated loopback gateway; packaged and official-client certification is pending. |
 | Windsurf connector setup | **Preview** | Native PowerShell transport and full Setup lifecycle are implemented; packaged and interactive official-client certification is pending. |
@@ -73,10 +73,10 @@ or an advanced operation; it does not mean every listed subcommand is broken.
 | `codeguard` | `install`, `install-skill`, `status` | **Limited** explicit opt-in; agent/network requirements apply. |
 | `config` | `path`, `reference`, `show`, `validate` | **Supported**. Configuration v8 rejects `config show --reveal`; effective and source views remain masked. |
 | `doctor` | no subcommands | **Supported**. Use `--fix --dry-run` before approving fixes. |
-| `guardrail` | `block-message`, `disable`, `enable`, `fail-mode`, `hilt`; `judge add/list/remove`; `list-packs`; `status` | **Supported** for Claude Code and **Preview** for Codex/Cursor/Windsurf/Hermes/OpenCode/OmniGent; connector-specific event limits still apply. |
+| `guardrail` | `block-message`, `disable`, `enable`, `fail-mode`, `hilt`; `judge add/list/remove`; `list-packs`; `status` | **Preview** for Claude Code/Codex/Cursor/Windsurf/Hermes/OpenCode/OmniGent; connector-specific event limits still apply. |
 | `init` | no subcommands | **Limited** to supported native connector choices; sandbox setup is unsupported. |
 | `keys` | `check`, `fill-missing`, `list`, `set` | **Supported**, but secret values must not be pasted into support output. |
-| `mcp` | `allow`, `block`, `list`, `scan`, `set`, `unblock`, `unset` | **Supported** for certified connector roots; remote scans are optional network operations. |
+| `mcp` | `allow`, `block`, `list`, `scan`, `set`, `unblock`, `unset` | **Supported** for documented supported or preview connector roots; remote scans are optional network operations. |
 | `migrations` | `reset`, `status`, `unmark` | **Limited** advanced recovery/upgrade surface; do not change markers without a diagnosed reason. |
 | `observability` | `destination test`, `plan` | **Limited** to configured destinations and their network/credential contract. |
 | `plugin` | `allow`, `block`, `disable`, `enable`, `info`, `install`, `list`, `quarantine`, `remove`, `restore`, `scan`, `unblock` | **Limited** by connector runtime-disable and quarantine guarantees. |
@@ -86,7 +86,7 @@ or an advanced operation; it does not mean every listed subcommand is broken.
 | `reset` | no subcommands | **Supported** but destructive and confirmation-gated. It is not uninstall. |
 | `sandbox` | `init`, `setup` | **Unsupported** on native Windows. |
 | `settings` | `save` | **Supported**. |
-| `setup` | See the complete setup inventory below. | **Limited**: only the explicitly supported connectors, Cursor preview, and optional-feature paths apply on Windows. |
+| `setup` | See the complete setup inventory below. | **Limited**: only connectors labeled supported, preview, or not certified in the capability matrix, plus documented optional-feature paths, apply on Windows. |
 | `skill` | `allow`, `block`, `disable`, `enable`, `info`, `install`, `list`, `quarantine`, `restore`, `scan`, `search`, `unblock` | **Supported**, with the runtime-disable limits in the capability matrix. |
 | `status` | no subcommands | **Supported**; `--json` includes per-connector runtime posture. |
 | `tool` | `allow`, `block`, `list`, `status`, `unblock` | **Supported** local policy state. |
@@ -116,9 +116,9 @@ The public tree contains:
 - Splunk: the `splunk` setup surface plus
   `splunk dashboards apply/destroy/plan`.
 
-On native Windows, `claude-code` is the certified connector alias; `codex`,
-`cursor`, `windsurf`, `hermes`, `opencode`, and `omnigent` are selectable
-previews; `copilot` and `antigravity` remain selectable but not certified. Other aliases may
+On native Windows, `claude-code`, `codex`, `cursor`, `windsurf`, `hermes`,
+`opencode`, and `omnigent` are selectable previews; `copilot` and
+`antigravity` remain selectable but not certified. Other aliases may
 remain visible because this is one cross-platform CLI; their presence does not
 override the platform gate. Gemini CLI is excluded from native Windows. Local
 observability, Splunk, providers, webhooks, Galileo, registries, and remote

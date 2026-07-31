@@ -17,7 +17,10 @@
 package connector
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -378,13 +381,31 @@ func TestClaudeCodeProfileRespond_Parity(t *testing.T) {
 			},
 		},
 		{
-			name:   "TaskCreated_block_stops_continuation",
-			event:  "TaskCreated",
-			action: "block",
+			name:     "TaskCreated_block_uses_exit_two_feedback",
+			event:    "TaskCreated",
+			action:   "block",
+			raw:      "block",
+			expected: nil,
+		},
+		{
+			name:   "Notification_advisory_uses_system_message",
+			event:  "Notification",
+			action: "allow",
 			raw:    "block",
 			expected: map[string]interface{}{
-				"continue":   false,
-				"stopReason": "Blocked by DefenseClaw Claude Code policy.",
+				"systemMessage": "advisory context",
+			},
+		},
+		{
+			name:   "SubagentStop_advisory_uses_additional_context",
+			event:  "SubagentStop",
+			action: "allow",
+			raw:    "block",
+			expected: map[string]interface{}{
+				"hookSpecificOutput": map[string]interface{}{
+					"hookEventName":     "SubagentStop",
+					"additionalContext": "advisory context",
+				},
 			},
 		},
 	}
@@ -395,12 +416,66 @@ func TestClaudeCodeProfileRespond_Parity(t *testing.T) {
 				Action:    tc.action,
 				RawAction: tc.raw,
 				Reason:    tc.reason,
+				AdditionalContext: func() string {
+					if tc.event == "Notification" || tc.event == "SubagentStop" {
+						return "advisory context"
+					}
+					return ""
+				}(),
 			})
 			if out.FieldName != "claude_code_output" {
 				t.Errorf("FieldName=%q want claude_code_output", out.FieldName)
 			}
 			if !reflect.DeepEqual(out.Output, tc.expected) {
 				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeProfileRespond_WatchPathsForEveryDynamicSource(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "claude-config")
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	previous := ClaudeCodeSettingsPathOverride
+	ClaudeCodeSettingsPathOverride = ""
+	t.Cleanup(func() { ClaudeCodeSettingsPathOverride = previous })
+
+	rule := filepath.Join(workspace, ".claude", "rules", "security.md")
+	if err := os.MkdirAll(filepath.Dir(rule), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rule, []byte("fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, event := range []string{"SessionStart", "CwdChanged", "FileChanged"} {
+		t.Run(event, func(t *testing.T) {
+			req := HookProfileRequest{
+				ConnectorName: "claudecode",
+				HookEventName: event,
+				CWD:           workspace,
+				Payload:       map[string]interface{}{"new_cwd": workspace},
+			}
+			output := claudeCodeProfileRespond(HookRespondInput{Req: req, Action: "allow"}).Output
+			if event == "SessionStart" {
+				output = output["hookSpecificOutput"].(map[string]interface{})
+			}
+			watchPaths, ok := output["watchPaths"].([]string)
+			if !ok {
+				t.Fatalf("watchPaths = %#v, want []string", output["watchPaths"])
+			}
+			for _, want := range []string{
+				filepath.Join(configDir, "settings.json"),
+				filepath.Join(configDir, ".claude.json"),
+				filepath.Join(workspace, ".claude", "settings.json"),
+				filepath.Join(workspace, ".mcp.json"),
+				filepath.Join(workspace, "CLAUDE.md"),
+				rule,
+			} {
+				if !slices.Contains(watchPaths, want) {
+					t.Errorf("watchPaths = %v, missing %q", watchPaths, want)
+				}
 			}
 		})
 	}

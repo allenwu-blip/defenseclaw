@@ -87,6 +87,44 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
         assert label in text
 
 
+def test_claude_windows_docs_keep_preview_and_optional_git_boundary() -> None:
+    windows_docs = ROOT / "docs-site/content/docs/get-started/windows"
+    capabilities = (windows_docs / "capabilities-commands.mdx").read_text(
+        encoding="utf-8"
+    )
+    lifecycle = (windows_docs / "install-lifecycle.mdx").read_text(encoding="utf-8")
+    install = (
+        ROOT / "docs-site/content/docs/get-started/install.mdx"
+    ).read_text(encoding="utf-8")
+    live_workflow = (
+        ROOT / ".github/workflows/connector-live-e2e.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "| Claude Code connector setup | **Preview**" in capabilities
+    assert (
+        "**Preview** for Claude Code/Codex/Cursor/Windsurf/Hermes/OpenCode/OmniGent"
+        in capabilities
+    )
+    assert "`claude-code`, `codex`, `cursor`, `windsurf`, `hermes`" in capabilities
+    assert "`opencode`, and `omnigent` are selectable previews" in capabilities
+    assert "Claude Code connector setup | **Supported**" not in capabilities
+    assert "`claude-code` is the certified connector alias" not in capabilities
+    assert (
+        "Native Windows x64 release certification currently covers Claude Code"
+        not in live_workflow
+    )
+    assert (
+        "Native Windows x64 release certification remains closed for Claude Code"
+        in live_workflow
+    )
+
+    for text in (lifecycle, install):
+        assert "Git for Windows" in text
+        assert "it is optional; without it Claude uses its native PowerShell tool" in text
+        assert "Claude Code's Git for Windows requirement" not in text
+        assert "Claude Code retains its Git for Windows requirement" not in text
+
+
 def test_release_runtime_custody_splits_certified_x64_from_compatibility_arm64() -> None:
     release = yaml.safe_load((ROOT / ".goreleaser.yaml").read_text(encoding="utf-8"))
     builds = {build["id"]: build for build in release["builds"]}

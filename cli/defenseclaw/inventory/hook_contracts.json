@@ -259,7 +259,7 @@
         {
           "contract_id": "claudecode-hooks-v1",
           "agent_version": {
-            "min_inclusive": "2.1.152",
+            "min_inclusive": "2.1.154",
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
@@ -333,7 +333,7 @@
             "scope": "user"
           },
           "notes": [
-            "Pinned to the documented Claude Code hook surface as of 2.1.152, which introduced MessageDisplay; older Claude Code releases exposed smaller hook event sets.",
+            "Pinned to Claude Code 2.1.154: 2.1.152 introduced MessageDisplay and 2.1.154 added the plugin defaultEnabled semantics required by inventory.",
             "Claude Code PreToolUse supports native HITL via permissionDecision=ask.",
             "PostToolUse findings are advisory because the inspected tool side effects have already occurred.",
             "PostToolBatch can block continuation before the next model call, but cannot undo completed batch side effects.",

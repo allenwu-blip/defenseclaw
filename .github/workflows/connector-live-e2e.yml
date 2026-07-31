@@ -31,8 +31,8 @@
 #     approved version (that stays a deliberate human edit of
 #     cli/defenseclaw/inventory/validated_versions.json).
 #
-# Native Windows x64 release certification currently covers Claude Code.
-# The Codex, Cursor, and Antigravity Windows cells are pending evidence only.
+# Native Windows x64 release certification remains closed for Claude Code,
+# Codex, Cursor, and Antigravity; their Windows cells are pending evidence only.
 # Deterministic native Windows x64 contract checks run in windows-native.yml;
 # certification remains closed until the packaged and live gates are integrated.
 # Antigravity's official client uses Windows Credential Manager/browser auth,
@@ -430,8 +430,9 @@ jobs:
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         if: steps.select.outputs.run == 'true'
 
-      # Most live agents (codex, claude, gemini, copilot, cursor) ship as npm
-      # packages; OpenHands installs via pipx. Node + uv cover both.
+      # Several live agents still use npm and OpenHands uses pipx. Claude's
+      # Windows lane uses Anthropic's native PowerShell installer; Node remains
+      # required by the other matrix cells.
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         if: steps.select.outputs.run == 'true'
         with:

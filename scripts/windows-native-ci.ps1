@@ -2372,7 +2372,7 @@ public static class CodexVersionFixture {
 using System;
 public static class ClaudeVersionFixture {
     public static int Main(string[] arguments) {
-        Console.WriteLine("claude 2.1.152");
+        Console.WriteLine("claude 2.1.154");
         return 0;
     }
 }
@@ -2411,7 +2411,7 @@ public static class CursorAgentVersionFixture {
             throw "Codex fixture returned an unexpected version: $($codexVersion.StdOut)"
         }
         $claudeVersion = Invoke-WindowsNativeProcess $claudePath @('--version') -TimeoutSeconds 30
-        if ($claudeVersion.StdOut.Trim() -ne 'claude 2.1.152') {
+        if ($claudeVersion.StdOut.Trim() -ne 'claude 2.1.154') {
             throw "Claude fixture returned an unexpected version: $($claudeVersion.StdOut)"
         }
         $cursorVersion = Invoke-WindowsNativeProcess $cursorPath @('--version') -TimeoutSeconds 30

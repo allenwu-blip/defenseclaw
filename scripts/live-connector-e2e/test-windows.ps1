@@ -1485,6 +1485,18 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($liveWorkflowText -notmatch '(?m)^  windows-(harness-static|contract):') 'deterministic Windows jobs moved out of live radar'
     Assert-True ($ciWorkflowText -notmatch '(?m)^  windows-(hook-path|installer-smoke):') 'legacy partial Windows jobs were removed'
     Assert-True ($harnessText -notmatch '(?i)\bwsl(?:\.exe)?\b|git bash|/bin/|Get-Command\s+(?:jq|tail|curl)|Invoke-Tool\s+''(?:jq|tail|curl)''') 'native harness has no WSL, Git Bash, or Unix utility dependency'
+    Assert-True ($harnessText -match 'CLAUDE_CODE_USE_POWERSHELL_TOOL = ''1''' -and
+        $harnessText -match 'https://claude\.ai/install\.ps1' -and
+        $harnessText -match '\.local\\bin\\claude\.exe' -and
+        $harnessText -match "Get-Command 'claude\.exe' -CommandType Application" -and
+        $harnessText -notmatch '@anthropic-ai/claude-code@' -and
+        $harnessText -match '--allowedTools'', ''PowerShell''' -and
+        $harnessText -match 'Assert-ClaudeNativePowerShellExecution' -and
+        $harnessText -match 'CapturedProcesses' -and
+        $harnessText -match 'powershell\|pwsh' -and
+        $harnessText -match 'bash\|sh\|dash\|git-bash\|mintty\|msys' -and
+        $harnessText -match 'cygwin') `
+        'Claude live lane forces and captures native PowerShell tool/process execution without a compatibility shell'
     $isolatedHomeBinding = [regex]::Match(
         $harnessText,
         '(?s)if \(\[string\]::IsNullOrWhiteSpace\(\$NativeDataRoot\)\) \{.*?\} else \{\s*Assert-PackagedConnectorHomes \$StateRoot \$HomeRoot\s*\}'

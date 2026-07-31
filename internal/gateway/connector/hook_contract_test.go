@@ -67,7 +67,7 @@ func TestHookContractResolution(t *testing.T) {
 		{"codex_unversioned_uses_full_default", "codex", "", HookCompatibilityUnversioned, "codex-hooks-v4", ""},
 		{"codex_unknown_before_stable", "codex", "codex 0.123.0", HookCompatibilityUnknown, "", "0.123.0"},
 		{"claude_before_message_display", "claude-code", "Claude Code v2.1.151", HookCompatibilityUnknown, "", "2.1.151"},
-		{"claude_alias_known", "claude-code", "Claude Code v2.1.152", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.152"},
+		{"claude_alias_known", "claude-code", "Claude Code v2.1.154", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.154"},
 		{"openhands_alias_known", "open-hands", "OpenHands 1.0.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.0.0"},
 		{"cursor_exact_agent_preview_pin", "cursor", "2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
@@ -495,7 +495,7 @@ func stringInSlice(values []string, want string) bool {
 func TestApplyHookContractPinsProfileCapabilities(t *testing.T) {
 	profile := NewClaudeCodeConnector().HookProfile(SetupOpts{
 		APIAddr:      "127.0.0.1:18970",
-		AgentVersion: "Claude Code v2.1.152",
+		AgentVersion: "Claude Code v2.1.154",
 	})
 	if profile.ContractID != "claudecode-hooks-v1" {
 		t.Fatalf("ContractID=%q", profile.ContractID)
