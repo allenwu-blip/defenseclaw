@@ -61,8 +61,28 @@ function Invoke-BasicUserBootstrapSmoke {
     [void][IO.Directory]::CreateDirectory($relayRoot)
     $process = $null
     try {
+        # Hosted runners may grant the elevated token workspace access only
+        # through its Administrators SID. The filtered LUA child must not rely
+        # on that SID, so stage the exact three-file bootstrap surface beneath
+        # its user-accessible relay while preserving the production layout.
+        $stagedWindowsRoot = Join-Path $relayRoot 'packaging\windows'
+        $stagedTestsRoot = Join-Path $stagedWindowsRoot 'tests'
+        [void][IO.Directory]::CreateDirectory($stagedTestsRoot)
+        $stagedScriptPath = Join-Path $stagedTestsRoot 'enterprise-bootstrap-smoke.ps1'
+        [IO.File]::WriteAllBytes(
+            $stagedScriptPath,
+            [IO.File]::ReadAllBytes($PSCommandPath)
+        )
+        [IO.File]::WriteAllBytes(
+            (Join-Path $stagedWindowsRoot 'install-enterprise.ps1'),
+            [IO.File]::ReadAllBytes($installerSource)
+        )
+        [IO.File]::WriteAllBytes(
+            (Join-Path $stagedWindowsRoot 'DefenseClawEnterprise.psm1'),
+            [IO.File]::ReadAllBytes($moduleSource)
+        )
         $resultPath = Join-Path $relayRoot 'result.json'
-        $scriptLiteral = $PSCommandPath.Replace("'", "''")
+        $scriptLiteral = $stagedScriptPath.Replace("'", "''")
         $resultLiteral = $resultPath.Replace("'", "''")
         $workerCommand = (
             "& '$scriptLiteral' -BasicUserResultPath '$resultLiteral'"
@@ -91,7 +111,7 @@ function Invoke-BasicUserBootstrapSmoke {
         $process = [DefenseClaw.SetupStandardUserLauncher]::StartRestrictedWithCapture(
             $engine,
             $arguments,
-            [IO.Path]::GetFullPath($PSScriptRoot),
+            [IO.Path]::GetFullPath($stagedTestsRoot),
             [string[]]$environment,
             $true
         )

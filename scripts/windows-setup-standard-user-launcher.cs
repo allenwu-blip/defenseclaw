@@ -41,6 +41,14 @@ namespace DefenseClaw
 
         internal RestrictedSetupProcess(Process process, Stream stdoutStream, Stream stderrStream)
         {
+            if (process == null)
+            {
+                throw new ArgumentNullException("process");
+            }
+            if (process.Handle == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("restricted Setup process handle is null");
+            }
             this.process = process;
             this.stdoutStream = stdoutStream;
             this.stderrStream = stderrStream;
