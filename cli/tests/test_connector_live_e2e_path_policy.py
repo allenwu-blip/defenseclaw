@@ -121,3 +121,10 @@ def test_full_matrix_allowlist_rejects_unrelated_and_near_miss_paths(
     path: str,
 ) -> None:
     assert not _selects_full_connector_matrix(path)
+
+
+def test_manual_live_matrix_keeps_cursor_macos_credential_gated() -> None:
+    workflow = (ROOT / ".github/workflows/connector-live-e2e.yml").read_text(encoding="utf-8")
+    assert "- { connector: cursor,     os: macos-latest,   dcos: macos }" in workflow
+    assert '[ "${MATRIX_CONNECTOR}" = "cursor" ] && [ -z "${CURSOR_API_KEY:-}" ]' in workflow
+    assert "Cursor cell skipped: CURSOR_API_KEY is not configured" in workflow

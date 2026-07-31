@@ -71,6 +71,13 @@ class TestConnectorContractManifest(unittest.TestCase):
             self.assertEqual(compat.status, STATUS_NOT_GATED)
             self.assertTrue(compat.supported)
 
+    def test_antigravity_cli_alias_resolves_without_becoming_gemini_cli(self) -> None:
+        antigravity = resolve_connector_contract("agy", "Antigravity CLI v1.1.8")
+        self.assertEqual(antigravity.connector, "antigravity")
+        self.assertEqual(antigravity.status, STATUS_KNOWN)
+        self.assertEqual(antigravity.contract.contract_id, "antigravity-hooks-v2")
+        self.assertNotEqual(antigravity.connector, "geminicli")
+
     def test_codex_version_range_matches_contract(self) -> None:
         expected = (
             (
@@ -225,14 +232,24 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(compat.contract.hook_script_version, "v7")
         self.assertIn("event_content", compat.contract.aid_surfaces)
 
-    def test_copilot_contract_does_not_claim_native_otlp(self) -> None:
+    def test_current_copilot_contract_claims_documented_native_otlp(self) -> None:
         compat = resolve_connector_contract("copilot", "")
 
         self.assertEqual(compat.contract.contract_id, "copilot-hooks-v2")
         self.assertFalse(compat.contract.native_otlp)
         self.assertEqual(compat.contract.native_otlp_auth, "")
         self.assertEqual(compat.contract.native_otlp_signals, ())
+        self.assertIn("userPromptTransformed", compat.contract.events)
         self.assertEqual(compat.contract.native_otlp_endpoint_template, "")
+
+        current = resolve_connector_contract("copilot", "GitHub Copilot CLI 1.0.76")
+        self.assertEqual(current.contract.contract_id, "copilot-hooks-v2")
+        latest = resolve_connector_contract("copilot", "GitHub Copilot CLI 1.0.77")
+        self.assertEqual(latest.contract.contract_id, "copilot-hooks-v2")
+
+        historical = resolve_connector_contract("copilot", "GitHub Copilot CLI 1.0.75")
+        self.assertEqual(historical.contract.contract_id, "copilot-hooks-v1")
+        self.assertNotIn("userPromptTransformed", historical.contract.events)
 
     def test_unversioned_connectors_use_default_contract(self) -> None:
         compat = resolve_connector_contract("cursor", "")

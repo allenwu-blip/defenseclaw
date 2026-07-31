@@ -78,6 +78,8 @@ def normalize_connector(name: str | None) -> str:
         return "geminicli"
     if value in {"open-hands", "open_hands"}:
         return "openhands"
+    if value == "agy":
+        return "antigravity"
     return value
 
 
