@@ -24,7 +24,9 @@
         "/etc/codex/skills",
         ".agents/skills",
         ".agents/plugins/marketplace.json",
+        ".agents/plugins/api_marketplace.json",
         ".claude-plugin/marketplace.json",
+        ".cursor-plugin/marketplace.json",
         ".codex/config.toml",
         ".codex/agents",
         ".codex/rules",
@@ -293,7 +295,8 @@
         ".windsurf/rules",
         ".windsurf/skills",
         ".agents/skills",
-        ".windsurfrules"
+        ".windsurfrules",
+        "AGENTS.md"
       ],
       "extension_ids": [
         "codeium.codeium",
