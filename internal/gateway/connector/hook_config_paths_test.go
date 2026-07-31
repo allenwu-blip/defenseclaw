@@ -146,6 +146,52 @@ func TestOwnedHooksPresent_TrueAfterSetup_FalseAfterRemoval(t *testing.T) {
 	}
 }
 
+func TestOwnedHooksPresent_CursorRequiresExactAdvisoryContract(t *testing.T) {
+	mutations := map[string]func(map[string]interface{}){
+		"missing event": func(hooks map[string]interface{}) { delete(hooks, "subagentStart") },
+		"wrong type": func(hooks map[string]interface{}) {
+			hooks["preToolUse"].([]interface{})[0].(map[string]interface{})["type"] = "prompt"
+		},
+		"millisecond timeout": func(hooks map[string]interface{}) {
+			hooks["preToolUse"].([]interface{})[0].(map[string]interface{})["timeout"] = json.Number("30000")
+		},
+		"fail closed": func(hooks map[string]interface{}) {
+			hooks["preToolUse"].([]interface{})[0].(map[string]interface{})["failClosed"] = true
+		},
+		"duplicate": func(hooks map[string]interface{}) {
+			entry := hooks["preToolUse"].([]interface{})[0]
+			hooks["preToolUse"] = append(hooks["preToolUse"].([]interface{}), entry)
+		},
+		"unexpected event": func(hooks map[string]interface{}) {
+			hooks["beforeVendorExtension"] = []interface{}{hooks["preToolUse"].([]interface{})[0]}
+		},
+	}
+	for name, mutate := range mutations {
+		t.Run(name, func(t *testing.T) {
+			conn, opts, cfgPath := cursorTestSetup(t)
+			if err := conn.Setup(context.Background(), opts); err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+			cfg, err := readJSONObject(cfgPath)
+			if err != nil {
+				t.Fatalf("read hooks: %v", err)
+			}
+			hooks := cfg["hooks"].(map[string]interface{})
+			mutate(hooks)
+			if err := writeJSONObject(cfgPath, cfg); err != nil {
+				t.Fatalf("write mutated hooks: %v", err)
+			}
+			present, err := OwnedHooksPresent(conn, opts)
+			if err != nil {
+				t.Fatalf("OwnedHooksPresent: %v", err)
+			}
+			if present {
+				t.Fatal("OwnedHooksPresent=true for malformed Cursor registration")
+			}
+		})
+	}
+}
+
 func TestOwnedHooksPresent_FalseWhenFileMissing(t *testing.T) {
 	conn, opts, cfgPath := cursorTestSetup(t)
 
@@ -162,6 +208,24 @@ func TestOwnedHooksPresent_FalseWhenFileMissing(t *testing.T) {
 	}
 	if present {
 		t.Fatal("OwnedHooksPresent=true for a deleted config file; want false")
+	}
+}
+
+func TestOwnedHooksPresent_CursorRejectsMissingManagedRuntime(t *testing.T) {
+	conn, opts, _ := cursorTestSetup(t)
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	runtimePath := conn.(*hookOnlyConnector).cursorRuntimePath(opts)
+	if err := os.Remove(runtimePath); err != nil {
+		t.Fatalf("remove Cursor runtime: %v", err)
+	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil {
+		t.Fatalf("OwnedHooksPresent: %v", err)
+	}
+	if present {
+		t.Fatal("OwnedHooksPresent=true after removing Cursor's managed runtime")
 	}
 }
 

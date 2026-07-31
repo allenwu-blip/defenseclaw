@@ -1603,7 +1603,11 @@ func normalizeAgentHookRequestWithProfileEvent(connectorName string, payload map
 	if len(decoded.ToolArgs) != 0 {
 		req.ToolArgs = append(json.RawMessage(nil), decoded.ToolArgs...)
 	}
-	if decoded.Content != "" {
+	if decoded.Content != "" || (strings.EqualFold(connectorName, "cursor") && decoded.Direction == "tool_result") {
+		// Cursor's event-specific result field is authoritative even when it
+		// is an empty string/array. Do not let a generic decoy `result` field
+		// replace an explicitly empty tool_output/error/output/result_json/
+		// edits/text/summary value.
 		req.Content = decoded.Content
 	}
 	if decoded.Direction != "" {
@@ -1611,6 +1615,17 @@ func normalizeAgentHookRequestWithProfileEvent(connectorName string, payload map
 	}
 	if decoded.Payload != nil {
 		req.Payload = decoded.Payload
+	}
+	if strings.EqualFold(connectorName, "cursor") && canonicalEvent(req.HookEventName) == "beforemcpexecution" {
+		probe := cursorMCPProbeFromPayload(req.Payload, req.ToolName)
+		if probe.Matched {
+			augmented := make(map[string]interface{}, len(req.Payload)+1)
+			for key, value := range req.Payload {
+				augmented[key] = value
+			}
+			augmented["mcp_server_name"] = probe.ServerName
+			req.Payload = augmented
+		}
 	}
 	return req
 }
@@ -1832,6 +1847,10 @@ func (a *APIServer) collectAgentHookAssetDecisions(ctx context.Context, req agen
 
 func (a *APIServer) agentHookMCPAssetDecision(ctx context.Context, req agentHookRequest) (config.AssetPolicyDecision, bool) {
 	toolInput := decodeAgentHookToolInput(req.ToolArgs)
+	if strings.EqualFold(req.ConnectorName, "cursor") && canonicalEvent(req.HookEventName) == "beforemcpexecution" {
+		probe := cursorMCPProbeFromPayload(req.Payload, req.ToolName)
+		return a.evaluateRuntimeMCPAssetPolicy(ctx, req.ConnectorName, req.HookEventName, probe)
+	}
 	probe := mcpProbeFromFields(payloadString(req.Payload, "mcp_server_name"), req.ToolName, toolInput)
 	return a.evaluateRuntimeMCPAssetPolicy(ctx, req.ConnectorName, req.HookEventName, probe)
 }

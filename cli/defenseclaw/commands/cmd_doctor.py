@@ -59,6 +59,7 @@ from defenseclaw.connector_paths import (
     omnigent_config_path,
 )
 from defenseclaw.context import AppContext, pass_ctx
+from defenseclaw.cursor_contract import validate_cursor_registration
 from defenseclaw.doctor_gateway import (
     GATEWAY_PROCESS_NAMES,
     GatewayEvidence,
@@ -604,8 +605,8 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "warn",
             "Human approval",
-            "Cursor enforces ask only for beforeShellExecution and beforeMCPExecution; "
-            "preToolUse accepts ask in the schema but does not enforce it",
+            "Cursor human approval is unsupported here: DefenseClaw owns only the "
+            "non-authoritative user hook, below Enterprise, Team, and Project hooks",
             r=r,
         )
     elif connector == "codex":
@@ -1991,191 +1992,43 @@ def _check_cursor_configured_runtime(
     platform_name: str | None = None,
     probe_runtime: bool = False,
 ) -> None:
-    """Validate the exact command Cursor invokes, not generated shell assets.
-
-    The hook contract lock records portable script assets, while Windows
-    Cursor uses ``cursor-hook.ps1`` to preserve the vendor's PowerShell object
-    pipeline before invoking ``defenseclaw-hook.exe``. Parse the live
-    hooks.json, verify every DefenseClaw-owned entry uses one consistent,
-    reachable runtime, and ensure Cursor's host-side failClosed flag agrees
-    with the connector's effective observe/action mode. Doctor is passive by
-    default: callers must explicitly opt in to ``probe_runtime`` because that
-    path delivers a synthetic event through the live gateway.
-    """
+    """Validate Cursor's persisted advisory contract and optional live round trip."""
     repair = "run `defenseclaw setup cursor --yes --restart` to reconcile the managed registration"
-    try:
-        with open(path, encoding="utf-8") as fh:
-            document = json.load(fh)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        _emit("fail", label, f"cannot parse configured hook file {path}: {exc}", r=r)
-        return
-
-    if not isinstance(document, dict) or document.get("version") != 1:
-        _emit("fail", label, f"configured hook file must use Cursor hooks schema version 1: {path}", r=r)
-        return
-    hooks = document.get("hooks")
-    if not isinstance(hooks, dict):
-        _emit("fail", label, f"configured hook file has no hooks object: {path}", r=r)
-        return
-
-    managed: list[tuple[str, dict[str, object], str]] = []
-    for event, raw_entries in hooks.items():
-        if not isinstance(raw_entries, list):
-            continue
-        for raw_entry in raw_entries:
-            if not isinstance(raw_entry, dict):
-                continue
-            command = str(raw_entry.get("command") or "").strip()
-            if "hook --connector cursor" in command or "cursor-hook.sh" in command or "cursor-hook.ps1" in command:
-                managed.append((str(event), raw_entry, command))
-
-    if not managed:
-        _emit("fail", label, f"{path} has no DefenseClaw Cursor command entries", r=r)
-        return
-
-    expected_events = {
-        "sessionStart",
-        "sessionEnd",
-        "preToolUse",
-        "postToolUse",
-        "postToolUseFailure",
-        "subagentStart",
-        "subagentStop",
-        "beforeShellExecution",
-        "beforeMCPExecution",
-        "afterShellExecution",
-        "afterMCPExecution",
-        "beforeReadFile",
-        "beforeTabFileRead",
-        "afterFileEdit",
-        "afterTabFileEdit",
-        "beforeSubmitPrompt",
-        "afterAgentResponse",
-        "afterAgentThought",
-        "stop",
-        "preCompact",
-        "workspaceOpen",
-    }
-    managed_events = {event for event, _entry, _command in managed}
-    missing_events = sorted(expected_events - managed_events)
-    if missing_events:
-        _emit(
-            "fail",
-            label,
-            f"configured Cursor hook coverage is incomplete: {', '.join(missing_events)}; {repair}",
-            r=r,
-        )
-        return
-    malformed = [
-        event
-        for event, entry, _command in managed
-        if entry.get("type") != "command"
-        or isinstance(entry.get("timeout"), bool)
-        or entry.get("timeout") != 30
-    ]
-    if malformed:
-        _emit(
-            "fail",
-            label,
-            "configured Cursor entries must use type=command and timeout=30 seconds: "
-            + ", ".join(sorted(set(malformed)))
-            + f"; {repair}",
-            r=r,
-        )
-        return
-
-    commands = {command for _event, _entry, command in managed}
-    if len(commands) != 1:
-        _emit("fail", label, f"DefenseClaw Cursor entries use inconsistent commands; {repair}", r=r)
-        return
-    command = next(iter(commands))
-    argv = _split_configured_hook_command(command, platform_name=platform_name)
-    if not argv:
-        _emit("fail", label, f"cannot parse configured Cursor command: {command}", r=r)
-        return
-
-    target = os.path.expanduser(argv[0])
-    basename = os.path.basename(target).lower()
-    native = basename in {"defenseclaw-hook", "defenseclaw-hook.exe"}
-    shell_script = basename == "cursor-hook.sh"
-    windows_adapter = basename == "cursor-hook.ps1"
-    if native:
-        if argv[1:] != ["hook", "--connector", "cursor"]:
-            _emit("fail", label, f"configured Cursor launcher has unexpected arguments: {command}", r=r)
-            return
-        if (platform_name or os.name) == "nt":
-            _emit(
-                "fail",
-                label,
-                "Cursor on Windows is configured to invoke the native launcher directly; "
-                "run `defenseclaw setup cursor` to install the PowerShell input adapter",
-                r=r,
-            )
-            return
-    elif shell_script or windows_adapter:
-        if len(argv) != 1:
-            _emit("fail", label, f"configured Cursor script has unexpected arguments: {command}", r=r)
-            return
-    else:
-        _emit("fail", label, f"configured Cursor command is not a DefenseClaw hook runtime: {command}", r=r)
-        return
-
-    resolved = target if os.path.isabs(target) else (shutil.which(target) or "")
-    if not resolved or not os.path.isfile(resolved):
-        _emit("fail", label, f"configured Cursor hook runtime is missing: {target}; {repair}", r=r)
-        return
-    adapter_markers = (
-        "defenseclaw-managed-hook v8",
-        "--input-file",
-        "defenseclaw-hook.exe",
-        "ProcessStartInfo",
-        "RedirectStandardOutput",
-        "WaitForExit",
-        "$failClosed",
-    )
-    if windows_adapter and not all(_file_references_marker(resolved, (marker,)) for marker in adapter_markers):
-        _emit(
-            "fail",
-            label,
-            f"configured Cursor Windows adapter is stale or invalid: {resolved}; {repair}",
-            r=r,
-        )
-        return
-
     guardrail = getattr(cfg, "guardrail", None)
     mode_resolver = getattr(guardrail, "effective_mode", None)
     fail_resolver = getattr(guardrail, "effective_hook_fail_mode", None)
     mode = str(mode_resolver("cursor") if callable(mode_resolver) else "observe").strip().lower()
     fail_mode = str(fail_resolver("cursor") if callable(fail_resolver) else "open").strip().lower()
-    expected_fail_closed = mode == "action" and fail_mode == "closed"
-    mismatched = [
-        event for event, entry, _command in managed if (entry.get("failClosed") is True) != expected_fail_closed
-    ]
-    if mismatched:
+    hilt = None
+    hilt_resolver = getattr(guardrail, "effective_hilt", None)
+    if callable(hilt_resolver):
+        try:
+            hilt = hilt_resolver("cursor")
+        except Exception:  # noqa: BLE001 - report the persisted registration independently.
+            hilt = None
+    hilt_enabled = getattr(hilt, "enabled", False) is True
+    if mode == "action" or fail_mode != "open" or hilt_enabled:
         _emit(
             "fail",
             label,
-            f"configured failClosed does not match mode={mode or 'observe'} "
-            f"(expected {str(expected_fail_closed).lower()}): {', '.join(sorted(mismatched))}; "
-            f"{repair}",
+            f"unsupported Cursor posture is persisted (mode={mode or 'observe'}, fail_mode={fail_mode or 'open'}, "
+            f"human_approval={str(hilt_enabled).lower()}); {repair}",
             r=r,
         )
         return
-    if windows_adapter:
-        expected_adapter_mode = "$failClosed = $true" if expected_fail_closed else "$failClosed = $false"
-        if not _file_references_marker(resolved, (expected_adapter_mode,)):
-            _emit(
-                "fail",
-                label,
-                f"configured Cursor Windows adapter does not match failClosed="
-                f"{str(expected_fail_closed).lower()}: {resolved}; {repair}",
-                r=r,
-            )
-            return
+
+    result = validate_cursor_registration(
+        path,
+        expected_runtime_paths=_hook_runtime_paths_from_lock(cfg, "cursor"),
+        platform_name=platform_name,
+    )
+    if not result.ok:
+        _emit("fail", label, f"{result.detail}; {repair}", r=r)
+        return
 
     runtime_detail = ""
-    if windows_adapter and (platform_name or os.name) == "nt" and probe_runtime:
-        runtime_ok, runtime_detail = _probe_cursor_windows_runtime(cfg, resolved)
+    if (platform_name or os.name) == "nt" and probe_runtime:
+        runtime_ok, runtime_detail = _probe_cursor_windows_runtime(cfg, result.runtime_path)
         if not runtime_ok:
             _emit("fail", label, runtime_detail, r=r)
             return
@@ -2183,11 +2036,10 @@ def _check_cursor_configured_runtime(
     _emit(
         "pass",
         label,
-        f"configured runtime={resolved}; entries={len(managed)}; "
-        f"mode={mode or 'observe'}; failClosed={str(expected_fail_closed).lower()}; "
-        f"failure={'fail-closed' if expected_fail_closed else 'fail-open (Cursor default)'}; "
-        "ask=beforeShellExecution,beforeMCPExecution only; "
-        "fire-and-forget=sessionStart,sessionEnd; stop=followup-only"
+        f"configured runtime={result.runtime_path}; entries={result.entry_count}; "
+        "mode=observe; failClosed=false; failure=fail-open; "
+        "authority=user-hook advisory (Enterprise > Team > Project > User); "
+        "hard-action=unsupported; human-approval=unsupported"
         + (f"; {runtime_detail}" if runtime_detail else ""),
         r=r,
     )
@@ -2786,6 +2638,11 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
     label = connectors[0] if len(connectors) == 1 else ", ".join(sorted(connectors))
     if len(connectors) == 1:
         mode = modes.get(connectors[0], "observe")
+        if connectors[0] == "cursor":
+            return (
+                f"hook-driven for cursor (configured mode={mode}; user-hook advisory only, "
+                "hard action unsupported) — proxy port intentionally closed"
+            )
         if connectors[0] == "omnigent":
             if mode == "action":
                 return (
@@ -2799,13 +2656,15 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
         if mode == "action":
             return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
-    if "omnigent" not in modes and all(mode == "action" for mode in modes.values()):
+    if "omnigent" not in modes and "cursor" not in modes and all(mode == "action" for mode in modes.values()):
         return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
-    if "omnigent" not in modes and all(mode != "action" for mode in modes.values()):
+    if "omnigent" not in modes and "cursor" not in modes and all(mode != "action" for mode in modes.values()):
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
     parts = []
     for connector, mode in modes.items():
-        if connector == "omnigent" and mode == "action":
+        if connector == "cursor":
+            parts.append(f"cursor (configured mode={mode}; user-hook advisory only)")
+        elif connector == "omnigent" and mode == "action":
             parts.append("omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)")
         elif connector == "omnigent":
             parts.append("omnigent (native-degraded preview; mode=observe via custom policy API)")
@@ -4700,7 +4559,7 @@ def _check_hook_contract_lock(
     script_version = str(entry.get("hook_script_version") or "")
     detail = f"contract={contract or '?'} status={status or '?'}"
     if raw_version:
-        detail += f" agent={raw_version}"
+        detail += f" {'agent_cli' if connector == 'cursor' else 'agent'}={raw_version}"
     if normalized:
         detail += f" normalized={normalized}"
     if script_version:
@@ -4762,6 +4621,13 @@ def _check_hook_contract_lock(
         )
     )
     current_version = "" if protected_codex_agent else _discovered_agent_version(data_dir, connector)
+    if connector == "cursor":
+        discovered_path = _discovered_agent_path(data_dir, connector)
+        discovered_binary = os.path.basename(discovered_path).lower()
+        if discovered_binary in {"cursor", "cursor.exe", "cursor.cmd", "cursor.bat", "cursor.com"}:
+            if current_version:
+                detail += f" desktop={current_version} (separate; not Agent CLI contract evidence)"
+            current_version = ""
     if current_version and raw_version and current_version != raw_version:
         _emit(
             "fail",
@@ -4771,7 +4637,9 @@ def _check_hook_contract_lock(
             r=r,
         )
         return
-    if native_runtime is not None and not native_runtime.healthy:
+    if connector == "cursor" and str(entry.get("hook_fail_mode") or "") != "open":
+        _emit("fail", "Hook contract", detail + " expected_hook_fail_mode=open", r=r)
+    elif native_runtime is not None and not native_runtime.healthy:
         _emit("fail", "Hook contract", detail, r=r)
     elif status == "unknown":
         _emit("fail", "Hook contract", detail, r=r)
@@ -4782,13 +4650,22 @@ def _check_hook_contract_lock(
 
 
 def _discovered_agent_version(data_dir: str, connector: str) -> str:
+    return str(_discovered_agent_signal(data_dir, connector).get("version") or "").strip()
+
+
+def _discovered_agent_path(data_dir: str, connector: str) -> str:
+    signal = _discovered_agent_signal(data_dir, connector)
+    return str(signal.get("binary_path") or signal.get("path") or signal.get("binary") or "").strip()
+
+
+def _discovered_agent_signal(data_dir: str, connector: str) -> dict[str, object]:
     try:
         with open(os.path.join(data_dir, "agent_discovery.json"), encoding="utf-8") as fh:
             disc = json.load(fh)
     except Exception:
-        return ""
+        return {}
     signal = (disc.get("agents") or {}).get(connector) or {}
-    return str(signal.get("version") or "").strip()
+    return signal if isinstance(signal, dict) else {}
 
 
 # Maps connector name → list of *expected* artifact filenames (relative

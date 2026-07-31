@@ -1224,7 +1224,8 @@ def agent_dirs(
     client's private trust decision. Other connector agent layouts remain
     owned by their existing inventory adapters.
     """
-    if normalize(connector) == "codex":
+    name = normalize(connector)
+    if name == "codex":
         return _dedup(
             [
                 *[
@@ -1232,6 +1233,18 @@ def agent_dirs(
                     for layer in _codex_project_layer_dirs(workspace_dir)
                 ],
                 os.path.join(codex_home(), "agents"),
+            ]
+        )
+    if name == "cursor":
+        home = str(Path.home())
+        return _dedup(
+            [
+                _workspace_path(workspace_dir, ".cursor", "agents"),
+                _workspace_path(workspace_dir, ".claude", "agents"),
+                _workspace_path(workspace_dir, ".codex", "agents"),
+                os.path.join(home, ".cursor", "agents"),
+                os.path.join(home, ".claude", "agents"),
+                os.path.join(home, ".codex", "agents"),
             ]
         )
     return []
@@ -1253,6 +1266,8 @@ def rule_dirs(
     name = normalize(connector)
     if name == "copilot":
         return copilot_instruction_paths(workspace_dir)
+    if name == "cursor":
+        return _dedup([_workspace_path(workspace_dir, ".cursor", "rules")])
     if name != "codex":
         return []
     paths = [
@@ -1588,11 +1603,72 @@ def _cursor_skill_dirs(workspace_dir: str | None = None) -> list[str]:
     home = str(Path.home())
     return _dedup(
         [
+            *_cursor_project_skill_dirs(workspace_dir),
             os.path.join(home, ".cursor", "skills"),
             os.path.join(home, ".agents", "skills"),
-            _workspace_path(workspace_dir, ".cursor", "skills"),
-            _workspace_path(workspace_dir, ".agents", "skills"),
+            os.path.join(home, ".claude", "skills"),
+            os.path.join(home, ".codex", "skills"),
         ]
+    )
+
+
+_CURSOR_DISCOVERY_DIR_LIMIT = 32768
+
+
+def _cursor_project_skill_dirs(workspace_dir: str | None) -> list[str]:
+    """Return documented Cursor project and lazy nested skill roots.
+
+    Cursor recursively discovers SKILL.md within each root and additionally
+    scopes nested .cursor/skills and .agents/skills roots to their subtree.
+    Discovery is bounded and refuses symlink/reparse traversal.
+    """
+
+    workspace = _workspace_dir(workspace_dir)
+    if not workspace:
+        return []
+    roots = [
+        os.path.join(workspace, ".cursor", "skills"),
+        os.path.join(workspace, ".agents", "skills"),
+        os.path.join(workspace, ".claude", "skills"),
+        os.path.join(workspace, ".codex", "skills"),
+    ]
+    if not _cursor_walkable_directory(workspace):
+        return _dedup(roots)
+
+    visited = 0
+    for current, dirs, _files in os.walk(workspace, topdown=True, followlinks=False):
+        safe_dirs: list[str] = []
+        for name in sorted(dirs, key=str.casefold):
+            if name == ".git":
+                continue
+            candidate = os.path.join(current, name)
+            if _cursor_walkable_directory(candidate):
+                safe_dirs.append(name)
+        dirs[:] = safe_dirs
+        visited += 1
+        if visited > _CURSOR_DISCOVERY_DIR_LIMIT:
+            dirs[:] = []
+            break
+        if (
+            os.path.basename(current).casefold() == "skills"
+            and os.path.basename(os.path.dirname(current)).casefold()
+            in {".cursor", ".agents"}
+        ):
+            roots.append(os.path.abspath(current))
+    return _dedup(roots)
+
+
+def _cursor_walkable_directory(path: str) -> bool:
+    try:
+        reject_reparse_path(path)
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISDIR(info.st_mode)
+        and not stat.S_ISLNK(info.st_mode)
+        and not bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
     )
 
 
@@ -2179,11 +2255,19 @@ def _hermes_mcp_servers() -> list[MCPServerEntry]:
 def _cursor_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
     home = str(Path.home())
     entries: list[MCPServerEntry] = []
-    entries.extend(_read_dotmcp_json(os.path.join(home, ".cursor", "mcp.json")))
     project_mcp = _workspace_path(workspace_dir, ".cursor", "mcp.json")
     if project_mcp:
-        entries.extend(_read_dotmcp_json(project_mcp))
-    return _dedup_mcp_entries(entries)
+        entries.extend(_read_dotmcp_json(project_mcp, source_scope="project"))
+    entries.extend(
+        _read_dotmcp_json(
+            os.path.join(home, ".cursor", "mcp.json"),
+            source_scope="user",
+        )
+    )
+    # Cursor documents both scopes but not a same-name winner, and extension
+    # APIs may register dynamic servers without either file. Preserve every
+    # local candidate instead of silently selecting the first one.
+    return entries
 
 
 def _windsurf_mcp_servers() -> list[MCPServerEntry]:
@@ -2453,7 +2537,11 @@ def _read_yaml_mcp_servers(
     return _dedup_mcp_entries(entries)
 
 
-def _read_dotmcp_json(path: str) -> list[MCPServerEntry]:
+def _read_dotmcp_json(
+    path: str,
+    *,
+    source_scope: str = "",
+) -> list[MCPServerEntry]:
     """Parse a project-local ``.mcp.json``.
 
     The file may either wrap the servers under ``mcpServers`` (Claude
@@ -2469,8 +2557,15 @@ def _read_dotmcp_json(path: str) -> list[MCPServerEntry]:
         return []
     inner = data.get("mcpServers")
     if isinstance(inner, dict):
-        return _parse_mcp_servers_dict(inner)
-    return _parse_mcp_servers_dict(data)
+        entries = _parse_mcp_servers_dict(inner)
+    else:
+        entries = _parse_mcp_servers_dict(data)
+    if source_scope:
+        return [
+            replace(entry, source=path, source_scope=source_scope)
+            for entry in entries
+        ]
+    return entries
 
 
 def _read_zepto_config(path: str) -> list[MCPServerEntry]:

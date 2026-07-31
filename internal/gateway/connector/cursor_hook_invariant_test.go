@@ -176,7 +176,7 @@ func TestCursorHook_NeverEmptyStdout(t *testing.T) {
 // TestCursorHooks_ObserveModeWritesFailClosedFalse pins the config
 // side: a default / observe (non-closed) install must write
 // failClosed:false so an empty or slow hook can never be misread as a
-// fail-closed block. Paired with TestCursorHooks_FailClosedOnlyWhenExplicit.
+// fail-closed block.
 func TestCursorHooks_ObserveModeWritesFailClosedFalse(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "hooks.json")
@@ -203,5 +203,36 @@ func TestCursorHooks_ObserveModeWritesFailClosedFalse(t *testing.T) {
 	}
 	if strings.Contains(string(data), `"failClosed": true`) {
 		t.Fatalf("observe-mode cursor hooks must not write failClosed:true, got:\n%s", string(data))
+	}
+}
+
+func TestCursorHooks_ActionAndClosedPreferenceRemainAdvisory(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "hooks.json")
+	previous := CursorHooksPathOverride
+	CursorHooksPathOverride = cfgPath
+	t.Cleanup(func() { CursorHooksPathOverride = previous })
+
+	conn := NewCursorConnector()
+	opts := SetupOpts{
+		DataDir:       filepath.Join(dir, "dc"),
+		APIAddr:       "127.0.0.1:18970",
+		APIToken:      "tok-test",
+		GuardrailMode: "action",
+		HookFailMode:  "closed",
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read Cursor hooks: %v", err)
+	}
+	if strings.Contains(string(body), `"failClosed": true`) {
+		t.Fatalf("Cursor user hook claimed fail-closed authority:\n%s", body)
+	}
+	entry := NewHookContractLockEntry(opts, conn, "test")
+	if entry.HookFailMode != "open" {
+		t.Fatalf("Cursor lock hook_fail_mode = %q, want open", entry.HookFailMode)
 	}
 }

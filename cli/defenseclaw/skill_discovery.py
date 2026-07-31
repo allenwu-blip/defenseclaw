@@ -31,6 +31,7 @@ from defenseclaw.safety import is_symlink
 
 _SKILL_MARKERS = ("SKILL.md", "skill.json", "README.md")
 _COPILOT_COMMAND_FILE_LIMIT = 2048
+_CURSOR_SKILL_DIRECTORY_LIMIT = 32768
 
 
 @dataclass(frozen=True)
@@ -378,6 +379,8 @@ def discover_skill_directories(
         and os.path.basename(os.path.normpath(skill_root)).casefold() == "commands"
     ):
         return _discover_markdown_commands(skill_root)
+    if normalized_connector == "cursor":
+        return _discover_cursor_skill_directories(skill_root)
 
     try:
         root_identity = _stable_directory_info(skill_root)
@@ -422,3 +425,39 @@ def discover_skill_directories(
     ):
         return []
     return regular + bundled
+
+
+def _discover_cursor_skill_directories(skill_root: str) -> list[SkillDirectory]:
+    """Recursively discover Cursor SKILL.md files without following aliases."""
+
+    try:
+        root_identity = _stable_directory_info(skill_root)
+    except OSError:
+        return []
+
+    rows: list[SkillDirectory] = []
+    pending = [skill_root]
+    visited = 0
+    while pending and visited < _CURSOR_SKILL_DIRECTORY_LIMIT:
+        current = pending.pop()
+        visited += 1
+        try:
+            current_identity = _stable_directory_info(current)
+            children = _stable_child_directories(current)
+        except OSError:
+            continue
+        marker = _open_stable_skill_marker(current, "SKILL.md")
+        if marker is not None:
+            fd, _marker_identity, skill_identity = marker
+            os.close(fd)
+            if _directory_unchanged(current, skill_identity):
+                rel = os.path.relpath(current, skill_root)
+                name = os.path.basename(current) if rel != "." else os.path.basename(skill_root)
+                rows.append(SkillDirectory(name, current, skill_root))
+        for _name, child, _identity in reversed(children):
+            pending.append(child)
+        if not _directory_unchanged(current, current_identity):
+            return []
+    if not _directory_unchanged(skill_root, root_identity):
+        return []
+    return rows

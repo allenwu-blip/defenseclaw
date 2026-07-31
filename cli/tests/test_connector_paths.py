@@ -324,6 +324,15 @@ class TestClaudeAutoMemory:
             "cursor",
             workspace_dir=str(tmp_path),
         )
+        for family in (".cursor", ".agents", ".claude", ".codex"):
+            assert os.path.join(str(tmp_path / "home"), family, "skills") in connector_paths.skill_dirs(
+                "cursor",
+                workspace_dir=str(tmp_path),
+            )
+            assert os.path.join(str(tmp_path), family, "skills") in connector_paths.skill_dirs(
+                "cursor",
+                workspace_dir=str(tmp_path),
+            )
         assert connector_paths.skill_dirs("windsurf") == []
         assert connector_paths.skill_dirs("windsurf", workspace_dir=str(tmp_path)) == [
             os.path.join(str(tmp_path), ".windsurf", "skills"),
@@ -347,6 +356,26 @@ class TestClaudeAutoMemory:
             "copilot",
             workspace_dir=str(tmp_path),
         )
+
+    def test_cursor_skill_dirs_include_nested_documented_roots_without_aliases(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        workspace = tmp_path / "repo"
+        nested = workspace / "apps" / "web" / ".agents" / "skills"
+        nested.mkdir(parents=True)
+        rejected = workspace / "linked" / ".cursor" / "skills"
+        rejected.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(
+            connector_paths,
+            "_cursor_walkable_directory",
+            lambda path: os.path.normcase(os.path.abspath(path))
+            != os.path.normcase(os.path.abspath(str(workspace / "linked"))),
+        )
+
+        roots = connector_paths.skill_dirs("cursor", workspace_dir=str(workspace))
+
+        assert str(nested) in roots
+        assert str(rejected) not in roots
         openhands = connector_paths.skill_dirs("openhands")
         assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in openhands
         assert os.path.join(str(tmp_path / "home"), ".openhands", "skills") in openhands
@@ -938,6 +967,41 @@ class TestMCPServers:
 
         config.write_bytes(b"x" * (connector_paths._MCP_CONFIG_MAX_BYTES + 1))
         assert connector_paths.mcp_servers("hermes") == []
+
+    def test_cursor_mcp_preserves_same_name_scope_candidates(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        workspace = tmp_path / "repo"
+        monkeypatch.setenv("HOME", str(home))
+        for path, command in (
+            (workspace / ".cursor" / "mcp.json", "project-server"),
+            (home / ".cursor" / "mcp.json", "user-server"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"mcpServers": {"shared": {"command": command}}}))
+
+        entries = connector_paths.mcp_servers("cursor", workspace_dir=str(workspace))
+
+        assert [(entry.name, entry.command, entry.source_scope) for entry in entries] == [
+            ("shared", "project-server", "project"),
+            ("shared", "user-server", "user"),
+        ]
+
+    def test_cursor_agent_and_rule_roots_cover_compatibility_paths(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        workspace = tmp_path / "repo"
+        monkeypatch.setenv("HOME", str(home))
+
+        assert connector_paths.agent_dirs("cursor", workspace_dir=str(workspace)) == [
+            str(workspace / ".cursor" / "agents"),
+            str(workspace / ".claude" / "agents"),
+            str(workspace / ".codex" / "agents"),
+            str(home / ".cursor" / "agents"),
+            str(home / ".claude" / "agents"),
+            str(home / ".codex" / "agents"),
+        ]
+        assert connector_paths.rule_dirs("cursor", workspace_dir=str(workspace)) == [
+            str(workspace / ".cursor" / "rules"),
+        ]
 
     def test_copilot_mcp_reads_ancestors_and_deduplicates_by_priority(
         self,

@@ -2117,6 +2117,66 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 )
             )
 
+    def test_wait_for_cursor_runtime_requires_exact_persisted_registration(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+        from defenseclaw.cursor_contract import CURSOR_HOOK_EVENTS
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_name = "cursor-hook.ps1" if os.name == "nt" else "cursor-hook.sh"
+            runtime_path = os.path.join(tmpdir, runtime_name)
+            runtime_body = "# defenseclaw-managed-hook v8\n"
+            if os.name == "nt":
+                runtime_body += (
+                    "$failClosed = $false\n--input-file\ndefenseclaw-hook.exe\n"
+                    "ProcessStartInfo\nRedirectStandardOutput\nWaitForExit\n"
+                )
+                command = "& '" + runtime_path.replace("'", "''") + "'"
+            else:
+                command = runtime_path
+            with open(runtime_path, "w", encoding="utf-8") as runtime_file:
+                runtime_file.write(runtime_body)
+            hooks_path = os.path.join(tmpdir, "cursor-hooks.json")
+            hooks = {
+                event: [
+                    {
+                        "type": "command",
+                        "command": command,
+                        "timeout": 30,
+                        "failClosed": False,
+                    }
+                ]
+                for event in CURSOR_HOOK_EVENTS
+            }
+            with open(hooks_path, "w", encoding="utf-8") as hooks_file:
+                json.dump({"version": 1, "hooks": hooks}, hooks_file)
+            with open(os.path.join(tmpdir, "active_connector.json"), "w", encoding="utf-8") as state_file:
+                json.dump({"version": 2, "name": "cursor", "names": ["cursor"]}, state_file)
+            lock = {
+                "version": 2,
+                "connectors": {
+                    "cursor": {
+                        "connector": "cursor",
+                        "contract_id": "cursor-hooks-v1",
+                        "compatibility_status": "known",
+                        "hook_script_version": "v8",
+                        "hook_fail_mode": "open",
+                        "locations": {
+                            "hook_config_paths": [hooks_path],
+                            "hook_script_paths": [runtime_path],
+                        },
+                    }
+                },
+            }
+            lock_path = os.path.join(tmpdir, "hook_contract_lock.json")
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(lock, lock_file)
+
+            self.assertTrue(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=0.02))
+            hooks["preToolUse"][0]["timeout"] = 30000
+            with open(hooks_path, "w", encoding="utf-8") as hooks_file:
+                json.dump({"version": 1, "hooks": hooks}, hooks_file)
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=0.02))
+
 
 class TestCheckOpenclawGateway(unittest.TestCase):
     def _fast_monotonic(self, step=5):

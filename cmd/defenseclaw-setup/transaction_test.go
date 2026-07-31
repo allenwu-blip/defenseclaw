@@ -677,6 +677,16 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	if err := validateSetupTransaction(transaction, expected); err != nil {
 		t.Fatalf("valid connector-preserving transaction rejected: %v", err)
 	}
+	cursorMigration := transaction
+	cursorPrevious := *transaction.PreviousState
+	cursorPrevious.Connector = "cursor"
+	cursorPrevious.Mode = "action"
+	cursorMigration.PreviousState = &cursorPrevious
+	cursorMigration.TargetConnector = "cursor"
+	cursorMigration.TargetMode = "observe"
+	if err := validateSetupTransaction(cursorMigration, expected); err != nil {
+		t.Fatalf("Cursor action-to-advisory repair migration rejected: %v", err)
+	}
 
 	changedHome := transaction
 	changedHome.CopilotHome = filepath.Join(filepath.Dir(dataRoot), "other-copilot")
@@ -1966,10 +1976,14 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	officialCursorHome, err := defaultConnectorConfigHome(".cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
-		!samePath(transaction.PreviousCursorHome, cursorHome) ||
+		!samePath(transaction.PreviousCursorHome, officialCursorHome) ||
 		!samePath(transaction.PreviousAntigravityConfigDir, antigravityHome) ||
 		!samePath(transaction.PreviousOpenCodeConfigDir, openCodeHome) {
 		t.Fatalf(
@@ -1983,7 +1997,7 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 			codexHome,
 			claudeHome,
 			copilotHome,
-			cursorHome,
+			officialCursorHome,
 			antigravityHome,
 			openCodeHome,
 		)
@@ -2154,6 +2168,42 @@ func TestFreshAntigravityUsesOfficialHomeAndScrubsInventedEnvironment(t *testing
 		if got := envValue(childEnv, forbidden); got != "" {
 			t.Fatalf("%s survived in child environment as %q", forbidden, got)
 		}
+	}
+}
+
+func TestFreshCursorIgnoresAmbientConfigHome(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows setup transaction connector-home resolution")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	ambient := filepath.Join(filepath.Dir(dataRoot), "ambient-cursor")
+	t.Setenv("DEFENSECLAW_CURSOR_CONFIG_HOME", ambient)
+
+	transaction, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"",
+		"0.8.7",
+		nil,
+		// Home binding is resolved for every fresh transaction. Use the
+		// connector-none path so this unit test does not inspect or mutate a
+		// developer machine's existing gateway startup registration.
+		options{Action: "install", Connector: "none", ConnectorSet: true, Mode: "observe"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	official, err := defaultConnectorConfigHome(".cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(transaction.CursorHome, official) || samePath(transaction.CursorHome, ambient) {
+		t.Fatalf("fresh Cursor home=%q, want official %q and not ambient %q", transaction.CursorHome, official, ambient)
+	}
+	if got := envValue(transactionChildEnv(transaction), "DEFENSECLAW_CURSOR_CONFIG_HOME"); !samePath(got, official) {
+		t.Fatalf("authenticated Cursor custody env=%q, want %q", got, official)
 	}
 }
 

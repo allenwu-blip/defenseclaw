@@ -17,12 +17,29 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
+
+func TestCursorContractSeparatesAgentAndDesktopEvidence(t *testing.T) {
+	contract := KnownHookContracts("cursor")[0]
+	if !stringInSlice(contract.Events, "subagentStart") {
+		t.Fatalf("Cursor event roster omitted subagentStart: %v", contract.Events)
+	}
+	if contract.Capabilities.CanBlock || contract.Capabilities.CanAskNative || contract.Capabilities.SupportsFailClosed {
+		t.Fatalf("Cursor user-hook contract claimed higher-priority authority: %+v", contract.Capabilities)
+	}
+	joined := strings.Join(contract.Notes, " ")
+	for _, want := range []string{"cursor_version", "application/Desktop", "Agent CLI", "Enterprise > Team > Project > User"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("Cursor evidence notes missing %q: %s", want, joined)
+		}
+	}
+}
 
 func TestAntigravityDefaultCapabilitiesMatchResolvedContract(t *testing.T) {
 	opts := SetupOpts{DataDir: t.TempDir()}

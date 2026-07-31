@@ -9402,11 +9402,11 @@ func TestSetupOpts_HookFailMode_RespectsOperatorChoice(t *testing.T) {
 			wantFailMode: "open",
 		},
 		{
-			name:         "cursor_action_closed_enforces",
+			name:         "cursor_action_closed_remains_non_authoritative",
 			opts:         SetupOpts{APIAddr: "127.0.0.1:1", GuardrailMode: "action", HookFailMode: "closed"},
 			connector:    NewCursorConnector(),
 			hookFile:     "cursor-hook.sh",
-			wantFailMode: "closed",
+			wantFailMode: "open",
 		},
 		{
 			// The safer default is "closed": empty

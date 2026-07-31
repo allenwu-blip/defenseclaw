@@ -38,24 +38,25 @@ func TestHookOnlyConnector_CapabilityMatrix(t *testing.T) {
 	opts := SetupOpts{DataDir: t.TempDir(), WorkspaceDir: t.TempDir()}
 	cases := []struct {
 		conn       *hookOnlyConnector
+		canBlock   bool
 		canAsk     bool
 		failClosed bool
 		scope      string
 		configBase string
 	}{
-		{NewHermesConnector(), false, false, "user", "config.yaml"},
-		{NewCursorConnector(), true, true, "user", "hooks.json"},
-		{NewWindsurfConnector(), false, true, "user", "hooks.json"},
-		{NewGeminiCLIConnector(), false, true, "user", "settings.json"},
-		{NewCopilotConnector(), true, false, "user,workspace", "defenseclaw.json"},
-		{NewOpenHandsConnector(), false, true, "user,workspace", "hooks.json"},
-		{NewAntigravityConnector(), true, false, "user", "hooks.json"},
+		{NewHermesConnector(), true, false, false, "user", "config.yaml"},
+		{NewCursorConnector(), false, false, false, "user", "hooks.json"},
+		{NewWindsurfConnector(), true, false, true, "user", "hooks.json"},
+		{NewGeminiCLIConnector(), true, false, true, "user", "settings.json"},
+		{NewCopilotConnector(), true, true, false, "user,workspace", "defenseclaw.json"},
+		{NewOpenHandsConnector(), true, false, true, "user,workspace", "hooks.json"},
+		{NewAntigravityConnector(), true, true, false, "user", "hooks.json"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.conn.Name(), func(t *testing.T) {
 			caps := tc.conn.HookCapabilities(opts)
-			if !caps.CanBlock {
-				t.Fatal("CanBlock = false, want true")
+			if caps.CanBlock != tc.canBlock {
+				t.Fatalf("CanBlock = %v, want %v", caps.CanBlock, tc.canBlock)
 			}
 			if caps.CanAskNative != tc.canAsk {
 				t.Fatalf("CanAskNative = %v, want %v", caps.CanAskNative, tc.canAsk)
@@ -324,13 +325,51 @@ func TestCursorConnector_InventoryOnlyPluginAndSubagentCapabilities(t *testing.T
 
 	wantAgents := []string{
 		filepath.Join(workspace, ".cursor", "agents"),
+		filepath.Join(workspace, ".claude", "agents"),
+		filepath.Join(workspace, ".codex", "agents"),
 		filepath.Join(home, ".cursor", "agents"),
+		filepath.Join(home, ".claude", "agents"),
+		filepath.Join(home, ".codex", "agents"),
 	}
 	if !caps.Agents.Supported || !caps.Agents.DiscoveryOnly || !sameStrings(caps.Agents.ReadPaths, wantAgents) {
 		t.Fatalf("Cursor subagent inventory capability drifted: %+v", caps.Agents)
 	}
 	if len(caps.Agents.WritePaths) != 0 || len(caps.Agents.InstallTargets) != 0 {
 		t.Fatalf("Cursor subagents must remain inventory-only: %+v", caps.Agents)
+	}
+}
+
+func TestCursorComponentTargetsDiscoverNestedSkillsAndRulesBoundedly(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	workspace := filepath.Join(dir, "repo")
+	testenv.SetHome(t, home)
+	nestedSkills := filepath.Join(workspace, "apps", "web", ".agents", "skills")
+	nestedAgents := filepath.Join(workspace, "apps", "AGENTS.md")
+	mdc := filepath.Join(workspace, ".cursor", "rules", "security", "secrets.mdc")
+	ignored := filepath.Join(workspace, ".cursor", "rules", "ignored.md")
+	for _, path := range []string{filepath.Join(nestedSkills, "deploy"), filepath.Dir(nestedAgents), filepath.Dir(mdc)} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, path := range []string{nestedAgents, mdc, ignored} {
+		if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	targets := NewCursorConnector().ComponentTargets(workspace)
+	if !stringInSlice(targets["skill"], nestedSkills) {
+		t.Fatalf("Cursor skill targets missing nested root %q: %v", nestedSkills, targets["skill"])
+	}
+	for _, want := range []string{nestedAgents, mdc} {
+		if !stringInSlice(targets["rule"], want) {
+			t.Fatalf("Cursor rule targets missing %q: %v", want, targets["rule"])
+		}
+	}
+	if stringInSlice(targets["rule"], ignored) {
+		t.Fatalf("Cursor rule targets accepted non-.mdc file: %v", targets["rule"])
 	}
 }
 
@@ -1928,7 +1967,7 @@ func TestCopilotHookContractReconciliationIsEventBoundAndVersionExact(t *testing
 	}
 }
 
-func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
+func TestCursorHooks_RefuseFailClosedForNonAuthoritativeUserSource(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "hooks.json")
 	prev := CursorHooksPathOverride
@@ -1950,8 +1989,8 @@ func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read cursor hooks: %v", err)
 	}
-	if !strings.Contains(string(data), `"failClosed": true`) {
-		t.Fatalf("cursor hooks did not enable failClosed when explicitly requested:\n%s", string(data))
+	if strings.Contains(string(data), `"failClosed": true`) || !strings.Contains(string(data), `"failClosed": false`) {
+		t.Fatalf("cursor hooks claimed fail-closed authority for a user hook:\n%s", string(data))
 	}
 
 	// Refreshing the same connector in observe mode must replace the
@@ -2189,7 +2228,7 @@ func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 		guardrailMode string
 		wantFailMode  string
 	}{
-		{name: "cursor_action_supports_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "closed"},
+		{name: "cursor_action_refuses_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "open"},
 		{name: "cursor_observe_forces_fail_open", connector: NewCursorConnector(), guardrailMode: "observe", wantFailMode: "open"},
 		{name: "geminicli_supports_fail_closed", connector: NewGeminiCLIConnector(), wantFailMode: "closed"},
 		{name: "openhands_supports_fail_closed", connector: NewOpenHandsConnector(), wantFailMode: "closed"},

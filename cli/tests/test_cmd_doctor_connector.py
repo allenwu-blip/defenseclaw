@@ -481,8 +481,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertIn(runtime, r.checks[-1]["detail"])
         self.assertIn("mode=observe", r.checks[-1]["detail"])
         self.assertIn("failClosed=false", r.checks[-1]["detail"])
-        self.assertIn("fail-open (Cursor default)", r.checks[-1]["detail"])
-        self.assertIn("fire-and-forget=sessionStart,sessionEnd", r.checks[-1]["detail"])
+        self.assertIn("authority=user-hook advisory", r.checks[-1]["detail"])
+        self.assertIn("hard-action=unsupported", r.checks[-1]["detail"])
         self.assertNotIn("inspect-tool.sh", r.checks[-1]["detail"])
 
     @patch("defenseclaw.commands.cmd_doctor._probe_cursor_windows_runtime")
@@ -546,9 +546,9 @@ class TestCheckConnectorHooks(unittest.TestCase):
             )
 
         self.assertEqual(r.checks[-1]["status"], "fail")
-        self.assertIn("expected false", r.checks[-1]["detail"])
+        self.assertIn("failClosed=false", r.checks[-1]["detail"])
 
-    def test_cursor_doctor_accepts_fail_closed_action_hook(self) -> None:
+    def test_cursor_doctor_rejects_fail_closed_action_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg, hooks_path, _runtime = self._cursor_runtime_case(
                 tmp,
@@ -565,10 +565,9 @@ class TestCheckConnectorHooks(unittest.TestCase):
                 probe_runtime=False,
             )
 
-        self.assertEqual(r.checks[-1]["status"], "pass")
+        self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertIn("mode=action", r.checks[-1]["detail"])
-        self.assertIn("failClosed=true", r.checks[-1]["detail"])
-        self.assertIn("failure=fail-closed", r.checks[-1]["detail"])
+        self.assertIn("unsupported Cursor posture", r.checks[-1]["detail"])
 
     def test_cursor_doctor_rejects_millisecond_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -770,9 +769,11 @@ class TestCheckHookContractLock(unittest.TestCase):
                     {
                         "connectors": {
                             "cursor": {
+                                "connector": "cursor",
                                 "contract_id": "cursor-hooks-v1",
                                 "compatibility_status": "known",
                                 "hook_script_version": "v8",
+                                "hook_fail_mode": "open",
                                 "locations": {
                                     "hook_config_paths": [os.path.join(tmp, "hooks.json")],
                                     "hook_script_paths": [
@@ -798,6 +799,45 @@ class TestCheckHookContractLock(unittest.TestCase):
             self.assertEqual(r.checks[-1]["status"], "pass")
             self.assertIn(f"runtime_path={adapter}", detail)
             self.assertNotRegex(detail.lower(), r"inspect-tool\.sh|cursor-hook\.sh")
+
+    def test_cursor_desktop_version_does_not_drift_agent_cli_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "connectors": {
+                            "cursor": {
+                                "connector": "cursor",
+                                "contract_id": "cursor-hooks-v1",
+                                "compatibility_status": "known",
+                                "raw_agent_version": "2026.07.23-e383d2b",
+                                "hook_script_version": "v8",
+                                "hook_fail_mode": "open",
+                            }
+                        }
+                    },
+                    fh,
+                )
+            with open(os.path.join(tmp, "agent_discovery.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "agents": {
+                            "cursor": {
+                                "version": "3.14.7",
+                                "binary_path": os.path.join(tmp, "Cursor.exe"),
+                            }
+                        }
+                    },
+                    fh,
+                )
+
+            r = _DoctorResult()
+            _check_hook_contract_lock(self._cfg(tmp), "cursor", r, platform_name="linux")
+
+            check = r.checks[-1]
+            self.assertEqual(check["status"], "pass")
+            self.assertIn("agent_cli=2026.07.23-e383d2b", check["detail"])
+            self.assertIn("desktop=3.14.7 (separate; not Agent CLI contract evidence)", check["detail"])
 
     def test_discovered_version_drift_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

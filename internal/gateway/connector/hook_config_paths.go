@@ -170,6 +170,9 @@ type ownedHookContractInspector interface {
 }
 
 func OwnedHooksPresent(conn Connector, opts SetupOpts) (bool, error) {
+	if cursor, ok := conn.(*hookOnlyConnector); ok && cursor.name == "cursor" {
+		return cursor.ownedCursorHookContractPresent(opts)
+	}
 	if inspector, ok := conn.(ownedHookContractInspector); ok {
 		return inspector.ownedHookContractPresent(opts)
 	}

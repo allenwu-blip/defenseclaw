@@ -333,6 +333,33 @@ func TestCanonicalInitializationUsesExplicitNoConnectorAuthority(t *testing.T) {
 	}
 }
 
+func TestCursorInitializationDowngradesUnsupportedAction(t *testing.T) {
+	args := initialConfigurationArgs(options{Connector: "cursor", Mode: "action"})
+	want := []string{
+		"init", "--skip-install", "--non-interactive", "--yes",
+		"--connector", "cursor",
+		"--profile", "observe",
+		"--no-start-gateway", "--no-verify",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("Cursor initialization args = %v, want %v", args, want)
+	}
+}
+
+func TestCursorRepairUsesAdditiveAdvisorySetup(t *testing.T) {
+	args := cursorAdvisoryConfigurationArgs()
+	want := []string{
+		"setup", "cursor", "--yes", "--mode", "observe", "--fail-mode", "open",
+		"--no-human-approval", "--no-restart",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("Cursor repair args = %v, want %v", args, want)
+	}
+	if slices.Contains(args, "--replace") {
+		t.Fatalf("Cursor repair args may not displace the active connector roster: %v", args)
+	}
+}
+
 func TestCopilotInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
 	args := initialConfigurationArgs(options{Connector: "copilot", Mode: "action"})
 	want := []string{

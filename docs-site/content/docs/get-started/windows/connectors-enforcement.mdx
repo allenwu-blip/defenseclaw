@@ -61,7 +61,8 @@ time:
 ```powershell
 defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
-defenseclaw setup cursor --mode action
+# Cursor remains advisory; action/fail-closed/HITL requests are downgraded.
+defenseclaw setup cursor --mode observe --fail-mode open --no-human-approval
 defenseclaw setup windsurf --mode action
 defenseclaw setup hermes --mode action
 defenseclaw setup opencode --mode action
@@ -157,21 +158,33 @@ documented synchronous verdict. Cursor spawns each command hook and
 automatically reloads `hooks.json`; if a configuration change is not observed,
 the documented fallback is to restart Cursor.
 
-The preview registers 21 events. Its block-capable events are `preToolUse`,
-`beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`,
-`beforeTabFileRead`, and `beforeSubmitPrompt`. Native ask is enforceable only
-for `beforeShellExecution` and `beforeMCPExecution`; although the
-`preToolUse` schema accepts `ask`, Cursor does not enforce it there.
+The preview registers the current 21-event roster, including `subagentStart`.
+Cursor's event schemas expose native deny gates and ask on
+`beforeShellExecution` and `beforeMCPExecution`, but Cursor runs every matching
+hook and merges conflicts **Enterprise > Team > Project > User**. DefenseClaw
+owns only the user hook and does not implement Enterprise or Team hooks. It
+therefore cannot prove a hard decision or approval authoritative and maps
+blocks to `would_block` and confirms to alerts.
 `sessionStart` and `sessionEnd` are fire-and-forget. `stop` accepts only a
 follow-up message. None of those three lifecycle surfaces is a synchronous
 enforcement gate.
 
-Cursor command hooks fail open by vendor default, so observe/default setup
-writes `failClosed: false`. An explicit closed failure policy writes
-`failClosed: true`; Cursor then treats hook crashes, timeouts, invalid JSON,
-and exit code `2` as a deny path. This is a connector-specific exception to the
-fresh-install default described below. Cursor remains preview-only until its
-packaged Setup and official-client Windows validation passes.
+Cursor setup downgrades action, fail-closed, and human-approval requests to
+observe, `failClosed: false`, and approval-disabled before saving. Setup and
+repair report readiness only when the exact 21-event schema, current managed
+adapter, fail-open contract lock, and full active connector roster agree.
+Fresh setup ignores ambient
+`DEFENSECLAW_CURSOR_CONFIG_HOME` and uses `%USERPROFILE%\.cursor`; only an
+authenticated persisted custody record may restore a historical path.
+
+The decoder boundedly inspects the official post/result fields and preserves
+the exact MCP URL/command plus `tool_input`. Local inventory covers recursive
+skill compatibility roots, `.cursor/rules/**/*.mdc`, root/nested `AGENTS.md`,
+local plugins, and project/user compatibility subagents. Multi-root, cloud,
+marketplace/team/private, dynamic plugin/MCP, user UI rules, and effective
+same-name selection remain unverified. The payload `cursor_version` identifies
+the Cursor application/Desktop; `agent --version` remains separate Agent CLI
+evidence. Cursor remains preview/not certified.
 ## Windsurf
 
 DefenseClaw binds Windsurf to the signed-in user's Windows Profile Known

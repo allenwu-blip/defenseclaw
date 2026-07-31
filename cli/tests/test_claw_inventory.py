@@ -2585,7 +2585,8 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             [os.path.join(home, ".cursor", "plugins", "local")],
         )
         self.assertEqual(cfg.plugin_dirs("cursor"), [])
-        self.assertNotIn("agents", {row["category"] for row in inv["limitations"]})
+        agent_limits = [row for row in inv["limitations"] if row["category"] == "agents"]
+        self.assertEqual([row["status"] for row in agent_limits], ["unverified"])
 
     def test_cursor_inventory_does_not_infer_project_subagents_from_cwd(self):
         cfg = _make_cfg_for_connector(self.tmp, "cursor")
@@ -2609,6 +2610,78 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             agents = _agents_for_connector("cursor", cfg)
 
         self.assertEqual({row["id"] for row in agents}, {"global-reviewer"})
+
+    def test_cursor_inventory_recurses_skills_rules_and_agents_with_precedence(self):
+        cfg = _make_cfg_for_connector(self.tmp, "cursor")
+        home = Path(self.tmp) / "home"
+        # Most real workspaces live below the user's home. Scope detection
+        # must compare exact documented roots rather than classify every
+        # descendant of HOME as a user-level definition.
+        workspace = home / "workspace"
+        cfg.connector_workspace_dir = lambda: str(workspace)  # type: ignore[method-assign]
+        cfg.claw.workspace_dir = str(workspace)
+
+        nested_skill = workspace / "apps" / "web" / ".agents" / "skills" / "deploy" / "nested"
+        nested_skill.mkdir(parents=True)
+        (nested_skill / "SKILL.md").write_text("---\ndescription: nested\n---\n")
+        mdc = workspace / ".cursor" / "rules" / "security" / "secrets.mdc"
+        mdc.parent.mkdir(parents=True)
+        mdc.write_text("---\ndescription: secrets\n---\n")
+        root_agents = workspace / "AGENTS.md"
+        nested_agents = workspace / "apps" / "AGENTS.md"
+        root_agents.write_text("root\n")
+        nested_agents.parent.mkdir(parents=True, exist_ok=True)
+        nested_agents.write_text("nested\n")
+
+        definitions = (
+            (workspace / ".cursor" / "agents" / "review.md", "project-cursor"),
+            (workspace / ".claude" / "agents" / "review.md", "project-claude"),
+            (home / ".cursor" / "agents" / "review.md", "user-cursor"),
+            (workspace / ".claude" / "agents" / "ambiguous.md", "claude"),
+            (workspace / ".codex" / "agents" / "ambiguous.md", "codex"),
+        )
+        for path, description in definitions:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"---\ndescription: {description}\n---\n")
+
+        with patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}, clear=False), \
+             patch("defenseclaw.connector_paths.Path.home", return_value=home):
+            inv = build_claw_aibom(cfg, live=True)
+
+        self.assertIn("nested", {row["id"] for row in inv["skills"]})
+        self.assertEqual(
+            {row["source"] for row in inv["rules"]},
+            {str(mdc), str(root_agents), str(nested_agents)},
+        )
+        review = [row for row in inv["agents"] if row["id"] == "review"]
+        self.assertEqual([row["shadowed"] if "shadowed" in row else False for row in review], [False, True, True])
+        ambiguous = [row for row in inv["agents"] if row["id"] == "ambiguous"]
+        self.assertTrue(all(row["selection_state"] == "unverified-compatibility-conflict" for row in ambiguous))
+        limitations = {(row["category"], row["status"]) for row in inv["limitations"]}
+        for category in ("skills", "plugins", "mcp", "agents", "rules"):
+            self.assertIn((category, "unverified"), limitations)
+
+    def test_cursor_inventory_marks_same_name_mcp_selection_unverified(self):
+        cfg = _make_cfg_for_connector(self.tmp, "cursor")
+        home = Path(self.tmp) / "home"
+        workspace = Path(self.tmp) / "workspace"
+        workspace.mkdir()
+        cfg.connector_workspace_dir = lambda: str(workspace)  # type: ignore[method-assign]
+        for path, command in (
+            (workspace / ".cursor" / "mcp.json", "project-server"),
+            (home / ".cursor" / "mcp.json", "user-server"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"mcpServers": {"shared": {"command": command}}}))
+
+        with patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}, clear=False), \
+             patch("defenseclaw.connector_paths.Path.home", return_value=home):
+            inv = build_claw_aibom(cfg, live=True, categories={"mcp"})
+
+        self.assertEqual(len(inv["mcp"]), 2)
+        self.assertEqual({row["scope"] for row in inv["mcp"]}, {"project", "user"})
+        self.assertTrue(all(row["selection_conflict"] for row in inv["mcp"]))
+        self.assertTrue(all(row["activation_verified"] is False for row in inv["mcp"]))
 
     def test_claudecode_legacy_command_markdown_is_inventory_skill(self):
         cfg = _make_cfg_for_connector(self.tmp, "claudecode")

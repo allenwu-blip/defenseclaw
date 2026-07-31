@@ -17,6 +17,7 @@
 package connector
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -119,6 +120,64 @@ func TestHookOnlyProfiles_DoNotCrossMapUnrelatedIDsToTurns(t *testing.T) {
 				t.Fatalf("TurnID=%q want empty", got)
 			}
 		})
+	}
+}
+
+func TestCursorProfileDecodeOfficialResultFieldsAndMCPInput(t *testing.T) {
+	tests := []struct {
+		event string
+		key   string
+		value interface{}
+		want  string
+	}{
+		{"postToolUse", "tool_output", `{"ok":true}`, `{"ok":true}`},
+		{"postToolUseFailure", "error_message", "denied", "denied"},
+		{"afterShellExecution", "output", "shell output", "shell output"},
+		{"afterMCPExecution", "result_json", `{"rows":2}`, `{"rows":2}`},
+		{"afterFileEdit", "edits", []interface{}{map[string]interface{}{"path": "a.go"}}, `[{"path":"a.go"}]`},
+		{"afterTabFileEdit", "edits", []interface{}{map[string]interface{}{"path": "b.go"}}, `[{"path":"b.go"}]`},
+		{"afterAgentResponse", "text", "answer", "answer"},
+		{"afterAgentThought", "text", "thought", "thought"},
+		{"subagentStop", "summary", "done", "done"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.event, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"hook_event_name": tc.event,
+				"tool_name":       "mcp_call",
+				tc.key:            tc.value,
+			}
+			got := cursorProfileDecode(payload)
+			if got.Content != tc.want || got.Direction != "tool_result" {
+				t.Fatalf("decoded content=%q direction=%q, want %q/tool_result", got.Content, got.Direction, tc.want)
+			}
+		})
+	}
+
+	payload := map[string]interface{}{
+		"hook_event_name": "beforeMCPExecution",
+		"tool_name":       "lookup",
+		"tool_input":      map[string]interface{}{"query": "alpha"},
+		"url":             "https://mcp.example.test/api",
+	}
+	got := cursorProfileDecode(payload)
+	var input map[string]interface{}
+	if err := json.Unmarshal(got.ToolArgs, &input); err != nil || input["query"] != "alpha" {
+		t.Fatalf("ToolArgs=%s err=%v, want authoritative tool_input", got.ToolArgs, err)
+	}
+	if got.Payload["url"] != payload["url"] || got.Payload["tool_input"] == nil {
+		t.Fatalf("authoritative MCP fields were not preserved: %#v", got.Payload)
+	}
+}
+
+func TestCursorProfileDecodeBoundsOfficialResultContent(t *testing.T) {
+	payload := map[string]interface{}{
+		"hook_event_name": "afterAgentResponse",
+		"text":            string(make([]byte, cursorHookContentMaxBytes+1024)),
+	}
+	got := cursorProfileDecode(payload)
+	if len(got.Content) != cursorHookContentMaxBytes {
+		t.Fatalf("bounded content bytes=%d want %d", len(got.Content), cursorHookContentMaxBytes)
 	}
 }
 
@@ -1008,7 +1067,7 @@ func TestCursorProfileRespond_EventSpecificFields(t *testing.T) {
 	}
 }
 
-func TestCursorProfileMapVerdict_SubagentStartDenyWithoutAsk(t *testing.T) {
+func TestCursorProfileMapVerdict_UserHookIsAdvisory(t *testing.T) {
 	caps := KnownHookContracts("cursor")[0].Capabilities
 	tests := []struct {
 		name           string
@@ -1018,10 +1077,10 @@ func TestCursorProfileMapVerdict_SubagentStartDenyWithoutAsk(t *testing.T) {
 		wantAction     string
 		wantWouldBlock bool
 	}{
-		{"action_block_subagent", "subagentStart", "action", "block", "block", false},
+		{"action_block_subagent", "subagentStart", "action", "block", "allow", true},
 		{"observe_block_subagent", "subagentStart", "observe", "block", "allow", true},
 		{"confirm_subagent_downgrades", "subagentStart", "action", "confirm", "alert", false},
-		{"confirm_shell_uses_native_ask", "beforeShellExecution", "action", "confirm", "confirm", false},
+		{"confirm_shell_is_advisory", "beforeShellExecution", "action", "confirm", "alert", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

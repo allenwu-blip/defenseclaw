@@ -66,6 +66,18 @@ func TestMapHookAction_ObserveAndUnsupportedBlock(t *testing.T) {
 	}
 }
 
+func TestCursorProfileEmptyOfficialResultDoesNotUseGenericDecoy(t *testing.T) {
+	profile := connector.NewCursorConnector().HookProfile(connector.SetupOpts{})
+	req := normalizeAgentHookRequestWithProfile("cursor", map[string]interface{}{
+		"hook_event_name": "postToolUse",
+		"tool_output":     "",
+		"result":          "planted generic decoy",
+	}, profile)
+	if req.Content != "" || req.Direction != "tool_result" {
+		t.Fatalf("Cursor official empty result decoded as content=%q direction=%q", req.Content, req.Direction)
+	}
+}
+
 func TestNormalizeAgentHookMode_EnforceAlias(t *testing.T) {
 	if got := normalizeAgentHookMode("enforce"); got != "action" {
 		t.Fatalf("normalizeAgentHookMode(enforce) = %q, want action", got)

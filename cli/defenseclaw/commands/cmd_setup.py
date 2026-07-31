@@ -81,6 +81,7 @@ from defenseclaw.connector_contracts import (
     resolve_connector_contract,
 )
 from defenseclaw.context import AppContext, pass_ctx
+from defenseclaw.cursor_contract import validate_cursor_registration
 from defenseclaw.file_permissions import atomic_write_private_bytes, delete_file_durable
 from defenseclaw.inventory import agent_discovery
 from defenseclaw.logger import CanonicalObservabilityUnavailableError
@@ -3179,7 +3180,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "cursor": {
         "label": "Cursor",
-        "description": "hooks.json command hooks + MCP/skills/rules surfaces",
+        "description": "preview advisory user hooks + bounded local inventory",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -3287,10 +3288,14 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
     "cursor": (
         "~/.cursor/hooks.json hooks",
         "<workspace>/.cursor/mcp.json MCP entries when configured explicitly",
-        "<workspace>/.cursor/skills and <workspace>/.cursor/rules install surfaces",
+        (
+            "Recursive project/user .cursor/.agents skills plus documented "
+            ".claude/.codex compatibility roots"
+        ),
+        "<workspace>/.cursor/rules/**/*.mdc and root/nested AGENTS.md",
         (
             "Existing ~/.cursor/plugins/local plugins and user/project "
-            ".cursor/agents subagents are inventoried read-only"
+            ".cursor/.claude/.codex agents are inventoried read-only"
         ),
         (
             "~/.defenseclaw/hooks/cursor-hook.ps1 on Windows; "
@@ -3839,7 +3844,10 @@ def _hilt_support_note(connector: str) -> str:
     if connector == "copilot":
         return "Copilot CLI supports native ask on documented preToolUse hooks."
     if connector == "cursor":
-        return "Cursor supports native ask only on documented ask-capable hook events."
+        return (
+            "Cursor's ask-capable schemas are advisory here: Enterprise, Team, "
+            "and Project hook responses merge above DefenseClaw's user hook."
+        )
     if connector == "antigravity":
         return "Antigravity documents native ask only for PreToolUse."
     if connector == "omnigent":
@@ -5165,6 +5173,12 @@ def _apply_hook_connector_setup(
     desired_mode = (mode or "").strip().lower()
     if desired_mode not in ("observe", "action"):
         desired_mode = "observe"
+    if connector == "cursor" and desired_mode == "action":
+        click.echo(
+            "  ⚠ Cursor hard action mode is unsupported: Enterprise, Team, and Project "
+            "hooks outrank DefenseClaw's user hook. Configuring advisory observe mode instead."
+        )
+        desired_mode = "observe"
 
     version_check_kwargs = {
         "mode": desired_mode,
@@ -5250,12 +5264,20 @@ def _apply_hook_connector_setup(
             gc.connectors[connector].block_message = block_message
         else:
             gc.block_message = block_message
-    if fail_mode is not None:
+    if fail_mode is not None or connector == "cursor":
         normalized_fail = "closed" if str(fail_mode).strip().lower() == "closed" else "open"
+        if connector == "cursor":
+            if normalized_fail == "closed":
+                click.echo("  ⚠ Cursor fail-closed is unsupported; configuring fail-open advisory delivery.")
+            normalized_fail = "open"
         if per_connector:
             gc.connectors[connector].hook_fail_mode = normalized_fail
         else:
             gc.hook_fail_mode = normalized_fail
+    if connector == "cursor":
+        if hilt:
+            click.echo("  ⚠ Cursor user-hook human approval is non-authoritative; disabling it for this connector.")
+        hilt = False
     _apply_hilt_setup(
         gc,
         connector=connector,
@@ -5327,19 +5349,14 @@ def _apply_hook_connector_setup(
     # edits on multi-connector installs.
     click.echo(f"  ✓ {connector} mode={desired_mode}")
     if connector == "cursor":
-        requested_fail_mode = (gc.effective_hook_fail_mode("cursor") or "open").strip().lower()
-        effective_fail_mode = (
-            "closed"
-            if desired_mode == "action" and requested_fail_mode == "closed"
-            else "open"
-        )
+        effective_fail_mode = "open"
         click.echo(
             f"  ✓ cursor hook failures={effective_fail_mode} "
-            f"(failClosed={str(effective_fail_mode == 'closed').lower()}; vendor default is fail-open)"
+            "(failClosed=false; user hook is not authoritative)"
         )
         click.echo(
-            "  ℹ Cursor ask is enforced only for beforeShellExecution and beforeMCPExecution; "
-            "sessionStart/sessionEnd are fire-and-forget and stop is followup-only"
+            "  ℹ Cursor runs all matching hooks and merges Enterprise > Team > Project > User; "
+            "DefenseClaw owns only the advisory user hook"
         )
 
     if restart:
@@ -5440,7 +5457,9 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     if connector == "codex":
         click.echo("    • Notify     — agent-turn-complete events → /api/v1/codex/notify")
     click.echo()
-    if mode == "observe":
+    if connector == "cursor":
+        click.echo("  Cursor remains advisory; hard action mode is unsupported for a user-owned hook.")
+    elif mode == "observe":
         click.echo("  To later turn enforcement on:")
         click.echo(f"    defenseclaw setup {connector} --mode action")
     else:
@@ -5765,6 +5784,13 @@ def _setup_observability_alias(
     # multi-connector installs.
     if interactive:
         normalized_mode = _prompt_connector_mode(connector, default_mode=normalized_mode)
+
+    if connector == "cursor" and normalized_mode == "action":
+        ux.warn(
+            "Cursor hard action mode is unsupported because higher-priority Enterprise, "
+            "Team, and Project hooks outrank DefenseClaw's user hook. Configuring advisory observe mode."
+        )
+        normalized_mode = "observe"
 
     _print_connector_observability_banner(connector, mode=normalized_mode)
     if connector == "hermes" and (fail_mode or "").strip().lower() == "closed":
@@ -7085,7 +7111,13 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         "API-key access only. Consumer/free/Google AI Pro/Ultra service ended "
         "on June 18, 2026; this setup does not restore that access."
         if connector == "geminicli"
-        else ""
+        else (
+            "\n\nCursor scope: DefenseClaw owns only the user hook. Enterprise, Team, "
+            "and Project hooks have higher precedence, so --mode action is downgraded "
+            "to advisory observe and human approval/fail-closed are unsupported."
+            if connector == "cursor"
+            else ""
+        )
     )
     short_help = (
         "Configure continuing paid/enterprise Gemini CLI hooks."
@@ -7101,9 +7133,9 @@ def _make_observability_setup_command(connector: str) -> click.Command:
             f"Configure DefenseClaw for {label} via its {surface_name}.\n\n"
             "Configures this connector in the hook connector set so CLI/TUI "
             "scanners read that agent's documented local surfaces. Default "
-            "mode is observe; pass "
-            "--mode action to enable agent-native blocking/approval verdicts "
-            "on supported events. No proxy is involved in either mode."
+            "mode is observe. Cursor downgrades action requests to advisory observe; "
+            "other connectors may enable agent-native blocking/approval verdicts with "
+            "--mode action on supported events. No proxy is involved in either mode."
             f"{product_note}"
             f"{platform_note}"
         ),
@@ -7147,8 +7179,9 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         default="observe",
         show_default=True,
         help=(
-            "Lifecycle policy mode. observe records only; action returns the "
-            "connector's native blocking or approval verdict on supported events."
+            "Lifecycle policy mode. observe records only; action requests the connector's "
+            "native blocking or approval verdict on supported events. Cursor downgrades "
+            "that request to advisory observe."
         ),
     )
     @click.option(
@@ -7233,8 +7266,8 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         f"Configure DefenseClaw for {label} via its {surface_name}.\n\n"
         "Configures this connector in the hook connector set so CLI/TUI "
         "scanners read that agent's documented local surfaces. Default "
-        "mode is observe; pass "
-        "--mode action to enable agent-native lifecycle verdicts on policy hits."
+        "mode is observe. Cursor downgrades --mode action to advisory observe; other "
+        "connectors use action for agent-native lifecycle verdicts on policy hits."
         f"{product_note}"
     )
     return _cmd
@@ -7270,7 +7303,8 @@ for _observability_connector in (
 #     PreToolUse hook. ``mode=action`` IS supported on this surface —
 #     it's hook-driven blocking, not proxy-driven.
 #
-# Action mode is supported on both surfaces; the difference is only
+# Action mode is supported on both surfaces except Cursor's non-authoritative
+# user hook, which is downgraded to advisory observe. The difference is otherwise
 # the data-path topology and the proxy listener binding decision. The
 # observability-only label is reserved for installs where the operator
 # explicitly picks mode=observe.
@@ -8850,7 +8884,42 @@ def _hook_contract_lock_covers(lock: Any, expected: set[str]) -> bool:
         connector_name = entry.get("connector")
         if not isinstance(connector_name, str) or normalize_connector(connector_name) != name:
             return False
+        if name == "cursor":
+            if entry.get("contract_id") != "cursor-hooks-v1":
+                return False
+            if entry.get("compatibility_status") not in {"known", "unversioned"}:
+                return False
+            if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") != "open":
+                return False
+            locations = entry.get("locations")
+            if not isinstance(locations, dict):
+                return False
+            hook_paths = locations.get("hook_config_paths")
+            runtime_paths = locations.get("hook_script_paths")
+            if not isinstance(hook_paths, list) or len(hook_paths) != 1:
+                return False
+            if not isinstance(runtime_paths, list) or not runtime_paths:
+                return False
     return True
+
+
+def _cursor_registration_from_lock(lock: Any) -> bool:
+    if not isinstance(lock, dict):
+        return False
+    entries = lock.get("connectors")
+    entry = entries.get("cursor") if isinstance(entries, dict) else None
+    locations = entry.get("locations") if isinstance(entry, dict) else None
+    if not isinstance(locations, dict):
+        return False
+    config_paths = locations.get("hook_config_paths")
+    runtime_paths = locations.get("hook_script_paths")
+    if not isinstance(config_paths, list) or len(config_paths) != 1 or not isinstance(runtime_paths, list):
+        return False
+    result = validate_cursor_registration(
+        str(config_paths[0]),
+        expected_runtime_paths=(str(path) for path in runtime_paths if path),
+    )
+    return result.ok
 
 
 def _wait_for_connector_runtime(
@@ -8890,6 +8959,7 @@ def _wait_for_connector_runtime(
             and state_fresh
             and lock_fresh
             and _hook_contract_lock_covers(lock, expected)
+            and ("cursor" not in expected or _cursor_registration_from_lock(lock))
         ):
             return True
         time.sleep(0.2)

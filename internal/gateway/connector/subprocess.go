@@ -918,12 +918,13 @@ func WriteHookScriptsForConnectorObjectWithOpts(hookDir string, opts SetupOpts, 
 // "closed" when the operator has set the matching enforcement flag for
 // codex / claudecode (avarice F-0681).
 func resolveHookFailMode(opts SetupOpts, c Connector) string {
-	if c != nil && c.Name() == "cursor" &&
-		!strings.EqualFold(strings.TrimSpace(opts.GuardrailMode), "action") {
-		// Cursor defaults command-hook failures to fail-open. DefenseClaw's
-		// observe mode must never turn either the host failClosed field or the
-		// native adapter's transport failures into a block, even if a global
-		// hook_fail_mode=closed is inherited from another connector.
+	if c != nil && c.Name() == "cursor" {
+		// DefenseClaw owns only Cursor's user hook. All matching hooks run and
+		// higher-priority Enterprise, Team, and Project hooks can override or
+		// mutate the result, so this preview connector cannot truthfully claim
+		// fail-closed authority in either observe or requested action mode.
+		// Keep the rendered adapter, hooks.json, and contract lock fail-open even
+		// when a global hook_fail_mode=closed is inherited from another connector.
 		return "open"
 	}
 	if strings.TrimSpace(opts.HookFailMode) != "" {
@@ -931,11 +932,6 @@ func resolveHookFailMode(opts SetupOpts, c Connector) string {
 	}
 	if c != nil {
 		switch c.Name() {
-		case "cursor":
-			// Cursor's host schema is explicitly fail-open unless
-			// failClosed=true. Keep the rendered adapter aligned with the
-			// hooks.json value when no operator choice was supplied.
-			return "open"
 		case "codex":
 			if opts.CodexEnforcement {
 				return "closed"

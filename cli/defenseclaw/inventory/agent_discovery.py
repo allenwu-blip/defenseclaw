@@ -815,7 +815,7 @@ _SPECS: dict[str, _AgentSpec] = {
     # Hermes' path is resolved dynamically in _scan_agent so HERMES_HOME and
     # the native Windows %LOCALAPPDATA% default are honored.
     "hermes": _AgentSpec((), "hermes", ("--version",)),
-    "cursor": _AgentSpec(("~/.cursor/hooks.json", "~/.cursor/mcp.json"), "cursor", ("--version",)),
+    "cursor": _AgentSpec(("~/.cursor/hooks.json", "~/.cursor/mcp.json"), "agent", ("--version",)),
     "windsurf": _AgentSpec(
         (
             "~/.codeium/windsurf/hooks.json",
@@ -1835,12 +1835,12 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
         return ()
     candidates: list[str] = []
     # Cursor made ``agent`` its primary CLI entrypoint on 2026-01-08 while
-    # retaining ``cursor-agent`` as a compatibility alias. The desktop
-    # ``cursor`` launcher remains useful installation/version evidence. Probe
-    # the official primary name first, then both documented/installed aliases.
+    # retaining ``cursor-agent`` as a compatibility alias. The Desktop
+    # ``cursor`` launcher has a separate release/version stream and therefore
+    # must never become Agent CLI hook-contract evidence.
     binary_names = (spec.binary_name,)
     if name == "cursor":
-        binary_names = ("agent", "cursor-agent", "cursor")
+        binary_names = ("agent", "cursor-agent")
     if name == "windsurf":
         # Devin Desktop is the official renamed GUI. Its optional terminal
         # launcher is `devin-desktop`; retain `windsurf` for pre-rename and OTA

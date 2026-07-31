@@ -60,28 +60,20 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "summary": "Pre-execution shell and MCP hooks with native ask support.",
+      "summary": "Preview user hooks with bounded inspection and advisory decisions.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
       "hooks": {
-        "canBlock": true,
-        "canAskNative": true,
-        "askEvents": ["beforeShellExecution", "beforeMCPExecution"],
-        "blockEvents": [
-          "preToolUse",
-          "beforeShellExecution",
-          "beforeMCPExecution",
-          "beforeReadFile",
-          "beforeTabFileRead",
-          "beforeSubmitPrompt",
-          "subagentStart"
-        ],
-        "supportsFailClosed": true,
+        "canBlock": false,
+        "canAskNative": false,
+        "askEvents": [],
+        "blockEvents": [],
+        "supportsFailClosed": false,
         "scope": "user"
       },
-      "hilt": "Cursor enforces native ask only on beforeShellExecution and beforeMCPExecution. preToolUse accepts ask in the schema but does not enforce it.",
-      "notes": "hooks.json under ~/.cursor; command hooks fail open by default and use failClosed=true only for an explicit closed failure mode. sessionStart/sessionEnd are fire-and-forget and Stop is followup-only. Native Windows uses the managed PowerShell stdin adapter."
+      "hilt": "Cursor has native ask schemas on beforeShellExecution and beforeMCPExecution, but DefenseClaw owns only the lowest-priority user hook. Because Enterprise, Team, and Project responses merge above it, confirm is advisory and cannot be presented as a trustworthy pause.",
+      "notes": "Preview/not certified. The connector writes only ~/.cursor/hooks.json. Cursor runs every matching hook and merges conflicts Enterprise > Team > Project > User, so DefenseClaw refuses authoritative block, ask, and fail-closed claims and writes failClosed=false. The direct native adapter and all documented event schemas remain active for bounded inspection, including subagentStart and post/result fields. Agent CLI version evidence is separate from the event payload's Cursor application/Desktop cursor_version. Local inventory covers documented MCP, recursive skill and compatibility roots, .cursor/rules/**/*.mdc, root/nested AGENTS.md, local plugins, and project/user compatibility subagents; multi-root, cloud, marketplace/team/private, dynamic, and effective same-name sources remain unverified."
     },
     {
       "id": "hermes",

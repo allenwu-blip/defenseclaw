@@ -34,7 +34,7 @@ A HIGH-risk Claude Code action paused at `PreToolUse`, where the connector can p
 | --- | --- | --- |
 | OpenClaw | `before_tool_call`; plugin/chat-origin approval | Non-ask proxy surfaces use their route-specific enforcement behaviour |
 | Claude Code | `PreToolUse` | Other hook events are demoted to a non-pausing response |
-| Cursor | `beforeShellExecution`, `beforeMCPExecution` | Alert/context fallback; `raw_action` remains auditable |
+| Cursor | None authoritative (ask-capable schemas exist at `beforeShellExecution` and `beforeMCPExecution`) | Alert/context fallback; higher-priority hooks merge above the DefenseClaw user hook and `raw_action` remains auditable |
 | Copilot CLI | `preToolUse` | Alert/context fallback; `raw_action` remains auditable |
 | Antigravity | `PreToolUse` only | `PreInvocation` and `PostInvocation` are context-transform surfaces, `PostToolUse` is observation-only, and DefenseClaw returns allow for `Stop`. No permission-bypass override is claimed without persisted official-client evidence. |
 | OmniGent | Pre-action `request`, `tool_call`, `llm_request` phases | Post-phase confirm is audited and continues without a pause; DENY may suppress onward-visible content but cannot roll back completed work |

@@ -28,6 +28,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/defenseclaw/defenseclaw/internal/hermespath"
 	"gopkg.in/yaml.v3"
@@ -133,22 +134,14 @@ func NewCursorConnector() *hookOnlyConnector {
 		configPath:  cursorHooksPath,
 		capability: func(opts SetupOpts) HookCapability {
 			return HookCapability{
-				CanBlock:     true,
-				CanAskNative: true,
-				AskEvents: []string{
-					"beforeShellExecution",
-					"beforeMCPExecution",
-				},
-				BlockEvents: []string{
-					"preToolUse",
-					"subagentStart",
-					"beforeShellExecution",
-					"beforeMCPExecution",
-					"beforeReadFile",
-					"beforeTabFileRead",
-					"beforeSubmitPrompt",
-				},
-				SupportsFailClosed: true,
+				// Cursor merges every matching hook and resolves conflicting
+				// responses Enterprise > Team > Project > User. DefenseClaw owns
+				// only the user hook and cannot prove that a higher-priority source
+				// did not mutate or override its decision. Keep the native event
+				// schemas installed, but expose this connector as observation-only.
+				CanBlock:           false,
+				CanAskNative:       false,
+				SupportsFailClosed: false,
 				Scope:              "user",
 				ConfigPath:         cursorHooksPath(opts),
 			}
@@ -378,20 +371,77 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 // generation. Keep that connector-native turn mapping out of the generic
 // decoder so another connector's generation identifier cannot become a turn.
 func cursorProfileDecode(payload map[string]interface{}) HookProfileRequest {
-	return HookProfileRequest{
+	event := hookFirstString(payload,
+		"hook_event_name", "hookEventName",
+		"event_type", "eventType",
+		"event_name", "eventName",
+		"agent_action_name",
+	)
+	req := HookProfileRequest{
 		ConnectorName: "cursor",
-		HookEventName: hookFirstString(payload,
-			"hook_event_name", "hookEventName",
-			"event_type", "eventType",
-			"event_name", "eventName",
-			"agent_action_name",
-		),
+		HookEventName: event,
 		TurnID: hookFirstString(payload,
 			"generation_id", "generationId",
 			"turn_id", "turnId", "turnID",
 		),
-		Payload: payload,
+		CWD:      hookFirstString(payload, "cwd"),
+		ToolName: hookFirstString(payload, "tool_name"),
+		Payload:  payload,
 	}
+	if input, ok := payload["tool_input"]; ok {
+		if encoded, err := json.Marshal(input); err == nil {
+			req.ToolArgs = encoded
+		}
+	}
+	key := ""
+	switch canonicalHookEvent(event) {
+	case "posttooluse":
+		key = "tool_output"
+	case "posttoolusefailure":
+		key = "error_message"
+	case "aftershellexecution":
+		key = "output"
+	case "aftermcpexecution":
+		key = "result_json"
+	case "afterfileedit", "aftertabfileedit":
+		key = "edits"
+	case "afteragentresponse", "afteragentthought":
+		key = "text"
+	case "subagentstop":
+		key = "summary"
+	}
+	if key != "" {
+		req.Content = cursorHookContent(payload[key])
+		req.Direction = "tool_result"
+	}
+	return req
+}
+
+const cursorHookContentMaxBytes = 256 * 1024
+
+func cursorHookContent(value interface{}) string {
+	var content string
+	switch typed := value.(type) {
+	case string:
+		content = typed
+	case nil:
+		return ""
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return ""
+		}
+		content = string(encoded)
+	}
+	content = strings.ToValidUTF8(content, "\uFFFD")
+	if len(content) <= cursorHookContentMaxBytes {
+		return content
+	}
+	cut := cursorHookContentMaxBytes
+	for cut > 0 && !utf8.RuneStart(content[cut]) {
+		cut--
+	}
+	return content[:cut]
 }
 
 // Windsurf documents execution_id as one Cascade agent turn. This is a
@@ -511,6 +561,10 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			WritePaths:      []string{workspacePath(opts, ".cursor", "mcp.json")},
 			SupportsBackup:  true,
 			SupportsRestore: true,
+			Notes: []string{
+				"Project and user mcp.json files are locally inspectable; Cursor extension-registered dynamic servers and the effective same-name selection are unverified.",
+				"Cloud, team, private marketplace, and multi-root runtime activation require official-client session evidence and are not inferred from this local inventory.",
+			},
 		}
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
@@ -519,14 +573,22 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			WritePaths:     []string{workspacePath(opts, ".cursor", "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
+			Notes: []string{
+				"Cursor recursively discovers SKILL.md under .cursor/skills, .agents/skills, and the documented .claude/.codex compatibility roots at project and user scope; nested project .cursor/skills and .agents/skills roots are included.",
+				"Discovery is bounded and does not follow links or Windows reparse points; multi-root, cloud, team, private, marketplace, and dynamic plugin skill activation remain unverified.",
+			},
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace",
-			ReadPaths:      []string{workspacePath(opts, ".cursor", "rules"), workspacePath(opts, "AGENTS.md")},
+			ReadPaths:      cursorRulePaths(opts),
 			WritePaths:     []string{workspacePath(opts, ".cursor", "rules")},
 			InstallTargets: []string{"rule"},
 			RequiresOptIn:  true,
+			Notes: []string{
+				"Inventory covers .cursor/rules/**/*.mdc and root or nested AGENTS.md without following links or reparse points.",
+				"Cursor user rules, team rules, private sources, cloud activation, and multi-root effective selection are not represented by the local filesystem inventory.",
+			},
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
@@ -538,19 +600,18 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Notes: []string{
 				"Cursor local plugins use <plugin>/.cursor-plugin/plugin.json under ~/.cursor/plugins/local.",
 				"DefenseClaw inventories existing Cursor plugins only; connector setup does not install, remove, or modify them.",
+				"Marketplace, team/private, cloud, and dynamically registered plugin sources are unverified.",
 			},
 		}
 		caps.Agents = SurfaceCapability{
-			Supported: true,
-			Scope:     "workspace,user",
-			ReadPaths: uniqueNonEmptyStrings([]string{
-				workspacePath(opts, ".cursor", "agents"),
-				homePath(".cursor", "agents"),
-			}),
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     cursorAgentPaths(opts),
 			DiscoveryOnly: true,
 			Notes: []string{
-				"Cursor subagents are read from <workspace>/.cursor/agents and ~/.cursor/agents.",
+				"Cursor subagents are read from project and user .cursor/agents plus the documented .claude/agents and .codex/agents compatibility roots; project wins over user and .cursor wins within a scope.",
 				"DefenseClaw inventories existing Cursor subagents only; connector setup does not install, remove, or modify them.",
+				"Cloud, team/private, marketplace/dynamic, multi-root, and runtime-only subagent activation remain unverified.",
 			},
 		}
 	case "windsurf":
@@ -772,6 +833,15 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 	}
 	if err := c.patchConfig(opts, c.hookCommand(opts)); err != nil {
 		return fmt.Errorf("%s hook config: %w", c.name, err)
+	}
+	if c.name == "cursor" {
+		present, err := c.ownedCursorHookContractPresent(opts)
+		if err != nil {
+			return fmt.Errorf("cursor verify persisted hook contract: %w", err)
+		}
+		if !present {
+			return errors.New("cursor persisted hook contract does not match the complete advisory registration")
+		}
 	}
 	return nil
 }
@@ -1099,7 +1169,83 @@ func (c *hookOnlyConnector) ComponentTargets(cwd string) map[string][]string {
 	addSurfaceTargets(targets, "rule", caps.Rules)
 	addSurfaceTargets(targets, "plugin", caps.Plugins)
 	addSurfaceTargets(targets, "agent", caps.Agents)
+	if c.name == "cursor" {
+		nestedSkills, rules := cursorDiscoveredComponentPaths(cwd)
+		targets["skill"] = uniqueNonEmptyStrings(append(targets["skill"], nestedSkills...))
+		targets["rule"] = uniqueNonEmptyStrings(append(targets["rule"], rules...))
+	}
 	return targets
+}
+
+const cursorDiscoveryDirectoryLimit = 32768
+
+func cursorDiscoveredComponentPaths(workspace string) ([]string, []string) {
+	workspace = strings.TrimSpace(workspace)
+	if workspace == "" || atomicTransformValidateNoReparsePathPlatform(workspace) != nil {
+		return nil, nil
+	}
+	info, err := os.Lstat(workspace)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, nil
+	}
+	rulesRoot := filepath.Join(workspace, ".cursor", "rules")
+	var skills []string
+	var rules []string
+	visited := 0
+	errCursorDiscoveryLimit := errors.New("cursor discovery directory limit reached")
+	_ = filepath.WalkDir(workspace, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err := atomicTransformValidateNoReparsePathPlatform(path); err != nil {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			visited++
+			if visited > cursorDiscoveryDirectoryLimit {
+				return errCursorDiscoveryLimit
+			}
+			if path != workspace && strings.EqualFold(entry.Name(), ".git") {
+				return filepath.SkipDir
+			}
+			if strings.EqualFold(entry.Name(), "skills") {
+				parent := filepath.Base(filepath.Dir(path))
+				if strings.EqualFold(parent, ".cursor") || strings.EqualFold(parent, ".agents") {
+					skills = append(skills, path)
+				}
+			}
+			return nil
+		}
+		if entry.Name() == "AGENTS.md" {
+			rules = append(rules, path)
+			return nil
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".mdc") && cursorPathWithin(path, rulesRoot) {
+			rules = append(rules, path)
+		}
+		return nil
+	})
+	return uniqueNonEmptyStrings(skills), uniqueNonEmptyStrings(rules)
+}
+
+func cursorPathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 func (c *hookOnlyConnector) HasUsableProviders() (int, error) {
@@ -1778,12 +1924,34 @@ func pluginsAreOpenClawOnly() SurfaceCapability {
 }
 
 func cursorSkillPaths(opts SetupOpts) []string {
-	return []string{
-		homePath(".cursor", "skills"),
-		homePath(".agents", "skills"),
+	return uniqueNonEmptyStrings([]string{
 		workspacePath(opts, ".cursor", "skills"),
 		workspacePath(opts, ".agents", "skills"),
-	}
+		workspacePath(opts, ".claude", "skills"),
+		workspacePath(opts, ".codex", "skills"),
+		homePath(".cursor", "skills"),
+		homePath(".agents", "skills"),
+		homePath(".claude", "skills"),
+		homePath(".codex", "skills"),
+	})
+}
+
+func cursorRulePaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		workspacePath(opts, ".cursor", "rules"),
+		workspacePath(opts, "AGENTS.md"),
+	})
+}
+
+func cursorAgentPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		workspacePath(opts, ".cursor", "agents"),
+		workspacePath(opts, ".claude", "agents"),
+		workspacePath(opts, ".codex", "agents"),
+		homePath(".cursor", "agents"),
+		homePath(".claude", "agents"),
+		homePath(".codex", "agents"),
+	})
 }
 
 func openhandsSkillPaths(opts SetupOpts) []string {
@@ -2057,6 +2225,30 @@ func hermesPristineAutoAccept(backup *managedFileBackup) (interface{}, bool, boo
 	return value, present, true, nil
 }
 
+var cursorHookEvents = []string{
+	"sessionStart",
+	"sessionEnd",
+	"preToolUse",
+	"postToolUse",
+	"postToolUseFailure",
+	"subagentStart",
+	"subagentStop",
+	"beforeShellExecution",
+	"beforeMCPExecution",
+	"afterShellExecution",
+	"afterMCPExecution",
+	"beforeReadFile",
+	"beforeTabFileRead",
+	"afterFileEdit",
+	"afterTabFileEdit",
+	"beforeSubmitPrompt",
+	"afterAgentResponse",
+	"afterAgentThought",
+	"stop",
+	"preCompact",
+	"workspaceOpen",
+}
+
 func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed bool) error {
 	cfg, err := readJSONObject(path)
 	if err != nil {
@@ -2064,29 +2256,7 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 	}
 	hooks := ensureJSONObject(cfg, "hooks")
 	cfg["version"] = 1
-	for _, event := range []string{
-		"sessionStart",
-		"sessionEnd",
-		"preToolUse",
-		"postToolUse",
-		"postToolUseFailure",
-		"subagentStart",
-		"subagentStop",
-		"beforeShellExecution",
-		"beforeMCPExecution",
-		"afterShellExecution",
-		"afterMCPExecution",
-		"beforeReadFile",
-		"beforeTabFileRead",
-		"afterFileEdit",
-		"afterTabFileEdit",
-		"beforeSubmitPrompt",
-		"afterAgentResponse",
-		"afterAgentThought",
-		"stop",
-		"preCompact",
-		"workspaceOpen",
-	} {
+	for _, event := range cursorHookEvents {
 		entry := map[string]interface{}{
 			"type":    "command",
 			"command": shellWord(hookScript),
@@ -2101,6 +2271,116 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 		hooks[event] = replaceManagedCursorHooks(hooks[event], hookScript, legacyShellScript, entry)
 	}
 	return writeJSONObject(path, cfg)
+}
+
+// ownedCursorHookContractPresent validates the exact registration Setup writes
+// before the gateway is allowed to publish active/contract-lock evidence. A
+// substring hit is not readiness: all 21 documented events must contain one
+// current command entry with the advisory type/timeout/fail-open contract, and
+// no legacy or duplicate DefenseClaw entries may remain elsewhere.
+func (c *hookOnlyConnector) ownedCursorHookContractPresent(opts SetupOpts) (bool, error) {
+	if c == nil || c.name != "cursor" {
+		return false, errors.New("cursor hook contract verifier called for a different connector")
+	}
+	path := c.configPath(opts)
+	runtimePath := c.cursorRuntimePath(opts)
+	runtimeInfo, err := os.Lstat(runtimePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !runtimeInfo.Mode().IsRegular() || runtimeInfo.Mode()&os.ModeSymlink != 0 || runtimeInfo.Size() > 512*1024 {
+		return false, nil
+	}
+	runtimeBody, err := os.ReadFile(runtimePath)
+	if err != nil {
+		return false, err
+	}
+	runtimeMarkers := []string{"defenseclaw-managed-hook v8"}
+	if runtime.GOOS == "windows" {
+		runtimeMarkers = append(runtimeMarkers,
+			"--input-file",
+			"defenseclaw-hook.exe",
+			"ProcessStartInfo",
+			"RedirectStandardOutput",
+			"WaitForExit",
+			"$failClosed = $false",
+		)
+	}
+	for _, marker := range runtimeMarkers {
+		if !bytes.Contains(runtimeBody, []byte(marker)) {
+			return false, nil
+		}
+	}
+	cfg, err := readJSONObject(path)
+	if err != nil {
+		return false, err
+	}
+	version, ok := cfg["version"].(json.Number)
+	if !ok || version.String() != "1" {
+		return false, nil
+	}
+	hooks, ok := cfg["hooks"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+	currentCommand := shellWord(c.hookCommand(opts))
+	ownedCommands := uniqueNonEmptyStrings(append(
+		[]string{c.hookCommand(opts), currentCommand},
+		cursorOwnedHookCommands(opts)...,
+	))
+	expected := make(map[string]struct{}, len(cursorHookEvents))
+	for _, event := range cursorHookEvents {
+		expected[event] = struct{}{}
+		entries, ok := hooks[event].([]interface{})
+		if !ok {
+			return false, nil
+		}
+		ownedCount := 0
+		for _, raw := range entries {
+			if !managedCursorHookEntry(raw, ownedCommands) {
+				continue
+			}
+			ownedCount++
+			entry, ok := raw.(map[string]interface{})
+			if !ok || len(entry) != 4 || entry["type"] != "command" || entry["command"] != currentCommand {
+				return false, nil
+			}
+			timeout, ok := entry["timeout"].(json.Number)
+			if !ok || timeout.String() != "30" {
+				return false, nil
+			}
+			failClosed, ok := entry["failClosed"].(bool)
+			if !ok || failClosed {
+				return false, nil
+			}
+		}
+		if ownedCount != 1 {
+			return false, nil
+		}
+	}
+	for event, raw := range hooks {
+		if _, ok := expected[event]; ok {
+			continue
+		}
+		entries, _ := raw.([]interface{})
+		for _, entry := range entries {
+			if managedCursorHookEntry(entry, ownedCommands) {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
+}
+
+func (c *hookOnlyConnector) cursorRuntimePath(opts SetupOpts) string {
+	name := "cursor-hook.sh"
+	if runtime.GOOS == "windows" {
+		name = "cursor-hook.ps1"
+	}
+	return filepath.Join(opts.DataDir, "hooks", name)
 }
 
 func replaceManagedCursorHooks(raw interface{}, hookScript, legacyShellScript string, entry map[string]interface{}) []interface{} {

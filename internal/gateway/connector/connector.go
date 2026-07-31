@@ -99,7 +99,8 @@ type SetupOpts struct {
 	// transport failures) or "closed" (block on either failure class). Runtime
 	// setup populates it from cfg.EffectiveHookFailModeForConnector(conn.Name()).
 	// Hook-writing helpers normalize an empty or invalid value to the secure
-	// "closed" fallback except that Cursor observe mode remains fail-open.
+	// "closed" fallback except that Cursor's non-authoritative user hook
+	// remains fail-open in every mode.
 	// Profile-only callers may omit it; provider-specific profile defaults are
 	// separate from the hook-writing boundary.
 	// DEFENSECLAW_STRICT_AVAILABILITY remains
@@ -107,9 +108,9 @@ type SetupOpts struct {
 	HookFailMode string
 
 	// GuardrailMode is the effective connector policy mode. Cursor's vendor
-	// hook schema can block when failClosed=true, so its setup boundary needs
-	// both values: only action+closed may render a blocking host registration
-	// or adapter. An empty value is treated as observe.
+	// schema supports failClosed, but DefenseClaw owns only the lowest-priority
+	// user hook and never renders a blocking host registration or adapter for
+	// that connector. An empty value is treated as observe.
 	GuardrailMode string
 
 	// HILTEnabled tells connectors with native approval surfaces to wire

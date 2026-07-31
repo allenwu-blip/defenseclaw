@@ -260,6 +260,13 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	previousConnectors = normalizeStringSlice(previousConnectors)
 	preserveConnectorConfiguration := action == "install" && opts.PreserveConnectorConfiguration
 	targetConnector := opts.Connector
+	targetMode := opts.Mode
+	if action == "install" && targetConnector == "cursor" && targetMode == "action" {
+		// Cursor's user hook is below Enterprise, Team, and Project hooks. The
+		// native installer must not persist or display hard-action authority that
+		// the connector cannot prove, including during repair of an older preview.
+		targetMode = "observe"
+	}
 	targetServices := requestedServices(opts, previousServices)
 	if preserveConnectorConfiguration && len(previousConnectors) != 0 {
 		// CLI configuration can add connectors after an installer-first "none"
@@ -329,10 +336,11 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	cursorHome, err := transactionConfigHome("DEFENSECLAW_CURSOR_CONFIG_HOME", defaultCursorHome)
-	if err != nil {
-		return setupTransaction{}, err
-	}
+	// Cursor documents its user configuration at %USERPROFILE%\.cursor and
+	// publishes no config-home override. Ignore ambient process state for a
+	// fresh registration. A previously authenticated transaction or managed
+	// backup may still restore its exact historical custody below.
+	cursorHome := defaultCursorHome
 	// Google documents Antigravity's global hook root at
 	// %USERPROFILE%\.gemini\config and publishes no configuration-home
 	// environment override. New registrations always target that official
@@ -479,7 +487,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousConnectors:             previousConnectors,
 		PreserveConnectorConfiguration: preserveConnectorConfiguration,
 		TargetConnector:                targetConnector,
-		TargetMode:                     opts.Mode,
+		TargetMode:                     targetMode,
 		TargetServices:                 targetServices,
 		FromVersion:                    fromVersion,
 		TargetVersion:                  targetVersion,
@@ -809,6 +817,15 @@ func normalizeStringSlice(values []string) []string {
 		return nil
 	}
 	return values
+}
+
+func stringSliceContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), wanted) {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotMaintenanceFile(path string) (bool, string, error) {
@@ -1339,8 +1356,11 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		if transaction.Action != "install" || !transaction.HadInstall || transaction.PreviousState == nil {
 			return errors.New("connector-preserving transaction has no previous installation")
 		}
+		cursorAdvisoryMigration := transaction.TargetConnector == "cursor" &&
+			transaction.PreviousState.Connector == "cursor" &&
+			transaction.PreviousState.Mode == "action" && transaction.TargetMode == "observe"
 		if transaction.TargetConnector != transaction.PreviousState.Connector ||
-			transaction.TargetMode != transaction.PreviousState.Mode {
+			(transaction.TargetMode != transaction.PreviousState.Mode && !cursorAdvisoryMigration) {
 			return errors.New("connector-preserving transaction changed the installer selection")
 		}
 		if !samePath(transaction.PreviousCodexHome, transaction.CodexHome) ||
@@ -3025,6 +3045,14 @@ func convergeCommittedSetupTransaction(transaction setupTransaction) error {
 	}
 	reconciliation := connectorReconciliationRecorder{}
 	if transaction.PreserveConnectorConfiguration {
+		if stringSliceContains(transaction.PreviousConnectors, "cursor") {
+			if err := runCursorAdvisoryConfigurationWithEnv(
+				transaction.InstallRoot,
+				childEnv,
+			); err != nil {
+				return fmt.Errorf("reconcile preserved Cursor advisory configuration: %w", err)
+			}
+		}
 		reconciliation = reconcilePreservedConnectors(
 			transaction,
 			gatewayPath,

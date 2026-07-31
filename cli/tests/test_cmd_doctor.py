@@ -605,7 +605,7 @@ class DoctorGuardrailTests(unittest.TestCase):
         _check_hilt_support(cfg, "cursor", result)
         self.assertEqual(result.warned, 1)
         self.assertIn(
-            "preToolUse accepts ask in the schema but does not enforce it",
+            "non-authoritative user hook",
             result.checks[0]["detail"],
         )
 

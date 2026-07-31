@@ -1636,6 +1636,49 @@ _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
     ),
 }
 
+_UNVERIFIED_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
+    (
+        "cursor",
+        "skills",
+    ): (
+        "local project/user Cursor, Agents, Claude, and Codex skill roots plus "
+        "nested project Cursor/Agents roots are scanned recursively and without "
+        "following aliases; multi-root, cloud, team/private, marketplace, and "
+        "dynamic plugin skill activation require official-client evidence"
+    ),
+    (
+        "cursor",
+        "plugins",
+    ): (
+        "only the documented local plugin directory is inspectable; marketplace, "
+        "team/private, cloud, and dynamically registered plugins are unverified"
+    ),
+    (
+        "cursor",
+        "mcp",
+    ): (
+        "project and user mcp.json candidates are retained without inventing a "
+        "same-name winner; extension-registered dynamic servers, cloud/team "
+        "sources, multi-root activation, and the effective runtime selection are unverified"
+    ),
+    (
+        "cursor",
+        "agents",
+    ): (
+        "project/user .cursor, .claude, and .codex subagent files are inventoried "
+        "with documented scope precedence; multi-root, cloud, team/private, "
+        "marketplace/dynamic, and runtime-only subagents are unverified"
+    ),
+    (
+        "cursor",
+        "rules",
+    ): (
+        "local .cursor/rules/**/*.mdc and root/nested AGENTS.md are inventoried; "
+        "user UI rules, team/private rules, cloud state, multi-root activation, "
+        "and effective runtime ordering are unverified"
+    ),
+}
+
 
 def _collect_filesystem_category(
     connector: str,
@@ -1715,12 +1758,11 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     if name == "copilot":
         return _agents_from_copilot_dirs(connector_paths.copilot_agent_dirs(_connector_workspace_dir(cfg)))
     if name == "cursor":
-        workspace = cfg.connector_workspace_dir()
-        return _agents_from_md_dirs(
-            [
-                os.path.join(workspace, ".cursor", "agents") if workspace else "",
-                os.path.join(home, ".cursor", "agents"),
-            ]
+        return _agents_from_cursor_dirs(
+            connector_paths.agent_dirs(
+                name,
+                workspace_dir=_connector_workspace_dir(cfg),
+            )
         )
     if name == "antigravity":
         return _agents_from_antigravity_dirs(_antigravity_agent_dirs(_connector_workspace_dir(cfg)))
@@ -1729,10 +1771,12 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
 def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     """Enumerate documented local rule/instruction files without evaluating them."""
-    name = (connector or "").lower()
-    if name == "copilot":
+    normalized = connector_paths.normalize(connector)
+    if normalized == "copilot":
         return _copilot_instruction_rules(_connector_workspace_dir(cfg))
-    if name != "codex":
+    if normalized == "cursor":
+        return _cursor_rules_from_workspace(_connector_workspace_dir(cfg))
+    if normalized != "codex":
         return []
 
     user_rules = os.path.normcase(
@@ -2312,6 +2356,136 @@ def _agents_from_md_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
             seen.add(key)
             rows.append(row)
     return rows
+
+
+def _agents_from_cursor_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
+    """Retain Cursor subagent custody while expressing documented precedence."""
+
+    home = os.path.abspath(os.path.expanduser("~"))
+    user_roots = {
+        os.path.normcase(os.path.abspath(os.path.join(home, family, "agents")))
+        for family in (".cursor", ".claude", ".codex")
+    }
+    rows: list[dict[str, Any]] = []
+    selected: dict[str, dict[str, Any]] = {}
+    for agents_dir in agent_dirs:
+        normalized_dir = os.path.normcase(os.path.abspath(agents_dir))
+        scope = "user" if normalized_dir in user_roots else "project"
+        family = os.path.basename(os.path.dirname(os.path.normpath(agents_dir))).casefold()
+        for row in _agents_from_md_dir(agents_dir):
+            row["scope"] = scope
+            row["source_family"] = family
+            identity = os.path.normcase(str(row["id"]))
+            prior = selected.get(identity)
+            if prior is None:
+                row["selection_state"] = "documented-candidate"
+                selected[identity] = row
+            else:
+                prior_scope = str(prior.get("scope") or "")
+                prior_family = str(prior.get("source_family") or "")
+                if prior_scope == "project" and scope == "user":
+                    row["shadowed"] = True
+                    row["selection_state"] = "documented-shadowed"
+                elif prior_scope == scope and prior_family == ".cursor":
+                    row["shadowed"] = True
+                    row["selection_state"] = "documented-shadowed"
+                elif prior_scope == scope and family == ".cursor":
+                    prior["shadowed"] = True
+                    prior["selection_state"] = "documented-shadowed"
+                    row["selection_state"] = "documented-candidate"
+                    selected[identity] = row
+                else:
+                    # Cursor documents .cursor over compatibility roots, but
+                    # does not define a Claude-vs-Codex tie breaker.
+                    prior["activation_verified"] = False
+                    prior["selection_state"] = "unverified-compatibility-conflict"
+                    row["activation_verified"] = False
+                    row["selection_state"] = "unverified-compatibility-conflict"
+            rows.append(row)
+    return rows
+
+
+def _cursor_rules_from_workspace(workspace: str) -> list[dict[str, Any]]:
+    if not workspace or not connector_paths._cursor_walkable_directory(workspace):
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    rules_root = os.path.join(workspace, ".cursor", "rules")
+    for current, _dirs, files in _bounded_cursor_walk(rules_root):
+        for name in files:
+            if not name.casefold().endswith(".mdc"):
+                continue
+            source = os.path.join(current, name)
+            if not _cursor_regular_file(source):
+                continue
+            key = os.path.normcase(os.path.abspath(source))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "id": os.path.relpath(source, rules_root),
+                    "name": name,
+                    "source": source,
+                    "kind": "cursor-rule",
+                    "scope": "project",
+                }
+            )
+    for current, _dirs, files in _bounded_cursor_walk(workspace):
+        for name in files:
+            if name != "AGENTS.md":
+                continue
+            source = os.path.join(current, name)
+            if not _cursor_regular_file(source):
+                continue
+            key = os.path.normcase(os.path.abspath(source))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(
+                {
+                    "id": os.path.relpath(source, workspace),
+                    "name": name,
+                    "source": source,
+                    "kind": "agents-instructions",
+                    "scope": "project",
+                }
+            )
+    return rows
+
+
+def _bounded_cursor_walk(root: str):
+    if not connector_paths._cursor_walkable_directory(root):
+        return
+    visited = 0
+    for current, dirs, files in os.walk(root, topdown=True, followlinks=False):
+        safe_dirs: list[str] = []
+        for name in sorted(dirs, key=str.casefold):
+            if name == ".git":
+                continue
+            candidate = os.path.join(current, name)
+            if connector_paths._cursor_walkable_directory(candidate):
+                safe_dirs.append(name)
+        dirs[:] = safe_dirs
+        visited += 1
+        if visited > connector_paths._CURSOR_DISCOVERY_DIR_LIMIT:
+            dirs[:] = []
+            break
+        yield current, dirs, sorted(files, key=str.casefold)
+
+
+def _cursor_regular_file(path: str) -> bool:
+    try:
+        connector_paths.reject_reparse_path(path)
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return (
+        stat.S_ISREG(info.st_mode)
+        and not stat.S_ISLNK(info.st_mode)
+        and not bool(getattr(info, "st_file_attributes", 0) & reparse_flag)
+    )
 
 
 _COPILOT_BUILTIN_AGENTS: tuple[str, ...] = (
@@ -3050,6 +3224,20 @@ def _build_aibom_from_filesystem(
                 "reason": note,
             }
         )
+    for (partial_connector, cat_key), note in _UNVERIFIED_CONNECTOR_NOTES.items():
+        if partial_connector != connector or cat_key not in cats:
+            continue
+        result = results.get(cat_key)
+        if result is None or result.error is not None:
+            continue
+        limitations.append(
+            {
+                "connector": connector,
+                "category": cat_key,
+                "status": InventoryCapabilityStatus.UNVERIFIED,
+                "reason": note,
+            }
+        )
     if connector_paths.normalize(connector) == "claudecode" and "memory" in cats:
         memory_resolution = connector_paths.claude_auto_memory_resolution(
             _connector_workspace_dir(cfg),
@@ -3446,7 +3634,13 @@ def _enumerate_mcp_filesystem(
     """
     rows: list[dict[str, Any]] = []
     resolved = connector or cfg.active_connector()
-    for entry in cfg.mcp_servers(connector):
+    entries = cfg.mcp_servers(connector)
+    cursor_names: dict[str, int] = {}
+    if connector_paths.normalize(resolved) == "cursor":
+        for entry in entries:
+            identity = os.path.normcase(entry.name)
+            cursor_names[identity] = cursor_names.get(identity, 0) + 1
+    for entry in entries:
         row: dict[str, Any] = {
             "id": entry.name,
             "source": entry.source or f"{resolved} mcp registry",
@@ -3465,5 +3659,11 @@ def _enumerate_mcp_filesystem(
             row["scope"] = entry.source_scope
         if entry.trust_required:
             row["trust_required"] = True
+        if connector_paths.normalize(resolved) == "cursor":
+            row["activation_verified"] = False
+            row["activation_state"] = "unverified-dynamic-selection"
+            if cursor_names.get(os.path.normcase(entry.name), 0) > 1:
+                row["selection_conflict"] = True
+                row["activation_state"] = "unverified-same-name-scope-conflict"
         rows.append(row)
     return rows

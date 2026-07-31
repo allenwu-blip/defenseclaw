@@ -1240,7 +1240,7 @@ def test_windsurf_windows_desktop_uses_narrow_product_trust_roots(monkeypatch, t
                 "hermes.exe",
             ),
         ),
-        ("cursor", ("local", "Programs", "cursor", "resources", "app", "bin", "cursor.cmd")),
+        ("cursor", ("local", "cursor-agent", "agent.exe")),
         ("windsurf", ("local", "Programs", "Windsurf", "bin", "windsurf.exe")),
         ("geminicli", ("roaming", "npm", "gemini.cmd")),
         ("copilot", ("roaming", "npm", "copilot.cmd")),
@@ -1327,7 +1327,7 @@ def test_cursor_discovery_prefers_primary_agent_entrypoint(monkeypatch, tmp_path
     resolved = ad._binary_candidates_for_agent("cursor", ad._SPECS["cursor"])
 
     assert tuple(map(ad._path_key, resolved)) == tuple(
-        map(ad._path_key, (str(primary), str(compatibility), str(desktop)))
+        map(ad._path_key, (str(primary), str(compatibility)))
     )
 
 
