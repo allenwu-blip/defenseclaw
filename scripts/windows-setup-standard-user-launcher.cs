@@ -4,9 +4,11 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -104,7 +106,30 @@ namespace DefenseClaw
 
         public void Kill(bool entireProcessTree)
         {
-            process.Kill(entireProcessTree);
+            var treeKill = typeof(Process).GetMethod("Kill", new Type[] { typeof(bool) });
+            if (entireProcessTree && treeKill != null)
+            {
+                treeKill.Invoke(process, new object[] { true });
+                return;
+            }
+            if (entireProcessTree)
+            {
+                string taskkill = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.System),
+                    "taskkill.exe");
+                using (Process killer = Process.Start(new ProcessStartInfo
+                {
+                    FileName = taskkill,
+                    Arguments = "/PID " + process.Id.ToString(CultureInfo.InvariantCulture) + " /T /F",
+                    CreateNoWindow = true,
+                    UseShellExecute = false
+                }))
+                {
+                    if (killer != null) killer.WaitForExit(30000);
+                }
+                if (process.HasExited) return;
+            }
+            process.Kill();
         }
 
         public bool CompleteOutput(int timeoutMilliseconds)
@@ -202,6 +227,7 @@ namespace DefenseClaw
         private const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
         private const uint TOKEN_DUPLICATE = 0x0002;
         private const uint TOKEN_QUERY = 0x0008;
+        private const uint TOKEN_ADJUST_DEFAULT = 0x0080;
         private const uint DISABLE_MAX_PRIVILEGE = 0x0001;
         private const uint LUA_TOKEN = 0x0004;
         private const uint CREATE_SUSPENDED = 0x00000004;
@@ -214,11 +240,14 @@ namespace DefenseClaw
         private const int TokenElevationType = 18;
         private const int TokenLinkedToken = 19;
         private const int TokenElevation = 20;
+        private const int TokenIntegrityLevel = 25;
         private const int TokenPrimary = 1;
         private const int TokenElevationTypeDefault = 1;
         private const int TokenElevationTypeFull = 2;
         private const int TokenElevationTypeLimited = 3;
         private const int SecurityImpersonation = 2;
+        private const uint SE_GROUP_INTEGRITY = 0x00000020;
+        private const string MediumIntegritySid = "S-1-16-8192";
 
         private enum LaunchTokenKind
         {
@@ -236,6 +265,19 @@ namespace DefenseClaw
         private struct TOKEN_LINKED_TOKEN
         {
             public IntPtr LinkedToken;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SID_AND_ATTRIBUTES
+        {
+            public IntPtr Sid;
+            public uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TOKEN_MANDATORY_LABEL
+        {
+            public SID_AND_ATTRIBUTES Label;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -382,6 +424,18 @@ namespace DefenseClaw
             int informationLength,
             out int returnLength);
 
+        [DllImport(
+            "advapi32.dll",
+            EntryPoint = "SetTokenInformation",
+            ExactSpelling = true,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetTokenInformationIntegrity(
+            IntPtr token,
+            int informationClass,
+            ref TOKEN_MANDATORY_LABEL information,
+            int informationLength);
+
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool IsTokenRestricted(IntPtr token);
@@ -475,6 +529,41 @@ namespace DefenseClaw
                     "GetTokenInformation(" + label + ") returned a truncated value");
             }
             return value;
+        }
+
+        private static void SetMediumIntegrity(IntPtr token)
+        {
+            SecurityIdentifier identifier = new SecurityIdentifier(MediumIntegritySid);
+            byte[] sid = new byte[identifier.BinaryLength];
+            identifier.GetBinaryForm(sid, 0);
+            GCHandle pinned = GCHandle.Alloc(sid, GCHandleType.Pinned);
+            try
+            {
+                TOKEN_MANDATORY_LABEL label = new TOKEN_MANDATORY_LABEL
+                {
+                    Label = new SID_AND_ATTRIBUTES
+                    {
+                        Sid = pinned.AddrOfPinnedObject(),
+                        Attributes = SE_GROUP_INTEGRITY
+                    }
+                };
+                int size = checked(
+                    Marshal.SizeOf(typeof(TOKEN_MANDATORY_LABEL)) + sid.Length);
+                if (!SetTokenInformationIntegrity(
+                    token,
+                    TokenIntegrityLevel,
+                    ref label,
+                    size))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "SetTokenInformation(TokenIntegrityLevel) failed");
+                }
+            }
+            finally
+            {
+                pinned.Free();
+            }
         }
 
         private static IntPtr GetLinkedToken(IntPtr sourceToken)
@@ -618,6 +707,7 @@ namespace DefenseClaw
                 {
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed");
                 }
+                SetMediumIntegrity(launchToken);
                 ValidateStandardUserPrimaryToken(launchToken, kind, "restricted LUA Setup");
                 IntPtr fallback = launchToken;
                 launchToken = IntPtr.Zero;
@@ -907,9 +997,12 @@ namespace DefenseClaw
             bool resumed = false;
             try
             {
+                // CreateRestrictedToken preserves the source handle's access;
+                // TOKEN_ADJUST_DEFAULT is required to lower the fallback MIC.
                 sourceToken = OpenToken(
                     GetCurrentProcess(),
-                    TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY);
+                    TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY |
+                        TOKEN_ADJUST_DEFAULT);
                 if (!IsElevated(sourceToken))
                 {
                     throw new InvalidOperationException(

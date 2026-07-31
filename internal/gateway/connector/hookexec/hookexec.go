@@ -304,6 +304,7 @@ func RunCodexNotify(ctx context.Context, opts Options, payload []byte) int {
 				opts.ManagedGatewayServiceName,
 			)
 			if err != nil {
+				fmt.Fprintln(opts.Stderr, managedGatewayPeerUnverifiedReason)
 				return 0
 			}
 		} else {
@@ -313,6 +314,9 @@ func RunCodexNotify(ctx context.Context, opts Options, payload []byte) int {
 
 	resp, err := opts.HTTPClient.Do(req)
 	if err != nil {
+		if opts.ManagedEnterprise && errors.Is(err, errManagedGatewayPeerUnverified) {
+			fmt.Fprintln(opts.Stderr, managedGatewayPeerUnverifiedReason)
+		}
 		return 0
 	}
 	defer resp.Body.Close()

@@ -831,8 +831,24 @@ func validateHookContract(mode string, conn connector.Connector, opts connector.
 	if connector.HookContractNeedsActionOverride(resolution) {
 		return fmt.Errorf("enterprise hooks: connector %s agent version %q is not verified against a known hook contract: %s", conn.Name(), opts.AgentVersion, resolution.Reason)
 	}
-	if previous := connector.LoadHookContractLockEntry(opts.DataDir, conn.Name()); previous.Connector != "" {
-		current := connector.NewHookContractLockEntry(opts, conn, version.Current().BinaryVersion)
+	previous, err := connector.LoadHookContractLockEntryForMode(
+		opts.DataDir,
+		conn.Name(),
+		opts.ManagedEnterprise,
+	)
+	if err != nil {
+		return fmt.Errorf("enterprise hooks: load hook contract lock: %w", err)
+	}
+	if previous.Connector != "" {
+		current, err := connector.NewHookContractLockEntryForMode(
+			opts,
+			conn,
+			version.Current().BinaryVersion,
+			opts.ManagedEnterprise,
+		)
+		if err != nil {
+			return fmt.Errorf("enterprise hooks: hash managed hook runtime: %w", err)
+		}
 		if connector.HookContractLockDrifted(previous, current) {
 			return fmt.Errorf("enterprise hooks: connector %s hook contract drift detected: previous version=%q contract=%s current version=%q contract=%s", conn.Name(), previous.RawAgentVersion, previous.ContractID, current.RawAgentVersion, current.ContractID)
 		}

@@ -1058,8 +1058,8 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsNonElevatedHasNoPrivilegedSide
 		windowsEnterprisePowerShellTempOps{
 			isElevated: func() bool { return false },
 			userTemp:   func() (string, error) { return userTemp, nil },
-			windowsDir: func() (string, error) {
-				t.Fatal("non-elevated temp selection resolved the Windows directory")
+			elevatedTempRoot: func() (string, error) {
+				t.Fatal("non-elevated temp selection resolved ProgramData")
 				return "", nil
 			},
 			randomRead: func([]byte) (int, error) {
@@ -1097,8 +1097,8 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsCreatesExactProtectedCapabilit
 		removedPath       string
 	)
 	ops := windowsEnterprisePowerShellTempOps{
-		isElevated: func() bool { return true },
-		windowsDir: func() (string, error) { return `C:\Windows`, nil },
+		isElevated:       func() bool { return true },
+		elevatedTempRoot: func() (string, error) { return `C:\ProgramData`, nil },
 		randomRead: func(buffer []byte) (int, error) {
 			for index := range buffer {
 				buffer[index] = byte(index)
@@ -1140,7 +1140,7 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsCreatesExactProtectedCapabilit
 	if err != nil {
 		t.Fatalf("prepareWindowsEnterprisePowerShellTempWithOps: %v", err)
 	}
-	want := `C:\Windows\Temp\DefenseClaw-PowerShell-000102030405060708090a0b0c0d0e0f`
+	want := `C:\ProgramData\DefenseClaw-PowerShell-000102030405060708090a0b0c0d0e0f`
 	wantCreatePath, err := winpath.Extended(want)
 	if err != nil {
 		t.Fatalf("extend expected CreateDirectory path: %v", err)
@@ -1180,9 +1180,8 @@ func TestWindowsEnterpriseExactDescriptorMatchIgnoresOnlyAutoInherited(t *testin
 	if err != nil {
 		t.Fatalf("build expected descriptor: %v", err)
 	}
-	autoInherited, err := windows.SecurityDescriptorFromString(
-		"O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
-	)
+	autoInheritedSDDL := strings.Replace(windowsEnterpriseTempSDDL, "D:P", "D:PAI", 1)
+	autoInherited, err := windows.SecurityDescriptorFromString(autoInheritedSDDL)
 	if err != nil {
 		t.Fatalf("build auto-inherited descriptor: %v", err)
 	}
@@ -1195,7 +1194,7 @@ func TestWindowsEnterpriseExactDescriptorMatchIgnoresOnlyAutoInherited(t *testin
 	}
 
 	hostile, err := windows.SecurityDescriptorFromString(
-		"O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GR;;;BU)",
+		autoInheritedSDDL + "(A;OICI;GR;;;BU)",
 	)
 	if err != nil {
 		t.Fatalf("build hostile descriptor: %v", err)
@@ -1317,7 +1316,7 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsFailureCleanupIsExact(t *testi
 	if err == nil || !strings.Contains(err.Error(), "exact descriptor rejected") {
 		t.Fatalf("initial validation error = %v", err)
 	}
-	want := `C:\Windows\Temp\DefenseClaw-PowerShell-000102030405060708090a0b0c0d0e0f`
+	want := `C:\ProgramData\DefenseClaw-PowerShell-000102030405060708090a0b0c0d0e0f`
 	if path != "" || cleanup != nil || removed != want {
 		t.Fatalf("validation failure path=%q cleanupNil=%t removed=%q want=%q", path, cleanup == nil, removed, want)
 	}
@@ -1326,8 +1325,8 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsFailureCleanupIsExact(t *testi
 func deterministicWindowsEnterpriseTempOps(t *testing.T) windowsEnterprisePowerShellTempOps {
 	t.Helper()
 	return windowsEnterprisePowerShellTempOps{
-		isElevated: func() bool { return true },
-		windowsDir: func() (string, error) { return `C:\Windows`, nil },
+		isElevated:       func() bool { return true },
+		elevatedTempRoot: func() (string, error) { return `C:\ProgramData`, nil },
 		randomRead: func(buffer []byte) (int, error) {
 			for index := range buffer {
 				buffer[index] = byte(index)
@@ -1343,7 +1342,7 @@ func deterministicWindowsEnterpriseTempOps(t *testing.T) windowsEnterprisePowerS
 
 func TestPrepareWindowsEnterprisePowerShellTempElevatedDescriptorAndCleanupRefusal(t *testing.T) {
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		t.Skip("protected System32 temp creation requires an elevated process token")
+		t.Skip("protected ProgramData temp creation requires an elevated process token")
 	}
 	path, cleanup, err := prepareWindowsEnterprisePowerShellTemp()
 	if err != nil {
@@ -1353,11 +1352,14 @@ func TestPrepareWindowsEnterprisePowerShellTempElevatedDescriptorAndCleanupRefus
 		_ = os.RemoveAll(path)
 	})
 
-	windowsDirectory, err := windows.GetSystemWindowsDirectory()
+	programData, err := windows.KnownFolderPath(
+		windows.FOLDERID_ProgramData,
+		windows.KF_FLAG_DEFAULT,
+	)
 	if err != nil {
-		t.Fatalf("GetSystemWindowsDirectory: %v", err)
+		t.Fatalf("resolve ProgramData: %v", err)
 	}
-	wantParent := filepath.Join(windowsDirectory, "Temp")
+	wantParent := filepath.Clean(programData)
 	if !strings.EqualFold(filepath.Dir(path), wantParent) {
 		t.Fatalf("protected temp parent = %q, want %q", filepath.Dir(path), wantParent)
 	}

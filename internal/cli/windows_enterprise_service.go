@@ -101,14 +101,14 @@ var (
 )
 
 type windowsEnterprisePowerShellTempOps struct {
-	isElevated      func() bool
-	userTemp        func() (string, error)
-	windowsDir      func() (string, error)
-	randomRead      func([]byte) (int, error)
-	createDirectory func(*uint16, *windows.SecurityAttributes) error
-	validate        func(string) error
-	remove          func(string) error
-	removeAll       func(string) error
+	isElevated       func() bool
+	userTemp         func() (string, error)
+	elevatedTempRoot func() (string, error)
+	randomRead       func([]byte) (int, error)
+	createDirectory  func(*uint16, *windows.SecurityAttributes) error
+	validate         func(string) error
+	remove           func(string) error
+	removeAll        func(string) error
 }
 
 var enterpriseWindowsCmd = &cobra.Command{
@@ -729,8 +729,15 @@ func prepareWindowsEnterprisePowerShellTemp() (string, func() error, error) {
 			isElevated: func() bool {
 				return windows.GetCurrentProcessToken().IsElevated()
 			},
-			userTemp:        trustedWindowsEnterpriseUserTempDirectory,
-			windowsDir:      windows.GetSystemWindowsDirectory,
+			userTemp: trustedWindowsEnterpriseUserTempDirectory,
+			elevatedTempRoot: func() (string, error) {
+				// ProgramData permits create-only access at its root without
+				// granting unprivileged callers replacement access to this child.
+				return windows.KnownFolderPath(
+					windows.FOLDERID_ProgramData,
+					windows.KF_FLAG_DEFAULT,
+				)
+			},
 			randomRead:      rand.Read,
 			createDirectory: windows.CreateDirectory,
 			validate:        validateWindowsEnterprisePowerShellTemp,
@@ -748,11 +755,10 @@ func prepareWindowsEnterprisePowerShellTempWithOps(
 		return path, func() error { return nil }, err
 	}
 
-	windowsDirectory, err := ops.windowsDir()
+	parent, err := ops.elevatedTempRoot()
 	if err != nil {
-		return "", nil, fmt.Errorf("resolve the trusted Windows directory: %w", err)
+		return "", nil, fmt.Errorf("resolve the trusted ProgramData directory: %w", err)
 	}
-	parent := filepath.Join(windowsDirectory, "Temp")
 	descriptor, err := windows.SecurityDescriptorFromString(windowsEnterpriseTempSDDL)
 	if err != nil {
 		return "", nil, fmt.Errorf("build protected Windows enterprise PowerShell temp descriptor: %w", err)

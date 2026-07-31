@@ -166,7 +166,6 @@ func buildHookOptions(connector, event, apiAddr, failMode string) hookexec.Optio
 }
 
 func buildHookOptionsForRuntime(connector, event, apiAddr, failMode string, enterpriseManaged bool) hookexec.Options {
-	home, trustedNativeState := trustedNativeHookHome()
 	if enterpriseManaged && enterpriseManagedHookRuntimeForceClosed() {
 		// The administrator-owned runtime failed trust validation. Do not read its
 		// sidecar/token or contact any endpoint derived from those files; hand an
@@ -180,6 +179,7 @@ func buildHookOptionsForRuntime(connector, event, apiAddr, failMode string, ente
 			ManagedRuntimeFailure: enterpriseManagedHookRuntimeFailureReason(),
 		}
 	}
+	home, trustedNativeState := trustedNativeHookHome()
 	if !trustedNativeState {
 		home = config.DefaultDataPath()
 	}

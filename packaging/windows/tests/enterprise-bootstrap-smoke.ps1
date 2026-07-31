@@ -59,6 +59,7 @@ function Invoke-BasicUserBootstrapSmoke {
         [IO.Path]::GetTempPath()
     ) "DefenseClaw-BootstrapRelay-$([Guid]::NewGuid().ToString('N'))"
     [void][IO.Directory]::CreateDirectory($relayRoot)
+    $process = $null
     try {
         $resultPath = Join-Path $relayRoot 'result.json'
         $scriptLiteral = $PSCommandPath.Replace("'", "''")
@@ -69,22 +70,63 @@ function Invoke-BasicUserBootstrapSmoke {
         $encodedCommand = [Convert]::ToBase64String(
             [Text.Encoding]::Unicode.GetBytes($workerCommand)
         )
-        $program = '"{0}" -NoLogo -NoProfile -NonInteractive ' +
-            '-ExecutionPolicy Bypass -EncodedCommand {1}'
-        $program = $program -f $engine, $encodedCommand
-        $runasPath = Join-Path $env:SystemRoot 'System32\runas.exe'
-        $runasOutput = & $runasPath '/trustlevel:0x20000' $program 2>&1 |
-            Out-String
-        if ($LASTEXITCODE -ne 0) {
-            throw "could not start Basic User bootstrap smoke: $runasOutput"
+        $repoRoot = [IO.Path]::GetFullPath(
+            (Join-Path $PSScriptRoot '..\..\..')
+        )
+        $launcherSource = Join-Path `
+            $repoRoot 'scripts\windows-setup-standard-user-launcher.cs'
+        if (-not ('DefenseClaw.SetupStandardUserLauncher' -as [type])) {
+            Add-Type -Path $launcherSource -ErrorAction Stop
         }
+        $environment = @(
+            [Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
+                ForEach-Object {
+                    '{0}={1}' -f [string]$_.Key, [string]$_.Value
+                }
+        )
+        $arguments = [string[]]@(
+            '-NoLogo', '-NoProfile', '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+        )
+        $process = [DefenseClaw.SetupStandardUserLauncher]::StartRestrictedWithCapture(
+            $engine,
+            $arguments,
+            [IO.Path]::GetFullPath($PSScriptRoot),
+            [string[]]$environment,
+            $true
+        )
         $deadline = [DateTime]::UtcNow.AddMinutes(5)
         while (-not [IO.File]::Exists($resultPath) -and
+            -not $process.HasExited -and
             [DateTime]::UtcNow -lt $deadline) {
             Start-Sleep -Milliseconds 100
         }
+        $timedOut = -not [IO.File]::Exists($resultPath) -and
+            -not $process.HasExited
+        if ($timedOut) {
+            $process.Kill($true)
+        }
+        if (-not $process.WaitForExit(30000)) {
+            throw 'Basic User bootstrap smoke child did not exit after completion'
+        }
+        $outputHealthy = $process.CompleteOutput(5000)
+        $launchOutput = @(
+            [string]$process.StdOut,
+            [string]$process.StdErr,
+            [string]$process.OutputCaptureError
+        ) -join [Environment]::NewLine
         if (-not [IO.File]::Exists($resultPath)) {
-            throw 'Basic User bootstrap smoke timed out'
+            throw (
+                $(if ($timedOut) {
+                    'Basic User bootstrap smoke timed out; '
+                } else {
+                    "Basic User bootstrap smoke exited $($process.ExitCode); "
+                }) +
+                "launch output=$($launchOutput.Trim())"
+            )
+        }
+        if (-not $outputHealthy) {
+            throw "Basic User bootstrap output capture failed: $launchOutput"
         }
         $reportJson = [IO.File]::ReadAllText($resultPath)
         $report = $reportJson | ConvertFrom-Json
@@ -94,6 +136,22 @@ function Invoke-BasicUserBootstrapSmoke {
         Write-Output $reportJson
     }
     finally {
+        if ($null -ne $process) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill($true)
+                    if (-not $process.WaitForExit(30000)) {
+                        throw (
+                            'Basic User bootstrap smoke process tree did not ' +
+                            'exit during cleanup'
+                        )
+                    }
+                }
+            }
+            finally {
+                $process.Dispose()
+            }
+        }
         if ([IO.Directory]::Exists($relayRoot)) {
             [IO.Directory]::Delete($relayRoot, $true)
         }

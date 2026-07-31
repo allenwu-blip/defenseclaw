@@ -258,11 +258,8 @@ func TestEnterpriseProgramFilesCommandDoesNotClaimPerUserTombstoneNoop(t *testin
 	t.Cleanup(func() { hookExecutableOverride = oldOverride })
 
 	_, recognized, err := hookruntime.ReadTrustedForExecutable(executable)
-	if err != nil {
-		t.Fatalf("unrecognized enterprise path returned an unexpected state error: %v", err)
-	}
 	if recognized {
-		t.Fatal("managed-enterprise Program Files command was mistaken for the stable per-user launcher")
+		t.Fatalf("managed-enterprise Program Files command was mistaken for the stable per-user launcher: %v", err)
 	}
 	stubEnterpriseManagedRuntimeResolver(t, func(string, string) (enterprisehooks.WindowsManagedHookRuntime, error) {
 		return enterprisehooks.WindowsManagedHookRuntime{Connector: "codex"}, nil

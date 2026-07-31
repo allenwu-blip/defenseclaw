@@ -1202,6 +1202,7 @@ func TestInstallWindowsGenericRejectsSparseOversizedConfigBeforeConnectorSetup(t
 }
 
 func TestInstallWindowsGenericRepairsAuthorizedSparseOversizedConfig(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	fixture := newWindowsGenericCodexFixture(t)
 	file, err := os.OpenFile(fixture.config, os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -1292,6 +1293,7 @@ func TestInstallWindowsClaudeRejectsReparseDataDir(t *testing.T) {
 }
 
 func TestInstallWindowsClaudeRepairsAuthorizedTargetOwnedReparseDataDir(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	fixture := newWindowsManagedInstallFixture(t, map[string]interface{}{"allowManagedHooksOnly": true})
 	opts := windowsManagedInstallOptions(fixture)
 	if _, err := Install(context.Background(), opts); err != nil {
@@ -1335,6 +1337,7 @@ func TestInstallWindowsClaudeRepairsAuthorizedTargetOwnedReparseDataDir(t *testi
 }
 
 func TestInstallWindowsClaudeRepairsAuthorizedRegularFileAtDataDir(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	fixture := newWindowsManagedInstallFixture(t, map[string]interface{}{"allowManagedHooksOnly": true})
 	opts := windowsManagedInstallOptions(fixture)
 	if _, err := Install(context.Background(), opts); err != nil {
@@ -1365,6 +1368,7 @@ func TestInstallWindowsClaudeRepairsAuthorizedRegularFileAtDataDir(t *testing.T)
 }
 
 func TestWindowsAuthorizedRepairRecyclesNonEmptyQuarantineWithoutFollowingJunction(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	fixture := newWindowsGenericCodexFixture(t)
 	outside := filepath.Join(filepath.Dir(fixture.home), "outside-quarantine-target")
 	if err := os.MkdirAll(outside, 0o700); err != nil {
@@ -1460,6 +1464,7 @@ func TestWindowsAuthorizedRepairRecyclesNonEmptyQuarantineWithoutFollowingJuncti
 }
 
 func TestWindowsAuthorizedRepairReplacesManagedLockObstructions(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	for _, tc := range []struct {
 		name       string
 		lockPath   func(windowsGenericCodexFixture) string
@@ -1958,6 +1963,21 @@ func currentWindowsTestSID(t *testing.T) *windows.SID {
 		t.Fatalf("current Windows token user: %v", err)
 	}
 	return user.User.Sid
+}
+
+func stubWindowsAuthorizedRepairIdentityChecks(t *testing.T) {
+	t.Helper()
+	// These tests exercise bounded repair after authorization. Windows CI can
+	// run as elevated RID-500, which production correctly rejects as a per-user
+	// target; exact-token and LocalSystem refusals have dedicated tests.
+	originalMutationIdentity := windowsEnterpriseMutationIdentityCheck
+	originalTargetTokenCheck := windowsQuarantineTargetTokenCheck
+	windowsEnterpriseMutationIdentityCheck = func() error { return nil }
+	windowsQuarantineTargetTokenCheck = func(*windows.SID) error { return nil }
+	t.Cleanup(func() {
+		windowsEnterpriseMutationIdentityCheck = originalMutationIdentity
+		windowsQuarantineTargetTokenCheck = originalTargetTokenCheck
+	})
 }
 
 func runWindowsTestThreadImpersonated(fn func() error) (result error) {

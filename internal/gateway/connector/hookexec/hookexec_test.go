@@ -949,6 +949,7 @@ func TestCodexNotifyRequestWiring(t *testing.T) {
 func TestCodexNotifyManagedEnterpriseRejectsUnverifiedPeer(t *testing.T) {
 	home := t.TempDir()
 	hookDir := filepath.Join(home, "hooks")
+	stderr := &bytes.Buffer{}
 	if err := os.MkdirAll(hookDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -966,6 +967,7 @@ func TestCodexNotifyManagedEnterpriseRejectsUnverifiedPeer(t *testing.T) {
 		Token:                     "managed-notify-token",
 		ManagedEnterprise:         true,
 		ManagedGatewayServiceName: "DefenseClawGateway",
+		Stderr:                    stderr,
 	}, []byte(`{"type":"agent-turn-complete"}`))
 	if code != 0 {
 		t.Fatalf("exit code = %d, want best-effort 0", code)
@@ -974,6 +976,9 @@ func TestCodexNotifyManagedEnterpriseRejectsUnverifiedPeer(t *testing.T) {
 	case req := <-requests:
 		t.Fatalf("managed notify reached unverified peer with authorization %q", req.Header.Get("Authorization"))
 	default:
+	}
+	if got := strings.TrimSpace(stderr.String()); got != managedGatewayPeerUnverifiedReason {
+		t.Fatalf("managed notify error = %q, want %q", got, managedGatewayPeerUnverifiedReason)
 	}
 }
 

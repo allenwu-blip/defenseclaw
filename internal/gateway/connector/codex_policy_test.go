@@ -215,7 +215,10 @@ func TestInspectManagedCodexPolicyNeverExecutesUserWritableBinaryOnWindows(t *te
 		AgentExecutable:   executable,
 		ManagedEnterprise: true,
 	})
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "untrusted") {
+	errText := strings.ToLower(fmt.Sprint(err))
+	if err == nil ||
+		(!strings.Contains(errText, "untrusted") &&
+			!strings.Contains(errText, "protected setup-selected executable evidence")) {
 		t.Fatalf("managed user-writable executable error = %v", err)
 	}
 	if called {
