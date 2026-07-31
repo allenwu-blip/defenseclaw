@@ -62,15 +62,21 @@ func TestOpenCodeAuthenticateRequiresScopedBearer(t *testing.T) {
 }
 
 func TestOpenCodeCompatibilityBoundary(t *testing.T) {
+	outsideReviewedRange := HookCompatibilityUnknown
+	defaultForUnversioned := false
+	if runtime.GOOS == "windows" {
+		outsideReviewedRange = HookCompatibilityKnown
+		defaultForUnversioned = true
+	}
 	for _, tc := range []struct {
 		version string
 		want    string
 	}{
-		{version: "1.16.1", want: HookCompatibilityUnknown},
+		{version: "1.16.1", want: outsideReviewedRange},
 		{version: "1.16.2", want: HookCompatibilityKnown},
 		{version: "1.18.10", want: HookCompatibilityKnown},
-		{version: "1.18.11", want: HookCompatibilityUnknown},
-		{version: "1.19.0", want: HookCompatibilityUnknown},
+		{version: "1.18.11", want: outsideReviewedRange},
+		{version: "1.19.0", want: outsideReviewedRange},
 		{version: "", want: HookCompatibilityUnversioned},
 	} {
 		t.Run(tc.version, func(t *testing.T) {
@@ -78,8 +84,8 @@ func TestOpenCodeCompatibilityBoundary(t *testing.T) {
 			if got.Status != tc.want {
 				t.Fatalf("ResolveHookContract(%q).Status = %q, want %q (%s)", tc.version, got.Status, tc.want, got.Reason)
 			}
-			if tc.version == "" && got.Contract.DefaultForUnversioned {
-				t.Fatal("unversioned OpenCode must not opt into the hook contract by default")
+			if tc.version == "" && got.Contract.DefaultForUnversioned != defaultForUnversioned {
+				t.Fatalf("unversioned OpenCode default=%v want %v", got.Contract.DefaultForUnversioned, defaultForUnversioned)
 			}
 		})
 	}
@@ -93,8 +99,9 @@ func TestOpenCodeReviewedEventUnionIsComplete(t *testing.T) {
 	}
 	// @opencode-ai/sdk Event union at the reviewed v1.18.10 tag, plus
 	// permission.asked observed on the runtime bus and the two direct tool
-	// hooks used by the DefenseClaw policy bridge.
-	for _, event := range []string{
+	// hooks used by the DefenseClaw policy bridge. Windows retains PR #655's
+	// narrower reviewed event overlay.
+	reviewedEvents := []string{
 		"server.instance.disposed",
 		"installation.updated", "installation.update-available",
 		"lsp.client.diagnostics", "lsp.updated",
@@ -106,7 +113,15 @@ func TestOpenCodeReviewedEventUnionIsComplete(t *testing.T) {
 		"vcs.branch.updated", "tui.prompt.append", "tui.command.execute", "tui.toast.show",
 		"pty.created", "pty.updated", "pty.exited", "pty.deleted", "server.connected",
 		"tool.execute.before", "tool.execute.after",
-	} {
+	}
+	if runtime.GOOS == "windows" {
+		reviewedEvents = []string{
+			"session.created", "session.updated", "session.status", "session.idle",
+			"session.compacted", "session.error", "session.deleted",
+			"tool.execute.before", "tool.execute.after",
+		}
+	}
+	for _, event := range reviewedEvents {
 		if !got[event] {
 			t.Errorf("reviewed OpenCode event %q is absent from the contract", event)
 		}
@@ -217,6 +232,9 @@ func TestOpenCodeManagedPluginCustodyAndTamperDetection(t *testing.T) {
 }
 
 func TestOpenCodeTeardownRestoresPreexistingPluginExactly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("OpenCode plugin write and custody are unsupported on Windows")
+	}
 	dir := t.TempDir()
 	pluginPath := filepath.Join(dir, ".config", "opencode", "plugins", "defenseclaw.js")
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {

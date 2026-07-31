@@ -867,18 +867,22 @@ func TestCodex_ComponentTargetsUseCurrentOfficialSurfaces(t *testing.T) {
 	t.Setenv("CODEX_HOME", filepath.Join(homeDir, "custom-codex"))
 
 	targets := NewCodexConnector().ComponentTargets(workspace)
-	for component, expected := range map[string][]string{
-		"skill": {
-			filepath.Join(homeDir, ".agents", "skills"),
-			filepath.Join(workspace, ".agents", "skills"),
-		},
-		"plugin": {
-			filepath.Join(homeDir, "custom-codex", "plugins", "cache"),
+	skillTargets := []string{filepath.Join(workspace, ".agents", "skills")}
+	pluginTargets := []string{
+		filepath.Join(homeDir, "custom-codex", "plugins", "cache"),
+		filepath.Join(workspace, ".agents", "plugins", "marketplace.json"),
+		filepath.Join(workspace, ".agents", "plugins", "api_marketplace.json"),
+	}
+	if runtime.GOOS != "windows" {
+		skillTargets = append([]string{filepath.Join(homeDir, ".agents", "skills")}, skillTargets...)
+		pluginTargets = append(pluginTargets,
 			filepath.Join(homeDir, ".agents", "plugins", "marketplace.json"),
 			filepath.Join(homeDir, ".agents", "plugins", "api_marketplace.json"),
-			filepath.Join(workspace, ".agents", "plugins", "marketplace.json"),
-			filepath.Join(workspace, ".agents", "plugins", "api_marketplace.json"),
-		},
+		)
+	}
+	for component, expected := range map[string][]string{
+		"skill":  skillTargets,
+		"plugin": pluginTargets,
 		"mcp": {
 			filepath.Join(homeDir, "custom-codex", "config.toml"),
 			filepath.Join(workspace, ".codex", "config.toml"),

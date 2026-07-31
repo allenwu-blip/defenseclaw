@@ -2904,12 +2904,14 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         if os.name == "nt":
             self.assertNotIn("oc-skill", {row["id"] for row in inv["skills"]})
             self.assertNotIn("oc-plugin", {row["id"] for row in inv["plugins"]})
+            self.assertNotIn("file-tool", {row["id"] for row in inv["tools"]})
+            self.assertNotIn("review", {row["id"] for row in inv["tools"]})
         else:
             self.assertIn("oc-skill", {row["id"] for row in inv["skills"]})
             self.assertIn("oc-plugin", {row["id"] for row in inv["plugins"]})
+            self.assertIn("file-tool", {row["id"] for row in inv["tools"]})
+            self.assertIn("review", {row["id"] for row in inv["tools"]})
         self.assertIn("npm-plugin@1.0.0", {row["id"] for row in inv["plugins"]})
-        self.assertIn("file-tool", {row["id"] for row in inv["tools"]})
-        self.assertIn("review", {row["id"] for row in inv["tools"]})
         self.assertNotIn("bash", {row["id"] for row in inv["tools"]})
         self.assertIn("reviewer", {row["id"] for row in inv["agents"]})
         self.assertNotIn("opencode:tools", {e["command"] for e in inv["errors"]})
