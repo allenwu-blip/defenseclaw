@@ -9,11 +9,11 @@ const [pluginPath, scratchPath, expected, command] = process.argv.slice(2);
 if (
   !pluginPath ||
   !scratchPath ||
-  !["allow", "block", "lifecycle"].includes(expected) ||
+  !["allow", "block", "event", "lifecycle"].includes(expected) ||
   !command
 ) {
   throw new Error(
-    "usage: node assert-opencode-plugin.mjs <plugin.js> <scratch.mjs> <allow|block|lifecycle> <command-or-event>",
+    "usage: node assert-opencode-plugin.mjs <plugin.js> <scratch.mjs> <allow|block|event|lifecycle> <command-or-event>",
   );
 }
 
@@ -52,10 +52,11 @@ try {
     throw new Error("installed OpenCode plugin is missing required hook functions");
   }
 
-  if (expected === "lifecycle") {
+  if (expected === "event" || expected === "lifecycle") {
+    const eventType = expected === "event" ? "session.created" : command;
     await hooks.event({
       event: {
-        type: command,
+        type: eventType,
         properties: {
           info: {
             id: `defenseclaw-windows-contract-lifecycle-${probeID}`,
@@ -64,6 +65,7 @@ try {
         },
       },
     });
+    console.log(JSON.stringify({ decision: "allow", event: eventType }));
   } else {
     let blocked = false;
     try {
@@ -111,6 +113,7 @@ try {
         `OpenCode after payload does not preserve official input args and result output: ${JSON.stringify(observedAfterPayload)}`,
       );
     }
+    console.log(JSON.stringify({ decision: blocked ? "block" : "allow" }));
   }
 } finally {
   globalThis.fetch = nativeFetch;

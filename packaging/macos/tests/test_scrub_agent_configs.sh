@@ -257,6 +257,83 @@ t_empty_object_safe() {
   local rc=$?; assert_status "${rc}" 0 "empty JSON is a no-op"
 }
 
+t_opencode_restores_pristine_plugin_exactly() {
+  local d; d="$(mktest_tmp)"
+  mkdir -p "${d}/plugins" "${d}/backups"
+  local plugin="${d}/plugins/defenseclaw.js"
+  local backup="${d}/backups/config.json"
+  printf '// user plugin\nexport const user = true;\n' > "${plugin}"
+  chmod 640 "${plugin}"
+  PLUGIN="${plugin}" BACKUP="${backup}" ${PY} - <<'PY'
+import base64, hashlib, json, os
+path = os.environ["PLUGIN"]
+pristine = open(path, "rb").read()
+managed = b"// defenseclaw-managed-plugin v7\n"
+open(path, "wb").write(managed)
+backup = {
+    "version": 1, "connector": "opencode", "logical_name": "config",
+    "path": path, "existed": True, "mode": 0o640,
+    "pristine_sha256": hashlib.sha256(pristine).hexdigest(),
+    "post_sha256": hashlib.sha256(managed).hexdigest(),
+    "pristine_bytes": base64.b64encode(pristine).decode(),
+}
+open(os.environ["BACKUP"], "w", encoding="utf-8").write(json.dumps(backup))
+PY
+  ${PY} "${SCRUB}" opencode "${plugin}" "${backup}"
+  local rc=$?; assert_status "${rc}" 0 "OpenCode exact restore exits 0"
+  assert_eq "$(cat "${plugin}")" $'// user plugin\nexport const user = true;' "pristine bytes restored"
+  [[ ! -e "${backup}" ]] || _fail "OpenCode backup removed after successful restore"
+  local mode; mode="$(stat -f '%Lp' "${plugin}" 2>/dev/null || stat -c '%a' "${plugin}")"
+  assert_eq "${mode}" "640" "pristine mode restored"
+}
+
+t_opencode_removes_new_plugin() {
+  local d; d="$(mktest_tmp)"
+  mkdir -p "${d}/plugins" "${d}/backups"
+  local plugin="${d}/plugins/defenseclaw.js"
+  local backup="${d}/backups/config.json"
+  printf '// defenseclaw-managed-plugin v7\n' > "${plugin}"
+  PLUGIN="${plugin}" BACKUP="${backup}" ${PY} - <<'PY'
+import hashlib, json, os
+managed = open(os.environ["PLUGIN"], "rb").read()
+backup = {
+    "version": 1, "connector": "opencode", "logical_name": "config",
+    "path": os.environ["PLUGIN"], "existed": False,
+    "pristine_sha256": "missing",
+    "post_sha256": hashlib.sha256(managed).hexdigest(),
+}
+open(os.environ["BACKUP"], "w", encoding="utf-8").write(json.dumps(backup))
+PY
+  ${PY} "${SCRUB}" opencode "${plugin}" "${backup}"
+  local rc=$?; assert_status "${rc}" 0 "OpenCode removal exits 0"
+  [[ ! -e "${plugin}" ]] || _fail "new managed OpenCode plugin removed"
+  [[ ! -e "${backup}" ]] || _fail "OpenCode backup removed after successful cleanup"
+}
+
+t_opencode_preserves_tamper_and_backup() {
+  local d; d="$(mktest_tmp)"
+  mkdir -p "${d}/plugins" "${d}/backups"
+  local plugin="${d}/plugins/defenseclaw.js"
+  local backup="${d}/backups/config.json"
+  printf '// defenseclaw-managed-plugin v7\n' > "${plugin}"
+  PLUGIN="${plugin}" BACKUP="${backup}" ${PY} - <<'PY'
+import hashlib, json, os
+managed = open(os.environ["PLUGIN"], "rb").read()
+backup = {
+    "version": 1, "connector": "opencode", "logical_name": "config",
+    "path": os.environ["PLUGIN"], "existed": False,
+    "pristine_sha256": "missing",
+    "post_sha256": hashlib.sha256(managed).hexdigest(),
+}
+open(os.environ["BACKUP"], "w", encoding="utf-8").write(json.dumps(backup))
+PY
+  printf '// user changed this after setup\n' > "${plugin}"
+  ${PY} "${SCRUB}" opencode "${plugin}" "${backup}" 2>/dev/null
+  local rc=$?; assert_status "${rc}" 5 "OpenCode drift returns custody error"
+  assert_contains "$(cat "${plugin}")" "user changed" "tampered plugin preserved"
+  [[ -f "${backup}" ]] || _fail "backup preserved when plugin drifted"
+}
+
 run_case "cursor: drops DC, keeps user entry (idempotent)" t_cursor_drops_dc_keeps_user_entry
 run_case "cursor: no-op without DC entries"                 t_cursor_no_op_when_no_dc_entries
 run_case "claudecode: strips managed env keys"              t_claudecode_strips_managed_env_keys
@@ -270,3 +347,6 @@ run_case "missing file returns 2"                           t_missing_file_retur
 run_case "unsupported connector returns 3"                  t_unsupported_connector_returns_3
 run_case "garbage JSON returns 4"                           t_garbage_json_returns_4
 run_case "empty object is no-op"                            t_empty_object_safe
+run_case "opencode: restores pristine plugin exactly"       t_opencode_restores_pristine_plugin_exactly
+run_case "opencode: removes newly-created plugin"           t_opencode_removes_new_plugin
+run_case "opencode: preserves tamper and backup"             t_opencode_preserves_tamper_and_backup
