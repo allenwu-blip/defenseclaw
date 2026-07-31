@@ -1250,17 +1250,17 @@ function Assert-CodexSynchronousWindowsHookCommand([object]$CodexCommand, [strin
         'codex-hooks-v3' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact', 'Stop')
         'codex-hooks-v4' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact', 'Stop', 'SessionEnd')
     }
-    $event = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
+    $boundEvent = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
     $contract = if ($arguments.Count -eq 7) { $arguments[6] } else { '' }
     if (-not $startProcess.Success -or
         ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
         [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
         $arguments.Count -ne 7 -or
         ($arguments -join "`0") -cne (@(
-            'hook', '--connector', 'codex', '--event', $event, '--hook-contract', $contract
+            'hook', '--connector', 'codex', '--event', $boundEvent, '--hook-contract', $contract
         ) -join "`0") -or
         -not $contractEvents.ContainsKey($contract) -or
-        $event -cnotin @($contractEvents[$contract]) -or
+        $boundEvent -cnotin @($contractEvents[$contract]) -or
         $CodexCommand.Script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
         $CodexCommand.Script -match '(?i)\$LASTEXITCODE') {
         throw "$Context does not use the exact synchronous native hook command"

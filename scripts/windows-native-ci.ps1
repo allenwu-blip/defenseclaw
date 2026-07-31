@@ -3068,21 +3068,21 @@ function Assert-WizardHookRegistration(
             } else {
                 ''
             }
-            $event = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
+            $boundEvent = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
             if (-not $startProcess.Success -or
                 ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
                 [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
                 $arguments.Count -ne 7 -or
                 ($arguments -join "`0") -cne (@(
-                    'hook', '--connector', 'codex', '--event', $event,
+                    'hook', '--connector', 'codex', '--event', $boundEvent,
                     '--hook-contract', 'codex-hooks-v3'
                 ) -join "`0") -or
-                $event -cnotin $codexV3Events -or
+                $boundEvent -cnotin $codexV3Events -or
                 $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
                 $script -match '(?i)\$LASTEXITCODE') {
                 throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"
             }
-            $registeredEvents.Add($event)
+            $registeredEvents.Add($boundEvent)
         }
         if ((($registeredEvents | Sort-Object) -join "`0") -cne
             (($codexV3Events | Sort-Object) -join "`0")) {
