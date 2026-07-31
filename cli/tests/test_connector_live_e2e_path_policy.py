@@ -150,7 +150,9 @@ def test_contract_matrix_uses_isolated_opencode_calls_and_trusts_omnigent_owner(
 
     assert "-${expected}-call`" in opencode_probe
     assert opencode_probe.count("callID: toolCallID") == 2
-    assert 'IFS= read -r omnigent_shebang < "$(command -v omnigent)"' in workflow
+    assert "uv python install 3.12" in workflow
+    assert "uv python find --managed-python 3.12" in workflow
+    assert 'uv tool install --python "${omnigent_python}" --force omnigent==0.7.0' in workflow
     assert "os.path.realpath(sys.executable)" in workflow
     assert "DEFENSECLAW_TRUSTED_BIN_PREFIXES=%s" in workflow
     assert '"$(dirname "${omnigent_python}")" >> "$GITHUB_ENV"' in workflow

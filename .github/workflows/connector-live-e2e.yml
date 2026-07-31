@@ -277,9 +277,9 @@ jobs:
       - name: Install official OmniGent contract runtime
         if: steps.select.outputs.run == 'true' && matrix.connector == 'omnigent'
         run: |
-          uv tool install --python 3.12 --force omnigent==0.7.0
-          IFS= read -r omnigent_shebang < "$(command -v omnigent)"
-          omnigent_python="${omnigent_shebang#\#!}"
+          uv python install 3.12
+          omnigent_python="$(uv python find --managed-python 3.12)"
+          uv tool install --python "${omnigent_python}" --force omnigent==0.7.0
           omnigent_python="$("${omnigent_python}" -I -c \
             'import os, sys; print(os.path.realpath(sys.executable))')"
           printf 'DEFENSECLAW_TRUSTED_BIN_PREFIXES=%s\n' \
