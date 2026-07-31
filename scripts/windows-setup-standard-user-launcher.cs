@@ -252,6 +252,7 @@ namespace DefenseClaw
         private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const int STARTF_USESTDHANDLES = 0x00000100;
         private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
+        private const int TokenGroups = 2;
         private const int TokenTypeInformation = 8;
         private const int TokenElevationType = 18;
         private const int TokenLinkedToken = 19;
@@ -262,6 +263,9 @@ namespace DefenseClaw
         private const int TokenElevationTypeFull = 2;
         private const int TokenElevationTypeLimited = 3;
         private const int SecurityImpersonation = 2;
+        private const int ERROR_INSUFFICIENT_BUFFER = 122;
+        private const uint SE_GROUP_ENABLED = 0x00000004;
+        private const uint SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010;
         private const uint SE_GROUP_INTEGRITY = 0x00000020;
         private const string MediumIntegritySid = "S-1-16-8192";
 
@@ -288,6 +292,13 @@ namespace DefenseClaw
         {
             public IntPtr Sid;
             public uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TOKEN_GROUPS_HEADER
+        {
+            public uint GroupCount;
+            public SID_AND_ATTRIBUTES FirstGroup;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -424,6 +435,19 @@ namespace DefenseClaw
             IntPtr token,
             int informationClass,
             out int information,
+            int informationLength,
+            out int returnLength);
+
+        [DllImport(
+            "advapi32.dll",
+            EntryPoint = "GetTokenInformation",
+            ExactSpelling = true,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetTokenInformationBuffer(
+            IntPtr token,
+            int informationClass,
+            IntPtr information,
             int informationLength,
             out int returnLength);
 
@@ -622,10 +646,80 @@ namespace DefenseClaw
 
         private static bool IsAdministrator(IntPtr token)
         {
-            using (WindowsIdentity identity = new WindowsIdentity(token))
+            int bufferLength;
+            if (GetTokenInformationBuffer(
+                token,
+                TokenGroups,
+                IntPtr.Zero,
+                0,
+                out bufferLength))
             {
-                WindowsPrincipal principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+                throw new InvalidOperationException(
+                    "GetTokenInformation(TokenGroups) unexpectedly accepted an empty buffer");
+            }
+            int sizingError = Marshal.GetLastWin32Error();
+            if (sizingError != ERROR_INSUFFICIENT_BUFFER || bufferLength <= 0)
+            {
+                throw new Win32Exception(
+                    sizingError,
+                    "GetTokenInformation(TokenGroups) sizing failed");
+            }
+
+            IntPtr buffer = Marshal.AllocHGlobal(bufferLength);
+            try
+            {
+                int returnedLength;
+                if (!GetTokenInformationBuffer(
+                    token,
+                    TokenGroups,
+                    buffer,
+                    bufferLength,
+                    out returnedLength))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "GetTokenInformation(TokenGroups) failed");
+                }
+                int groupOffset = Marshal.OffsetOf(
+                    typeof(TOKEN_GROUPS_HEADER),
+                    "FirstGroup").ToInt32();
+                int groupSize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+                uint groupCount = unchecked((uint)Marshal.ReadInt32(buffer));
+                long groupBytes = (long)groupCount * groupSize;
+                if (returnedLength < groupOffset ||
+                    groupBytes > returnedLength - groupOffset)
+                {
+                    throw new InvalidOperationException(
+                        "GetTokenInformation(TokenGroups) returned an invalid group array");
+                }
+
+                SecurityIdentifier administrators = new SecurityIdentifier(
+                    WellKnownSidType.BuiltinAdministratorsSid,
+                    null);
+                for (uint index = 0; index < groupCount; index++)
+                {
+                    IntPtr entry = IntPtr.Add(
+                        buffer,
+                        checked(groupOffset + checked((int)index * groupSize)));
+                    SID_AND_ATTRIBUTES group = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(
+                        entry,
+                        typeof(SID_AND_ATTRIBUTES));
+                    if (group.Sid == IntPtr.Zero)
+                    {
+                        throw new InvalidOperationException(
+                            "GetTokenInformation(TokenGroups) returned a null group SID");
+                    }
+                    if (administrators.Equals(new SecurityIdentifier(group.Sid)))
+                    {
+                        return (group.Attributes & SE_GROUP_ENABLED) != 0 &&
+                            (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0;
+                    }
+                }
+                return false;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
             }
         }
 
