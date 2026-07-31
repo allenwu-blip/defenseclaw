@@ -125,6 +125,18 @@ def test_claude_windows_docs_keep_preview_and_optional_git_boundary() -> None:
         assert "Claude Code retains its Git for Windows requirement" not in text
 
 
+def test_claude_windows_docs_use_official_config_override() -> None:
+    claude_docs = (
+        ROOT / "docs/reference/CLAUDE-CODE-WINDOWS.md",
+        ROOT / "docs-site/content/docs/connectors/claudecode.mdx",
+    )
+
+    for path in claude_docs:
+        text = path.read_text(encoding="utf-8")
+        assert "CLAUDE_CONFIG_DIR" in text, path
+        assert "$CLAUDE_HOME" not in text, path
+
+
 def test_release_runtime_custody_splits_certified_x64_from_compatibility_arm64() -> None:
     release = yaml.safe_load((ROOT / ".goreleaser.yaml").read_text(encoding="utf-8"))
     builds = {build["id"]: build for build in release["builds"]}

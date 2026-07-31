@@ -384,6 +384,166 @@ func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 	}
 }
 
+func TestConnectorReconcilePreservesClaudeCustodyAcrossPeerSetupAndRosterRefresh(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	seedCodexSelectionForTest(t, dataDir)
+	home := testenv.PrivateTempDir(t)
+	testenv.SetHome(t, home)
+	claudePath := filepath.Join(home, ".claude", "settings.json")
+	codexPath := filepath.Join(home, ".codex", "config.toml")
+	for _, path := range []string{claudePath, codexPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
+		claudePath,
+		[]byte(`{"env":{"OPERATOR_SENTINEL":"preserve"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	launcher := filepath.Join(home, ".local", "bin", "defenseclaw-hook.exe")
+	if runtime.GOOS == "windows" {
+		if err := os.MkdirAll(filepath.Dir(launcher), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(launcher, []byte("MZ-native-hook-fixture"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	previousClaudePath := connector.ClaudeCodeSettingsPathOverride
+	previousCodexPath := connector.CodexConfigPathOverride
+	connector.ClaudeCodeSettingsPathOverride = claudePath
+	connector.CodexConfigPathOverride = codexPath
+	t.Cleanup(func() {
+		connector.ClaudeCodeSettingsPathOverride = previousClaudePath
+		connector.CodexConfigPathOverride = previousCodexPath
+	})
+	defer withConnectorState(t, dataDir, "claudecode")()
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "open"
+	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"claudecode": {HookFailMode: "open"},
+		"codex":      {HookFailMode: "open"},
+	}
+	for _, name := range []string{"claudecode", "codex"} {
+		if _, err := connector.EnsureHookAPIToken(dataDir, name); err != nil {
+			t.Fatalf("ensure %s token: %v", name, err)
+		}
+	}
+	if err := connector.SaveActiveConnectors(dataDir, []string{"claudecode", "codex"}); err != nil {
+		t.Fatalf("save active connector roster: %v", err)
+	}
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--json")
+	assertConnectorReconcileStderr(t, "claudecode", stderr)
+
+	claudeFiles := []string{
+		claudePath,
+		filepath.Join(dataDir, "connector_backups", "claudecode", "settings.json.json"),
+		filepath.Join(dataDir, "claudecode_backup.json"),
+		filepath.Join(dataDir, "hooks", ".hookcfg.claudecode"),
+		filepath.Join(dataDir, "active_connector.json"),
+	}
+	claudeBefore := make(map[string][]byte, len(claudeFiles))
+	for _, path := range claudeFiles {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read Claude custody file %s: %v", path, err)
+		}
+		claudeBefore[path] = body
+	}
+	lockBefore := readTestHookContractLock(t, dataDir).Connectors["claudecode"]
+	if lockBefore.Connector != "claudecode" {
+		t.Fatalf("Claude lock entry missing before peer setup: %+v", lockBefore)
+	}
+	cloneDigests := func(source map[string]string) map[string]string {
+		cloned := make(map[string]string, len(source))
+		for name, digest := range source {
+			cloned[name] = digest
+		}
+		return cloned
+	}
+
+	assertClaudeCustody := func(stage string) {
+		t.Helper()
+		for path, before := range claudeBefore {
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s removed Claude custody file %s: %v", stage, path, err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("%s changed Claude custody file %s", stage, path)
+			}
+		}
+		lockAfter := readTestHookContractLock(t, dataDir).Connectors["claudecode"]
+		beforeOwned := lockBefore
+		afterOwned := lockAfter
+		beforeOwned.HookScriptDigests = cloneDigests(lockBefore.HookScriptDigests)
+		afterOwned.HookScriptDigests = cloneDigests(lockAfter.HookScriptDigests)
+		// The native launcher is shared. A peer Setup may legitimately replace
+		// it and atomically advance every connector's digest; all Claude-owned
+		// contract fields and its private artifacts must remain unchanged.
+		delete(beforeOwned.HookScriptDigests, "defenseclaw-hook.exe")
+		delete(afterOwned.HookScriptDigests, "defenseclaw-hook.exe")
+		if !reflect.DeepEqual(afterOwned, beforeOwned) {
+			t.Fatalf("%s changed Claude lock ownership: before=%+v after=%+v", stage, lockBefore, lockAfter)
+		}
+		if got := connector.LoadActiveConnectors(dataDir); !reflect.DeepEqual(got, []string{"claudecode", "codex"}) {
+			t.Fatalf("%s changed active connector roster: %v", stage, got)
+		}
+
+		settingsBody, err := os.ReadFile(claudePath)
+		if err != nil {
+			t.Fatalf("%s read Claude settings: %v", stage, err)
+		}
+		var settings map[string]interface{}
+		if err := json.Unmarshal(settingsBody, &settings); err != nil {
+			t.Fatalf("%s parse Claude settings: %v", stage, err)
+		}
+		env, ok := settings["env"].(map[string]interface{})
+		if !ok || env["OPERATOR_SENTINEL"] != "preserve" || env["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+			t.Fatalf("%s lost Claude operator or managed environment state", stage)
+		}
+		if hooks, ok := settings["hooks"].(map[string]interface{}); !ok || len(hooks) == 0 {
+			t.Fatalf("%s lost Claude hook registration", stage)
+		}
+
+		var runtimeState struct {
+			Version   int               `json:"version"`
+			FailModes map[string]string `json:"fail_modes"`
+		}
+		runtimeBody, err := os.ReadFile(filepath.Join(dataDir, "hooks", ".hookcfg"))
+		if err != nil {
+			t.Fatalf("%s read shared runtime state: %v", stage, err)
+		}
+		if err := json.Unmarshal(runtimeBody, &runtimeState); err != nil {
+			t.Fatalf("%s parse shared runtime state: %v", stage, err)
+		}
+		if runtimeState.Version != 2 ||
+			runtimeState.FailModes["claudecode"] != "open" ||
+			runtimeState.FailModes["codex"] != "open" {
+			t.Fatalf("%s lost Claude runtime state: %+v", stage, runtimeState)
+		}
+		assertMixedHookContractsCurrent(t, dataDir, home)
+	}
+
+	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "codex", "--json")
+	assertConnectorReconcileStderr(t, "codex", stderr)
+	assertClaudeCustody("unrelated Codex setup")
+
+	// Shared restart maintenance walks the preserved roster through the same
+	// selected reconciliation primitive. Exercise the complete roster and keep
+	// Claude's configuration, recovery metadata, and runtime ownership exact.
+	for _, name := range connector.LoadActiveConnectors(dataDir) {
+		_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", name, "--json")
+		assertConnectorReconcileStderr(t, name, stderr)
+	}
+	assertClaudeCustody("preserved roster reconciliation")
+}
+
 func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows Setup maintenance contract")
