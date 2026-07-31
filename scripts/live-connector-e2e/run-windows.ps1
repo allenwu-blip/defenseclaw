@@ -2540,6 +2540,10 @@ function Invoke-ContractRun {
     if ($Connector -eq 'copilot') {
         $initArgs += '--native-setup-copilot'
         $script:CopilotConfiguredMode = 'observe'
+    } elseif ($Connector -eq 'antigravity') {
+        # Keep Antigravity publicly not_certified while allowing this
+        # installer-shaped packaged contract to seed canonical state.
+        $initArgs += '--native-setup-antigravity'
     }
     Invoke-Tool 'defenseclaw' $initArgs | Out-Null
     Set-IsolatedGatewayPort
