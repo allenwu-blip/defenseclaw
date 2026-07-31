@@ -768,7 +768,7 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		}
 		return makeSpec(CorrelationProfileCopilotV1, correlationContractID, []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "documented hooks expose session membership but not stable turn, interaction, response, or tool-call IDs; DefenseClaw does not integrate Copilot's upstream native OTel surface"))
 	case "openhands":
-		// OpenHands SDK 1.21.0's HookEvent stdin carries session_id,
+		// OpenHands SDK 1.39.1's HookEvent stdin still carries session_id,
 		// event_type, working_dir, and event content. action_id, message_id,
 		// tool_call_id, and model response IDs exist only on the SDK's separate
 		// in-process HookExecutionEvent and are not passed to command hooks.

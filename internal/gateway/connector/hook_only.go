@@ -463,9 +463,10 @@ func geminiCLINativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
 }
 
 // openhandsNativeOTLPSpec describes the process environment consumed by the
-// OpenHands SDK 1.21 observability layer bundled with OpenHands CLI 1.16.0.
-// Upstream initializes Laminar when an OTEL endpoint is present and exports
-// traces only. No OpenHands config file or shell profile is mutated.
+// OpenHands SDK observability contract, source-reviewed through standalone SDK
+// 1.39.1. OpenHands CLI 1.16.0 remains a separate compatibility axis and
+// bundles SDK 1.21.0. Both initialize Laminar when an OTEL endpoint is present
+// and export traces only. No OpenHands config file or shell profile is mutated.
 func openhandsNativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
 	endpoint := "http://" + strings.TrimSpace(opts.APIAddr)
 	headers := map[string]string{
@@ -946,7 +947,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			WritePaths:     openhandsAgentWritePaths(opts),
 			InstallTargets: []string{"agent"},
 			RequiresOptIn:  true,
-			Notes:          []string{"OpenHands loads file-based subagents from .agents/agents/*.md first and .openhands/agents/*.md as the legacy fallback. Built-in default/explore/bash subagents are runtime-provided and are not filesystem assets."},
+			Notes:          []string{"OpenHands loads file-based subagents from .agents/agents/*.md first and .openhands/agents/*.md as the legacy fallback. Built-in general-purpose/code-explorer/bash-runner agents are runtime-provided and are not filesystem assets; default/explore/bash are deprecated aliases."},
 		}
 		caps.Telemetry = TelemetryCapability{
 			NativeOTLP:    true,
@@ -961,7 +962,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			EndpointTemplate: "http://" + opts.APIAddr + "/v1/traces",
 			SourceModes:      []string{"native", "hook"},
 			Notes: []string{
-				"OpenHands CLI 1.16.0 bundles SDK 1.21.0, whose Laminar observability layer accepts standard OTEL process environment variables and exports traces only.",
+				"OpenHands CLI 1.16.0 bundles SDK 1.21.0; standalone SDK 1.39.1 preserves the same Laminar process-environment OTEL trace-export contract. The SDK review does not change the CLI compatibility range.",
 				"DefenseClaw does not persist OTEL variables in OpenHands config or mutate shell profiles; launch OpenHands with the rendered process environment.",
 				"Native trace attributes are not claimed as cross-rail identity until a stable exported session attribute is source-documented and live-validated.",
 			},

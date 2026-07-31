@@ -28,6 +28,8 @@ def test_openhands_macos_is_implemented_but_uncertified() -> None:
         "run_url": "",
     }
     assert "uncertified" in openhands["notes"].lower()
+    assert "Standalone OpenHands SDK 1.39.1" in openhands["notes"]
+    assert "does not change the CLI compatibility range" in openhands["notes"]
 
     contracts = json.loads(
         (ROOT / "cli/defenseclaw/inventory/hook_contracts.json").read_text(
@@ -40,6 +42,7 @@ def test_openhands_macos_is_implemented_but_uncertified() -> None:
         "max_exclusive": "",
     }
     assert contract["native_otlp"] is True
+    assert any("OpenHands SDK 1.39.1" in note for note in contract["notes"])
 
 
 def test_openhands_live_driver_uses_official_cli_on_macos() -> None:
@@ -99,5 +102,9 @@ def test_openhands_docs_separate_outdated_current_and_uncertified() -> None:
         assert classification in docs
     assert "CLI plugins are explicitly **N/A**" in docs
     assert "**trace-only native OTLP**" in docs
+    assert "standalone OpenHands SDK 1.39.1" in docs
+    assert "does not widen or otherwise change the CLI compatibility range" in docs
     assert "does not natively export OTLP logs or metrics" in docs
     assert "does not contain stable turn, action, tool-call, event, or model-response IDs" in docs
+    assert "general-purpose`, `code-explorer`, and `bash-runner" in docs
+    assert "intentionally installs only CLI command hooks" in docs

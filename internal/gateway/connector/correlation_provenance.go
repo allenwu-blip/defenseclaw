@@ -93,8 +93,8 @@ func correlationContractSources(name string) []CorrelationContractSource {
 				Revision: "2963442dacc7cea44e39b7c4e73724295c853465", CheckedDate: correlationSourceCheckedDate,
 			},
 			{
-				ID: "openhands-sdk-source-4110929b", URI: "https://github.com/OpenHands/software-agent-sdk",
-				Revision: "4110929b788604d50d83ec693bc445ef8e0a3d38", CheckedDate: correlationSourceCheckedDate,
+				ID: "openhands-sdk-source-bf57d16f", URI: "https://github.com/OpenHands/software-agent-sdk",
+				Revision: "bf57d16f3dde05b0b03fa0af3f7e0ae924043b80", CheckedDate: "2026-07-31",
 			},
 		}
 	case "antigravity":

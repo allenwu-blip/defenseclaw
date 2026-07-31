@@ -39,7 +39,7 @@ upstream surface. It does not mean certified.
 | Devin Desktop / Windsurf | **CURRENT:** renamed product 3.6.22 remains compatible with `>=1.12.41` | `preview` | **UNCERTIFIED:** no genuine interactive 3.6.22 run |
 | OpenCode | **CURRENT:** macOS/Linux `>=1.16.2,<1.18.11`, v7/35 events; Windows unbounded/default, v6/9 events; latest 1.18.10 source-reviewed | available, not certified | **UNCERTIFIED:** no durable latest-version run |
 | Hermes | **CURRENT:** 0.19.1 / release tag `v2026.7.30`; macOS/Linux `>=0.19.0,<0.20.0`, Windows `>=0.19.0` unbounded | `preview` | **UNCERTIFIED:** no packaged genuine-client run |
-| OpenHands | **CURRENT / LIMITED:** CLI 1.16.0 remains latest and macOS/Linux stays `>=1.12.0`; SDK 1.21.0 evidence is **OUTDATED** by 1.39.1 and its hook/OTLP surfaces need re-review; Windows zero-floor override is native-OTLP-off and setup-unsupported | available, not certified | **UNCERTIFIED:** no genuine latest-version run |
+| OpenHands | **CURRENT / LIMITED:** CLI 1.16.0 remains latest and macOS/Linux stays `>=1.12.0`; standalone SDK 1.39.1 preserves the six-event hook and trace-only exporter boundaries; Windows zero-floor override is native-OTLP-off and setup-unsupported | available, not certified | **UNCERTIFIED:** no genuine latest-version run |
 | OmniGent | **CURRENT:** 0.7.0 custom-policy API | historical `supported` default | **UNCERTIFIED:** no durable packaged/live record |
 | Antigravity | **CURRENT:** macOS `>=1.1.8, <1.1.10`; official 1.1.9 arm64/x64 artifacts reviewed with the unchanged five-event v2 contract | `preview` | **UNCERTIFIED:** no packaged authenticated client record |
 

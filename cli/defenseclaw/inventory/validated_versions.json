@@ -63,7 +63,7 @@
     "openhands": {
       "version_probe": "openhands --version",
       "live": true,
-      "notes": "OpenHands CLI 1.16.0 is the current upstream release and supports macOS. Native macOS status is UNCERTIFIED pending a durable green latest-version live run.",
+      "notes": "OpenHands CLI 1.16.0 is the current upstream release and supports macOS. Standalone OpenHands SDK 1.39.1 is separately source-reviewed and does not change the CLI compatibility range. Native macOS status is UNCERTIFIED pending a durable green latest-version live run.",
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }

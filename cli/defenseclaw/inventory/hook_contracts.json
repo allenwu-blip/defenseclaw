@@ -898,7 +898,7 @@
             "OpenHands hooks use native snake_case event keys and install to ~/.openhands/hooks.json by default, with repo-local .openhands/hooks.json when a workspace is pinned.",
             "OpenHands CLI 1.12.0 is the minimum because it first loads user-global ~/.openhands/hooks.json; source-reviewed against 1.16.0 with no maximum. macOS remains uncertified until a durable green latest-version live run is recorded.",
             "OpenHands blocks by exit code 2 and optional decision=deny JSON; no native ask surface is documented. Confirm becomes additionalContext only for UserPromptSubmit; PreToolUse and Stop downgrades are audit-only.",
-            "OpenHands SDK 1.21.0 provides process-environment OTLP traces only; DefenseClaw does not persist those variables in hooks.json or a shell profile."
+            "OpenHands SDK 1.39.1 preserves process-environment OTLP traces only; DefenseClaw does not persist those variables in hooks.json or a shell profile."
           ]
         }
       ]

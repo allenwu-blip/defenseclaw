@@ -60,7 +60,7 @@ trusted `openhands --version` probe succeeds. On macOS and Linux,
 user-global `~/.openhands/hooks.json` file. Source review covered
 [`openhands` 1.16.0](https://pypi.org/project/openhands/), and the
 [official installation guide](https://docs.openhands.dev/openhands/usage/cli/installation)
-supports macOS. That review is compatibility evidence, not certification;
+supports macOS. That review is **CURRENT** version-compatibility evidence, not certification;
 native macOS remains **UNCERTIFIED** and `last_validated_version` stays empty.
 The old `openhands-ai` live-driver package and Linux-only runtime assumption
 were **OUTDATED** and have been replaced by the official `openhands` Python
@@ -69,7 +69,9 @@ were **OUTDATED** and have been replaced by the official `openhands` Python
 The runtime retains a Windows registry override with a zero version floor and
 `native_otlp=false`, but native Windows OpenHands setup is unsupported because
 the CLI requires WSL and DefenseClaw has no WSL connector path. That internal
-override is compatibility preservation, not a Windows support claim.
+override is compatibility preservation, not a Windows support claim. The
+separate review of standalone OpenHands SDK 1.39.1 does not widen or otherwise
+change the CLI compatibility range.
 
 <Callout type="warning">
 OpenHands checks `<workspace>/.openhands/hooks.json` first and then
@@ -142,32 +144,25 @@ OpenHands documents `additionalContext` for context injection. DefenseClaw uses 
 
 OpenHands MCP servers are managed in [`~/.openhands/mcp.json`](https://docs.openhands.dev/openhands/usage/cli/mcp-servers) by default. When `OPENHANDS_PERSISTENCE_DIR` is set, DefenseClaw uses the same `<persistence-dir>/mcp.json` path as the CLI for discovery and mutations. Current OpenHands skills use `.agents/skills`; global setup resolves that as `~/.agents/skills`, and workspace setup resolves it under the pinned repository. DefenseClaw also discovers `.openhands/skills`, legacy `.openhands/microagents`, installed skills in `~/.openhands/skills/installed`, and the public OpenHands extensions cache at `~/.openhands/cache/skills/public-skills/skills`.
 
-File-based subagents use `.agents/agents/*.md`, with `.openhands/agents/*.md` as the legacy fallback. DefenseClaw can install those assets only with explicit opt-in. OpenHands' built-in `default`, `explore`, and `bash` subagents are runtime-provided, not local files. `AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `GEMINI.md`, and `.cursorrules` are case-insensitive third-party instruction inputs and are discovery-only: setup never overwrites them. The SDK has a programmatic plugin API, but CLI 1.16.0 exposes no persistent plugin install/config path, so CLI plugins are explicitly **N/A** rather than guessed.
+File-based subagents use `.agents/agents/*.md`, with `.openhands/agents/*.md` as the legacy fallback. DefenseClaw can install those assets only with explicit opt-in. OpenHands' built-in `general-purpose`, `code-explorer`, and `bash-runner` agents are runtime-provided, not local files; `default`, `explore`, and `bash` are deprecated aliases. `AGENTS.md`, `AGENT.md`, `CLAUDE.md`, `GEMINI.md`, and `.cursorrules` are case-insensitive third-party instruction inputs and are discovery-only: setup never overwrites them. The SDK has a programmatic plugin API, but CLI 1.16.0 exposes no persistent plugin install/config path, so CLI plugins are explicitly **N/A** rather than guessed.
 
 `claw.workspace_dir` is optional. Empty means global user scope. When set via `--workspace`, workspace-local skills/rules discovery uses that repository until you clear it with a global setup run or point it at another workspace.
 
 The resolved paths are captured in `~/.defenseclaw/hook_contract_lock.json` under `locations`, so `defenseclaw doctor` can report both the hook contract and the concrete hook/MCP/skill locations it is using.
 
-OpenHands CLI 1.16.0 remains the latest CLI, but the prior SDK review at 1.21.0
-is stale: the official
-[OpenHands SDK 1.39.1 release](https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.39.1)
-([PyPI](https://pypi.org/project/openhands-sdk/1.39.1/)) was published on July
-30, 2026. The 1.21.0 source exposed **trace-only native
-OTLP** when the OpenHands process received
+OpenHands CLI 1.16.0 bundles SDK 1.21.0. A separate source review of the latest
+[standalone OpenHands SDK 1.39.1 observability layer](https://github.com/OpenHands/software-agent-sdk/blob/v1.39.1/openhands-sdk/openhands/sdk/observability/laminar.py)
+confirms that it preserves **trace-only native OTLP** when the OpenHands process receives
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or the combined endpoint),
 `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, and
 `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`. The macOS/Linux registry's
 `native_otlp=true` records this upstream, exporter-only capability. DefenseClaw
 does not auto-configure the OpenHands launch environment: Setup does not persist
 those variables in `hooks.json`, mutate a shell profile, or claim that an
-ordinary OpenHands launch exports traces. OpenHands does not natively export
-OTLP logs or metrics in the stale 1.21.0 review; 1.39.1 signal support is
-pending re-review.
-
-The SDK-derived hook-schema and native-OTLP evidence must be re-reviewed
-against 1.39.1 before DefenseClaw claims it is current. That stale evidence does
-not lower the CLI `>=1.12.0` floor, add a ceiling, add hook events, or establish
-new correlation identifiers.
+ordinary OpenHands launch exports traces. OpenHands SDK 1.39.1 does not
+natively export OTLP logs or metrics. The separate SDK review does not lower
+the CLI `>=1.12.0` floor, add a ceiling, add hook events, or establish new
+correlation identifiers.
 
 DefenseClaw also produces authenticated hook-derived audit, log, metric, and
 trace records, propagates W3C trace context through its managed hook runtime,
@@ -177,6 +172,13 @@ sets a Laminar trace-session association, but upstream does not document its
 exported OTLP attribute name as a stable cross-rail contract, so DefenseClaw
 does not claim hook/native identity equivalence or a native event-stream
 adapter. The Windows contract keeps native OTLP disabled.
+
+SDK 1.39.1 also exposes programmatic `agent` hook definitions. DefenseClaw's
+OpenHands connector intentionally installs only CLI command hooks; it does not
+author SDK agent hooks, and the SDK's `prompt` hook type still falls open as
+unimplemented. The standalone Agent Server currently loads workspace
+`.openhands/hooks.json` only, so the user-global fallback described above is a
+CLI/local-SDK path and is not claimed for remote Agent Server sessions.
 
 ## Hook capabilities
 

@@ -82,6 +82,26 @@ func TestCorrelationContractSourcesAndFixturesAreImmutable(t *testing.T) {
 	}
 }
 
+func TestOpenHandsCorrelationEvidenceTracksStandaloneSDK1391(t *testing.T) {
+	sources := correlationContractSources("openhands")
+	for _, source := range sources {
+		if source.URI != "https://github.com/OpenHands/software-agent-sdk" {
+			continue
+		}
+		if source.ID != "openhands-sdk-source-bf57d16f" {
+			t.Fatalf("SDK source ID=%q", source.ID)
+		}
+		if source.Revision != "bf57d16f3dde05b0b03fa0af3f7e0ae924043b80" {
+			t.Fatalf("SDK source revision=%q", source.Revision)
+		}
+		if source.CheckedDate != "2026-07-31" {
+			t.Fatalf("SDK source checked date=%q", source.CheckedDate)
+		}
+		return
+	}
+	t.Fatal("OpenHands SDK source evidence is missing")
+}
+
 func TestCorrelationAuthorityRequiresExactFieldEvidence(t *testing.T) {
 	spec := DefaultCorrelationSpec("codex")
 	generic, ok := spec.NativeOTLPValue(map[string]interface{}{
