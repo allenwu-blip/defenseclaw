@@ -742,6 +742,53 @@ func ResolveWindowsCodexManagedRuntimeRegistry(
 	}
 	requirementsPath := filepath.Join(programData, "OpenAI", "Codex", "requirements.toml")
 	statePath := filepath.Join(filepath.Dir(requirementsPath), windowsCodexManagedStateFile)
+	lockPath := filepath.Join(filepath.Dir(requirementsPath), windowsCodexManagedLockFile)
+	lockExists, err := windowsCodexMachinePathExists(lockPath)
+	if err != nil {
+		return result, err
+	}
+	if !lockExists {
+		requirementsExists, requirementsErr := windowsCodexMachinePathExists(requirementsPath)
+		if requirementsErr != nil {
+			return result, requirementsErr
+		}
+		stateExists, stateErr := windowsCodexMachinePathExists(statePath)
+		if stateErr != nil {
+			return result, stateErr
+		}
+		// Close the first-install race before using either unlocked observation.
+		// The writer always creates the protected lock before publishing policy.
+		lockExists, err = windowsCodexMachinePathExists(lockPath)
+		if err != nil {
+			return result, err
+		}
+		if lockExists {
+			// The policy pair will be inspected again after the writer releases
+			// this lock, so no unlocked observation above influences the result.
+		} else if requirementsExists || stateExists {
+			return result, errors.New("Codex managed artifacts exist without the machine policy lock")
+		} else {
+			return result, nil
+		}
+	}
+	err = withWindowsCodexMachinePolicyLock(requirementsPath, func() error {
+		var resolveErr error
+		result, resolveErr = resolveWindowsCodexManagedRuntimeRegistryLocked(
+			requirementsPath,
+			statePath,
+			hookExecutable,
+		)
+		return resolveErr
+	})
+	return result, err
+}
+
+func resolveWindowsCodexManagedRuntimeRegistryLocked(
+	requirementsPath string,
+	statePath string,
+	hookExecutable string,
+) (WindowsCodexManagedRuntimeRegistry, error) {
+	var result WindowsCodexManagedRuntimeRegistry
 	requirementsExists, err := windowsCodexMachinePathExists(requirementsPath)
 	if err != nil {
 		return result, err
@@ -1115,11 +1162,26 @@ func withWindowsCodexMachineRead(
 	if err := validateWindowsCodexMachineLayout(opts); err != nil {
 		return err
 	}
+	return withWindowsCodexMachinePolicyLock(opts.RequirementsPath, func() error {
+		// The lock wait is bounded but may still outlive an operator mount or
+		// policy change. Re-establish the complete path identity immediately
+		// before the protected read or mutation.
+		if err := validateWindowsCodexMachineLayout(opts); err != nil {
+			return fmt.Errorf("revalidate Codex machine layout after lock acquisition: %w", err)
+		}
+		return fn()
+	})
+}
+
+func withWindowsCodexMachinePolicyLock(
+	requirementsPath string,
+	fn func() error,
+) error {
 	windowsCodexMachineProcessMu.Lock()
 	defer windowsCodexMachineProcessMu.Unlock()
 
 	lockPath := filepath.Join(
-		filepath.Dir(opts.RequirementsPath),
+		filepath.Dir(requirementsPath),
 		windowsCodexManagedLockFile,
 	)
 	lock, overlapped, err := acquireWindowsCodexMachineFileLock(lockPath)
@@ -1128,12 +1190,6 @@ func withWindowsCodexMachineRead(
 	}
 	defer windows.CloseHandle(lock)
 	defer windows.UnlockFileEx(lock, 0, 1, 0, overlapped)
-	// The lock wait is bounded but may still outlive an operator mount or
-	// policy change. Re-establish the complete path identity immediately
-	// before the protected read or mutation.
-	if err := validateWindowsCodexMachineLayout(opts); err != nil {
-		return fmt.Errorf("revalidate Codex machine layout after lock acquisition: %w", err)
-	}
 	return fn()
 }
 

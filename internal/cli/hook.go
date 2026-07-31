@@ -172,11 +172,12 @@ func buildHookOptionsForRuntime(connector, event, apiAddr, failMode string, ente
 		// sidecar/token or contact any endpoint derived from those files; hand an
 		// unavailable strict runtime directly to hookexec's fail-closed boundary.
 		return hookexec.Options{
-			Connector:          connector,
-			Event:              event,
-			FailMode:           "closed",
-			StrictAvailability: true,
-			ManagedEnterprise:  true,
+			Connector:             connector,
+			Event:                 event,
+			FailMode:              "closed",
+			StrictAvailability:    true,
+			ManagedEnterprise:     true,
+			ManagedRuntimeFailure: enterpriseManagedHookRuntimeFailureReason(),
 		}
 	}
 	if !trustedNativeState {

@@ -189,11 +189,22 @@ func Verify(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 			if !present {
 				return fmt.Errorf("enterprise hooks: connector %s hook verification failed: owned hook command not present", conn.Name())
 			}
-			lock := connector.LoadHookContractLockEntry(dataDir, conn.Name())
+			lock, err := connector.LoadHookContractLockEntryForMode(dataDir, conn.Name(), true)
+			if err != nil {
+				return fmt.Errorf("enterprise hooks: load hook contract lock: %w", err)
+			}
 			if lock.Connector != conn.Name() {
 				return fmt.Errorf("enterprise hooks: connector %s hook contract lock is missing", conn.Name())
 			}
-			current := connector.NewHookContractLockEntry(setupOpts, conn, version.Current().BinaryVersion)
+			current, err := connector.NewHookContractLockEntryForMode(
+				setupOpts,
+				conn,
+				version.Current().BinaryVersion,
+				true,
+			)
+			if err != nil {
+				return fmt.Errorf("enterprise hooks: hash managed hook runtime: %w", err)
+			}
 			if connector.HookContractLockDrifted(lock, current) {
 				return fmt.Errorf("enterprise hooks: connector %s hook contract lock drift detected", conn.Name())
 			}
@@ -349,7 +360,16 @@ func Install(ctx context.Context, opts InstallOptions) (InstallResult, error) {
 				_ = conn.Teardown(ctx, setupOpts)
 				return fmt.Errorf("enterprise hooks: connector %s hook verification failed: owned hook command not present", conn.Name())
 			}
-			lockEntry := connector.NewHookContractLockEntry(setupOpts, conn, version.Current().BinaryVersion)
+			lockEntry, err := connector.NewHookContractLockEntryForMode(
+				setupOpts,
+				conn,
+				version.Current().BinaryVersion,
+				true,
+			)
+			if err != nil {
+				_ = conn.Teardown(ctx, setupOpts)
+				return fmt.Errorf("enterprise hooks: hash managed hook runtime: %w", err)
+			}
 			if err := connector.SaveHookContractLockEntryForMode(dataDir, lockEntry, true); err != nil {
 				_ = conn.Teardown(ctx, setupOpts)
 				return fmt.Errorf("enterprise hooks: save hook contract lock: %w", err)

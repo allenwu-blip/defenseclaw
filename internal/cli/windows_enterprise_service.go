@@ -11,6 +11,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -58,6 +59,14 @@ type windowsEnterpriseLifecycleOptions struct {
 	purge                          bool
 	allowUnsigned                  bool
 	jsonOutput                     bool
+}
+
+type windowsEnterpriseACLHeader struct {
+	revision  uint8
+	reserved  uint8
+	size      uint16
+	aceCount  uint16
+	reserved2 uint16
 }
 
 type windowsEnterpriseLifecyclePreflightFailure struct {
@@ -817,6 +826,81 @@ func trustedWindowsEnterpriseUserTempDirectory() (string, error) {
 	return filepath.Clean(path), nil
 }
 
+func windowsEnterpriseExactDescriptorMatch(
+	actual, expected *windows.SECURITY_DESCRIPTOR,
+) (bool, error) {
+	if actual == nil || expected == nil {
+		return false, nil
+	}
+	actualControl, actualRevision, err := actual.Control()
+	if err != nil {
+		return false, err
+	}
+	expectedControl, expectedRevision, err := expected.Control()
+	if err != nil {
+		return false, err
+	}
+	ignored := windows.SECURITY_DESCRIPTOR_CONTROL(windows.SE_DACL_AUTO_INHERITED)
+	if actualRevision != expectedRevision ||
+		actualControl&^ignored != expectedControl&^ignored {
+		return false, nil
+	}
+	actualOwner, _, err := actual.Owner()
+	if err != nil {
+		return false, err
+	}
+	expectedOwner, _, err := expected.Owner()
+	if err != nil {
+		return false, err
+	}
+	if !windowsEnterpriseSIDEqual(actualOwner, expectedOwner) {
+		return false, nil
+	}
+	actualGroup, _, err := actual.Group()
+	if err != nil {
+		return false, err
+	}
+	expectedGroup, _, err := expected.Group()
+	if err != nil {
+		return false, err
+	}
+	if !windowsEnterpriseSIDEqual(actualGroup, expectedGroup) {
+		return false, nil
+	}
+	actualDACL, err := windowsEnterpriseRawDACL(actual)
+	if err != nil {
+		return false, err
+	}
+	expectedDACL, err := windowsEnterpriseRawDACL(expected)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(actualDACL, expectedDACL), nil
+}
+
+func windowsEnterpriseSIDEqual(left, right *windows.SID) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.Equals(right)
+}
+
+func windowsEnterpriseRawDACL(descriptor *windows.SECURITY_DESCRIPTOR) ([]byte, error) {
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return nil, err
+	}
+	if dacl == nil {
+		return nil, nil
+	}
+	header := (*windowsEnterpriseACLHeader)(unsafe.Pointer(dacl))
+	minimum := uint16(unsafe.Sizeof(windowsEnterpriseACLHeader{}))
+	if header.size < minimum || header.aceCount != dacl.AceCount {
+		return nil, fmt.Errorf("invalid DACL header")
+	}
+	return unsafe.Slice((*byte)(unsafe.Pointer(dacl)), int(header.size)), nil
+}
+
 func validateWindowsEnterprisePowerShellTemp(path string) error {
 	if err := managed.ValidateTrustedRuntimeDir(
 		path,
@@ -842,7 +926,11 @@ func validateWindowsEnterprisePowerShellTemp(path string) error {
 	if err != nil {
 		return fmt.Errorf("build expected protected Windows enterprise PowerShell temp descriptor: %w", err)
 	}
-	if actual == nil || actual.String() != expected.String() {
+	matches, err := windowsEnterpriseExactDescriptorMatch(actual, expected)
+	if err != nil {
+		return fmt.Errorf("compare protected Windows enterprise PowerShell temp descriptor: %w", err)
+	}
+	if !matches {
 		actualString := "<nil>"
 		if actual != nil {
 			actualString = actual.String()

@@ -946,6 +946,37 @@ func TestCodexNotifyRequestWiring(t *testing.T) {
 	}
 }
 
+func TestCodexNotifyManagedEnterpriseRejectsUnverifiedPeer(t *testing.T) {
+	home := t.TempDir()
+	hookDir := filepath.Join(home, "hooks")
+	if err := os.MkdirAll(hookDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	requests := make(chan *http.Request, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		requests <- req
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	code := RunCodexNotify(context.Background(), Options{
+		APIAddr:                   strings.TrimPrefix(server.URL, "http://"),
+		Home:                      home,
+		HookDir:                   hookDir,
+		Token:                     "managed-notify-token",
+		ManagedEnterprise:         true,
+		ManagedGatewayServiceName: "DefenseClawGateway",
+	}, []byte(`{"type":"agent-turn-complete"}`))
+	if code != 0 {
+		t.Fatalf("exit code = %d, want best-effort 0", code)
+	}
+	select {
+	case req := <-requests:
+		t.Fatalf("managed notify reached unverified peer with authorization %q", req.Header.Get("Authorization"))
+	default:
+	}
+}
+
 func TestCodexNotifyGuardBranchesDoNotSendRequests(t *testing.T) {
 	validHome := t.TempDir()
 	disabledHome := t.TempDir()

@@ -4,7 +4,9 @@
 #Requires -Version 5.1
 
 [CmdletBinding()]
-param()
+param(
+    [string]$BasicUserResultPath = ''
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -20,6 +22,94 @@ $engine = if ($PSVersionTable.PSEdition -eq 'Core') {
 }
 else {
     Join-Path $PSHOME 'powershell.exe'
+}
+
+function Test-EffectiveMediumNonAdminUser {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $whoamiPath = Join-Path $env:SystemRoot 'System32\whoami.exe'
+    $groupText = & $whoamiPath /groups /fo csv /nh 2>$null | Out-String
+    return (-not $principal.IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator
+        ) -and $groupText -match 'S-1-16-8192')
+}
+
+function Write-BasicUserResult {
+    param([Parameter(Mandatory = $true)][string]$Json)
+    $resultPath = [IO.Path]::GetFullPath($BasicUserResultPath)
+    $tempPath = "$resultPath.$PID.tmp"
+    [IO.File]::WriteAllText($tempPath, $Json)
+    [IO.File]::Move($tempPath, $resultPath)
+}
+
+trap {
+    $detail = ($_ | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($BasicUserResultPath)) {
+        Write-BasicUserResult -Json (
+            [pscustomobject]@{ ok = $false; error = $detail } |
+                ConvertTo-Json -Compress
+        )
+    }
+    [Console]::Error.WriteLine($detail)
+    exit 1
+}
+
+function Invoke-BasicUserBootstrapSmoke {
+    $relayRoot = Join-Path (
+        [IO.Path]::GetTempPath()
+    ) "DefenseClaw-BootstrapRelay-$([Guid]::NewGuid().ToString('N'))"
+    [void][IO.Directory]::CreateDirectory($relayRoot)
+    try {
+        $resultPath = Join-Path $relayRoot 'result.json'
+        $scriptLiteral = $PSCommandPath.Replace("'", "''")
+        $resultLiteral = $resultPath.Replace("'", "''")
+        $workerCommand = (
+            "& '$scriptLiteral' -BasicUserResultPath '$resultLiteral'"
+        )
+        $encodedCommand = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($workerCommand)
+        )
+        $program = '"{0}" -NoLogo -NoProfile -NonInteractive ' +
+            '-ExecutionPolicy Bypass -EncodedCommand {1}'
+        $program = $program -f $engine, $encodedCommand
+        $runasPath = Join-Path $env:SystemRoot 'System32\runas.exe'
+        $runasOutput = & $runasPath '/trustlevel:0x20000' $program 2>&1 |
+            Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "could not start Basic User bootstrap smoke: $runasOutput"
+        }
+        $deadline = [DateTime]::UtcNow.AddMinutes(5)
+        while (-not [IO.File]::Exists($resultPath) -and
+            [DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not [IO.File]::Exists($resultPath)) {
+            throw 'Basic User bootstrap smoke timed out'
+        }
+        $reportJson = [IO.File]::ReadAllText($resultPath)
+        $report = $reportJson | ConvertFrom-Json
+        if (-not [bool]$report.ok) {
+            throw "Basic User bootstrap smoke failed: $($report.error)"
+        }
+        Write-Output $reportJson
+    }
+    finally {
+        if ([IO.Directory]::Exists($relayRoot)) {
+            [IO.Directory]::Delete($relayRoot, $true)
+        }
+    }
+}
+
+$effectiveMediumNonAdmin = Test-EffectiveMediumNonAdminUser
+if (-not $effectiveMediumNonAdmin) {
+    if (-not [string]::IsNullOrWhiteSpace($BasicUserResultPath)) {
+        throw (
+            'raw DOS-device bootstrap regression requires the executable ' +
+            'test process to be an effective medium-integrity non-admin user'
+        )
+    }
+    Invoke-BasicUserBootstrapSmoke
+    exit 0
 }
 $testRoot = Join-Path (
     [IO.Path]::GetTempPath()
@@ -653,15 +743,7 @@ try {
     # NTFS, and subst.exe does not enumerate it. Exercise the public bootstrap
     # in a child of this same logon so only authoritative mount-manager volume
     # identity can reject the redirected root.
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    $whoamiPath = Join-Path $env:SystemRoot 'System32\whoami.exe'
-    $groupText = & $whoamiPath /groups /fo csv /nh 2>$null |
-        Out-String
-    if ($principal.IsInRole(
-            [Security.Principal.WindowsBuiltInRole]::Administrator
-        ) -or
-        $groupText -notmatch 'S-1-16-8192') {
+    if (-not $effectiveMediumNonAdmin) {
         throw (
             'raw DOS-device bootstrap regression requires the executable ' +
             'test process to be an effective medium-integrity non-admin user'
@@ -1039,7 +1121,7 @@ finally {
     }
 }
 
-[pscustomobject]@{
+$reportJson = [pscustomobject]@{
     schema_version = 1
     ok = $true
     engine = $PSVersionTable.PSVersion.ToString()
@@ -1074,3 +1156,8 @@ finally {
     raw_dos_device_no_roots_or_temp = $true
     raw_dos_device_cleanup_verified = $rawAliasCleanupVerified
 } | ConvertTo-Json -Compress
+if (-not [string]::IsNullOrWhiteSpace($BasicUserResultPath)) {
+    Write-BasicUserResult -Json $reportJson
+    exit 0
+}
+Write-Output $reportJson

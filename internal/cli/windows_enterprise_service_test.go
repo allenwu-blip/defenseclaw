@@ -1175,6 +1175,40 @@ func TestPrepareWindowsEnterprisePowerShellTempOpsCreatesExactProtectedCapabilit
 	}
 }
 
+func TestWindowsEnterpriseExactDescriptorMatchIgnoresOnlyAutoInherited(t *testing.T) {
+	expected, err := windows.SecurityDescriptorFromString(windowsEnterpriseTempSDDL)
+	if err != nil {
+		t.Fatalf("build expected descriptor: %v", err)
+	}
+	autoInherited, err := windows.SecurityDescriptorFromString(
+		"O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+	)
+	if err != nil {
+		t.Fatalf("build auto-inherited descriptor: %v", err)
+	}
+	matches, err := windowsEnterpriseExactDescriptorMatch(autoInherited, expected)
+	if err != nil {
+		t.Fatalf("compare auto-inherited descriptor: %v", err)
+	}
+	if !matches {
+		t.Fatal("benign AutoInherited metadata caused an exact-DACL mismatch")
+	}
+
+	hostile, err := windows.SecurityDescriptorFromString(
+		"O:BAG:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;GR;;;BU)",
+	)
+	if err != nil {
+		t.Fatalf("build hostile descriptor: %v", err)
+	}
+	matches, err = windowsEnterpriseExactDescriptorMatch(hostile, expected)
+	if err != nil {
+		t.Fatalf("compare hostile descriptor: %v", err)
+	}
+	if matches {
+		t.Fatal("descriptor comparison accepted an extra ACE")
+	}
+}
+
 func TestPrepareWindowsEnterprisePowerShellTempOpsCleanupRefusesValidationDrift(t *testing.T) {
 	validateCalls := 0
 	removeAllCalled := false

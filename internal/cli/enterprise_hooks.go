@@ -1066,9 +1066,6 @@ func runEnterpriseHookReconcileOnce(ctx context.Context) (enterpriseHookReconcil
 	var enrollmentErr error
 	if failures == 0 {
 		enrollmentErr = syncEnterpriseHookManagedEnrollments(manifest, apiAddr, true)
-		if enrollmentErr != nil {
-			failures++
-		}
 	}
 	stateErr := writeEnterpriseHookGuardianState(cfg.DataDir, enterpriseHookManifest, rows, failures)
 	if stateErr == nil && enrollmentErr != nil {

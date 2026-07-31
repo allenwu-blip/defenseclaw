@@ -188,7 +188,8 @@ func TestBuildHookOptionsEnterpriseManagedFailsClosedOnOwnershipError(t *testing
 		t.Fatal("invalid enterprise runtime was allowed to no-op")
 	}
 	opts := buildHookOptionsForRuntime("claudecode", "PreToolUse", "", "open", true)
-	if opts.Home != userRuntime || opts.FailMode != "closed" || !opts.StrictAvailability {
+	if opts.Home != "" || opts.HookDir != "" ||
+		opts.FailMode != "closed" || !opts.StrictAvailability {
 		t.Fatalf("invalid managed runtime did not fail closed: %+v", opts)
 	}
 }

@@ -296,7 +296,19 @@ func RunCodexNotify(ctx context.Context, opts Options, payload []byte) int {
 		req.Header.Set("tracestate", v)
 	}
 	if opts.HTTPClient == nil {
-		opts.HTTPClient = defaultHTTPClient(defaultHookRequestTimeout)
+		if opts.ManagedEnterprise {
+			var err error
+			opts.HTTPClient, err = managedEnterpriseHTTPClient(
+				defaultHookRequestTimeout,
+				opts.APIAddr,
+				opts.ManagedGatewayServiceName,
+			)
+			if err != nil {
+				return 0
+			}
+		} else {
+			opts.HTTPClient = defaultHTTPClient(defaultHookRequestTimeout)
+		}
 	}
 
 	resp, err := opts.HTTPClient.Do(req)

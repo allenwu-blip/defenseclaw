@@ -419,7 +419,9 @@ try {
         $processes.Add($process)
     }
     foreach ($process in $processes) {
-        if (-not $process.WaitForExit(30000)) {
+        # Hosted Windows runners can spend well over 30 seconds starting six
+        # concurrent PowerShell workers while Defender scans Add-Type output.
+        if (-not $process.WaitForExit(120000)) {
             try {
                 $process.Kill()
             }

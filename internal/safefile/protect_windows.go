@@ -119,14 +119,18 @@ func validatePrivateOwnership(path string, wantDirectory bool) error {
 		(!wantDirectory && !info.Mode().IsRegular()) {
 		return fmt.Errorf("safefile: private path has an unexpected type: %s", path)
 	}
-	owned, err := windowsPathOwnedByCurrentUser(path)
+	identity, err := windowsProtectionIdentity()
+	if err != nil {
+		return err
+	}
+	owned, err := windowsPathOwnedBySubject(path, identity)
 	if err != nil {
 		return err
 	}
 	if !owned {
 		return fmt.Errorf("safefile: private path is not owned by the current user: %s", path)
 	}
-	repairable, err := privateDACLIsWriterRepairable(path)
+	repairable, err := privateDACLIsWriterRepairableForSubject(path, identity)
 	if err != nil {
 		return err
 	}
@@ -161,6 +165,17 @@ func withLockedDirectory(path string, write func() error) error {
 }
 
 func windowsPathOwnedByCurrentUser(path string) (bool, error) {
+	identity, err := windowsProtectionIdentity()
+	if err != nil {
+		return false, err
+	}
+	return windowsPathOwnedBySubject(path, identity)
+}
+
+func windowsPathOwnedBySubject(
+	path string,
+	identity windowsProtectionSubject,
+) (bool, error) {
 	extended, err := winpath.Extended(path)
 	if err != nil {
 		return false, err
@@ -173,9 +188,8 @@ func windowsPathOwnedByCurrentUser(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	identity, err := windowsProtectionIdentity()
-	if err != nil {
-		return false, err
+	if identity.sid == nil {
+		return false, fmt.Errorf("safefile: protection subject SID is unavailable")
 	}
 	return owner != nil && owner.Equals(identity.sid), nil
 }
@@ -585,7 +599,10 @@ func privateSecurityDescriptorIsSafeForSubject(
 	return foundOwner && foundSystem, nil
 }
 
-func privateDACLIsWriterRepairable(path string) (bool, error) {
+func privateDACLIsWriterRepairableForSubject(
+	path string,
+	identity windowsProtectionSubject,
+) (bool, error) {
 	extended, err := winpath.Extended(path)
 	if err != nil {
 		return false, err
@@ -597,6 +614,16 @@ func privateDACLIsWriterRepairable(path string) (bool, error) {
 	)
 	if err != nil {
 		return false, err
+	}
+	return privateSecurityDescriptorIsWriterRepairableForSubject(sd, identity)
+}
+
+func privateSecurityDescriptorIsWriterRepairableForSubject(
+	sd *windows.SECURITY_DESCRIPTOR,
+	identity windowsProtectionSubject,
+) (bool, error) {
+	if sd == nil {
+		return false, nil
 	}
 	owner, _, err := sd.Owner()
 	if err != nil {
@@ -610,11 +637,10 @@ func privateDACLIsWriterRepairable(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil || user == nil || user.User.Sid == nil {
-		return false, err
+	if identity.sid == nil {
+		return false, fmt.Errorf("safefile: protection subject SID is unavailable")
 	}
-	if owner == nil || !owner.Equals(user.User.Sid) {
+	if owner == nil || !owner.Equals(identity.sid) {
 		return false, nil
 	}
 	untrustedWrite := windows.ACCESS_MASK(
@@ -641,7 +667,7 @@ func privateDACLIsWriterRepairable(path string) (bool, error) {
 			return false, nil
 		}
 		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		trusted := sid.Equals(user.User.Sid) || sid.Equals(system) ||
+		trusted := sid.Equals(identity.sid) || sid.Equals(system) ||
 			sid.IsWellKnown(windows.WinCreatorOwnerRightsSid)
 		if ace.Header.AceType == windows.ACCESS_DENIED_ACE_TYPE {
 			if trusted && ace.Mask != 0 {

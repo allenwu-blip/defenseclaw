@@ -133,6 +133,76 @@ func TestWindowsProtectionIdentityDistinguishesActualThreadToken(t *testing.T) {
 	}
 }
 
+func TestWindowsPrivateOwnershipRepairUsesImpersonatedSubject(t *testing.T) {
+	processUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || processUser == nil || processUser.User.Sid == nil {
+		t.Fatalf("current process token user: %v", err)
+	}
+	anonymous, err := windows.CreateWellKnownSid(windows.WinAnonymousSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	impersonateAnonymous := windows.NewLazySystemDLL("advapi32.dll").NewProc("ImpersonateAnonymousToken")
+	result, _, callErr := impersonateAnonymous.Call(uintptr(windows.CurrentThread()))
+	if result == 0 {
+		t.Fatalf("ImpersonateAnonymousToken: %v", callErr)
+	}
+	reverted := false
+	defer func() {
+		if !reverted {
+			if err := windows.RevertToSelf(); err != nil {
+				t.Errorf("revert anonymous impersonation: %v", err)
+			}
+		}
+	}()
+
+	identity, err := windowsProtectionIdentity()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !identity.impersonated || !identity.sid.Equals(anonymous) {
+		t.Fatalf("effective protection subject = %+v, want anonymous SID %s", identity, anonymous)
+	}
+	if identity.sid.Equals(processUser.User.Sid) {
+		t.Fatal("anonymous thread token did not produce a distinct effective SID")
+	}
+	if err := windows.RevertToSelf(); err != nil {
+		t.Fatalf("revert anonymous impersonation: %v", err)
+	}
+	reverted = true
+
+	sid := identity.sid.String()
+	descriptor, err := windows.SecurityDescriptorFromString(
+		"O:" + sid + "D:P(A;;GA;;;" + sid + ")(A;;GA;;;SY)",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repairable, err := privateSecurityDescriptorIsWriterRepairableForSubject(
+		descriptor,
+		identity,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repairable {
+		t.Fatal("repairability rejected the effective impersonated subject")
+	}
+	repairable, err = privateSecurityDescriptorIsWriterRepairableForSubject(
+		descriptor,
+		windowsProtectionSubject{sid: processUser.User.Sid},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repairable {
+		t.Fatal("repairability accepted the different process-token subject")
+	}
+}
+
 func TestOrdinaryWindowsProtectionRetainsLegacyAdministratorACENormalization(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ordinary-private.json")
 	if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {

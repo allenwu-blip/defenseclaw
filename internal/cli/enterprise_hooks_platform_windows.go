@@ -132,15 +132,26 @@ func windowsEnterpriseDesiredEnrollments(
 		if !target.IsEnabled() {
 			continue
 		}
-		sid, err := windows.StringToSid(strings.TrimSpace(target.SID))
+		resolved, err := resolveEnterpriseHookTargetValues(
+			target.User,
+			target.UserHome,
+			intPtrValue(target.UID),
+			intPtrValue(target.GID),
+			target.SID,
+			target.DataDir,
+		)
+		if err != nil {
+			return nil, nil, err
+		}
+		sid, err := windows.StringToSid(strings.TrimSpace(resolved.sid))
 		if err != nil || sid == nil {
-			return nil, nil, fmt.Errorf("invalid Windows enrollment SID %q", target.SID)
+			return nil, nil, fmt.Errorf("invalid Windows enrollment SID %q", resolved.sid)
 		}
 		switch strings.ToLower(strings.TrimSpace(target.Connector)) {
 		case "claudecode":
 			desiredClaude = append(desiredClaude, sid.String())
 		case "codex":
-			dataDir := filepath.Join(filepath.Clean(target.UserHome), ".defenseclaw")
+			dataDir := filepath.Join(filepath.Clean(resolved.home), ".defenseclaw")
 			if configured := strings.TrimSpace(target.DataDir); configured != "" {
 				configured, err = filepath.Abs(configured)
 				if err != nil {
