@@ -1498,6 +1498,15 @@ print(json.dumps({"entries": len(expected), "command": next(iter(commands))}))
     }
 }
 
+function Get-WindsurfExpectedEventNames {
+    return @(
+        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
+        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
+        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
+        'post_setup_worktree'
+    )
+}
+
 function Assert-WindsurfWindowsHookConfig(
     [string]$Config,
     [string]$ExpectedAdapter,
@@ -1506,12 +1515,7 @@ function Assert-WindsurfWindowsHookConfig(
     try { $settings = $Config | ConvertFrom-Json -ErrorAction Stop }
     catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
 
-    $expectedEvents = @(
-        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
-        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
-        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
-        'post_setup_worktree'
-    )
+    $expectedEvents = @(Get-WindsurfExpectedEventNames)
     if ($null -eq $settings.hooks) { throw "$Context does not contain a hooks object" }
     $actualEvents = @($settings.hooks.PSObject.Properties.Name)
     $actualEventKey = (@($actualEvents | Sort-Object) -join "`0")
@@ -2104,9 +2108,15 @@ function Assert-DoctorWindowsHookRegistration {
             'antigravity' { "does not use DefenseClaw's hook runtime" }
         }
         $tamperDetailMatched = $tamperedCheck.detail -match [regex]::Escape($expectedTamperDetail)
-        if ($Connector -eq 'windsurf' -and
-            $tamperedCheck.detail -match 'has 0 DefenseClaw handlers for (?:pre|post)_mcp_tool_use; expected exactly one') {
-            $tamperDetailMatched = $true
+        if ($Connector -eq 'windsurf') {
+            $zeroHandler = [regex]::Match(
+                [string]$tamperedCheck.detail,
+                'has 0 DefenseClaw handlers for (?<event>[a-z_]+); expected exactly one'
+            )
+            if ($zeroHandler.Success -and
+                @(Get-WindsurfExpectedEventNames) -ccontains $zeroHandler.Groups['event'].Value) {
+                $tamperDetailMatched = $true
+            }
         }
         if ($tamperedCheck.status -ne 'fail' -or -not $tamperDetailMatched) {
             throw "Doctor did not reject the tampered $Connector hook command: $($tamperedCheck.status) $($tamperedCheck.detail)"

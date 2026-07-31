@@ -3031,15 +3031,20 @@ function Assert-WizardHookRegistration(
             $registration,
             '(?m)^\s*command_windows\s*=\s*(?<literal>"(?:\\.|[^"\\])*"|''[^'']*'')\s*$'
         ))
-        $codexV3Events = @(
-            'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
-            'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact',
-            'PostCompact', 'Stop'
-        )
-        if ($tomlStrings.Count -ne $codexV3Events.Count) {
-            throw "wizard-selected Codex registration has $($tomlStrings.Count) command_windows overrides, expected $($codexV3Events.Count)"
+        $codexEventsByContract = @{
+            'codex-hooks-v3' = @(
+                'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
+                'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact',
+                'PostCompact', 'Stop'
+            )
+            'codex-hooks-v4' = @(
+                'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
+                'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact',
+                'PostCompact', 'Stop', 'SessionEnd'
+            )
         }
         $registeredEvents = [Collections.Generic.List[string]]::new()
+        $registeredContract = ''
         $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*'')\s+-ArgumentList\s+@\((?<arguments>''(?:''''|[^''])*''(?:,''(?:''''|[^''])*'')*)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
         foreach ($tomlString in $tomlStrings) {
             $literal = $tomlString.Groups['literal'].Value
@@ -3069,24 +3074,41 @@ function Assert-WizardHookRegistration(
                 ''
             }
             $boundEvent = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
+            $boundContract = if ($arguments.Count -eq 7) { $arguments[6] } else { '' }
+            if (-not $codexEventsByContract.ContainsKey($boundContract)) {
+                throw "wizard-selected Codex registration uses unsupported hook contract: $boundContract"
+            }
+            if ([string]::IsNullOrEmpty($registeredContract)) {
+                $registeredContract = $boundContract
+            } elseif ($registeredContract -cne $boundContract) {
+                throw "wizard-selected Codex registration mixes hook contracts: $registeredContract, $boundContract"
+            }
+            $expectedEvents = @($codexEventsByContract[$boundContract])
             if (-not $startProcess.Success -or
                 ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
                 [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
                 $arguments.Count -ne 7 -or
                 ($arguments -join "`0") -cne (@(
                     'hook', '--connector', 'codex', '--event', $boundEvent,
-                    '--hook-contract', 'codex-hooks-v3'
+                    '--hook-contract', $boundContract
                 ) -join "`0") -or
-                $boundEvent -cnotin $codexV3Events -or
+                $boundEvent -cnotin $expectedEvents -or
                 $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
                 $script -match '(?i)\$LASTEXITCODE') {
                 throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"
             }
             $registeredEvents.Add($boundEvent)
         }
+        if ([string]::IsNullOrEmpty($registeredContract)) {
+            throw 'wizard-selected Codex registration contains no supported command_windows hooks'
+        }
+        $expectedEvents = @($codexEventsByContract[$registeredContract])
+        if ($tomlStrings.Count -ne $expectedEvents.Count) {
+            throw "wizard-selected Codex registration has $($tomlStrings.Count) command_windows overrides, expected the exact $registeredContract roster of $($expectedEvents.Count)"
+        }
         if ((($registeredEvents | Sort-Object) -join "`0") -cne
-            (($codexV3Events | Sort-Object) -join "`0")) {
-            throw "wizard-selected Codex registration does not contain the exact codex-hooks-v3 event set: $($Specification.ConfigPath)"
+            (($expectedEvents | Sort-Object) -join "`0")) {
+            throw "wizard-selected Codex registration does not contain the exact $registeredContract event set: $($Specification.ConfigPath)"
         }
     } elseif ($Specification.Connector -eq 'antigravity') {
         try { $hooks = $registration | ConvertFrom-Json -ErrorAction Stop }

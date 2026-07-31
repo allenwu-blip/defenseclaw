@@ -64,3 +64,65 @@ def test_preparer_refuses_operator_observability_graph(tmp_path: Path) -> None:
         )
 
     assert config.read_text(encoding="utf-8") == original
+
+
+def test_preparer_is_idempotent_for_exact_owned_destination(tmp_path: Path) -> None:
+    helper = _load_helper()
+    config = tmp_path / "config.yaml"
+    jsonl = tmp_path / "gateway.jsonl"
+    original = yaml.safe_dump(
+        {
+            "config_version": 8,
+            "observability": {
+                "destinations": [
+                    {
+                        "name": "windows-contract-jsonl",
+                        "kind": "jsonl",
+                        "path": str(jsonl),
+                    }
+                ]
+            },
+        },
+        sort_keys=False,
+    )
+    config.write_text(original, encoding="utf-8")
+
+    helper.prepare_windows_contract_v8(
+        config,
+        data_dir=tmp_path,
+        jsonl_path=jsonl,
+        validator=lambda _path, _data_dir: None,
+    )
+
+    assert config.read_text(encoding="utf-8") == original
+
+
+def test_preparer_refuses_similar_non_owned_destination(tmp_path: Path) -> None:
+    helper = _load_helper()
+    config = tmp_path / "config.yaml"
+    original = yaml.safe_dump(
+        {
+            "config_version": 8,
+            "observability": {
+                "destinations": [
+                    {
+                        "name": "windows-contract-jsonl",
+                        "kind": "jsonl",
+                        "path": str(tmp_path / "different.jsonl"),
+                    }
+                ]
+            },
+        },
+        sort_keys=False,
+    )
+    config.write_text(original, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="exact owned"):
+        helper.prepare_windows_contract_v8(
+            config,
+            data_dir=tmp_path,
+            jsonl_path=tmp_path / "gateway.jsonl",
+            validator=lambda _path, _data_dir: None,
+        )
+
+    assert config.read_text(encoding="utf-8") == original

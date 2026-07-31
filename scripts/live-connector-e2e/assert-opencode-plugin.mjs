@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { copyFile, rm } from "node:fs/promises";
+import { basename } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [pluginPath, scratchPath, expected, command] = process.argv.slice(2);
@@ -17,6 +18,7 @@ if (
 }
 
 await copyFile(pluginPath, scratchPath);
+const probeID = basename(scratchPath, ".mjs");
 const nativeFetch = globalThis.fetch;
 let observedAfterPayload;
 globalThis.fetch = async (url, init) => {
@@ -56,7 +58,7 @@ try {
         type: command,
         properties: {
           info: {
-            id: "defenseclaw-windows-contract-lifecycle",
+            id: `defenseclaw-windows-contract-lifecycle-${probeID}`,
             title: "DefenseClaw Windows lifecycle contract",
           },
         },
@@ -68,8 +70,8 @@ try {
       await hooks["tool.execute.before"](
         {
           tool: "bash",
-          sessionID: "defenseclaw-windows-contract",
-          callID: "defenseclaw-windows-contract-call",
+          sessionID: `defenseclaw-windows-contract-${probeID}`,
+          callID: `defenseclaw-windows-contract-${probeID}-call`,
         },
         { args: { command } },
       );
@@ -89,8 +91,8 @@ try {
     await hooks["tool.execute.after"](
       {
         tool: "bash",
-        sessionID: "defenseclaw-windows-contract",
-        callID: "defenseclaw-windows-contract-call",
+        sessionID: `defenseclaw-windows-contract-${probeID}`,
+        callID: `defenseclaw-windows-contract-${probeID}-call`,
         args: { command },
       },
       {

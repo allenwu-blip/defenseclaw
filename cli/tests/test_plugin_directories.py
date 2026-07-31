@@ -198,6 +198,39 @@ def test_codex_stable_directory_rejects_content_mutation(
         plugin_directories_module._stable_directory_info(str(directory))
 
 
+def test_codex_stable_directory_accepts_nonportable_size(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    directory = tmp_path / "cache"
+    directory.mkdir()
+    original_stat = os.stat
+    before = original_stat(directory, follow_symlinks=False)
+    after = SimpleNamespace(
+        st_mode=before.st_mode,
+        st_dev=before.st_dev,
+        st_ino=before.st_ino,
+        st_size=before.st_size + 4096,
+        st_mtime_ns=before.st_mtime_ns,
+        st_ctime_ns=before.st_ctime_ns,
+        st_file_attributes=getattr(before, "st_file_attributes", 0),
+    )
+    observations = iter((before, after))
+
+    monkeypatch.setattr(
+        plugin_directories_module,
+        "reject_reparse_path",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        plugin_directories_module.os,
+        "stat",
+        lambda *_args, **_kwargs: next(observations),
+    )
+
+    assert plugin_directories_module._stable_directory_info(str(directory)) is after
+
+
 def test_codex_cache_accepts_missing_windows_direntry_identity(
     tmp_path: Path,
     monkeypatch,

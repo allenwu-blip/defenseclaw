@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $harness = Join-Path $PSScriptRoot 'run-windows.ps1'
+$openCodeAssertion = Join-Path $PSScriptRoot 'assert-opencode-plugin.mjs'
 $nativeHarness = Join-Path $root 'scripts\windows-native-ci.ps1'
 $wizardHarness = Join-Path $root 'scripts\test-windows-setup-wizard.ps1'
 $standardUserCI = Join-Path $root 'scripts\invoke-windows-setup-standard-user-ci.ps1'
@@ -961,6 +962,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     $liveWorkflowText = [IO.File]::ReadAllText($liveWorkflow)
     $ciWorkflowText = [IO.File]::ReadAllText($ciWorkflow)
     $harnessText = [IO.File]::ReadAllText($harness)
+    $openCodeAssertionText = [IO.File]::ReadAllText($openCodeAssertion)
     $nativeHarnessText = [IO.File]::ReadAllText($nativeHarness)
     $wizardHarnessText = [IO.File]::ReadAllText($wizardHarness)
     $standardUserCIText = [IO.File]::ReadAllText($standardUserCI)
@@ -1681,6 +1683,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         $latestHookDecision -match 'Get-JsonPropertyValue \$body ''defenseclaw\.hook\.event''' -and
         $hookDecisionWait -match '\$SessionID \$HookEvent') `
         'gateway hook readiness accepts only the current probe session and event decision'
+    Assert-True ($openCodeAssertionText.Contains('const probeID = basename(scratchPath, ".mjs");') -and
+        [regex]::Matches(
+            $openCodeAssertionText,
+            'defenseclaw-windows-contract-\$\{probeID\}'
+        ).Count -ge 4) `
+        'OpenCode contract probes use a fresh correlation identity for every helper invocation'
     $isolatedCleanup = [regex]::Match($harnessText, '(?s)function Stop-IsolatedProcessTree\b.*?\n\}').Value
     Assert-True ($isolatedCleanup -match 'HashSet\[int\]' -and
         $isolatedCleanup -match '\$ancestor\[0\]\.ParentProcessId' -and
@@ -1696,7 +1704,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'doctor:windows-hook-tamper' -and
         $harnessText -match 'cannot be resolved' -and
         $harnessText -match 'does not use the native hook runtime' -and
-        $harnessText.Contains('has 0 DefenseClaw handlers for (?:pre|post)_mcp_tool_use; expected exactly one') -and
+        $harnessText.Contains('function Get-WindsurfExpectedEventNames') -and
+        $harnessText.Contains('has 0 DefenseClaw handlers for (?<event>[a-z_]+); expected exactly one') -and
+        $harnessText.Contains('@(Get-WindsurfExpectedEventNames) -ccontains') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
         'Doctor connector contract rejects connector-specific tampered hook commands with exit 1'
     Assert-True ($harnessText -match 'WriteAllBytes\(\$configPath, \$originalConfig\)' -and $harnessText -match 'doctor:windows-hook-recovery') 'Doctor connector contract restores the registration byte-for-byte and validates recovery'
