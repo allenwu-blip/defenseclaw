@@ -86,6 +86,21 @@ def test_macos_contract_smoke_may_explicitly_skip_missing_claude_selection(
         _record_windows_setup_agent_selections(tmp_path, ("claudecode",))
 
 
+def test_macos_contract_smoke_may_explicitly_skip_missing_codex_selection(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT", "1")
+    with (
+        patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
+        patch(
+            "defenseclaw.agent_selection.record_setup_agent_selections",
+            return_value=({}, {"codex": "agent is intentionally absent"}),
+        ),
+    ):
+        _record_windows_setup_agent_selections(tmp_path, ("codex",))
+
+
 def test_macos_production_setup_requires_claude_selection(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT", raising=False)
     with (

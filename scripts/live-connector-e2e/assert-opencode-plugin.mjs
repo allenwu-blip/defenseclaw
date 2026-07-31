@@ -68,12 +68,13 @@ try {
     console.log(JSON.stringify({ decision: "allow", event: eventType }));
   } else {
     let blocked = false;
+    const toolCallID = `defenseclaw-windows-contract-${probeID}-${expected}-call`;
     try {
       await hooks["tool.execute.before"](
         {
           tool: "bash",
           sessionID: `defenseclaw-windows-contract-${probeID}`,
-          callID: `defenseclaw-windows-contract-${probeID}-call`,
+          callID: toolCallID,
         },
         { args: { command } },
       );
@@ -94,7 +95,7 @@ try {
       {
         tool: "bash",
         sessionID: `defenseclaw-windows-contract-${probeID}`,
-        callID: `defenseclaw-windows-contract-${probeID}-call`,
+        callID: toolCallID,
         args: { command },
       },
       {

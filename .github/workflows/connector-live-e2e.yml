@@ -276,7 +276,12 @@ jobs:
 
       - name: Install official OmniGent contract runtime
         if: steps.select.outputs.run == 'true' && matrix.connector == 'omnigent'
-        run: uv tool install --python 3.12 --force omnigent==0.7.0
+        run: |
+          uv tool install --python 3.12 --force omnigent==0.7.0
+          IFS= read -r omnigent_shebang < "$(command -v omnigent)"
+          omnigent_python="${omnigent_shebang#\#!}"
+          printf 'DEFENSECLAW_TRUSTED_BIN_PREFIXES=%s\n' \
+            "$(dirname "${omnigent_python}")" >> "$GITHUB_ENV"
 
       # Deterministic Go contract tests for this connector. The shared
       # connector lifecycle / observability / verify matrices are

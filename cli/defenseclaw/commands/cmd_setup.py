@@ -3758,7 +3758,8 @@ def _record_windows_setup_agent_selections(
         # Layer-A contract smoke deliberately runs without an upstream agent.
         # Keep that explicit exploratory escape hatch usable while production
         # and certification setup continue to require protected evidence.
-        selection_errors.pop("claudecode", None)
+        for connector in ("codex", "claudecode"):
+            selection_errors.pop(connector, None)
     if selection_errors:
         details = "; ".join(f"{name}: {detail}" for name, detail in sorted(selection_errors.items()))
         raise click.ClickException(
