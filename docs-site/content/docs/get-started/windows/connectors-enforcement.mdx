@@ -5,7 +5,7 @@ keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
   - DefenseClaw Windows Cursor
-  - DefenseClaw Windows Windsurf
+  - DefenseClaw Windows legacy Cascade
   - DefenseClaw Windows Hermes Agent
   - DefenseClaw Windows OpenCode
   - DefenseClaw Windows OmniGent
@@ -16,7 +16,7 @@ keywords:
 
 Native Windows enforcement is connector-native and proxy-free. A supported
 or preview agent invokes its managed native hook or awaited policy path. Codex, Claude Code,
-and Hermes invoke `defenseclaw-hook.exe`; Cursor and Windsurf use managed native
+and Hermes invoke `defenseclaw-hook.exe`; Cursor and legacy Cascade use managed native
 PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
 OmniGent imports a Python policy bridge into its selected native `uv tool`
 environment.
@@ -185,16 +185,34 @@ marketplace/team/private, dynamic plugin/MCP, user UI rules, and effective
 same-name selection remain unverified. The payload `cursor_version` identifies
 the Cursor application/Desktop; `agent --version` remains separate Agent CLI
 evidence. Cursor remains preview/not certified.
-## Windsurf
 
-DefenseClaw binds Windsurf to the signed-in user's Windows Profile Known
+## Legacy Cascade (`windsurf`)
+
+This preview covers only the legacy Cascade agent in Devin Desktop. Devin Local
+is the current default for new tabs and uses separate lifecycle hooks and
+configuration; Devin Local, cloud agents, and ACP are unsupported by this
+connector.
+
+DefenseClaw binds the connector to the signed-in user's Windows Profile Known
 Folder and manages only
 `<bound-profile>\.codeium\windsurf\hooks.json`. The binding is persisted for
 repair, upgrade, reconciliation, and uninstall; maintenance never guesses from
 an ambient `USERPROFILE`. Existing top-level values, events, and foreign hook
 handlers are preserved.
 
-Windsurf's documented Windows transport runs a hook's `powershell` field via
+The connector captures the managed backup for this exact file before writing.
+It then requires one native DefenseClaw handler on every documented event,
+publishes the `windsurf-hooks-v1` lock/runtime metadata, and only afterward
+publishes Windsurf as active. Failure rolls back the partial connector instead
+of leaving another connector setup to repair it. The optional bound-profile
+`mcp_config.json` is inventory only and is not a hook-health prerequisite.
+
+System/`ProgramData` and workspace hook files plus enterprise, Team,
+cloud-dashboard, and MDM policy are not managed. Their precedence and effective
+deployment remain unverified, so this per-user connector does not claim
+authoritative enforcement across those layers.
+
+Cascade's documented Windows transport runs a hook's `powershell` field via
 `powershell -Command`. DefenseClaw writes no `command` fallback. Its generated
 `windsurf-hook.ps1` adapter uses only native Windows processes, forwards the
 vendor JSON stdin and child stdout/stderr, waits for the exact packaged
@@ -210,14 +228,17 @@ The registration covers all twelve documented Cascade events:
 | Non-blocking post-hooks | `post_read_code`, `post_write_code`, `post_run_command`, `post_mcp_tool_use`, `post_setup_worktree` |
 | Asynchronous response hooks | `post_cascade_response`, `post_cascade_response_with_transcript` |
 
-Windsurf's exit contract is exact: exit `0` proceeds, exit `2` blocks only the
+Cascade's exit contract is exact: exit `0` proceeds, exit `2` blocks only the
 five pre-hooks and shows stderr to the agent, and every other exit proceeds.
 Post-hooks cannot block; the two Cascade response hooks run asynchronously.
 Restricted Mode disables hooks entirely, so DefenseClaw cannot claim
 enforcement while that workspace mode is active. `defenseclaw doctor` reports
-these boundaries with adapter/hash/registration drift.
+these boundaries with adapter/hash/registration drift. Because Restricted Mode
+is a workspace UI state with no documented passive local signal, Doctor marks
+that state unverified instead of inferring it from event counters. Zero
+counters do not prove activation, failure, or certification.
 
-Windsurf has no native hook ask/HITL response. A `confirm` verdict uses the
+Cascade has no native hook ask/HITL response. A `confirm` verdict uses the
 connector's configured immediate fallback and remains visible as `raw_action`
 in audit; it cannot be approved and resumed from the DefenseClaw TUI.
 
@@ -364,9 +385,9 @@ defenseclaw guardrail fail-mode closed --connector opencode --yes
 defenseclaw guardrail status
 ```
 
-For Windsurf, “closed” means DefenseClaw adapter availability or invalid
+For legacy Cascade, “closed” means DefenseClaw adapter availability or invalid
 response failures become the vendor's blocking exit `2`. It does not broaden
-Windsurf's semantics: arbitrary non-`2` hook errors still fail open, only the
+Cascade's semantics: arbitrary non-`2` hook errors still fail open, only the
 five documented pre-hooks can block, and Restricted Mode still disables all
 hooks.
 

@@ -3185,8 +3185,8 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
         "subprocess_policy": "none",
     },
     "windsurf": {
-        "label": "Windsurf",
-        "description": "Cascade hooks + documented local config discovery",
+        "label": "Devin Desktop — legacy Cascade",
+        "description": "legacy Cascade-only hooks + bounded local customization discovery",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -3303,8 +3303,9 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         ),
     ),
     "windsurf": (
-        "~/.codeium/windsurf/hooks.json hooks",
-        "Existing Windsurf MCP/rules paths are discovered but not guessed/created",
+        "Legacy Cascade only: ~/.codeium/windsurf/hooks.json hooks",
+        "Bound-user MCP plus non-enterprise Cascade rules/skills are discovered read-only",
+        "Devin Local/default-agent, cloud, ACP, and managed/ProgramData layers remain unsupported",
         "~/.defenseclaw/hooks/windsurf-hook.sh",
     ),
     "geminicli": (

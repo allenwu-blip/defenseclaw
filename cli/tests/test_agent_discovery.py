@@ -412,6 +412,23 @@ def test_windsurf_discovery_uses_bound_profile_not_ambient(
     assert str(ambient) not in signal.config_path
 
 
+def test_windsurf_optional_mcp_file_is_not_hook_configuration_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bound = tmp_path / "bound-profile"
+    mcp = bound / ".codeium" / "windsurf" / "mcp_config.json"
+    mcp.parent.mkdir(parents=True)
+    mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    _pin_home(monkeypatch, tmp_path / "ambient-profile")
+    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    signal = ad._scan_agent("windsurf")
+
+    assert signal.configured is False
+    assert signal.config_path == ""
+
+
 @pytest.mark.parametrize(
     ("connector", "relative_config"),
     [

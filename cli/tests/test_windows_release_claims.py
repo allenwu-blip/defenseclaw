@@ -65,7 +65,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "Windows ARM64" in text and "Not certified" in text
     assert "| Codex | `codex` | **Preview**" in text
     assert "| Claude Code | `claudecode` | **Preview**" in text
-    assert "| Windsurf | `windsurf` | **Preview**" in text
+    assert "| Devin Desktop — legacy Cascade only | `windsurf` | **Preview / not certified**" in text
     assert "| OpenCode | `opencode` | **Preview**" in text
     assert "| OmniGent | `omnigent` | **Preview — native degraded**" in text
     assert "local observability" in text
@@ -102,7 +102,7 @@ def test_claude_windows_docs_keep_preview_and_optional_git_boundary() -> None:
 
     assert "| Claude Code connector setup | **Preview**" in capabilities
     assert (
-        "**Preview** for Claude Code/Codex/Cursor/Windsurf/Hermes/OpenCode/OmniGent"
+        "**Preview** for Claude Code/Codex/Cursor/legacy Cascade/Hermes/OpenCode/OmniGent"
         in capabilities
     )
     assert "`claude-code`, `codex`, `cursor`, `windsurf`, `hermes`" in capabilities

@@ -87,8 +87,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     ),
     "windsurf": ConnectorPlatformSupport(
         PREVIEW,
-        "Windsurf Cascade hooks and the native PowerShell adapter are implemented; "
-        "packaged and official-client Windows x64 certification is pending.",
+        "Legacy Cascade-only hooks and the native PowerShell adapter are available as a Windows x64 preview. "
+        "Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer "
+        "enforcement are not covered; packaged and official-client certification is pending.",
     ),
     "geminicli": ConnectorPlatformSupport(
         UNSUPPORTED,

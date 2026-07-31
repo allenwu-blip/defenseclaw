@@ -62,7 +62,7 @@ Pick a row with **proxy family**, **block: yes**, **native ask: yes**, **fail-cl
 
 ### "I want enforcement on Claude Code without the proxy"
 
-Hook-only enforcement is supported on [Claude Code](/docs/connectors/claudecode), [Codex](/docs/connectors/codex), [Gemini CLI](/docs/connectors/geminicli), [Hermes](/docs/connectors/hermes), [Windsurf](/docs/connectors/windsurf), [Copilot CLI](/docs/connectors/copilot), [OpenHands](/docs/connectors/openhands), [Antigravity](/docs/connectors/antigravity), [OpenCode](/docs/connectors/opencode), and [OmniGent](/docs/connectors/omnigent). [Cursor](/docs/connectors/cursor) is advisory: Enterprise, Team, and Project hook responses merge above DefenseClaw's user hook. The broader constraint is that hook-only enforcement cannot block a request the agent has not yet asked the hook about.
+Hook-only enforcement is supported on [Claude Code](/docs/connectors/claudecode), [Codex](/docs/connectors/codex), [Gemini CLI](/docs/connectors/geminicli), [Hermes](/docs/connectors/hermes), [Devin Desktop legacy Cascade](/docs/connectors/windsurf), [Copilot CLI](/docs/connectors/copilot), [OpenHands](/docs/connectors/openhands), [Antigravity](/docs/connectors/antigravity), [OpenCode](/docs/connectors/opencode), and [OmniGent](/docs/connectors/omnigent). [Cursor](/docs/connectors/cursor) is advisory: Enterprise, Team, and Project hook responses merge above DefenseClaw's user hook. The `windsurf` alias covers legacy Cascade only, not Devin Local, cloud, or ACP. The broader constraint is that hook-only enforcement cannot block a request the agent has not yet asked the hook about.
 
 ### "I want HITL approvals to surface inside the agent UI"
 
@@ -76,4 +76,4 @@ connector-specific fallback; there is no TUI approval queue.
 
 ### "I want fail-closed on transport failures"
 
-Pick a row with **fail-closed: yes**: OpenClaw, ZeptoClaw, Claude Code, Codex, Gemini CLI, OpenCode, OpenHands, and OmniGent. Cursor, GitHub Copilot CLI, Hermes, Windsurf, and Antigravity do not expose a DefenseClaw-controlled authoritative fail-closed response.
+Pick a row with **fail-closed: yes**: OpenClaw, ZeptoClaw, Claude Code, Codex, Gemini CLI, OpenCode, OpenHands, and OmniGent. Cursor, GitHub Copilot CLI, Hermes, legacy Cascade, and Antigravity do not expose a generic DefenseClaw-controlled authoritative fail-closed transport response. Legacy Cascade can use vendor exit `2` only on its five documented blocking pre-hooks.

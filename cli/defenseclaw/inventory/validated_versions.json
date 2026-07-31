@@ -64,7 +64,7 @@
     "windsurf": {
       "version_probe": "",
       "live": false,
-      "notes": "contract-only (Layer A); no headless CLI/SDK"
+      "notes": "legacy Cascade-only contract (Layer A); preview/not certified. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed/ProgramData layers are unsupported and unverified; no real-client evidence is recorded."
     },
     "opencode": {
       "version_probe": "opencode --version",

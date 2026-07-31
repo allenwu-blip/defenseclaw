@@ -2321,6 +2321,57 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertIn(str(project_agents), inv["connector_agent_dirs"])
         self.assertIn(str(project_rules), inv["connector_rule_dirs"])
 
+    def test_windsurf_inventory_classifies_cascade_rules_and_discloses_limits(self):
+        cfg = _make_cfg_for_connector(self.tmp, "windsurf")
+        bound = Path(self.tmp) / "windsurf-profile"
+        repo = Path(self.tmp) / "repo"
+        workspace = repo / "app"
+        (repo / ".git").mkdir(parents=True)
+        workspace.mkdir()
+        cfg.claw.workspace_dir = str(workspace)
+
+        sources = (
+            bound / ".codeium" / "windsurf" / "memories" / "global_rules.md",
+            repo / "AGENTS.md",
+            workspace / ".devin" / "rules" / "preferred.md",
+            workspace / ".windsurf" / "rules" / "legacy.md",
+            workspace / ".windsurfrules",
+        )
+        for source in sources:
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_text("rule\n", encoding="utf-8")
+
+        with patch.dict(
+            os.environ,
+            {"WINDSURF_USER_HOME": str(bound)},
+            clear=False,
+        ), self._patch_skill_dirs([]), self._patch_plugin_dirs([]), self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        self.assertEqual(
+            {rule["source_format"] for rule in inv["rules"]},
+            {
+                "user-global",
+                "directory-scoped",
+                "preferred-devin",
+                "legacy-windsurf",
+                "legacy-single-file",
+            },
+        )
+        self.assertTrue(all(rule["discovery_only"] for rule in inv["rules"]))
+        self.assertTrue(
+            all(not rule["activation_verified"] for rule in inv["rules"])
+        )
+        limitations = {
+            item["category"]: item for item in inv["limitations"]
+        }
+        self.assertEqual(
+            {category: limitations[category]["status"] for category in ("mcp", "rules", "skills")},
+            {"mcp": "unverified", "rules": "unverified", "skills": "unverified"},
+        )
+        self.assertIn("Devin Local", limitations["mcp"]["reason"])
+        self.assertIn("ProgramData", limitations["rules"]["reason"])
+
     def test_codex_agents_and_rules_reject_reparse_ancestry(self):
         cfg = _make_cfg_for_connector(self.tmp, "codex")
         repo = Path(self.tmp) / "repo"

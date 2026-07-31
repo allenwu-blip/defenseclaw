@@ -44,7 +44,10 @@ intact when diagnosing a problem.
 | `%CODEX_HOME%\config.toml` | Codex user config plus DefenseClaw-marked OTLP/notify fields. | Other Codex settings are user-owned; use DefenseClaw teardown to remove managed fields. |
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
-| `%USERPROFILE%\.codeium\windsurf\hooks.json` | Windsurf user hook configuration. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
+| `%USERPROFILE%\.codeium\windsurf\hooks.json` | Legacy Cascade user hook configuration in Devin Desktop. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. Devin Local uses separate hooks and is unsupported. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
+| `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Optional read-only legacy Cascade MCP inventory. It is not hook configuration and its absence does not make the connector unhealthy. | Manage MCP servers through Devin Desktop. DefenseClaw does not create this file or use it to repair hooks. |
+| `%USERPROFILE%\.defenseclaw\connector_backups\windsurf\config.json` | Managed ownership/restore receipt for the exact bound Cascade `hooks.json`. | Do not edit or copy it; setup/teardown use it for exact lifecycle custody. |
+| `%USERPROFILE%\.defenseclaw\hook_contract_lock.json` | Versioned connector readiness metadata. An active `windsurf` entry must identify `windsurf-hooks-v1` and the same bound `hooks.json`. | If Doctor reports a missing Windsurf lock, rerun `defenseclaw setup windsurf --yes --restart`; another connector setup is not a repair path. |
 | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` | OpenCode bridge plugin. Default config root is `%USERPROFILE%\.config\opencode`. | Carries a connector-scoped token. Do not edit or copy; Doctor detects digest drift and Setup reconciles it. Restart OpenCode after lifecycle changes. |
 | `%HERMES_HOME%\config.yaml` | Preview Hermes hook configuration. Default is `%LOCALAPPDATA%\hermes`. | Do not add a shell wrapper or edit DefenseClaw-owned handlers; use setup/remove. |
 
@@ -59,11 +62,11 @@ not a user-facing rollback directory.
 configuration overrides honored by their respective implementations. Set them
 to absolute, normalized native Windows paths before initial Setup or connector
 setup. The installer validates and records them; reparse ancestors are refused.
-Antigravity, Cursor, and Windsurf publish no equivalent configuration-home
+Antigravity, Cursor, and legacy Cascade publish no equivalent public configuration-home
 override. Antigravity's global hook path is fixed at
 `%USERPROFILE%\.gemini\config\hooks.json`; Setup keeps any predecessor custom
 path only as internal custody needed for exact migration and restoration.
-Cursor and Windsurf likewise record their exact native paths internally.
+Cursor and legacy Cascade likewise record their exact native paths internally.
 
 <Tabs items={['PowerShell', 'cmd']}>
   <Tab value="PowerShell">
@@ -92,7 +95,7 @@ Changing an environment value after installation does not authorize lifecycle
 commands to abandon the recorded home. Re-run supported connector setup or
 repair deliberately; do not move the directory and edit installer state.
 
-Windsurf has no supported user-home override. Setup resolves the signed-in
+The legacy Cascade connector has no public user-home override. Setup resolves the signed-in
 user's Windows Profile Known Folder, validates it, and persists that exact
 profile-root binding. Repair, upgrade, reconciliation, and uninstall use only
 the persisted binding or the exact target in DefenseClaw's managed backup.
@@ -332,7 +335,7 @@ Complete this without real secrets or destructive tools:
   not a stale checkout or copied binary.
 - Confirm each configured connector has loaded its configuration, restarting
   the official client where documented, then repeat the harmless per-connector
-  event check above. For Windsurf, use an interactive native Windows desktop
+  event check above. For legacy Cascade, use an interactive native Windows desktop
   session; a CLI, WSL, or shell substitute is not valid evidence.
 - Verify optional destinations with `defenseclaw observability plan` and the
   destination-specific test command. A destination failure does not erase the

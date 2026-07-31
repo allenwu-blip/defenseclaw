@@ -35,6 +35,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, NamedTuple, TypedDict
 
 import yaml
@@ -1585,6 +1586,34 @@ _FILESYSTEM_ONLY_CONNECTOR_NOTES: dict[str, str] = {
 
 _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
     (
+        "windsurf",
+        "skills",
+    ): (
+        "legacy Cascade user and pinned-workspace .windsurf/skills and "
+        ".agents/skills roots are inventoried with no-follow discovery; "
+        "optional Claude-config reading plus system/ProgramData and managed "
+        "enterprise skill layers are excluded and unverified"
+    ),
+    (
+        "windsurf",
+        "rules",
+    ): (
+        "legacy Cascade user-global, preferred .devin/rules, legacy "
+        ".windsurf/rules and .windsurfrules, and recursive/ancestor AGENTS.md "
+        "sources are inventoried with bounded no-follow discovery; cloud "
+        "dashboard, MDM, ProgramData/system, and effective higher-layer "
+        "enforcement are excluded and unverified"
+    ),
+    (
+        "windsurf",
+        "mcp",
+    ): (
+        "only the legacy Cascade mcp_config.json under the persisted bound "
+        "WINDSURF_USER_HOME is inventoried; Devin Local config files, cloud, "
+        "Team/Enterprise registry, and allowlist state are unsupported and "
+        "unverified"
+    ),
+    (
         "copilot",
         "skills",
     ): (
@@ -1776,6 +1805,53 @@ def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _copilot_instruction_rules(_connector_workspace_dir(cfg))
     if normalized == "cursor":
         return _cursor_rules_from_workspace(_connector_workspace_dir(cfg))
+    if normalized == "windsurf":
+        workspace = _connector_workspace_dir(cfg)
+        rows: list[dict[str, Any]] = []
+        for source in connector_paths.windsurf_rule_files(workspace):
+            folded_parts = [part.casefold() for part in Path(source).parts]
+            filename = os.path.basename(source)
+            filename_folded = filename.casefold()
+            if filename_folded == "global_rules.md":
+                kind = "global-rule"
+                source_format = "user-global"
+            elif filename_folded == "agents.md":
+                kind = "agents-md"
+                source_format = "directory-scoped"
+            elif filename_folded == ".windsurfrules":
+                kind = "legacy-rule"
+                source_format = "legacy-single-file"
+            elif ".devin" in folded_parts:
+                kind = "rule"
+                source_format = "preferred-devin"
+            elif ".windsurf" in folded_parts:
+                kind = "legacy-rule"
+                source_format = "legacy-windsurf"
+            else:
+                kind = "global-rule"
+                source_format = "user-global"
+
+            identity = source
+            if workspace:
+                try:
+                    relative = os.path.relpath(source, workspace)
+                except ValueError:
+                    relative = source
+                if relative != os.pardir and not relative.startswith(os.pardir + os.sep):
+                    identity = relative
+            rows.append(
+                {
+                    "id": identity.replace(os.sep, "/"),
+                    "name": filename,
+                    "source": source,
+                    "scope": "user" if source_format == "user-global" else "workspace",
+                    "kind": kind,
+                    "source_format": source_format,
+                    "discovery_only": True,
+                    "activation_verified": False,
+                }
+            )
+        return rows
     if normalized != "codex":
         return []
 
@@ -3216,11 +3292,16 @@ def _build_aibom_from_filesystem(
         result = results.get(cat_key)
         if result is None or result.error is not None:
             continue
+        partial_status = (
+            InventoryCapabilityStatus.UNVERIFIED
+            if partial_connector == "windsurf"
+            else InventoryCapabilityStatus.UNSUPPORTED
+        )
         limitations.append(
             {
                 "connector": connector,
                 "category": cat_key,
-                "status": InventoryCapabilityStatus.UNSUPPORTED,
+                "status": partial_status,
                 "reason": note,
             }
         )

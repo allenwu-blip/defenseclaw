@@ -208,8 +208,8 @@
     },
     {
       "id": "windsurf",
-      "label": "Windsurf",
-      "summary": "Cascade hooks across prompts, commands, code access, and MCP tools.",
+      "label": "Devin Desktop — legacy Cascade",
+      "summary": "Preview coverage for legacy Cascade hooks; Devin Local, cloud, and ACP are unsupported.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
@@ -228,7 +228,7 @@
         "scope": "user"
       },
       "hilt": "Can block supported hook events but has no native human-approval surface; confirm verdicts fall back explicitly.",
-      "notes": "Cascade hooks under ~/.codeium/windsurf/hooks.json. DefenseClaw can map its configured availability failures to Windsurf's blocking exit 2 on the five documented pre-hooks; Windsurf itself fails open on other non-zero exits. Post hooks are non-blocking, Cascade response post hooks are asynchronous, and Restricted Mode disables hooks. Existing MCP/rules are discovered, never auto-created."
+      "notes": "Legacy Cascade hooks under the bound user's ~/.codeium/windsurf/hooks.json. DefenseClaw can map configured availability failures to exit 2 on the five documented pre-hooks; other non-zero exits proceed. Post hooks are non-blocking, Cascade response hooks are asynchronous, and Restricted Mode disables Cascade hooks. Read-only inventory covers the bound-profile Cascade MCP file, non-enterprise user/workspace rules and skills, and recursive or ancestor AGENTS.md with bounded no-follow traversal. Devin Local (the current default), cloud, ACP, ProgramData, enterprise, Team, cloud-dashboard, MDM, and managed precedence are unsupported or unverified."
     },
     {
       "id": "zeptoclaw",

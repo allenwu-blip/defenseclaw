@@ -1234,7 +1234,7 @@ def friendly_connector_name(connector: str) -> str:
         case "cursor":
             return "Cursor"
         case "windsurf":
-            return "Windsurf"
+            return "Devin Desktop — legacy Cascade"
         case "geminicli":
             return "Gemini CLI"
         case "copilot":
@@ -1280,7 +1280,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("zeptoclaw", "skills"): ("~/.zeptoclaw/skills", "./.zeptoclaw/skills"),
         ("hermes", "skills"): (os.path.join(hermes_root, "skills"),),
         ("cursor", "skills"): ("./.cursor/skills", "./.agents/skills", "~/.cursor/skills", "~/.agents/skills"),
-        ("windsurf", "skills"): ("unsupported/documented paths only",),
+        ("windsurf", "skills"): (
+            "~/.codeium/windsurf/skills",
+            "~/.agents/skills",
+            "./.windsurf/skills",
+            "./.agents/skills",
+        ),
         ("geminicli", "skills"): ("./.gemini/skills", "./.agents/skills"),
         ("copilot", "skills"): ("./.github/skills", "./.agents/skills", "~/.copilot/skills"),
         ("openhands", "skills"): ("~/.openhands/skills", "~/.openhands/microagents", "~/.agents/skills"),

@@ -1268,6 +1268,16 @@ def rule_dirs(
         return copilot_instruction_paths(workspace_dir)
     if name == "cursor":
         return _dedup([_workspace_path(workspace_dir, ".cursor", "rules")])
+    if name == "windsurf":
+        paths = [os.path.join(windsurf_config_home(), "memories")]
+        for layer in _windsurf_workspace_ancestors(workspace_dir):
+            paths.extend(
+                [
+                    os.path.join(layer, ".devin", "rules"),
+                    os.path.join(layer, ".windsurf", "rules"),
+                ]
+            )
+        return _dedup(paths)
     if name != "codex":
         return []
     paths = [
@@ -1673,12 +1683,190 @@ def _cursor_walkable_directory(path: str) -> bool:
 
 
 def _windsurf_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    home = windsurf_user_home()
     return _dedup(
         [
+            os.path.join(home, ".codeium", "windsurf", "skills"),
+            os.path.join(home, ".agents", "skills"),
             _workspace_path(workspace_dir, ".windsurf", "skills"),
             _workspace_path(workspace_dir, ".agents", "skills"),
         ]
     )
+
+
+_WINDSURF_CUSTOMIZATION_DIR_LIMIT = 32768
+_WINDSURF_CUSTOMIZATION_FILE_LIMIT = 65536
+
+
+def _windsurf_workspace_ancestors(workspace_dir: str | None) -> list[str]:
+    """Return the pinned workspace through its repository root, closest first."""
+
+    start = _workspace_dir(workspace_dir)
+    if not start:
+        return []
+    repository_root = _windsurf_repository_root(start)
+    stop = repository_root or start
+    layers: list[str] = []
+    current = start
+    while True:
+        layers.append(current)
+        if os.path.normcase(current) == os.path.normcase(stop):
+            break
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            break
+        current = parent
+    return _dedup(layers)
+
+
+def _windsurf_repository_root(start: str) -> str:
+    """Resolve a Git root without following linked/reparse marker ancestry."""
+
+    current = os.path.abspath(start)
+    while True:
+        marker = os.path.join(current, ".git")
+        try:
+            reject_reparse_path(marker)
+            info = os.stat(marker, follow_symlinks=False)
+        except OSError:
+            info = None
+        if info is not None and (
+            stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
+        ):
+            return current
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            return ""
+        current = parent
+
+
+def _windsurf_safe_directory(path: str) -> bool:
+    try:
+        reject_reparse_path(path)
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and not is_symlink(path)
+
+
+def _windsurf_safe_regular_file(path: str) -> bool:
+    try:
+        reject_reparse_path(path)
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and not is_symlink(path)
+
+
+def _windsurf_walk_directories(root: str) -> list[str]:
+    """Return a deterministic bounded workspace walk without following links."""
+
+    if not root:
+        return []
+    root = os.path.abspath(root)
+    if not _windsurf_safe_directory(root):
+        return []
+    pending = [root]
+    walked: list[str] = []
+    while pending and len(walked) < _WINDSURF_CUSTOMIZATION_DIR_LIMIT:
+        current = pending.pop()
+        if not _windsurf_safe_directory(current):
+            continue
+        walked.append(current)
+        try:
+            with os.scandir(current) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError:
+            continue
+        children: list[str] = []
+        for entry in entries:
+            if entry.name.casefold() == ".git":
+                continue
+            candidate = entry.path
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if (
+                entry.is_symlink()
+                or not stat.S_ISDIR(info.st_mode)
+                or not _windsurf_safe_directory(candidate)
+            ):
+                continue
+            try:
+                if os.path.normcase(os.path.commonpath((root, candidate))) != os.path.normcase(root):
+                    continue
+            except ValueError:
+                continue
+            children.append(candidate)
+        pending.extend(reversed(children))
+    return walked
+
+
+def windsurf_rule_files(workspace_dir: str | None = None) -> list[str]:
+    """Discover non-enterprise Cascade rules with bounded no-follow semantics.
+
+    This intentionally excludes system/ProgramData, managed dashboard, and MDM
+    layers. It covers the documented user-global rule, preferred and legacy
+    workspace rule directories, legacy ``.windsurfrules``, and case-insensitive
+    ``AGENTS.md`` files in the workspace plus ancestors through the Git root.
+    """
+
+    files: list[str] = []
+
+    def add(candidate: str) -> None:
+        if len(files) >= _WINDSURF_CUSTOMIZATION_FILE_LIMIT:
+            return
+        absolute = os.path.abspath(candidate)
+        if _windsurf_safe_regular_file(absolute):
+            files.append(absolute)
+
+    add(os.path.join(windsurf_config_home(), "memories", "global_rules.md"))
+    ancestors = _windsurf_workspace_ancestors(workspace_dir)
+    for layer in ancestors:
+        if not _windsurf_safe_directory(layer):
+            continue
+        try:
+            with os.scandir(layer) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError:
+            entries = []
+        for entry in entries:
+            folded = entry.name.casefold()
+            if folded in {"agents.md", ".windsurfrules"}:
+                add(entry.path)
+        for rules_dir in (
+            os.path.join(layer, ".devin", "rules"),
+            os.path.join(layer, ".windsurf", "rules"),
+        ):
+            if not _windsurf_safe_directory(rules_dir):
+                continue
+            try:
+                with os.scandir(rules_dir) as iterator:
+                    rule_entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+            except OSError:
+                continue
+            for entry in rule_entries:
+                if entry.name.casefold().endswith(".md"):
+                    add(entry.path)
+
+    workspace = _workspace_dir(workspace_dir)
+    for current in _windsurf_walk_directories(workspace):
+        try:
+            with os.scandir(current) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError:
+            continue
+        is_rule_dir = (
+            os.path.basename(current).casefold() == "rules"
+            and os.path.basename(os.path.dirname(current)).casefold()
+            in {".devin", ".windsurf"}
+        )
+        for entry in entries:
+            folded = entry.name.casefold()
+            if folded == "agents.md" or (is_rule_dir and folded.endswith(".md")):
+                add(entry.path)
+    return _dedup(files)
 
 
 def _opencode_config_dir() -> str:
@@ -2271,9 +2459,8 @@ def _cursor_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry
 
 
 def _windsurf_mcp_servers() -> list[MCPServerEntry]:
-    home = str(Path.home())
     entries: list[MCPServerEntry] = []
-    for path in _windsurf_mcp_paths(home):
+    for path in _windsurf_mcp_paths():
         entries.extend(_read_dotmcp_json(path))
     return _dedup_mcp_entries(entries)
 
@@ -2576,7 +2763,6 @@ def _windsurf_mcp_paths(home: str | None = None) -> list[str]:
     home = home or windsurf_user_home()
     return [
         os.path.join(home, ".codeium", "windsurf", "mcp_config.json"),
-        os.path.join(home, ".codeium", "windsurf", "mcp.json"),
     ]
 
 

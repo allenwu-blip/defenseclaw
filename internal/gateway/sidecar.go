@@ -3948,6 +3948,22 @@ func (s *Sidecar) failGuardrailWithRollback(ctx context.Context, opts connector.
 }
 
 func (s *Sidecar) saveSingleConnectorReadyState(ctx context.Context, opts connector.SetupOpts, conn connector.Connector) error {
+	if conn.Name() == "windsurf" {
+		// Publish the verified Cascade contract before making the connector
+		// active. Doctor must never observe active Windsurf state without the
+		// matching lock/runtime metadata. A failed publication is rolled back
+		// to an explicit inactive tombstone so stale or partially published
+		// readiness cannot survive the DCWIN-012 recovery path.
+		if err := publishWindsurfReadyEvidence(opts, conn); err != nil {
+			lockErr := fmt.Errorf("connector %s hook contract lock save failed: %w", conn.Name(), err)
+			return s.failWindsurfReadyStatePublication(ctx, opts, conn, lockErr)
+		}
+		if err := saveWindsurfReadyActiveState(opts.DataDir, conn.Name()); err != nil {
+			stateErr := fmt.Errorf("connector %s active state save failed after hook contract publication: %w", conn.Name(), err)
+			return s.failWindsurfReadyStatePublication(ctx, opts, conn, stateErr)
+		}
+		return nil
+	}
 	if err := connector.SaveActiveConnector(opts.DataDir, conn.Name()); err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] save active connector state: %v\n", err)
 	}
@@ -3956,6 +3972,36 @@ func (s *Sidecar) saveSingleConnectorReadyState(ctx context.Context, opts connec
 		return s.failGuardrailWithRollback(ctx, opts, conn, "hook contract lock", lockErr)
 	}
 	return nil
+}
+
+var (
+	publishWindsurfReadyEvidence = publishFreshHookRegistrationEvidence
+	saveWindsurfReadyActiveState = connector.SaveActiveConnector
+	markWindsurfReadyInactive    = connector.MarkConnectorInactive
+)
+
+func (s *Sidecar) failWindsurfReadyStatePublication(ctx context.Context, opts connector.SetupOpts, conn connector.Connector, cause error) error {
+	fmt.Fprintf(os.Stderr, "[guardrail] connector windsurf atomic readiness publication failed: %v\n", cause)
+	var cleanupErrors []string
+	if _, err := markWindsurfReadyInactive(opts.DataDir, "windsurf"); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("clear active connector readiness: %v", err))
+	}
+	if err := connector.ClearHookContractLockEntry(opts.DataDir, "windsurf"); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("clear hook contract metadata: %v", err))
+	}
+	if err := conn.Teardown(ctx, opts); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("rollback teardown: %v", err))
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		cleanupErrors = append(cleanupErrors, fmt.Sprintf("verify rollback: %v", err))
+	}
+	if len(cleanupErrors) > 0 {
+		cause = fmt.Errorf("%w; cleanup: %s", cause, strings.Join(cleanupErrors, "; "))
+	}
+	if s != nil && s.health != nil {
+		s.health.SetGuardrail(StateError, cause.Error(), nil)
+	}
+	return cause
 }
 
 func publishFreshHookRegistrationEvidence(opts connector.SetupOpts, conn connector.Connector) error {

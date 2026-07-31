@@ -196,6 +196,20 @@ func TestLoadAISignatures_WindsurfIncludesOfficialDevinDesktopRename(t *testing.
 				t.Errorf("Windsurf %s missing official renamed identity %q: %v", field, want, values)
 			}
 		}
+		if sig.Name != "Devin Desktop (legacy Cascade)" || sig.Vendor != "Cognition" {
+			t.Errorf("Windsurf identity = %q/%q, want legacy Cascade/Cognition", sig.Name, sig.Vendor)
+		}
+		if !slices.Equal(sig.MCPPaths, []string{"~/.codeium/windsurf/mcp_config.json"}) {
+			t.Errorf("Windsurf MCP paths = %v, want only documented bound-profile path", sig.MCPPaths)
+		}
+		if len(sig.EnvVarNames) != 0 {
+			t.Errorf("Windsurf env vars = %v, want none for legacy Cascade discovery", sig.EnvVarNames)
+		}
+		for _, want := range []string{"~/.codeium/windsurf/skills", "~/.agents/skills", "AGENTS.md"} {
+			if !slices.Contains(sig.ConfigPaths, want) {
+				t.Errorf("Windsurf config paths missing %q: %v", want, sig.ConfigPaths)
+			}
+		}
 		return
 	}
 	t.Fatal("Windsurf signature missing")

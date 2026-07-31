@@ -524,9 +524,11 @@ var builtinHookContracts = map[string][]HookContract{
 		},
 		SupportsTraceparent: true,
 		Notes: []string{
-			"Windsurf 1.12.41 added Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
-			"Only the five pre_* events are blocking, and Windsurf treats exit code 2 as the blocking decision; other non-zero exit codes continue.",
+			"This preview contract is limited to the legacy Cascade agent. Devin Local is the current default and uses a separate lifecycle-hook/configuration system; Devin Local, cloud Devin, ACP agents, and their lifecycle hooks are unsupported.",
+			"Windsurf 1.12.41 added legacy Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
+			"Only the five pre_* events are blocking, and Cascade treats exit code 2 as the blocking decision; other non-zero exit codes continue.",
 			"Post hooks do not block Cascade, post_cascade_response hooks run asynchronously, and Restricted Mode disables hooks.",
+			"The connector owns only the bound user hooks file. ProgramData/system hooks, cloud dashboard, MDM, and authoritative enforcement across higher layers are excluded and unverified.",
 		},
 	}},
 	"geminicli": {{

@@ -266,8 +266,8 @@
     },
     {
       "id": "windsurf",
-      "name": "Windsurf",
-      "vendor": "Codeium",
+      "name": "Devin Desktop (legacy Cascade)",
+      "vendor": "Cognition",
       "category": "supported_connector",
       "confidence": 0.95,
       "supported_connector": "windsurf",
@@ -287,26 +287,25 @@
       "config_paths": [
         "~/.codeium/windsurf/hooks.json",
         "~/.codeium/windsurf/mcp_config.json",
-        "~/.codeium/windsurf/mcp.json",
         "~/.codeium/windsurf/memories/global_rules.md",
+        "~/.codeium/windsurf/skills",
+        "~/.agents/skills",
         ".devin/rules",
         ".windsurf/rules",
         ".windsurf/skills",
         ".agents/skills",
-        ".windsurfrules"
+        ".windsurfrules",
+        "AGENTS.md"
       ],
       "extension_ids": [
         "codeium.codeium",
         "windsurf"
       ],
       "mcp_paths": [
-        "~/.codeium/windsurf/mcp_config.json",
-        "~/.codeium/windsurf/mcp.json"
+        "~/.codeium/windsurf/mcp_config.json"
       ],
       "package_names": [],
-      "env_var_names": [
-        "CODEIUM_API_KEY"
-      ],
+      "env_var_names": [],
       "domain_patterns": [
         "devin.ai",
         "codeium.com",

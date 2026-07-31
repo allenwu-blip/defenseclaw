@@ -1440,8 +1440,13 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
     if connector == "windsurf":
         path = windsurf_hook_config_path()
         if os.path.isfile(path):
-            return StepResult("Connector", "pass", "Windsurf hooks found")
-        return StepResult("Connector", "warn", "Windsurf hooks not found yet", "defenseclaw setup windsurf")
+            return StepResult("Connector", "pass", "Legacy Cascade hooks found")
+        return StepResult(
+            "Connector",
+            "warn",
+            "Legacy Cascade hooks not found; Devin Local/default-agent hooks are unsupported",
+            "defenseclaw setup windsurf",
+        )
     if connector == "geminicli":
         path = os.path.expanduser("~/.gemini/settings.json")
         if os.path.isfile(path):

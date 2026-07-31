@@ -66,7 +66,7 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 	},
 	"windsurf": {
 		Status: PlatformPreview,
-		Reason: "Windsurf Cascade hooks and the native PowerShell adapter are implemented; packaged and official-client Windows x64 certification is pending.",
+		Reason: "Legacy Cascade-only hooks and the native PowerShell adapter are available as a Windows x64 preview. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer enforcement are not covered; packaged and official-client certification is pending.",
 	},
 	"geminicli": {
 		Status: PlatformUnsupported,

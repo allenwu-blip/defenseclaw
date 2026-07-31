@@ -816,15 +816,10 @@ _SPECS: dict[str, _AgentSpec] = {
     # the native Windows %LOCALAPPDATA% default are honored.
     "hermes": _AgentSpec((), "hermes", ("--version",)),
     "cursor": _AgentSpec(("~/.cursor/hooks.json", "~/.cursor/mcp.json"), "agent", ("--version",)),
-    "windsurf": _AgentSpec(
-        (
-            "~/.codeium/windsurf/hooks.json",
-            "~/.codeium/windsurf/mcp_config.json",
-            "~/.codeium/windsurf/mcp.json",
-        ),
-        "windsurf",
-        ("--version",),
-    ),
+    # Legacy Cascade hook registration is the connector configuration signal.
+    # Its optional mcp_config.json is inventory only and an undocumented
+    # mcp.json guess must never make this connector appear configured.
+    "windsurf": _AgentSpec(("~/.codeium/windsurf/hooks.json",), "windsurf", ("--version",)),
     "geminicli": _AgentSpec(("~/.gemini/settings.json",), "gemini", ("--version",)),
     "copilot": _AgentSpec(
         (
@@ -1037,10 +1032,7 @@ def _scan_agent(
         config_path = omnigent_config_path()
         config_candidates = (config_path,)
     elif name == "windsurf":
-        config_candidates = (
-            windsurf_hook_config_path(),
-            *connector_config_files("windsurf"),
-        )
+        config_candidates = (windsurf_hook_config_path(),)
     config_path = _first_existing_file(config_candidates)
     binary_candidates = _binary_candidates_for_agent(name, spec)
     binary_path = binary_candidates[0] if binary_candidates else ""

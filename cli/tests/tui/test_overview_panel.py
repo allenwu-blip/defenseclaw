@@ -634,7 +634,7 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     cases = {
         "hermes": "Hermes",
         "cursor": "Cursor",
-        "windsurf": "Windsurf",
+        "windsurf": "Devin Desktop — legacy Cascade",
         "geminicli": "Gemini CLI",
         "copilot": "GitHub Copilot CLI",
     }

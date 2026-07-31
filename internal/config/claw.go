@@ -519,7 +519,11 @@ func (c *Config) ConnectorHomeDir(connector string) string {
 	case "cursor":
 		return filepath.Join(home, ".cursor")
 	case "windsurf":
-		return filepath.Join(home, ".codeium", "windsurf")
+		boundHome, err := windsurfUserHome()
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(boundHome, ".codeium", "windsurf")
 	case "geminicli":
 		return filepath.Join(home, ".gemini")
 	case "copilot":
@@ -664,10 +668,20 @@ func (c *Config) SkillDirsForConnector(connector string) []string {
 			workspaceJoin(cwd, ".cursor", "skills"),
 			workspaceJoin(cwd, ".agents", "skills"),
 		})
-	case "windsurf", "opencode", "omnigent":
-		// No documented skills install/discovery surface. Return nil so
-		// these never fall through to OpenClaw's skill dirs — parity with
-		// connector_paths.skill_dirs() == [] on the Python side.
+	case "windsurf":
+		boundHome, err := windsurfUserHome()
+		if err != nil {
+			return nil
+		}
+		return dedupNonEmpty([]string{
+			filepath.Join(boundHome, ".codeium", "windsurf", "skills"),
+			filepath.Join(boundHome, ".agents", "skills"),
+			workspaceJoin(cwd, ".windsurf", "skills"),
+			workspaceJoin(cwd, ".agents", "skills"),
+		})
+	case "opencode", "omnigent":
+		// These connectors have no documented local skills surface. Keep
+		// them isolated from OpenClaw's skill directories.
 		return nil
 	case "antigravity":
 		return dedupNonEmpty([]string{
@@ -964,17 +978,30 @@ func readMCPServersCursor(workspaceDir string) ([]MCPServerEntry, error) {
 }
 
 func readMCPServersWindsurf() ([]MCPServerEntry, error) {
-	home, _ := os.UserHomeDir()
-	var entries []MCPServerEntry
-	for _, path := range []string{
-		filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"),
-		filepath.Join(home, ".codeium", "windsurf", "mcp.json"),
-	} {
-		if e, err := readMCPFromDotMCPJSON(path); err == nil {
-			entries = append(entries, e...)
-		}
+	home, err := windsurfUserHome()
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
+	entries, err := readMCPFromDotMCPJSON(path)
+	if err != nil {
+		return nil, nil
 	}
 	return dedupMCPEntries(entries), nil
+}
+
+func windsurfUserHome() (string, error) {
+	configured := os.Getenv("WINDSURF_USER_HOME")
+	if configured == "" {
+		return os.UserHomeDir()
+	}
+	if strings.TrimSpace(configured) != configured ||
+		strings.ContainsAny(configured, "\x00\r\n") ||
+		!filepath.IsAbs(configured) ||
+		filepath.Clean(configured) != configured {
+		return "", fmt.Errorf("WINDSURF_USER_HOME is not an absolute normalized path")
+	}
+	return configured, nil
 }
 
 func readMCPServersGeminiCLI() ([]MCPServerEntry, error) {

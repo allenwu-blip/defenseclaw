@@ -52,7 +52,13 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
         "shell hooks; synchronous JSON pre-tool block; no ask or fail-closed",
     ),
     ModeChoice("cursor", "Cursor", "u", False, "command hooks + event-scoped ask/block"),
-    ModeChoice("windsurf", "Windsurf", "w", False, "Cascade hooks + fail-open block decisions"),
+    ModeChoice(
+        "windsurf",
+        "Devin Desktop — legacy Cascade",
+        "w",
+        False,
+        "preview: Cascade hooks only; Devin Local/cloud/ACP unsupported",
+    ),
     ModeChoice(
         "geminicli",
         "Gemini CLI",

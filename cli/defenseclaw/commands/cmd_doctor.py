@@ -57,6 +57,7 @@ from defenseclaw.connector_paths import (
     hermes_config_path,
     hermes_legacy_config_path,
     omnigent_config_path,
+    windsurf_hook_config_path,
 )
 from defenseclaw.context import AppContext, pass_ctx
 from defenseclaw.cursor_contract import validate_cursor_registration
@@ -1429,6 +1430,8 @@ def _windows_native_hook_check(
             )
         elif connector == "antigravity":
             config_path = os.path.join(connector_home("antigravity"), "hooks.json")
+        elif connector == "windsurf":
+            config_path = windsurf_hook_config_path()
         else:
             config_path = connector_config_files(connector)[0]
     if install_root is None:
@@ -1679,9 +1682,17 @@ def _check_codex_otel_alignment(cfg, r: _DoctorResult) -> None:
 
 def _check_windsurf_hooks(cfg, r: _DoctorResult, *, platform_name: str | None = None) -> None:
     if (platform_name or os.name) == "nt":
-        _check_windows_native_hooks(cfg, "windsurf", "Windsurf hooks", r)
-        return
-    _check_hook_health(cfg, "windsurf", r)
+        _check_windows_native_hooks(cfg, "windsurf", "Legacy Cascade hooks", r)
+    else:
+        _check_hook_health(cfg, "windsurf", r)
+    _emit(
+        "warn",
+        "Cascade Restricted Mode",
+        "workspace state cannot be detected passively; Restricted Mode disables all "
+        "Cascade hooks. Exact 12-event registration does not prove authentic event "
+        "delivery, and zero counters are not activation or certification evidence",
+        r=r,
+    )
 
 
 def _check_hermes_hooks(
@@ -1752,7 +1763,7 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 _HOOK_HEALTH_LABELS = {
     "hermes": "Hermes hooks (preview; fail-open)",
     "cursor": "Cursor hooks",
-    "windsurf": "Windsurf hooks",
+    "windsurf": "Legacy Cascade hooks",
     "geminicli": "Gemini CLI hooks",
     "opencode": "OpenCode hooks",
     "omnigent": "OmniGent policy",
@@ -2238,6 +2249,8 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
             # root. Match Setup/discovery instead of silently inspecting the
             # unrelated default home when the lock is unavailable.
             candidates = connector_config_files("opencode")
+        elif connector == "windsurf":
+            candidates = [windsurf_hook_config_path()]
         else:
             candidates = [os.path.join(home, rel) for rel in rel_candidates]
     present = [p for p in candidates if os.path.isfile(p)]
@@ -4310,7 +4323,7 @@ _CONNECTOR_LABELS = {
     "zeptoclaw": "ZeptoClaw",
     "hermes": "Hermes",
     "cursor": "Cursor",
-    "windsurf": "Windsurf",
+    "windsurf": "Devin Desktop — legacy Cascade",
     "geminicli": "Gemini CLI",
     "copilot": "GitHub Copilot CLI",
     "openhands": "OpenHands",
@@ -4453,7 +4466,16 @@ def _check_connector_inventory(cfg, connector: str, r: _DoctorResult) -> None:
         more = f" (+{count - 5} more)" if count > 5 else ""
         _emit("pass", "MCP servers", f"{count} configured: {names}{more}", r=r)
     else:
-        _emit("skip", "MCP servers", "no MCP servers registered", r=r)
+        if connector == "windsurf":
+            _emit(
+                "skip",
+                "MCP servers",
+                "optional legacy Cascade mcp_config.json is absent or contains no servers; "
+                "MCP inventory does not own or repair hook activation",
+                r=r,
+            )
+        else:
+            _emit("skip", "MCP servers", "no MCP servers registered", r=r)
 
     # Effective rule pack for this connector (falls back to built-in
     # defaults when no rule_pack_dir is configured). Warn when the resolved
@@ -4541,7 +4563,17 @@ def _check_hook_contract_lock(
         with open(lock_path, encoding="utf-8") as fh:
             lock = json.load(fh)
     except FileNotFoundError:
-        _emit("warn", "Hook contract", "no hook_contract_lock.json yet — restart gateway after setup", r=r)
+        if connector == "windsurf":
+            _emit(
+                "fail",
+                "Hook contract",
+                "active legacy Cascade connector has no hook_contract_lock.json; "
+                "rerun `defenseclaw setup windsurf --yes --restart` to publish and "
+                "verify the connector-owned 12-event registration",
+                r=r,
+            )
+        else:
+            _emit("warn", "Hook contract", "no hook_contract_lock.json yet — restart gateway after setup", r=r)
         return
     except Exception as exc:
         _emit("fail", "Hook contract", f"cannot read {lock_path}: {exc}", r=r)
@@ -4549,7 +4581,16 @@ def _check_hook_contract_lock(
 
     entry = (lock.get("connectors") or {}).get(connector) or {}
     if not entry:
-        _emit("warn", "Hook contract", f"no lock entry for active connector {connector}", r=r)
+        if connector == "windsurf":
+            _emit(
+                "fail",
+                "Hook contract",
+                "active legacy Cascade connector has no Windsurf lock entry; rerun "
+                "`defenseclaw setup windsurf --yes --restart`",
+                r=r,
+            )
+        else:
+            _emit("warn", "Hook contract", f"no lock entry for active connector {connector}", r=r)
         return
 
     status = str(entry.get("compatibility_status") or "")

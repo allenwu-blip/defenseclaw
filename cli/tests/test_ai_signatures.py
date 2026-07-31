@@ -54,13 +54,22 @@ def test_windsurf_signature_tracks_official_devin_desktop_rename():
     assert {"Devin.exe", "devin-desktop", "windsurf"} <= set(windsurf.binary_names)
     assert {"Devin", "Devin.exe", "Devin Desktop", "Windsurf"} <= set(windsurf.process_names)
     assert {
+        "~/.codeium/windsurf/mcp_config.json",
         "~/.codeium/windsurf/memories/global_rules.md",
+        "~/.codeium/windsurf/skills",
+        "~/.agents/skills",
         ".devin/rules",
         ".windsurf/rules",
+        "AGENTS.md",
         ".windsurf/skills",
         ".agents/skills",
     } <= set(windsurf.config_paths)
     assert ".codeium/windsurf/rules" not in windsurf.config_paths
+    assert "~/.codeium/windsurf/mcp.json" not in windsurf.config_paths
+    assert windsurf.mcp_paths == ("~/.codeium/windsurf/mcp_config.json",)
+    assert windsurf.name == "Devin Desktop (legacy Cascade)"
+    assert windsurf.vendor == "Cognition"
+    assert windsurf.env_var_names == ()
     assert "Devin Desktop" in windsurf.application_names
     assert "devin.ai" in windsurf.domain_patterns
 

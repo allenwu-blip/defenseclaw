@@ -152,7 +152,7 @@ func NewCursorConnector() *hookOnlyConnector {
 func NewWindsurfConnector() *hookOnlyConnector {
 	return &hookOnlyConnector{
 		name:        "windsurf",
-		description: "Cascade hooks with documented MCP/rules discovery",
+		description: "legacy Cascade-only hooks with bounded local customization discovery",
 		apiPath:     "/api/v1/windsurf/hook",
 		scriptName:  "windsurf-hook.sh",
 		configPath:  windsurfHooksPath,
@@ -167,6 +167,21 @@ func NewWindsurfConnector() *hookOnlyConnector {
 			}
 		},
 	}
+}
+
+var windsurfCascadeHookEvents = []string{
+	"pre_read_code",
+	"post_read_code",
+	"pre_write_code",
+	"post_write_code",
+	"pre_run_command",
+	"post_run_command",
+	"pre_mcp_tool_use",
+	"post_mcp_tool_use",
+	"pre_user_prompt",
+	"post_cascade_response",
+	"post_cascade_response_with_transcript",
+	"post_setup_worktree",
 }
 
 func NewGeminiCLIConnector() *hookOnlyConnector {
@@ -618,25 +633,42 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.MCP = SurfaceCapability{
 			Supported:     true,
 			Scope:         "user",
-			ConfigPaths:   windsurfMCPPaths(),
-			ReadPaths:     windsurfMCPPaths(),
+			ConfigPaths:   windsurfMCPPaths(opts),
+			ReadPaths:     windsurfMCPPaths(opts),
 			DiscoveryOnly: true,
 			RequiresOptIn: true,
-			Notes:         []string{"DefenseClaw discovers existing Windsurf MCP paths only; it does not create undocumented config files."},
+			Notes: []string{
+				"This is the legacy Cascade mcp_config.json surface under the bound user profile; Devin Local uses separate config files and is unsupported.",
+				"DefenseClaw discovers the existing file only and does not create guessed MCP paths.",
+				"Cloud, Team/Enterprise registry, allowlist, and managed state are excluded and unverified.",
+			},
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:     true,
-			Scope:         "workspace",
-			ReadPaths:     existingWindsurfRulePaths(opts),
+			Scope:         "workspace,user",
+			ReadPaths:     windsurfRulePaths(opts),
 			DiscoveryOnly: true,
-			Notes:         []string{"Windsurf rule writes are deferred unless a documented or pre-existing path is present."},
+			Notes: []string{
+				"Legacy Cascade inventory covers the user-global rule, preferred .devin/rules, legacy .windsurf/rules and .windsurfrules, plus bounded recursive/ancestor AGENTS.md discovery.",
+				"ProgramData/system, cloud dashboard, MDM, and authoritative enforcement across higher layers are excluded and unverified.",
+				"Rule writes remain deferred unless a documented or pre-existing path is present.",
+			},
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"rule"}
-		caps.CodeGuard.Notes = append(caps.CodeGuard.Notes, "Windsurf CodeGuard rule installation is available only when a documented/pre-existing rules path exists.")
-		caps.Skills = unsupportedSurface("Windsurf skills are not exposed as a documented local install surface.")
+		caps.CodeGuard.Notes = append(caps.CodeGuard.Notes, "Legacy Cascade CodeGuard rule installation is available only when a documented/pre-existing rules path exists.")
+		caps.Skills = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     windsurfSkillPaths(opts),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Legacy Cascade skills are inventoried from bound-user and pinned-workspace .windsurf/skills and .agents/skills roots.",
+				"Optional Claude-config reading and ProgramData/system enterprise skills are excluded and unverified.",
+			},
+		}
 		caps.Plugins = pluginsAreOpenClawOnly()
-		caps.Agents = unsupportedSurface("Windsurf agent/subagent asset installation is not supported.")
+		caps.Agents = unsupportedSurface("Legacy Cascade has no supported agent/subagent asset surface; Devin Local and ACP agents are outside this connector.")
 	case "geminicli":
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
@@ -823,6 +855,11 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 	_ = ctx
 	if c.pluginArtifact {
 		return c.setupPluginArtifact(opts)
+	}
+	if c.name == "windsurf" && WindsurfHooksPathOverride == "" {
+		if _, err := resolveWindsurfHooksPath(opts); err != nil {
+			return fmt.Errorf("windsurf authoritative Cascade path: %w", err)
+		}
 	}
 	if err := c.migrateManagedBackup(opts); err != nil {
 		return fmt.Errorf("%s managed backup migration: %w", c.name, err)
@@ -1422,11 +1459,84 @@ func cursorHooksPath(opts SetupOpts) string {
 	return homePath(".cursor", "hooks.json")
 }
 
-func windsurfHooksPath(SetupOpts) string {
+func windsurfHooksPath(opts SetupOpts) string {
 	if WindsurfHooksPathOverride != "" {
 		return WindsurfHooksPathOverride
 	}
-	return homePath(".codeium", "windsurf", "hooks.json")
+	path, err := resolveWindsurfHooksPath(opts)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// resolveWindsurfUserHome keeps every Cascade-only surface bound to the same
+// profile root captured by native Setup. The environment variables are
+// internal custody passed by the launcher, not public connector knobs. The
+// hidden ConfigHome binding is used by isolated lifecycle maintenance. When
+// neither exists, userHomeDir retains the established non-native behavior.
+func resolveWindsurfUserHome(opts SetupOpts) (string, error) {
+	configHome := strings.TrimSpace(opts.ConfigHome)
+	if configHome != "" {
+		if err := validateWindsurfBoundPath("connector config home", configHome); err != nil {
+			return "", err
+		}
+	}
+	envHome := os.Getenv("WINDSURF_USER_HOME")
+	if envHome != "" {
+		if err := validateWindsurfBoundPath("WINDSURF_USER_HOME", envHome); err != nil {
+			return "", err
+		}
+		if configHome != "" && !sameCleanPath(configHome, envHome) {
+			return "", errors.New("WINDSURF_USER_HOME does not match the bound connector config home")
+		}
+		return envHome, nil
+	}
+	if configHome != "" {
+		return configHome, nil
+	}
+	home := userHomeDir()
+	if strings.TrimSpace(home) == "" {
+		return "", errors.New("Windsurf user home is empty")
+	}
+	return filepath.Clean(home), nil
+}
+
+func resolveWindsurfHooksPath(opts SetupOpts) (string, error) {
+	home, err := resolveWindsurfUserHome(opts)
+	if err != nil {
+		return "", err
+	}
+	expected := filepath.Join(home, ".codeium", "windsurf", "hooks.json")
+	configured := os.Getenv("WINDSURF_HOOK_CONFIG_PATH")
+	if configured == "" {
+		return expected, nil
+	}
+	if err := validateWindsurfBoundPath("WINDSURF_HOOK_CONFIG_PATH", configured); err != nil {
+		return "", err
+	}
+	if !sameCleanPath(configured, expected) {
+		return "", errors.New("WINDSURF_HOOK_CONFIG_PATH does not match the bound Windsurf profile")
+	}
+	return configured, nil
+}
+
+func validateWindsurfBoundPath(label, path string) error {
+	if strings.TrimSpace(path) != path ||
+		strings.ContainsAny(path, "\x00\r\n") ||
+		!filepath.IsAbs(path) ||
+		filepath.Clean(path) != path {
+		return fmt.Errorf("%s is not an absolute normalized path", label)
+	}
+	return nil
+}
+
+func sameCleanPath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func geminiSettingsPath(SetupOpts) string {
@@ -2043,29 +2153,39 @@ func antigravityWorkspacePath(opts SetupOpts, parts ...string) string {
 	return filepath.Join(all...)
 }
 
-func windsurfMCPPaths() []string {
-	return []string{
-		homePath(".codeium", "windsurf", "mcp_config.json"),
-		homePath(".codeium", "windsurf", "mcp.json"),
-	}
-}
-
-func existingWindsurfRulePaths(opts SetupOpts) []string {
-	root := workspaceRoot(opts)
-	if strings.TrimSpace(root) == "" {
+func windsurfMCPPaths(opts SetupOpts) []string {
+	home, err := resolveWindsurfUserHome(opts)
+	if err != nil {
 		return nil
 	}
-	candidates := []string{
-		filepath.Join(root, ".windsurf", "rules"),
-		filepath.Join(root, ".codeium", "windsurf", "rules"),
+	return []string{filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")}
+}
+
+func windsurfRulePaths(opts SetupOpts) []string {
+	home, err := resolveWindsurfUserHome(opts)
+	if err != nil {
+		return nil
 	}
-	out := make([]string, 0, len(candidates))
-	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			out = append(out, p)
-		}
+	return uniqueNonEmptyStrings([]string{
+		filepath.Join(home, ".codeium", "windsurf", "memories", "global_rules.md"),
+		workspacePath(opts, ".devin", "rules"),
+		workspacePath(opts, ".windsurf", "rules"),
+		workspacePath(opts, ".windsurfrules"),
+		workspacePath(opts, "AGENTS.md"),
+	})
+}
+
+func windsurfSkillPaths(opts SetupOpts) []string {
+	home, err := resolveWindsurfUserHome(opts)
+	if err != nil {
+		return nil
 	}
-	return out
+	return uniqueNonEmptyStrings([]string{
+		filepath.Join(home, ".codeium", "windsurf", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		workspacePath(opts, ".windsurf", "skills"),
+		workspacePath(opts, ".agents", "skills"),
+	})
 }
 
 func uniqueNonEmptyStrings(in []string) []string {
@@ -2451,20 +2571,7 @@ func patchWindsurfHooksForOS(path, hookScript, legacyShellScript, goos string) e
 		return err
 	}
 	hooks := ensureJSONObject(cfg, "hooks")
-	for _, event := range []string{
-		"pre_read_code",
-		"post_read_code",
-		"pre_write_code",
-		"post_write_code",
-		"pre_run_command",
-		"post_run_command",
-		"pre_mcp_tool_use",
-		"post_mcp_tool_use",
-		"pre_user_prompt",
-		"post_cascade_response",
-		"post_cascade_response_with_transcript",
-		"post_setup_worktree",
-	} {
+	for _, event := range windsurfCascadeHookEvents {
 		entry := map[string]interface{}{"show_output": true}
 		if goos == "windows" {
 			// Windsurf executes this field with `powershell -Command`. Do not

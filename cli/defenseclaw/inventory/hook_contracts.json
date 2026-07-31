@@ -549,8 +549,10 @@
             "scope": "user"
           },
           "notes": [
-            "Windsurf 1.12.41 added Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
-            "Windsurf blocks only the five documented pre-hooks when a hook exits 2. Other non-zero exits fail open, post hooks never block, Cascade response post hooks are asynchronous, and Restricted Mode disables hooks.",
+            "This preview contract is limited to the legacy Cascade agent. Devin Local is the current default and uses a separate lifecycle-hook/configuration system; Devin Local, cloud Devin, ACP agents, and their lifecycle hooks are unsupported.",
+            "Windsurf 1.12.41 added legacy Cascade hooks on user prompts, completing the pre-hook set used by this contract.",
+            "Cascade blocks only the five documented pre-hooks when a hook exits 2. Other non-zero exits fail open, post hooks never block, Cascade response post hooks are asynchronous, and Restricted Mode disables hooks.",
+            "The connector owns only the bound user hooks file. ProgramData/system hooks, cloud dashboard, MDM, and authoritative enforcement across higher layers are excluded and unverified.",
             "Devin Desktop is a GUI and has no non-interactive version command; native Windows discovery reads trusted executable file-version metadata without launching it."
           ]
         }
