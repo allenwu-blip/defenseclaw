@@ -3,7 +3,11 @@
 
 package connector
 
-import "testing"
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+)
 
 func TestAntigravityProfileDecodeOfficialEvents(t *testing.T) {
 	common := map[string]interface{}{
@@ -83,6 +87,18 @@ func TestAntigravityProfileDecodeOfficialEvents(t *testing.T) {
 			}
 			if got.Direction != tc.direction || got.ToolName != tc.tool || got.Content != tc.content {
 				t.Fatalf("decoded = %+v", got)
+			}
+			if tc.event == "PreToolUse" {
+				var args map[string]interface{}
+				if err := json.Unmarshal(got.ToolArgs, &args); err != nil {
+					t.Fatalf("ToolArgs are not valid JSON: %v", err)
+				}
+				want := tc.extra["toolCall"].(map[string]interface{})["args"]
+				if !reflect.DeepEqual(args, want) {
+					t.Fatalf("ToolArgs=%v, want %v", args, want)
+				}
+			} else if len(got.ToolArgs) != 0 {
+				t.Fatalf("%s unexpectedly supplied ToolArgs: %s", tc.event, got.ToolArgs)
 			}
 			if got.CWD != `C:\work\repo` {
 				t.Fatalf("CWD=%q", got.CWD)

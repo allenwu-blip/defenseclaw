@@ -171,7 +171,10 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 					"workspacePaths": []string{"/workspace"},
 					"toolCall": map[string]interface{}{
 						"name": sh.toolName,
-						"args": map[string]interface{}{"CommandLine": "rm -rf /"},
+						"args": map[string]interface{}{
+							"Cwd":         `C:\workspace`,
+							"CommandLine": `Get-Content -LiteralPath C:\Windows\System32\config\SAM`,
+						},
 					},
 				}
 			}
@@ -238,6 +241,15 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 
 			if action, _ := parsed["action"].(string); action != sh.expectAction {
 				t.Errorf("dangerous request action=%q, want %q\nbody=%s", action, sh.expectAction, w.Body.String())
+			}
+			if sh.connector == "antigravity" {
+				output, ok := parsed["hook_output"].(map[string]interface{})
+				if !ok {
+					t.Fatalf("Antigravity hook_output is not an object: %T\nbody=%s", parsed["hook_output"], w.Body.String())
+				}
+				if decision, _ := output["decision"].(string); decision != "deny" {
+					t.Fatalf("Antigravity decision=%q, want deny\nbody=%s", decision, w.Body.String())
+				}
 			}
 
 			connectorHealth := connByName(health.Snapshot().Connectors)[sh.connector]

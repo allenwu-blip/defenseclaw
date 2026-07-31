@@ -133,7 +133,6 @@ case "$connector" in
     codex)
         agent_version='codex-cli 0.142.0'
         hook_name='codex-hook.sh'
-        hook_args=(--event PreToolUse --hook-contract codex-hooks-v3)
         native_config_rel='.codex/config.toml'
         native_config_seed='model = "gpt-5"'
         hook_request_path='/api/v1/codex/hook'
@@ -142,7 +141,6 @@ case "$connector" in
     claudecode)
         agent_version='2.1.187 (Claude Code)'
         hook_name='claude-code-hook.sh'
-        hook_args=()
         native_config_rel='.claude/settings.json'
         native_config_seed='{}'
         hook_request_path='/api/v1/claude-code/hook'
@@ -489,9 +487,19 @@ run_reconcile_checked "${target_home}/reconcile-noop.json"
 
 hook_stdout="${target_home}/hook.stdout"
 hook_stderr="${target_home}/hook.stderr"
-if ! printf '%s\n' "$hook_payload" | \
-    HOME="$target_home" DEFENSECLAW_GATEWAY_TOKEN='attacker-inherited-token' \
-    "$hook_script" "${hook_args[@]}" >"$hook_stdout" 2>"$hook_stderr"; then
+if [ "$connector" = 'codex' ]; then
+    hook_completed=0
+    printf '%s\n' "$hook_payload" | \
+        HOME="$target_home" DEFENSECLAW_GATEWAY_TOKEN='attacker-inherited-token' \
+        "$hook_script" --event PreToolUse --hook-contract codex-hooks-v3 \
+        >"$hook_stdout" 2>"$hook_stderr" || hook_completed=$?
+else
+    hook_completed=0
+    printf '%s\n' "$hook_payload" | \
+        HOME="$target_home" DEFENSECLAW_GATEWAY_TOKEN='attacker-inherited-token' \
+        "$hook_script" >"$hook_stdout" 2>"$hook_stderr" || hook_completed=$?
+fi
+if [ "$hook_completed" -ne 0 ]; then
     cat "$hook_stderr" >&2
     fail "managed hook did not complete an allow request"
 fi

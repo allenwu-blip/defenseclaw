@@ -16,7 +16,10 @@
 
 package connector
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // antigravityProfileDecode maps Google's documented Antigravity hook stdin
 // schemas onto the unified request. Antigravity does not include an event-name
@@ -96,6 +99,9 @@ func antigravityExtractToolCall(req *HookProfileRequest, payload map[string]inte
 	args, ok := antigravityObject(toolCall, "args")
 	if !ok {
 		return
+	}
+	if encoded, err := json.Marshal(args); err == nil {
+		req.ToolArgs = encoded
 	}
 	req.CWD = hookFirstString(args, "Cwd", "cwd")
 	req.Content = hookFirstString(args,

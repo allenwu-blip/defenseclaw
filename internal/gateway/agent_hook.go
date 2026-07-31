@@ -1600,6 +1600,9 @@ func normalizeAgentHookRequestWithProfileEvent(connectorName string, payload map
 	if decoded.ToolName != "" {
 		req.ToolName = decoded.ToolName
 	}
+	if len(decoded.ToolArgs) != 0 {
+		req.ToolArgs = append(json.RawMessage(nil), decoded.ToolArgs...)
+	}
 	if decoded.Content != "" {
 		req.Content = decoded.Content
 	}

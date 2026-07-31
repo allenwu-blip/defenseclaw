@@ -22,6 +22,7 @@ package connector
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 )
@@ -522,6 +523,7 @@ type HookProfileRequest struct {
 	SuppressCorrelationEmit   bool
 	CWD                       string
 	ToolName                  string
+	ToolArgs                  json.RawMessage
 	Content                   string
 	Direction                 string
 	Model                     string

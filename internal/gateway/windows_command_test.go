@@ -130,6 +130,12 @@ func TestWindowsCommandArrayShape(t *testing.T) {
 	assertWindowsRule(t, ScanAllRules(input, "shell"), "CMD-WIN-REMOVE-ITEM-RF")
 }
 
+func TestWindowsCommandAntigravityOfficialArgsShape(t *testing.T) {
+	t.Parallel()
+	input := `{"Cwd":"C:\\workspace","CommandLine":"Get-Content -LiteralPath C:\\Windows\\System32\\config\\SAM"}`
+	assertWindowsRule(t, ScanAllRules(input, "run_command"), "PATH-WIN-SAM")
+}
+
 func TestWindowsCommandArraySkipsNonStringElements(t *testing.T) {
 	t.Parallel()
 	input := `{"command":[false,"powershell.exe","-Command","Remove-Item -Recurse -Force C:\\Temp\\fixture"]}`
