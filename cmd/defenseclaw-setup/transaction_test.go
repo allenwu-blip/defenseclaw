@@ -659,7 +659,10 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.CopilotHome = transaction.PreviousCopilotHome
 	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
 	transaction.CursorHome = transaction.PreviousCursorHome
-	officialAntigravityHome := connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
+	officialAntigravityHome, err := officialAntigravityConfigHomeForTransaction(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	transaction.PreviousAntigravityConfigDir = officialAntigravityHome
 	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
 	transaction.PreviousOpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".config", "opencode")
@@ -736,6 +739,37 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	disabledGateway.TargetServices.Gateway = false
 	if err := validateSetupTransaction(disabledGateway, expected); err == nil {
 		t.Fatal("connector-preserving transaction disabled its required gateway")
+	}
+}
+
+func TestValidateSetupTransactionAntigravityHomeIgnoresSpoofedDataRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Profile Known Folder contract")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, nil)
+	officialHome, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	spoofedDataRoot := filepath.Join(t.TempDir(), "spoofed-profile", ".defenseclaw")
+	transaction.DataRoot = spoofedDataRoot
+	transaction.AntigravityConfigDir = officialHome
+	expected := setupTransactionExpectations{
+		InstallRoot:     installRoot,
+		DataRoot:        spoofedDataRoot,
+		MaintenancePath: maintenancePath,
+	}
+	if err := validateSetupTransaction(transaction, expected); err != nil {
+		t.Fatalf("official Antigravity home changed with a spoofed DataRoot: %v", err)
+	}
+	transaction.AntigravityConfigDir = connectorDefaultHomeBesideDataRoot(
+		spoofedDataRoot,
+		"antigravity",
+	)
+	if err := validateSetupTransaction(transaction, expected); err == nil ||
+		!strings.Contains(err.Error(), "non-official Antigravity configuration home") {
+		t.Fatalf("spoofed DataRoot redirected Antigravity custody: %v", err)
 	}
 }
 
@@ -3802,7 +3836,11 @@ func testSetupTransactionForRoots(action, installRoot, dataRoot, maintenancePath
 	}
 	antigravityConfigDir := ""
 	if action == "install" {
-		antigravityConfigDir = connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
+		var err error
+		antigravityConfigDir, err = officialAntigravityConfigHomeForTransaction(dataRoot)
+		if err != nil {
+			panic(fmt.Sprintf("resolve test Antigravity configuration home: %v", err))
+		}
 	}
 	uninstallPathOwned := action == "uninstall" && previous != nil && previous.PathEntryOwned
 	uninstallPathSeparatorReused := uninstallPathOwned && previous.PathSeparatorReused

@@ -64,9 +64,19 @@ func createExclusiveUnpublishedFile(path string) (*os.File, error) {
 func gatewayAutoStartValueOwned(gatewayPath, value string) (bool, error) {
 	return value == gatewayAutoStartCommand(gatewayPath) || value == legacyGatewayAutoStartCommand(gatewayPath), nil
 }
-func defaultInstallRoot() (string, error)                   { return "", errors.New("windows-only operation") }
-func defaultDataRoot() (string, error)                      { return "", errors.New("windows-only operation") }
-func defaultProfileRoot() (string, error)                   { return "", errors.New("windows-only operation") }
+func defaultInstallRoot() (string, error) { return "", errors.New("windows-only operation") }
+func defaultDataRoot() (string, error)    { return "", errors.New("windows-only operation") }
+func defaultProfileRoot() (string, error) { return "", errors.New("windows-only operation") }
+func officialAntigravityConfigHomeForTransaction(dataRoot string) (string, error) {
+	// Setup cannot mutate on non-Windows hosts. This deterministic synthetic
+	// profile keeps the host-independent journal tests runnable without
+	// weakening the native-Windows Known Folder resolver above.
+	home := connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
+	if home == "" {
+		return "", errors.New("test data root is not a profile-scoped DefenseClaw root")
+	}
+	return home, nil
+}
 func defaultHermesHome() (string, error)                    { return "", errors.New("windows-only operation") }
 func defaultOpenClawRoot() (string, error)                  { return "", errors.New("windows-only operation") }
 func defaultMaintenancePath() (string, error)               { return "", errors.New("windows-only operation") }

@@ -1321,14 +1321,16 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	if transaction.Action == "install" {
 		// Current Antigravity registrations have exactly one vendor-documented
 		// global home. Arbitrary predecessor paths are valid only in Previous*
-		// custody fields used for restoration and migration. DataRoot has
-		// already been bound to the current user's expected Known Folder, so
-		// deriving its fixed sibling keeps this validation host-independent
-		// for transaction recovery without weakening that binding.
-		officialAntigravityHome := connectorDefaultHomeBesideDataRoot(
+		// custody fields used for restoration and migration. On Windows this
+		// resolver uses the Profile Known Folder independently of DataRoot, so
+		// even a spoofed transaction expectation cannot redirect current
+		// Antigravity custody.
+		officialAntigravityHome, err := officialAntigravityConfigHomeForTransaction(
 			transaction.DataRoot,
-			"antigravity",
 		)
+		if err != nil {
+			return fmt.Errorf("resolve official Antigravity configuration home: %w", err)
+		}
 		if !samePath(transaction.AntigravityConfigDir, officialAntigravityHome) {
 			return errors.New("install transaction has a non-official Antigravity configuration home")
 		}

@@ -480,6 +480,12 @@ func defaultProfileRoot() (string, error) {
 	return winpath.CurrentUserKnownFolderPath(windows.FOLDERID_Profile)
 }
 
+func officialAntigravityConfigHomeForTransaction(_ string) (string, error) {
+	// Deliberately ignore DataRoot. Current Antigravity custody is always the
+	// vendor-documented global path under the current Profile Known Folder.
+	return defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+}
+
 func defaultHermesHome() (string, error) {
 	local, err := winpath.CurrentUserKnownFolderPath(windows.FOLDERID_LocalAppData)
 	if err != nil {
