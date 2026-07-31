@@ -334,6 +334,68 @@ PY
   [[ -f "${backup}" ]] || _fail "backup preserved when plugin drifted"
 }
 
+t_opencode_rejects_mismatched_restore_target() {
+  local d; d="$(mktest_tmp)"
+  mkdir -p "${d}/expected/plugins" "${d}/crafted/plugins" "${d}/backups"
+  local expected="${d}/expected/plugins/defenseclaw.js"
+  local crafted="${d}/crafted/plugins/defenseclaw.js"
+  local backup="${d}/backups/config.json"
+  printf '// expected target stays unchanged\n' > "${expected}"
+  printf '// managed crafted target\n' > "${crafted}"
+  CRAFTED="${crafted}" BACKUP="${backup}" ${PY} - <<'PY'
+import base64, hashlib, json, os
+managed = open(os.environ["CRAFTED"], "rb").read()
+pristine = b"// crafted pristine bytes must not be restored\n"
+backup = {
+    "version": 1, "connector": "opencode", "logical_name": "config",
+    "path": os.environ["CRAFTED"], "existed": True, "mode": 0o600,
+    "pristine_sha256": hashlib.sha256(pristine).hexdigest(),
+    "post_sha256": hashlib.sha256(managed).hexdigest(),
+    "pristine_bytes": base64.b64encode(pristine).decode(),
+}
+open(os.environ["BACKUP"], "w", encoding="utf-8").write(json.dumps(backup))
+PY
+  local expected_before crafted_before rc
+  expected_before="$(cat "${expected}")"
+  crafted_before="$(cat "${crafted}")"
+  ${PY} "${SCRUB}" opencode "${expected}" "${backup}" 2>/dev/null
+  rc=$?
+  assert_status "${rc}" 4 "OpenCode mismatched restore target fails closed"
+  assert_eq "$(cat "${expected}")" "${expected_before}" "expected target unchanged on mismatch"
+  assert_eq "$(cat "${crafted}")" "${crafted_before}" "crafted target not overwritten on mismatch"
+  [[ -f "${backup}" ]] || _fail "backup preserved on restore-target mismatch"
+}
+
+t_opencode_rejects_mismatched_removal_target() {
+  local d; d="$(mktest_tmp)"
+  mkdir -p "${d}/expected/plugins" "${d}/crafted/plugins" "${d}/backups"
+  local expected="${d}/expected/plugins/defenseclaw.js"
+  local crafted="${d}/crafted/plugins/defenseclaw.js"
+  local backup="${d}/backups/config.json"
+  printf '// expected target stays unchanged\n' > "${expected}"
+  printf '// managed crafted target\n' > "${crafted}"
+  CRAFTED="${crafted}" BACKUP="${backup}" ${PY} - <<'PY'
+import hashlib, json, os
+managed = open(os.environ["CRAFTED"], "rb").read()
+backup = {
+    "version": 1, "connector": "opencode", "logical_name": "config",
+    "path": os.environ["CRAFTED"], "existed": False,
+    "pristine_sha256": "missing",
+    "post_sha256": hashlib.sha256(managed).hexdigest(),
+}
+open(os.environ["BACKUP"], "w", encoding="utf-8").write(json.dumps(backup))
+PY
+  local expected_before crafted_before rc
+  expected_before="$(cat "${expected}")"
+  crafted_before="$(cat "${crafted}")"
+  ${PY} "${SCRUB}" opencode "${expected}" "${backup}" 2>/dev/null
+  rc=$?
+  assert_status "${rc}" 4 "OpenCode mismatched removal target fails closed"
+  assert_eq "$(cat "${expected}")" "${expected_before}" "expected target unchanged on mismatch"
+  assert_eq "$(cat "${crafted}")" "${crafted_before}" "crafted target not deleted on mismatch"
+  [[ -f "${backup}" ]] || _fail "backup preserved on removal-target mismatch"
+}
+
 run_case "cursor: drops DC, keeps user entry (idempotent)" t_cursor_drops_dc_keeps_user_entry
 run_case "cursor: no-op without DC entries"                 t_cursor_no_op_when_no_dc_entries
 run_case "claudecode: strips managed env keys"              t_claudecode_strips_managed_env_keys
@@ -350,3 +412,5 @@ run_case "empty object is no-op"                            t_empty_object_safe
 run_case "opencode: restores pristine plugin exactly"       t_opencode_restores_pristine_plugin_exactly
 run_case "opencode: removes newly-created plugin"           t_opencode_removes_new_plugin
 run_case "opencode: preserves tamper and backup"             t_opencode_preserves_tamper_and_backup
+run_case "opencode: rejects mismatched restore target"       t_opencode_rejects_mismatched_restore_target
+run_case "opencode: rejects mismatched removal target"       t_opencode_rejects_mismatched_removal_target

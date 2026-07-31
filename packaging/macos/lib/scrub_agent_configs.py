@@ -329,10 +329,21 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def restore_opencode(backup_path: str) -> tuple[bool, str | None]:
+def _normalize_opencode_target(path: object) -> str | None:
+    """Return the absolute, cleaned path shape stored by the Go backup code."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return None
+    try:
+        return os.path.normpath(os.path.abspath(path))
+    except (OSError, ValueError):
+        return None
+
+
+def restore_opencode(backup_path: str, expected_target: str) -> tuple[bool, str | None]:
     """Restore OpenCode's whole-file plugin only when it still matches the
     exact bytes DefenseClaw installed. A drifted plugin is preserved so purge
-    cannot erase user changes or delete the only pristine snapshot."""
+    cannot erase user changes or delete the only pristine snapshot. The backup
+    target must also match the explicit plugin path selected by the caller."""
     backup_raw = _read_regular_nofollow(backup_path)
     backup = json.loads(backup_raw.decode("utf-8"))
     if not isinstance(backup, dict):
@@ -344,10 +355,14 @@ def restore_opencode(backup_path: str) -> tuple[bool, str | None]:
     ):
         return False, "backup identity mismatch"
 
-    target = backup.get("path")
-    if not isinstance(target, str) or not os.path.isabs(target):
+    target = _normalize_opencode_target(backup.get("path"))
+    if target is None:
         return False, "backup target is not absolute"
-    target = os.path.normpath(target)
+    requested_target = _normalize_opencode_target(expected_target)
+    if requested_target is None:
+        return False, "requested OpenCode plugin target is not absolute"
+    if target != requested_target:
+        return False, "backup target does not match requested OpenCode plugin"
     if os.path.basename(target) != "defenseclaw.js" or os.path.basename(os.path.dirname(target)) != "plugins":
         return False, "backup target is not an OpenCode plugin path"
     parent = os.path.dirname(target)
@@ -434,7 +449,7 @@ def main(argv: list[str]) -> int:
         if not os.path.exists(backup_path):
             return 2
         try:
-            ok, err = restore_opencode(backup_path)
+            ok, err = restore_opencode(backup_path, path)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as e:
             print(f"restore failed for {path}: {e}", file=sys.stderr)
             return 4
