@@ -1253,7 +1253,10 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 	case "windsurf":
 		variable = "WINDSURF_USER_HOME"
 	case "antigravity":
-		variable = "ANTIGRAVITY_CONFIG_DIR"
+		// DefenseClaw-internal custody binding used to construct the hidden
+		// --config-home argument. Google publishes no Antigravity config-home
+		// environment override.
+		variable = "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME"
 	case "opencode":
 		variable = "OPENCODE_CONFIG_DIR"
 	case "omnigent":

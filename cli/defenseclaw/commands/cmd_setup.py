@@ -3211,7 +3211,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
             "five lifecycle hooks in ~/.gemini/config/hooks.json; only "
             "PreToolUse has documented native ask and deny responses"
         ),
-        "tool_mode": "both",
+        "tool_mode": "pre-execution",
         "subprocess_policy": "none",
     },
     "opencode": {
@@ -3325,9 +3325,9 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
     "antigravity": (
         (
             "~/.gemini/config/hooks.json — five DefenseClaw-owned registrations "
-            "using agy's documented direct-list and matcher-group shapes; agy "
-            "merges every discovered hooks file, so DefenseClaw never patches "
-            "workspace-local copies"
+            "using Antigravity's documented direct-list and matcher-group shapes; "
+            "the host separately discovers <workspace>/.agents/hooks.json, so "
+            "DefenseClaw owns only the global registration"
         ),
         "~/.defenseclaw/hooks/antigravity-hook.sh",
     ),
@@ -5399,6 +5399,10 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
             click.echo("  path; valid synchronous pre_tool_call JSON can deny tools,")
             click.echo("  while pre_verify JSON can continue verification. Failures")
             click.echo("  remain open, exit status is not enforcement, and there is no ask.")
+        elif connector == "antigravity" and mode == "action":
+            click.echo("  path; only synchronous PreToolUse JSON can ask or deny.")
+            click.echo("  Other lifecycle outputs are non-blocking, and nonzero")
+            click.echo("  hook exit status is not an enforcement interface.")
         elif mode == "action":
             click.echo("  path; supported actions flagged by policy are blocked")
             click.echo("  by the connector's native lifecycle verdict.")
@@ -5410,6 +5414,9 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
         click.echo("    • Policy API — six request/tool/model phases → /api/v1/omnigent/hook")
     elif connector == "hermes":
         click.echo("    • Hooks      — 23 classified v0.19 events → /api/v1/hermes/hook")
+    elif connector == "antigravity":
+        click.echo("    • Hooks      — five bound lifecycle events → /api/v1/antigravity/hook")
+        click.echo("                   only PreToolUse carries documented ask/deny output")
     else:
         click.echo(f"    • Hooks      — tool calls, prompt-submit, agent stop → /api/v1/{connector}/hook")
     native_otel_connectors = {"codex", "claudecode", "geminicli", "omnigent"}
@@ -5727,17 +5734,17 @@ def _setup_observability_alias(
         raise click.ClickException(f"unsupported connector for hook alias: {connector!r}")
     _ensure_connector_available(connector)
 
-    # Antigravity is global-only by design. agy v1.0.x merges every
-    # hooks file it discovers (~/.gemini/config/hooks.json,
-    # legacy ~/.gemini/hooks.json, workspace .antigravitycli/hooks.json),
-    # so a workspace-scoped install would silently fire the same hook
-    # multiple times per tool call. Reject --workspace explicitly rather
-    # than accepting it and quietly doing the wrong thing.
+    # Antigravity documents global customization at
+    # ~/.gemini/config/hooks.json and workspace customization at
+    # <workspace>/.agents/hooks.json. The host discovers both, so Setup owns
+    # only the global file and rejects --workspace to avoid duplicate
+    # DefenseClaw registrations.
     if connector == "antigravity" and (workspace_dir or "").strip():
         raise click.ClickException(
-            "antigravity setup does not support --workspace: agy merges every "
-            "hooks file it discovers, so DefenseClaw only writes the global "
-            "~/.gemini/config/hooks.json to avoid duplicate firings. "
+            "antigravity setup does not support --workspace: Antigravity "
+            "discovers both ~/.gemini/config/hooks.json and "
+            "<workspace>/.agents/hooks.json, so DefenseClaw owns only the "
+            "global file to avoid duplicate registrations. "
             "Re-run without --workspace."
         )
 

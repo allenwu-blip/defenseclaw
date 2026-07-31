@@ -3,6 +3,7 @@
 
 """Consistency gates for the certified native Windows release surface."""
 
+import json
 import re
 from pathlib import Path
 
@@ -165,6 +166,46 @@ def test_connector_matrix_delegates_current_support_to_the_website() -> None:
         "zeptoclaw",
     ):
         assert f'<ConnectorLabel id="{connector_id}" />' in compatibility
+
+
+def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
+    connector_index = (ROOT / "docs-site/content/docs/connectors/index.mdx").read_text(
+        encoding="utf-8"
+    )
+    connector_page = (
+        ROOT / "docs-site/content/docs/connectors/antigravity.mdx"
+    ).read_text(encoding="utf-8")
+    config_reference = (
+        ROOT / "docs-site/content/docs/reference/configuration.mdx"
+    ).read_text(encoding="utf-8")
+    setup_source = (
+        ROOT / "cli/defenseclaw/commands/cmd_setup.py"
+    ).read_text(encoding="utf-8")
+    matrix = json.loads(
+        (ROOT / "docs-site/data/capability-matrix.json").read_text(encoding="utf-8")
+    )
+    row = next(entry for entry in matrix["connectors"] if entry["id"] == "antigravity")
+    connector_page_text = " ".join(connector_page.split())
+
+    assert "Antigravity (`PreToolUse` only)" in connector_index
+    assert row["toolInspection"] == "pre-execution"
+    assert row["hooks"]["askEvents"] == ["PreToolUse"]
+    assert row["hooks"]["blockEvents"] == ["PreToolUse"]
+    assert row["hooks"]["supportsFailClosed"] is False
+    assert "`~/.gemini/config/hooks.json`" in config_reference
+    assert "Google documents no configuration-home environment override" in config_reference
+    assert "<workspace>/.agents/hooks.json" in config_reference
+    assert "only hard-blocking claim for the connector" in connector_page_text
+    assert "does not document non-zero hook exit status as enforcement" in connector_page_text
+
+    combined = "\n".join((connector_index, connector_page, config_reference, setup_source))
+    assert "Claude-Code-compatible" not in combined
+    assert "single global hook entry" not in combined
+    assert "decision=ask overrides" not in combined
+    assert "PreInvocation`, `PreToolUse" not in combined
+    assert ".antigravitycli/hooks.json" not in combined
+    assert "ANTIGRAVITY_CONFIG_DIR" not in combined
+    assert "GEMINI_CONFIG_DIR" not in combined
 
 
 def test_windows_live_harness_avoids_automatic_variable_assignments() -> None:

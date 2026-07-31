@@ -1562,6 +1562,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
     * copilot    — ``.github/agents`` and ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
     * cursor     — explicitly pinned project ``.cursor/agents`` and user ``~/.cursor/agents``
+    * antigravity — global/workspace custom agents plus plugin agent components
     """
     home = os.path.expanduser("~")
     name = (connector or "").lower()
@@ -1595,6 +1596,8 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
                 os.path.join(home, ".cursor", "agents"),
             ]
         )
+    if name == "antigravity":
+        return _agents_from_antigravity_dirs(_antigravity_agent_dirs(_connector_workspace_dir(cfg)))
     return []
 
 
@@ -1748,6 +1751,34 @@ def _agents_from_md_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             rows.append(row)
+    return rows
+
+
+def _agents_from_antigravity_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
+    """Read Antigravity's direct ``*.md`` and ``<name>/agent.md`` forms."""
+
+    rows = _agents_from_md_dirs(agent_dirs)
+    seen = {str(row.get("source") or "") for row in rows}
+    for agents_dir in agent_dirs:
+        if not os.path.isdir(agents_dir):
+            continue
+        try:
+            entries = sorted(os.listdir(agents_dir))
+        except OSError:
+            continue
+        for entry in entries:
+            source = os.path.join(agents_dir, entry, "agent.md")
+            if not os.path.isfile(source) or source in seen:
+                continue
+            seen.add(source)
+            rows.append(
+                {
+                    "id": entry,
+                    "name": entry,
+                    "source": source,
+                    "kind": "subagent",
+                }
+            )
     return rows
 
 
@@ -1927,6 +1958,18 @@ def _antigravity_command_dirs(workspace_dir: str) -> list[str]:
             os.path.join(workspace_dir, "_agents", "commands") if workspace_dir else "",
             os.path.join(home, ".gemini", "antigravity-cli", "commands"),
             *list(_plugin_component_dirs(plugin_dirs, "commands")),
+        ]
+    )
+
+
+def _antigravity_agent_dirs(workspace_dir: str) -> list[str]:
+    home = os.path.expanduser("~")
+    plugin_dirs = connector_paths.plugin_dirs("antigravity", workspace_dir=workspace_dir)
+    return _dedup_paths(
+        [
+            os.path.join(home, ".gemini", "config", "agents"),
+            os.path.join(workspace_dir, ".agents", "agents") if workspace_dir else "",
+            *list(_plugin_component_dirs(plugin_dirs, "agents")),
         ]
     )
 

@@ -253,6 +253,59 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 	}
 }
 
+func TestHandleAgentHook_AntigravityInvocationEventsDoNotScanInventedContent(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Guardrail.Mode = "action"
+	cfg.Guardrail.Connector = "antigravity"
+	api := &APIServer{scannerCfg: cfg}
+	handler := http.HandlerFunc(api.handleAgentHook("antigravity"))
+
+	for _, event := range []string{"PreInvocation", "PostInvocation"} {
+		t.Run(event, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"conversationId":        "session-antigravity-invocation",
+				"workspacePaths":        []string{"/workspace"},
+				"transcriptPath":        "/workspace/transcript.json",
+				"artifactDirectoryPath": "/workspace/artifacts",
+				"invocationNum":         2,
+				"initialNumSteps":       1,
+				// These dangerous decoys are not part of Google's invocation
+				// schemas. They must not cause generic prompt/result scans.
+				"prompt":      "rm -rf /",
+				"tool_result": "rm -rf /",
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/antigravity/hook",
+				bytes.NewReader(body),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("X-DefenseClaw-Antigravity-Event", event)
+			w := httptest.NewRecorder()
+
+			handler.ServeHTTP(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			var parsed map[string]interface{}
+			if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+				t.Fatalf("response not valid JSON: %v body=%s", err, w.Body.String())
+			}
+			if action, _ := parsed["action"].(string); action != "allow" {
+				t.Fatalf("%s invented content scan action=%q, want allow; body=%s", event, action, w.Body.String())
+			}
+			if isPromptLikeEvent(event) || isResultLikeEvent(event) || isGenericToolInspectionEvent(event) {
+				t.Fatalf("%s is still classified as an inspectable content/tool event", event)
+			}
+		})
+	}
+}
+
 // TestHandleAgentHook_FullChain_SyntheticPath drives the
 // codex-notify synthetic hook path top-to-bottom and asserts that:
 //

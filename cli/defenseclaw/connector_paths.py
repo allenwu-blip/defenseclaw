@@ -454,23 +454,11 @@ def connector_home(
             return os.path.join(root, ".openhands")
         return os.path.join(home, ".openhands")
     if name == "antigravity":
-        # Antigravity (`agy`) is global-only by design: agy v1.0.x
-        # merges every discovered hooks.json (global, project,
-        # legacy ~/.gemini/hooks.json), so DefenseClaw deliberately
-        # does NOT honor workspace_dir — multiple writes cause
-        # duplicate firings.
-        #
-        # NOTE: agy *advertises* ~/.gemini/antigravity-cli/ in its
-        # --help output, but empirically it reads PreToolUse hooks
-        # only from ~/.gemini/config/hooks.json (see
-        # internal/gateway/connector/hook_only.go ::
-        # antigravityHooksPath for the smoke-test evidence). We
-        # report the marketing-facing dir here as the "connector
-        # home" because it's the agy-owned directory operators
-        # know about; the actual hooks file path comes back via
-        # connector_config_files() below, which points at the
-        # path agy actually evaluates.
-        return os.path.join(home, ".gemini", "antigravity-cli")
+        # Google documents one global customization root at ~/.gemini/config
+        # and publishes no config-home environment override. workspace_dir is
+        # intentionally ignored because DefenseClaw does not patch the host's
+        # separate <workspace>/.agents/hooks.json surface.
+        return os.path.join(home, ".gemini", "config")
     if name == "cursor":
         return os.path.join(home, ".cursor")
     if name == "windsurf":
@@ -548,17 +536,13 @@ def connector_config_files(
             _workspace_path(workspace_dir, ".openhands", "hooks.json"),
         ]
     elif name == "antigravity":
-        # Antigravity has two independently documented surfaces under
-        # ~/.gemini/config/: hooks.json for lifecycle hooks and
-        # mcp_config.json for MCP servers. Workspace MCP lives in
-        # <workspace>/.agents/mcp_config.json when an explicit workspace
-        # is pinned. The legacy antigravity-cli hooks path is discovery-only
-        # so doctor/inventory can surface stale pre-v0.5.0 entries.
+        # Google's global Hooks and MCP contract is pinned to
+        # ~/.gemini/config. Setup does not own workspace hooks.
+        hooks_home = connector_home("antigravity")
         paths = [
             os.path.join(home, ".gemini", "config", "mcp_config.json"),
             _workspace_path(workspace_dir, ".agents", "mcp_config.json"),
-            os.path.join(home, ".gemini", "config", "hooks.json"),
-            os.path.join(home, ".gemini", "antigravity-cli", "hooks.json"),
+            os.path.join(hooks_home, "hooks.json"),
         ]
     elif name == "opencode":
         # opencode auto-loads plugins from ~/.config/opencode/plugins/;
@@ -858,11 +842,10 @@ def _antigravity_skill_dirs(workspace_dir: str | None = None) -> list[str]:
     )
     return _dedup(
         [
+            os.path.join(home, ".gemini", "config", "skills"),
             _workspace_path(workspace_dir, ".agents", "skills"),
-            _workspace_path(workspace_dir, "_agents", "skills"),
+            _workspace_path(workspace_dir, ".agent", "skills"),
             os.path.join(home, ".gemini", "antigravity-cli", "skills"),
-            os.path.join(home, ".gemini", "skills"),
-            os.path.join(home, ".agents", "skills"),
             *plugin_skill_dirs,
         ]
     )

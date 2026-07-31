@@ -445,6 +445,7 @@
       "package_names": [],
       "env_var_names": [],
       "domain_patterns": [
+        "antigravity.google",
         "antigravity.google.com",
         "antigravity.dev"
       ],

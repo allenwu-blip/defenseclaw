@@ -339,6 +339,8 @@ func TestAntigravityConnector_CapabilityContract(t *testing.T) {
 	home := filepath.Join(dir, "home")
 	workspace := filepath.Join(dir, "repo")
 	testenv.SetHome(t, home)
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", filepath.Join(dir, "vendor-looking-decoy"))
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(dir, "gemini-decoy"))
 
 	conn := NewAntigravityConnector()
 	opts := SetupOpts{
@@ -356,6 +358,16 @@ func TestAntigravityConnector_CapabilityContract(t *testing.T) {
 	}
 	if caps.Hooks.ConfigPath == filepath.Join(workspace, ".agents", "hooks.json") {
 		t.Fatalf("Antigravity hook config must remain global-write only: %q", caps.Hooks.ConfigPath)
+	}
+	custodyHome := filepath.Join(dir, "legacy-custody")
+	maintenanceCaps := conn.Capabilities(SetupOpts{
+		DataDir:      opts.DataDir,
+		WorkspaceDir: workspace,
+		APIAddr:      opts.APIAddr,
+		ConfigHome:   custodyHome,
+	})
+	if maintenanceCaps.Hooks.ConfigPath != filepath.Join(custodyHome, "hooks.json") {
+		t.Fatalf("Antigravity hidden custody hook ConfigPath=%q", maintenanceCaps.Hooks.ConfigPath)
 	}
 
 	wantMCP := []string{
@@ -396,11 +408,22 @@ func TestAntigravityConnector_CapabilityContract(t *testing.T) {
 	if !caps.Rules.Supported || !caps.Rules.DiscoveryOnly || len(caps.Rules.WritePaths) != 0 {
 		t.Fatalf("Antigravity rules should be discovery-only with no write paths: %+v", caps.Rules)
 	}
-	if !caps.Plugins.Supported || !caps.Plugins.DiscoveryOnly || len(caps.Plugins.WritePaths) != 0 {
-		t.Fatalf("Antigravity plugins should be discovery-only with no write paths: %+v", caps.Plugins)
+	if !caps.Plugins.Supported || caps.Plugins.DiscoveryOnly || !caps.Plugins.RequiresOptIn {
+		t.Fatalf("Antigravity plugins should expose explicit opt-in install support: %+v", caps.Plugins)
+	}
+	if len(caps.Plugins.InstallTargets) != 1 || caps.Plugins.InstallTargets[0] != "plugin" {
+		t.Fatalf("Antigravity plugin install targets = %v, want [plugin]", caps.Plugins.InstallTargets)
 	}
 	if !caps.Agents.Supported || !caps.Agents.DiscoveryOnly || len(caps.Agents.WritePaths) != 0 {
-		t.Fatalf("Antigravity plugin-contained agents should be discovery-only with no write paths: %+v", caps.Agents)
+		t.Fatalf("Antigravity agents should be discovery-only with no write paths: %+v", caps.Agents)
+	}
+	for _, want := range []string{
+		filepath.Join(home, ".gemini", "config", "agents"),
+		filepath.Join(workspace, ".agents", "agents"),
+	} {
+		if !stringInSlice(caps.Agents.ReadPaths, want) {
+			t.Fatalf("Antigravity agent read paths missing %q: %v", want, caps.Agents.ReadPaths)
+		}
 	}
 	for _, want := range []string{
 		filepath.Join(home, ".gemini", "config", "plugins"),
@@ -411,9 +434,40 @@ func TestAntigravityConnector_CapabilityContract(t *testing.T) {
 		if !stringInSlice(caps.Plugins.ReadPaths, want) {
 			t.Fatalf("Antigravity plugin read paths missing %q: %v", want, caps.Plugins.ReadPaths)
 		}
-		if !stringInSlice(caps.Agents.ReadPaths, want) {
-			t.Fatalf("Antigravity agent read paths missing plugin root %q: %v", want, caps.Agents.ReadPaths)
+	}
+	for _, want := range []string{
+		filepath.Join(home, ".gemini", "config", "plugins"),
+		filepath.Join(workspace, ".agents", "plugins"),
+		filepath.Join(workspace, "_agents", "plugins"),
+	} {
+		if !stringInSlice(caps.Plugins.WritePaths, want) {
+			t.Fatalf("Antigravity plugin write paths missing %q: %v", want, caps.Plugins.WritePaths)
 		}
+	}
+	if cliStaging := filepath.Join(home, ".gemini", "antigravity-cli", "plugins"); stringInSlice(caps.Plugins.WritePaths, cliStaging) {
+		t.Fatalf("Antigravity CLI staging path must remain discovery-only: %v", caps.Plugins.WritePaths)
+	}
+}
+
+func TestAntigravityAgentPathsDiscoverPluginComponents(t *testing.T) {
+	root := t.TempDir()
+	globalPlugins := filepath.Join(root, ".gemini", "config", "plugins")
+	pluginAgents := filepath.Join(globalPlugins, "review-bundle", "agents")
+	if err := os.MkdirAll(pluginAgents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	if err := WithUserHomeDir(root, func() error {
+		paths = antigravityAgentPaths(SetupOpts{})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !stringInSlice(paths, filepath.Join(root, ".gemini", "config", "agents")) {
+		t.Fatalf("global standalone agent path missing: %v", paths)
+	}
+	if !stringInSlice(paths, pluginAgents) {
+		t.Fatalf("plugin agent component path missing: %v", paths)
 	}
 }
 
@@ -993,6 +1047,81 @@ func TestAntigravityTeardownMigratesLegacyBackupAndRestoresExactBytes(t *testing
 	}
 	if err := conn.VerifyClean(opts); err != nil {
 		t.Fatalf("VerifyClean: %v", err)
+	}
+}
+
+func TestAntigravityManagedBackupMigrationCollapsesIdenticalRecords(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".defenseclaw")
+	target := filepath.Join(t.TempDir(), "antigravity-home", "hooks.json")
+	base := managedFileBackup{
+		Version:        managedBackupVersion,
+		Connector:      "antigravity",
+		Path:           target,
+		Existed:        false,
+		PristineSHA256: managedBackupMissingHash,
+		PostSHA256:     managedBackupMissingHash,
+		CapturedAt:     "2026-07-30T00:00:00Z",
+	}
+	legacy := base
+	legacy.LogicalName = "config"
+	canonical := base
+	canonical.LogicalName = "hooks.json"
+	legacyPath := managedFileBackupPath(dataDir, "antigravity", "config")
+	canonicalPath := managedFileBackupPath(dataDir, "antigravity", "hooks.json")
+	if err := writeManagedFileBackup(legacyPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManagedFileBackup(canonicalPath, canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := NewAntigravityConnector()
+	if err := conn.migrateManagedBackup(SetupOpts{DataDir: dataDir}); err != nil {
+		t.Fatalf("migrateManagedBackup: %v", err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("identical legacy backup survived migration: %v", err)
+	}
+	got, err := loadManagedFileBackupPath(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LogicalName != "hooks.json" || !sameManagedTargetPath(got.Path, target) {
+		t.Fatalf("canonical backup changed custody: %#v", got)
+	}
+}
+
+func TestAntigravityManagedBackupMigrationRejectsConflictingCustody(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), ".defenseclaw")
+	legacy := managedFileBackup{
+		Version:        managedBackupVersion,
+		Connector:      "antigravity",
+		LogicalName:    "config",
+		Path:           filepath.Join(t.TempDir(), "legacy-home", "hooks.json"),
+		PristineSHA256: managedBackupMissingHash,
+		CapturedAt:     "2026-07-30T00:00:00Z",
+	}
+	canonical := legacy
+	canonical.LogicalName = "hooks.json"
+	canonical.Path = filepath.Join(t.TempDir(), "canonical-home", "hooks.json")
+	legacyPath := managedFileBackupPath(dataDir, "antigravity", "config")
+	canonicalPath := managedFileBackupPath(dataDir, "antigravity", "hooks.json")
+	if err := writeManagedFileBackup(legacyPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeManagedFileBackup(canonicalPath, canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := NewAntigravityConnector()
+	err := conn.migrateManagedBackup(SetupOpts{DataDir: dataDir})
+	if err == nil || !strings.Contains(err.Error(), "conflicting config and hooks.json managed backup custody") {
+		t.Fatalf("migrateManagedBackup error = %v, want conflicting custody", err)
+	}
+	for _, path := range []string{legacyPath, canonicalPath} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("conflicting backup %q was modified or removed: %v", path, statErr)
+		}
 	}
 }
 

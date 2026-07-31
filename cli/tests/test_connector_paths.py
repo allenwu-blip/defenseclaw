@@ -166,11 +166,12 @@ class TestSkillDirs:
             os.path.join(str(tmp_path), ".agents", "skills"),
         ]
         antigravity = connector_paths.skill_dirs("antigravity", workspace_dir=str(tmp_path))
+        assert os.path.join(str(tmp_path / "home"), ".gemini", "config", "skills") in antigravity
         assert os.path.join(str(tmp_path), ".agents", "skills") in antigravity
-        assert os.path.join(str(tmp_path), "_agents", "skills") in antigravity
+        assert os.path.join(str(tmp_path), ".agent", "skills") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".gemini", "antigravity-cli", "skills") in antigravity
-        assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") in antigravity
-        assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in antigravity
+        assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") not in antigravity
+        assert os.path.join(str(tmp_path / "home"), ".agents", "skills") not in antigravity
         assert connector_paths.skill_dirs("opencode", workspace_dir=str(tmp_path)) == []
         assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") in connector_paths.skill_dirs("geminicli")
         assert os.path.join(str(tmp_path), ".gemini", "skills") in connector_paths.skill_dirs(
@@ -859,8 +860,21 @@ class TestConnectorHome:
     def test_antigravity_home(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
         assert connector_paths.connector_home("antigravity") == os.path.join(
-            str(tmp_path), ".gemini", "antigravity-cli"
+            str(tmp_path), ".gemini", "config"
         )
+
+    def test_antigravity_home_ignores_undocumented_config_overrides(self, monkeypatch, tmp_path):
+        configured = tmp_path / "custom-antigravity"
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("ANTIGRAVITY_CONFIG_DIR", str(configured))
+        monkeypatch.setenv("GEMINI_CONFIG_DIR", str(configured / "gemini"))
+
+        official = tmp_path / ".gemini" / "config"
+        assert connector_paths.connector_home("antigravity") == str(official)
+        assert connector_paths.connector_config_files("antigravity") == [
+            str(official / "mcp_config.json"),
+            str(official / "hooks.json"),
+        ]
 
     def test_opencode_home_is_not_openclaw(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -961,6 +975,8 @@ class TestConnectorConfigFiles:
         )
         assert os.path.join(str(fake_home), ".gemini", "config", "mcp_config.json") in files
         assert os.path.join(str(tmp_path), ".agents", "mcp_config.json") in files
+        assert os.path.join(str(fake_home), ".gemini", "config", "hooks.json") in files
+        assert not any("antigravity-cli" in path for path in files)
 
     def test_omnigent_honors_config_home(self, tmp_path, monkeypatch):
         config_home = tmp_path / "isolated-omnigent"

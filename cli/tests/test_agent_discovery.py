@@ -596,6 +596,26 @@ def test_antigravity_windows_cli_fallback_is_detected(
     assert signal.version == "1.0.13"
 
 
+def test_antigravity_config_evidence_ignores_undocumented_home_overrides(monkeypatch, tmp_path):
+    _pin_home(monkeypatch, tmp_path)
+    configured = tmp_path / "custom-antigravity"
+    decoy = configured / "hooks.json"
+    decoy.parent.mkdir(parents=True)
+    decoy.write_text("{}\n", encoding="utf-8")
+    hooks = tmp_path / ".gemini" / "config" / "hooks.json"
+    hooks.parent.mkdir(parents=True)
+    hooks.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("ANTIGRAVITY_CONFIG_DIR", str(configured))
+    monkeypatch.setenv("GEMINI_CONFIG_DIR", str(configured / "gemini"))
+    monkeypatch.setattr(ad, "_binary_candidates_for_agent", lambda *_args, **_kwargs: ())
+
+    signal = ad._scan_agent("antigravity")
+
+    assert signal.installed is False
+    assert signal.configured is True
+    assert signal.config_path == str(hooks)
+
+
 def test_antigravity_gui_fallback_reads_metadata_without_launch(
     monkeypatch,
     tmp_path,

@@ -659,7 +659,11 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.CopilotHome = transaction.PreviousCopilotHome
 	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
 	transaction.CursorHome = transaction.PreviousCursorHome
-	transaction.PreviousAntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "config")
+	officialAntigravityHome, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction.PreviousAntigravityConfigDir = officialAntigravityHome
 	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
 	transaction.PreviousOpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".config", "opencode")
 	transaction.OpenCodeConfigDir = transaction.PreviousOpenCodeConfigDir
@@ -688,6 +692,33 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	changedAntigravityHome.AntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), ".gemini", "other")
 	if err := validateSetupTransaction(changedAntigravityHome, expected); err == nil {
 		t.Fatal("connector-preserving transaction changed its recorded Antigravity config home")
+	}
+	changedNonPreservingAntigravityHome := transaction
+	changedNonPreservingAntigravityHome.PreserveConnectorConfiguration = false
+	changedNonPreservingAntigravityHome.AntigravityConfigDir = filepath.Join(
+		filepath.Dir(dataRoot),
+		".gemini",
+		"other",
+	)
+	if err := validateSetupTransaction(changedNonPreservingAntigravityHome, expected); err == nil {
+		t.Fatal("non-preserving install transaction accepted a non-official Antigravity config home")
+	}
+	migratedAntigravityHome := transaction
+	migratedPreviousState := *transaction.PreviousState
+	migratedAntigravityHome.PreviousState = &migratedPreviousState
+	migratedAntigravityHome.PreviousConnectors = append(
+		append([]string(nil), transaction.PreviousConnectors...),
+		"antigravity",
+	)
+	migratedAntigravityHome.PreviousAntigravityConfigDir = filepath.Join(
+		filepath.Dir(dataRoot),
+		"legacy-antigravity-custom",
+	)
+	migratedAntigravityHome.PreviousState.AntigravityConfigDir =
+		migratedAntigravityHome.PreviousAntigravityConfigDir
+	migratedAntigravityHome.AntigravityConfigDir = officialAntigravityHome
+	if err := validateSetupTransaction(migratedAntigravityHome, expected); err != nil {
+		t.Fatalf("connector-preserving Antigravity custom-home migration rejected: %v", err)
 	}
 	changedOpenCodeHome := transaction
 	changedOpenCodeHome.OpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), "other-opencode")
@@ -750,6 +781,38 @@ func TestSetupJournalRoundTripsAntigravityConfigHomeCustody(t *testing.T) {
 		!samePath(restored.Transaction.PreviousAntigravityConfigDir, home) ||
 		!samePath(restored.Transaction.AntigravityConfigDir, home) {
 		t.Fatalf("Antigravity config-home custody was not preserved: %+v", restored.Transaction)
+	}
+}
+
+func TestValidateUninstallRetainsCustomAntigravityRestorationCustody(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"1.0.0",
+	)
+	customHome := filepath.Join(filepath.Dir(dataRoot), "legacy-antigravity-custom")
+	previous.Connector = "antigravity"
+	previous.AntigravityConfigDir = customHome
+	transaction := testSetupTransactionForRoots(
+		"uninstall",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		&previous,
+	)
+	transaction.PreviousConnectors = []string{"antigravity"}
+	transaction.PreviousAntigravityConfigDir = customHome
+	transaction.AntigravityConfigDir = customHome
+
+	if err := validateSetupTransaction(transaction, setupTransactionExpectations{
+		InstallRoot:     installRoot,
+		DataRoot:        dataRoot,
+		MaintenancePath: maintenancePath,
+	}); err != nil {
+		t.Fatalf("custom Antigravity uninstall custody rejected: %v", err)
 	}
 }
 
@@ -2016,6 +2079,130 @@ func TestHermesManagedHomeSurvivesRepairEnvironmentDriftAndHandoff(t *testing.T)
 			handoff.HermesHome,
 			managedHome,
 		)
+	}
+}
+
+func TestFreshAntigravityUsesOfficialHomeAndScrubsInventedEnvironment(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows setup transaction connector-home resolution")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", filepath.Join(filepath.Dir(dataRoot), "vendor-decoy"))
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(filepath.Dir(dataRoot), "gemini-decoy"))
+
+	transaction, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"",
+		"0.8.7",
+		nil,
+		options{
+			Action:       "install",
+			Connector:    "antigravity",
+			ConnectorSet: true,
+			Mode:         "observe",
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	officialHome, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(transaction.AntigravityConfigDir, officialHome) {
+		t.Fatalf("fresh Antigravity home = %q, want official %q", transaction.AntigravityConfigDir, officialHome)
+	}
+	childEnv := transactionChildEnv(transaction)
+	if got := envValue(childEnv, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME"); !samePath(got, officialHome) {
+		t.Fatalf("internal Antigravity custody home = %q, want %q", got, officialHome)
+	}
+	for _, forbidden := range []string{"ANTIGRAVITY_CONFIG_DIR", "GEMINI_CONFIG_DIR"} {
+		if got := envValue(childEnv, forbidden); got != "" {
+			t.Fatalf("%s survived in child environment as %q", forbidden, got)
+		}
+	}
+}
+
+func TestModeOnlyMaintenanceMigratesCustomAntigravityHomeToOfficialPath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows setup transaction connector-home resolution")
+	}
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	managedHome := filepath.Join(filepath.Dir(dataRoot), "Antigravity Managed")
+	ambientHome := filepath.Join(filepath.Dir(dataRoot), "ambient-antigravity")
+	backupPath := filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")
+	if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binding := fmt.Sprintf(`{"path":%q}`, filepath.Join(managedHome, "hooks.json"))
+	if err := os.WriteFile(backupPath, []byte(binding), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ambientHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTIGRAVITY_CONFIG_DIR", ambientHome)
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(filepath.Dir(dataRoot), "ambient-gemini"))
+
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"0.8.6",
+	)
+	previous.Connector = "antigravity"
+	previous.AntigravityConfigDir = filepath.Join(filepath.Dir(dataRoot), "stale-antigravity-state")
+	transaction, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"0.8.6",
+		"0.8.7",
+		&previous,
+		options{
+			Action:       "upgrade",
+			Connector:    "antigravity",
+			Mode:         "action",
+			ModeSet:      true,
+			ConnectorSet: false,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transaction.TargetMode != "action" {
+		t.Fatalf("mode-only maintenance target mode = %q, want action", transaction.TargetMode)
+	}
+	officialHome, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !samePath(transaction.PreviousAntigravityConfigDir, managedHome) ||
+		!samePath(transaction.AntigravityConfigDir, officialHome) {
+		t.Fatalf(
+			"Antigravity mode-only maintenance homes = (%q, %q), want previous %q and official %q",
+			transaction.PreviousAntigravityConfigDir,
+			transaction.AntigravityConfigDir,
+			managedHome,
+			officialHome,
+		)
+	}
+	if got := envValue(transactionPreviousChildEnv(transaction), "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME"); !samePath(got, managedHome) {
+		t.Fatalf("previous Antigravity custody binding = %q, want %q", got, managedHome)
+	}
+	childEnv := transactionChildEnv(transaction)
+	if got := envValue(childEnv, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME"); !samePath(got, officialHome) {
+		t.Fatalf("current Antigravity custody binding = %q, want %q", got, officialHome)
+	}
+	for _, forbidden := range []string{"ANTIGRAVITY_CONFIG_DIR", "GEMINI_CONFIG_DIR"} {
+		if got := envValue(childEnv, forbidden); got != "" {
+			t.Fatalf("%s survived in child environment as %q", forbidden, got)
+		}
 	}
 }
 
@@ -3616,6 +3803,14 @@ func testSetupTransactionForRoots(action, installRoot, dataRoot, maintenancePath
 		targetVersion = ""
 		maintenanceSHA256 = ""
 	}
+	antigravityConfigDir := ""
+	if action == "install" {
+		var err error
+		antigravityConfigDir, err = defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
+		if err != nil {
+			panic(fmt.Sprintf("resolve test Antigravity configuration home: %v", err))
+		}
+	}
 	uninstallPathOwned := action == "uninstall" && previous != nil && previous.PathEntryOwned
 	uninstallPathSeparatorReused := uninstallPathOwned && previous.PathSeparatorReused
 	uninstallPathValueCreated := uninstallPathOwned && previous.PathValueCreated
@@ -3637,6 +3832,7 @@ func testSetupTransactionForRoots(action, installRoot, dataRoot, maintenancePath
 		TargetConnector:              "none",
 		TargetMode:                   "observe",
 		TargetVersion:                targetVersion,
+		AntigravityConfigDir:         antigravityConfigDir,
 		MaintenanceSHA256:            maintenanceSHA256,
 		UninstallPathEntryOwned:      uninstallPathOwned,
 		UninstallPathSeparatorReused: uninstallPathSeparatorReused,

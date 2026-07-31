@@ -18,6 +18,7 @@ import base64
 import binascii
 import ctypes
 import hashlib
+import hmac
 import json
 import ntpath
 import os
@@ -44,6 +45,8 @@ from defenseclaw.connector_contracts import resolve_connector_contract
 from defenseclaw.inventory.plugin_identity import is_link_or_reparse
 
 _SAFE_PATHEXT = (".exe", ".cmd")
+_HOOK_RUNTIME_STATE_MAX_BYTES = 64 << 10
+_HOOK_RUNTIME_EXECUTABLE_MAX_BYTES = 256 << 20
 _MANAGED_MARKER = re.compile(r"(?im)^\s*(?:#|rem\s+)\s*defenseclaw-managed-hook\s+v(\d+)\b")
 _EXPECTED_CONTRACTS = {
     "codex": frozenset(
@@ -355,6 +358,31 @@ def _windows_known_folder_path(folder_id: str) -> str:
                 ole32.CoTaskMemFree(result)
     finally:
         kernel32.CloseHandle(token)
+
+
+def _windows_system_powershell_path() -> str:
+    """Return the immutable system Windows PowerShell path used by hook setup."""
+    if os.name != "nt":
+        # Deterministic contract path for non-Windows schema/unit tests. Native
+        # Windows validation below always uses GetSystemDirectoryW.
+        return r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    if not hasattr(ctypes, "windll"):
+        return ""
+    buffer = ctypes.create_unicode_buffer(32_768)
+    get_system_directory = ctypes.windll.kernel32.GetSystemDirectoryW
+    get_system_directory.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+    get_system_directory.restype = ctypes.c_uint
+    length = int(get_system_directory(buffer, len(buffer)))
+    if length == 0 or length >= len(buffer):
+        return ""
+    return ntpath.normpath(
+        ntpath.join(
+            buffer.value,
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe",
+        )
+    )
 
 
 def _codex_system_requirements_path() -> str:
@@ -719,6 +747,102 @@ def _windows_hook_runtime_root(path: str) -> str | None:
     except (OSError, ValueError):
         return None
     return root
+
+
+def _same_windows_path(left: str, right: str) -> bool:
+    try:
+        return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
+    except (OSError, ValueError):
+        return False
+
+
+def _stable_file_sha256(path: str, root: str) -> str:
+    """Hash a bounded protected file while retaining replacement checks."""
+
+    try:
+        size = os.lstat(path).st_size
+    except OSError as exc:
+        raise _InspectionError("missing", f"protected runtime file is unavailable: {path}: {exc}") from exc
+    if size < 0 or size > _HOOK_RUNTIME_EXECUTABLE_MAX_BYTES:
+        raise _InspectionError(
+            "stale",
+            f"protected runtime file size is outside Doctor's bounded verifier: {path}",
+        )
+    body = _stable_regular_file(path, root, read_limit=size + 1)
+    if len(body) != size:
+        raise _InspectionError("stale", f"protected runtime file changed during hashing: {path}")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _validate_antigravity_hook_runtime_state(
+    launcher_path: str,
+    *,
+    runtime_root: str,
+    install_root: str,
+    data_dir: str,
+) -> str:
+    """Validate the active installer-owned stable launcher generation."""
+
+    state_path = os.path.join(runtime_root, "hook-runtime-state.json")
+    raw = _stable_regular_file(
+        state_path,
+        runtime_root,
+        read_limit=_HOOK_RUNTIME_STATE_MAX_BYTES + 1,
+    )
+    if len(raw) > _HOOK_RUNTIME_STATE_MAX_BYTES:
+        raise _InspectionError("stale", "stable hook runtime state exceeds 64 KiB")
+    try:
+        state = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeError, ValueError) as exc:
+        raise _InspectionError("stale", f"stable hook runtime state is malformed: {exc}") from exc
+    if not isinstance(state, dict) or type(state.get("schema_version")) is not int:
+        raise _InspectionError("stale", "stable hook runtime state schema is malformed")
+    if state["schema_version"] != 2:
+        raise _InspectionError(
+            "stale",
+            f"stable hook runtime state schema is {state['schema_version']!r}; expected 2",
+        )
+    if state.get("status") != "active":
+        raise _InspectionError(
+            "stale",
+            f"stable hook runtime is not active (status={state.get('status')!r})",
+        )
+    transaction_id = state.get("transaction_id")
+    if not isinstance(transaction_id, str) or re.fullmatch(r"[0-9a-f]{32}", transaction_id) is None:
+        raise _InspectionError("stale", "stable hook runtime transaction identity is malformed")
+
+    expected_paths = {
+        "runtime_root": runtime_root,
+        "launcher_path": launcher_path,
+        "data_root": data_dir,
+        "hook_path": os.path.join(install_root, "bin", "defenseclaw-hook.exe"),
+        "gateway_path": os.path.join(install_root, "bin", "defenseclaw-gateway.exe"),
+    }
+    for field, expected in expected_paths.items():
+        actual = state.get(field)
+        if not isinstance(actual, str) or not os.path.isabs(actual) or not _same_windows_path(actual, expected):
+            raise _InspectionError(
+                "stale",
+                f"stable hook runtime {field} does not match protected Setup custody",
+            )
+    if state.get("launcher_kind") != "trampoline":
+        raise _InspectionError("stale", "stable hook runtime does not bind the installed full hook")
+
+    for label, path_field, digest_field, root in (
+        ("launcher", "launcher_path", "launcher_sha256", runtime_root),
+        ("full hook", "hook_path", "hook_sha256", install_root),
+        ("gateway", "gateway_path", "gateway_sha256", install_root),
+    ):
+        expected_digest = state.get(digest_field)
+        if not isinstance(expected_digest, str) or re.fullmatch(r"[0-9a-fA-F]{64}", expected_digest) is None:
+            raise _InspectionError("stale", f"stable hook runtime {label} digest is malformed")
+        actual_digest = _stable_file_sha256(str(state[path_field]), root)
+        if not hmac.compare_digest(actual_digest.casefold(), expected_digest.casefold()):
+            raise _InspectionError(
+                "stale",
+                f"protected {label} digest does not match stable hook runtime state",
+            )
+    return f"runtime_state=active schema=2 transaction={transaction_id}"
 
 
 def _packaged_windows_install_root(
@@ -2287,6 +2411,9 @@ def _validate_antigravity_hook_matrix(document: dict[str, Any]) -> list[str]:
         container = document.get(key)
         if not isinstance(container, dict):
             raise _InspectionError("missing", f"Antigravity DefenseClaw registration {key} is missing")
+        enabled = container.get("enabled", True)
+        if type(enabled) is not bool or not enabled:
+            raise _InspectionError("stale", f"Antigravity DefenseClaw registration {key} is disabled")
         entries = container.get(event)
         if not isinstance(entries, list) or len(entries) != 1:
             raise _InspectionError(
@@ -2328,15 +2455,19 @@ def _validate_antigravity_hook_matrix(document: dict[str, Any]) -> list[str]:
             raise _InspectionError("foreign", f"Antigravity {event} does not use DefenseClaw's hook runtime")
         commands.append(command.strip())
         targets.add(os.path.normcase(os.path.normpath(target)))
+        for field, value in container.items():
+            if field in {event, "enabled"}:
+                continue
+            if _hook_json_value_targets_defenseclaw(value, "antigravity"):
+                raise _InspectionError(
+                    "stale",
+                    f"unexpected Antigravity event {field} in DefenseClaw registration {key}",
+                )
 
     if len(targets) != 1:
         raise _InspectionError("stale", "Antigravity lifecycle events target inconsistent hook runtimes")
     for key, value in document.items():
-        if (
-            key.startswith("defenseclaw-antigravity-")
-            and key not in expected_keys
-            and _hook_json_value_targets_defenseclaw(value, "antigravity")
-        ):
+        if key not in expected_keys and _hook_json_value_targets_defenseclaw(value, "antigravity"):
             raise _InspectionError("stale", f"unexpected Antigravity DefenseClaw registration {key}")
     return commands
 
@@ -2437,6 +2568,19 @@ def _command_target(
     command: str, connector: str, *, allow_enterprise_managed: bool = False
 ) -> tuple[str, list[str], str]:
     value = command.strip()
+    if connector == "antigravity" and (
+        value.casefold().startswith("set ")
+        or value.startswith("&")
+        or any(quote in value for quote in {'"', "'"})
+    ):
+        # Antigravity receives the registered command as a directly tokenized
+        # native command. Setup emits no shell prefix, call operator, or quote
+        # characters; accepting them here could normalize a host no-fire or
+        # alternate-executable registration into the trusted command.
+        raise _InspectionError(
+            "stale",
+            "Antigravity hook differs from the exact native outer command form",
+        )
     prefix = "set NoDefaultCurrentDirectoryInExePath=1&& "
     if value.casefold().startswith("set "):
         if not value.casefold().startswith(prefix.casefold()):
@@ -2457,6 +2601,15 @@ def _command_target(
     if first_base in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
         lowered = [part.casefold() for part in parts]
         if "-encodedcommand" in lowered:
+            if connector == "antigravity":
+                expected_powershell = _windows_system_powershell_path()
+                if not expected_powershell or ntpath.normcase(
+                    ntpath.normpath(parts[0])
+                ) != ntpath.normcase(ntpath.normpath(expected_powershell)):
+                    raise _InspectionError(
+                        "stale",
+                        "Antigravity hook does not use the trusted system Windows PowerShell",
+                    )
             encoded_index = lowered.index("-encodedcommand")
             if encoded_index + 2 != len(parts):
                 raise _InspectionError("malformed", "PowerShell EncodedCommand hook has unsupported launcher arguments")
@@ -2839,10 +2992,24 @@ def validate_windows_hook_registration(
         target = resolved
         basename = ntpath.basename(resolved).casefold()
         evidence, expected_runtime_version, contract_id = _contract_evidence(data_dir, connector, config_path)
-        if connector == "antigravity" and basename != "defenseclaw-hook.exe":
-            raise _InspectionError(
-                "foreign",
-                f"Antigravity requires the protected native defenseclaw-hook.exe PE target: {resolved}",
+        antigravity_runtime_evidence = ""
+        if connector == "antigravity":
+            if basename != "defenseclaw-hook.exe":
+                raise _InspectionError(
+                    "foreign",
+                    f"Antigravity requires the protected native defenseclaw-hook.exe PE target: {resolved}",
+                )
+            stable_runtime_root = _windows_hook_runtime_root(resolved)
+            if not stable_runtime_root:
+                raise _InspectionError(
+                    "foreign",
+                    "Antigravity registration does not target the canonical protected stable hook launcher",
+                )
+            antigravity_runtime_evidence = _validate_antigravity_hook_runtime_state(
+                resolved,
+                runtime_root=stable_runtime_root,
+                install_root=install_root,
+                data_dir=data_dir,
             )
         if basename in {"defenseclaw-gateway.exe", "defenseclaw-gateway.cmd"}:
             _stable_regular_file(resolved, install_root, read_limit=64 * 1024)
@@ -2904,6 +3071,7 @@ def validate_windows_hook_registration(
         return WindowsHookCheck(
             "healthy",
             f"healthy Windows-native {runtime} registration; entries={matrix_entries}; target={resolved}; {evidence}"
+            + (f"; {antigravity_runtime_evidence}" if antigravity_runtime_evidence else "")
             + (f"; policy={policy_detail}" if policy_detail else "")
             + limitations,
             command,

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import json
+import ntpath
 import os
 import shlex
 import subprocess
@@ -35,7 +36,6 @@ from defenseclaw.commands.cmd_doctor import (
 )
 from defenseclaw.doctor_hooks import (
     _CLAUDE_REQUIRED_HOOKS,
-    _CODEX_HOOK_SPECS,
     _codex_command_hook_hash,
     _codex_hook_state_key_source,
     _codex_policy_executable,
@@ -108,6 +108,23 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
         self.assertEqual(os.path.normcase(observed), os.path.normcase(expected))
 
+    @unittest.skipUnless(os.name == "nt", "Windows system directory contract")
+    def test_system_powershell_lookup_ignores_mutable_windows_environment(self) -> None:
+        expected = doctor_hooks._windows_system_powershell_path()
+        self.assertTrue(expected)
+
+        with patch.dict(
+            os.environ,
+            {
+                "SYSTEMROOT": str(self.root / "spoofed-windows"),
+                "WINDIR": str(self.root / "spoofed-windows"),
+                "PATH": str(self.root / "spoofed-path"),
+            },
+        ):
+            observed = doctor_hooks._windows_system_powershell_path()
+
+        self.assertEqual(ntpath.normcase(observed), ntpath.normcase(expected))
+
     def _runtime(self, name: str = "defenseclaw-hook.exe", body: bytes | None = None) -> Path:
         path = self.install / name
         if body is None:
@@ -175,6 +192,74 @@ class WindowsHookDoctorTests(unittest.TestCase):
         with self.assertRaisesRegex(_InspectionError, "direct handler"):
             _validate_antigravity_hook_matrix(malformed)
 
+        disabled = json.loads(json.dumps(document))
+        disabled["defenseclaw-antigravity-pretooluse"]["enabled"] = False  # type: ignore[index]
+        with self.assertRaisesRegex(_InspectionError, "disabled"):
+            _validate_antigravity_hook_matrix(disabled)
+
+        extra_event = json.loads(json.dumps(document))
+        extra_event["defenseclaw-antigravity-pretooluse"]["FutureEvent"] = [  # type: ignore[index]
+            {
+                "type": "command",
+                "command": self._encoded_hook_command(
+                    runtime,
+                    "antigravity",
+                    event="PreToolUse",
+                ),
+                "timeout": 30,
+            }
+        ]
+        with self.assertRaisesRegex(_InspectionError, "unexpected Antigravity event"):
+            _validate_antigravity_hook_matrix(extra_event)
+
+        aliased = json.loads(json.dumps(document))
+        aliased["operator-copy"] = aliased["defenseclaw-antigravity-pretooluse"]
+        with self.assertRaisesRegex(_InspectionError, "operator-copy"):
+            _validate_antigravity_hook_matrix(aliased)
+
+    def test_antigravity_rejects_non_system_outer_powershell(self) -> None:
+        runtime = self._runtime()
+        trusted = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        command = self._encoded_hook_command(
+            runtime,
+            "antigravity",
+            event="PreToolUse",
+        )
+        with patch(
+            "defenseclaw.doctor_hooks._windows_system_powershell_path",
+            return_value=trusted,
+        ):
+            target, args, kind = doctor_hooks._command_target(command, "antigravity")
+            self.assertEqual(target, str(runtime))
+            self.assertEqual(
+                args,
+                ["hook", "--connector", "antigravity", "--event", "PreToolUse"],
+            )
+            self.assertEqual(kind, "direct")
+            for replacement in (
+                "powershell.exe",
+                "pwsh.exe",
+                r"C:\Users\Public\powershell.exe",
+            ):
+                with self.subTest(replacement=replacement):
+                    tampered = command.replace(trusted, replacement, 1)
+                    with self.assertRaisesRegex(
+                        _InspectionError,
+                        "trusted system Windows PowerShell",
+                    ):
+                        doctor_hooks._command_target(tampered, "antigravity")
+            for tampered in (
+                "& " + command,
+                "set NoDefaultCurrentDirectoryInExePath=1&& " + command,
+                command.replace(trusted, f'"{trusted}"', 1),
+            ):
+                with self.subTest(tampered=tampered[:48]):
+                    with self.assertRaisesRegex(
+                        _InspectionError,
+                        "exact native outer command form",
+                    ):
+                        doctor_hooks._command_target(tampered, "antigravity")
+
     def test_antigravity_rejects_managed_cmd_instead_of_protected_pe(self) -> None:
         runtime = self._runtime("defenseclaw-hook.cmd")
         document: dict[str, object] = {}
@@ -199,6 +284,136 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
         self.assertEqual(check.state, "foreign", check.detail)
         self.assertIn("protected native defenseclaw-hook.exe PE target", check.detail)
+
+    def test_antigravity_validates_active_stable_runtime_digests(self) -> None:
+        local_app_data = self.root / "Local AppData"
+        runtime_root = local_app_data / "DefenseClaw" / "HookRuntime"
+        launcher = runtime_root / "defenseclaw-hook.exe"
+        full_hook = self.install / "bin" / "defenseclaw-hook.exe"
+        gateway = self.install / "bin" / "defenseclaw-gateway.exe"
+        runtime_root.mkdir(parents=True)
+        full_hook.parent.mkdir(parents=True)
+        launcher_bytes = b"MZ-stable-trampoline"
+        full_hook_bytes = b"MZ-installed-full-hook"
+        gateway_bytes = b"MZ-installed-gateway"
+        launcher.write_bytes(launcher_bytes)
+        full_hook.write_bytes(full_hook_bytes)
+        gateway.write_bytes(gateway_bytes)
+
+        state_path = runtime_root / "hook-runtime-state.json"
+        state = {
+            "schema_version": 2,
+            "status": "active",
+            "runtime_root": str(runtime_root),
+            "launcher_path": str(launcher),
+            "launcher_sha256": hashlib.sha256(launcher_bytes).hexdigest(),
+            "launcher_kind": "trampoline",
+            "hook_path": str(full_hook),
+            "hook_sha256": hashlib.sha256(full_hook_bytes).hexdigest(),
+            "data_root": str(self.data),
+            "gateway_path": str(gateway),
+            "gateway_sha256": hashlib.sha256(gateway_bytes).hexdigest(),
+            "transaction_id": "0" * 32,
+        }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+        document: dict[str, object] = {}
+        for event in ("PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop"):
+            handler = {
+                "type": "command",
+                "command": self._encoded_hook_command(launcher, "antigravity", event=event),
+                "timeout": 30,
+            }
+            entries: list[object]
+            if event in {"PreToolUse", "PostToolUse"}:
+                entries = [{"matcher": "*", "hooks": [handler]}]
+            else:
+                entries = [handler]
+            document[f"defenseclaw-antigravity-{event.lower()}"] = {event: entries}
+        config = self.profile / ".gemini" / "config" / "hooks.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps(document), encoding="utf-8")
+        self._lock("antigravity", config, version="v8")
+
+        with (
+            patch(
+                "defenseclaw.doctor_hooks._windows_known_folder_path",
+                return_value=str(local_app_data),
+            ),
+            patch("defenseclaw.inventory.agent_discovery._windows_acl_write_error", return_value=None),
+        ):
+            healthy = self._validate("antigravity", config)
+            self.assertEqual(healthy.state, "healthy", healthy.detail)
+            self.assertIn("runtime_state=active schema=2", healthy.detail)
+
+            full_hook.write_bytes(b"MZ-tampered-full-hook")
+            tampered_hook = self._validate("antigravity", config)
+            self.assertEqual(tampered_hook.state, "stale", tampered_hook.detail)
+            self.assertIn("full hook digest", tampered_hook.detail)
+            full_hook.write_bytes(full_hook_bytes)
+
+            launcher.write_bytes(b"MZ-tampered-trampoline")
+            tampered_launcher = self._validate("antigravity", config)
+            self.assertEqual(tampered_launcher.state, "stale", tampered_launcher.detail)
+            self.assertIn("launcher digest", tampered_launcher.detail)
+            launcher.write_bytes(launcher_bytes)
+
+            state["status"] = "disabled"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            disabled = self._validate("antigravity", config)
+            self.assertEqual(disabled.state, "stale", disabled.detail)
+            self.assertIn("not active", disabled.detail)
+
+    def test_antigravity_contract_check_fails_for_managed_cmd_runtime(self) -> None:
+        runtime = self._runtime("defenseclaw-hook.cmd")
+        document: dict[str, object] = {}
+        for event in ("PreInvocation", "PreToolUse", "PostToolUse", "PostInvocation", "Stop"):
+            handler = {
+                "type": "command",
+                "command": self._encoded_hook_command(runtime, "antigravity", event=event),
+                "timeout": 30,
+            }
+            entries: list[object]
+            if event in {"PreToolUse", "PostToolUse"}:
+                entries = [{"matcher": "*", "hooks": [handler]}]
+            else:
+                entries = [handler]
+            document[f"defenseclaw-antigravity-{event.lower()}"] = {event: entries}
+        config = self.profile / ".gemini" / "config" / "hooks.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps(document), encoding="utf-8")
+
+        result, output = self._contract_check("antigravity", config)
+
+        self.assertEqual(result.passed, 0, output)
+        self.assertEqual(result.failed, 1, output)
+        self.assertIn("protected native defenseclaw-hook.exe PE target", output)
+
+    def test_antigravity_windows_fallback_uses_official_hooks_home(self) -> None:
+        hooks_home = self.profile / ".gemini" / "config"
+        expected = hooks_home / "hooks.json"
+        sentinel = MagicMock()
+        with (
+            patch("defenseclaw.commands.cmd_doctor._hook_health_paths_from_lock", return_value=[]),
+            patch(
+                "defenseclaw.commands.cmd_doctor.connector_home",
+                return_value=str(hooks_home),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor.validate_windows_hook_registration",
+                return_value=sentinel,
+            ) as validator,
+        ):
+            observed = cmd_doctor._windows_native_hook_check(
+                self.cfg,
+                "antigravity",
+                install_root=str(self.install),
+                search_path="",
+                pathext=".EXE",
+            )
+
+        self.assertIs(observed, sentinel)
+        self.assertEqual(validator.call_args.kwargs["config_path"], str(expected))
 
     def _lock(
         self,

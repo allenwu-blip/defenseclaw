@@ -2267,15 +2267,7 @@ func isGenericToolInspectionEvent(event string) bool {
 func isPromptLikeEvent(event string) bool {
 	switch canonicalEvent(event) {
 	case "userpromptsubmit", "userpromptsubmitted", "beforesubmitprompt", "preuserprompt", "subagentstart",
-		"prellmcall", "beforeagent", "beforemodel",
-		// Antigravity 2.0 spec: PreInvocation fires just before the
-		// agent makes an invocation (call) to the LLM. Best used for
-		// dynamically injecting context, modifying system instructions,
-		// or feeding custom workspace rules to the model right before
-		// it generates a response. Routes through inspectMessageContent
-		// with direction=prompt so prompt-content rules see the user
-		// prompt and transcript before they reach Gemini.
-		"preinvocation":
+		"prellmcall", "beforeagent", "beforemodel":
 		return true
 	default:
 		return false
@@ -2290,23 +2282,13 @@ func isResultLikeEvent(event string) bool {
 		"afteragentresponse", "afteragentthought", "afteragent", "aftermodel",
 		// hermes post_llm_call carries the model's final response
 		// (extra.assistant_response); classifying it result-like routes
-		// it through tool_result inspection like antigravity's
-		// PostInvocation below. It stays non-blockable: it is absent
-		// from hermes BlockEvents, so verdicts demote to would_block.
+		// it through tool_result inspection. It stays non-blockable: it
+		// is absent from hermes BlockEvents, so verdicts demote to
+		// would_block.
 		"postllmcall", "postcascaderesponse", "postcascaderesponsewithtranscript",
 		// opencode plugin hook: tool.execute.after fires after a tool
 		// returns; observe-only telemetry routed as a tool_result.
-		"toolexecuteafter",
-		// Antigravity 2.0 spec: PostInvocation fires after the LLM
-		// invocation completes and all associated tool calls have
-		// finished running. Best used for post-processing outputs,
-		// executing clean-ups, or triggering follow-up agent cycles.
-		// Routes through inspectMessageContent with
-		// direction=tool_result so response-content rules see the
-		// generated text + final state. Note: PostToolUse (per-tool)
-		// is already classified above via the canonical "posttooluse"
-		// entry; PostInvocation is the per-turn equivalent.
-		"postinvocation":
+		"toolexecuteafter":
 		return true
 	default:
 		return false

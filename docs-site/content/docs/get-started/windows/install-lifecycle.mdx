@@ -201,13 +201,16 @@ defenseclaw setup `
 ```
 
 Setup records validated `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
-`ANTIGRAVITY_CONFIG_DIR`, `OMNIGENT_CONFIG_HOME`, and `OPENCODE_CONFIG_DIR`
-values when they are used, plus `HERMES_HOME` when Hermes is selected.
-Cursor publishes no configuration-home environment variable, so Setup records
-its exact configuration home internally. Windsurf likewise uses the exact
-Windows Profile Known Folder rather than an invented vendor override. Repair
-and upgrade preserve all recorded homes instead of following later profile
-or environment drift. The transaction retains both the
+`OMNIGENT_CONFIG_HOME`, and `OPENCODE_CONFIG_DIR` values when they are used,
+plus `HERMES_HOME` when Hermes is selected. Google publishes no Antigravity
+configuration-home override, so new Antigravity registrations always use
+`%USERPROFILE%\.gemini\config`. A predecessor custom path is retained only as
+internal custody long enough to restore its exact file and migrate the managed
+registration to the official path. Cursor publishes no configuration-home
+environment variable, so Setup records its exact configuration home
+internally. Windsurf likewise uses the exact Windows Profile Known Folder
+rather than an invented vendor override. Repair and upgrade preserve all other
+recorded homes instead of following later profile or environment drift. The transaction retains both the
 current and previous recorded Hermes home until reconciliation, rollback, or
 teardown has finished, so an environment change cannot strand an owned
 `config.yaml` registration. Restart OpenCode after lifecycle changes so the running

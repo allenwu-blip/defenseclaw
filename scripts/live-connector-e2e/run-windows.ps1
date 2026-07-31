@@ -64,7 +64,9 @@ function Resolve-EffectiveConnectorHome(
         'copilot' { 'COPILOT_HOME' }
         'cursor' { 'DEFENSECLAW_CURSOR_CONFIG_HOME' }
         'hermes' { 'HERMES_HOME' }
-        'antigravity' { 'ANTIGRAVITY_CONFIG_DIR' }
+        # Google documents no Antigravity configuration-home environment
+        # override. Its global hooks always follow USERPROFILE\.gemini\config.
+        'antigravity' { $null }
         'opencode' { 'OPENCODE_CONFIG_DIR' }
     }
     if (-not [string]::IsNullOrWhiteSpace($environmentName)) {

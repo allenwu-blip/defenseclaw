@@ -29,7 +29,9 @@ func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
 		"COPILOT_HOME=" + copilotHome,
 		"DEFENSECLAW_CURSOR_CONFIG_HOME=" + cursorHome,
 		"WINDSURF_USER_HOME=" + windsurfHome,
-		"ANTIGRAVITY_CONFIG_DIR=" + antigravityHome,
+		"ANTIGRAVITY_CONFIG_DIR=" + filepath.Join(root, "ignored-antigravity"),
+		"GEMINI_CONFIG_DIR=" + filepath.Join(root, "ignored-gemini"),
+		"DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME=" + antigravityHome,
 		"OPENCODE_CONFIG_DIR=" + openCodeHome,
 		"HERMES_HOME=" + hermesHome,
 	}

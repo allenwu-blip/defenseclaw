@@ -775,10 +775,8 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             self.assertIn("does not reference", result.checks[0]["detail"])
 
     def test_antigravity_hooks_global_only_passes(self):
-        # Canonical happy path: the new ~/.gemini/config/hooks.json
-        # exists with the nested schema and the legacy
-        # antigravity-cli/ path is absent. Doctor should report
-        # exactly one PASS, zero WARNs, zero FAILs.
+        # The documented global hooks file exists with the mixed schema.
+        # Doctor should report exactly one PASS, zero WARNs, zero FAILs.
         with tempfile.TemporaryDirectory() as tmp:
             home = os.path.join(tmp, "home")
             hook_path = os.path.join(home, ".gemini", "config", "hooks.json")
@@ -796,12 +794,8 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             self.assertIn("reachable", result.checks[0]["detail"])
 
     def test_antigravity_hooks_ignore_undocumented_legacy_path_residue(self):
-        # Pre-v0.5.0 install left a stale defenseclaw-managed
-        # entry at ~/.gemini/antigravity-cli/hooks.json. agy
-        # ignores that path at runtime, so it doesn't break the
-        # integration, but doctor must surface a WARN explaining
-        # the situation. The canonical path still exists and is
-        # valid, so PASS=1 and WARN=1.
+        # Undocumented residue is ignored; only the documented global hook
+        # file is authoritative for this check.
         with tempfile.TemporaryDirectory() as tmp:
             home = os.path.join(tmp, "home")
             canonical = os.path.join(home, ".gemini", "config", "hooks.json")
@@ -822,11 +816,8 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             self.assertEqual(result.warned, 0, result.checks)
 
     def test_antigravity_hooks_warn_on_duplicate_registration(self):
-        # ~/.gemini/hooks.json (the legacy global hooks file agy
-        # also reads) carries a duplicate DefenseClaw entry —
-        # agy will fire DefenseClaw twice per tool call. Doctor
-        # must surface a WARN distinct from the legacy-residue
-        # warn above.
+        # The documented workspace .agents/hooks.json carries a duplicate
+        # DefenseClaw entry, so Doctor warns about double evaluation.
         with tempfile.TemporaryDirectory() as tmp:
             home = os.path.join(tmp, "home")
             canonical = os.path.join(home, ".gemini", "config", "hooks.json")
@@ -850,6 +841,38 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             warn_check = next(c for c in result.checks if c["status"] == "warn")
             self.assertIn("fire twice", warn_check["detail"])
             self.assertIn(legacy_global, warn_check["detail"])
+
+    def test_antigravity_windows_hooks_warn_on_workspace_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "workspace")
+            workspace_hooks = os.path.join(workspace, ".agents", "hooks.json")
+            os.makedirs(os.path.dirname(workspace_hooks), exist_ok=True)
+            script_path = os.path.join(tmp, ".defenseclaw", "hooks", "defenseclaw-hook.exe")
+            with open(workspace_hooks, "w", encoding="utf-8") as fh:
+                json.dump(self._antigravity_hooks_payload(script_path), fh)
+            cfg = self._cfg(tmp, "antigravity")
+            cfg.claw.workspace_dir = workspace
+            result = _DoctorResult()
+
+            def healthy_native(_cfg, _connector, _label, native_result, **_kwargs):
+                native_result.passed += 1
+                native_result.checks.append(
+                    {"status": "pass", "label": "Antigravity hooks", "detail": "healthy native matrix"}
+                )
+
+            with patch(
+                "defenseclaw.commands.cmd_doctor._check_windows_native_hooks",
+                side_effect=healthy_native,
+            ) as native_check:
+                _check_antigravity_hooks(cfg, result, platform_name="nt")
+
+            native_check.assert_called_once()
+            self.assertEqual(result.failed, 0, result.checks)
+            self.assertEqual(result.passed, 1, result.checks)
+            self.assertEqual(result.warned, 1, result.checks)
+            warning = next(check for check in result.checks if check["status"] == "warn")
+            self.assertIn(workspace_hooks, warning["detail"])
+            self.assertIn("fire twice", warning["detail"])
 
     def test_copilot_hooks_fail_when_workspace_is_data_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

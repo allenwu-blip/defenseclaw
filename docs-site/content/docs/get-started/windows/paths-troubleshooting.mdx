@@ -54,14 +54,16 @@ not a user-facing rollback directory.
 
 ## Supported path overrides
 
-`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
-`ANTIGRAVITY_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `OMNIGENT_CONFIG_HOME`, and
-`HERMES_HOME` are the connector
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`, `OPENCODE_CONFIG_DIR`,
+`OMNIGENT_CONFIG_HOME`, and `HERMES_HOME` are the connector
 configuration overrides honored by their respective implementations. Set them
 to absolute, normalized native Windows paths before initial Setup or connector
 setup. The installer validates and records them; reparse ancestors are refused.
-Cursor and Windsurf publish no equivalent configuration-home override, so
-Setup records the exact native paths it selected internally.
+Antigravity, Cursor, and Windsurf publish no equivalent configuration-home
+override. Antigravity's global hook path is fixed at
+`%USERPROFILE%\.gemini\config\hooks.json`; Setup keeps any predecessor custom
+path only as internal custody needed for exact migration and restoration.
+Cursor and Windsurf likewise record their exact native paths internally.
 
 <Tabs items={['PowerShell', 'cmd']}>
   <Tab value="PowerShell">

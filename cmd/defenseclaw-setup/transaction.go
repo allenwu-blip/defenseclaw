@@ -333,10 +333,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	antigravityConfigDir, err := transactionConfigHome("ANTIGRAVITY_CONFIG_DIR", defaultAntigravityConfigDir)
-	if err != nil {
-		return setupTransaction{}, err
-	}
+	// Google documents Antigravity's global hook root at
+	// %USERPROFILE%\.gemini\config and publishes no configuration-home
+	// environment override. New registrations always target that official
+	// location. A predecessor's custom binding is recovered separately below
+	// only so Setup can restore and migrate the exact file it previously owned.
+	antigravityConfigDir := defaultAntigravityConfigDir
 	openCodeConfigDir, err := transactionConfigHome("OPENCODE_CONFIG_DIR", defaultOpenCodeConfigDir)
 	if err != nil {
 		return setupTransaction{}, err
@@ -433,7 +435,6 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		cursorHome = previousCursorHome
 		hermesHome = previousHermesHome
 		windsurfUserHome = previousWindsurfUserHome
-		antigravityConfigDir = previousAntigravityConfigDir
 		openCodeConfigDir = previousOpenCodeConfigDir
 		omnigentConfigHome = previousOmnigentConfigHome
 	}
@@ -1089,6 +1090,8 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
 			strings.EqualFold(name, "WINDSURF_HOOK_CONFIG_PATH") ||
 			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR") ||
+			strings.EqualFold(name, "GEMINI_CONFIG_DIR") ||
+			strings.EqualFold(name, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME") ||
 			strings.EqualFold(name, "OPENCODE_CONFIG_DIR") ||
 			strings.EqualFold(name, "OMNIGENT_CONFIG_HOME") ||
 			strings.EqualFold(name, "HERMES_HOME")) {
@@ -1121,7 +1124,10 @@ func transactionChildEnvForConnectorHomes(
 		)
 	}
 	if antigravityConfigDir != "" {
-		filtered = append(filtered, "ANTIGRAVITY_CONFIG_DIR="+antigravityConfigDir)
+		// Internal Setup-to-gateway custody binding. The hidden --config-home
+		// plumbing consumes it; Antigravity never receives a vendor-looking
+		// configuration override.
+		filtered = append(filtered, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME="+antigravityConfigDir)
 	}
 	if openCodeConfigDir != "" {
 		filtered = append(filtered, "OPENCODE_CONFIG_DIR="+openCodeConfigDir)
@@ -1312,6 +1318,20 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			}
 		}
 	}
+	if transaction.Action == "install" {
+		// Current Antigravity registrations have exactly one vendor-documented
+		// global home. Arbitrary predecessor paths are valid only in Previous*
+		// custody fields used for restoration and migration.
+		officialAntigravityHome, err := defaultConnectorConfigHome(
+			filepath.Join(".gemini", "config"),
+		)
+		if err != nil {
+			return fmt.Errorf("resolve official Antigravity configuration home: %w", err)
+		}
+		if !samePath(transaction.AntigravityConfigDir, officialAntigravityHome) {
+			return errors.New("install transaction has a non-official Antigravity configuration home")
+		}
+	}
 	if transaction.PreserveConnectorConfiguration {
 		if transaction.Action != "install" || !transaction.HadInstall || transaction.PreviousState == nil {
 			return errors.New("connector-preserving transaction has no previous installation")
@@ -1325,12 +1345,15 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) ||
 			!samePath(transaction.PreviousCursorHome, transaction.CursorHome) ||
 			!samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome) ||
-			!samePath(transaction.PreviousAntigravityConfigDir, transaction.AntigravityConfigDir) ||
 			!samePath(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir) ||
 			!samePath(transaction.PreviousOmnigentConfigHome, transaction.OmnigentConfigHome) ||
 			!samePath(transaction.PreviousHermesHome, transaction.HermesHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
+		// Antigravity is the deliberate equality exception above: older preview
+		// builds could persist a DefenseClaw-only custom home. Its Previous*
+		// path remains exact restoration authority while the universal install
+		// check above pins the current registration to the official home.
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
 			return errors.New("connector-preserving transaction disabled the required gateway")
 		}
@@ -3003,6 +3026,7 @@ func convergeCommittedSetupTransaction(transaction setupTransaction) error {
 			transaction,
 			gatewayPath,
 			previousChildEnv,
+			childEnv,
 			runConnectorLifecycleWithEnv,
 		)
 	} else {

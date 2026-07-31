@@ -46,6 +46,7 @@ from defenseclaw.audit_actions import ACTION_DOCTOR
 from defenseclaw.connector_paths import (
     codex_home,
     connector_config_files,
+    connector_home,
     copilot_home,
     hermes_config_path,
     hermes_legacy_config_path,
@@ -1403,6 +1404,8 @@ def _windows_native_hook_check(
             config_path = os.path.join(codex_home(), "managed_config.toml")
         elif connector == "copilot":
             config_path = os.path.join(copilot_home(), "hooks", "defenseclaw.json")
+        elif connector == "antigravity":
+            config_path = os.path.join(connector_home("antigravity"), "hooks.json")
         else:
             config_path = connector_config_files(connector)[0]
     if install_root is None:
@@ -2385,10 +2388,10 @@ def _check_antigravity_hooks(cfg, r: _DoctorResult, platform_name: str | None = 
 
     if (platform_name or os.name) == "nt":
         _check_windows_native_hooks(cfg, "antigravity", "Antigravity hooks", r)
+        _check_antigravity_workspace_duplicates(cfg, r)
         return
 
-    home = os.path.expanduser("~")
-    canonical = os.path.join(home, ".gemini", "config", "hooks.json")
+    canonical = os.path.join(connector_home("antigravity"), "hooks.json")
     if not os.path.isfile(canonical):
         _emit(
             "fail",
@@ -2405,6 +2408,12 @@ def _check_antigravity_hooks(cfg, r: _DoctorResult, platform_name: str | None = 
             f"{canonical} exists but does not reference DefenseClaw hook script",
             r=r,
         )
+
+    _check_antigravity_workspace_duplicates(cfg, r)
+
+
+def _check_antigravity_workspace_duplicates(cfg, r: _DoctorResult) -> None:
+    """Warn when the host will merge a second DefenseClaw registration."""
 
     workspace = _workspace_dir(cfg)
     extras = [os.path.join(workspace, ".agents", "hooks.json")] if workspace else []
@@ -4535,6 +4544,7 @@ def _check_hook_contract_lock(
         "copilot",
         "hermes",
         "windsurf",
+        "antigravity",
     }:
         native_runtime = _windows_native_hook_check(
             cfg,

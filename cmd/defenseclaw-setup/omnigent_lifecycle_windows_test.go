@@ -250,6 +250,7 @@ func TestOmnigentRepairUpgradePreservesExactHomeAndReconciles(t *testing.T) {
 		transaction,
 		filepath.Join(installRoot, "bin", "defenseclaw-gateway.exe"),
 		transactionPreviousChildEnv(transaction),
+		transactionChildEnv(transaction),
 		func(_, _, connectorName, action string, env []string) error {
 			calls = append(calls, connectorName+":"+action+":"+envValue(env, "OMNIGENT_CONFIG_HOME"))
 			return nil

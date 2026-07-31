@@ -848,14 +848,10 @@ _SPECS: dict[str, _AgentSpec] = {
         ("--version",),
     ),
     "antigravity": _AgentSpec(
-        # agy v1.0.x reads PreToolUse hooks from ~/.gemini/config/
-        # hooks.json (the canonical runtime path). The legacy
-        # ~/.gemini/antigravity-cli/hooks.json file remains a legacy
-        # signal, but the parent directory alone is not installation
-        # evidence: other tools can create empty plugin/skill folders.
+        # The documented global hooks file is configuration evidence, but
+        # configuration alone never proves an installed official client.
         (
             "~/.gemini/config/hooks.json",
-            "~/.gemini/antigravity-cli/hooks.json",
         ),
         "agy",
         ("--version",),
@@ -1025,6 +1021,8 @@ def _scan_agent(
         config_candidates = (claude_paths[2], claude_paths[3], claude_paths[0])
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)
+    elif name == "antigravity":
+        config_candidates = (os.path.join(connector_home("antigravity"), "hooks.json"),)
     elif name == "opencode":
         config_home = connector_home("opencode")
         config_candidates = (

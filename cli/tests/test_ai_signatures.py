@@ -122,6 +122,7 @@ def test_antigravity_signature_tracks_mcp_and_customization_paths():
     assert "~/.gemini/config/skills" in antigravity.config_paths
     assert ".agents/rules" in antigravity.config_paths
     assert "~/.gemini/config/plugins" in antigravity.config_paths
+    assert "antigravity.google" in antigravity.domain_patterns
 
 
 def test_custom_signature_pack_loads_from_managed_dir(tmp_path):

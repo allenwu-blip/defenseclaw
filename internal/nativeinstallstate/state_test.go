@@ -55,7 +55,7 @@ func fixtureState(t *testing.T) (State, string) {
 	return state, executable
 }
 
-func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
+func TestLoadAtAndEnvironmentRehydrateDocumentedConnectorHomes(t *testing.T) {
 	want, executable := fixtureState(t)
 	got, err := loadAt(executable, want.InstallRoot)
 	if err != nil {
@@ -69,6 +69,8 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 		"windsurf_hook_config_path=project-windsurf-hooks",
 		"DEFENSECLAW_HOME=project-data",
 		"ANTIGRAVITY_CONFIG_DIR=project-antigravity",
+		"GEMINI_CONFIG_DIR=project-gemini",
+		"DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME=project-internal",
 	})
 	joined := strings.Join(env, "\n")
 	for _, expected := range []string{
@@ -76,7 +78,6 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 		"CLAUDE_CONFIG_DIR=" + want.ClaudeConfigDir,
 		"WINDSURF_USER_HOME=" + want.WindsurfUserHome,
 		"WINDSURF_HOOK_CONFIG_PATH=" + want.WindsurfHooksPath,
-		"ANTIGRAVITY_CONFIG_DIR=" + want.AntigravityConfigDir,
 		"DEFENSECLAW_HOME=" + want.DataRoot,
 		"DEFENSECLAW_INSTALL_ROOT=" + want.InstallRoot,
 	} {
@@ -86,6 +87,18 @@ func TestLoadAtAndEnvironmentRehydrateConnectorHomes(t *testing.T) {
 	}
 	if strings.Contains(joined, "project-") {
 		t.Fatalf("ambient profile override survived: %v", env)
+	}
+	for _, forbidden := range []string{
+		"ANTIGRAVITY_CONFIG_DIR=",
+		"GEMINI_CONFIG_DIR=",
+		"DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME=",
+	} {
+		if strings.Contains(strings.ToUpper(joined), forbidden) {
+			t.Fatalf("invented Antigravity config environment survived: %v", env)
+		}
+	}
+	if got.AntigravityConfigDir != want.AntigravityConfigDir {
+		t.Fatalf("internal Antigravity custody path = %q, want %q", got.AntigravityConfigDir, want.AntigravityConfigDir)
 	}
 }
 
@@ -98,13 +111,17 @@ func TestEnvironmentRemovesAmbientConnectorHomesFromLegacyState(t *testing.T) {
 		"windsurf_user_home=project-windsurf",
 		"windsurf_hook_config_path=project-windsurf-hooks",
 		"antigravity_config_dir=project-antigravity",
+		"gemini_config_dir=project-gemini",
+		"defenseclaw_antigravity_config_home=project-internal",
 	})
 	joined := strings.Join(env, "\n")
 	if strings.Contains(strings.ToUpper(joined), "CODEX_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "CLAUDE_CONFIG_DIR=") ||
 		strings.Contains(strings.ToUpper(joined), "WINDSURF_USER_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "WINDSURF_HOOK_CONFIG_PATH=") ||
-		strings.Contains(strings.ToUpper(joined), "ANTIGRAVITY_CONFIG_DIR=") {
+		strings.Contains(strings.ToUpper(joined), "ANTIGRAVITY_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "GEMINI_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME=") {
 		t.Fatalf("ambient connector home survived legacy state: %v", env)
 	}
 }

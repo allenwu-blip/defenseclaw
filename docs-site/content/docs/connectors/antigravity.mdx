@@ -54,11 +54,12 @@ synchronously, and propagates the launcher status. Enforcement does not depend
 on that status: Google documents structured stdout, not non-zero hook exit
 codes, as the policy interface.
 
-Native Setup writes five DefenseClaw-owned registrations to
-`%USERPROFILE%\.gemini\config\hooks.json`. It backs up the original file,
-reconciles stale DefenseClaw commands on repair/upgrade, preserves unrelated
-hooks, writes connector-scoped gateway credentials into the protected
-DefenseClaw runtime, and records the resolved contract in
+Native Setup writes five DefenseClaw-owned registrations to the official
+`%USERPROFILE%\.gemini\config\hooks.json` path. Google documents no
+configuration-home environment override. Setup retains a predecessor custom
+path only as internal custody needed for exact restoration and migration;
+backs up the original file; preserves unrelated hooks; writes connector-scoped
+gateway credentials into the protected DefenseClaw runtime; and records the resolved contract in
 `%USERPROFILE%\.defenseclaw\hook_contract_lock.json`.
 
 ## Modes and enforcement
@@ -188,6 +189,7 @@ the current CLI release.
   <Folder name="~/.gemini/config" defaultOpen>
     <File name="hooks.json" />
     <File name="mcp_config.json" />
+    <Folder name="agents" />
     <Folder name="skills">
       <Folder name="<skill>">
         <File name="SKILL.md" />
@@ -197,6 +199,7 @@ the current CLI release.
   <Folder name="<workspace>/.agents">
     <File name="hooks.json" />
     <File name="mcp_config.json" />
+    <Folder name="agents" />
     <Folder name="skills" />
     <Folder name="plugins" />
   </Folder>
@@ -204,5 +207,5 @@ the current CLI release.
 
 DefenseClaw writes hooks only to the global file to avoid duplicated global and
 workspace evaluation. MCP and AgentSkills retain their documented global and
-workspace behavior; rules and plugin-contained agents remain discovery-only as
-listed in the connector matrix.
+workspace behavior; rules plus standalone and plugin-contained agents remain
+discovery-only as listed in the connector matrix.

@@ -38,20 +38,23 @@ type State struct {
 	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
 }
 
-// Environment removes ambient profile selectors and restores the exact
-// installer-owned values. Empty connector homes are retained only for legacy
-// state written before those fields existed; current setup always records both.
+// Environment removes ambient profile selectors and restores the documented
+// installer-owned values. AntigravityConfigDir remains internal custody state
+// for migration/restoration only; no invented Antigravity or Gemini config-home
+// environment variable is exported to child processes.
 func (state State) Environment(base []string) []string {
 	owned := map[string]bool{
-		"DEFENSECLAW_INSTALL_ROOT":  true,
-		"DEFENSECLAW_HOME":          true,
-		"CODEX_HOME":                true,
-		"CLAUDE_CONFIG_DIR":         true,
-		"WINDSURF_USER_HOME":        true,
-		"WINDSURF_HOOK_CONFIG_PATH": true,
-		"ANTIGRAVITY_CONFIG_DIR":    true,
+		"DEFENSECLAW_INSTALL_ROOT":            true,
+		"DEFENSECLAW_HOME":                    true,
+		"CODEX_HOME":                          true,
+		"CLAUDE_CONFIG_DIR":                   true,
+		"WINDSURF_USER_HOME":                  true,
+		"WINDSURF_HOOK_CONFIG_PATH":           true,
+		"ANTIGRAVITY_CONFIG_DIR":              true,
+		"GEMINI_CONFIG_DIR":                   true,
+		"DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME": true,
 	}
-	result := make([]string, 0, len(base)+7)
+	result := make([]string, 0, len(base)+6)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || owned[strings.ToUpper(name)] {
@@ -74,9 +77,6 @@ func (state State) Environment(base []string) []string {
 	}
 	if state.WindsurfHooksPath != "" {
 		result = append(result, "WINDSURF_HOOK_CONFIG_PATH="+state.WindsurfHooksPath)
-	}
-	if state.AntigravityConfigDir != "" {
-		result = append(result, "ANTIGRAVITY_CONFIG_DIR="+state.AntigravityConfigDir)
 	}
 	return result
 }

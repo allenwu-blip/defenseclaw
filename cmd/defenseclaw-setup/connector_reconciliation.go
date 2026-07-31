@@ -379,14 +379,52 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 func reconcilePreservedConnectors(
 	transaction setupTransaction,
 	gatewayPath string,
-	childEnv []string,
+	previousChildEnv []string,
+	currentChildEnv []string,
 	run connectorLifecycleRunner,
 ) connectorReconciliationRecorder {
 	reconciliation := connectorReconciliationRecorder{}
 	for _, connectorName := range transaction.PreviousConnectors {
-		configHome := connectorConfigHome(transaction, connectorName, true)
-		reconciliation.run(transaction.ID, connectorName, configHome, "reconcile", func() error {
-			return run(gatewayPath, transaction.DataRoot, connectorName, "reconcile", childEnv)
+		previousHome := connectorConfigHome(transaction, connectorName, true)
+		currentHome := connectorConfigHome(transaction, connectorName, false)
+		if !samePath(previousHome, currentHome) {
+			if !reconciliation.run(
+				transaction.ID,
+				connectorName,
+				previousHome,
+				"teardown",
+				func() error {
+					return run(
+						gatewayPath,
+						transaction.DataRoot,
+						connectorName,
+						"teardown",
+						previousChildEnv,
+					)
+				},
+			) {
+				continue
+			}
+			if !reconciliation.run(
+				transaction.ID,
+				connectorName,
+				previousHome,
+				"verify",
+				func() error {
+					return run(
+						gatewayPath,
+						transaction.DataRoot,
+						connectorName,
+						"verify",
+						previousChildEnv,
+					)
+				},
+			) {
+				continue
+			}
+		}
+		reconciliation.run(transaction.ID, connectorName, currentHome, "reconcile", func() error {
+			return run(gatewayPath, transaction.DataRoot, connectorName, "reconcile", currentChildEnv)
 		})
 	}
 	return reconciliation

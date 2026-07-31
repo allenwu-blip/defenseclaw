@@ -479,7 +479,7 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 			event:      "PostToolUse",
 			action:     "alert",
 			raw:        "alert",
-			additional: "Tool output contained API_KEY=sk-...",
+			additional: "Tool lifecycle metadata matched policy",
 			expected:   map[string]interface{}{},
 		},
 		{
@@ -487,10 +487,10 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 			event:      "PostInvocation",
 			action:     "alert",
 			raw:        "alert",
-			additional: "Model response leaked PII",
+			additional: "Invocation context matched policy",
 			expected: map[string]interface{}{
 				"injectSteps": []interface{}{
-					map[string]interface{}{"ephemeralMessage": "Model response leaked PII"},
+					map[string]interface{}{"ephemeralMessage": "Invocation context matched policy"},
 				},
 			},
 		},
@@ -503,13 +503,46 @@ func TestAntigravityProfileRespond_Parity(t *testing.T) {
 				RawAction:         tc.raw,
 				Reason:            tc.reason,
 				AdditionalContext: tc.additional,
-				Caps:              HookCapability{CanAskNative: true, AskEvents: []string{"PreInvocation", "PreToolUse"}},
+				Caps:              HookCapability{CanAskNative: true, AskEvents: []string{"PreToolUse"}},
 			})
 			if out.FieldName != "hook_output" {
 				t.Errorf("FieldName=%q want hook_output", out.FieldName)
 			}
 			if !reflect.DeepEqual(out.Output, tc.expected) {
 				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
+			}
+		})
+	}
+}
+
+func TestAntigravityProfileMapVerdict_AskOnlyAtPreToolUse(t *testing.T) {
+	caps := HookCapability{
+		CanBlock:     true,
+		CanAskNative: true,
+		AskEvents:    []string{"PreToolUse"},
+		BlockEvents:  []string{"PreToolUse"},
+	}
+	cases := []struct {
+		name       string
+		event      string
+		wantAction string
+	}{
+		{name: "pre_tool_use_retains_native_confirm", event: "PreToolUse", wantAction: "confirm"},
+		{name: "pre_invocation_downgrades_confirm", event: "PreInvocation", wantAction: "alert"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := hookOnlyProfileMapVerdict(HookVerdictInput{
+				RawAction: "confirm",
+				Event:     tc.event,
+				Mode:      "action",
+				Caps:      caps,
+			})
+			if out.Action != tc.wantAction {
+				t.Fatalf("Action=%q want %q", out.Action, tc.wantAction)
+			}
+			if out.WouldBlock {
+				t.Fatal("confirm verdict must not be reported as would-block")
 			}
 		})
 	}

@@ -55,6 +55,14 @@ class _FakeCfg:
     """
 
 
+class _WorkspaceCfg:
+    def __init__(self, workspace: str):
+        self.workspace = workspace
+
+    def connector_workspace_dir(self) -> str:
+        return self.workspace
+
+
 class AgentsAdapterTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="dc-aibom-agents-")
@@ -108,6 +116,36 @@ class AgentsAdapterTests(unittest.TestCase):
         out = _agents_for_connector("zeptoclaw", _FakeCfg())
         ids = sorted(a["id"] for a in out)
         self.assertEqual(ids, ["alpha", "beta", "name-only-fallback"])
+
+    def test_antigravity_agents_from_global_workspace_and_plugin_paths(self):
+        workspace = os.path.join(self.tmp, "workspace")
+        global_agents = os.path.join(self.tmp, ".gemini", "config", "agents")
+        workspace_agents = os.path.join(workspace, ".agents", "agents")
+        plugin_agents = os.path.join(
+            self.tmp,
+            ".gemini",
+            "config",
+            "plugins",
+            "review-bundle",
+            "agents",
+        )
+        os.makedirs(global_agents)
+        os.makedirs(os.path.join(workspace_agents, "workspace-reviewer"))
+        os.makedirs(plugin_agents)
+        with open(os.path.join(global_agents, "global-reviewer.md"), "w") as fh:
+            fh.write("# Global reviewer\n")
+        with open(os.path.join(workspace_agents, "workspace-reviewer", "agent.md"), "w") as fh:
+            fh.write("# Workspace reviewer\n")
+        with open(os.path.join(plugin_agents, "plugin-reviewer.md"), "w") as fh:
+            fh.write("# Plugin reviewer\n")
+
+        out = _agents_for_connector("antigravity", _WorkspaceCfg(workspace))
+
+        self.assertEqual(
+            sorted(agent["id"] for agent in out),
+            ["global-reviewer", "plugin-reviewer", "workspace-reviewer"],
+        )
+        self.assertTrue(all(agent["kind"] == "subagent" for agent in out))
 
     def test_unknown_connector_returns_empty(self):
         out = _agents_for_connector("openclaw", _FakeCfg())

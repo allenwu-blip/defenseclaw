@@ -588,11 +588,19 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 		PreviousWindsurfUserHome:     filepath.Join(root, "windsurf-profile"),
 		PreviousAntigravityConfigDir: filepath.Join(root, ".gemini", "config"),
 		PreviousOpenCodeConfigDir:    filepath.Join(root, "opencode"),
+		CodexHome:                    filepath.Join(root, "codex"),
+		ClaudeConfigDir:              filepath.Join(root, "claude"),
+		CopilotHome:                  filepath.Join(root, "copilot"),
+		CursorHome:                   filepath.Join(root, "cursor"),
+		WindsurfUserHome:             filepath.Join(root, "windsurf-profile"),
+		AntigravityConfigDir:         filepath.Join(root, ".gemini", "config"),
+		OpenCodeConfigDir:            filepath.Join(root, "opencode"),
 	}
 	var calls []string
 	recorder := reconcilePreservedConnectors(
 		transaction,
 		filepath.Join(root, "defenseclaw-gateway.exe"),
+		[]string{"PRESERVED=1"},
 		[]string{"PRESERVED=1"},
 		func(_, _, connector, action string, env []string) error {
 			calls = append(calls, connector+":"+action+":"+strings.Join(env, ","))
@@ -605,6 +613,49 @@ func TestReconcilePreservedConnectorsRefreshesEntireExistingRoster(t *testing.T)
 	}
 	if len(recorder.attempts) != 7 || len(recorder.failures) != 0 {
 		t.Fatalf("preserved connector reconciliation = %+v", recorder)
+	}
+}
+
+func TestReconcilePreservedAntigravityMigratesCustomCustodyToOfficialHome(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	customHome := filepath.Join(root, "legacy-custom")
+	officialHome := filepath.Join(root, ".gemini", "config")
+	transaction := setupTransaction{
+		ID:                           strings.Repeat("a", 32),
+		DataRoot:                     filepath.Join(root, "data"),
+		PreviousConnectors:           []string{"antigravity"},
+		PreviousAntigravityConfigDir: customHome,
+		AntigravityConfigDir:         officialHome,
+	}
+	previousEnv := transactionPreviousChildEnv(transaction)
+	currentEnv := transactionChildEnv(transaction)
+	var calls []string
+	recorder := reconcilePreservedConnectors(
+		transaction,
+		filepath.Join(root, "defenseclaw-gateway.exe"),
+		previousEnv,
+		currentEnv,
+		func(_, _, connector, action string, env []string) error {
+			home := envValue(env, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME")
+			if envValue(env, "ANTIGRAVITY_CONFIG_DIR") != "" ||
+				envValue(env, "GEMINI_CONFIG_DIR") != "" {
+				t.Fatalf("invented Antigravity vendor environment survived: %v", env)
+			}
+			calls = append(calls, connector+":"+action+":"+home)
+			return nil
+		},
+	)
+	want := []string{
+		"antigravity:teardown:" + customHome,
+		"antigravity:verify:" + customHome,
+		"antigravity:reconcile:" + officialHome,
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("Antigravity migration calls = %v, want %v", calls, want)
+	}
+	if len(recorder.attempts) != 3 || len(recorder.failures) != 0 {
+		t.Fatalf("Antigravity preserved migration = %+v", recorder)
 	}
 }
 

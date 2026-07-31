@@ -84,11 +84,12 @@ func TestBindWindsurfLifecycleProfileOverridesAmbientAndRestoresIt(t *testing.T)
 	}
 }
 
-func TestBindAntigravityLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testing.T) {
+func TestBindAntigravityLifecycleConfigHomeUsesHiddenOptsWithoutVendorEnv(t *testing.T) {
 	root := t.TempDir()
 	ambient := filepath.Join(root, "ambient")
 	bound := filepath.Join(root, ".gemini", "config")
 	t.Setenv("ANTIGRAVITY_CONFIG_DIR", ambient)
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(root, "gemini-ambient"))
 	connectorFlagConfigHome = bound
 	t.Cleanup(func() { connectorFlagConfigHome = "" })
 
@@ -96,8 +97,12 @@ func TestBindAntigravityLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != bound {
-		t.Fatalf("bound ANTIGRAVITY_CONFIG_DIR = %q, want %q", got, bound)
+	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != ambient {
+		t.Fatalf("ANTIGRAVITY_CONFIG_DIR was mutated to %q", got)
+	}
+	opts := resolveConnectorOpts("")
+	if got := connector.NewAntigravityConnector().Capabilities(opts).Hooks.ConfigPath; got != filepath.Join(bound, "hooks.json") {
+		t.Fatalf("hidden Antigravity config home resolved to %q", got)
 	}
 	restore()
 	if got := os.Getenv("ANTIGRAVITY_CONFIG_DIR"); got != ambient {

@@ -260,8 +260,8 @@ func NewOpenHandsConnector() *hookOnlyConnector {
 // PreToolUse supports documented allow/deny/ask/force_ask decisions.
 //
 // Scope is intentionally "user" only. Antigravity also discovers
-// <workspace>/.agents/hooks.json, but Setup writes only the single global file
-// so the registration is deterministic and is not duplicated per workspace.
+// <workspace>/.agents/hooks.json, but Setup owns only the global file so the
+// registration is deterministic and is not duplicated per workspace.
 func NewAntigravityConnector() *hookOnlyConnector {
 	return &hookOnlyConnector{
 		name:        "antigravity",
@@ -283,11 +283,19 @@ func NewAntigravityConnector() *hookOnlyConnector {
 	}
 }
 
-func (c *hookOnlyConnector) Name() string                           { return c.name }
-func (c *hookOnlyConnector) Description() string                    { return c.description }
-func (c *hookOnlyConnector) HookAPIPath() string                    { return c.apiPath }
-func (c *hookOnlyConnector) ToolInspectionMode() ToolInspectionMode { return ToolModeBoth }
-func (c *hookOnlyConnector) SubprocessPolicy() SubprocessPolicy     { return SubprocessNone }
+func (c *hookOnlyConnector) Name() string        { return c.name }
+func (c *hookOnlyConnector) Description() string { return c.description }
+func (c *hookOnlyConnector) HookAPIPath() string { return c.apiPath }
+func (c *hookOnlyConnector) ToolInspectionMode() ToolInspectionMode {
+	if c.name == "antigravity" {
+		// Antigravity's PostToolUse input contains only lifecycle metadata
+		// (stepIdx and optional error), not tool-result content. DefenseClaw
+		// therefore claims inspection only at the documented PreToolUse gate.
+		return ToolModePreExecution
+	}
+	return ToolModeBoth
+}
+func (c *hookOnlyConnector) SubprocessPolicy() SubprocessPolicy { return SubprocessNone }
 func (c *hookOnlyConnector) HookScriptNames(SetupOpts) []string {
 	// Cursor and Windsurf require connector-specific PowerShell adapters only
 	// for their native Windows transports. Unix and macOS continue to use the
@@ -684,18 +692,20 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Notes:         []string{"Antigravity rules are discovery-only; DefenseClaw does not write rules until activation metadata and file naming are documented."},
 		}
 		caps.Plugins = SurfaceCapability{
-			Supported:     true,
-			Scope:         "workspace,user",
-			ReadPaths:     antigravityPluginPaths(opts),
-			DiscoveryOnly: true,
-			Notes:         []string{"Antigravity plugins are scan/discovery-only; DefenseClaw does not install or disable agy plugins in PR #365."},
+			Supported:      true,
+			Scope:          "workspace,user",
+			ReadPaths:      antigravityPluginPaths(opts),
+			WritePaths:     antigravityPluginWritePaths(opts),
+			InstallTargets: []string{"plugin"},
+			RequiresOptIn:  true,
+			Notes:          []string{"DefenseClaw can scan, install, and remove Antigravity plugins at Google's documented manual global/workspace paths. The Antigravity CLI staging path is discovery-only. Runtime disable remains DefenseClaw policy/advisory state; the connector does not invoke agy plugin disable."},
 		}
 		caps.Agents = SurfaceCapability{
 			Supported:     true,
-			Scope:         "plugin",
-			ReadPaths:     antigravityPluginPaths(opts),
+			Scope:         "workspace,user,plugin",
+			ReadPaths:     antigravityAgentPaths(opts),
 			DiscoveryOnly: true,
-			Notes:         []string{"No standalone Antigravity agent path is documented. Plugin-contained agents under <plugin>/agents are discovered through Antigravity plugin roots only."},
+			Notes:         []string{"Antigravity agents under ~/.gemini/config/agents, <workspace>/.agents/agents, and <plugin>/agents are discovery-only; DefenseClaw does not install or modify them."},
 		}
 		caps.CodeGuard.Supported = false
 	case "openhands":
@@ -1286,12 +1296,15 @@ func openhandsHooksPath(opts SetupOpts) string {
 // files, so writing the same DefenseClaw hook to more than one path
 // would duplicate-fire policy evaluations. Workspace and plugin hook
 // files remain discovery-only surfaces.
-func antigravityHooksPath(SetupOpts) string {
+func antigravityHooksPath(opts SetupOpts) string {
 	if AntigravityHooksPathOverride != "" {
 		return AntigravityHooksPathOverride
 	}
-	if configDir := strings.TrimSpace(os.Getenv("ANTIGRAVITY_CONFIG_DIR")); configDir != "" {
-		return filepath.Join(configDir, "hooks.json")
+	if strings.TrimSpace(opts.ConfigHome) != "" {
+		// Hidden native-maintenance commands use this DefenseClaw-internal
+		// binding only to restore or migrate a path already recorded in Setup
+		// custody. Ordinary calls always use Google's documented global path.
+		return filepath.Join(opts.ConfigHome, "hooks.json")
 	}
 	return homePath(".gemini", "config", "hooks.json")
 }
@@ -1456,12 +1469,36 @@ func antigravityRuleReadPaths(opts SetupOpts) []string {
 }
 
 func antigravityPluginPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings(append(antigravityPluginWritePaths(opts),
+		homePath(".gemini", "antigravity-cli", "plugins"),
+	))
+}
+
+func antigravityPluginWritePaths(opts SetupOpts) []string {
 	return uniqueNonEmptyStrings([]string{
 		homePath(".gemini", "config", "plugins"),
-		homePath(".gemini", "antigravity-cli", "plugins"),
 		antigravityWorkspacePath(opts, ".agents", "plugins"),
 		antigravityWorkspacePath(opts, "_agents", "plugins"),
 	})
+}
+
+func antigravityAgentPaths(opts SetupOpts) []string {
+	paths := []string{
+		homePath(".gemini", "config", "agents"),
+		antigravityWorkspacePath(opts, ".agents", "agents"),
+	}
+	for _, pluginRoot := range antigravityPluginPaths(opts) {
+		entries, err := os.ReadDir(pluginRoot)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				paths = append(paths, filepath.Join(pluginRoot, entry.Name(), "agents"))
+			}
+		}
+	}
+	return uniqueNonEmptyStrings(paths)
 }
 
 func antigravityWorkspacePath(opts SetupOpts, parts ...string) string {
@@ -2045,15 +2082,13 @@ func antigravityOwnedHookCommands(hookScript string) []string {
 // to the same hooks.json file under their own keys are not
 // disturbed.
 //
-// The "command" field is written WITHOUT shellWord() quoting. agy v1.0.x
-// tokenizes the command itself and passes quote characters through to direct
-// exec, so shell quoting becomes literal path bytes and the hook silently
-// no-fires (verified empirically via the v0.5.0 Antigravity smoke test). On
-// Unix hookScript is the bare absolute .sh path. On Windows it is a
-// tokenizer-safe PowerShell command whose encoded script invokes the absolute
-// managed defenseclaw-hook.exe path. The visible command has no quoted tokens
-// or user-profile path segments for agy to mis-tokenize, and the launcher lookup
-// does not depend on Antigravity's current directory or PATH.
+// The "command" field is written WITHOUT shellWord() quoting because
+// Antigravity tokenizes the command before direct execution. On Unix hookScript
+// is the bare absolute .sh path. On Windows it is a tokenizer-safe PowerShell
+// command whose encoded script invokes the absolute managed
+// defenseclaw-hook.exe path. The visible command has no quoted tokens or
+// user-profile path segments for Antigravity to mis-tokenize, and the launcher
+// lookup does not depend on Antigravity's current directory or PATH.
 func patchAntigravityHooks(path, hookScript string) error {
 	cfg, err := readJSONObject(path)
 	if err != nil {

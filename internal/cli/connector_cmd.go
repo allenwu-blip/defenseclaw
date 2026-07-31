@@ -251,7 +251,10 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		// never inherit a maintenance process's ambient USERPROFILE.
 		return connector.BindUserHomeDir(home)
 	case "antigravity":
-		variable = "ANTIGRAVITY_CONFIG_DIR"
+		// Google has no documented Antigravity configuration-home environment
+		// variable. The hidden maintenance flag already flows through
+		// SetupOpts.ConfigHome, so do not invent or export a vendor override.
+		return func() {}, nil
 	case "opencode":
 		variable = "OPENCODE_CONFIG_DIR"
 	case "hermes":
