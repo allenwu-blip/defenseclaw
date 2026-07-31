@@ -5350,6 +5350,7 @@ def _apply_hook_connector_setup(
             cfg.gateway.host,
             cfg.gateway.port,
             connector=connector,
+            connectors=_actives,
             wait_for_connector_ready=True,
         )
         click.echo(f"  ✓ {_CONNECTOR_META[connector]['label']} connector setup complete")
@@ -8835,6 +8836,13 @@ def _hook_contract_lock_covers(lock: Any, expected: set[str]) -> bool:
     entries = lock.get("connectors")
     if type(version) is not int or version < 1 or version > 2 or not isinstance(entries, dict):
         return False
+    actual = {
+        normalize_connector(name)
+        for name in entries
+        if isinstance(name, str) and name.strip()
+    }
+    if actual != expected:
+        return False
     for name in expected:
         entry = entries.get(name)
         if not isinstance(entry, dict):
@@ -8878,7 +8886,7 @@ def _wait_for_connector_runtime(
         state_fresh = previous_state_marker is None or state_marker != previous_state_marker
         lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
         if (
-            expected.issubset(active)
+            active == expected
             and state_fresh
             and lock_fresh
             and _hook_contract_lock_covers(lock, expected)
@@ -8987,6 +8995,15 @@ def _restart_defense_gateway(data_dir: str, *, start_if_stopped: bool = True) ->
         ctx = None
     if ctx is not None:
         ctx.meta[_SETUP_RESTART_HANDLED_KEY] = True
+
+    if os.name == "nt":
+        from defenseclaw.gateway import packaged_windows_install_root
+
+        if packaged_windows_install_root():
+            return _restart_defense_gateway_native(
+                data_dir,
+                start_if_stopped=start_if_stopped,
+            )
 
     pid_file = os.path.join(data_dir, "gateway.pid")
     pid_alive = _is_pid_alive(pid_file)
@@ -9127,7 +9144,12 @@ def _restart_defense_gateway_native(
 ) -> bool:
     """Reload the gateway with the bounded native process-tree runner."""
 
-    from defenseclaw.observability.local_stack import CommandRunner, LocalStackError
+    from defenseclaw.observability.local_stack import (
+        CommandRunner,
+        CommandTimeoutError,
+        LocalStackError,
+        native_command_environment,
+    )
 
     try:
         ctx = click.get_current_context(silent=True)
@@ -9164,20 +9186,36 @@ def _restart_defense_gateway_native(
         result = runner.run(
             [executable, action],
             timeout=_DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS,
+            env=native_command_environment(),
+            allow_breakaway=True,
         )
-    except LocalStackError:
-        if _native_gateway_lifecycle_status(runner, executable):
-            click.echo(" ✓ (ready after launcher timeout)")
+    except CommandTimeoutError as exc:
+        if _wait_for_defense_gateway_api(data_dir):
+            click.echo(" ✓ (API ready after launcher timeout)")
             return True
+        _echo_native_command_diagnostics(exc.result)
         if not was_running:
             _native_gateway_lifecycle_stop(runner, executable)
-        click.echo(" ✗ (timed out; final status is not healthy)")
+        click.echo(" ✗ (timed out; final API state is not healthy)")
         return False
-    if result.returncode == 0:
+    except LocalStackError as exc:
+        click.echo(" ✗")
+        click.echo(f"    {exc}")
+        return False
+    if result.returncode == 0 and _wait_for_defense_gateway_api(data_dir):
         click.echo(" ✓")
         return True
     click.echo(" ✗")
+    _echo_native_command_diagnostics(result)
+    if result.returncode == 0:
+        click.echo("    The lifecycle command returned, but the sidecar API did not reach running state.")
     return False
+
+
+def _echo_native_command_diagnostics(result: Any) -> None:
+    detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "").strip()
+    for line in detail.splitlines()[:3]:
+        click.echo(f"    {line}")
 
 
 def _native_gateway_lifecycle_status(runner, executable: str) -> bool:

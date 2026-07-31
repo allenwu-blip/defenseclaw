@@ -84,6 +84,8 @@ from defenseclaw.file_permissions import (
 )
 from defenseclaw.safety import is_symlink
 
+_MCP_CONFIG_MAX_BYTES = 2 * 1024 * 1024
+
 # ---------------------------------------------------------------------------
 # Public constants
 # ---------------------------------------------------------------------------
@@ -2195,9 +2197,12 @@ def _read_yaml_mcp_servers(
     key_paths: tuple[tuple[str, ...], ...],
 ) -> list[MCPServerEntry]:
     try:
-        with open(path) as f:
-            data = yaml.safe_load(f) or {}
-    except (OSError, yaml.YAMLError):
+        with open(path, "rb") as f:
+            raw = f.read(_MCP_CONFIG_MAX_BYTES + 1)
+        if len(raw) > _MCP_CONFIG_MAX_BYTES:
+            return []
+        data = yaml.safe_load(raw.decode("utf-8-sig", errors="strict")) or {}
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
         return []
     if not isinstance(data, dict):
         return []

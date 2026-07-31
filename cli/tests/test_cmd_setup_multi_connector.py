@@ -117,6 +117,20 @@ class TestAdditiveSetupCommand(unittest.TestCase):
         self.assertEqual(self.app.cfg.claw.mode, "codex")
         self.assertEqual(self.app.cfg.active_connectors(), ["codex", "cursor"])
 
+    def test_later_setup_revalidates_every_active_connector_before_success(self):
+        self._seed_single("codex")
+        with _setup_patches() as restart:
+            result = _invoke(["cursor", "--yes"], self.app)
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        restart.assert_called_once_with(
+            self.app.cfg.data_dir,
+            self.app.cfg.gateway.host,
+            self.app.cfg.gateway.port,
+            connector="cursor",
+            connectors=["codex", "cursor"],
+            wait_for_connector_ready=True,
+        )
+
     def test_bare_batch_restart_waits_for_every_active_connector(self):
         self._seed_map("codex", "cursor")
         with (

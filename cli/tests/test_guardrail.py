@@ -1799,15 +1799,17 @@ class TestRestartDefenseGateway(unittest.TestCase):
         "defenseclaw.commands.cmd_setup._wait_for_defense_gateway_api",
         return_value=True,
     )
-    @patch("defenseclaw.commands.cmd_setup.subprocess.run")
+    @patch("defenseclaw.observability.local_stack.CommandRunner")
     def test_packaged_restart_uses_verified_sibling_from_hostile_working_directory(
         self,
-        mock_run,
+        runner_cls,
         mock_ready,
     ):
         from defenseclaw.commands.cmd_setup import _restart_defense_gateway
+        from defenseclaw.observability.local_stack import CommandResult
 
-        mock_run.return_value = MagicMock(returncode=0)
+        runner = runner_cls.return_value
+        runner.run.return_value = CommandResult(("gateway", "start"), 0, "", "")
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir, "installed")
             python = root / "runtime" / "python" / "python.exe"
@@ -1831,7 +1833,13 @@ class TestRestartDefenseGateway(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
-        self.assertEqual(mock_run.call_args.args[0], [str(gateway.resolve()), "start"])
+        self.assertEqual(runner.run.call_args.args[0], [str(gateway), "start"])
+        self.assertEqual(runner.run.call_args.kwargs["timeout"], 60.0)
+        self.assertTrue(runner.run.call_args.kwargs["allow_breakaway"])
+        self.assertEqual(
+            runner.run.call_args.kwargs["env"]["PYTHONIOENCODING"],
+            "utf-8",
+        )
         mock_ready.assert_called_once_with(tmpdir)
 
     @patch(
@@ -2067,6 +2075,28 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 )
             )
             self.assertTrue(
+                _wait_for_connector_runtime(
+                    tmpdir, ["codex"], state_marker - 1, lock_marker - 1, timeout=0.01
+                )
+            )
+
+            with open(state_path, "w", encoding="utf-8") as state_file:
+                json.dump(
+                    {"version": 2, "name": "codex", "names": ["codex", "cursor"]},
+                    state_file,
+                )
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(
+                    {
+                        "version": 2,
+                        "connectors": {
+                            "codex": {"connector": "codex"},
+                            "cursor": {"connector": "cursor"},
+                        },
+                    },
+                    lock_file,
+                )
+            self.assertFalse(
                 _wait_for_connector_runtime(
                     tmpdir, ["codex"], state_marker - 1, lock_marker - 1, timeout=0.01
                 )

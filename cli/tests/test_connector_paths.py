@@ -864,6 +864,24 @@ class TestMCPServers:
         openhands.write_text(json.dumps({"mcpServers": {"o": {"command": "openhands-mcp"}}}))
         assert connector_paths.mcp_servers("openhands")[0].command == "openhands-mcp"
 
+    def test_hermes_mcp_yaml_uses_bounded_utf8_decoding(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        config = hermes_home / "config.yaml"
+        config.write_bytes(
+            "mcp:\n  servers:\n    display\u200f:\n      command: hermes-mcp\n".encode()
+        )
+
+        entries = connector_paths.mcp_servers("hermes")
+
+        assert [(entry.name, entry.command) for entry in entries] == [
+            ("display\u200f", "hermes-mcp")
+        ]
+
+        config.write_bytes(b"x" * (connector_paths._MCP_CONFIG_MAX_BYTES + 1))
+        assert connector_paths.mcp_servers("hermes") == []
+
     def test_copilot_mcp_reads_ancestors_and_deduplicates_by_priority(
         self,
         tmp_path,
