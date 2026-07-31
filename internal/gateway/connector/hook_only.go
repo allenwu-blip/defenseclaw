@@ -639,21 +639,23 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			WritePaths:     []string{copilotHomePath("skills"), workspacePath(opts, ".github", "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
-			Notes:          []string{"Reads documented local project, inherited .github, personal, and COPILOT_SKILLS_DIRS sources in Copilot precedence order. Plugin, built-in, and organization/remote skills are not expanded from private caches; plugins are listed separately through Copilot's official read-only command."},
+			Notes:          []string{"Reads documented local project, inherited .github, personal, and COPILOT_SKILLS_DIRS sources in Copilot precedence order, followed by .claude/commands alternative Markdown skills. Same-name commands lose to every Agent Skill source. Plugin, built-in, and organization/remote skills are not expanded from private caches; plugins are listed separately through Copilot's official read-only command."},
 		}
 		caps.Rules = SurfaceCapability{
-			Supported:      true,
-			Scope:          "workspace",
-			ReadPaths:      []string{workspacePath(opts, ".github", "instructions")},
-			WritePaths:     []string{workspacePath(opts, ".github", "instructions")},
-			InstallTargets: []string{"rule"},
-			RequiresOptIn:  true,
+			Supported:     true,
+			Scope:         "user,workspace,custom",
+			ReadPaths:     copilotInstructionReadPaths(opts),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Copilot combines applicable instruction files and documents no general precedence; inventory must surface collisions instead of choosing a winner.",
+				"Path-specific applicability, active-file context, session toggles, folder trust, managed/organization policy, and remote instructions require official-client live inspection and remain unverified.",
+			},
 		}
 		caps.Plugins = SurfaceCapability{
 			Supported:     true,
 			Scope:         "workspace,user",
 			DiscoveryOnly: true,
-			Notes:         []string{"Read-only discovery uses the official `copilot plugins list --kind plugin --json` command; DefenseClaw does not install, enable, disable, or remove Copilot plugins."},
+			Notes:         []string{"Read-only discovery uses the official `copilot plugins list --kind plugin --json` command under the validated pinned workspace and exact COPILOT_HOME. DefenseClaw does not install, enable, disable, or remove Copilot plugins; semantic activation and managed/organization policy remain unverified without live-session evidence."},
 		}
 		caps.Agents = SurfaceCapability{
 			Supported:      true,
@@ -1110,10 +1112,18 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 		if root != "" && !workspaceRootOutsideDataDir(root, opts.DataDir) {
 			return fmt.Errorf("copilot setup workspace must be outside DefenseClaw data dir; pass --workspace with the target repository or omit it for global ~/.copilot hooks")
 		}
+		if err := validateCopilotLifecycleHome(opts); err != nil {
+			return err
+		}
 	}
 	path := c.configPath(opts)
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("%s setup could not resolve a hook config path", c.name)
+	}
+	if c.name == "copilot" {
+		if err := validateCopilotHookPolicy(opts, path); err != nil {
+			return err
+		}
 	}
 	logicalName := c.managedBackupLogicalName()
 	if err := captureManagedFileBackup(opts.DataDir, c.name, logicalName, path); err != nil {
@@ -1280,6 +1290,184 @@ func geminiSettingsPath(SetupOpts) string {
 	return homePath(".gemini", "settings.json")
 }
 
+const copilotSettingsMaxBytes int64 = 1 << 20
+
+func validateCopilotLifecycleHome(opts SetupOpts) error {
+	raw, exists := os.LookupEnv("COPILOT_HOME")
+	if exists {
+		if strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\x00\r\n") ||
+			!filepath.IsAbs(raw) || filepath.Clean(raw) != raw {
+			return fmt.Errorf("COPILOT_HOME is not an absolute normalized path")
+		}
+	}
+	bound := copilotHomePath()
+	if configured := strings.TrimSpace(opts.ConfigHome); configured != "" &&
+		!strings.EqualFold(filepath.Clean(configured), filepath.Clean(bound)) {
+		return fmt.Errorf("COPILOT_HOME does not match the lifecycle-bound config home")
+	}
+	return nil
+}
+
+func copilotSettingsPaths(opts SetupOpts) []string {
+	paths := []string{
+		copilotHomePath("config.json"), // internal/legacy migration input only
+		copilotHomePath("settings.json"),
+	}
+	roots := copilotWorkspaceAncestors(opts)
+	if len(roots) == 0 {
+		return paths
+	}
+	repository := roots[len(roots)-1]
+	return append(paths,
+		filepath.Join(repository, ".claude", "settings.json"),
+		filepath.Join(repository, ".github", "copilot", "settings.json"),
+		filepath.Join(repository, ".claude", "settings.local.json"),
+		filepath.Join(repository, ".github", "copilot", "settings.local.json"),
+	)
+}
+
+func validateCopilotHookPolicy(opts SetupOpts, registrationPath string) error {
+	disabled := false
+	disabledSource := ""
+	for _, path := range copilotSettingsPaths(opts) {
+		value, present, err := readCopilotDisableAllHooks(path)
+		if err != nil {
+			return fmt.Errorf("cannot verify Copilot settings %s: %w", path, err)
+		}
+		if present {
+			disabled = value
+			disabledSource = path
+		}
+	}
+	if disabled {
+		return fmt.Errorf("Copilot hooks are disabled by effective operator setting disableAllHooks=true at %s; refusing to overwrite operator policy", disabledSource)
+	}
+	if value, present, err := readCopilotDisableAllHooks(registrationPath); err != nil {
+		return fmt.Errorf("cannot verify Copilot hook registration policy %s: %w", registrationPath, err)
+	} else if present && value {
+		return fmt.Errorf("Copilot hook registration is disabled by operator setting disableAllHooks=true at %s; refusing to overwrite operator policy", registrationPath)
+	}
+	return nil
+}
+
+func readCopilotDisableAllHooks(path string) (bool, bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, err
+	}
+	body, ok := ReadStableInventoryFile(path, copilotSettingsMaxBytes)
+	if !ok {
+		return false, false, fmt.Errorf("file is unsafe, changing, or exceeds the 1 MiB limit")
+	}
+	normalized, err := normalizeCopilotJSONC(body)
+	if err != nil {
+		return false, false, err
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(normalized, &document); err != nil {
+		return false, false, fmt.Errorf("invalid JSON/JSONC: %w", err)
+	}
+	raw, present := document["disableAllHooks"]
+	if !present {
+		return false, false, nil
+	}
+	value, valid := raw.(bool)
+	if !valid {
+		return false, false, fmt.Errorf("disableAllHooks must be boolean")
+	}
+	return value, true, nil
+}
+
+func normalizeCopilotJSONC(input []byte) ([]byte, error) {
+	input = bytes.TrimPrefix(input, []byte{0xEF, 0xBB, 0xBF})
+	withoutComments := make([]byte, 0, len(input))
+	inString := false
+	escaped := false
+	for i := 0; i < len(input); i++ {
+		current := input[i]
+		if inString {
+			withoutComments = append(withoutComments, current)
+			if escaped {
+				escaped = false
+			} else if current == '\\' {
+				escaped = true
+			} else if current == '"' {
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			withoutComments = append(withoutComments, current)
+			continue
+		}
+		if current == '/' && i+1 < len(input) && input[i+1] == '/' {
+			for i < len(input) && input[i] != '\n' {
+				i++
+			}
+			if i < len(input) {
+				withoutComments = append(withoutComments, '\n')
+			}
+			continue
+		}
+		if current == '/' && i+1 < len(input) && input[i+1] == '*' {
+			i += 2
+			closed := false
+			for i+1 < len(input) && !(input[i] == '*' && input[i+1] == '/') {
+				if input[i] == '\n' {
+					withoutComments = append(withoutComments, '\n')
+				}
+				i++
+			}
+			if i+1 < len(input) {
+				closed = true
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated JSONC comment")
+			}
+			i++
+			continue
+		}
+		withoutComments = append(withoutComments, current)
+	}
+
+	out := make([]byte, 0, len(withoutComments))
+	inString = false
+	escaped = false
+	for i := 0; i < len(withoutComments); i++ {
+		current := withoutComments[i]
+		if inString {
+			out = append(out, current)
+			if escaped {
+				escaped = false
+			} else if current == '\\' {
+				escaped = true
+			} else if current == '"' {
+				inString = false
+			}
+			continue
+		}
+		if current == '"' {
+			inString = true
+			out = append(out, current)
+			continue
+		}
+		if current == ',' {
+			next := i + 1
+			for next < len(withoutComments) && (withoutComments[next] == ' ' || withoutComments[next] == '\t' || withoutComments[next] == '\r' || withoutComments[next] == '\n') {
+				next++
+			}
+			if next < len(withoutComments) && (withoutComments[next] == '}' || withoutComments[next] == ']') {
+				continue
+			}
+		}
+		out = append(out, current)
+	}
+	return out, nil
+}
+
 func copilotHooksPath(opts SetupOpts) string {
 	if CopilotHooksPathOverride != "" {
 		return CopilotHooksPathOverride
@@ -1381,6 +1569,52 @@ func copilotSkillReadPaths(opts SetupOpts) []string {
 			path = filepath.Join(workspaceRoot(opts), path)
 		}
 		paths = append(paths, path)
+	}
+	if len(roots) > 0 {
+		// Compatible Markdown commands are alternative skills and have lower
+		// priority than all Agent Skill sources above.
+		paths = append(paths, filepath.Join(roots[0], ".claude", "commands"))
+	}
+	return copilotUniquePaths(paths)
+}
+
+func copilotInstructionReadPaths(opts SetupOpts) []string {
+	paths := []string{
+		copilotHomePath("copilot-instructions.md"),
+		copilotHomePath("instructions"),
+	}
+	roots := copilotWorkspaceAncestors(opts)
+	for i := len(roots) - 1; i >= 0; i-- {
+		root := roots[i]
+		paths = append(paths,
+			filepath.Join(root, ".github", "copilot-instructions.md"),
+			filepath.Join(root, "AGENTS.md"),
+			filepath.Join(root, "CLAUDE.md"),
+			filepath.Join(root, ".claude", "CLAUDE.md"),
+			filepath.Join(root, "GEMINI.md"),
+		)
+	}
+	if len(roots) > 0 {
+		paths = append(paths, filepath.Join(roots[len(roots)-1], ".github", "instructions"))
+		paths = append(paths, filepath.Join(roots[0], ".github", "instructions"))
+		// The inventory performs a bounded, no-follow scan under the repository
+		// for general files that can become applicable for nested active files.
+		paths = append(paths, roots[len(roots)-1])
+	}
+	for _, raw := range strings.Split(os.Getenv("COPILOT_CUSTOM_INSTRUCTIONS_DIRS"), ",") {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+			path = filepath.Join(homePath(), path[2:])
+		} else if !filepath.IsAbs(path) {
+			if workspaceRoot(opts) == "" {
+				continue
+			}
+			path = filepath.Join(workspaceRoot(opts), path)
+		}
+		paths = append(paths, filepath.Join(path, "AGENTS.md"), path)
 	}
 	return copilotUniquePaths(paths)
 }
@@ -1502,7 +1736,20 @@ func homePath(parts ...string) string {
 }
 
 func copilotHomePath(parts ...string) string {
-	root := connectorEnvHomeDir("COPILOT_HOME", ".copilot")
+	root := ""
+	if configured, exists := os.LookupEnv("COPILOT_HOME"); exists {
+		if strings.TrimSpace(configured) != configured || strings.ContainsAny(configured, "\x00\r\n") ||
+			!filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
+			return ""
+		}
+		root = configured
+	} else {
+		home := strings.TrimSpace(userHomeDir())
+		if home == "" {
+			return ""
+		}
+		root = filepath.Join(home, ".copilot")
+	}
 	return filepath.Join(append([]string{root}, parts...)...)
 }
 

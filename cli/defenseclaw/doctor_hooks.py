@@ -41,6 +41,7 @@ try:  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10
     import tomli as tomllib
 
+from defenseclaw import connector_paths
 from defenseclaw.connector_contracts import resolve_connector_contract
 from defenseclaw.inventory.plugin_identity import is_link_or_reparse
 
@@ -3182,12 +3183,29 @@ def validate_windows_copilot_hook_registration(
     install_root: str,
     search_path: str,
     pathext: str,
+    workspace_dir: str = "",
 ) -> WindowsHookCheck:
     """Passively validate Copilot's native Windows PowerShell hook contract."""
     command = ""
     target = ""
     raw_target = ""
     try:
+        settings = connector_paths.copilot_settings_resolution(workspace_dir)
+        if settings.errors:
+            raise _InspectionError(
+                "malformed",
+                "Copilot settings cascade cannot be verified: " + "; ".join(settings.errors),
+            )
+        if settings.disable_all_hooks:
+            return WindowsHookCheck(
+                "disabled",
+                "Copilot hooks are disabled by effective operator setting "
+                f"disableAllHooks=true at {settings.source}; DefenseClaw did not "
+                "overwrite it; enterprise/managed policy remains unverified",
+                command,
+                target,
+                raw_target,
+            )
         document = _read_config(config_path, "copilot")
         evidence, _runtime_version, contract_id = _contract_evidence(data_dir, "copilot", config_path)
         command, raw_target, matrix_entries = _validate_copilot_hook_matrix(document, contract_id)
@@ -3206,7 +3224,8 @@ def validate_windows_copilot_hook_registration(
         return WindowsHookCheck(
             "healthy",
             f"healthy Windows-native Copilot PowerShell registration; entries={matrix_entries}; "
-            f"target={resolved}; {evidence}",
+            f"target={resolved}; local settings verified; enterprise/managed policy unverified; "
+            f"{evidence}",
             command,
             resolved,
             raw_target,

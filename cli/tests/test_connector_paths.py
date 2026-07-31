@@ -381,6 +381,7 @@ class TestClaudeAutoMemory:
             str(home / ".agents" / "skills"),
             str(custom),
             str(package / "relative-skills"),
+            str(package / ".claude" / "commands"),
         ]
         assert connector_paths.copilot_agent_dirs(str(package)) == [
             str(package / ".github" / "agents"),
@@ -400,6 +401,62 @@ class TestClaudeAutoMemory:
             str(repo / ".github" / "mcp.json"),
             str(copilot_home / "mcp-config.json"),
         ]
+
+    def test_copilot_settings_cascade_uses_bound_home_and_repository_layers(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "copilot-home"
+        repo = tmp_path / "repo"
+        workspace = repo / "package"
+        workspace.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        (home).mkdir()
+        monkeypatch.setenv("COPILOT_HOME", str(home))
+        (home / "config.json").write_text('{"disableAllHooks": true}')
+        (home / "settings.json").write_text('{// operator\n"disableAllHooks": false,}')
+        claude = repo / ".claude"
+        claude.mkdir()
+        (claude / "settings.json").write_text('{"disableAllHooks": false}')
+        (claude / "settings.local.json").write_text('{"disableAllHooks": true}')
+        native = repo / ".github" / "copilot"
+        native.mkdir(parents=True)
+        (native / "settings.json").write_text('{"disableAllHooks": true}')
+        (native / "settings.local.json").write_text('{"disableAllHooks": false}')
+
+        resolution = connector_paths.copilot_settings_resolution(str(workspace))
+
+        assert resolution.verified is True
+        assert resolution.disable_all_hooks is False
+        assert resolution.source == str(native / "settings.local.json")
+        assert resolution.managed_policy_verified is False
+        assert resolution.inspected == tuple(
+            connector_paths.copilot_settings_paths(str(workspace))
+        )
+        assert str(claude / "settings.json") in resolution.inspected
+        assert str(claude / "settings.local.json") in resolution.inspected
+        instruction_paths = connector_paths.rule_dirs(
+            "copilot", workspace_dir=str(workspace)
+        )
+        assert str(home / "copilot-instructions.md") in instruction_paths
+        assert str(repo / "AGENTS.md") in instruction_paths
+        assert str(repo / ".github" / "instructions") in instruction_paths
+        assert str(repo) in instruction_paths
+        configs = connector_paths.connector_config_files(
+            "copilot", workspace_dir=str(workspace)
+        )
+        assert str(home / "settings.json") in configs
+        assert str(home / "config.json") not in configs
+        assert str(workspace / ".github" / "copilot.json") not in configs
+
+    @pytest.mark.parametrize("binding", [" relative-home ", ""])
+    def test_copilot_home_rejects_non_exact_lifecycle_binding(self, monkeypatch, binding):
+        monkeypatch.setenv("COPILOT_HOME", binding)
+
+        with pytest.raises(ValueError, match="absolute normalized"):
+            connector_paths.copilot_home()
+        resolution = connector_paths.copilot_settings_resolution()
+        assert resolution.verified is False
+        assert resolution.errors == ("COPILOT_HOME is not an absolute normalized path",)
 
     def test_copilot_non_repository_workspace_does_not_scan_filesystem_ancestors(self, tmp_path):
         workspace = tmp_path / "not-a-repo" / "package"
@@ -1486,7 +1543,7 @@ class TestConnectorHome:
         [
             ("codex", "CODEX_HOME", "custom-codex", "config.toml"),
             ("claudecode", "CLAUDE_CONFIG_DIR", "custom-claude", "settings.json"),
-            ("copilot", "COPILOT_HOME", "custom-copilot", "config.json"),
+            ("copilot", "COPILOT_HOME", "custom-copilot", "settings.json"),
         ],
     )
     def test_clients_honor_client_home_overrides(
@@ -1509,7 +1566,6 @@ class TestConnectorHome:
         [
             ("codex", "CODEX_HOME", "relative-codex"),
             ("claudecode", "CLAUDE_CONFIG_DIR", "relative-claude"),
-            ("copilot", "COPILOT_HOME", "relative-copilot"),
         ],
     )
     def test_client_home_overrides_are_resolved_absolutely(self, connector, variable, directory, monkeypatch, tmp_path):

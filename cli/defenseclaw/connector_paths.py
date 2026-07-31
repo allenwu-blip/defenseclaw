@@ -179,6 +179,20 @@ class ClaudeAutoMemoryResolution:
     limitation: str = ""
 
 
+@dataclass(frozen=True)
+class CopilotSettingsResolution:
+    """Effective local Copilot hook policy for one lifecycle binding."""
+
+    disable_all_hooks: bool = False
+    source: str = ""
+    inspected: tuple[str, ...] = ()
+    errors: tuple[str, ...] = ()
+    verified: bool = True
+    # Enterprise/managed policy is intentionally owned by another connector
+    # change and must never be inferred from local files.
+    managed_policy_verified: bool = False
+
+
 def infer_mcp_transport(
     transport: Any = "",
     *,
@@ -622,9 +636,177 @@ def _codex_marketplace_files(workspace_dir: str | None) -> list[tuple[str, str]]
 
 
 def copilot_home() -> str:
-    """Return GitHub Copilot CLI's effective user configuration directory."""
+    """Return the exact lifecycle-bound Copilot configuration directory."""
 
-    return _connector_env_home("COPILOT_HOME", ".copilot")
+    configured = os.environ.get("COPILOT_HOME")
+    if configured is not None:
+        if (
+            configured.strip() != configured
+            or "\x00" in configured
+            or "\r" in configured
+            or "\n" in configured
+            or not os.path.isabs(configured)
+            or os.path.normpath(configured) != configured
+        ):
+            raise ValueError("COPILOT_HOME is not an absolute normalized path")
+        return configured
+    return os.path.join(os.path.abspath(str(Path.home())), ".copilot")
+
+
+def copilot_settings_paths(workspace_dir: str | None = None) -> list[str]:
+    """Return local settings layers from lowest to highest priority.
+
+    ``config.json`` remains first solely for Copilot's documented legacy
+    migration/merge behavior. It is internal application state and is not
+    advertised by :func:`connector_config_files` as operator configuration.
+    Native Copilot files win over compatible Claude files at the same scope.
+    """
+
+    paths = [
+        os.path.join(copilot_home(), "config.json"),
+        os.path.join(copilot_home(), "settings.json"),
+    ]
+    ancestors = _copilot_workspace_ancestors(_workspace_dir(workspace_dir))
+    if ancestors:
+        repository = ancestors[-1]
+        paths.extend(
+            [
+                os.path.join(repository, ".claude", "settings.json"),
+                os.path.join(repository, ".github", "copilot", "settings.json"),
+                os.path.join(repository, ".claude", "settings.local.json"),
+                os.path.join(repository, ".github", "copilot", "settings.local.json"),
+            ]
+        )
+    return _dedup(paths)
+
+
+def _load_bounded_json_or_jsonc(path: str) -> Any:
+    payload = _read_bounded_stable_file(path, max_bytes=1024 * 1024)
+    raw = payload.decode("utf-8-sig")
+    try:
+        return json.loads(_normalize_jsonc(raw))
+    except json.JSONDecodeError as exc:
+        raise ValueError("file is not valid JSON/JSONC") from exc
+
+
+def _normalize_jsonc(raw: str) -> str:
+    """Remove JSONC comments and trailing commas without touching strings."""
+
+    uncommented: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+    while index < len(raw):
+        current = raw[index]
+        if in_string:
+            uncommented.append(current)
+            if escaped:
+                escaped = False
+            elif current == "\\":
+                escaped = True
+            elif current == '"':
+                in_string = False
+            index += 1
+            continue
+        if current == '"':
+            in_string = True
+            uncommented.append(current)
+            index += 1
+            continue
+        if current == "/" and index + 1 < len(raw) and raw[index + 1] == "/":
+            index += 2
+            while index < len(raw) and raw[index] not in "\r\n":
+                index += 1
+            continue
+        if current == "/" and index + 1 < len(raw) and raw[index + 1] == "*":
+            index += 2
+            closed = False
+            while index + 1 < len(raw):
+                if raw[index] == "*" and raw[index + 1] == "/":
+                    index += 2
+                    closed = True
+                    break
+                if raw[index] in "\r\n":
+                    uncommented.append(raw[index])
+                index += 1
+            if not closed:
+                raise ValueError("file has an unterminated JSONC comment")
+            continue
+        uncommented.append(current)
+        index += 1
+
+    cleaned: list[str] = []
+    in_string = False
+    escaped = False
+    for index, current in enumerate(uncommented):
+        if in_string:
+            cleaned.append(current)
+            if escaped:
+                escaped = False
+            elif current == "\\":
+                escaped = True
+            elif current == '"':
+                in_string = False
+            continue
+        if current == '"':
+            in_string = True
+            cleaned.append(current)
+            continue
+        if current == ",":
+            lookahead = index + 1
+            while lookahead < len(uncommented) and uncommented[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(uncommented) and uncommented[lookahead] in "}]":
+                continue
+        cleaned.append(current)
+    return "".join(cleaned)
+
+
+def copilot_settings_resolution(
+    workspace_dir: str | None = None,
+) -> CopilotSettingsResolution:
+    """Resolve the documented local ``disableAllHooks`` settings cascade."""
+
+    try:
+        paths = copilot_settings_paths(workspace_dir)
+    except ValueError as exc:
+        return CopilotSettingsResolution(
+            errors=(str(exc),),
+            verified=False,
+            managed_policy_verified=False,
+        )
+    disabled = False
+    source = ""
+    inspected: list[str] = []
+    errors: list[str] = []
+    for path in paths:
+        try:
+            document = _load_bounded_json_or_jsonc(path)
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            errors.append(f"{path}: {exc}")
+            continue
+        inspected.append(path)
+        if not isinstance(document, dict):
+            errors.append(f"{path}: top-level settings value must be an object")
+            continue
+        if "disableAllHooks" not in document:
+            continue
+        value = document["disableAllHooks"]
+        if type(value) is not bool:
+            errors.append(f"{path}: disableAllHooks must be boolean")
+            continue
+        disabled = value
+        source = path
+    return CopilotSettingsResolution(
+        disable_all_hooks=disabled,
+        source=source,
+        inspected=tuple(inspected),
+        errors=tuple(errors),
+        verified=not errors,
+        managed_policy_verified=False,
+    )
 
 
 def windsurf_user_home() -> str:
@@ -859,9 +1041,8 @@ def connector_config_files(
     elif name == "copilot":
         copilot_root = copilot_home()
         paths = [
-            os.path.join(copilot_root, "config.json"),
+            *copilot_settings_paths(workspace_dir)[1:],
             os.path.join(copilot_root, "hooks", "defenseclaw.json"),
-            _workspace_path(workspace_dir, ".github", "copilot.json"),
             _workspace_path(workspace_dir, ".github", "hooks", "defenseclaw.json"),
         ]
     elif name == "openhands":
@@ -1069,7 +1250,10 @@ def rule_dirs(
     combine and the most restrictive decision wins. The Unix system layer is
     omitted on native Windows.
     """
-    if normalize(connector) != "codex":
+    name = normalize(connector)
+    if name == "copilot":
+        return copilot_instruction_paths(workspace_dir)
+    if name != "codex":
         return []
     paths = [
         *[
@@ -1487,12 +1671,20 @@ def _copilot_skill_dirs(workspace_dir: str | None = None) -> list[str]:
         # The official inherited skill surface is parent .github/skills,
         # deepest first, through the Git root.
         project.extend(os.path.join(root, ".github", "skills") for root in ancestors[1:])
+    commands = (
+        [os.path.join(ancestors[0], ".claude", "commands")]
+        if ancestors
+        else []
+    )
     return _dedup(
         [
             *project,
             os.path.join(copilot_home(), "skills"),
             os.path.join(str(Path.home()), ".agents", "skills"),
             *_copilot_custom_skill_dirs(workspace),
+            # Alternative command skills lose every same-name collision to
+            # the Agent Skill locations above.
+            *commands,
         ]
     )
 
@@ -1530,6 +1722,48 @@ def copilot_mcp_config_files(workspace_dir: str | None = None) -> list[str]:
             ]
         )
     return _dedup([*project, os.path.join(copilot_home(), "mcp-config.json")])
+
+
+def copilot_instruction_paths(workspace_dir: str | None = None) -> list[str]:
+    """Return documented local instruction files/roots for passive scanning."""
+
+    paths = [
+        os.path.join(copilot_home(), "copilot-instructions.md"),
+        os.path.join(copilot_home(), "instructions"),
+    ]
+    workspace = _workspace_dir(workspace_dir)
+    ancestors = _copilot_workspace_ancestors(workspace)
+    for root in reversed(ancestors):
+        paths.extend(
+            [
+                os.path.join(root, ".github", "copilot-instructions.md"),
+                os.path.join(root, "AGENTS.md"),
+                os.path.join(root, "CLAUDE.md"),
+                os.path.join(root, ".claude", "CLAUDE.md"),
+                os.path.join(root, "GEMINI.md"),
+            ]
+        )
+    if ancestors:
+        paths.extend(
+            [
+                os.path.join(ancestors[-1], ".github", "instructions"),
+                os.path.join(ancestors[0], ".github", "instructions"),
+                # Nested general instruction files can become applicable when
+                # Copilot works on an active file below the pinned workspace.
+                ancestors[-1],
+            ]
+        )
+    for raw in os.environ.get("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "").split(","):
+        candidate = os.path.expanduser(_expand(raw.strip()))
+        if not candidate:
+            continue
+        if not os.path.isabs(candidate):
+            if not workspace:
+                continue
+            candidate = os.path.join(workspace, candidate)
+        candidate = os.path.abspath(candidate)
+        paths.extend([os.path.join(candidate, "AGENTS.md"), candidate])
+    return _dedup(paths)
 
 
 def _copilot_workspace_ancestors(workspace_dir: str) -> list[str]:

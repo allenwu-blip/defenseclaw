@@ -24,6 +24,8 @@ Commands are dispatched in parallel via ``ThreadPoolExecutor`` and deduplicated
 
 from __future__ import annotations
 
+import hashlib
+import heapq
 import json
 import os
 import re
@@ -1611,6 +1613,27 @@ _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
         "mode), while session flag, plugin-contributed, built-in, and remote "
         "runtime servers require official-client live inspection"
     ),
+    (
+        "copilot",
+        "rules",
+    ): (
+        "documented personal, repository-root, current-workspace, intermediate, "
+        "nested active-file candidates, modular, imported, and "
+        "COPILOT_CUSTOM_INSTRUCTIONS_DIRS sources are inventoried with no-follow "
+        "file/directory/size bounds and collision metadata; exact active-file "
+        "selection, path-specific applyTo, session enable/disable state, folder "
+        "trust, managed/organization policy, and remote instructions remain "
+        "unverified"
+    ),
+    (
+        "copilot",
+        "plugins",
+    ): (
+        "declared plugins are queried only through the trusted Copilot executable "
+        "with `plugins list --kind plugin --json`, the pinned workspace, and exact "
+        "COPILOT_HOME; semantic activation and managed/organization policy remain "
+        "unverified without live-session evidence"
+    ),
 }
 
 
@@ -1705,8 +1728,11 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
 
 def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
-    """Enumerate documented Codex ``*.rules`` files without evaluating them."""
-    if (connector or "").lower() != "codex":
+    """Enumerate documented local rule/instruction files without evaluating them."""
+    name = (connector or "").lower()
+    if name == "copilot":
+        return _copilot_instruction_rules(_connector_workspace_dir(cfg))
+    if name != "codex":
         return []
 
     user_rules = os.path.normcase(
@@ -1749,6 +1775,381 @@ def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
                 }
             )
     return rows
+
+
+_COPILOT_INSTRUCTION_FILE_LIMIT = 2048
+_COPILOT_INSTRUCTION_DIR_LIMIT = 1024
+_COPILOT_INSTRUCTION_BYTES = 1024 * 1024
+_COPILOT_IMPORT_DEPTH = 8
+_COPILOT_CUSTOM_DIR_LIMIT = 32
+
+
+def _extend_copilot_candidates(
+    target: list[tuple[str, str, str, str]],
+    additions: list[tuple[str, str, str, str]],
+) -> None:
+    remaining = _COPILOT_INSTRUCTION_FILE_LIMIT - len(target)
+    if remaining > 0:
+        target.extend(additions[:remaining])
+
+
+def _copilot_instruction_rules(workspace: str) -> list[dict[str, Any]]:
+    """Inventory Copilot's documented local instruction cascade.
+
+    Copilot combines applicable instruction files and documents no general
+    winner. Rows therefore expose collisions instead of manufacturing a
+    precedence order. Runtime trust, active-file matching, session toggles,
+    managed policy, and remote instructions remain explicitly unverified.
+    """
+
+    candidates: list[tuple[str, str, str, str]] = []
+    home = connector_paths.copilot_home()
+    candidates.append((os.path.join(home, "copilot-instructions.md"), "user", "general", home))
+    _extend_copilot_candidates(
+        candidates,
+        _copilot_recursive_instruction_candidates(
+            os.path.join(home, "instructions"),
+            suffix=".instructions.md",
+            scope="user",
+            kind="path-specific",
+        )
+    )
+
+    ancestors = connector_paths._copilot_workspace_ancestors(workspace) if workspace else []
+    if ancestors:
+        repository = ancestors[-1]
+        # General files are loaded at the repository root, current workspace,
+        # and intermediate directories. Root-to-workspace order is only for
+        # deterministic output; it does not imply semantic priority.
+        for root in reversed(ancestors):
+            for relative in (
+                os.path.join(".github", "copilot-instructions.md"),
+                "AGENTS.md",
+                "CLAUDE.md",
+                os.path.join(".claude", "CLAUDE.md"),
+                "GEMINI.md",
+            ):
+                if len(candidates) < _COPILOT_INSTRUCTION_FILE_LIMIT:
+                    candidates.append(
+                        (os.path.join(root, relative), "project", "general", repository)
+                    )
+        _extend_copilot_candidates(
+            candidates,
+            _copilot_recursive_instruction_candidates(
+                repository,
+                scope="project",
+                kind="general",
+                general_names=True,
+            )
+        )
+        modular_roots = [os.path.join(repository, ".github", "instructions")]
+        current_modular = os.path.join(ancestors[0], ".github", "instructions")
+        if os.path.normcase(current_modular) != os.path.normcase(modular_roots[0]):
+            modular_roots.append(current_modular)
+        for root in modular_roots:
+            _extend_copilot_candidates(
+                candidates,
+                _copilot_recursive_instruction_candidates(
+                    root,
+                    suffix=".instructions.md",
+                    scope="project",
+                    kind="path-specific",
+                )
+            )
+        intermediate_roots = {
+            os.path.normcase(os.path.abspath(root)) for root in ancestors[1:-1]
+        }
+        for candidate in _copilot_recursive_instruction_candidates(
+            repository,
+            suffix=".instructions.md",
+            scope="project",
+            kind="path-specific",
+        ):
+            owner = _copilot_modular_instruction_owner(candidate[0], repository)
+            if owner is None or os.path.normcase(owner) in intermediate_roots:
+                continue
+            if len(candidates) < _COPILOT_INSTRUCTION_FILE_LIMIT:
+                candidates.append(candidate)
+
+    custom_roots = os.environ.get("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "").split(",")
+    for raw in custom_roots[:_COPILOT_CUSTOM_DIR_LIMIT]:
+        custom = os.path.expanduser(_expand(raw.strip()))
+        if not custom:
+            continue
+        if not os.path.isabs(custom):
+            if not workspace:
+                continue
+            custom = os.path.join(workspace, custom)
+        custom = os.path.abspath(custom)
+        if len(candidates) < _COPILOT_INSTRUCTION_FILE_LIMIT:
+            candidates.append((os.path.join(custom, "AGENTS.md"), "custom", "general", custom))
+        _extend_copilot_candidates(
+            candidates,
+            _copilot_recursive_instruction_candidates(
+                custom,
+                suffix=".instructions.md",
+                scope="custom",
+                kind="path-specific",
+            )
+        )
+
+    rows: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    seen_general_content: set[str] = set()
+    pending = list(candidates)
+    import_depth: dict[str, int] = {}
+    while pending and len(rows) < _COPILOT_INSTRUCTION_FILE_LIMIT:
+        path, scope, kind, allowed_root = pending.pop(0)
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        payload = _read_copilot_instruction(path, allowed_root)
+        if payload is None:
+            continue
+        digest = hashlib.sha256(payload).hexdigest()
+        if kind == "general":
+            if digest in seen_general_content:
+                continue
+            seen_general_content.add(digest)
+        row = {
+            "id": os.path.basename(path),
+            "name": os.path.basename(path),
+            "source": os.path.abspath(path),
+            "kind": kind,
+            "scope": scope,
+            "content_sha256": digest,
+            "precedence": "combined-no-general-precedence",
+            "activation_verified": False,
+            "activation_state": "declared-unverified",
+            "no_follow_verified": True,
+        }
+        rows.append(row)
+
+        depth = import_depth.get(key, 0)
+        import_capable = kind == "import" or os.path.basename(path).casefold() in {
+            "copilot-instructions.md",
+            "agents.md",
+            "claude.md",
+        }
+        if depth >= _COPILOT_IMPORT_DEPTH or kind == "path-specific" or not import_capable:
+            continue
+        remaining = _COPILOT_INSTRUCTION_FILE_LIMIT - len(rows) - len(pending)
+        for imported in _copilot_instruction_imports(
+            payload,
+            os.path.dirname(path),
+            limit=max(remaining, 0),
+        ):
+            imported_key = os.path.normcase(os.path.abspath(imported))
+            if imported_key not in seen_paths:
+                import_depth[imported_key] = depth + 1
+                pending.append((imported, scope, "import", allowed_root))
+
+    by_name: dict[str, int] = {}
+    for row in rows:
+        key = str(row["name"]).casefold()
+        by_name[key] = by_name.get(key, 0) + 1
+    for row in rows:
+        row["collision"] = by_name[str(row["name"]).casefold()] > 1
+    return rows
+
+
+def _copilot_recursive_instruction_candidates(
+    root: str,
+    *,
+    suffix: str = "",
+    scope: str,
+    kind: str,
+    general_names: bool = False,
+) -> list[tuple[str, str, str, str]]:
+    try:
+        connector_paths.reject_reparse_path(root)
+        root_info = os.stat(root, follow_symlinks=False)
+    except OSError:
+        return []
+    if not stat.S_ISDIR(root_info.st_mode):
+        return []
+    rows: list[tuple[str, str, str, str]] = []
+    pending = [root]
+    visited = 0
+    while pending and visited < _COPILOT_INSTRUCTION_DIR_LIMIT:
+        current = pending.pop(0)
+        visited += 1
+        directory_budget = max(
+            _COPILOT_INSTRUCTION_DIR_LIMIT - visited - len(pending),
+            0,
+        )
+        file_budget = max(_COPILOT_INSTRUCTION_FILE_LIMIT - len(rows), 0)
+        try:
+            connector_paths.reject_reparse_path(current)
+            before = os.stat(current, follow_symlinks=False)
+            if not stat.S_ISDIR(before.st_mode):
+                continue
+            with os.scandir(current) as iterator:
+                directory_entries = heapq.nsmallest(
+                    directory_budget,
+                    (entry for entry in iterator if _copilot_entry_is_directory(entry)),
+                    key=lambda item: item.name.casefold(),
+                )
+            with os.scandir(current) as iterator:
+                file_entries = heapq.nsmallest(
+                    file_budget,
+                    (
+                        entry
+                        for entry in iterator
+                        if _copilot_entry_is_instruction_file(
+                            entry,
+                            current=current,
+                            suffix=suffix,
+                            general_names=general_names,
+                        )
+                    ),
+                    key=lambda item: item.name.casefold(),
+                )
+        except OSError:
+            continue
+        child_dirs: list[str] = []
+        child_files: list[tuple[str, str, str, str]] = []
+        for entry in directory_entries:
+            if entry.name.casefold() == ".git":
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if entry.is_symlink():
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                child_dirs.append(entry.path)
+        for entry in file_entries:
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            if not entry.is_symlink() and stat.S_ISREG(info.st_mode):
+                child_files.append((entry.path, scope, kind, root))
+        try:
+            connector_paths.reject_reparse_path(current)
+            after = os.stat(current, follow_symlinks=False)
+        except OSError:
+            continue
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if before_identity != after_identity:
+            continue
+        pending.extend(child_dirs)
+        rows.extend(child_files)
+        if len(rows) >= _COPILOT_INSTRUCTION_FILE_LIMIT:
+            return rows[:_COPILOT_INSTRUCTION_FILE_LIMIT]
+    return rows
+
+
+def _copilot_entry_is_directory(entry: os.DirEntry[str]) -> bool:
+    try:
+        return (
+            entry.name.casefold() != ".git"
+            and not entry.is_symlink()
+            and stat.S_ISDIR(entry.stat(follow_symlinks=False).st_mode)
+        )
+    except OSError:
+        return False
+
+
+def _copilot_entry_is_instruction_file(
+    entry: os.DirEntry[str],
+    *,
+    current: str,
+    suffix: str,
+    general_names: bool,
+) -> bool:
+    try:
+        if entry.is_symlink() or not stat.S_ISREG(entry.stat(follow_symlinks=False).st_mode):
+            return False
+    except OSError:
+        return False
+    name = entry.name.casefold()
+    return bool(
+        (
+            general_names
+            and (
+                name in {"agents.md", "claude.md", "gemini.md"}
+                or (
+                    name == "copilot-instructions.md"
+                    and os.path.basename(current).casefold() == ".github"
+                )
+            )
+        )
+        or (suffix and name.endswith(suffix))
+    )
+
+
+def _read_copilot_instruction(path: str, allowed_root: str) -> bytes | None:
+    absolute = os.path.abspath(path)
+    root = os.path.abspath(allowed_root)
+    try:
+        if os.path.normcase(os.path.commonpath((absolute, root))) != os.path.normcase(root):
+            return None
+        real_absolute = os.path.realpath(absolute)
+        real_root = os.path.realpath(root)
+        if os.path.normcase(os.path.commonpath((real_absolute, real_root))) != os.path.normcase(
+            real_root
+        ):
+            return None
+        connector_paths.reject_reparse_path(absolute)
+        return connector_paths._read_bounded_stable_file(
+            absolute,
+            max_bytes=_COPILOT_INSTRUCTION_BYTES,
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _copilot_modular_instruction_owner(path: str, repository: str) -> str | None:
+    """Return the directory owning a ``.github/instructions`` tree."""
+
+    try:
+        relative = os.path.relpath(os.path.abspath(path), os.path.abspath(repository))
+    except ValueError:
+        return None
+    if relative == os.pardir or relative.startswith(os.pardir + os.sep):
+        return None
+    parts = relative.split(os.sep)
+    for index in range(len(parts) - 2):
+        if parts[index].casefold() == ".github" and parts[index + 1].casefold() == "instructions":
+            owner_parts = parts[:index]
+            return os.path.abspath(os.path.join(repository, *owner_parts))
+    return None
+
+
+def _copilot_instruction_imports(payload: bytes, parent: str, *, limit: int) -> list[str]:
+    try:
+        text = payload.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return []
+    out: list[str] = []
+    if limit <= 0:
+        return out
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("@"):
+            continue
+        raw = stripped[1:].strip().strip("'\"")
+        if not raw or "://" in raw or os.path.isabs(raw) or raw.startswith("~"):
+            continue
+        out.append(os.path.abspath(os.path.join(parent, raw)))
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
@@ -2783,6 +3184,18 @@ def _enumerate_skills_filesystem(
                 "bundled": discovered.bundled,
                 "path": full,
             }
+            if (
+                normalized_connector == "copilot"
+                and os.path.basename(os.path.normpath(skill_dir)).casefold() == "commands"
+            ):
+                row.update(
+                    {
+                        "kind": "command",
+                        "precedence": "after-all-agent-skills",
+                        "activation_verified": False,
+                        "activation_state": "alternative-skill-unverified",
+                    }
+                )
             if nested_prefix:
                 row["activation_state"] = "discoverable-unverified"
             description = _read_skill_description(full)

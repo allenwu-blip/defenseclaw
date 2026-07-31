@@ -1621,6 +1621,24 @@ func TestCopilotInventoryReadsOfficialWorkspacePrecedence(t *testing.T) {
 			t.Fatalf("Copilot skill read paths missing %q: %v", want, caps.Skills.ReadPaths)
 		}
 	}
+	if want := filepath.Join(workspace, ".claude", "commands"); caps.Skills.ReadPaths[len(caps.Skills.ReadPaths)-1] != want {
+		t.Fatalf("Copilot command compatibility path=%q, want final low-priority path %q", caps.Skills.ReadPaths[len(caps.Skills.ReadPaths)-1], want)
+	}
+	for _, want := range []string{
+		copilotHomePath("copilot-instructions.md"),
+		copilotHomePath("instructions"),
+		filepath.Join(repo, "AGENTS.md"),
+		filepath.Join(repo, ".claude", "CLAUDE.md"),
+		filepath.Join(repo, ".github", "instructions"),
+		repo,
+	} {
+		if !stringInSlice(caps.Rules.ReadPaths, want) {
+			t.Fatalf("Copilot instruction read paths missing %q: %v", want, caps.Rules.ReadPaths)
+		}
+	}
+	if !caps.Rules.DiscoveryOnly || len(caps.Rules.WritePaths) != 0 {
+		t.Fatalf("Copilot instructions must remain discovery-only: %+v", caps.Rules)
+	}
 
 	wantMCP := []string{
 		filepath.Join(workspace, ".mcp.json"),
@@ -1656,6 +1674,78 @@ func TestCopilotInventoryReadsOfficialWorkspacePrecedence(t *testing.T) {
 		if stringInSlice(caps.Skills.WritePaths, forbidden) || stringInSlice(caps.Agents.WritePaths, forbidden) {
 			t.Fatalf("discovery-only Copilot path became writable: %q", forbidden)
 		}
+	}
+}
+
+func TestCopilotSettingsCascadePreservesEffectiveOperatorPolicy(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "copilot-home")
+	repo := filepath.Join(t.TempDir(), "repo")
+	workspace := filepath.Join(repo, "package")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".github", "copilot"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repo, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COPILOT_HOME", home)
+	userSettings := append([]byte{0xEF, 0xBB, 0xBF}, []byte("{// user\n\"disableAllHooks\": true,}")...)
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), userSettings, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudeLocal := filepath.Join(repo, ".claude", "settings.local.json")
+	if err := os.WriteFile(claudeLocal, []byte(`{"disableAllHooks": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(repo, ".github", "copilot", "settings.local.json")
+	if err := os.WriteFile(local, []byte(`{"disableAllHooks": false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts := SetupOpts{WorkspaceDir: workspace}
+	if err := validateCopilotHookPolicy(opts, filepath.Join(repo, "missing-hooks.json")); err != nil {
+		t.Fatalf("higher-priority false did not override user true: %v", err)
+	}
+	if err := os.WriteFile(local, []byte(`{"disableAllHooks": true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := validateCopilotHookPolicy(opts, filepath.Join(repo, "missing-hooks.json"))
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite operator policy") {
+		t.Fatalf("effective disableAllHooks did not block setup: %v", err)
+	}
+	registration := filepath.Join(workspace, ".github", "hooks", "defenseclaw.json")
+	err = NewCopilotConnector().patchConfig(opts, "unused")
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite operator policy") {
+		t.Fatalf("Copilot Setup path did not preserve effective operator policy: %v", err)
+	}
+	if _, statErr := os.Stat(registration); !os.IsNotExist(statErr) {
+		t.Fatalf("Copilot Setup mutated disabled registration %q: %v", registration, statErr)
+	}
+}
+
+func TestCopilotSettingsCascadeRejectsMalformedJSONC(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("COPILOT_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), []byte(`{"disableAllHooks": "yes"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := validateCopilotHookPolicy(SetupOpts{}, filepath.Join(home, "hooks", "missing.json"))
+	if err == nil || !strings.Contains(err.Error(), "must be boolean") {
+		t.Fatalf("malformed setting was not rejected: %v", err)
+	}
+}
+
+func TestCopilotLifecycleHomeRejectsNonExactBinding(t *testing.T) {
+	t.Setenv("COPILOT_HOME", " relative-home ")
+	if err := validateCopilotLifecycleHome(SetupOpts{}); err == nil || !strings.Contains(err.Error(), "absolute normalized") {
+		t.Fatalf("non-exact COPILOT_HOME accepted: %v", err)
 	}
 }
 

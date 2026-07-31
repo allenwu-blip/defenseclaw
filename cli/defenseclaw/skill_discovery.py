@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import heapq
 import os
 import stat
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from defenseclaw.file_permissions import (
 from defenseclaw.safety import is_symlink
 
 _SKILL_MARKERS = ("SKILL.md", "skill.json", "README.md")
+_COPILOT_COMMAND_FILE_LIMIT = 2048
 
 
 @dataclass(frozen=True)
@@ -299,6 +301,54 @@ def _discover_claude_skill_directories(
     return regular
 
 
+def _discover_markdown_commands(skill_root: str) -> list[SkillDirectory]:
+    """Return stable, direct Markdown command files without following links."""
+
+    try:
+        root_identity = _stable_directory_info(skill_root)
+        with os.scandir(skill_root) as iterator:
+            entries = heapq.nsmallest(
+                _COPILOT_COMMAND_FILE_LIMIT,
+                (
+                    entry
+                    for entry in iterator
+                    if entry.name.casefold().endswith(".md")
+                ),
+                key=lambda item: item.name.casefold(),
+            )
+    except OSError:
+        return []
+
+    rows: list[SkillDirectory] = []
+    for entry in entries:
+        try:
+            info = entry.stat(follow_symlinks=False)
+            if entry.is_symlink() or not stat.S_ISREG(info.st_mode):
+                continue
+            if not _canonically_contained(entry.path, skill_root):
+                continue
+            fd = open_regular_file_no_follow(entry.path)
+            try:
+                opened = os.fstat(fd)
+            finally:
+                os.close(fd)
+            named = os.stat(entry.path, follow_symlinks=False)
+            if not os.path.samestat(opened, named):
+                continue
+        except OSError:
+            continue
+        rows.append(
+            SkillDirectory(
+                os.path.splitext(entry.name)[0],
+                entry.path,
+                skill_root,
+            )
+        )
+    if not _directory_unchanged(skill_root, root_identity):
+        return []
+    return rows
+
+
 def discover_skill_directories(
     skill_root: str,
     *,
@@ -323,6 +373,11 @@ def discover_skill_directories(
             skill_root,
             commands=claude_commands,
         )
+    if (
+        normalized_connector == "copilot"
+        and os.path.basename(os.path.normpath(skill_root)).casefold() == "commands"
+    ):
+        return _discover_markdown_commands(skill_root)
 
     try:
         root_identity = _stable_directory_info(skill_root)

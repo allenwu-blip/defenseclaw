@@ -2318,26 +2318,41 @@ class HostPluginEnumerationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _list_copilot_plugins(),
+            _list_copilot_plugins(workspace_dir=self.tmp_dir),
             [{
                 "id": "acme@example",
                 "name": "Acme",
                 "version": "1.2.3",
                 "enabled": True,
+                "activation_verified": False,
+                "activation_state": "semantic-activation-unverified",
                 "source": "host:copilot",
                 "path": "",
             }],
         )
-        run.assert_called_once_with(
+        args, kwargs = run.call_args
+        self.assertEqual(
+            args[0],
             [r"C:\Tools\copilot.exe", "plugins", "list", "--kind", "plugin", "--json"],
-            capture_output=True,
-            text=True,
-            timeout=15,
         )
+        self.assertEqual(kwargs["cwd"], self.tmp_dir)
+        self.assertEqual(kwargs["env"]["COPILOT_HOME"], os.path.join(os.path.expanduser("~"), ".copilot"))
+        self.assertEqual(kwargs["timeout"], 15)
 
     @patch("defenseclaw.commands.cmd_plugin.subprocess.run")
     @patch("defenseclaw.commands.cmd_plugin._trusted_copilot_binary", return_value="")
     def test_list_copilot_plugins_does_not_execute_untrusted_path(self, _trusted, run):
+        from defenseclaw.commands.cmd_plugin import _list_copilot_plugins
+
+        self.assertEqual(_list_copilot_plugins(workspace_dir=self.tmp_dir), [])
+        run.assert_not_called()
+
+    @patch("defenseclaw.commands.cmd_plugin.subprocess.run")
+    @patch(
+        "defenseclaw.commands.cmd_plugin._trusted_copilot_binary",
+        return_value=r"C:\Tools\copilot.exe",
+    )
+    def test_list_copilot_plugins_requires_pinned_workspace(self, _trusted, run):
         from defenseclaw.commands.cmd_plugin import _list_copilot_plugins
 
         self.assertEqual(_list_copilot_plugins(), [])

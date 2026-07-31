@@ -50,6 +50,7 @@ from defenseclaw.inventory.claw_inventory import (
     _build_scan_map_for_type,
     _build_summary,
     _CmdResult,
+    _enumerate_skills_filesystem,
     _fetch_all,
     _format_scan,
     _format_verdict,
@@ -2854,6 +2855,125 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
                 for path in inventory["connector_mcp_files"]
             )
         )
+
+    def test_copilot_instruction_inventory_combines_sources_and_tracks_imports(self):
+        from defenseclaw.inventory.claw_inventory import _rules_for_connector
+
+        cfg = _make_cfg_for_connector(self.tmp, "copilot")
+        home = os.path.join(self.tmp, "copilot-home")
+        repo = os.path.join(self.tmp, "repo")
+        workspace = os.path.join(repo, "package")
+        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
+        os.makedirs(workspace, exist_ok=True)
+        cfg.claw.workspace_dir = workspace
+        os.makedirs(home, exist_ok=True)
+        with open(os.path.join(home, "copilot-instructions.md"), "w", encoding="utf-8") as stream:
+            stream.write("@shared.md\nuser")
+        with open(os.path.join(home, "shared.md"), "w", encoding="utf-8") as stream:
+            stream.write("imported")
+        with open(os.path.join(repo, "AGENTS.md"), "w", encoding="utf-8") as stream:
+            stream.write("project")
+        with open(os.path.join(workspace, "AGENTS.md"), "w", encoding="utf-8") as stream:
+            stream.write("project")
+        nested = os.path.join(repo, "services", "api")
+        os.makedirs(nested, exist_ok=True)
+        with open(os.path.join(nested, "CLAUDE.md"), "w", encoding="utf-8") as stream:
+            stream.write("@nested-shared.md\nnested")
+        with open(os.path.join(nested, "nested-shared.md"), "w", encoding="utf-8") as stream:
+            stream.write("nested import")
+        nested_modular = os.path.join(nested, ".github", "instructions")
+        os.makedirs(nested_modular, exist_ok=True)
+        with open(
+            os.path.join(nested_modular, "api.instructions.md"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("---\napplyTo: 'services/api/**'\n---\napi")
+        with open(os.path.join(repo, "GEMINI.md"), "w", encoding="utf-8") as stream:
+            stream.write("@gemini-only.md\ngemini")
+        with open(os.path.join(repo, "gemini-only.md"), "w", encoding="utf-8") as stream:
+            stream.write("must not import")
+        modular = os.path.join(repo, ".github", "instructions")
+        os.makedirs(modular, exist_ok=True)
+        with open(os.path.join(modular, "python.instructions.md"), "w", encoding="utf-8") as stream:
+            stream.write("---\napplyTo: '**/*.py'\n---\npython")
+        workspace_modular = os.path.join(workspace, ".github", "instructions")
+        os.makedirs(workspace_modular, exist_ok=True)
+        with open(
+            os.path.join(workspace_modular, "python.instructions.md"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("---\napplyTo: 'tests/**/*.py'\n---\nworkspace python")
+
+        with patch.dict(os.environ, {"COPILOT_HOME": home}, clear=False):
+            rows = _rules_for_connector("copilot", cfg)
+
+        by_name = {row["name"]: row for row in rows}
+        self.assertEqual(
+            set(by_name),
+            {
+                "copilot-instructions.md",
+                "shared.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "nested-shared.md",
+                "GEMINI.md",
+                "api.instructions.md",
+                "python.instructions.md",
+            },
+        )
+        self.assertEqual(sum(row["name"] == "AGENTS.md" for row in rows), 1)
+        python_rows = [row for row in rows if row["name"] == "python.instructions.md"]
+        self.assertEqual(len(python_rows), 2)
+        self.assertTrue(all(row["collision"] for row in python_rows))
+        self.assertEqual(by_name["shared.md"]["kind"], "import")
+        self.assertEqual(by_name["nested-shared.md"]["kind"], "import")
+        self.assertNotIn("gemini-only.md", by_name)
+        self.assertEqual(by_name["python.instructions.md"]["kind"], "path-specific")
+        self.assertFalse(by_name["AGENTS.md"]["activation_verified"])
+        self.assertTrue(all(row["no_follow_verified"] for row in rows))
+
+    def test_copilot_commands_lose_same_name_collision_to_agent_skill(self):
+        cfg = _make_cfg_for_connector(self.tmp, "copilot")
+        repo = os.path.join(self.tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
+        cfg.claw.workspace_dir = repo
+        skill = os.path.join(repo, ".github", "skills", "review")
+        command_root = os.path.join(repo, ".claude", "commands")
+        os.makedirs(skill, exist_ok=True)
+        os.makedirs(command_root, exist_ok=True)
+        with open(os.path.join(skill, "SKILL.md"), "w", encoding="utf-8") as stream:
+            stream.write("skill")
+        with open(os.path.join(command_root, "review.md"), "w", encoding="utf-8") as stream:
+            stream.write("command")
+
+        rows = _enumerate_skills_filesystem(cfg, "copilot")
+
+        matches = [row for row in rows if row["id"] == "review"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["path"], skill)
+
+    def test_copilot_instruction_file_bound_ignores_unrelated_siblings(self):
+        from defenseclaw.inventory import claw_inventory
+
+        root = os.path.join(self.tmp, "bounded-instructions")
+        os.makedirs(root)
+        with open(os.path.join(root, "000-ignored.txt"), "w", encoding="utf-8") as stream:
+            stream.write("ignored")
+        expected = os.path.join(root, "z.instructions.md")
+        with open(expected, "w", encoding="utf-8") as stream:
+            stream.write("bounded")
+
+        with patch.object(claw_inventory, "_COPILOT_INSTRUCTION_FILE_LIMIT", 1):
+            rows = claw_inventory._copilot_recursive_instruction_candidates(
+                root,
+                suffix=".instructions.md",
+                scope="project",
+                kind="path-specific",
+            )
+
+        self.assertEqual([row[0] for row in rows], [expected])
 
     def test_opencode_catalog_limits_unproven_asset_surfaces(self):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")

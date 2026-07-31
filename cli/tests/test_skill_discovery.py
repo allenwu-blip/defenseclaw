@@ -9,11 +9,36 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
-import pytest
 import defenseclaw.skill_discovery as skill_discovery_module
+import pytest
 from defenseclaw.skill_discovery import discover_skill_directories
 
 from tests.environment import requires_symlink_privilege
+
+
+def test_copilot_markdown_commands_are_stable_alternative_skills(tmp_path, monkeypatch) -> None:
+    commands = tmp_path / ".claude" / "commands"
+    commands.mkdir(parents=True)
+    (commands / "review.md").write_text("review safely", encoding="utf-8")
+    (commands / "000-ignored.txt").write_text("not a command", encoding="utf-8")
+    monkeypatch.setattr(skill_discovery_module, "_COPILOT_COMMAND_FILE_LIMIT", 1)
+
+    discovered = discover_skill_directories(os.fspath(commands), connector="copilot")
+
+    assert [(entry.name, entry.path) for entry in discovered] == [
+        ("review", os.fspath(commands / "review.md"))
+    ]
+
+
+@requires_symlink_privilege
+def test_copilot_markdown_commands_reject_linked_files(tmp_path) -> None:
+    commands = tmp_path / ".claude" / "commands"
+    commands.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    os.symlink(outside, commands / "linked.md")
+
+    assert discover_skill_directories(os.fspath(commands), connector="copilot") == []
 
 
 @requires_symlink_privilege

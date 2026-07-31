@@ -53,6 +53,7 @@ from defenseclaw.connector_paths import (
     connector_config_files,
     connector_home,
     copilot_home,
+    copilot_settings_resolution,
     hermes_config_path,
     hermes_legacy_config_path,
     omnigent_config_path,
@@ -1401,6 +1402,16 @@ def _windows_native_hook_check(
     freshness checks; the live agent registration is the source of truth for
     the runtime Windows will actually resolve.
     """
+    if connector == "copilot":
+        settings = copilot_settings_resolution(_workspace_dir(cfg))
+        if settings.errors:
+            return WindowsHookCheck(
+                "malformed",
+                "Copilot settings cascade cannot be verified: " + "; ".join(settings.errors),
+                "",
+                "",
+                "",
+            )
     paths = _hook_health_paths_from_lock(cfg, connector)
     if config_path is None:
         if paths:
@@ -1436,7 +1447,7 @@ def _windows_native_hook_check(
         "pathext": os.environ.get("PATHEXT", "") if pathext is None else pathext,
     }
     if connector == "copilot":
-        return validator(**common)
+        return validator(**common, workspace_dir=_workspace_dir(cfg))
     return validator(
         connector=connector,
         **common,
@@ -2610,6 +2621,24 @@ def _check_copilot_hooks(
             r=r,
         )
         return
+    settings = copilot_settings_resolution(workspace)
+    if settings.errors:
+        _emit(
+            "fail",
+            "Copilot hooks",
+            "settings cascade cannot be verified: " + "; ".join(settings.errors),
+            r=r,
+        )
+        return
+    if settings.disable_all_hooks:
+        _emit(
+            "fail",
+            "Copilot hooks",
+            "disabled by effective operator setting disableAllHooks=true at "
+            f"{settings.source}; policy was not overwritten; managed policy unverified",
+            r=r,
+        )
+        return
     if (platform_name or os.name) == "nt":
         _check_windows_native_hooks(
             cfg,
@@ -2628,7 +2657,12 @@ def _check_copilot_hooks(
             _emit("fail", "Copilot hooks", f"{path} not found", r=r)
             return
         if _hook_json_references(path, "copilot-hook.sh"):
-            _emit("pass", "Copilot hooks", f"reachable at {path}", r=r)
+            _emit(
+                "pass",
+                "Copilot hooks",
+                f"reachable at {path}; local settings verified; managed policy unverified",
+                r=r,
+            )
             return
         _emit("fail", "Copilot hooks", f"{path} does not reference DefenseClaw hook script", r=r)
         return
@@ -2637,7 +2671,12 @@ def _check_copilot_hooks(
         _emit("fail", "Copilot hooks", f"{path} not found", r=r)
         return
     if _hook_json_references(path, "copilot-hook.sh"):
-        _emit("pass", "Copilot hooks", f"reachable at {path}", r=r)
+        _emit(
+            "pass",
+            "Copilot hooks",
+            f"reachable at {path}; local settings verified; managed policy unverified",
+            r=r,
+        )
     else:
         _emit("fail", "Copilot hooks", f"{path} does not reference DefenseClaw hook script", r=r)
 

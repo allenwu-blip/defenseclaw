@@ -11,6 +11,7 @@ from defenseclaw.commands.cmd_doctor import (
     _check_copilot_hooks,
     _check_hook_contract_lock,
     _DoctorResult,
+    _windows_native_hook_check,
 )
 from defenseclaw.doctor_hooks import (
     _COPILOT_CONTRACT_EVENTS,
@@ -110,6 +111,52 @@ def test_windows_copilot_doctor_accepts_bounded_v1_contract(tmp_path: Path) -> N
     assert check.state == "healthy", check.detail
     assert f"entries={len(_COPILOT_CONTRACT_EVENTS['copilot-hooks-v1'])}" in check.detail
     assert "contract=copilot-hooks-v1" in check.detail
+
+
+def test_windows_copilot_doctor_reports_effective_operator_disable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    install, data, config = _fixture(tmp_path, workspace=True)
+    copilot_home = tmp_path / "copilot-home"
+    copilot_home.mkdir()
+    (copilot_home / "settings.json").write_text(
+        '{"disableAllHooks": false}', encoding="utf-8"
+    )
+    repository = tmp_path / "repo"
+    native = repository / ".github" / "copilot"
+    native.mkdir(parents=True)
+    (native / "settings.local.json").write_text(
+        '{// operator policy\n"disableAllHooks": true,}', encoding="utf-8"
+    )
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+
+    check = validate_windows_copilot_hook_registration(
+        config_path=str(config),
+        data_dir=str(data),
+        install_root=str(install),
+        search_path=str(install),
+        pathext=".EXE;.CMD",
+        workspace_dir=str(repository),
+    )
+
+    assert check.state == "disabled"
+    assert "disableAllHooks=true" in check.detail
+    assert "managed policy remains unverified" in check.detail
+
+
+def test_windows_copilot_doctor_reports_invalid_lifecycle_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = SimpleNamespace(
+        data_dir=str(tmp_path / "data"),
+        claw=SimpleNamespace(workspace_dir=""),
+    )
+    monkeypatch.setenv("COPILOT_HOME", "")
+
+    check = _windows_native_hook_check(cfg, "copilot")
+
+    assert check.state == "malformed"
+    assert "COPILOT_HOME is not an absolute normalized path" in check.detail
 
 
 def test_windows_copilot_services_and_contract_rows_share_deep_validator(

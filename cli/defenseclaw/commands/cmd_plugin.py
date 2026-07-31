@@ -31,6 +31,7 @@ from typing import Any
 
 import click
 
+from defenseclaw import connector_paths
 from defenseclaw.commands import compute_verdict as _compute_verdict
 from defenseclaw.context import AppContext, pass_ctx
 from defenseclaw.inventory.plugin_directories import (
@@ -2097,7 +2098,12 @@ def _list_host_plugins(connector: str, cfg) -> list[dict[str, Any]]:
         # binary (see _list_openclaw_plugins). Don't double-count.
         return []
     if name == "copilot":
-        return _list_copilot_plugins(data_dir=getattr(cfg, "data_dir", None))
+        workspace_resolver = getattr(cfg, "connector_workspace_dir", None)
+        workspace_dir = workspace_resolver() if callable(workspace_resolver) else ""
+        return _list_copilot_plugins(
+            data_dir=getattr(cfg, "data_dir", None),
+            workspace_dir=workspace_dir,
+        )
     try:
         dirs = cfg.plugin_dirs(connector)
     except Exception:
@@ -2143,23 +2149,72 @@ def _trusted_copilot_binary(
 def _list_copilot_plugins(
     *,
     data_dir: str | os.PathLike[str] | None = None,
+    workspace_dir: str | os.PathLike[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Best-effort Copilot CLI plugin listing via documented CLI flow."""
+    """List declared plugins in the exact trusted lifecycle context."""
+
+    workspace = str(workspace_dir or "")
+    if (
+        not workspace
+        or workspace.strip() != workspace
+        or not os.path.isabs(workspace)
+        or os.path.normpath(workspace) != workspace
+    ):
+        return []
+    try:
+        connector_paths.reject_reparse_path(workspace)
+        before = os.stat(workspace, follow_symlinks=False)
+        if not os.path.isdir(workspace):
+            return []
+        if data_dir:
+            data_real = os.path.realpath(os.path.abspath(str(data_dir)))
+            workspace_real = os.path.realpath(workspace)
+            if os.path.normcase(os.path.commonpath((workspace_real, data_real))) == os.path.normcase(
+                data_real
+            ):
+                return []
+    except (OSError, ValueError):
+        return []
+
     copilot = _trusted_copilot_binary(data_dir)
     if not copilot:
         return []
+    try:
+        bound_home = connector_paths.copilot_home()
+    except ValueError:
+        return []
+    env = os.environ.copy()
+    env["COPILOT_HOME"] = bound_home
     try:
         proc = subprocess.run(
             [copilot, "plugins", "list", "--kind", "plugin", "--json"],
             capture_output=True,
             text=True,
             timeout=15,
+            cwd=workspace,
+            env=env,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    try:
+        after = os.stat(workspace, follow_symlinks=False)
+    except OSError:
+        return []
+    if (
+        before.st_dev,
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+    ) != (
+        after.st_dev,
+        after.st_ino,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+    ):
         return []
     if proc.returncode != 0:
         return []
-    plugins = _parse_plugin_list_json(proc.stdout) or _parse_plugin_list_text(proc.stdout)
+    plugins = _parse_plugin_list_json(proc.stdout)
     out: list[dict[str, Any]] = []
     for p in plugins:
         pid = str(p.get("id") or p.get("name") or "").strip()
@@ -2171,6 +2226,8 @@ def _list_copilot_plugins(
                 "name": str(p.get("name") or pid),
                 "version": str(p.get("version") or ""),
                 "enabled": p.get("enabled", True),
+                "activation_verified": False,
+                "activation_state": "semantic-activation-unverified",
                 "source": "host:copilot",
                 "path": "",
             }
