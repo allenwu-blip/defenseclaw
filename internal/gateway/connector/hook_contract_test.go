@@ -34,6 +34,73 @@ func TestAntigravityDefaultCapabilitiesMatchResolvedContract(t *testing.T) {
 	}
 }
 
+func TestAntigravityContractDoesNotAutoCertifyFuturePatches(t *testing.T) {
+	if got := ResolveHookContract("antigravity", "1.1.8"); got.Status != HookCompatibilityKnown {
+		t.Fatalf("Antigravity 1.1.8 compatibility=%q want known", got.Status)
+	}
+	if got := ResolveHookContract("antigravity", "1.1.9"); got.Status != HookCompatibilityUnknown {
+		t.Fatalf("Antigravity 1.1.9 compatibility=%q want unknown", got.Status)
+	}
+}
+
+func TestMacOSContractUpdatesPreserveWindowsPR655Contracts(t *testing.T) {
+	contract := func(goos, connector, id string) HookContract {
+		t.Helper()
+		for _, candidate := range hookContractsForOS(connector, goos) {
+			if candidate.ContractID == id {
+				return candidate
+			}
+		}
+		t.Fatalf("%s/%s contract %q missing", goos, connector, id)
+		return HookContract{}
+	}
+
+	for _, goos := range []string{"darwin", "windows"} {
+		claude := contract(goos, "claudecode", "claudecode-hooks-v1")
+		if claude.MinAgentVersion != "2.1.154" {
+			t.Errorf("%s Claude minimum=%q want 2.1.154", goos, claude.MinAgentVersion)
+		}
+	}
+
+	darwinHermes := contract("darwin", "hermes", "hermes-hooks-v1")
+	windowsHermes := contract("windows", "hermes", "hermes-hooks-v1")
+	if darwinHermes.MaxAgentVersion != "0.20.0" || windowsHermes.MaxAgentVersion != "" {
+		t.Errorf("Hermes maximums darwin=%q windows=%q", darwinHermes.MaxAgentVersion, windowsHermes.MaxAgentVersion)
+	}
+
+	darwinAntigravity := contract("darwin", "antigravity", "antigravity-hooks-v2")
+	windowsAntigravity := contract("windows", "antigravity", "antigravity-hooks-v2")
+	if darwinAntigravity.MaxAgentVersion != "1.1.9" || windowsAntigravity.MaxAgentVersion != "" {
+		t.Errorf("Antigravity maximums darwin=%q windows=%q", darwinAntigravity.MaxAgentVersion, windowsAntigravity.MaxAgentVersion)
+	}
+
+	darwinOpenHands := contract("darwin", "openhands", "openhands-hooks-v1")
+	windowsOpenHands := contract("windows", "openhands", "openhands-hooks-v1")
+	if darwinOpenHands.MinAgentVersion != "1.12.0" || !darwinOpenHands.NativeOTLP ||
+		windowsOpenHands.MinAgentVersion != "0.0.0" || windowsOpenHands.NativeOTLP {
+		t.Errorf("OpenHands darwin=(min=%q native=%v) windows=(min=%q native=%v)",
+			darwinOpenHands.MinAgentVersion, darwinOpenHands.NativeOTLP,
+			windowsOpenHands.MinAgentVersion, windowsOpenHands.NativeOTLP)
+	}
+
+	darwinOpenCode := contract("darwin", "opencode", "opencode-hooks-v1")
+	windowsOpenCode := contract("windows", "opencode", "opencode-hooks-v1")
+	if darwinOpenCode.MinAgentVersion != "1.16.2" || darwinOpenCode.MaxAgentVersion != "1.18.11" ||
+		darwinOpenCode.HookScriptVersion != "v7" || len(darwinOpenCode.Events) != 35 ||
+		windowsOpenCode.MinAgentVersion != "0.0.0" || windowsOpenCode.MaxAgentVersion != "" ||
+		windowsOpenCode.HookScriptVersion != "v6" || len(windowsOpenCode.Events) != 9 {
+		t.Errorf("OpenCode darwin=(min=%q max=%q script=%q events=%d) windows=(min=%q max=%q script=%q events=%d)",
+			darwinOpenCode.MinAgentVersion, darwinOpenCode.MaxAgentVersion, darwinOpenCode.HookScriptVersion, len(darwinOpenCode.Events),
+			windowsOpenCode.MinAgentVersion, windowsOpenCode.MaxAgentVersion, windowsOpenCode.HookScriptVersion, len(windowsOpenCode.Events))
+	}
+
+	darwinCopilot := contract("darwin", "copilot", "copilot-hooks-v2")
+	windowsCopilot := contract("windows", "copilot", "copilot-hooks-v2")
+	if !darwinCopilot.NativeOTLP || windowsCopilot.NativeOTLP {
+		t.Errorf("Copilot v2 native OTLP darwin=%v windows=%v", darwinCopilot.NativeOTLP, windowsCopilot.NativeOTLP)
+	}
+}
+
 func sharedHookBytes(t *testing.T, hookDir string) map[string][]byte {
 	t.Helper()
 	out := make(map[string][]byte, len(genericHookScripts)+len(hookHelperScripts))
@@ -68,7 +135,7 @@ func TestHookContractResolution(t *testing.T) {
 		{"codex_unknown_before_stable", "codex", "codex 0.123.0", HookCompatibilityUnknown, "", "0.123.0"},
 		{"claude_before_message_display", "claude-code", "Claude Code v2.1.151", HookCompatibilityUnknown, "", "2.1.151"},
 		{"claude_alias_known", "claude-code", "Claude Code v2.1.154", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.154"},
-		{"openhands_alias_known", "open-hands", "OpenHands 1.0.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.0.0"},
+		{"openhands_alias_known", "open-hands", "OpenHands 1.12.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.12.0"},
 		{"cursor_exact_agent_preview_pin", "cursor", "2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_other_agent_build_unknown", "cursor", "cursor-agent 2026.07.23-deadbee", HookCompatibilityUnknown, "", "2026.7.23"},
@@ -1031,6 +1098,21 @@ func TestHookContractLockEntryIncludesResolvedLocations(t *testing.T) {
 	if entry.Locations.Surfaces["plugins"].Supported {
 		t.Fatalf("OpenHands plugins should be recorded as unsupported: %+v", entry.Locations.Surfaces["plugins"])
 	}
+	agents := entry.Locations.Surfaces["agents"]
+	if !agents.Supported || !sameStrings(agents.WritePaths, []string{
+		filepath.Join(workspace, ".agents", "agents"),
+		filepath.Join(home, ".agents", "agents"),
+	}) {
+		t.Fatalf("OpenHands file-agent paths=%+v", agents)
+	}
+	for _, want := range []string{
+		filepath.Join(workspace, ".openhands", "agents"),
+		filepath.Join(home, ".openhands", "agents"),
+	} {
+		if !stringInSlice(agents.ReadPaths, want) {
+			t.Fatalf("OpenHands agent read paths=%v missing %q", agents.ReadPaths, want)
+		}
+	}
 }
 
 func TestHookContractLockEntryUsesPinnedContractMetadata(t *testing.T) {
@@ -1057,7 +1139,7 @@ func TestHookContractLockEntryUsesPinnedContractMetadata(t *testing.T) {
 	}
 }
 
-func TestCodexGenericDiscoveryCacheAuthorityIsWindowsScoped(t *testing.T) {
+func TestCodexGenericDiscoveryCacheAuthorityIsNativeScoped(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	payload := map[string]interface{}{
 		"version": 3,
@@ -1079,9 +1161,9 @@ func TestCodexGenericDiscoveryCacheAuthorityIsWindowsScoped(t *testing.T) {
 	}
 	version := LoadCachedAgentVersion(dir, "codex")
 	executable := LoadCachedAgentExecutable(dir, "codex")
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		if version != "" || executable != "" {
-			t.Fatalf("Windows trusted generic cache: version=%q executable=%q", version, executable)
+			t.Fatalf("native trusted generic cache: version=%q executable=%q", version, executable)
 		}
 		return
 	}
@@ -1091,11 +1173,15 @@ func TestCodexGenericDiscoveryCacheAuthorityIsWindowsScoped(t *testing.T) {
 }
 
 func TestCodexSetupSelectionReceiptIsBoundAndSealed(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("protected Codex setup selections are native-Windows authority")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("protected Codex setup selections are native Windows/macOS authority")
 	}
 	dir := testenv.PrivateTempDir(t)
-	executable := filepath.Join(dir, "codex.exe")
+	executableName := "codex"
+	if runtime.GOOS == "windows" {
+		executableName = "codex.exe"
+	}
+	executable := filepath.Join(dir, executableName)
 	if err := atomicWriteFile(executable, []byte("fixture-codex-binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -117,8 +117,8 @@ func TestInspectCodexSystemRequirements(t *testing.T) {
 }
 
 func TestInspectCodexPolicyFailsClosedForLegacyLockEvidence(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("protected Codex lock authority is native-Windows-only")
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skip("protected Codex lock authority is native Windows/macOS only")
 	}
 	dir := testenv.PrivateTempDir(t)
 	body := []byte(`{"version":2,"updated_at":"2026-07-14T00:00:00Z","connectors":{"codex":{"connector":"codex","updated_at":"2026-07-14T00:00:00Z"}}}`)
@@ -202,8 +202,15 @@ func TestDecodeCodexRPCFiltersFloodAndKeepsTerminalOrdered(t *testing.T) {
 }
 
 func TestValidateCodexPolicyExecutableRejectsReplacement(t *testing.T) {
+	originalValidator := codexNativeExecutableValidator
+	codexNativeExecutableValidator = func(string) error { return nil }
+	t.Cleanup(func() { codexNativeExecutableValidator = originalValidator })
 	dir := testenv.PrivateTempDir(t)
-	executable := filepath.Join(dir, "codex.exe")
+	executableName := "codex.exe"
+	if runtime.GOOS == "darwin" {
+		executableName = "codex"
+	}
+	executable := filepath.Join(dir, executableName)
 	if err := atomicWriteFile(executable, []byte("original-codex"), 0o700); err != nil {
 		t.Fatal(err)
 	}

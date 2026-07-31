@@ -19,7 +19,9 @@ package gateway
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -27,6 +29,70 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+func TestCodexComponentTargetsUseCurrentOfficialSurfaces(t *testing.T) {
+	homeDir := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	codexHome := filepath.Join(homeDir, "custom-codex")
+	t.Setenv("HOME", homeDir)
+	t.Setenv("CODEX_HOME", codexHome)
+
+	currentPaths := []string{
+		filepath.Join(homeDir, ".agents", "skills", "personal-skill"),
+		filepath.Join(codexHome, "plugins", "cache", "installed-plugin"),
+		filepath.Join(workspace, ".agents", "skills", "project-skill"),
+	}
+	for _, path := range currentPaths {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	currentFiles := []string{
+		filepath.Join(homeDir, ".agents", "plugins", "marketplace.json"),
+		filepath.Join(codexHome, "config.toml"),
+		filepath.Join(workspace, ".agents", "plugins", "marketplace.json"),
+		filepath.Join(workspace, ".codex", "config.toml"),
+	}
+	for _, path := range currentFiles {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	obsoletePaths := []string{
+		filepath.Join(homeDir, ".codex", "skills", "obsolete"),
+		filepath.Join(workspace, ".codex", "skills", "obsolete"),
+		filepath.Join(workspace, ".mcp.json"),
+	}
+	for _, path := range obsoletePaths[:2] {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(obsoletePaths[2], []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	targets := codexComponentTargets(workspace)
+	for component, expected := range map[string][]string{
+		"skill":  {currentPaths[0], currentPaths[2]},
+		"plugin": {currentPaths[1], currentFiles[0], currentFiles[2]},
+		"mcp":    {currentFiles[1], currentFiles[3]},
+	} {
+		for _, path := range expected {
+			if !slices.Contains(targets[component], path) {
+				t.Errorf("codexComponentTargets(%q) = %v, missing %q", component, targets[component], path)
+			}
+		}
+		for _, obsolete := range obsoletePaths {
+			if slices.Contains(targets[component], obsolete) {
+				t.Errorf("codexComponentTargets(%q) retains obsolete path %q", component, obsolete)
+			}
+		}
+	}
+}
 
 func attrByKey(kv []attribute.KeyValue, key string) (attribute.Value, bool) {
 	for _, a := range kv {

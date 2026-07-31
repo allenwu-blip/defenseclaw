@@ -265,7 +265,7 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 		{
 			name:            "windsurf",
 			ctor:            func() connector.Connector { return connector.NewWindsurfConnector() },
-			expectSkillSrc:  watcherDirsFromDefault,
+			expectSkillSrc:  watcherDirsFromConnector,
 			expectPluginSrc: watcherDirsFromDefault,
 		},
 		{
@@ -284,7 +284,7 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 			ctor:            func() connector.Connector { return connector.NewCopilotConnector() },
 			expectSkillSrc:  watcherDirsFromConnector,
 			expectSkillFrag: filepath.Join(".copilot", "skills"),
-			expectPluginSrc: watcherDirsFromDefault,
+			expectPluginSrc: watcherDirsFromConnector,
 		},
 		{
 			name:            "openhands",

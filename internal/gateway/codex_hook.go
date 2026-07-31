@@ -214,7 +214,7 @@ func (a *APIServer) evaluateCodexHookForProfile(
 		if decision, matched := a.codexSkillAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "skill", decision: decision})
 		}
-	case "Stop":
+	case "SubagentStop", "Stop":
 		if !req.StopHookActive && a.scannerCfg != nil && a.scannerCfg.ConnectorHookConfig("codex").ScanOnStop {
 			verdict = a.scanCodexChangedFiles(ctx, req)
 		}
@@ -851,12 +851,18 @@ func codexComponentTargets(cwd string) map[string][]string {
 	}
 
 	codexHome := connector.CodexHomeDir()
+	homeDir, _ := os.UserHomeDir()
 	if personalSkills := connector.CodexPersonalSkillsPath(); strings.TrimSpace(personalSkills) != "" {
 		targets["skill"] = append(targets["skill"], childDirs(personalSkills)...)
 	}
 	if strings.TrimSpace(codexHome) != "" {
-		targets["plugin"] = append(targets["plugin"],
-			codexInstalledPluginDirs(filepath.Join(codexHome, "plugins", "cache"))...)
+		if runtime.GOOS == "darwin" {
+			targets["plugin"] = append(targets["plugin"],
+				childDirs(filepath.Join(codexHome, "plugins", "cache"))...)
+		} else {
+			targets["plugin"] = append(targets["plugin"],
+				codexInstalledPluginDirs(filepath.Join(codexHome, "plugins", "cache"))...)
+		}
 		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(codexHome, "config.toml"))...)
 		targets["agent"] = append(targets["agent"], childFilesWithExtension(filepath.Join(codexHome, "agents"), ".toml")...)
 		targets["rule"] = append(targets["rule"], childFilesWithExtension(filepath.Join(codexHome, "rules"), ".rules")...)
@@ -866,7 +872,8 @@ func codexComponentTargets(cwd string) map[string][]string {
 	}
 
 	targets["plugin"] = append(targets["plugin"], connector.CodexPluginSourceDirs(cwd)...)
-	for _, root := range connector.CodexProjectLayerDirs(cwd) {
+	layers := connector.CodexProjectLayerDirs(cwd)
+	for _, root := range layers {
 		targets["skill"] = append(targets["skill"],
 			childDirs(filepath.Join(root, ".agents", "skills"))...)
 		targets["mcp"] = append(targets["mcp"],
@@ -875,6 +882,14 @@ func codexComponentTargets(cwd string) map[string][]string {
 			childFilesWithExtension(filepath.Join(root, ".codex", "agents"), ".toml")...)
 		targets["rule"] = append(targets["rule"],
 			childFilesWithExtension(filepath.Join(root, ".codex", "rules"), ".rules")...)
+	}
+	if runtime.GOOS == "darwin" {
+		targets["plugin"] = append(targets["plugin"],
+			existingFiles(gatewayCodexMarketplaceManifestPaths(homeDir)...)...)
+		if len(layers) > 0 {
+			targets["plugin"] = append(targets["plugin"],
+				existingFiles(gatewayCodexMarketplaceManifestPaths(layers[len(layers)-1])...)...)
+		}
 	}
 	for k, paths := range targets {
 		targets[k] = uniqueExistingPaths(paths)
@@ -918,6 +933,15 @@ func workspaceCodexRoots(cwd string) []string {
 		}
 	}
 	return uniqueExistingDirs(roots)
+}
+
+func gatewayCodexMarketplaceManifestPaths(root string) []string {
+	return []string{
+		filepath.Join(root, ".agents", "plugins", "marketplace.json"),
+		filepath.Join(root, ".agents", "plugins", "api_marketplace.json"),
+		filepath.Join(root, ".claude-plugin", "marketplace.json"),
+		filepath.Join(root, ".cursor-plugin", "marketplace.json"),
+	}
 }
 
 func sameCleanPath(left, right string) bool {

@@ -198,7 +198,10 @@ func TestHermesLifecycleHookExecutableBindingRequiresExactNativePath(t *testing.
 }
 
 func TestBindConnectorLifecycleConfigHomeRejectsUnsafeTargets(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	unnormalized := root + string(filepath.Separator) + "child" + string(filepath.Separator) + ".." + string(filepath.Separator) + "codex"
 	for _, test := range []struct {
 		name      string
@@ -268,9 +271,16 @@ func TestCursorVerifyUsesExplicitConfigHomeWithoutVendorEnvironmentOverride(t *t
 	if err := os.MkdirAll(bound, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	adapter := filepath.Join(dataDir, "hooks", "cursor-hook.ps1")
+	adapterName := "cursor-hook.sh"
+	commandPrefix := "'"
+	commandSuffix := "'"
+	if runtime.GOOS == "windows" {
+		adapterName = "cursor-hook.ps1"
+		commandPrefix = "& '"
+	}
+	adapter := filepath.Join(dataDir, "hooks", adapterName)
 	config := []byte(`{"version":1,"hooks":{"preToolUse":[{"type":"command","command":"` +
-		`& '` + strings.ReplaceAll(adapter, `\`, `\\`) + `'` +
+		commandPrefix + strings.ReplaceAll(adapter, `\`, `\\`) + commandSuffix +
 		`","timeout":30,"failClosed":false}]}}`)
 	configPath := filepath.Join(bound, "hooks.json")
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
@@ -330,7 +340,7 @@ func TestCursorReconcileWritesOnlyExplicitConfigHome(t *testing.T) {
 	)
 	if !strings.Contains(stdout, `"connector":"cursor"`) ||
 		!strings.Contains(stdout, `"fail_mode":"open"`) ||
-		(stderr != "" && !strings.Contains(stderr, "preview on windows")) {
+		(stderr != "" && !strings.Contains(stderr, "preview on ")) {
 		t.Fatalf("Cursor reconcile: stdout=%q stderr=%q", stdout, stderr)
 	}
 	hooksPath := filepath.Join(bound, "hooks.json")

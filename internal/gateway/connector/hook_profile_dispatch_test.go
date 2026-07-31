@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -305,6 +306,17 @@ func TestCodexProfileRespond_Parity(t *testing.T) {
 			},
 		},
 		{
+			name:   "SubagentStop_block",
+			event:  "SubagentStop",
+			action: "block",
+			raw:    "block",
+			reason: "changed files denied",
+			expected: map[string]interface{}{
+				"decision": "block",
+				"reason":   "changed files denied",
+			},
+		},
+		{
 			name:   "Stop_allow",
 			event:  "Stop",
 			action: "allow",
@@ -392,6 +404,52 @@ func TestCodexProfileRespond_Parity(t *testing.T) {
 				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
 			}
 		})
+	}
+}
+
+func TestCopilotUserPromptTransformedIsMutationNoOp(t *testing.T) {
+	out := hookOnlyProfileRespond(HookRespondInput{
+		Req:               HookProfileRequest{ConnectorName: "copilot", HookEventName: "userPromptTransformed"},
+		Action:            "alert",
+		RawAction:         "confirm",
+		AdditionalContext: "must not become a prompt mutation",
+	})
+	if out.FieldName != "hook_output" {
+		t.Fatalf("FieldName=%q want hook_output", out.FieldName)
+	}
+	if !reflect.DeepEqual(out.Output, map[string]interface{}{}) {
+		t.Fatalf("Output=%#v want empty mutation object", out.Output)
+	}
+}
+
+func TestCopilotResponseSemanticsStayEventScoped(t *testing.T) {
+	policyCases := []struct {
+		event string
+		want  map[string]interface{}
+	}{
+		{"preToolUse", map[string]interface{}{"permissionDecision": "deny", "permissionDecisionReason": "policy denied"}},
+		{"permissionRequest", map[string]interface{}{"behavior": "deny", "message": "policy denied", "interrupt": true}},
+		{"agentStop", map[string]interface{}{"decision": "block", "reason": "policy denied"}},
+		{"subagentStop", map[string]interface{}{"decision": "block", "reason": "policy denied"}},
+	}
+	for _, tc := range policyCases {
+		got := copilotHookOutputForProfile(tc.event, "block", "block", "policy denied", "")
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s output=%#v want %#v", tc.event, got, tc.want)
+		}
+	}
+	contextEvents := []string{"sessionStart", "subagentStart", "postToolUse", "postToolUseFailure", "notification"}
+	for _, event := range contextEvents {
+		got := copilotHookOutputForProfile(event, "alert", "alert", "", "review this event")
+		want := map[string]interface{}{"additionalContext": "review this event"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s output=%#v want %#v", event, got, want)
+		}
+	}
+	for _, event := range []string{"userPromptSubmitted", "sessionEnd", "errorOccurred", "preCompact"} {
+		if got := copilotHookOutputForProfile(event, "alert", "confirm", "", "must be ignored"); got != nil {
+			t.Errorf("%s output=%#v want nil", event, got)
+		}
 	}
 }
 
@@ -867,6 +925,13 @@ func TestCursorProfileRespond_CurrentEventOutputMatrix(t *testing.T) {
 		{"afterAgentThought", map[string]interface{}{}},
 		{"workspaceOpen", map[string]interface{}{}},
 	}
+	if runtime.GOOS == "darwin" {
+		for i := range cases {
+			if cases[i].event == "subagentStart" {
+				cases[i].expected = map[string]interface{}{"continue": true, "permission": "allow"}
+			}
+		}
+	}
 	for _, tc := range cases {
 		t.Run(tc.event, func(t *testing.T) {
 			out := hookOnlyProfileRespond(HookRespondInput{
@@ -988,6 +1053,18 @@ func TestCursorProfileRespond_EventSpecificFields(t *testing.T) {
 			expected:   map[string]interface{}{},
 		},
 	}
+	if runtime.GOOS == "darwin" {
+		for i := range cases {
+			if cases[i].event == "subagentStart" {
+				cases[i].expected = map[string]interface{}{
+					"continue":      true,
+					"permission":    "deny",
+					"user_message":  "subagent creation denied",
+					"agent_message": "subagent creation denied",
+				}
+			}
+		}
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := hookOnlyProfileRespond(HookRespondInput{
@@ -1070,6 +1147,32 @@ func TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue(t *testing.T) 
 	}
 	if _, hasPerm := out.Output["permission"]; hasPerm {
 		t.Errorf("beforeSubmitPrompt block must not rely on `permission` (Cursor ignores it): %#v", out.Output)
+	}
+}
+
+func TestCursorProfileRespond_SubagentStartBlocksAndDowngradesConfirmToDeny(t *testing.T) {
+	for _, action := range []string{"block", "confirm"} {
+		t.Run(action, func(t *testing.T) {
+			out := hookOnlyProfileRespond(HookRespondInput{
+				Req: HookProfileRequest{
+					ConnectorName: "cursor",
+					HookEventName: "subagentStart",
+				},
+				Action:    action,
+				RawAction: action,
+				Reason:    "subagent requires review",
+				Caps:      NewCursorConnector().HookCapabilities(SetupOpts{}),
+			})
+			want := map[string]interface{}{
+				"continue":      true,
+				"permission":    "deny",
+				"user_message":  "subagent requires review",
+				"agent_message": "subagent requires review",
+			}
+			if !reflect.DeepEqual(out.Output, want) {
+				t.Errorf("subagentStart %s Output mismatch\n got: %#v\nwant: %#v", action, out.Output, want)
+			}
+		})
 	}
 }
 

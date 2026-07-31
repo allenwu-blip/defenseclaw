@@ -18,6 +18,7 @@ package connector
 
 import (
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"unicode"
@@ -44,6 +45,7 @@ const (
 	CorrelationProfileWindsurfV1    CorrelationProfileVersion = "windsurf-correlation-v1"
 	CorrelationProfileGeminiCLIV1   CorrelationProfileVersion = "geminicli-correlation-v1"
 	CorrelationProfileCopilotV1     CorrelationProfileVersion = "copilot-correlation-v1"
+	CorrelationProfileCopilotV2     CorrelationProfileVersion = "copilot-correlation-v2"
 	CorrelationProfileOpenHandsV1   CorrelationProfileVersion = "openhands-correlation-v1"
 	CorrelationProfileAntigravityV1 CorrelationProfileVersion = "antigravity-correlation-v1"
 	CorrelationProfileOpenCodeV1    CorrelationProfileVersion = "opencode-correlation-v1"
@@ -506,6 +508,16 @@ func nativeTelemetryForConnector(name string) NativeTelemetrySpec {
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryMetrics, NativeTelemetryTraces}, Stability: NativeTelemetryBeta, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
 	case "geminicli":
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
+	case "copilot":
+		if runtime.GOOS == "darwin" {
+			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable}
+		}
+		return none
+	case "openhands":
+		if runtime.GOOS == "darwin" {
+			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
+		}
+		return none
 	case "omnigent":
 		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryExperimental, AcceptsW3C: true, PropagatesW3C: true}
 	default:
@@ -733,20 +745,32 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 			reported(CorrelationTargetAgentName, ns, "agent_name", "agentName"),
 			reported(CorrelationTargetAgentType, ns, "agent_type", "agentType"),
 		)
+		if runtime.GOOS == "darwin" && hookContractID == "copilot-hooks-v2" {
+			native := appendBindings(nativeStandard(ns),
+				reported(CorrelationTargetSession, ns, "session", "gen_ai.conversation.id"),
+				reported(CorrelationTargetTurn, ns, "turn", "github.copilot.turn_id"),
+				reported(CorrelationTargetSourceEvent, ns, "interaction", "github.copilot.interaction_id"),
+				reported(CorrelationTargetTool, ns, "tool_invocation", "gen_ai.tool.call.id"),
+			)
+			return makeSpec(CorrelationProfileCopilotV2, hookContractID, []CorrelationSurface{CorrelationSurfaceHook, CorrelationSurfaceNativeOTLP}, bindings, native, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, "native OTLP carries conversation, turn, interaction, and tool-call identity, but GitHub does not document a W3C cross-rail trace link; provider model response IDs remain undocumented"))
+		}
 		return makeSpec(CorrelationProfileCopilotV1, correlationContractID, []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceSubagentIdentity, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, "documented hooks expose session membership but not stable turn, interaction, response, or tool-call IDs; DefenseClaw does not integrate Copilot's upstream native OTel surface"))
 	case "openhands":
-		bindings := appendBindings(base,
-			reported(CorrelationTargetSession, ns, "conversation", "conversation_id", "conversationId"),
-			reported(CorrelationTargetTurn, ns, "message", "message_id", "messageId", "prompt_id", "promptId"),
-			reported(CorrelationTargetSourceEvent, ns, "event", "event_id", "eventId"),
-			reported(CorrelationTargetTool, ns, "tool_invocation", "tool_call_id", "toolCallId"),
-			// OpenHands action_id identifies an action event. It is independent
-			// from ActionEvent.tool_call_id and must never populate the canonical
-			// tool-invocation field merely because both appear around a tool.
-			reported(CorrelationTargetAction, ns, "action", "action_id", "actionId"),
-			reported(CorrelationTargetModelResponse, ns, "model_response", "llm_response_id", "llmResponseId"),
-		)
-		return makeSpec(CorrelationProfileOpenHandsV1, "openhands-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessAbsent, "shell hook lacks the complete event-stream lineage surface; no authenticated event-stream adapter or native exporter is installed"))
+		// OpenHands SDK 1.21.0's HookEvent stdin carries session_id,
+		// event_type, working_dir, and event content. action_id, message_id,
+		// tool_call_id, and model response IDs exist only on the SDK's separate
+		// in-process HookExecutionEvent and are not passed to command hooks.
+		// Keep this profile deliberately narrower than the generic canonical
+		// envelope so we never claim correlation IDs the connector cannot see.
+		bindings := []CorrelationFieldBinding{
+			reported(CorrelationTargetSemanticEvent, "defenseclaw", "semantic_event", "defenseclaw.semantic_event.id"),
+			reported(CorrelationTargetSession, ns, "session", "session_id"),
+		}
+		surfaces := []CorrelationSurface{CorrelationSurfaceHook}
+		if runtime.GOOS == "darwin" {
+			surfaces = append(surfaces, CorrelationSurfaceNativeOTLP)
+		}
+		return makeSpec(CorrelationProfileOpenHandsV1, "openhands-hooks-v1", surfaces, bindings, nil, []CorrelationInferenceRule{CorrelationInferencePromptBoundaryTurn, CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessAbsent, CorrelationCompletenessAbsent, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, CorrelationCompletenessAbsent, "official command-hook stdin exposes session membership but no stable turn, action, tool-call, event, or model IDs", "native OTLP traces are supported, but upstream does not document a stable exported session attribute for hook/native identity equivalence"))
 	case "antigravity":
 		bindings := appendBindings(base,
 			reported(CorrelationTargetSession, ns, "conversation", "conversationId", "conversation_id", "sessionId"),
@@ -775,6 +799,18 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 		// v0.7.0 proves only session.id as an identity. Its gen_ai.agent.name,
 		// gen_ai.request.model, and gen_ai.tool.name attributes are names, not
 		// occurrence IDs, and must not populate agent/model/tool ID targets.
+		inference := []CorrelationInferenceRule(nil)
+		if runtime.GOOS == "darwin" {
+			// FunctionPolicy does not expose a provider request ID. On the audited
+			// macOS lane, mint a DefenseClaw UUIDv7 at BeforeModel and resolve the
+			// unique durable pending model operation at AfterModel, including after
+			// a gateway restart. Windows retains PR #655's no-inference behavior.
+			inference = []CorrelationInferenceRule{
+				CorrelationInferenceModelBoundary,
+				CorrelationInferenceUniquePendingTool,
+				CorrelationInferenceTraceLink,
+			}
+		}
 		spec, ok := makeSpec(
 			CorrelationProfileOmniGentV1,
 			"omnigent-custom-policy-v1",
@@ -783,7 +819,7 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 			[]CorrelationFieldBinding{
 				reported(CorrelationTargetSession, ns, "session", "session.id"),
 			},
-			nil,
+			inference,
 			complete(
 				CorrelationCompletenessPartial,
 				CorrelationCompletenessAbsent,
@@ -1026,13 +1062,17 @@ func (s CorrelationSpec) Validate() error {
 		default:
 			return fmt.Errorf("unknown correlation surface %q", surface)
 		}
-		if len(bindings) == 0 {
+		// A native exporter can be a supported capture surface without
+		// exposing a reviewed identity attribute. OpenHands is deliberately
+		// trace-only: accepting the surface must not turn an undocumented
+		// attribute into a correlation claim.
+		if len(bindings) == 0 && !(surface == CorrelationSurfaceNativeOTLP && s.NativeTelemetry.Stability != NativeTelemetryNone) {
 			return fmt.Errorf("correlation surface %q has no reviewed bindings", surface)
 		}
 	}
 	switch s.NativeTelemetry.Stability {
 	case NativeTelemetryStable, NativeTelemetryBeta, NativeTelemetryExperimental:
-		if len(s.NativeTelemetry.Signals) == 0 || len(s.NativeOTLPBindings) == 0 || s.NativeTelemetry.InputSurface != CorrelationSurfaceNativeOTLP {
+		if len(s.NativeTelemetry.Signals) == 0 || s.NativeTelemetry.InputSurface != CorrelationSurfaceNativeOTLP {
 			return fmt.Errorf("native-capable profile requires signals and native_otlp input surface")
 		}
 	case NativeTelemetryNone:
