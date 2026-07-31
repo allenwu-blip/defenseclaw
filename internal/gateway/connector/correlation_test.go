@@ -352,7 +352,7 @@ func TestEveryDeclaredCorrelationSurfaceHasReviewedBindings(t *testing.T) {
 			case CorrelationSurfaceNativeOTLP:
 				count = len(spec.NativeOTLPBindings)
 			}
-			if count == 0 {
+			if count == 0 && !(surface == CorrelationSurfaceNativeOTLP && spec.NativeTelemetry.BindingMode == NativeTelemetryBindingsExporterOnly) {
 				t.Errorf("%s declares %s without bindings", name, surface)
 			}
 		}
@@ -363,6 +363,37 @@ func TestEveryDeclaredCorrelationSurfaceHasReviewedBindings(t *testing.T) {
 				t.Errorf("%s advertises an event stream without a production adapter", name)
 			}
 		}
+	}
+}
+
+func TestExporterOnlyNativeTelemetryClassificationIsNarrow(t *testing.T) {
+	var exporterOnly []string
+	for _, name := range NewDefaultRegistry().Names() {
+		spec := DefaultCorrelationSpec(name)
+		if spec.NativeTelemetry.BindingMode == NativeTelemetryBindingsExporterOnly {
+			exporterOnly = append(exporterOnly, name)
+		}
+	}
+	if runtime.GOOS == "darwin" {
+		if len(exporterOnly) != 1 || exporterOnly[0] != "openhands" {
+			t.Fatalf("exporter-only native telemetry connectors=%v, want [openhands]", exporterOnly)
+		}
+
+		openhands := DefaultCorrelationSpec("openhands")
+		openhands.NativeTelemetry.BindingMode = NativeTelemetryBindingsReviewed
+		if err := openhands.Validate(); err == nil || !strings.Contains(err.Error(), "no reviewed bindings") {
+			t.Fatalf("reviewed binding mode accepted without bindings: %v", err)
+		}
+
+		openhands = DefaultCorrelationSpec("openhands")
+		openhands.NativeOTLPBindings = []CorrelationFieldBinding{
+			reported(CorrelationTargetSession, "openhands", "session", "undocumented.session.id"),
+		}
+		if err := openhands.Validate(); err == nil || !strings.Contains(err.Error(), "exporter-only") {
+			t.Fatalf("exporter-only mode accepted an invented binding: %v", err)
+		}
+	} else if len(exporterOnly) != 0 {
+		t.Fatalf("exporter-only native telemetry connectors=%v, want none on %s", exporterOnly, runtime.GOOS)
 	}
 }
 
@@ -853,7 +884,8 @@ func TestOpenHandsCommandHookCorrelationMatchesOfficialEnvelope(t *testing.T) {
 	if runtime.GOOS == "darwin" {
 		if spec.NativeTelemetry.Stability != NativeTelemetryStable ||
 			len(spec.NativeTelemetry.Signals) != 1 ||
-			spec.NativeTelemetry.Signals[0] != NativeTelemetryTraces {
+			spec.NativeTelemetry.Signals[0] != NativeTelemetryTraces ||
+			spec.NativeTelemetry.BindingMode != NativeTelemetryBindingsExporterOnly {
 			t.Fatalf("OpenHands trace-only native exporter contract = %+v", spec.NativeTelemetry)
 		}
 	} else if spec.NativeTelemetry.Stability != NativeTelemetryNone {

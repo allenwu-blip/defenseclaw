@@ -118,6 +118,17 @@ const (
 	NativeTelemetryMetrics NativeTelemetrySignal = "metrics"
 )
 
+// NativeTelemetryBindingMode states whether the native exporter carries any
+// reviewed correlation identity. Exporter-only telemetry remains a genuine
+// capture capability, but it cannot be used to join occurrences across rails.
+type NativeTelemetryBindingMode string
+
+const (
+	NativeTelemetryBindingsNone         NativeTelemetryBindingMode = "none"
+	NativeTelemetryBindingsReviewed     NativeTelemetryBindingMode = "reviewed"
+	NativeTelemetryBindingsExporterOnly NativeTelemetryBindingMode = "exporter_only"
+)
+
 // NativeTelemetrySpec records native-rail capability independently from hook
 // decoding. Setup/custody code can therefore distinguish a supported native
 // exporter from a hook-only connector without inferring capability from the
@@ -126,6 +137,7 @@ type NativeTelemetrySpec struct {
 	InputSurface        CorrelationSurface
 	Signals             []NativeTelemetrySignal
 	Stability           NativeTelemetryStability
+	BindingMode         NativeTelemetryBindingMode
 	AcceptsW3C          bool
 	PropagatesW3C       bool
 	AuthoritativeFields []CorrelationTarget
@@ -362,7 +374,7 @@ func ExplicitCanonicalCorrelationSpec(connectorName string) CorrelationSpec {
 		// it explicitly supplies the canonical source_event_id field. No vendor
 		// alias or contextual inference is enabled by this declaration.
 		ReceiptTargets:  []CorrelationTarget{CorrelationTargetSourceEvent},
-		NativeTelemetry: NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Stability: NativeTelemetryNone},
+		NativeTelemetry: NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Stability: NativeTelemetryNone, BindingMode: NativeTelemetryBindingsNone},
 		Completeness: CorrelationCompleteness{
 			Session: CorrelationCompletenessUnknown, Turn: CorrelationCompletenessUnknown,
 			AgentLifecycle: CorrelationCompletenessUnknown, Tool: CorrelationCompletenessUnknown,
@@ -495,31 +507,31 @@ func nativeStandard(namespace string) []CorrelationFieldBinding {
 }
 
 func nativeTelemetryForConnector(name string) NativeTelemetrySpec {
-	none := NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Stability: NativeTelemetryNone}
+	none := NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Stability: NativeTelemetryNone, BindingMode: NativeTelemetryBindingsNone}
 	switch name {
 	case "codex":
 		// Only call_id is source-proven to be the same invocation exported to
 		// Codex hooks as tool_use_id. Standard GenAI attributes remain typed
 		// native evidence, but are not cross-rail identity authority by default.
-		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
+		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, BindingMode: NativeTelemetryBindingsReviewed, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
 	case "claudecode":
 		// Official monitoring documentation states that native tool_use_id and
 		// gen_ai.tool.call.id carry the same value passed to hooks.
-		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryMetrics, NativeTelemetryTraces}, Stability: NativeTelemetryBeta, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
+		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryMetrics, NativeTelemetryTraces}, Stability: NativeTelemetryBeta, BindingMode: NativeTelemetryBindingsReviewed, AcceptsW3C: true, PropagatesW3C: true, AuthoritativeFields: []CorrelationTarget{CorrelationTargetTool}}
 	case "geminicli":
-		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
+		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, BindingMode: NativeTelemetryBindingsReviewed, AcceptsW3C: true, PropagatesW3C: true}
 	case "copilot":
 		if runtime.GOOS == "darwin" {
-			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable}
+			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryStable, BindingMode: NativeTelemetryBindingsReviewed}
 		}
 		return none
 	case "openhands":
 		if runtime.GOOS == "darwin" {
-			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces}, Stability: NativeTelemetryStable, AcceptsW3C: true, PropagatesW3C: true}
+			return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryTraces}, Stability: NativeTelemetryStable, BindingMode: NativeTelemetryBindingsExporterOnly, AcceptsW3C: true, PropagatesW3C: true}
 		}
 		return none
 	case "omnigent":
-		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryExperimental, AcceptsW3C: true, PropagatesW3C: true}
+		return NativeTelemetrySpec{InputSurface: CorrelationSurfaceNativeOTLP, Signals: []NativeTelemetrySignal{NativeTelemetryLogs, NativeTelemetryTraces, NativeTelemetryMetrics}, Stability: NativeTelemetryExperimental, BindingMode: NativeTelemetryBindingsReviewed, AcceptsW3C: true, PropagatesW3C: true}
 	default:
 		return none
 	}
@@ -1062,11 +1074,7 @@ func (s CorrelationSpec) Validate() error {
 		default:
 			return fmt.Errorf("unknown correlation surface %q", surface)
 		}
-		// A native exporter can be a supported capture surface without
-		// exposing a reviewed identity attribute. OpenHands is deliberately
-		// trace-only: accepting the surface must not turn an undocumented
-		// attribute into a correlation claim.
-		if len(bindings) == 0 && !(surface == CorrelationSurfaceNativeOTLP && s.NativeTelemetry.Stability != NativeTelemetryNone) {
+		if len(bindings) == 0 && !(surface == CorrelationSurfaceNativeOTLP && s.NativeTelemetry.BindingMode == NativeTelemetryBindingsExporterOnly) {
 			return fmt.Errorf("correlation surface %q has no reviewed bindings", surface)
 		}
 	}
@@ -1075,8 +1083,20 @@ func (s CorrelationSpec) Validate() error {
 		if len(s.NativeTelemetry.Signals) == 0 || s.NativeTelemetry.InputSurface != CorrelationSurfaceNativeOTLP {
 			return fmt.Errorf("native-capable profile requires signals and native_otlp input surface")
 		}
+		switch s.NativeTelemetry.BindingMode {
+		case NativeTelemetryBindingsReviewed:
+			if len(s.NativeOTLPBindings) == 0 {
+				return fmt.Errorf("reviewed native telemetry has no correlation bindings")
+			}
+		case NativeTelemetryBindingsExporterOnly:
+			if len(s.NativeOTLPBindings) != 0 || len(s.NativeTelemetry.AuthoritativeFields) != 0 || len(s.MirrorIdentityTargets) != 0 {
+				return fmt.Errorf("exporter-only native telemetry cannot declare correlation bindings or authorities")
+			}
+		default:
+			return fmt.Errorf("native-capable profile requires an explicit binding mode")
+		}
 	case NativeTelemetryNone:
-		if len(s.NativeTelemetry.Signals) != 0 || len(s.NativeTelemetry.AuthoritativeFields) != 0 ||
+		if s.NativeTelemetry.BindingMode != NativeTelemetryBindingsNone || len(s.NativeTelemetry.Signals) != 0 || len(s.NativeTelemetry.AuthoritativeFields) != 0 ||
 			len(s.MirrorIdentityTargets) != 0 {
 			return fmt.Errorf("native telemetry stability none cannot declare signals, authorities, or mirror targets")
 		}
