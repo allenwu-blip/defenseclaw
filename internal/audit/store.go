@@ -3338,6 +3338,8 @@ func (s *Store) SelectAlertAcknowledgementTargets(
 		WHERE projection.alert_id IS NULL
 		  AND (
 		      (event.bucket = ? AND event.event_name = 'finding.observed')
+		      OR (event.action = 'connector-hook' AND COALESCE(event.enforced, 0) = 1
+		          AND LENGTH(TRIM(COALESCE(event.connector, ''))) > 0)
 		      OR (event.bucket IS NULL AND event.action IN (`
 	legacyActions := legacyAlertEligibleActions()
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(legacyActions)), ",")
@@ -3396,6 +3398,8 @@ func (s *Store) selectExactAlertAcknowledgementTargets(
 		              WHERE alert_id = requested.alert_id)
 		   OR (event.id IS NOT NULL AND (
 		       (event.bucket = ? AND event.event_name = 'finding.observed')
+		       OR (event.action = 'connector-hook' AND COALESCE(event.enforced, 0) = 1
+		           AND LENGTH(TRIM(COALESCE(event.connector, ''))) > 0)
 		       OR (event.bucket IS NULL AND event.action IN (` + actionPlaceholders + `)
 		           AND UPPER(COALESCE(event.severity,'')) IN
 		               ('CRITICAL','HIGH','MEDIUM','LOW','ERROR','INFO'))
@@ -3453,10 +3457,12 @@ func (s *Store) ListAlerts(limit int) ([]Event, error) {
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(legacyActions)), ",")
 	query := `SELECT event.id, event.timestamp, event.action, event.target, event.actor,
 			event.details, event.structured_json, event.severity, event.run_id,
-			event.trace_id, event.request_id
+			event.trace_id, event.request_id, event.connector, event.enforced
 		 FROM audit_events AS event
 		 WHERE (
 			(event.bucket = ? AND event.event_name = 'finding.observed')
+			OR (event.action = 'connector-hook' AND COALESCE(event.enforced, 0) = 1
+			    AND LENGTH(TRIM(COALESCE(event.connector, ''))) > 0)
 			OR (event.bucket IS NULL AND event.action IN (` + placeholders + `))
 		 )
 		 AND event.severity IN ('CRITICAL','HIGH','MEDIUM','LOW','ERROR','INFO')
@@ -3479,8 +3485,12 @@ func (s *Store) ListAlerts(limit int) ([]Event, error) {
 	var events []Event
 	for rows.Next() {
 		var e Event
-		var target, details, structuredJSON, severity, runID, traceID, requestID sql.NullString
-		if err := rows.Scan(&e.ID, &e.Timestamp, &e.Action, &target, &e.Actor, &details, &structuredJSON, &severity, &runID, &traceID, &requestID); err != nil {
+		var target, details, structuredJSON, severity, runID, traceID, requestID, connector sql.NullString
+		var enforced sql.NullBool
+		if err := rows.Scan(
+			&e.ID, &e.Timestamp, &e.Action, &target, &e.Actor, &details, &structuredJSON,
+			&severity, &runID, &traceID, &requestID, &connector, &enforced,
+		); err != nil {
 			return nil, fmt.Errorf("audit: scan alert row: %w", err)
 		}
 		e.Target = target.String
@@ -3494,6 +3504,8 @@ func (s *Store) ListAlerts(limit int) ([]Event, error) {
 		e.RunID = runID.String
 		e.TraceID = traceID.String
 		e.RequestID = requestID.String
+		e.Connector = connector.String
+		e.Enforced = enforced.Bool
 		events = append(events, e)
 	}
 	return events, rows.Err()

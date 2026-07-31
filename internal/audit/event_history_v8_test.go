@@ -90,6 +90,16 @@ type testEventHistoryHealthReporter struct {
 	codes []EventHistoryHealthCode
 }
 
+type signalingSQLiteBusyObserver struct {
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (observer *signalingSQLiteBusyObserver) RecordSQLiteBusyMetric(context.Context, string) error {
+	observer.once.Do(func() { close(observer.observed) })
+	return nil
+}
+
 func (reporter *testEventHistoryHealthReporter) ReportEventHistoryHealth(code EventHistoryHealthCode) {
 	reporter.codes = append(reporter.codes, code)
 }
@@ -1384,6 +1394,69 @@ func TestEventHistorySanitizedWriteErrorPreservesMessageOnlyBusyDetection(t *tes
 	}
 	if !isSQLiteBusy(err) {
 		t.Fatal("sanitized event-history wrapper hid message-only SQLite BUSY from retry detection")
+	}
+}
+
+func TestEventHistoryWriterRetriesWholeTransactionOnSQLiteContention(t *testing.T) {
+	store := newV8HistoryStore(t)
+	if _, err := store.db.Exec(`PRAGMA busy_timeout=0`); err != nil {
+		t.Fatal(err)
+	}
+	contender, err := sql.Open("sqlite", store.DatabasePath()+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = contender.Close() })
+	if _, err := contender.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	t.Cleanup(func() {
+		if locked {
+			_, _ = contender.Exec(`ROLLBACK`)
+		}
+	})
+
+	observer := &signalingSQLiteBusyObserver{observed: make(chan struct{})}
+	store.BindSQLiteBusyObservabilityV8(observer)
+	health := &testEventHistoryHealthReporter{}
+	writer, err := NewEventHistoryWriter(
+		store,
+		&testProjectionSigner{
+			key: []byte("0123456789abcdef0123456789abcdef"), keyID: "contention-test-key",
+		},
+		health,
+		testLocalProfileResolver{profile: observabilityredaction.ProfileNone},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := newV8HistoryRecord(t, "history-contention-retry", "bounded contention")
+	projection := projectV8HistoryRecord(t, record, observabilityredaction.ProfileNone)
+
+	result := make(chan error, 1)
+	go func() { result <- writer.Append(record, projection) }()
+	select {
+	case <-observer.observed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("event-history append did not observe SQLite contention")
+	}
+	if _, err := contender.Exec(`ROLLBACK`); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+	if err := <-result; err != nil {
+		t.Fatalf("Append after contention: %v", err)
+	}
+	if len(health.codes) != 0 {
+		t.Fatalf("transient contention degraded event-history health: %v", health.codes)
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE id=?`, record.RecordID()).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("persisted rows = %d, want exactly one", count)
 	}
 }
 
