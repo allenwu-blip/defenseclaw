@@ -27,6 +27,7 @@ func TestWriteEnterpriseHookGuardianState(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("enterprise hook guardian persistence is unsupported on native Windows; lifecycle gate coverage remains active")
 	}
+	stubEnterpriseHookAuthorizationTrustForTempDir(t)
 	dir := t.TempDir()
 	authorizationDir := t.TempDir()
 	t.Setenv(hookGuardianAuthorizationDirEnv, authorizationDir)
@@ -100,6 +101,7 @@ func TestWriteEnterpriseHookGuardianStateRefusesSymlink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("enterprise hook guardian symlink writer is unreachable on native Windows; lifecycle gate coverage remains active")
 	}
+	stubEnterpriseHookAuthorizationTrustForTempDir(t)
 	dir := t.TempDir()
 	t.Setenv(hookGuardianAuthorizationDirEnv, t.TempDir())
 	outside := filepath.Join(t.TempDir(), "outside.json")
@@ -113,6 +115,18 @@ func TestWriteEnterpriseHookGuardianStateRefusesSymlink(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "refusing to write through symlink") {
 		t.Fatalf("writeEnterpriseHookGuardianState error = %v, want symlink refusal", err)
 	}
+}
+
+func stubEnterpriseHookAuthorizationTrustForTempDir(t *testing.T) {
+	t.Helper()
+	originalDirTrust := enterpriseHookAuthorizationDirTrustCheck
+	originalFileTrust := enterpriseHookAuthorizationFileTrustCheck
+	enterpriseHookAuthorizationDirTrustCheck = func(string) error { return nil }
+	enterpriseHookAuthorizationFileTrustCheck = func(string) error { return nil }
+	t.Cleanup(func() {
+		enterpriseHookAuthorizationDirTrustCheck = originalDirTrust
+		enterpriseHookAuthorizationFileTrustCheck = originalFileTrust
+	})
 }
 
 func TestWriteEnterpriseHookGuardianStatePreservesProtectedTargets(t *testing.T) {
