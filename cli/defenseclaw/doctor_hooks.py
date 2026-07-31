@@ -116,6 +116,18 @@ _CODEX_CONTRACT_EVENTS = {
         "SessionEnd",
     ),
 }
+_CODEX_SESSION_START_MATCHERS = {
+    "codex-hooks-v1": "startup|resume|clear",
+    "codex-hooks-v2": "startup|resume|clear",
+    "codex-hooks-v3": "startup|resume|clear|compact",
+    "codex-hooks-v4": "startup|resume|clear|compact",
+}
+_CODEX_BOUND_HOOK_PAIRS = frozenset(
+    (event, contract_id)
+    for contract_id, events in _CODEX_CONTRACT_EVENTS.items()
+    for event in events
+)
+_CODEX_KNOWN_HOOK_EVENTS = frozenset(event for event, _contract_id in _CODEX_BOUND_HOOK_PAIRS)
 _CODEX_TRUSTED_CONTRACTS = frozenset(
     {"codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
 )
@@ -1847,13 +1859,30 @@ def _malformed_owned_hook_target(command: str, connector: str) -> str:
                     encoded = base64.b64decode(parts[encoded_index + 1], validate=True)
                     if len(encoded) <= 16 * 1024 and len(encoded) % 2 == 0:
                         script = encoded.decode("utf-16-le")
+                        event_suffix = ""
+                        if connector == "codex":
+                            event_pattern = "|".join(
+                                re.escape(event) for event in sorted(_CODEX_KNOWN_HOOK_EVENTS)
+                            )
+                            contract_pattern = "|".join(
+                                re.escape(contract_id) for contract_id in sorted(_CODEX_CONTRACT_EVENTS)
+                            )
+                            event_suffix = (
+                                r"(?:,'--event','(?:"
+                                + event_pattern
+                                + r")'(?:,'--hook-contract','(?:"
+                                + contract_pattern
+                                + r")')?)?"
+                            )
                         match = re.fullmatch(
                             r"\$ErrorActionPreference='Stop'; "
                             r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
                             r"\$hookProcess=Start-Process -FilePath '((?:[^']|'')+)' "
                             r"-ArgumentList @\('hook','--connector','"
                             + re.escape(connector)
-                            + r"'\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
+                            + r"'"
+                            + event_suffix
+                            + r"\) -NoNewWindow -Wait -PassThru; exit \$hookProcess\.ExitCode",
                             script,
                         )
                         if not match:
@@ -2006,7 +2035,7 @@ def _validate_codex_hook_contract(
         raise _InspectionError("stale", "Codex hook trust state is missing or malformed")
 
     key_source = _codex_hook_state_key_source(config_path)
-    managed_commands: list[str] = []
+    managed_targets: set[str] = set()
     expected_specs = _codex_hook_specs(contract_id)
     expected_events = set(expected_specs)
     for event, (event_key, expected_matcher, expected_timeout) in expected_specs.items():
@@ -2052,6 +2081,12 @@ def _validate_codex_hook_contract(
                 "stale",
                 f"Codex {event} generic and native commands are not byte-identical",
             )
+        target = _validate_codex_bound_hook_command(
+            generic_command,
+            event,
+            contract_id,
+        )
+        managed_targets.add(ntpath.normcase(ntpath.normpath(target)))
         async_value = hook.get("async", False)
         if type(async_value) is not bool or async_value:
             raise _InspectionError("stale", f"Codex {event} enforcement handler is asynchronous")
@@ -2080,8 +2115,6 @@ def _validate_codex_hook_contract(
                 raise _InspectionError("stale", f"Codex {event} trust state is disabled")
             if trust.get("trusted_hash") != current_hash:
                 raise _InspectionError("stale", f"Codex {event} trust state does not match its native handler")
-        managed_commands.append(command)
-
     for event, raw_groups in hooks.items():
         if event == "state" or event in expected_events or not isinstance(raw_groups, list):
             continue
@@ -2096,8 +2129,8 @@ def _validate_codex_hook_contract(
                 if isinstance(command, str) and _managed_hook_command(command, "codex"):
                     raise _InspectionError("stale", f"Codex has an unexpected DefenseClaw handler for {event}")
 
-    if len(set(managed_commands)) != 1:
-        raise _InspectionError("stale", "DefenseClaw Codex hook entries use inconsistent commands")
+    if len(managed_targets) != 1:
+        raise _InspectionError("stale", "DefenseClaw Codex hook entries target inconsistent native runtimes")
 
 
 def _commands_from_hooks(
@@ -2186,7 +2219,7 @@ def _commands_from_hooks(
     if not managed:
         raise _InspectionError("foreign", "hook registration contains commands, but none target DefenseClaw")
     unique = set(managed)
-    if len(unique) != 1:
+    if connector != "codex" and len(unique) != 1:
         raise _InspectionError("malformed", "DefenseClaw hook entries use inconsistent commands")
     return managed
 
@@ -2288,7 +2321,33 @@ def _codex_hook_specs(contract_id: str) -> dict[str, tuple[str, str | None, int]
     events = _CODEX_CONTRACT_EVENTS.get(contract_id)
     if events is None:
         raise _InspectionError("stale", f"unsupported Codex hook contract {contract_id!r}")
-    return {event: _CODEX_HOOK_SPECS[event] for event in events}
+    specs = {event: _CODEX_HOOK_SPECS[event] for event in events}
+    event_key, _matcher, timeout = specs["SessionStart"]
+    specs["SessionStart"] = (
+        event_key,
+        _CODEX_SESSION_START_MATCHERS[contract_id],
+        timeout,
+    )
+    return specs
+
+
+def _validate_codex_bound_hook_command(command: str, event: str, contract_id: str) -> str:
+    target, args, _kind = _command_target(command, "codex")
+    expected_args = [
+        "hook",
+        "--connector",
+        "codex",
+        "--event",
+        event,
+        "--hook-contract",
+        contract_id,
+    ]
+    if args != expected_args:
+        raise _InspectionError(
+            "stale",
+            f"Codex {event} command is not bound to event {event!r} and contract {contract_id!r}",
+        )
+    return target
 
 
 def _validate_codex_hook_matrix(
@@ -2304,8 +2363,7 @@ def _validate_codex_hook_matrix(
     if not managed_source and not isinstance(state, dict):
         raise _InspectionError("stale", "Codex hook registration has no trusted hooks.state table")
 
-    generic_commands: set[str] = set()
-    windows_commands: set[str] = set()
+    command_targets: set[str] = set()
     source = _codex_normalized_source(config_path)
     count = 0
     required_hooks = _codex_hook_specs(contract_id)
@@ -2348,24 +2406,33 @@ def _validate_codex_hook_matrix(
         if "statusMessage" in handler or "status_message" in handler:
             raise _InspectionError("stale", f"Codex event {event} has an unexpected status message")
 
-        generic = _handler_command_line(handler, "codex", windows=False)
-        windows_command = _handler_command_line(handler, "codex", windows=True)
-        for label, command in (("generic", generic), ("Windows", windows_command)):
-            target, _args, _kind = _command_target(command, "codex")
-            if ntpath.basename(target).casefold() not in {
-                "defenseclaw-hook",
-                "defenseclaw-hook.exe",
-                "defenseclaw-hook.cmd",
-                "defenseclaw-gateway",
-                "defenseclaw-gateway.exe",
-                "defenseclaw-gateway.cmd",
-            }:
-                raise _InspectionError(
-                    "stale",
-                    f"Codex event {event} {label} fallback is not the native DefenseClaw hook runtime",
-                )
-        generic_commands.add(generic)
-        windows_commands.add(windows_command)
+        generic = handler.get("command")
+        windows_command = handler.get("command_windows")
+        if (
+            not isinstance(generic, str)
+            or not generic.strip()
+            or not isinstance(windows_command, str)
+            or not windows_command.strip()
+            or generic != windows_command
+        ):
+            raise _InspectionError(
+                "stale",
+                f"Codex event {event} generic and native commands are not byte-identical",
+            )
+        target = _validate_codex_bound_hook_command(generic, event, contract_id)
+        if ntpath.basename(target).casefold() not in {
+            "defenseclaw-hook",
+            "defenseclaw-hook.exe",
+            "defenseclaw-hook.cmd",
+            "defenseclaw-gateway",
+            "defenseclaw-gateway.exe",
+            "defenseclaw-gateway.cmd",
+        }:
+            raise _InspectionError(
+                "stale",
+                f"Codex event {event} command is not the native DefenseClaw hook runtime",
+            )
+        command_targets.add(ntpath.normcase(ntpath.normpath(target)))
 
         if not managed_source:
             key = f"{source}:{event_key}:{group_index}:{handler_index}"
@@ -2379,8 +2446,8 @@ def _validate_codex_hook_matrix(
                 raise _InspectionError("stale", f"Codex event {event} is not trusted for its current definition")
         count += 1
 
-    if len(generic_commands) != 1 or len(windows_commands) != 1:
-        raise _InspectionError("stale", "Codex DefenseClaw hook events use inconsistent command identities")
+    if len(command_targets) != 1:
+        raise _InspectionError("stale", "Codex DefenseClaw hook events target inconsistent native runtimes")
 
     for event, groups in hooks.items():
         if event == "state" or event in required_hooks or not isinstance(groups, list):
@@ -2794,16 +2861,34 @@ def _command_target(
                 script = encoded.decode("utf-16-le")
             except (binascii.Error, UnicodeError, ValueError) as exc:
                 raise _InspectionError("malformed", f"PowerShell EncodedCommand hook is invalid: {exc}") from exc
-            event_suffix = (
-                r"(?:,'--event','(PreInvocation|PreToolUse|PostToolUse|PostInvocation|Stop)')?"
-                if connector == "antigravity"
-                else ""
-            )
+            event_suffix = ""
+            if connector == "antigravity":
+                event_suffix = (
+                    r"(?:,'--event','(?P<event>PreInvocation|PreToolUse|"
+                    r"PostToolUse|PostInvocation|Stop)')?"
+                )
+            elif connector == "codex":
+                event_pattern = "|".join(
+                    re.escape(event) for event in sorted(_CODEX_KNOWN_HOOK_EVENTS)
+                )
+                contract_pattern = "|".join(
+                    re.escape(contract_id) for contract_id in sorted(_CODEX_CONTRACT_EVENTS)
+                )
+                # The optional forms are ownership evidence for registrations
+                # emitted before event/contract binding. Healthy validation
+                # requires both values and checks them against the table row.
+                event_suffix = (
+                    r"(?:,'--event','(?P<event>"
+                    + event_pattern
+                    + r")'(?:,'--hook-contract','(?P<contract>"
+                    + contract_pattern
+                    + r")')?)?"
+                )
             match = re.fullmatch(
                 r"\$ErrorActionPreference='Stop'; "
                 r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
                 r"\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process "
-                r"-FilePath '((?:[^']|'')+)' "
+                r"-FilePath '(?P<target>(?:[^']|'')+)' "
                 r"-ArgumentList @\('hook','--connector','"
                 + re.escape(connector)
                 + r"'"
@@ -2812,15 +2897,24 @@ def _command_target(
                 script,
             )
             if match:
-                target = match.group(1).replace("''", "'")
+                target = match.group("target").replace("''", "'")
                 args = ["hook", "--connector", connector]
-                if connector == "antigravity" and match.group(2):
-                    args.extend(["--event", match.group(2)])
+                event = match.groupdict().get("event")
+                contract_id = match.groupdict().get("contract")
+                if event:
+                    args.extend(["--event", event])
+                if contract_id:
+                    if (event, contract_id) not in _CODEX_BOUND_HOOK_PAIRS:
+                        raise _InspectionError(
+                            "malformed",
+                            "Codex hook command contains an unsupported event/contract pair",
+                        )
+                    args.extend(["--hook-contract", contract_id])
                 return target, args, "direct"
             unqualified = re.fullmatch(
                 r"\$ErrorActionPreference='Stop'; "
                 r"\$env:NoDefaultCurrentDirectoryInExePath='1'; "
-                r"\$hookProcess=Start-Process -FilePath '((?:[^']|'')+)' "
+                r"\$hookProcess=Start-Process -FilePath '(?P<target>(?:[^']|'')+)' "
                 r"-ArgumentList @\('hook','--connector','"
                 + re.escape(connector)
                 + r"'"
@@ -2861,6 +2955,27 @@ def _command_target(
         args = parts[1:]
         kind = "powershell" if call_operator and ntpath.splitext(target)[1].casefold() == ".ps1" else "direct"
     expected = ["hook", "--connector", connector]
+    codex_expected = False
+    if connector == "codex":
+        if args == expected:
+            codex_expected = True
+        elif (
+            len(args) == 5
+            and args[:3] == expected
+            and args[3] == "--event"
+            and args[4] in _CODEX_KNOWN_HOOK_EVENTS
+        ):
+            # Event-only commands remain recognized for repair; healthy
+            # validation requires the versioned contract binding too.
+            codex_expected = True
+        elif (
+            len(args) == 7
+            and args[:3] == expected
+            and args[3] == "--event"
+            and args[5] == "--hook-contract"
+            and (args[4], args[6]) in _CODEX_BOUND_HOOK_PAIRS
+        ):
+            codex_expected = True
     antigravity_event_expected = (
         len(args) == 5
         and args[:3] == expected
@@ -2874,7 +2989,7 @@ def _command_target(
         and ntpath.basename(target).casefold() == "windsurf-hook.ps1"
         and not args
     )
-    if not windsurf_adapter and args != expected and not antigravity_event_expected and not (
+    if not windsurf_adapter and args != expected and not codex_expected and not antigravity_event_expected and not (
         connector == "claudecode" and allow_enterprise_managed and args == enterprise_expected
     ):
         if len(args) == 3 and args[:2] == ["hook", "--connector"]:

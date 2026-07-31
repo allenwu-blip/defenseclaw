@@ -287,6 +287,9 @@ func TestWindowsCommandFullHookAuditCorrelation(t *testing.T) {
 					})
 					req := httptest.NewRequest(http.MethodPost, "/api/v1/"+connector+"/hook", bytes.NewReader(body))
 					req.Header.Set("Content-Type", "application/json")
+					if connector == "codex" {
+						setTestCodexHookBinding(req, "PreToolUse", defaultTestCodexHookContract)
+					}
 					w := httptest.NewRecorder()
 					api.handleAgentHook(connector).ServeHTTP(w, req)
 					if w.Code != http.StatusOK {

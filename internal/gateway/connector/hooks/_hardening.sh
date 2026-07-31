@@ -573,7 +573,7 @@ else:
       ;;
   esac
   case "$_dcjq_field" in
-    action|reason|block_reason|decision|permissionDecision|permissionDecisionReason)
+    action|reason|block_reason|decision|permissionDecision|permissionDecisionReason|hook_event_name)
       _dcjq_json="$(cat)"
       if _dcjq_value="$(defenseclaw_json_string_field "$_dcjq_json" "$_dcjq_field")"; then
         printf '%s\n' "$_dcjq_value"

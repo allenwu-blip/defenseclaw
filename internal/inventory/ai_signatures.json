@@ -16,16 +16,24 @@
       ],
       "config_paths": [
         "~/.codex/config.toml",
-        "~/.codex/skills",
-        "~/.codex/plugins",
-        ".codex/skills",
-        ".mcp.json",
+        "~/.agents/skills",
+        "~/.agents/plugins/marketplace.json",
+        "~/.codex/plugins/cache",
+        "~/.codex/agents",
+        "~/.codex/rules",
+        "/etc/codex/skills",
+        ".agents/skills",
+        ".agents/plugins/marketplace.json",
+        ".claude-plugin/marketplace.json",
+        ".codex/config.toml",
+        ".codex/agents",
+        ".codex/rules",
         "AGENTS.md"
       ],
       "extension_ids": [],
       "mcp_paths": [
         "~/.codex/config.toml",
-        ".mcp.json"
+        ".codex/config.toml"
       ],
       "package_names": [
         "@openai/codex"

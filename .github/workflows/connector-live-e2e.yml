@@ -11,7 +11,7 @@
 #     clean. Fork-safe; runs on pull requests as well — one always-on macOS
 #     cell (codex / macOS, intended as a required check) plus the full
 #     Linux + macOS matrix when connector code changes. Deterministic native
-#     Windows x64 certification lives in windows-native.yml.
+#     Windows x64 contract checks live in windows-native.yml.
 #
 #   live-matrix (Layer B) — installs the real upstream agent at its latest
 #     version, wires it with `defenseclaw setup`, and drives lifecycle + forced
@@ -31,10 +31,11 @@
 #     approved version (that stays a deliberate human edit of
 #     cli/defenseclaw/inventory/validated_versions.json).
 #
-# Native Windows x64 release certification remains closed for Claude Code,
-# Codex, Cursor, and Antigravity; their Windows cells are pending evidence only.
-# Deterministic native Windows x64 contract checks run in windows-native.yml;
-# certification remains closed until the packaged and live gates are integrated.
+# The manual, source-built Windows cells here, including Claude Code, are
+# evidence-producing preview checks rather than release certification. Codex,
+# Claude Code, Cursor, and Antigravity remain pending authentic packaged plus
+# official-client evidence. Deterministic contract checks run in
+# windows-native.yml; certification stays closed until those gates are integrated.
 # Antigravity's official client uses Windows Credential Manager/browser auth,
 # so its real-client cell runs only on a dedicated pre-authenticated runner.
 # OmniGent 0.7.0 has a separate advisory packaged native-degraded cell in
@@ -139,11 +140,11 @@ jobs:
         run: |
           set -euo pipefail
           # The Unix harness retains the full supported connector matrix.
-          # Native Windows certification is a separate, explicit x64 matrix.
+          # Native Windows contract validation is a separate, explicit x64 matrix.
           full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","geminicli","cursor","copilot","openhands","hermes","windsurf","antigravity"]}'
           # Always-on PR smoke: one connector on one cross-platform OS. macOS is
-          # chosen because windows-native.yml separately certifies the native
-          # Windows hook path on every PR. This adds the missing native macOS
+          # chosen because windows-native.yml separately checks the native
+          # Windows hook contract on every PR. This adds the missing native macOS
           # connector signal and is the cell to mark "required" in branch
           # protection. Its check name is "Contract codex / macos-latest".
           minimal='{"os":["macos-latest"],"connector":["codex"]}'

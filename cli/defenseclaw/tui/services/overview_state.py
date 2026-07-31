@@ -1273,7 +1273,10 @@ def connector_source_label(connector: str, category: str) -> str:
     sources = {
         ("openclaw", "skills"): ("./skills", "~/.openclaw/skills"),
         ("claudecode", "skills"): (os.path.join(claude_root, "skills"), "./.claude/skills"),
-        ("codex", "skills"): (os.path.join(codex_root, "skills"), "./.codex/skills"),
+        ("codex", "skills"): (
+            "~/.agents/skills",
+            "./.agents/skills (active directory to repository root)",
+        ),
         ("zeptoclaw", "skills"): ("~/.zeptoclaw/skills", "./.zeptoclaw/skills"),
         ("hermes", "skills"): (os.path.join(hermes_root, "skills"),),
         ("cursor", "skills"): ("./.cursor/skills", "./.agents/skills", "~/.cursor/skills", "~/.agents/skills"),
@@ -1290,7 +1293,10 @@ def connector_source_label(connector: str, category: str) -> str:
         ("omnigent", "skills"): ("unsupported by the OmniGent connector",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
         ("claudecode", "mcps"): (f"{claude_config} (mcpServers)", "./.mcp.json"),
-        ("codex", "mcps"): (f"{codex_config} ([mcp_servers])", "./.mcp.json"),
+        ("codex", "mcps"): (
+            f"{codex_config} ([mcp_servers])",
+            "./.codex/config.toml ([mcp_servers]; trusted projects only)",
+        ),
         ("zeptoclaw", "mcps"): ("~/.zeptoclaw/config.json (mcp.servers)", "./.mcp.json"),
         ("hermes", "mcps"): (f"{hermes_config} (mcp.servers)",),
         ("cursor", "mcps"): ("./.cursor/mcp.json", "~/.cursor/mcp.json"),
@@ -1307,7 +1313,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("omnigent", "mcps"): ("managed by OmniGent; not modified by DefenseClaw",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("claudecode", "plugins"): (os.path.join(claude_root, "plugins"),),
-        ("codex", "plugins"): (os.path.join(codex_root, "plugins"),),
+        ("codex", "plugins"): (
+            "./.agents/plugins/marketplace.json",
+            "./.claude-plugin/marketplace.json (legacy-compatible)",
+            "~/.agents/plugins/marketplace.json",
+            os.path.join(codex_root, "plugins", "cache"),
+        ),
         ("zeptoclaw", "plugins"): ("~/.zeptoclaw/plugins",),
         ("hermes", "plugins"): (
             os.path.join(hermes_root, "plugins"),

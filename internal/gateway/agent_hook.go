@@ -197,6 +197,33 @@ func (a *APIServer) handleAgentHook(connectorName string) http.HandlerFunc {
 		}
 
 		profile := a.hookProfileForConnector(connectorName)
+		if connectorName == "codex" {
+			boundEvent := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Hook-Event"))
+			boundContract := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Hook-Contract"))
+			stdinEvent := payloadString(payload, "hook_event_name")
+			switch {
+			case boundEvent == "":
+				a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "missing_bound_event", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "installer-bound Codex hook event is required"})
+				return
+			case stdinEvent == "" || stdinEvent != boundEvent:
+				a.recordConnectorHookRejection(r.Context(), connectorName, boundEvent, "bound_event_mismatch", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Codex stdin event does not match installer-bound event"})
+				return
+			case boundContract == "":
+				a.recordConnectorHookRejection(r.Context(), connectorName, boundEvent, "missing_bound_contract", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "installer-bound Codex hook contract is required"})
+				return
+			case profile.ContractID == "" || boundContract != profile.ContractID:
+				a.recordConnectorHookRejection(r.Context(), connectorName, boundEvent, "bound_contract_mismatch", int64(len(b)))
+				a.writeJSON(w, http.StatusConflict, map[string]string{"error": "Codex hook contract does not match protected runtime lock"})
+				return
+			case !eventIn(boundEvent, profile.SupportedEvents):
+				a.recordConnectorHookRejection(r.Context(), connectorName, boundEvent, "event_outside_contract", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Codex hook event is not registered by protected runtime contract"})
+				return
+			}
+		}
 		if registeredEvent != "" && !eventIn(registeredEvent, profile.SupportedEvents) {
 			a.recordConnectorHookRejection(r.Context(), connectorName, registeredEvent, "event_outside_contract", int64(len(b)))
 			a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hook event is outside the active contract"})

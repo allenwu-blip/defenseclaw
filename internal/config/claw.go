@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/defenseclaw/defenseclaw/internal/claudecodepath"
+	gatewayconnector "github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/hermespath"
 	toml "github.com/pelletier/go-toml/v2"
 	yaml "gopkg.in/yaml.v3"
@@ -67,6 +68,9 @@ type MCPServerEntry struct {
 	OAuth            map[string]any    `json:"oauth,omitempty"`
 	Disabled         bool              `json:"disabled,omitempty"`
 	DisabledTools    []string          `json:"disabledTools,omitempty"`
+	Source           string            `json:"source,omitempty"`
+	SourceScope      string            `json:"source_scope,omitempty"`
+	TrustRequired    bool              `json:"trust_required,omitempty"`
 }
 
 // expandPath expands ~ to home directory.
@@ -432,8 +436,8 @@ func (c *Config) SkillDirs() []string {
 // PluginDirs returns the plugin directories for the active connector.
 //
 // Dispatches via activeConnector() — when guardrail.connector is set,
-// the connector-specific layout is returned (e.g. ~/.codex/plugins
-// for Codex). With no connector configured, falls back to the OpenClaw
+// the connector-specific layout is returned. With no connector configured,
+// falls back to the OpenClaw
 // extensions directory (claw_home/extensions).
 func (c *Config) PluginDirs() []string {
 	return c.PluginDirsForConnector(c.activeConnector())
@@ -637,10 +641,15 @@ func (c *Config) SkillDirsForConnector(connector string) []string {
 		dirs = append(dirs, claudecodepath.ProjectSkillDirs(cwd)...)
 		return dedupNonEmpty(dirs)
 	case "codex":
-		return dedupNonEmpty([]string{
-			filepath.Join(c.ConnectorHomeDir("codex"), "skills"),
-			workspaceJoin(cwd, ".codex", "skills"),
-		})
+		dirs := make([]string, 0, 4)
+		for _, layer := range gatewayconnector.CodexProjectLayerDirs(cwd) {
+			dirs = append(dirs, filepath.Join(layer, ".agents", "skills"))
+		}
+		dirs = append(dirs, gatewayconnector.CodexPersonalSkillsPath())
+		if runtime.GOOS != "windows" {
+			dirs = append(dirs, filepath.FromSlash("/etc/codex/skills"))
+		}
+		return dedupNonEmpty(dirs)
 	case "zeptoclaw":
 		return dedupNonEmpty([]string{
 			filepath.Join(home, ".zeptoclaw", "skills"),
@@ -717,9 +726,11 @@ func (c *Config) PluginDirsForConnector(connector string) []string {
 		dirs = append(dirs, claudecodepath.ProjectSkillDirs(cwd)...)
 		return dedupNonEmpty(dirs)
 	case "codex":
-		return []string{
-			filepath.Join(c.ConnectorHomeDir("codex"), "plugins"),
-		}
+		base := filepath.Join(c.ConnectorHomeDir("codex"), "plugins")
+		return dedupNonEmpty(append(
+			gatewayconnector.CodexPluginSourceDirs(cwd),
+			filepath.Join(base, "cache"),
+		))
 	case "zeptoclaw":
 		return []string{
 			filepath.Join(home, ".zeptoclaw", "plugins"),
@@ -834,29 +845,38 @@ func sameClaudeWorkspace(left, right string) bool {
 }
 
 func readMCPServersCodex(workspaceDir string) ([]MCPServerEntry, error) {
-	// Codex registers MCP servers in two places — the global
-	// `~/.codex/config.toml` `[mcp_servers]` table and the
-	// project-local `./.mcp.json` (a Codex SDK / Claude Code
-	// convention). Pre-S5.x we only read `./.mcp.json`, which
-	// silently dropped every globally-registered server. We now
-	// read both, with the project-local file taking precedence so
-	// per-project overrides win — matching how Codex itself layers
-	// them at runtime.
+	// Codex stores user and project MCP registries in config.toml
+	// [mcp_servers] tables. Candidate project layers are read closest-first so
+	// their entries take precedence, then the user layer fills remaining names.
+	// Filesystem presence is discovery only: project entries carry
+	// TrustRequired because Codex activates them only for trusted projects.
 	cwd := strings.TrimSpace(workspaceDir)
 
 	var entries []MCPServerEntry
-	tomlPath := filepath.Join(connectorEnvHome("CODEX_HOME", ".codex"), "config.toml")
-	if e, err := readMCPFromCodexConfigTOML(tomlPath); err == nil {
-		entries = append(entries, e...)
-	}
-	if cwd != "" {
-		mcpJsonPath := filepath.Join(cwd, ".mcp.json")
-		if e, err := readMCPFromDotMCPJSON(mcpJsonPath); err == nil {
-			entries = append(entries, e...)
+	for _, layer := range gatewayconnector.CodexProjectLayerDirs(cwd) {
+		projectPath := filepath.Join(layer, ".codex", "config.toml")
+		if e, err := readMCPFromCodexConfigTOML(projectPath); err == nil {
+			entries = append(entries, annotateCodexMCPEntries(e, projectPath, "project", true)...)
 		}
+	}
+	userPath := filepath.Join(connectorEnvHome("CODEX_HOME", ".codex"), "config.toml")
+	if e, err := readMCPFromCodexConfigTOML(userPath); err == nil {
+		e = annotateCodexMCPEntries(e, userPath, "user", false)
+		entries = append(entries, e...)
 	}
 	return dedupMCPEntries(entries), nil
 }
+
+func annotateCodexMCPEntries(entries []MCPServerEntry, source, scope string, trustRequired bool) []MCPServerEntry {
+	for index := range entries {
+		entries[index].Source = source
+		entries[index].SourceScope = scope
+		entries[index].TrustRequired = trustRequired
+	}
+	return entries
+}
+
+const maxCodexInventoryConfigBytes = 1 << 20
 
 // readMCPFromCodexConfigTOML parses the [mcp_servers] table out of
 // ~/.codex/config.toml. Codex's documented schema is:
@@ -866,14 +886,13 @@ func readMCPServersCodex(workspaceDir string) ([]MCPServerEntry, error) {
 //	args = ["..."]
 //	env = { KEY = "value" }
 //
-// Returns an empty slice (not an error) for missing files / malformed
-// TOML / missing block so callers can soft-fall back to the
-// project-local .mcp.json. Uses pelletier/go-toml/v2 which is already
-// a project dependency — no new module is added.
+// The read is bounded and rejects reparse/symlink or changing inputs. Callers
+// treat errors as an unsafe/unavailable layer and continue to lower-precedence
+// project or user config.
 func readMCPFromCodexConfigTOML(path string) ([]MCPServerEntry, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
+	data, ok := gatewayconnector.ReadStableInventoryFile(path, maxCodexInventoryConfigBytes)
+	if !ok {
+		return nil, fmt.Errorf("Codex MCP config is unavailable, unstable, unsafe, or exceeds %d bytes: %s", maxCodexInventoryConfigBytes, path)
 	}
 	var doc struct {
 		MCPServers map[string]struct {

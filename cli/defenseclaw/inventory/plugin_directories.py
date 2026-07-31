@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,12 @@ from defenseclaw.inventory.plugin_identity import (
     PluginIdentityError,
     canonical_plugin_id,
     filesystem_identity_key,
+    is_link_or_reparse,
+    validate_plugin_id,
+)
+from defenseclaw.file_permissions import (
+    open_regular_file_no_follow,
+    reject_reparse_path,
 )
 from defenseclaw.safety import is_symlink, is_within_roots
 
@@ -84,38 +91,169 @@ def _child_directories(root: str) -> list[tuple[str, str]]:
 
 
 def _read_bounded_json(path: str) -> dict[str, Any] | None:
-    if is_symlink(path) or not os.path.isfile(path):
-        return None
     try:
-        with open(path, encoding="utf-8") as handle:
-            raw = handle.read(_MAX_MANIFEST_BYTES + 1)
-    except OSError:
-        return None
-    if len(raw) > _MAX_MANIFEST_BYTES:
-        return None
-    try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError):
+        raw = _read_bounded_stable_file(path, max_bytes=_MAX_MANIFEST_BYTES)
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, TypeError, ValueError):
         return None
     return payload if isinstance(payload, dict) else None
 
 
+def _read_bounded_stable_file(path: str, *, max_bytes: int) -> bytes:
+    """Read one stable regular file without following a reparse path."""
+    fd = open_regular_file_no_follow(path)
+    try:
+        before = os.fstat(fd)
+        if before.st_size > max_bytes:
+            raise OSError(f"file exceeds {max_bytes} byte inventory limit")
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        if len(payload) > max_bytes:
+            raise OSError(f"file exceeds {max_bytes} byte inventory limit")
+        after = os.fstat(fd)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if before_identity != after_identity:
+            raise OSError("file changed while it was being inventoried")
+        reject_reparse_path(path)
+        named = os.stat(path, follow_symlinks=False)
+        if not os.path.samestat(before, named):
+            raise OSError("file was replaced while it was being inventoried")
+        return payload
+    finally:
+        os.close(fd)
+
+
+def _stable_directory_info(path: str) -> os.stat_result:
+    """Return one real directory's stable, named identity."""
+    reject_reparse_path(path)
+    before = os.stat(path, follow_symlinks=False)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if (
+        not stat.S_ISDIR(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or bool(getattr(before, "st_file_attributes", 0) & reparse_flag)
+    ):
+        raise OSError(f"directory is a symlink or reparse point: {path}")
+    reject_reparse_path(path)
+    after = os.stat(path, follow_symlinks=False)
+    if _directory_identity(before) != _directory_identity(after):
+        raise OSError(f"directory changed while it was being inventoried: {path}")
+    return after
+
+
+def _directory_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Bind both directory object identity and observable content metadata."""
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+def _directory_unchanged(path: str, expected: os.stat_result) -> bool:
+    try:
+        current = _stable_directory_info(path)
+    except OSError:
+        return False
+    return _directory_identity(expected) == _directory_identity(current)
+
+
+def _directory_entry_matches(
+    enumerated: os.stat_result,
+    named: os.stat_result,
+) -> bool:
+    """Compare an entry snapshot without requiring unavailable Windows IDs."""
+    if not stat.S_ISDIR(enumerated.st_mode) or not stat.S_ISDIR(named.st_mode):
+        return False
+    if (
+        enumerated.st_size,
+        enumerated.st_mtime_ns,
+        enumerated.st_ctime_ns,
+    ) != (
+        named.st_size,
+        named.st_mtime_ns,
+        named.st_ctime_ns,
+    ):
+        return False
+    if enumerated.st_dev or enumerated.st_ino:
+        return (enumerated.st_dev, enumerated.st_ino) == (
+            named.st_dev,
+            named.st_ino,
+        )
+    # Windows DirEntry.stat() can expose 0/0 for dev/ino even though a named
+    # os.stat() returns the real file ID. The entry's type/reparse metadata was
+    # already validated above; the twice-checked named no-reparse identity is
+    # authoritative when the enumerated identity is unavailable.
+    return True
+
+
+def _codex_child_directories(
+    root: str,
+) -> list[tuple[str, str, os.stat_result]]:
+    """Return stable real child directories for Codex cache traversal."""
+    try:
+        before = _stable_directory_info(root)
+        with os.scandir(root) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        after = _stable_directory_info(root)
+    except OSError:
+        return []
+    if _directory_identity(before) != _directory_identity(after):
+        return []
+
+    children: list[tuple[str, str, os.stat_result]] = []
+    for entry in entries:
+        try:
+            entry_info = entry.stat(follow_symlinks=False)
+            if (
+                entry.is_symlink()
+                or is_link_or_reparse(entry.path)
+                or not stat.S_ISDIR(entry_info.st_mode)
+            ):
+                continue
+            named = _stable_directory_info(entry.path)
+            if not _directory_entry_matches(entry_info, named):
+                continue
+        except OSError:
+            continue
+        children.append((entry.name, entry.path, named))
+    return children
+
+
 def _codex_config_path(cache_root: str) -> str:
     # <CODEX_HOME>/plugins/cache -> <CODEX_HOME>/config.toml
-    return os.path.join(os.path.dirname(os.path.dirname(cache_root)), "config.toml")
+    normalized = os.path.normpath(cache_root)
+    return os.path.join(os.path.dirname(os.path.dirname(normalized)), "config.toml")
 
 
 def _codex_active_plugins(cache_root: str) -> dict[str, bool]:
     """Read only Codex's ``plugins`` activation table from config.toml."""
     path = _codex_config_path(cache_root)
-    if is_symlink(path) or not os.path.isfile(path):
-        return {}
     try:
-        with open(path, "rb") as handle:
-            raw = handle.read(_MAX_CONFIG_BYTES + 1)
+        raw = _read_bounded_stable_file(path, max_bytes=_MAX_CONFIG_BYTES)
     except OSError:
-        return {}
-    if len(raw) > _MAX_CONFIG_BYTES:
         return {}
     try:
         payload = tomllib.loads(raw.decode("utf-8"))
@@ -157,18 +295,37 @@ def _is_codex_cache_root(root: str, connector: str) -> bool:
 
 def _discover_codex_cache(cache_root: str) -> list[PluginDirectory]:
     """Discover exact ``registry/name/version`` Codex manifest roots."""
+    try:
+        cache_identity = _stable_directory_info(cache_root)
+    except OSError:
+        return []
     active = _codex_active_plugins(cache_root)
     candidates: list[PluginDirectory] = []
-    for registry, registry_path in _child_directories(cache_root):
+    for registry, registry_path, registry_identity in _codex_child_directories(
+        cache_root
+    ):
         if registry.startswith("."):
             continue
-        for logical_name, logical_path in _child_directories(registry_path):
+        for logical_name, logical_path, logical_identity in _codex_child_directories(
+            registry_path
+        ):
             if logical_name.startswith("."):
                 continue
-            for folder_version, plugin_path in _child_directories(logical_path):
-                if folder_version.startswith(".") or not is_within_roots(plugin_path, cache_root):
+            for (
+                folder_version,
+                plugin_path,
+                plugin_identity,
+            ) in _codex_child_directories(logical_path):
+                if folder_version.startswith(".") or not is_within_roots(
+                    plugin_path,
+                    cache_root,
+                ):
                     continue
-                manifest_path = os.path.join(plugin_path, ".codex-plugin", "plugin.json")
+                manifest_path = os.path.join(
+                    plugin_path,
+                    ".codex-plugin",
+                    "plugin.json",
+                )
                 if not is_within_roots(manifest_path, plugin_path):
                     continue
                 manifest = _read_bounded_json(manifest_path)
@@ -178,6 +335,14 @@ def _discover_codex_cache(cache_root: str) -> list[PluginDirectory]:
                 if not plugin_id:
                     continue
                 version = str(manifest.get("version") or folder_version).strip()
+                try:
+                    named_plugin = _stable_directory_info(plugin_path)
+                except OSError:
+                    return []
+                if _directory_identity(plugin_identity) != _directory_identity(
+                    named_plugin
+                ):
+                    return []
                 activation_keys = (
                     f"{plugin_id}@{registry}".casefold(),
                     f"{logical_name}@{registry}".casefold(),
@@ -197,6 +362,13 @@ def _discover_codex_cache(cache_root: str) -> list[PluginDirectory]:
                         cached=True,
                     )
                 )
+            if not _directory_unchanged(logical_path, logical_identity):
+                return []
+        if not _directory_unchanged(registry_path, registry_identity):
+            return []
+
+    if not _directory_unchanged(cache_root, cache_identity):
+        return []
 
     # One logical plugin row. An explicitly active registry wins over stale
     # copies; otherwise keep the newest cached version deterministically.
@@ -479,8 +651,6 @@ def discover_plugin_directories(
     claude_managed_settings_paths: tuple[str, ...] | None = None,
 ) -> list[PluginDirectory]:
     """Return real plugin roots, never registry/cache container directories."""
-    if not os.path.isdir(root) or is_symlink(root):
-        return []
     if _is_codex_cache_root(root, connector):
         return _discover_codex_cache(root)
     if _is_claude_root(root, connector, "cache"):
@@ -495,6 +665,8 @@ def discover_plugin_directories(
             workspace_dir=workspace_dir,
             managed_settings_paths=claude_managed_settings_paths,
         )
+    if not os.path.isdir(root) or is_symlink(root):
+        return []
 
     plugins: list[PluginDirectory] = []
     claimed: dict[str, str] = {}
@@ -504,7 +676,9 @@ def discover_plugin_directories(
         try:
             plugin_id, manifest = canonical_plugin_id(path)
         except PluginIdentityError as exc:
-            if not str(exc).startswith(("invalid plugin manifest", "could not read plugin manifest")):
+            if not str(exc).startswith(
+                ("invalid plugin manifest", "could not read plugin manifest")
+            ):
                 raise
             plugin_id, manifest = entry, ""
         key = filesystem_identity_key(plugin_id, root)
@@ -524,6 +698,42 @@ def discover_plugin_directories(
             )
         )
     return plugins
+
+
+def discover_exact_plugin_directory(
+    path: str,
+    *,
+    origin: str = "",
+) -> list[PluginDirectory]:
+    """Return one marketplace-declared plugin root, if it is a safe directory."""
+    try:
+        root_identity = _stable_directory_info(path)
+    except OSError:
+        return []
+
+    manifest_path = os.path.join(path, _CODEX_MANIFEST)
+    payload = _read_bounded_json(manifest_path)
+    plugin_id = validate_plugin_id(
+        (payload or {}).get("id")
+        or (payload or {}).get("name")
+        or os.path.basename(os.path.normpath(path))
+    )
+    manifest = _CODEX_MANIFEST if payload is not None else ""
+    try:
+        named_root = _stable_directory_info(path)
+    except OSError:
+        return []
+    if _directory_identity(root_identity) != _directory_identity(named_root):
+        return []
+    return [
+        PluginDirectory(
+            id=plugin_id,
+            name=plugin_id,
+            path=path,
+            origin=origin or os.path.dirname(path),
+            manifest=manifest,
+        )
+    ]
 
 
 def plugin_directory_entries(

@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
@@ -43,6 +44,7 @@ from defenseclaw.inventory.claw_inventory import (
     ALL_CATEGORIES,
     _admission_verdict,
     _agents_for_connector,
+    _agents_from_codex_toml_dirs,
     _build_actions_map_for_type,
     _build_scan_map_for_type,
     _build_summary,
@@ -55,7 +57,9 @@ from defenseclaw.inventory.claw_inventory import (
     _parse_skills,
     _parse_tools,
     _policy_detail_suffix,
+    _read_skill_description,
     _resolve_categories,
+    _rules_for_connector,
     _run_openclaw,
     _scan_detail_suffix,
     build_claw_aibom,
@@ -265,16 +269,16 @@ class TestLiveClawInventory(unittest.TestCase):
         self.assertEqual(inv["memory"][0]["files"], 12)
 
     @patch("defenseclaw.inventory.claw_inventory.subprocess.run", side_effect=_mock_run)
-    def test_version_bumped_to_3(self, _):
+    def test_version_bumped_to_4_for_rules_schema(self, _):
         inv = build_claw_aibom(self.cfg, live=True)
-        self.assertEqual(inv["version"], 3)
+        self.assertEqual(inv["version"], 4)
 
     @patch("defenseclaw.inventory.claw_inventory.subprocess.run", side_effect=_mock_run)
-    def test_scan_result_has_seven_findings(self, _):
+    def test_scan_result_has_eight_findings(self, _):
         inv = build_claw_aibom(self.cfg, live=True)
         result = claw_aibom_to_scan_result(inv, self.cfg)
         self.assertEqual(result.scanner, "aibom-claw")
-        self.assertEqual(len(result.findings), 7)
+        self.assertEqual(len(result.findings), 8)
         titles = [f.title for f in result.findings]
         self.assertTrue(any("Skills" in t for t in titles))
         self.assertTrue(any("Memory" in t for t in titles))
@@ -338,6 +342,7 @@ class TestSummary(unittest.TestCase):
         self.assertEqual(summary["plugins"]["count"], len(inv["plugins"]))
         self.assertEqual(summary["mcp"]["count"], len(inv["mcp"]))
         self.assertEqual(summary["agents"]["count"], len(inv["agents"]))
+        self.assertEqual(summary["rules"]["count"], len(inv["rules"]))
         self.assertEqual(summary["tools"]["count"], len(inv["tools"]))
         self.assertEqual(summary["model_providers"]["count"], len(inv["model_providers"]))
         self.assertEqual(summary["memory"]["count"], len(inv["memory"]))
@@ -348,7 +353,7 @@ class TestSummary(unittest.TestCase):
         summary = inv["summary"]
         manual_total = sum(
             summary[c]["count"]
-            for c in ("skills", "plugins", "mcp", "agents", "tools", "model_providers", "memory")
+            for c in ("skills", "plugins", "mcp", "agents", "rules", "tools", "model_providers", "memory")
         )
         self.assertEqual(summary["total_items"], manual_total)
 
@@ -396,6 +401,7 @@ class TestCategoryFilter(unittest.TestCase):
         self.assertEqual(inv["plugins"], [])
         self.assertEqual(inv["mcp"], [])
         self.assertEqual(inv["agents"], [])
+        self.assertEqual(inv["rules"], [])
         self.assertEqual(inv["tools"], [])
         self.assertEqual(inv["model_providers"], [])
         self.assertEqual(inv["memory"], [])
@@ -2255,6 +2261,233 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertNotIn("openclaw_config", inv)
         self.assertEqual(inv["claw_home"], inv["connector_home"])
 
+    def test_codex_inventory_parses_project_and_user_agents_and_rules(self):
+        cfg = _make_cfg_for_connector(self.tmp, "codex")
+        repo = Path(self.tmp) / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        cfg.claw.workspace_dir = str(repo)
+        codex_home = Path(self.tmp) / "codex-home"
+
+        project_agents = repo / ".codex" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / "reviewer.toml").write_text(
+            'name = "reviewer"\n'
+            'description = "Project reviewer"\n'
+            'developer_instructions = "Do not expose this prompt."\n'
+            'model = "gpt-test"\n'
+        )
+        user_agents = codex_home / "agents"
+        user_agents.mkdir(parents=True)
+        (user_agents / "reviewer.toml").write_text(
+            'name = "reviewer"\n'
+            'description = "User reviewer"\n'
+            'developer_instructions = "Private instructions."\n'
+        )
+        project_rules = repo / ".codex" / "rules"
+        project_rules.mkdir()
+        (project_rules / "project.rules").write_text('prefix_rule(pattern=["git"], decision="prompt")\n')
+        user_rules = codex_home / "rules"
+        user_rules.mkdir()
+        (user_rules / "user.rules").write_text('prefix_rule(pattern=["rm"], decision="forbidden")\n')
+
+        with patch.dict(
+            os.environ,
+            {"CODEX_HOME": str(codex_home), "HOME": self.tmp, "USERPROFILE": self.tmp},
+            clear=False,
+        ), patch("defenseclaw.connector_paths.Path.home", return_value=Path(self.tmp)), \
+             self._patch_skill_dirs([]), self._patch_plugin_dirs([]), self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        reviewers = [row for row in inv["agents"] if row["id"] == "reviewer"]
+        self.assertEqual(len(reviewers), 2)
+        self.assertEqual(reviewers[0]["scope"], "project")
+        self.assertTrue(reviewers[0]["trust_required"])
+        self.assertFalse(reviewers[0]["shadowed"])
+        self.assertTrue(reviewers[0]["eligible"])
+        self.assertEqual(reviewers[0]["model"], "gpt-test")
+        self.assertNotIn("developer_instructions", reviewers[0])
+        self.assertEqual(reviewers[1]["scope"], "user")
+        self.assertTrue(reviewers[1]["shadowed"])
+        self.assertEqual(
+            {(rule["id"], rule["scope"]) for rule in inv["rules"]},
+            {("project", "project"), ("user", "user")},
+        )
+        self.assertIn(str(project_agents), inv["connector_agent_dirs"])
+        self.assertIn(str(project_rules), inv["connector_rule_dirs"])
+
+    def test_codex_agents_and_rules_reject_reparse_ancestry(self):
+        cfg = _make_cfg_for_connector(self.tmp, "codex")
+        repo = Path(self.tmp) / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        cfg.claw.workspace_dir = str(repo)
+        codex_home = Path(self.tmp) / "codex-home"
+        project_agents = repo / ".codex" / "agents"
+        project_rules = repo / ".codex" / "rules"
+        user_agents = codex_home / "agents"
+        user_rules = codex_home / "rules"
+        for directory in (project_agents, project_rules, user_agents, user_rules):
+            directory.mkdir(parents=True)
+        for path, name in (
+            (project_agents / "project.toml", "project"),
+            (user_agents / "user.toml", "user"),
+        ):
+            path.write_text(
+                f'name = "{name}"\n'
+                'description = "desc"\n'
+                'developer_instructions = "private"\n'
+            )
+        (project_rules / "project.rules").write_text("prefix_rule(pattern=[\"pwsh\"])\n")
+        (user_rules / "user.rules").write_text("prefix_rule(pattern=[\"git\"])\n")
+        real_reject = connector_paths.reject_reparse_path
+        unsafe_root = os.path.normcase(str(repo / ".codex"))
+
+        def reject_project(path):
+            if os.path.normcase(os.path.abspath(path)).startswith(unsafe_root):
+                raise OSError("mocked Windows junction")
+            return real_reject(path)
+
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False), \
+             patch.object(connector_paths, "reject_reparse_path", side_effect=reject_project):
+            agents = _agents_from_codex_toml_dirs(
+                [str(project_agents), str(user_agents)]
+            )
+            rules = _rules_for_connector("codex", cfg)
+
+        self.assertEqual([row["id"] for row in agents], ["user"])
+        self.assertEqual([row["id"] for row in rules], ["user"])
+
+    def test_codex_agent_replaced_during_read_is_not_inventoried(self):
+        agents_dir = Path(self.tmp) / "agents"
+        agents_dir.mkdir()
+        agent_file = agents_dir / "raced.toml"
+        agent_file.write_text(
+            'name = "raced"\n'
+            'description = "desc"\n'
+            'developer_instructions = "private"\n'
+        )
+        real_read = connector_paths._read_bounded_stable_file
+
+        def reject_raced(path, *, max_bytes):
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(agent_file)):
+                raise OSError("file was replaced while it was being inventoried")
+            return real_read(path, max_bytes=max_bytes)
+
+        with patch.object(
+            connector_paths,
+            "_read_bounded_stable_file",
+            side_effect=reject_raced,
+        ):
+            agents = _agents_from_codex_toml_dirs([str(agents_dir)])
+
+        self.assertEqual(agents, [])
+
+    def test_codex_rule_reparse_file_is_not_inventoried(self):
+        cfg = _make_cfg_for_connector(self.tmp, "codex")
+        codex_home = Path(self.tmp) / "codex-home"
+        rules_dir = codex_home / "rules"
+        rules_dir.mkdir(parents=True)
+        rule_file = rules_dir / "unsafe.rules"
+        rule_file.write_text('prefix_rule(pattern=["pwsh"])\n')
+        real_reject = connector_paths.reject_reparse_path
+
+        def reject_rule(path):
+            if os.path.normcase(os.path.abspath(path)) == os.path.normcase(str(rule_file)):
+                raise OSError("mocked Windows reparse point")
+            return real_reject(path)
+
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex_home)}, clear=False), \
+             patch.object(connector_paths, "reject_reparse_path", side_effect=reject_rule):
+            rules = _rules_for_connector("codex", cfg)
+
+        self.assertEqual(rules, [])
+
+    def test_codex_inventory_reads_exact_local_marketplace_plugin_root(self):
+        cfg = _make_cfg_for_connector(self.tmp, "codex")
+        repo = Path(self.tmp) / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        cfg.claw.workspace_dir = str(repo)
+        plugin = repo / "packages" / "declared-plugin"
+        _seed_plugin(str(plugin.parent), plugin.name, manifest=".codex-plugin/plugin.json")
+        legacy_plugin = repo / "packages" / "legacy-plugin"
+        _seed_plugin(
+            str(legacy_plugin.parent),
+            legacy_plugin.name,
+            manifest=".codex-plugin/plugin.json",
+        )
+        personal_plugin = Path(self.tmp) / "personal-plugins" / "personal-plugin"
+        _seed_plugin(
+            str(personal_plugin.parent),
+            personal_plugin.name,
+            manifest=".codex-plugin/plugin.json",
+        )
+        marketplace = repo / ".agents" / "plugins" / "marketplace.json"
+        marketplace.parent.mkdir(parents=True)
+        marketplace.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "declared-plugin",
+                            "source": {"source": "local", "path": "./packages/declared-plugin"},
+                        }
+                    ]
+                }
+            )
+        )
+        legacy_marketplace = repo / ".claude-plugin" / "marketplace.json"
+        legacy_marketplace.parent.mkdir(parents=True)
+        legacy_marketplace.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "legacy-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./packages/legacy-plugin",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        personal_marketplace = Path(self.tmp) / ".agents" / "plugins" / "marketplace.json"
+        personal_marketplace.parent.mkdir(parents=True)
+        personal_marketplace.write_text(
+            json.dumps(
+                {
+                    "plugins": [
+                        {
+                            "name": "personal-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./personal-plugins/personal-plugin",
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+
+        with patch.dict(
+            os.environ,
+            {"CODEX_HOME": str(Path(self.tmp) / "codex-home")},
+            clear=False,
+        ), patch("defenseclaw.connector_paths.Path.home", return_value=Path(self.tmp)), \
+             self._patch_skill_dirs([]), self._patch_mcp([]):
+            inv = build_claw_aibom(cfg, live=True)
+
+        self.assertEqual(
+            [row["id"] for row in inv["plugins"]],
+            ["declared-plugin", "legacy-plugin", "personal-plugin"],
+        )
+        self.assertEqual(inv["plugins"][0]["path"], str(plugin))
+        self.assertEqual(inv["plugins"][1]["path"], str(legacy_plugin))
+        self.assertEqual(inv["plugins"][2]["path"], str(personal_plugin))
+
     def test_opencode_inventory_legacy_paths_are_connector_aware(self):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")
         with self._patch_skill_dirs([]), \
@@ -2706,10 +2939,10 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(inv["memory"], [])
         self.assertEqual(inv["errors"], [])
         self.assertEqual(inv["summary"]["errors"], 0)
-        self.assertEqual(inv["summary"]["limitations"], 4)
+        self.assertEqual(inv["summary"]["limitations"], 3)
         self.assertEqual(
             {item["category"] for item in inv["limitations"]},
-            {"agents", "tools", "models", "memory"},
+            {"tools", "models", "memory"},
         )
         self.assertTrue(all(item["connector"] == "codex" for item in inv["limitations"]))
         self.assertTrue(all(item["status"] == "unsupported" for item in inv["limitations"]))
@@ -2744,9 +2977,9 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(len(inv["errors"]), 1)
         self.assertEqual(inv["errors"][0]["command"], "codex:skills")
         self.assertIn("denied", inv["errors"][0]["error"])
-        self.assertEqual(len(inv["limitations"]), 4)
+        self.assertEqual(len(inv["limitations"]), 3)
         self.assertEqual(inv["summary"]["errors"], 1)
-        self.assertEqual(inv["summary"]["limitations"], 4)
+        self.assertEqual(inv["summary"]["limitations"], 3)
 
     def test_skill_eligibility_requires_marker(self):
         cfg = _make_cfg_for_connector(self.tmp, "codex")
@@ -2806,6 +3039,22 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
              self._patch_mcp([]):
             inv = build_claw_aibom(cfg, live=True)
         self.assertEqual(inv["skills"][0]["description"], "Frontmatter description")
+
+    def test_skill_description_rejects_linked_skill_ancestry(self):
+        outside = Path(self.tmp) / "outside"
+        outside.mkdir()
+        secret = "outside-secret-must-not-be-disclosed"
+        (outside / "SKILL.md").write_text(
+            f"---\ndescription: {secret}\n---\n",
+            encoding="utf-8",
+        )
+        linked = Path(self.tmp) / "linked-skill"
+        try:
+            linked.symlink_to(outside, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"filesystem does not permit test symlinks: {exc}")
+
+        self.assertEqual(_read_skill_description(str(linked)), "")
 
     def test_plugin_status_no_manifest(self):
         cfg = _make_cfg_for_connector(self.tmp, "codex")

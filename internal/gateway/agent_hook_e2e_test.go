@@ -202,6 +202,9 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 			if sh.connector == "copilot" {
 				req.Header.Set("X-DefenseClaw-Copilot-Event", sh.event)
 			}
+			if sh.connector == "codex" {
+				setTestCodexHookBinding(req, sh.event, defaultTestCodexHookContract)
+			}
 			w := httptest.NewRecorder()
 			handler.ServeHTTP(w, req)
 

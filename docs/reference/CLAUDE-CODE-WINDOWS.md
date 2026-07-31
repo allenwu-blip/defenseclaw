@@ -308,7 +308,7 @@ The following differences must remain explicit:
 | Decision output | event-specific `hookSpecificOutput`, top-level decisions, exit 2 | Codex-specific response envelope and event behavior |
 | Native ask | `PreToolUse` supports `permissionDecision="ask"` | current DefenseClaw Codex contract has no native ask surface |
 | Event set | 28 registered Claude lifecycle events | a smaller, independently versioned Codex event matrix |
-| MCP state | `~/.claude.json` plus project `.mcp.json` | `~/.codex/config.toml` plus optional project `.mcp.json` |
+| MCP state | `~/.claude.json` plus project `.mcp.json` | `$CODEX_HOME/config.toml` plus trusted project `.codex/config.toml` layers |
 | Managed policy | Windows registry and `C:\Program Files\ClaudeCode` policy chain | Codex-specific managed configuration |
 | Worktree hooks | `WorktreeCreate` replaces default behavior and is excluded | different host semantics; no equivalence assumed |
 | Telemetry | hook bus plus native OTel logs/metrics | hook/notify surfaces plus Codex-native telemetry |

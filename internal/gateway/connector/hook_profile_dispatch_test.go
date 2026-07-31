@@ -181,8 +181,11 @@ func TestCodexProfileDecode_Shape(t *testing.T) {
 // own matrix.
 func TestCodexProfileMapVerdict(t *testing.T) {
 	caps := HookCapability{
-		CanBlock:    true,
-		BlockEvents: []string{"UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"},
+		CanBlock: true,
+		BlockEvents: []string{
+			"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
+			"PostToolUse", "SubagentStop", "PreCompact", "PostCompact", "Stop",
+		},
 	}
 	cases := []struct {
 		name          string
@@ -196,7 +199,11 @@ func TestCodexProfileMapVerdict(t *testing.T) {
 		{"observe_block", "block", "PreToolUse", "observe", "allow", true, false},
 		{"observe_allow", "allow", "PreToolUse", "observe", "allow", false, false},
 		{"action_block_supported", "block", "PreToolUse", "action", "block", false, false},
-		{"action_block_unsupported_event", "block", "SessionStart", "action", "allow", true, false},
+		{"action_block_session_start", "block", "SessionStart", "action", "block", false, false},
+		{"action_block_subagent_stop", "block", "SubagentStop", "action", "block", false, false},
+		{"action_block_pre_compact", "block", "PreCompact", "action", "block", false, false},
+		{"action_block_post_compact", "block", "PostCompact", "action", "block", false, false},
+		{"action_block_unsupported_event", "block", "SessionEnd", "action", "allow", true, false},
 		{"action_confirm_demote", "confirm", "PreToolUse", "action", "alert", false, false},
 		{"action_alert_passthrough", "alert", "PreToolUse", "action", "alert", false, false},
 	}
@@ -305,6 +312,57 @@ func TestCodexProfileRespond_Parity(t *testing.T) {
 			expected: map[string]interface{}{
 				"continue": true,
 			},
+		},
+		{
+			name:   "SessionStart_block_stops_turn",
+			event:  "SessionStart",
+			action: "block",
+			raw:    "block",
+			reason: "stop current turn",
+			expected: map[string]interface{}{
+				"continue":   false,
+				"stopReason": "stop current turn",
+			},
+		},
+		{
+			name:   "PreCompact_block_stops_before_compaction",
+			event:  "PreCompact",
+			action: "block",
+			raw:    "block",
+			reason: "keep full context",
+			expected: map[string]interface{}{
+				"continue":   false,
+				"stopReason": "keep full context",
+			},
+		},
+		{
+			name:   "PostCompact_block_stops_after_compaction",
+			event:  "PostCompact",
+			action: "block",
+			raw:    "block",
+			reason: "review compacted context",
+			expected: map[string]interface{}{
+				"continue":   false,
+				"stopReason": "review compacted context",
+			},
+		},
+		{
+			name:   "SubagentStop_block_continues_subagent",
+			event:  "SubagentStop",
+			action: "block",
+			raw:    "block",
+			reason: "one more focused pass",
+			expected: map[string]interface{}{
+				"decision": "block",
+				"reason":   "one more focused pass",
+			},
+		},
+		{
+			name:   "SessionEnd_block_is_advisory",
+			event:  "SessionEnd",
+			action: "block",
+			raw:    "block",
+			reason: "must not steer",
 		},
 		{
 			name:   "PreToolUse_allow_no_additional",

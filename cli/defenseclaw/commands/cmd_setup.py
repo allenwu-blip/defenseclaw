@@ -6666,19 +6666,21 @@ def setup_codex(
 
     Alias for the hook-driven path of ``setup guardrail`` with
     ``--connector codex``. Configures Codex in the hook connector set
-    so the TUI, skill scanner, MCP scanner, and plugin scanner read
-    from ``~/.codex/`` for Codex-scoped surfaces.
+    so inventory follows Codex's current ``.agents`` asset layouts and
+    user/project ``.codex/config.toml`` layers.
 
     Wires three telemetry channels at gateway boot:
 
     \b
       • Hooks   — version-selected lifecycle contract: six events on
-                  0.124-0.128, eight on 0.129-0.132, and ten on 0.133+
+                  0.124-0.128, eight on 0.129-0.132, ten on
+                  0.133-0.144, and eleven from 0.145 (with SessionEnd
+                  advisory-only)
       • OTel    — native Codex logs, metrics, and traces using a
                   connector-scoped bearer and X-DefenseClaw-Source
                   header on the loopback /v1/<signal> routes
       • Notify  — agent-turn-complete webhooks via the bundled
-                  notify-bridge.sh shim
+                  native notification bridge
 
     Default mode is ``observe`` (record only). Pass ``--mode action``
     to provision hook-driven enforcement: the PreToolUse hook returns

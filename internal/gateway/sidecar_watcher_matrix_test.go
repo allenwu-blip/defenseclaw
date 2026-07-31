@@ -60,8 +60,8 @@ func TestRunWatcherWithoutConfiguredDirectoriesRemainsHealthy(t *testing.T) {
 //     the skill and plugin buckets — meaning the priority chain
 //     selected ComponentTargets and not cfg.SkillDirs() default.
 //  2. The skill/plugin slices contain at least one path under the
-//     connector-owned home directory (e.g. "~/.codex/skills" for
-//     codex). Path equality across $HOME is brittle — substring
+//     connector-owned personal directory (e.g. "~/.agents/skills" for
+//     Codex). Path equality across $HOME is brittle — substring
 //     check on the connector's expected home subpath is the
 //     stable assertion.
 func TestResolveWatcherDirs_PerConnectorMatrix(t *testing.T) {
@@ -92,8 +92,8 @@ func TestResolveWatcherDirs_PerConnectorMatrix(t *testing.T) {
 		{
 			name:             "codex",
 			ctor:             func() connector.Connector { return connector.NewCodexConnector() },
-			expectSkillFrag:  filepath.Join(".codex", "skills"),
-			expectPluginFrag: filepath.Join(".codex", "plugins"),
+			expectSkillFrag:  filepath.Join(".agents", "skills"),
+			expectPluginFrag: filepath.Join(".codex", "plugins", "cache"),
 		},
 	}
 

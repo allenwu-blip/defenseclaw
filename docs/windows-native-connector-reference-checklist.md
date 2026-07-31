@@ -49,6 +49,28 @@ Evidence was rechecked on 2026-07-30.
 - Machine requirements:
   `%ProgramData%\OpenAI\Codex\requirements.toml`.
 - Project configuration: `<workspace>\.codex\config.toml`.
+- MCP servers use `[mcp_servers.<name>]` in `$CODEX_HOME/config.toml` and
+  trusted project `.codex/config.toml` layers. Candidate project layers run
+  from repository root to the active directory, with the closest layer taking
+  precedence; Codex does not use Claude Code's `.mcp.json` convention.
+- Skills load from `.agents\skills` at candidate project layers and
+  `%USERPROFILE%\.agents\skills`; `CODEX_HOME` does not redirect the personal
+  skill directory.
+- Custom agents and rules load from `.codex\agents\*.toml` and
+  `.codex\rules\*.rules` beside candidate project configs, followed by
+  `%CODEX_HOME%\agents` and `%CODEX_HOME%\rules`. Project assets require a
+  trusted project; filesystem presence alone does not prove activation.
+- Plugin marketplace precedence is repository
+  `.agents\plugins\marketplace.json`, legacy-compatible repository
+  `.claude-plugin\marketplace.json`, then personal
+  `%USERPROFILE%\.agents\plugins\marketplace.json`. Local `source.path`
+  entries are exact roots relative to the marketplace root, and each plugin's
+  official manifest is `.codex-plugin\plugin.json`. Git, URL, and npm sources
+  have no stable source path in the public Codex CLI contract. Preview
+  inventory may inspect installed copies actually observed below
+  `%CODEX_HOME%\plugins\cache`, but that hierarchy is implementation evidence,
+  not a promised stable CLI layout; there is no fixed repository plugin
+  directory.
 - Hook configuration can be declared in TOML at the active configuration
   layers. JSON hook files use `commandWindows`; TOML uses `command_windows`.
 - DefenseClaw's native user setup writes the owned hook matrix to
@@ -57,6 +79,12 @@ Evidence was rechecked on 2026-07-30.
 - Official configuration references:
   <https://learn.chatgpt.com/docs/codex/config-reference> and
   <https://learn.chatgpt.com/docs/hooks>.
+- Official asset references:
+  [skills](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills),
+  [MCP](https://learn.chatgpt.com/docs/extend/mcp#connect-codex-to-an-mcp-server),
+  [custom agents](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents),
+  [rules](https://learn.chatgpt.com/docs/agent-configuration/rules#create-a-rules-file),
+  and [plugins](https://developers.openai.com/plugins/build/plugins).
 
 ### Versioned hook boundary
 
@@ -98,7 +126,23 @@ The current official hook reference lists eleven events:
   approval dialog.
 - `SessionEnd` is best-effort observation and telemetry. It is not a block or
   native ask surface.
-- `PostToolUse` cannot undo an already completed side effect.
+
+The following matcher and continuation details are contract-supported only
+for the v3/v4 boundary (`>=0.133.0`). This is not a release-certification
+claim, and the details are not inferred or backfilled onto the legacy v1/v2
+tiers:
+
+- `SessionStart` `continue: false` ends the turn. Its matcher has the four
+  official sources: `startup`, `resume`, `clear`, and `compact`.
+- `SubagentStop` `decision: "block"` continues the subagent rather than
+  terminating it.
+- `PreCompact` `continue: false` stops before compaction; `PostCompact`
+  `continue: false` stops only after compaction has completed.
+- `Stop` `decision: "block"` prevents stopping and continues with its reason
+  as a new prompt.
+- `PostToolUse` `decision: "block"` cannot undo the completed side effect. It
+  replaces the result fed to the next interactive loop; in code mode, the
+  corresponding tool promise rejects.
 
 ### Official limitations that must stay visible
 
@@ -108,8 +152,9 @@ The current official hook reference lists eleven events:
 - Several documented fields, including `suppressOutput`, are parsed but not
   supported.
 - The schema on the repository's main branch may be ahead of a release. Use
-  tagged release schemas and the published hook reference for a certified
-  boundary.
+  tagged release schemas and the published hook reference for the versioned
+  contract boundary; those sources alone are not release-certification
+  evidence.
 
 ## Reusable connector coverage gate
 
@@ -155,6 +200,10 @@ result for each item and link immutable or versioned evidence.
 
 - [ ] Protect hook runtime provenance, executable digest, configuration
   ancestry, ACLs, credentials, and contract-lock evidence.
+- [ ] Bind each fixed registered event and versioned contract to the official
+  stdin event at invocation time, carry both over the authenticated hook
+  request, and reject any mismatch with the gateway's protected contract lock
+  before policy evaluation or audit attribution.
 - [ ] Authenticate hook and native telemetry rails with connector-scoped,
   least-privilege credentials.
 - [ ] Reject or repair disabled, asynchronous, untrusted, duplicated, moved,

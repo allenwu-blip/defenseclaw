@@ -2095,8 +2095,9 @@ class TestCodexWrites:
         workspace = tmp_path / "ws"
         workspace.mkdir()
         monkeypatch.chdir(workspace)
-        path = workspace / ".mcp.json"
-        path.write_text(json.dumps({"mcpServers": {"old": {"command": "old"}}}))
+        path = workspace / ".codex" / "config.toml"
+        path.parent.mkdir()
+        path.write_text('[mcp_servers.old]\ncommand = "old"\n')
 
         set_mcp_server("codex", "demo", {"command": "uvx"}, workspace_dir=str(workspace))
 
@@ -2273,8 +2274,8 @@ class TestRoundTrip:
         # Isolate HOME so the real user's ``~/.codex/config.toml``
         # (which may register global MCP servers like ``playwright``)
         # doesn't bleed into ``mcp_servers("codex")`` — the codex
-        # reader merges the global TOML table with the project-local
-        # ``./.mcp.json`` we're about to write, and without HOME
+        # reader merges user and project ``.codex/config.toml`` layers,
+        # and without HOME
         # pinned to ``tmp_path`` this assertion is non-deterministic
         # across dev machines.
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -2313,16 +2314,22 @@ class TestRoundTrip:
 
 
 class TestAtomicity:
-    def test_set_recovers_from_corrupt_json(self, tmp_path, monkeypatch):
+    def test_codex_workspace_write_rejects_corrupt_toml_without_clobbering(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         if os.name == "nt":
             file_permissions._set_windows_owner_only_acl(os.fspath(tmp_path))
-        path = tmp_path / ".mcp.json"
-        path.write_text("{ this is not valid json")
+        path = tmp_path / ".codex" / "config.toml"
+        path.parent.mkdir()
+        original = "[mcp_servers.demo\nbroken"
+        path.write_text(original)
 
-        set_mcp_server("codex", "demo", {"command": "uvx"}, workspace_dir=str(tmp_path))
+        with pytest.raises(ValueError, match="malformed Codex config.toml"):
+            set_mcp_server("codex", "demo", {"command": "uvx"}, workspace_dir=str(tmp_path))
 
-        data = json.loads(path.read_text())
-        assert data["mcpServers"]["demo"]["command"] == "uvx"
+        assert path.read_text() == original
 
     def test_set_does_not_leave_tempfile_on_success(
         self,

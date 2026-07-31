@@ -1717,7 +1717,10 @@ def connector_source_label(connector: str, category: str) -> str:
     sources = {
         ("openclaw", "skills"): ("./skills", "~/.openclaw/skills"),
         ("claudecode", "skills"): (os.path.join(claude_root, "skills"), "./.claude/skills"),
-        ("codex", "skills"): (os.path.join(codex_root, "skills"), "./.codex/skills"),
+        ("codex", "skills"): (
+            "~/.agents/skills",
+            "./.agents/skills (active directory to repository root)",
+        ),
         ("zeptoclaw", "skills"): ("~/.zeptoclaw/skills", "./.zeptoclaw/skills"),
         ("antigravity", "skills"): (
             "~/.gemini/config/skills/<skill>/SKILL.md",
@@ -1728,7 +1731,10 @@ def connector_source_label(connector: str, category: str) -> str:
         ("omnigent", "skills"): ("unsupported by the OmniGent connector",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
         ("claudecode", "mcps"): (f"{claude_config} (mcpServers)", "./.mcp.json"),
-        ("codex", "mcps"): (f"{codex_config} ([mcp_servers])", "./.mcp.json"),
+        ("codex", "mcps"): (
+            f"{codex_config} ([mcp_servers])",
+            "./.codex/config.toml ([mcp_servers]; trusted projects only)",
+        ),
         ("zeptoclaw", "mcps"): ("~/.zeptoclaw/config.json (mcp.servers)", "./.mcp.json"),
         ("antigravity", "mcps"): (
             "~/.gemini/config/mcp_config.json",
@@ -1738,6 +1744,12 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
         ("omnigent", "mcps"): ("managed by OmniGent; not modified by DefenseClaw",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
+        ("codex", "plugins"): (
+            "./.agents/plugins/marketplace.json",
+            "./.claude-plugin/marketplace.json (legacy-compatible)",
+            "~/.agents/plugins/marketplace.json",
+            os.path.join(codex_root, "plugins", "cache"),
+        ),
         ("antigravity", "plugins"): (
             "~/.gemini/config/plugins/<plugin>/ (read/write)",
             "~/.gemini/antigravity-cli/plugins/<plugin>/ (discovery-only)",

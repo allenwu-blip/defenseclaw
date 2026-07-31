@@ -156,6 +156,32 @@ func TestCodexHookContractVersionedEventMatrix(t *testing.T) {
 	}
 }
 
+func TestCodexHookContractPinsLifecycleControlsToV3AndV4(t *testing.T) {
+	for _, version := range []string{"0.133.0", "0.144.0", "0.145.0"} {
+		contract := ResolveHookContract("codex", version).Contract
+		for _, event := range []string{"SessionStart", "SubagentStop", "PreCompact", "PostCompact"} {
+			if !stringInSlice(contract.Capabilities.BlockEvents, event) {
+				t.Errorf("%s %s does not own official %s control: %v",
+					version, contract.ContractID, event, contract.Capabilities.BlockEvents)
+			}
+		}
+		if stringInSlice(contract.Capabilities.BlockEvents, "SessionEnd") {
+			t.Errorf("%s %s incorrectly treats advisory SessionEnd as control", version, contract.ContractID)
+		}
+		if contract.Capabilities.CanAskNative || len(contract.Capabilities.AskEvents) != 0 {
+			t.Errorf("%s %s fabricated native ask: %+v", version, contract.ContractID, contract.Capabilities)
+		}
+	}
+	for _, version := range []string{"0.124.0", "0.129.0"} {
+		contract := ResolveHookContract("codex", version).Contract
+		for _, event := range []string{"SessionStart", "SubagentStop", "PreCompact", "PostCompact"} {
+			if stringInSlice(contract.Capabilities.BlockEvents, event) {
+				t.Errorf("%s %s backfilled uncertified %s control", version, contract.ContractID, event)
+			}
+		}
+	}
+}
+
 func TestHookContractNeedsActionOverride(t *testing.T) {
 	cases := []struct {
 		status string

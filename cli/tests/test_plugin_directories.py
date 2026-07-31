@@ -24,14 +24,19 @@ import json
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 import defenseclaw.inventory.plugin_directories as plugin_directories_module
 from defenseclaw.inventory.plugin_directories import (
+    discover_exact_plugin_directory,
     discover_plugin_directories,
     plugin_directory_entries,
 )
 
+from tests.environment import requires_symlink_privilege
 from tests.helpers import seed_cached_plugin
 
 try:
@@ -118,6 +123,222 @@ def test_codex_cache_discovers_manifests_uses_activation_and_deduplicates(
     assert all(entry.manifest == ".codex-plugin/plugin.json" for entry in entries)
     assert "openai-bundled" not in by_id
     assert "openai-curated-remote" not in by_id
+
+
+def test_codex_stable_reader_rejects_named_replacement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    original = tmp_path / "plugin.json"
+    replacement = tmp_path / "replacement.json"
+    original.write_text('{"name":"original"}', encoding="utf-8")
+    replacement.write_text('{"name":"replacement"}', encoding="utf-8")
+    original_stat = os.stat
+
+    def swapped_named_stat(path, *args, **kwargs):
+        if (
+            os.path.abspath(os.fspath(path)) == os.path.abspath(os.fspath(original))
+            and kwargs.get("follow_symlinks") is False
+        ):
+            return original_stat(replacement, follow_symlinks=False)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(
+        plugin_directories_module,
+        "open_regular_file_no_follow",
+        lambda path: os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_BINARY", 0),
+        ),
+    )
+    monkeypatch.setattr(
+        plugin_directories_module,
+        "reject_reparse_path",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(plugin_directories_module.os, "stat", swapped_named_stat)
+
+    with pytest.raises(OSError, match="replaced"):
+        plugin_directories_module._read_bounded_stable_file(
+            str(original),
+            max_bytes=1024,
+        )
+
+
+def test_codex_stable_directory_rejects_content_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    directory = tmp_path / "cache"
+    directory.mkdir()
+    original_stat = os.stat
+    before = original_stat(directory, follow_symlinks=False)
+    after = SimpleNamespace(
+        st_mode=before.st_mode,
+        st_dev=before.st_dev,
+        st_ino=before.st_ino,
+        st_size=before.st_size,
+        st_mtime_ns=before.st_mtime_ns + 1,
+        st_ctime_ns=before.st_ctime_ns,
+        st_file_attributes=getattr(before, "st_file_attributes", 0),
+    )
+    observations = iter((before, after))
+
+    monkeypatch.setattr(
+        plugin_directories_module,
+        "reject_reparse_path",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        plugin_directories_module.os,
+        "stat",
+        lambda *_args, **_kwargs: next(observations),
+    )
+
+    with pytest.raises(OSError, match="changed"):
+        plugin_directories_module._stable_directory_info(str(directory))
+
+
+def test_codex_cache_accepts_missing_windows_direntry_identity(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    codex_home = tmp_path / ".codex"
+    cache = codex_home / "plugins" / "cache"
+    plugin = seed_cached_plugin(
+        cache,
+        "openai-bundled",
+        "browser",
+        "1.0.0",
+    )
+    (codex_home / "config.toml").write_text(
+        "[plugins.'browser@openai-bundled']\nenabled = true\n",
+        encoding="utf-8",
+    )
+    real_scandir = os.scandir
+
+    class ZeroIdentityEntry:
+        def __init__(self, entry):
+            self._entry = entry
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_symlink(self):
+            return self._entry.is_symlink()
+
+        def stat(self, *, follow_symlinks=True):
+            info = os.stat(
+                self.path,
+                follow_symlinks=follow_symlinks,
+            )
+            return SimpleNamespace(
+                st_mode=info.st_mode,
+                st_dev=0,
+                st_ino=0,
+                st_size=info.st_size,
+                st_mtime_ns=info.st_mtime_ns,
+                st_ctime_ns=info.st_ctime_ns,
+                st_file_attributes=getattr(info, "st_file_attributes", 0),
+            )
+
+    class ZeroIdentityScandir:
+        def __init__(self, path):
+            with real_scandir(path) as iterator:
+                self._entries = [
+                    ZeroIdentityEntry(entry)
+                    for entry in iterator
+                ]
+
+        def __enter__(self):
+            return iter(self._entries)
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(
+        plugin_directories_module.os,
+        "scandir",
+        ZeroIdentityScandir,
+    )
+
+    entries = discover_plugin_directories(str(cache), connector="codex")
+
+    assert [(entry.id, entry.path, entry.enabled) for entry in entries] == [
+        ("browser", str(plugin), True),
+    ]
+
+
+def test_codex_cache_rejects_zero_identity_entry_with_mutated_metadata(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "registry"
+    directory.mkdir()
+    named = os.stat(directory, follow_symlinks=False)
+    enumerated = SimpleNamespace(
+        st_mode=named.st_mode,
+        st_dev=0,
+        st_ino=0,
+        st_size=named.st_size,
+        st_mtime_ns=named.st_mtime_ns + 1,
+        st_ctime_ns=named.st_ctime_ns,
+        st_file_attributes=getattr(named, "st_file_attributes", 0),
+    )
+
+    assert not plugin_directories_module._directory_entry_matches(
+        enumerated,
+        named,
+    )
+
+
+@requires_symlink_privilege
+def test_codex_cache_rejects_reparse_ancestor(tmp_path: Path) -> None:
+    actual_home = tmp_path / "actual-codex-home"
+    cache = actual_home / "plugins" / "cache"
+    seed_cached_plugin(cache, "openai-bundled", "browser", "1.0.0")
+    linked_home = tmp_path / ".codex"
+    linked_home.symlink_to(actual_home, target_is_directory=True)
+
+    assert discover_plugin_directories(
+        str(linked_home / "plugins" / "cache"),
+        connector="codex",
+    ) == []
+
+
+@requires_symlink_privilege
+def test_codex_cache_rejects_reparse_manifest_ancestor(tmp_path: Path) -> None:
+    cache = tmp_path / ".codex" / "plugins" / "cache"
+    plugin = cache / "openai-bundled" / "browser" / "1.0.0"
+    plugin.mkdir(parents=True)
+    outside_manifest = tmp_path / "outside-manifest"
+    outside_manifest.mkdir()
+    (outside_manifest / "plugin.json").write_text(
+        '{"name":"redirected","version":"9.9.9"}',
+        encoding="utf-8",
+    )
+    (plugin / ".codex-plugin").symlink_to(
+        outside_manifest,
+        target_is_directory=True,
+    )
+
+    assert discover_plugin_directories(str(cache), connector="codex") == []
+
+
+@requires_symlink_privilege
+def test_codex_exact_marketplace_plugin_rejects_reparse_ancestor(
+    tmp_path: Path,
+) -> None:
+    actual_root = tmp_path / "actual-marketplace"
+    plugin = actual_root / "browser"
+    manifest = plugin / ".codex-plugin" / "plugin.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"name":"browser","version":"1.0.0"}', encoding="utf-8")
+    linked_root = tmp_path / "linked-marketplace"
+    linked_root.symlink_to(actual_root, target_is_directory=True)
+
+    assert discover_exact_plugin_directory(
+        str(linked_root / "browser"),
+        origin="codex marketplace",
+    ) == []
 
 
 def test_regular_plugin_root_still_returns_immediate_plugins(tmp_path: Path) -> None:

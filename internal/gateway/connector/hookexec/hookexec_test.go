@@ -101,14 +101,26 @@ func runWithContext(
 		FailMode:   "open",
 		Home:       home,
 		HookDir:    hookDir,
-		Stdin:      strings.NewReader(`{"event":"x"}`),
 		Stdout:     &out,
 		Stderr:     &errb,
 		HTTPClient: &http.Client{Transport: rt},
 		Now:        func() time.Time { return time.Unix(0, 0).UTC() },
 	}
+	if connector == "codex" {
+		opts.HookContractID = "codex-hooks-v4"
+	}
 	if mutate != nil {
 		mutate(&opts)
+	}
+	if opts.Stdin == nil {
+		if connector == "codex" {
+			opts.Stdin = strings.NewReader(fmt.Sprintf(
+				`{"hook_event_name":%q}`,
+				opts.Event,
+			))
+		} else {
+			opts.Stdin = strings.NewReader(`{"event":"x"}`)
+		}
 	}
 	code := Run(ctx, opts)
 	return runResult{stdout: out.String(), stderr: errb.String(), code: code, rt: rt}
@@ -1672,6 +1684,282 @@ func TestResolveHookEventPrefersExplicitFlagAndRejectsMalformedPayload(t *testin
 	}
 	if got := hookRequestTimeout("codex", "Stop"); got != 10*time.Second {
 		t.Fatalf("non-Claude timeout=%s, want 10s", got)
+	}
+	if got := hookRequestTimeout("codex", "SessionEnd"); got != 2*time.Second {
+		t.Fatalf("Codex SessionEnd timeout=%s, want 2s", got)
+	}
+}
+
+func TestCodexSessionEndDeadlineAppliesToInjectedTransport(t *testing.T) {
+	var remaining time.Duration
+	rt := &stubRT{onRequest: func(_ *stubRT, req *http.Request) (*http.Response, error) {
+		deadline, ok := req.Context().Deadline()
+		if !ok {
+			return nil, errors.New("request context has no deadline")
+		}
+		remaining = time.Until(deadline)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"action":"allow"}`)),
+			Header:     make(http.Header),
+		}, nil
+	}}
+	result := run(t, "codex", rt, func(opts *Options) {
+		opts.Event = "SessionEnd"
+	})
+	if result.code != 0 {
+		t.Fatalf("SessionEnd code=%d stderr=%q", result.code, result.stderr)
+	}
+	if remaining <= 0 || remaining > 2*time.Second {
+		t.Fatalf("SessionEnd request deadline remaining=%s, want within 2s budget", remaining)
+	}
+}
+
+func TestCodexSessionEndDeadlineCancelsBlockingTransport(t *testing.T) {
+	cancelled := false
+	rt := &stubRT{onRequest: func(_ *stubRT, req *http.Request) (*http.Response, error) {
+		<-req.Context().Done()
+		cancelled = true
+		return nil, req.Context().Err()
+	}}
+	started := time.Now()
+	result := run(t, "codex", rt, func(opts *Options) {
+		opts.Event = "SessionEnd"
+		opts.FailMode = "closed"
+		opts.StrictAvailability = true
+	})
+	elapsed := time.Since(started)
+	if !cancelled {
+		t.Fatal("SessionEnd blocking transport was not cancelled")
+	}
+	if elapsed < time.Second || elapsed > 3*time.Second {
+		t.Fatalf("SessionEnd cancellation elapsed=%s, want internal cancellation before 3s host maximum", elapsed)
+	}
+	if result.code != 0 || result.stdout != "" {
+		t.Fatalf("SessionEnd cancellation synthesized control: code=%d stdout=%q stderr=%q", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestCodexFailClosedUsesEventSpecificControlSchema(t *testing.T) {
+	tests := []struct {
+		event      string
+		wantStdout string
+	}{
+		{
+			event:      "SessionStart",
+			wantStdout: `{"continue":false,"stopReason":"DefenseClaw hook failed closed"}` + "\n",
+		},
+		{
+			event:      "PreCompact",
+			wantStdout: `{"continue":false,"stopReason":"DefenseClaw hook failed closed"}` + "\n",
+		},
+		{
+			event:      "PostCompact",
+			wantStdout: `{"continue":false,"stopReason":"DefenseClaw hook failed closed"}` + "\n",
+		},
+		{
+			event:      "SubagentStop",
+			wantStdout: `{"decision":"block","reason":"DefenseClaw hook failed closed"}` + "\n",
+		},
+		{
+			event:      "SessionEnd",
+			wantStdout: "",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.event, func(t *testing.T) {
+			result := run(t, "codex", &stubRT{err: context.DeadlineExceeded}, func(opts *Options) {
+				opts.Event = test.event
+				opts.HookContractID = "codex-hooks-v4"
+				opts.FailMode = "closed"
+				opts.StrictAvailability = true
+			})
+			if result.code != 0 {
+				t.Fatalf("%s code=%d stderr=%q", test.event, result.code, result.stderr)
+			}
+			if result.stdout != test.wantStdout {
+				t.Fatalf("%s stdout=%q want %q", test.event, result.stdout, test.wantStdout)
+			}
+		})
+	}
+}
+
+func TestCodexLegacyAndInvalidContractsDoNotBackfillLifecycleControls(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      string
+		contractID string
+	}{
+		{name: "v1 SessionStart", event: "SessionStart", contractID: "codex-hooks-v1"},
+		{name: "v2 PreCompact", event: "PreCompact", contractID: "codex-hooks-v2"},
+		{name: "v2 PostCompact", event: "PostCompact", contractID: "codex-hooks-v2"},
+		{name: "missing contract", event: "SubagentStop"},
+		{name: "invalid contract", event: "SubagentStop", contractID: "codex-hooks-v999"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := run(t, "codex", &stubRT{err: context.DeadlineExceeded}, func(opts *Options) {
+				opts.Event = test.event
+				opts.HookContractID = test.contractID
+				opts.FailMode = "closed"
+				opts.StrictAvailability = true
+			})
+			if result.code != blockExit || result.stdout != "" {
+				t.Fatalf(
+					"legacy/invalid lifecycle fallback synthesized control: code=%d stdout=%q stderr=%q",
+					result.code,
+					result.stdout,
+					result.stderr,
+				)
+			}
+		})
+	}
+}
+
+func TestCodexGatewayControlIsDiscardedOutsideBoundContract(t *testing.T) {
+	for _, contractID := range []string{"codex-hooks-v1", "codex-hooks-v2", "", "codex-hooks-v999"} {
+		t.Run(contractID, func(t *testing.T) {
+			result := run(t, "codex", ok(`{
+				"action":"block",
+				"reason":"must not backfill",
+				"codex_output":{"continue":false,"stopReason":"must not backfill"}
+			}`), func(opts *Options) {
+				opts.Event = "PreCompact"
+				opts.HookContractID = contractID
+			})
+			if result.code != 0 || result.stdout != "" {
+				t.Fatalf("unsupported gateway control leaked: code=%d stdout=%q", result.code, result.stdout)
+			}
+		})
+	}
+}
+
+func TestCodexSessionEndDiscardsGatewayControlOutput(t *testing.T) {
+	result := run(t, "codex", ok(`{
+		"action":"block",
+		"reason":"must not steer teardown",
+		"codex_output":{"decision":"block","reason":"must not steer teardown"}
+	}`), func(opts *Options) {
+		opts.Event = "SessionEnd"
+		opts.FailMode = "closed"
+		opts.StrictAvailability = true
+	})
+	if result.code != 0 || result.stdout != "" {
+		t.Fatalf("SessionEnd synthesized control: code=%d stdout=%q stderr=%q", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestCodexInvocationBindingMatrix(t *testing.T) {
+	contracts := map[string][]string{
+		"codex-hooks-v1": {
+			"SessionStart", "UserPromptSubmit", "PreToolUse",
+			"PermissionRequest", "PostToolUse", "Stop",
+		},
+		"codex-hooks-v2": {
+			"SessionStart", "UserPromptSubmit", "PreToolUse",
+			"PermissionRequest", "PostToolUse", "PreCompact",
+			"PostCompact", "Stop",
+		},
+		"codex-hooks-v3": {
+			"SessionStart", "UserPromptSubmit", "PreToolUse",
+			"PermissionRequest", "PostToolUse", "SubagentStart",
+			"SubagentStop", "PreCompact", "PostCompact", "Stop",
+		},
+		"codex-hooks-v4": {
+			"SessionStart", "UserPromptSubmit", "PreToolUse",
+			"PermissionRequest", "PostToolUse", "SubagentStart",
+			"SubagentStop", "PreCompact", "PostCompact", "Stop",
+			"SessionEnd",
+		},
+	}
+	for contractID, events := range contracts {
+		for _, event := range events {
+			for _, failMode := range []string{"open", "closed"} {
+				name := contractID + "/" + event + "/" + failMode
+				t.Run(name, func(t *testing.T) {
+					result := run(t, "codex", ok(`{"action":"allow"}`), func(opts *Options) {
+						opts.Event = event
+						opts.HookContractID = contractID
+						opts.FailMode = failMode
+					})
+					if result.code != 0 || result.rt.requests != 1 {
+						t.Fatalf(
+							"valid binding code=%d requests=%d stderr=%q",
+							result.code,
+							result.rt.requests,
+							result.stderr,
+						)
+					}
+					if got := result.rt.gotReq.Header.Get(codexBoundEventHeader); got != event {
+						t.Fatalf("bound event header=%q want %q", got, event)
+					}
+					if got := result.rt.gotReq.Header.Get(codexBoundContractHeader); got != contractID {
+						t.Fatalf("bound contract header=%q want %q", got, contractID)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCodexRejectsStdinEventMismatchBeforeGateway(t *testing.T) {
+	contracts := map[string][]string{
+		"codex-hooks-v1": {"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"},
+		"codex-hooks-v2": {"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "Stop"},
+		"codex-hooks-v3": {"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Stop"},
+		"codex-hooks-v4": {"SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Stop", "SessionEnd"},
+	}
+	for contractID, events := range contracts {
+		for _, event := range events {
+			for _, failMode := range []string{"open", "closed"} {
+				name := contractID + "/" + event + "/" + failMode
+				t.Run(name, func(t *testing.T) {
+					stdinEvent := "SessionEnd"
+					if event == stdinEvent {
+						stdinEvent = "PreToolUse"
+					}
+					result := run(t, "codex", ok(`{"action":"allow"}`), func(opts *Options) {
+						opts.Event = event
+						opts.HookContractID = contractID
+						opts.FailMode = failMode
+						opts.Stdin = strings.NewReader(fmt.Sprintf(
+							`{"hook_event_name":%q}`,
+							stdinEvent,
+						))
+					})
+					if result.rt.requests != 0 {
+						t.Fatalf("mismatched invocation contacted gateway %d time(s)", result.rt.requests)
+					}
+					if !strings.Contains(result.stderr, "does not match installer-bound event") {
+						t.Fatalf("mismatch stderr=%q", result.stderr)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestCodexRejectsImpossibleContractEventBeforeGateway(t *testing.T) {
+	tests := []struct {
+		contractID string
+		event      string
+	}{
+		{"", "PreToolUse"},
+		{"codex-hooks-v999", "PreToolUse"},
+		{"codex-hooks-v1", "PreCompact"},
+		{"codex-hooks-v2", "SubagentStop"},
+		{"codex-hooks-v3", "SessionEnd"},
+	}
+	for _, test := range tests {
+		t.Run(test.contractID+"/"+test.event, func(t *testing.T) {
+			result := run(t, "codex", ok(`{"action":"allow"}`), func(opts *Options) {
+				opts.Event = test.event
+				opts.HookContractID = test.contractID
+			})
+			if result.rt.requests != 0 {
+				t.Fatalf("impossible binding contacted gateway %d time(s)", result.rt.requests)
+			}
+		})
 	}
 }
 

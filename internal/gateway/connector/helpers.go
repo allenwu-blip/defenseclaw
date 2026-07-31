@@ -461,6 +461,13 @@ func readStableNativeWindowsFile(path string, limit int64) ([]byte, bool) {
 	return body, true
 }
 
+// ReadStableInventoryFile performs a bounded, no-reparse, stable-identity read
+// for connector inventory parsers outside this package. Unsafe or changing
+// inputs return ok=false so callers can continue to lower-precedence layers.
+func ReadStableInventoryFile(path string, limit int64) ([]byte, bool) {
+	return readStableNativeWindowsFile(path, limit)
+}
+
 func sameStableNativeWindowsFile(left, right os.FileInfo) bool {
 	return left != nil && right != nil && os.SameFile(left, right) && left.Size() == right.Size() &&
 		left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
@@ -524,6 +531,14 @@ func windowsNativePowerShellHookCommandForBinary(connector, hookBinary string) s
 }
 
 func windowsNativePowerShellHookCommandForEvent(connector, event, hookBinary string) string {
+	return windowsNativePowerShellHookCommandForBoundEvent(connector, event, "", hookBinary)
+}
+
+func windowsNativePowerShellHookCommandForCodexEvent(event, contractID, hookBinary string) string {
+	return windowsNativePowerShellHookCommandForBoundEvent("codex", event, contractID, hookBinary)
+}
+
+func windowsNativePowerShellHookCommandForBoundEvent(connector, event, contractID, hookBinary string) string {
 	arguments := []string{
 		powershellQuoteLiteral("hook"),
 		powershellQuoteLiteral("--connector"),
@@ -533,6 +548,12 @@ func windowsNativePowerShellHookCommandForEvent(connector, event, hookBinary str
 		arguments = append(arguments,
 			powershellQuoteLiteral("--event"),
 			powershellQuoteLiteral(event),
+		)
+	}
+	if strings.TrimSpace(contractID) != "" {
+		arguments = append(arguments,
+			powershellQuoteLiteral("--hook-contract"),
+			powershellQuoteLiteral(contractID),
 		)
 	}
 	script := strings.Join([]string{
@@ -672,6 +693,15 @@ func isNativeHookCommand(cmd string) bool {
 				cmd == legacyUnqualifiedWindowsNativePowerShellHookCommandForBinary(connectorName, hookBinary) ||
 				cmd == legacyWindowsNativePowerShellHookCommandForBinary(connectorName, hookBinary) {
 				return true
+			}
+		}
+	}
+	for _, hookBinary := range uniqueNonEmptyStrings(hookBinaries) {
+		for _, contract := range builtinHookContracts["codex"] {
+			for _, event := range contract.Events {
+				if cmd == windowsNativePowerShellHookCommandForCodexEvent(event, contract.ContractID, hookBinary) {
+					return true
+				}
 			}
 		}
 	}

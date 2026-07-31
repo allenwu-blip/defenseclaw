@@ -615,9 +615,9 @@ func TestEnumerateClaudeWatcherPluginsUsesManifestlessCacheVersionBoundary(t *te
 	}
 }
 
-// TestRescan_FromCodexConfigToml — Codex defaults to the global
-// ~/.codex/config.toml MCP table. Workspace .mcp.json overlays are only
-// included when cfg.Claw.WorkspaceDir is explicitly pinned.
+// TestRescan_FromCodexConfigToml — Codex discovers MCP entries from the user
+// ~/.codex/config.toml table; pinned workspaces additionally contribute layered
+// .codex/config.toml entries, subject to the client's project trust decision.
 func TestRescan_FromCodexConfigToml(t *testing.T) {
 	cfg, store, logger, skillDir := setupTestEnv(t)
 	t.Setenv("PATH", "")

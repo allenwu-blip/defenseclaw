@@ -16,7 +16,7 @@
 
 """Build a live OpenClaw bill-of-materials by querying the ``openclaw`` CLI.
 
-Indexes: Skills, Plugins, MCP servers, Agents/sub-agents, Tools, Model providers, Memory.
+Indexes: Skills, Plugins, MCP servers, Agents/sub-agents, Rules, Tools, Model providers, Memory.
 
 Commands are dispatched in parallel via ``ThreadPoolExecutor`` and deduplicated
 (e.g. ``plugins list`` is fetched once even though three categories use it).
@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -39,7 +40,15 @@ import yaml
 from defenseclaw import connector_paths
 from defenseclaw.config import Config, SkillActionsConfig, _expand
 from defenseclaw.file_permissions import open_regular_file_no_follow
-from defenseclaw.inventory.plugin_directories import discover_plugin_directories
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
+
+from defenseclaw.inventory.plugin_directories import (
+    discover_exact_plugin_directory,
+    discover_plugin_directories,
+)
 from defenseclaw.inventory.plugin_identity import (
     AmbiguousPluginIdentityError,
     filesystem_identity_key,
@@ -47,9 +56,13 @@ from defenseclaw.inventory.plugin_identity import (
 from defenseclaw.models import ActionEntry, Finding, ScanResult
 from defenseclaw.safety import is_symlink
 
-INVENTORY_VERSION = 3
+# v4 adds the top-level ``rules`` category and its summary/finding/render
+# surface; consumers can distinguish it from the seven-category v3 schema.
+INVENTORY_VERSION = 4
 
-ALL_CATEGORIES: frozenset[str] = frozenset(["skills", "plugins", "mcp", "agents", "tools", "models", "memory"])
+ALL_CATEGORIES: frozenset[str] = frozenset(
+    ["skills", "plugins", "mcp", "agents", "rules", "tools", "models", "memory"]
+)
 
 _CATEGORY_ALIASES: dict[str, str] = {"model_providers": "models"}
 
@@ -160,6 +173,7 @@ def build_claw_aibom(
         "plugins": _parse_plugins(cache.get("plugins_list")) if "plugins" in cats else [],
         "mcp": _parse_mcp(cache.get("mcp_list")) if "mcp" in cats else [],
         "agents": (_parse_agents(cache.get("agents_list"), cache.get("config_agents")) if "agents" in cats else []),
+        "rules": [],
         "tools": _parse_tools(cache.get("plugins_list")) if "tools" in cats else [],
         "model_providers": (
             _parse_model_providers(
@@ -189,6 +203,7 @@ def claw_aibom_to_scan_result(inv: dict[str, Any], cfg: Config) -> ScanResult:
         ("plugins", "Plugins"),
         ("mcp", "MCP servers"),
         ("agents", "Agents / sub-agents"),
+        ("rules", "Rules"),
         ("tools", "Tools"),
         ("model_providers", "Model providers"),
         ("memory", "Memory"),
@@ -609,6 +624,7 @@ def format_claw_aibom_human(
         _render_plugins(console, inv.get("plugins", []))
         _render_mcp(console, inv.get("mcp", []))
         _render_agents(console, inv.get("agents", []))
+        _render_rules(console, inv.get("rules", []))
         _render_tools(console, inv.get("tools", []))
         _render_models(console, inv.get("model_providers", []))
         _render_memory(console, inv.get("memory", []))
@@ -648,6 +664,7 @@ def _attach_connector_paths(
             connector,
             openclaw_config=cfg.claw.config_file,
             openclaw_home=cfg.claw.home_dir,
+            workspace_dir=cfg.connector_workspace_dir(),
         )
     except Exception:
         out["connector_config_files"] = []
@@ -667,6 +684,20 @@ def _attach_connector_paths(
         )
     except Exception:
         out["connector_plugin_dirs"] = []
+    try:
+        out["connector_agent_dirs"] = connector_paths.agent_dirs(
+            connector,
+            workspace_dir=cfg.connector_workspace_dir(),
+        )
+    except Exception:
+        out["connector_agent_dirs"] = []
+    try:
+        out["connector_rule_dirs"] = connector_paths.rule_dirs(
+            connector,
+            workspace_dir=cfg.connector_workspace_dir(),
+        )
+    except Exception:
+        out["connector_rule_dirs"] = []
     try:
         out["connector_mcp_files"] = list(_collect_mcp_config_files(connector, cfg))
     except Exception:
@@ -723,10 +754,13 @@ def _collect_mcp_config_files(connector: str, cfg: Config) -> list[str]:
         connector,
         openclaw_config=cfg.claw.config_file,
         openclaw_home=cfg.claw.home_dir,
+        workspace_dir=cfg.connector_workspace_dir(),
     )
     out: list[str] = []
     for path in candidates:
         base = os.path.basename(path).lower()
+        if connector.lower() == "codex" and base != "config.toml":
+            continue
         if base.endswith(".json") or base.endswith(".toml") or base.endswith(".yaml") or base.endswith(".yml"):
             out.append(path)
     return out
@@ -750,6 +784,7 @@ def _build_summary(inv: dict[str, Any]) -> dict[str, Any]:
         "plugins": {"count": len(plugins), "loaded": n_loaded, "disabled": n_disabled},
         "mcp": {"count": len(inv.get("mcp", []))},
         "agents": {"count": len(inv.get("agents", []))},
+        "rules": {"count": len(inv.get("rules", []))},
         "tools": {"count": len(inv.get("tools", []))},
         "model_providers": {"count": len(inv.get("model_providers", []))},
         "memory": {"count": len(inv.get("memory", []))},
@@ -825,6 +860,7 @@ def _render_summary(console: Any, inv: dict[str, Any]) -> None:
         mcp_detail = mcp_detail.lstrip(" · ")
     table.add_row("MCP servers", str(data.get("mcp", {}).get("count", 0)), mcp_detail)
     table.add_row("Agents", str(data.get("agents", {}).get("count", 0)))
+    table.add_row("Rules", str(data.get("rules", {}).get("count", 0)))
     table.add_row("Tools", str(data.get("tools", {}).get("count", 0)))
     table.add_row("Model providers", str(data.get("model_providers", {}).get("count", 0)))
     table.add_row("Memory stores", str(data.get("memory", {}).get("count", 0)))
@@ -1043,6 +1079,27 @@ def _render_agents(console: Any, agents: list[dict[str, Any]]) -> None:
             a.get("model", "-"),
             "yes" if a.get("is_default") else "",
             _trunc(a.get("workspace", ""), 45),
+        )
+    console.print(table)
+    console.print()
+
+
+def _render_rules(console: Any, rules: list[dict[str, Any]]) -> None:
+    if not rules:
+        console.print("[dim]Rules: none[/dim]\n")
+        return
+
+    from rich.table import Table
+
+    table = Table(title=f"Rules ({len(rules)})")
+    table.add_column("Name", style="bold")
+    table.add_column("Scope")
+    table.add_column("Source")
+    for rule in rules:
+        table.add_row(
+            rule.get("id", ""),
+            rule.get("scope", ""),
+            _trunc(rule.get("source", ""), 70),
         )
     console.print(table)
     console.print()
@@ -1598,7 +1655,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
     * claudecode — recursive user/project Markdown agents, identified by YAML
       frontmatter with closest-project-over-user precedence
-    * codex      — ``agents/*`` below the precedence-aware connector home
+    * codex      — standalone TOML in candidate project and user agent layers
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` array
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
     * copilot    — precedence-aware project/ancestor agents plus
@@ -1614,7 +1671,12 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
             connector_paths.claude_agent_dirs(workspace),
         )
     if name == "codex":
-        return _agents_from_md_dir(os.path.join(connector_paths.connector_home(name), "agents"))
+        return _agents_from_codex_toml_dirs(
+            connector_paths.agent_dirs(
+                name,
+                workspace_dir=cfg.connector_workspace_dir(),
+            ),
+        )
     if name == "zeptoclaw":
         return _agents_from_zeptoclaw_json(
             os.path.join(home, ".zeptoclaw", "agents.json"),
@@ -1639,6 +1701,53 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     if name == "antigravity":
         return _agents_from_antigravity_dirs(_antigravity_agent_dirs(_connector_workspace_dir(cfg)))
     return []
+
+
+def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
+    """Enumerate documented Codex ``*.rules`` files without evaluating them."""
+    if (connector or "").lower() != "codex":
+        return []
+
+    user_rules = os.path.normcase(
+        os.path.abspath(os.path.join(connector_paths.codex_home(), "rules"))
+    )
+    rows: list[dict[str, Any]] = []
+    for rules_dir in connector_paths.rule_dirs(
+        "codex",
+        workspace_dir=cfg.connector_workspace_dir(),
+    ):
+        entries = _safe_codex_directory_entries(rules_dir)
+        if entries is None:
+            continue
+        normalized = os.path.normcase(os.path.abspath(rules_dir))
+        if normalized == user_rules:
+            scope = "user"
+        elif normalized == os.path.normcase(os.path.abspath(os.path.join(os.sep, "etc", "codex", "rules"))):
+            scope = "system"
+        else:
+            scope = "project"
+        for entry in entries:
+            if not entry.lower().endswith(".rules"):
+                continue
+            full = os.path.join(rules_dir, entry)
+            try:
+                connector_paths.reject_reparse_path(full)
+                info = os.stat(full, follow_symlinks=False)
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            rows.append(
+                {
+                    "id": os.path.splitext(entry)[0],
+                    "name": entry,
+                    "source": full,
+                    "kind": "exec-policy",
+                    "scope": scope,
+                    "trust_required": scope == "project",
+                }
+            )
+    return rows
 
 
 def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
@@ -1905,6 +2014,68 @@ def _claude_agents_from_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+def _agents_from_codex_toml_dirs(
+    agent_dirs: list[str],
+) -> list[dict[str, Any]]:
+    """Inventory Codex standalone custom-agent TOML without exposing prompts.
+
+    Directories arrive highest-precedence first. Duplicate ``name`` values are
+    retained for custody/tamper visibility and lower-precedence definitions are
+    marked ``shadowed``. Project entries are candidates only: Codex activates
+    them when the project is trusted, and filesystem inventory does not infer
+    that private client decision.
+    """
+    rows: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    user_agents = os.path.normcase(os.path.abspath(os.path.join(connector_paths.codex_home(), "agents")))
+    for agents_dir in agent_dirs:
+        entries = _safe_codex_directory_entries(agents_dir)
+        if entries is None:
+            continue
+        scope = (
+            "user"
+            if os.path.normcase(os.path.abspath(agents_dir)) == user_agents
+            else "project"
+        )
+        for entry in entries:
+            if not entry.lower().endswith(".toml"):
+                continue
+            full = os.path.join(agents_dir, entry)
+            data, parse_error = _load_codex_agent_toml(full)
+            if parse_error.startswith("unreadable agent file:"):
+                continue
+            agent_id = os.path.splitext(entry)[0]
+            if isinstance(data, dict):
+                configured_name = data.get("name")
+                if isinstance(configured_name, str) and configured_name.strip():
+                    agent_id = configured_name.strip()
+            required = ("name", "description", "developer_instructions")
+            eligible = isinstance(data, dict) and all(
+                isinstance(data.get(field), str) and data[field].strip()
+                for field in required
+            )
+            row: dict[str, Any] = {
+                "id": agent_id,
+                "name": agent_id,
+                "source": full,
+                "kind": "custom-agent",
+                "scope": scope,
+                "trust_required": scope == "project",
+                "eligible": eligible,
+                "shadowed": agent_id in seen_names,
+            }
+            if isinstance(data, dict):
+                for key in ("description", "model", "model_reasoning_effort", "sandbox_mode"):
+                    value = data.get(key)
+                    if isinstance(value, str) and value:
+                        row[key] = value
+            if parse_error:
+                row["parse_error"] = parse_error
+            seen_names.add(agent_id)
+            rows.append(row)
+    return rows
+
+
 def _claude_agents_from_dir(agents_dir: str) -> list[dict[str, Any]]:
     if (
         not os.path.isdir(agents_dir)
@@ -2007,6 +2178,39 @@ def _read_claude_agent_frontmatter(path: str) -> dict[str, str] | None:
     if not _CLAUDE_AGENT_NAME_PATTERN.fullmatch(name) or not description:
         return None
     return {"name": name, "description": description}
+
+
+def _safe_codex_directory_entries(path: str) -> list[str] | None:
+    """List one real directory after rejecting reparse ancestors and the leaf."""
+    try:
+        connector_paths.reject_reparse_path(path)
+        before = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            return None
+        entries = sorted(os.listdir(path))
+        connector_paths.reject_reparse_path(path)
+        after = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(after.st_mode) or not os.path.samestat(before, after):
+            return None
+        return entries
+    except OSError:
+        return None
+
+
+def _load_codex_agent_toml(path: str) -> tuple[dict[str, Any] | None, str]:
+    """Safely parse one custom-agent TOML file with a bounded read."""
+    try:
+        payload = connector_paths._read_bounded_stable_file(
+            path,
+            max_bytes=1024 * 1024,
+        )
+    except OSError as exc:
+        return None, f"unreadable agent file: {exc}"
+    try:
+        data = tomllib.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return None, f"invalid TOML: {exc}"
+    return data, ""
 
 
 def _agents_from_zeptoclaw_json(path: str) -> list[dict[str, Any]]:
@@ -2393,6 +2597,7 @@ def _build_aibom_from_filesystem(
         "plugins": lambda: _enumerate_plugins_filesystem(cfg, connector),
         "mcp": lambda: _enumerate_mcp_filesystem(cfg, connector),
         "agents": lambda: _agents_for_connector(connector, cfg),
+        "rules": lambda: _rules_for_connector(connector, cfg),
         "tools": lambda: _tools_for_connector(connector, cfg),
         "models": lambda: _model_providers_for_connector(connector, cfg),
         "memory": lambda: _memory_for_connector(connector, cfg),
@@ -2412,6 +2617,7 @@ def _build_aibom_from_filesystem(
     plugins = _items("plugins")
     mcps = _items("mcp")
     agents = _items("agents")
+    rules = _items("rules")
     tools = _items("tools")
     model_providers = _items("models")
     memory = _items("memory")
@@ -2448,6 +2654,8 @@ def _build_aibom_from_filesystem(
                 }
             )
     for cat_key, note in _FILESYSTEM_ONLY_CONNECTOR_NOTES.items():
+        if connector == "codex" and cat_key == "agents":
+            continue
         if cat_key not in cats:
             continue
         # Cursor has a documented local subagent surface. An empty directory is
@@ -2489,6 +2697,7 @@ def _build_aibom_from_filesystem(
         "plugins": plugins,
         "mcp": mcps,
         "agents": agents,
+        "rules": rules,
         "tools": tools,
         "model_providers": model_providers,
         "memory": memory,
@@ -2521,19 +2730,18 @@ def _enumerate_skills_filesystem(
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    normalized_connector = (connector or cfg.active_connector()).strip().lower().replace(
-        "-",
-        "",
-    )
+    resolved_connector = connector or cfg.active_connector()
+    normalized_connector = connector_paths.normalize(resolved_connector)
     claude_workspace = (
         cfg.connector_workspace_dir()
         if normalized_connector in {"claude", "claudecode"}
         else ""
     )
     for skill_dir in cfg.skill_dirs(connector):
-        if not os.path.isdir(skill_dir):
-            continue
-        for discovered in discover_skill_directories(skill_dir, connector=connector or cfg.active_connector()):
+        for discovered in discover_skill_directories(
+            skill_dir,
+            connector=resolved_connector,
+        ):
             entry = discovered.name
             if _is_openhands_installed_container(skill_dir, entry):
                 continue
@@ -2543,13 +2751,20 @@ def _enumerate_skills_filesystem(
                 skill_dir,
                 claude_workspace,
             )
-            if row_id in seen:
-                if not nested_prefix:
+            if normalized_connector in {"claude", "claudecode"}:
+                identity = row_id
+                if identity in seen:
+                    if not nested_prefix:
+                        continue
+                    row_id = f"{nested_prefix}:{entry}"
+                    identity = row_id
+                    if identity in seen:
+                        continue
+            else:
+                identity = full if normalized_connector == "codex" else entry
+                if identity in seen:
                     continue
-                row_id = f"{nested_prefix}:{entry}"
-                if row_id in seen:
-                    continue
-            seen.add(row_id)
+            seen.add(identity)
             row: dict[str, Any] = {
                 "id": row_id,
                 "source": discovered.source,
@@ -2604,10 +2819,9 @@ def _skill_dir_is_eligible(path: str) -> bool:
         and os.path.splitext(path)[1].casefold() == ".md"
     ):
         return True
-    for marker in ("SKILL.md", "skill.json", "README.md"):
-        if os.path.isfile(os.path.join(path, marker)):
-            return True
-    return False
+    from defenseclaw.skill_discovery import skill_dir_is_eligible
+
+    return skill_dir_is_eligible(path)
 
 
 def _read_skill_description(path: str) -> str:
@@ -2616,11 +2830,7 @@ def _read_skill_description(path: str) -> str:
     Bounded to 2 KiB so we don't accidentally slurp a multi-MB README
     into the inventory dict.
     """
-    marker_paths = (
-        [path]
-        if os.path.isfile(path)
-        else [os.path.join(path, marker) for marker in ("SKILL.md", "README.md")]
-    )
+    marker_paths = [path] if os.path.isfile(path) else []
     for marker_path in marker_paths:
         # F-0424: a skill directory is attacker-influenced content. A
         # ``SKILL.md``/``README.md`` that is a symlink could point at an
@@ -2651,6 +2861,20 @@ def _read_skill_description(path: str) -> str:
             with reader as f:
                 text = f.read(2048)
         except OSError:
+            continue
+        frontmatter_description = _frontmatter_description(text)
+        if frontmatter_description:
+            return frontmatter_description[:200]
+        for line in text.splitlines():
+            stripped = line.strip().lstrip("#").strip()
+            if stripped:
+                return stripped[:200]
+
+    from defenseclaw.skill_discovery import read_skill_marker_text
+
+    for marker in ("SKILL.md", "README.md"):
+        text = read_skill_marker_text(path, marker, max_bytes=2048)
+        if text is None:
             continue
         frontmatter_description = _frontmatter_description(text)
         if frontmatter_description:
@@ -2703,16 +2927,34 @@ def _enumerate_plugins_filesystem(
         if connector_paths.normalize(resolved_connector) == "cursor"
         else cfg.plugin_dirs(connector)
     )
+    exact_codex_sources = (
+        {
+            os.path.normcase(os.path.abspath(path))
+            for path in connector_paths.codex_marketplace_plugin_dirs(
+                workspace_dir
+            )
+        }
+        if connector_paths.normalize(resolved_connector) == "codex"
+        else set()
+    )
     for plugin_dir in plugin_dirs:
-        for discovered in discover_plugin_directories(
-            plugin_dir,
-            connector=resolved_connector,
-            workspace_dir=workspace_dir,
-        ):
+        normalized = os.path.normcase(os.path.abspath(plugin_dir))
+        discovered_plugins = (
+            discover_exact_plugin_directory(plugin_dir, origin="codex marketplace")
+            if normalized in exact_codex_sources
+            else discover_plugin_directories(
+                plugin_dir,
+                connector=resolved_connector,
+                workspace_dir=workspace_dir,
+            )
+        )
+        for discovered in discovered_plugins:
             entry = discovered.id
             entry_key = filesystem_identity_key(entry, plugin_dir)
             full = discovered.path
-            if entry_key in seen and os.path.realpath(seen[entry_key]) != os.path.realpath(full):
+            if entry_key in seen:
+                if os.path.realpath(seen[entry_key]) == os.path.realpath(full):
+                    continue
                 raise AmbiguousPluginIdentityError(
                     f"ambiguous plugin identity {entry!r}: {seen[entry_key]}, {full}; "
                     "remove or rename duplicate directories"
@@ -2783,7 +3025,7 @@ def _enumerate_mcp_filesystem(
     for entry in cfg.mcp_servers(connector):
         row: dict[str, Any] = {
             "id": entry.name,
-            "source": f"{resolved} mcp registry",
+            "source": entry.source or f"{resolved} mcp registry",
         }
         if entry.command:
             row["command"] = entry.command
@@ -2795,5 +3037,9 @@ def _enumerate_mcp_filesystem(
             row["transport"] = entry.transport
         if entry.env:
             row["env_keys"] = sorted(entry.env.keys())
+        if entry.source_scope:
+            row["scope"] = entry.source_scope
+        if entry.trust_required:
+            row["trust_required"] = True
         rows.append(row)
     return rows

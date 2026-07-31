@@ -138,6 +138,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
         connector: str = "codex",
         *,
         event: str = "",
+        contract: str = "",
         legacy: bool = False,
         unqualified: bool = False,
     ) -> str:
@@ -153,11 +154,12 @@ class WindowsHookDoctorTests(unittest.TestCase):
         else:
             start_process = "Start-Process" if unqualified else r"Microsoft.PowerShell.Management\Start-Process"
             event_args = f",'--event','{event}'" if event else ""
+            contract_args = f",'--hook-contract','{contract}'" if contract else ""
             script = (
                 "$ErrorActionPreference='Stop'; "
                 "$env:NoDefaultCurrentDirectoryInExePath='1'; "
                 f"$hookProcess={start_process} -FilePath '{literal}' "
-                f"-ArgumentList @('hook','--connector','{connector}'{event_args}) "
+                f"-ArgumentList @('hook','--connector','{connector}'{event_args}{contract_args}) "
                 "-NoNewWindow -Wait -PassThru; exit $hookProcess.ExitCode"
             )
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -165,6 +167,41 @@ class WindowsHookDoctorTests(unittest.TestCase):
             r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
             f"-NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
         )
+
+    @staticmethod
+    def _bind_codex_fixture_command(command: str, event: str, contract: str) -> str:
+        """Bind a current fixture while preserving legacy/malformed shapes."""
+
+        value = command.strip()
+        parts = _split_windows(value)
+        lowered = [part.casefold() for part in parts]
+        if "-encodedcommand" in lowered:
+            encoded_index = lowered.index("-encodedcommand")
+            if encoded_index + 1 != len(parts) - 1:
+                return command
+            try:
+                script = base64.b64decode(parts[encoded_index + 1], validate=True).decode("utf-16-le")
+            except (ValueError, UnicodeError):
+                return command
+            needle = "@('hook','--connector','codex')"
+            if needle not in script:
+                return command
+            replacement = (
+                "@('hook','--connector','codex',"
+                f"'--event','{event}','--hook-contract','{contract}')"
+            )
+            parts[encoded_index + 1] = base64.b64encode(
+                script.replace(needle, replacement, 1).encode("utf-16-le")
+            ).decode("ascii")
+            return subprocess.list2cmdline(parts)
+
+        suffix = "hook --connector codex"
+        if value.endswith(suffix):
+            return (
+                value
+                + f" --event {event} --hook-contract {contract}"
+            )
+        return command
 
     def test_antigravity_mixed_schema_binds_every_official_event(self) -> None:
         runtime = self._runtime()
@@ -507,12 +544,22 @@ class WindowsHookDoctorTests(unittest.TestCase):
             path.parent.mkdir(exist_ok=True)
             selected_windows = windows_command or command
             escaped_extra = extra_command.replace("\\", "\\\\").replace('"', '\\"')
-            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            escaped_windows = selected_windows.replace("\\", "\\\\").replace('"', '\\"')
             rows: list[str] = []
             trust_rows: list[tuple[str, str]] = []
             state_source = _codex_hook_state_key_source(str(path))
             for event, (event_key, matcher, timeout) in doctor_hooks._codex_hook_specs(codex_contract).items():
+                generic_command = self._bind_codex_fixture_command(
+                    command,
+                    event,
+                    codex_contract,
+                )
+                native_command = self._bind_codex_fixture_command(
+                    selected_windows,
+                    event,
+                    codex_contract,
+                )
+                escaped = generic_command.replace("\\", "\\\\").replace('"', '\\"')
+                escaped_windows = native_command.replace("\\", "\\\\").replace('"', '\\"')
                 matcher_text = "" if matcher is None else f'matcher = "{matcher}", '
                 groups = (
                     f'{event} = [{{ {matcher_text}hooks = [{{ type = "command", '
@@ -520,8 +567,8 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 )
                 managed_handler = {
                     "type": "command",
-                    "command": command,
-                    "command_windows": selected_windows,
+                    "command": generic_command,
+                    "command_windows": native_command,
                     "timeout": timeout,
                 }
                 state_key = f"{state_source}:{event_key}:0:0"
@@ -1261,6 +1308,226 @@ class WindowsHookDoctorTests(unittest.TestCase):
                     expected_count,
                 )
                 _validate_codex_hook_contract(document, contract, str(config))
+
+    def test_codex_doctor_session_start_matcher_respects_contract_boundary(self) -> None:
+        runtime = self._runtime()
+        command = f'"{runtime}" hook --connector codex'
+        legacy_matcher = "startup|resume|clear"
+        compact_matcher = legacy_matcher + "|compact"
+        for contract, expected_matcher in (
+            ("codex-hooks-v1", legacy_matcher),
+            ("codex-hooks-v2", legacy_matcher),
+            ("codex-hooks-v3", compact_matcher),
+            ("codex-hooks-v4", compact_matcher),
+        ):
+            with self.subTest(contract=contract):
+                config = self._config(
+                    "codex",
+                    command,
+                    codex_contract=contract,
+                )
+                document = tomllib.loads(config.read_text(encoding="utf-8"))
+                self.assertEqual(
+                    document["hooks"]["SessionStart"][0]["matcher"],
+                    expected_matcher,
+                )
+                doctor_hooks._validate_codex_hook_matrix(
+                    document,
+                    str(config),
+                    contract,
+                )
+
+                drifted = json.loads(json.dumps(document))
+                drifted["hooks"]["SessionStart"][0]["matcher"] = (
+                    compact_matcher
+                    if expected_matcher == legacy_matcher
+                    else legacy_matcher
+                )
+                with self.assertRaisesRegex(_InspectionError, "SessionStart matcher"):
+                    doctor_hooks._validate_codex_hook_matrix(
+                        drifted,
+                        str(config),
+                        contract,
+                    )
+
+    def test_codex_doctor_accepts_exact_event_contract_binding_for_all_tiers(self) -> None:
+        runtime = self._runtime()
+        command = self._encoded_hook_command(runtime)
+        for contract in (
+            "codex-hooks-v1",
+            "codex-hooks-v2",
+            "codex-hooks-v3",
+            "codex-hooks-v4",
+        ):
+            with self.subTest(contract=contract):
+                config = self._config(
+                    "codex",
+                    command,
+                    codex_contract=contract,
+                )
+                document = tomllib.loads(config.read_text(encoding="utf-8"))
+                targets: set[str] = set()
+                for event in doctor_hooks._codex_hook_specs(contract):
+                    handler = document["hooks"][event][0]["hooks"][0]
+                    self.assertEqual(handler["command"], handler["command_windows"])
+                    target, args, kind = doctor_hooks._command_target(
+                        handler["command"],
+                        "codex",
+                    )
+                    self.assertEqual(kind, "direct")
+                    self.assertEqual(
+                        args,
+                        [
+                            "hook",
+                            "--connector",
+                            "codex",
+                            "--event",
+                            event,
+                            "--hook-contract",
+                            contract,
+                        ],
+                    )
+                    targets.add(ntpath.normcase(ntpath.normpath(target)))
+                self.assertEqual(targets, {ntpath.normcase(ntpath.normpath(str(runtime)))})
+                doctor_hooks._validate_codex_hook_matrix(
+                    document,
+                    str(config),
+                    contract,
+                )
+                _validate_codex_hook_contract(document, contract, str(config))
+
+    def test_codex_doctor_rejects_inexact_event_contract_bindings(self) -> None:
+        runtime = self._runtime()
+        contract = "codex-hooks-v4"
+        config = self._config(
+            "codex",
+            self._encoded_hook_command(runtime),
+            codex_managed=True,
+            codex_contract=contract,
+        )
+        original = tomllib.loads(config.read_text(encoding="utf-8"))
+        cases = {
+            "wrong-event": self._encoded_hook_command(
+                runtime,
+                event="PostToolUse",
+                contract=contract,
+            ),
+            "wrong-contract": self._encoded_hook_command(
+                runtime,
+                event="PreToolUse",
+                contract="codex-hooks-v3",
+            ),
+            "missing-contract": self._encoded_hook_command(
+                runtime,
+                event="PreToolUse",
+            ),
+            "unbound": self._encoded_hook_command(runtime),
+        }
+        for name, replacement in cases.items():
+            with self.subTest(name=name):
+                document = json.loads(json.dumps(original))
+                handler = document["hooks"]["PreToolUse"][0]["hooks"][0]
+                handler["command"] = replacement
+                handler["command_windows"] = replacement
+                self.assertTrue(
+                    doctor_hooks._handler_targets_defenseclaw(handler, "codex")
+                )
+                for validator in (
+                    lambda: doctor_hooks._validate_codex_hook_matrix(
+                        document,
+                        str(config),
+                        contract,
+                    ),
+                    lambda: _validate_codex_hook_contract(
+                        document,
+                        contract,
+                        str(config),
+                    ),
+                ):
+                    with self.assertRaises(_InspectionError) as raised:
+                        validator()
+                    self.assertEqual(raised.exception.state, "stale")
+                    self.assertIn("not bound", raised.exception.detail)
+
+        second_runtime = self.install / "alternate" / "defenseclaw-hook.exe"
+        second_runtime.parent.mkdir()
+        second_runtime.write_bytes(b"MZsecond-fixture")
+        document = json.loads(json.dumps(original))
+        replacement = self._encoded_hook_command(
+            second_runtime,
+            event="PreToolUse",
+            contract=contract,
+        )
+        handler = document["hooks"]["PreToolUse"][0]["hooks"][0]
+        handler["command"] = replacement
+        handler["command_windows"] = replacement
+        for validator in (
+            lambda: doctor_hooks._validate_codex_hook_matrix(
+                document,
+                str(config),
+                contract,
+            ),
+            lambda: _validate_codex_hook_contract(
+                document,
+                contract,
+                str(config),
+            ),
+        ):
+            with self.assertRaisesRegex(_InspectionError, "inconsistent native runtimes"):
+                validator()
+
+    def test_codex_command_parser_rejects_future_binding_values(self) -> None:
+        runtime = self._runtime()
+        current = self._encoded_hook_command(
+            runtime,
+            event="PreToolUse",
+            contract="codex-hooks-v4",
+        )
+        _target, args, _kind = doctor_hooks._command_target(current, "codex")
+        self.assertEqual(args[-4:], ["--event", "PreToolUse", "--hook-contract", "codex-hooks-v4"])
+
+        legacy_event_only = self._encoded_hook_command(
+            runtime,
+            event="PreToolUse",
+        )
+        _target, args, _kind = doctor_hooks._command_target(legacy_event_only, "codex")
+        self.assertEqual(args[-2:], ["--event", "PreToolUse"])
+        _target, args, _kind = doctor_hooks._command_target(
+            self._encoded_hook_command(runtime),
+            "codex",
+        )
+        self.assertEqual(args, ["hook", "--connector", "codex"])
+
+        for name, command in (
+            (
+                "future-event",
+                self._encoded_hook_command(
+                    runtime,
+                    event="FutureEvent",
+                    contract="codex-hooks-v4",
+                ),
+            ),
+            (
+                "future-contract",
+                self._encoded_hook_command(
+                    runtime,
+                    event="PreToolUse",
+                    contract="codex-hooks-v99",
+                ),
+            ),
+            (
+                "unsupported-pair",
+                self._encoded_hook_command(
+                    runtime,
+                    event="SessionEnd",
+                    contract="codex-hooks-v3",
+                ),
+            ),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(_InspectionError) as raised:
+                    doctor_hooks._command_target(command, "codex")
+                self.assertEqual(raised.exception.state, "malformed")
 
     def test_codex_explicitly_disabled_hooks_raise_malformed(self) -> None:
         document = {

@@ -647,6 +647,15 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert str(hermes_home / "plugins") in connector_source_label("hermes", "plugins")
     assert str(claude_home / "settings.json") in connector_source_label("claudecode", "config")
     assert str(codex_home / "config.toml") in connector_source_label("codex", "config")
+    codex_skills = connector_source_label("codex", "skills")
+    codex_mcps = connector_source_label("codex", "mcps")
+    codex_plugins = connector_source_label("codex", "plugins")
+    assert "~/.agents/skills" in codex_skills
+    assert ".codex/skills" not in codex_skills
+    assert ".codex/config.toml" in codex_mcps
+    assert ".mcp.json" not in codex_mcps
+    assert ".claude-plugin/marketplace.json" in codex_plugins
+    assert "plugins/cache" in codex_plugins.replace("\\", "/")
     assert ".cursor/skills" in connector_source_label("cursor", "skills")
     assert str(windsurf_profile / ".codeium" / "windsurf" / "hooks.json") in connector_source_label(
         "windsurf", "config"

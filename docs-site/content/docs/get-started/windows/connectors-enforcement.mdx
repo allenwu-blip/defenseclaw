@@ -70,8 +70,9 @@ defenseclaw guardrail status
 ```
 
 Action mode is not a promise that a post-action hook can undo a completed side
-effect. `PostToolUse` and other result surfaces can record a finding or stop a
-later agentic step, but the original tool action has already occurred.
+effect. For Codex, `PostToolUse` block feedback replaces the completed tool
+result fed to the next interactive loop; in code mode, the corresponding tool
+promise rejects. The original tool action has already occurred.
 
 ## Codex
 
@@ -83,16 +84,25 @@ notify fields in `%CODEX_HOME%\config.toml`. The default Codex home is
 Codex 0.133 through 0.144 registers ten events. Codex 0.145 and newer
 registers the same matrix plus `SessionEnd`:
 
+The lifecycle matcher/control behavior in the four rows marked **v3/v4** is
+contract-supported only for Codex `>=0.133`: v3 covers `0.133` through
+`0.144`, and v4 covers `>=0.145`. This boundary is not release certification;
+native Windows remains preview until authentic packaged plus official-client
+evidence is recorded. The smaller v1/v2 contracts do not inherit these claims;
+DefenseClaw does not infer or backfill them.
+
 | Codex event | Action-mode role |
 | --- | --- |
-| `SessionStart` | Observe lifecycle. |
+| `SessionStart` (v3/v4, `>=0.133`) | DefenseClaw can return `continue: false` to end the turn before another model request. The matcher covers `startup`, `resume`, `clear`, and `compact`. |
 | `UserPromptSubmit` | Can return a block decision. |
 | `PreToolUse` | Can return a deny decision before the tool. |
 | `PermissionRequest` | Can return a deny decision in the permission flow. |
-| `PostToolUse` | Can report/block the later loop, but cannot undo the completed tool. |
-| `SubagentStart`, `SubagentStop` | Observe lifecycle; not declared block surfaces. |
-| `PreCompact`, `PostCompact` | Observe context compaction; not declared block surfaces. |
-| `Stop` | Can return a block-shaped stop decision. |
+| `PostToolUse` | `decision: "block"` cannot undo the completed tool. In interactive use, the reason replaces the result fed to the next loop; in code mode, the corresponding tool promise rejects. |
+| `SubagentStart` | Observe lifecycle. |
+| `SubagentStop` (v3/v4, `>=0.133`) | DefenseClaw can return `decision: "block"` to continue the subagent flow; this is a continuation request, not subagent termination. |
+| `PreCompact` (v3/v4, `>=0.133`) | DefenseClaw can return `continue: false` to stop before compaction. |
+| `PostCompact` (v3/v4, `>=0.133`) | DefenseClaw can return `continue: false` to stop after compaction has completed. |
+| `Stop` | `decision: "block"` prevents stopping and continues with the reason as a new continuation prompt. |
 | `SessionEnd` (0.145+) | Best-effort teardown observation with a three-second maximum; not a block or native ask surface. |
 
 Setup selects a hook contract that matches the installed Codex version; older

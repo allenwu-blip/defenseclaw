@@ -141,6 +141,27 @@ def test_antigravity_signature_tracks_mcp_and_customization_paths():
     assert "antigravity.google" in antigravity.domain_patterns
 
 
+def test_codex_signature_tracks_current_official_asset_layouts():
+    signatures = {sig.id: sig for sig in load_ai_signatures()}
+    codex = signatures["codex"]
+
+    assert {
+        "~/.agents/skills",
+        "~/.agents/plugins/marketplace.json",
+        "~/.codex/plugins/cache",
+        "~/.codex/agents",
+        "~/.codex/rules",
+        ".agents/skills",
+        ".agents/plugins/marketplace.json",
+        ".claude-plugin/marketplace.json",
+        ".codex/config.toml",
+        ".codex/agents",
+        ".codex/rules",
+    } <= set(codex.config_paths)
+    assert {".mcp.json", "~/.codex/skills", ".codex/skills"}.isdisjoint(codex.config_paths)
+    assert set(codex.mcp_paths) == {"~/.codex/config.toml", ".codex/config.toml"}
+
+
 def test_custom_signature_pack_loads_from_managed_dir(tmp_path):
     pack_dir = tmp_path / "signature-packs"
     pack_dir.mkdir()

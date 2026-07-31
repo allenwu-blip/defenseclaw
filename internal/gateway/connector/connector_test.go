@@ -3727,8 +3727,8 @@ env_key = "OPENAI_API_KEY"
 }
 
 // TestCodex_Setup_RegistersHooksInline verifies the Codex connector
-// writes an inline [hooks] HookEventsToml struct into config.toml
-// covering all ten Codex events and pointing at the platform-native hook
+// writes an inline [hooks] HookEventsToml struct into config.toml covering the
+// version-resolved Codex event matrix and pointing at the platform-native hook
 // command. The hooks key is NOT a path to a hooks.json file —
 // that would trigger a TOML parse error at codex startup.
 func TestCodex_Setup_RegistersHooksInline(t *testing.T) {
@@ -3794,12 +3794,12 @@ func TestCodex_Setup_RegistersHooksInline(t *testing.T) {
 		matchers := hooks["PreToolUse"].([]interface{})
 		handlers := matchers[0].(map[string]interface{})["hooks"].([]interface{})
 		handler := handlers[0].(map[string]interface{})
-		wantFallback := hookInvocationCommandFor("windows", "codex", "")
+		wantFallback := windowsCodexHookCommandForEvent("PreToolUse", "codex-hooks-v4")
 		if got, _ := handler["command"].(string); got != wantFallback {
 			t.Errorf("command = %q, want hardened native fallback %q", got, wantFallback)
 		}
-		if got, _ := handler["command_windows"].(string); got != windowsCodexHookCommand() {
-			t.Errorf("command_windows = %q, want managed absolute invocation %q", got, windowsCodexHookCommand())
+		if got, _ := handler["command_windows"].(string); got != wantFallback {
+			t.Errorf("command_windows = %q, want managed absolute invocation %q", got, wantFallback)
 		}
 	}
 }
@@ -3834,9 +3834,11 @@ func TestCodex_Setup_HonorsCodexHome(t *testing.T) {
 
 	targets := c.ComponentTargets(filepath.Join(dir, "workspace"))
 	for component, expected := range map[string]string{
-		"skill":  filepath.Join(codexHome, "skills"),
-		"plugin": filepath.Join(codexHome, "plugins"),
+		"skill":  homePath(".agents", "skills"),
+		"plugin": filepath.Join(codexHome, "plugins", "cache"),
 		"mcp":    configPath,
+		"agent":  filepath.Join(codexHome, "agents"),
+		"rule":   filepath.Join(codexHome, "rules"),
 	} {
 		if !slices.Contains(targets[component], expected) {
 			t.Errorf("ComponentTargets(%q) = %v, missing CODEX_HOME path %q", component, targets[component], expected)
@@ -7111,7 +7113,15 @@ func runHookAndReturnCurlArgs(t *testing.T, scriptPath string, extraEnv map[stri
 	// file so the runtime environment cannot spoof the trust decision.
 	hookPath := stubDir + ":/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 	bakeHookPathForTest(t, scriptPath, hookPath)
-	cmd := exec.Command("bash", scriptPath)
+	args := []string{scriptPath}
+	if filepath.Base(scriptPath) == "codex-hook.sh" {
+		args = append(
+			args,
+			"--event", "UserPromptSubmit",
+			"--hook-contract", "codex-hooks-v4",
+		)
+	}
+	cmd := exec.Command("bash", args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+stubDir+":"+os.Getenv("PATH"),
 		"DEFENSECLAW_HOME="+dcHome,
@@ -7280,7 +7290,15 @@ func runHookAndReturnCurlArgsWithHome(t *testing.T, scriptPath, dcHome string, e
 	if err := os.WriteFile(stub, []byte(stubSrc), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("bash", scriptPath)
+	args := []string{scriptPath}
+	if filepath.Base(scriptPath) == "codex-hook.sh" {
+		args = append(
+			args,
+			"--event", "UserPromptSubmit",
+			"--hook-contract", "codex-hooks-v4",
+		)
+	}
+	cmd := exec.Command("bash", args...)
 	cmd.Env = append(os.Environ(),
 		"PATH="+stubDir+":"+os.Getenv("PATH"),
 		"DEFENSECLAW_HOME="+dcHome,
@@ -9462,6 +9480,195 @@ func TestManagedEnterpriseHookIgnoresUserControlledHomeAndDisableSentinel(t *tes
 	}
 }
 
+func TestCodexHookScriptValidatesAndForwardsBoundIdentity(t *testing.T) {
+	source, err := hookFS.ReadFile("hooks/codex-hook.sh")
+	if err != nil {
+		t.Fatalf("read embedded Codex hook: %v", err)
+	}
+	hardening, err := hookFS.ReadFile("hooks/_hardening.sh")
+	if err != nil {
+		t.Fatalf("read embedded hook hardening helper: %v", err)
+	}
+	rendered, err := renderTemplate(string(source), templateData{
+		APIAddr:     "127.0.0.1:18970",
+		FailMode:    "closed",
+		TokenFile:   ".hook-codex.token",
+		ScopedToken: true,
+	})
+	if err != nil {
+		t.Fatalf("render embedded Codex hook: %v", err)
+	}
+	for _, want := range []string{
+		`--event)`,
+		`--hook-contract)`,
+		`case "${BOUND_CONTRACT}:${BOUND_EVENT}" in`,
+		`.hook_event_name // empty`,
+		`if [ "$PAYLOAD_EVENT" != "$BOUND_EVENT" ]; then`,
+		`X-DefenseClaw-Hook-Event: ${BOUND_EVENT}`,
+		`X-DefenseClaw-Hook-Contract: ${BOUND_CONTRACT}`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("rendered Codex hook missing binding contract %q", want)
+		}
+	}
+	if !strings.Contains(
+		string(hardening),
+		"permissionDecisionReason|hook_event_name)",
+	) {
+		t.Error("string-only JSON fallback cannot extract hook_event_name")
+	}
+}
+
+func TestCodexHookScriptRejectsMismatchedRegisteredEvent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts are not used on Windows")
+	}
+	for _, test := range []struct {
+		failMode string
+		wantCode int
+	}{
+		{failMode: "open", wantCode: 0},
+		{failMode: "closed", wantCode: 2},
+	} {
+		t.Run(test.failMode, func(t *testing.T) {
+			dir := t.TempDir()
+			opts := SetupOpts{
+				APIAddr:      "127.0.0.1:1",
+				APIToken:     "scoped-token",
+				HookFailMode: test.failMode,
+			}
+			if err := WriteHookScriptsForConnectorObjectWithOpts(dir, opts, &CodexConnector{}); err != nil {
+				t.Fatalf("WriteHookScriptsForConnectorObjectWithOpts: %v", err)
+			}
+			cmd := exec.Command(
+				"bash",
+				filepath.Join(dir, "codex-hook.sh"),
+				"--event", "PreToolUse",
+				"--hook-contract", "codex-hooks-v4",
+			)
+			cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionEnd"}`)
+			cmd.Env = append(
+				os.Environ(),
+				"DEFENSECLAW_HOME="+t.TempDir(),
+			)
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+			gotCode := 0
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				gotCode = exitErr.ExitCode()
+			} else if err != nil {
+				t.Fatalf("run mismatched hook: %v", err)
+			}
+			if gotCode != test.wantCode {
+				t.Fatalf(
+					"mismatch exit=%d want=%d stderr=%q",
+					gotCode,
+					test.wantCode,
+					stderr.String(),
+				)
+			}
+			if !strings.Contains(stderr.String(), "does not match the registered event") {
+				t.Fatalf("mismatch stderr=%q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestCodexHookScriptBindsEventWithoutJQOrPython(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell scripts are not used on Windows")
+	}
+
+	dir := t.TempDir()
+	opts := SetupOpts{
+		APIAddr:      "127.0.0.1:18970",
+		APIToken:     "scoped-token",
+		HookFailMode: "closed",
+	}
+	if err := WriteHookScriptsForConnectorObjectWithOpts(dir, opts, &CodexConnector{}); err != nil {
+		t.Fatalf("WriteHookScriptsForConnectorObjectWithOpts: %v", err)
+	}
+
+	toolDir := t.TempDir()
+	curlArgs := filepath.Join(toolDir, "curl-args.txt")
+	curlStub := filepath.Join(toolDir, "curl")
+	curlSource := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " +
+		shellSingleQuoteForTest(curlArgs) +
+		"\nprintf '{\"action\":\"allow\"}\\n200'\n"
+	if err := os.WriteFile(curlStub, []byte(curlSource), 0o755); err != nil {
+		t.Fatalf("write curl stub: %v", err)
+	}
+	for _, name := range []string{
+		"awk", "cat", "chmod", "date", "dirname", "find", "head",
+		"mkdir", "mktemp", "rm", "sed", "tail", "tr",
+	} {
+		target, err := exec.LookPath(name)
+		if err != nil {
+			t.Skipf("minimal Unix fallback fixture requires %s: %v", name, err)
+		}
+		if err := os.Symlink(target, filepath.Join(toolDir, name)); err != nil {
+			t.Fatalf("link %s into minimal Unix fallback fixture: %v", name, err)
+		}
+	}
+	scriptPath := filepath.Join(dir, "codex-hook.sh")
+	bakeHookPathForTest(t, scriptPath, toolDir)
+	dcHome := t.TempDir()
+
+	run := func(input string) (int, string) {
+		t.Helper()
+		cmd := exec.Command(
+			"bash",
+			scriptPath,
+			"--event", "PreToolUse",
+			"--hook-contract", "codex-hooks-v4",
+		)
+		cmd.Stdin = strings.NewReader(input)
+		cmd.Env = append(
+			os.Environ(),
+			"DEFENSECLAW_HOME="+dcHome,
+			"DEFENSECLAW_FAIL_MODE=closed",
+		)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		err := cmd.Run()
+		if err == nil {
+			return 0, stderr.String()
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return exitErr.ExitCode(), stderr.String()
+		}
+		t.Fatalf("run minimal Unix fallback hook: %v", err)
+		return -1, stderr.String()
+	}
+
+	if code, stderr := run(`{"hook_event_name":"PreToolUse"}`); code != 0 {
+		t.Fatalf("matching event exit=%d want=0 stderr=%q", code, stderr)
+	}
+	args, err := os.ReadFile(curlArgs)
+	if err != nil {
+		t.Fatalf("matching event did not reach curl: %v", err)
+	}
+	for _, want := range []string{
+		"X-DefenseClaw-Hook-Event: PreToolUse",
+		"X-DefenseClaw-Hook-Contract: codex-hooks-v4",
+	} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("curl args missing %q:\n%s", want, args)
+		}
+	}
+
+	if err := os.Remove(curlArgs); err != nil {
+		t.Fatalf("reset curl evidence: %v", err)
+	}
+	if code, stderr := run(`{"hook_event_name":"SessionEnd"}`); code != 2 {
+		t.Fatalf("mismatched event exit=%d want=2 stderr=%q", code, stderr)
+	}
+	if _, err := os.Stat(curlArgs); !os.IsNotExist(err) {
+		t.Fatalf("mismatched event reached curl; stat error=%v", err)
+	}
+}
+
 func TestManagedEnterpriseHookFailsClosedWhenTokenIsMissing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell hooks are not used on Windows")
@@ -9483,7 +9690,12 @@ func TestManagedEnterpriseHookFailsClosedWhenTokenIsMissing(t *testing.T) {
 		t.Fatalf("remove token: %v", err)
 	}
 
-	cmd := exec.Command("bash", filepath.Join(dir, "codex-hook.sh"))
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(dir, "codex-hook.sh"),
+		"--event", "PreToolUse",
+		"--hook-contract", "codex-hooks-v4",
+	)
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse"}`)
 	cmd.Env = append(os.Environ(), "DEFENSECLAW_STRICT_AVAILABILITY=0")
 	err = cmd.Run()
@@ -9507,7 +9719,12 @@ func TestCodexHookScript_FailClosed_DefaultForObservabilitySetup(t *testing.T) {
 	}
 
 	dcHome := t.TempDir()
-	cmd := exec.Command("bash", filepath.Join(dir, "codex-hook.sh"))
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(dir, "codex-hook.sh"),
+		"--event", "PreToolUse",
+		"--hook-contract", "codex-hooks-v4",
+	)
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse"}`)
 	cmd.Env = append(os.Environ(),
 		"PATH="+os.Getenv("PATH"),
@@ -9568,6 +9785,12 @@ func TestCodexHookScript_StructuredBlock_ExitsZeroNotTwo(t *testing.T) {
 	// PreToolUse. The codex_output mirror is the critical bit — it's
 	// the JSON the hook script must echo to stdout.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-DefenseClaw-Hook-Event"); got != "PreToolUse" {
+			t.Errorf("bound event header=%q want PreToolUse", got)
+		}
+		if got := r.Header.Get("X-DefenseClaw-Hook-Contract"); got != "codex-hooks-v4" {
+			t.Errorf("bound contract header=%q want codex-hooks-v4", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"action":"block",
@@ -9596,7 +9819,12 @@ func TestCodexHookScript_StructuredBlock_ExitsZeroNotTwo(t *testing.T) {
 	}
 	dcHome := t.TempDir()
 
-	cmd := exec.Command("bash", filepath.Join(dir, "codex-hook.sh"))
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(dir, "codex-hook.sh"),
+		"--event", "PreToolUse",
+		"--hook-contract", "codex-hooks-v4",
+	)
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":["bash","-lc","cat /etc/shadow"]}}`)
 	cmd.Env = append(os.Environ(),
 		"PATH="+os.Getenv("PATH"),
@@ -9892,7 +10120,12 @@ func TestCodexHookScript_NoStructuredOutput_EmitsInlineBlockJSON(t *testing.T) {
 	}
 	dcHome := t.TempDir()
 
-	cmd := exec.Command("bash", filepath.Join(dir, "codex-hook.sh"))
+	cmd := exec.Command(
+		"bash",
+		filepath.Join(dir, "codex-hook.sh"),
+		"--event", "PreToolUse",
+		"--hook-contract", "codex-hooks-v4",
+	)
 	cmd.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse"}`)
 	cmd.Env = append(os.Environ(),
 		"PATH="+os.Getenv("PATH"),

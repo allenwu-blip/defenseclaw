@@ -6,6 +6,15 @@
 > and
 > [capability matrix](https://cisco-ai-defense.github.io/defenseclaw/docs/capability-matrix/)
 > for current behavior.
+>
+> In particular, the Codex column below intentionally records superseded
+> commit-era `.codex/skills`, `.mcp.json`, and broad plugin-root behavior. Do
+> not use those historical paths as implementation guidance. Current Codex
+> uses project/personal `.agents/skills`, user and trusted-project
+> `.codex/config.toml` MCP tables, exact marketplace local sources, and the
+> implementation-observed installed `$CODEX_HOME/plugins/cache` hierarchy.
+> The cache is preview inventory evidence, not a promised stable Codex CLI
+> public contract.
 
 **Commits covered:**
 - `d3b94fb` — Go-side sentinel elimination, polymorphic config + discovery, hook registration, tests

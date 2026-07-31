@@ -118,6 +118,9 @@ func TestHandleAgentHook_AIDAppliesAcrossHookProfiles(t *testing.T) {
 			if tc.connector == "copilot" {
 				req.Header.Set("X-DefenseClaw-Copilot-Event", tc.event)
 			}
+			if tc.connector == "codex" {
+				setTestCodexHookBinding(req, tc.event, defaultTestCodexHookContract)
+			}
 			w := httptest.NewRecorder()
 			api.handleAgentHook(tc.connector).ServeHTTP(w, req)
 			if w.Code != http.StatusOK {

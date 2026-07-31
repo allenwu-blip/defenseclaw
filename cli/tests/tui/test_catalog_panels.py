@@ -297,6 +297,22 @@ def test_catalog_empty_connector_stays_unowned_and_hook_connector_labels_contrac
     assert "unsupported" in connector_source_label("opencode", "skills")
 
 
+def test_catalog_codex_labels_use_current_official_asset_layouts() -> None:
+    skills = connector_source_label("codex", "skills")
+    mcps = connector_source_label("codex", "mcps")
+    plugins = connector_source_label("codex", "plugins")
+
+    assert "~/.agents/skills" in skills
+    assert "./.agents/skills" in skills
+    assert ".codex/skills" not in skills
+    assert ".codex/config.toml" in mcps
+    assert "trusted projects only" in mcps
+    assert ".mcp.json" not in mcps
+    assert ".agents/plugins/marketplace.json" in plugins
+    assert ".claude-plugin/marketplace.json" in plugins
+    assert "plugins/cache" in plugins.replace("\\", "/")
+
+
 def test_plugin_parse_connector_gate_actions_and_intents() -> None:
     rows = parse_plugin_list_json(
         json.dumps(

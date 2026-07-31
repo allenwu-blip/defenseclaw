@@ -1272,14 +1272,13 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build Codex hooks: %v", err)
 	}
-	wantCommand := cmd
-	if runtime.GOOS == "windows" {
-		wantCommand = hookInvocationCommandFor("windows", "codex", cmd)
-	}
-
 	groups, err := codexHookGroupsForSetup(opts)
 	if err != nil {
 		t.Fatalf("resolve Codex hook groups: %v", err)
+	}
+	contract, err := codexHookContractForSetup(opts)
+	if err != nil {
+		t.Fatalf("resolve Codex hook contract: %v", err)
 	}
 	for _, group := range groups {
 		raw, ok := table[group.eventType].([]interface{})
@@ -1289,15 +1288,22 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 		mg := raw[0].(map[string]interface{})
 		hooks := mg["hooks"].([]interface{})
 		h0 := hooks[0].(map[string]interface{})
+		wantCommand := codexHookCommandForPlatform(
+			runtime.GOOS,
+			group.eventType,
+			contract.ContractID,
+			cmd,
+		)
 		if got := h0["command"].(string); got != wantCommand {
 			t.Errorf("event %s command = %q, want %q", group.eventType, got, wantCommand)
 		}
 		if runtime.GOOS == "windows" {
 			generic := h0["command"].(string)
 			windowsCommand := h0["command_windows"].(string)
-			if windowsCommand != windowsCodexHookCommand() {
+			wantEventCommand := windowsCodexHookCommandForEvent(group.eventType, contract.ContractID)
+			if windowsCommand != wantEventCommand {
 				got := windowsCommand
-				t.Errorf("event %s command_windows = %q, want %q", group.eventType, got, windowsCodexHookCommand())
+				t.Errorf("event %s command_windows = %q, want %q", group.eventType, got, wantEventCommand)
 			}
 			if generic != windowsCommand {
 				t.Errorf(
@@ -1305,6 +1311,16 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 					group.eventType,
 					generic,
 					windowsCommand,
+				)
+			}
+			decoded := decodePowerShellEncodedCommandForTest(t, windowsCommand)
+			if !strings.Contains(decoded, "'--event','"+group.eventType+"'") ||
+				!strings.Contains(decoded, "'--hook-contract','"+contract.ContractID+"'") {
+				t.Errorf(
+					"event %s command did not bind event and contract %s: %s",
+					group.eventType,
+					contract.ContractID,
+					decoded,
 				)
 			}
 		}
@@ -1315,6 +1331,82 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 	}
 }
 
+func TestCodexEventBoundUnixCommandsCoverFiniteContracts(t *testing.T) {
+	const hookPath = "/home/u/.defenseclaw/hooks/codex-hook.sh"
+	const hooksDir = "/home/u/.defenseclaw/hooks"
+	for _, goos := range []string{"linux", "darwin"} {
+		for _, contract := range builtinHookContracts["codex"] {
+			for _, event := range contract.Events {
+				command := codexHookCommandForPlatform(
+					goos,
+					event,
+					contract.ContractID,
+					hookPath,
+				)
+				want := hookPath +
+					" --event " + event +
+					" --hook-contract " + contract.ContractID
+				if command != want {
+					t.Fatalf(
+						"%s %s/%s command=%q want=%q",
+						goos,
+						contract.ContractID,
+						event,
+						command,
+						want,
+					)
+				}
+				if !isOwnedCodexHookHandler(
+					map[string]interface{}{"command": command},
+					hooksDir,
+				) {
+					t.Fatalf(
+						"%s %s/%s event-bound command is not owned",
+						goos,
+						contract.ContractID,
+						event,
+					)
+				}
+			}
+		}
+	}
+}
+
+func TestCodexEventBoundWindowsCommandsHaveFiniteOwnership(t *testing.T) {
+	const hookBinary = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, hookBinary)
+
+	for _, contract := range builtinHookContracts["codex"] {
+		for _, event := range contract.Events {
+			command := windowsNativePowerShellHookCommandForCodexEvent(event, contract.ContractID, hookBinary)
+			if !isNativeHookCommand(command) {
+				t.Errorf("contract %s event %s command is not owned", contract.ContractID, event)
+			}
+		}
+	}
+
+	future := windowsNativePowerShellHookCommandForCodexEvent("FutureEvent", "codex-hooks-v4", hookBinary)
+	if isNativeHookCommand(future) {
+		t.Fatal("arbitrary future event command was treated as owned")
+	}
+	invalidContract := windowsNativePowerShellHookCommandForCodexEvent("SessionEnd", "codex-hooks-v999", hookBinary)
+	if isNativeHookCommand(invalidContract) {
+		t.Fatal("arbitrary contract command was treated as owned")
+	}
+	impossiblePair := windowsNativePowerShellHookCommandForCodexEvent("SessionEnd", "codex-hooks-v3", hookBinary)
+	if isNativeHookCommand(impossiblePair) {
+		t.Fatal("event/contract pair outside the registered matrix was treated as owned")
+	}
+	foreign := windowsNativePowerShellHookCommandForCodexEvent(
+		"SessionEnd",
+		"codex-hooks-v4",
+		`C:\foreign\defenseclaw-hook.exe`,
+	)
+	if isNativeHookCommand(foreign) {
+		t.Fatal("foreign event-bound hook binary was treated as owned")
+	}
+}
+
 func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -1322,12 +1414,28 @@ func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
 		contractID     string
 		wantEventCount int
 		wantSessionEnd bool
+		wantMatcher    string
 	}{
+		{
+			name:           "0.128 retains certified legacy matcher",
+			version:        "codex-cli 0.128.0",
+			contractID:     "codex-hooks-v1",
+			wantEventCount: 6,
+			wantMatcher:    "startup|resume|clear",
+		},
+		{
+			name:           "0.132 retains certified legacy matcher",
+			version:        "codex-cli 0.132.0",
+			contractID:     "codex-hooks-v2",
+			wantEventCount: 8,
+			wantMatcher:    "startup|resume|clear",
+		},
 		{
 			name:           "0.144 keeps versioned ten-event matrix",
 			version:        "codex-cli 0.144.0",
 			contractID:     "codex-hooks-v3",
 			wantEventCount: 10,
+			wantMatcher:    "startup|resume|clear|compact",
 		},
 		{
 			name:           "0.145 adds SessionEnd",
@@ -1335,6 +1443,7 @@ func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
 			contractID:     "codex-hooks-v4",
 			wantEventCount: 11,
 			wantSessionEnd: true,
+			wantMatcher:    "startup|resume|clear|compact",
 		},
 	}
 	for _, test := range tests {
@@ -1353,6 +1462,11 @@ func TestBuildCodexHooksTableRespectsSessionEndVersionBoundary(t *testing.T) {
 			}
 			if len(table) != test.wantEventCount {
 				t.Fatalf("event count = %d, want %d: %#v", len(table), test.wantEventCount, table)
+			}
+			sessionStartGroups := table["SessionStart"].([]interface{})
+			sessionStartGroup := sessionStartGroups[0].(map[string]interface{})
+			if got := sessionStartGroup["matcher"]; got != test.wantMatcher {
+				t.Fatalf("SessionStart matcher = %#v, want %q", got, test.wantMatcher)
 			}
 			rawSessionEnd, hasSessionEnd := table["SessionEnd"]
 			if hasSessionEnd != test.wantSessionEnd {
