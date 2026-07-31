@@ -768,11 +768,18 @@ func TestDeferredCleanupBootTransitionRejectsSameBootAndHibernateResume(t *testi
 	}
 }
 
-func TestDeferredCleanupRejectsMissingHookRuntimeBeforeLegacyPostExitPath(t *testing.T) {
+func TestDeferredCleanupMissingHookRuntimeSelectsPostExitCleanup(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "HookRuntime")
-	err := requireDeferredCleanupHookRuntime(missing)
-	if err == nil || !strings.Contains(err.Error(), "unsupported legacy cache cleanup") {
-		t.Fatalf("missing HookRuntime error = %v", err)
+	present, err := deferredCleanupHookRuntimePresent(missing)
+	if err != nil || present {
+		t.Fatalf("missing HookRuntime = present %v, error %v", present, err)
+	}
+	if err := os.MkdirAll(missing, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	present, err = deferredCleanupHookRuntimePresent(missing)
+	if err != nil || !present {
+		t.Fatalf("published HookRuntime = present %v, error %v", present, err)
 	}
 }
 
