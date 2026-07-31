@@ -1578,6 +1578,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
     Assert-True ($harnessText -match "Invoke-DangerousCommandCorpus observe" -and $harnessText -match "Invoke-DangerousCommandCorpus action") 'connector contract executes dangerous-command corpus in observe and action modes'
     Assert-True ($harnessText -match 'raw_action' -and $harnessText -match 'would_block' -and $harnessText -match 'enforced') 'dangerous-command contract asserts raw and enforced decisions'
+    Assert-True ($harnessText.Contains('turn_id = "dc-windows-contract-$Mode-$Name"')) 'dangerous-command probes use a mode-qualified fresh turn identity'
+    Assert-True ($harnessText.Contains('conversationId = "dc-windows-contract-$Connector-$Mode-$Name"')) 'Antigravity dangerous-command probes use a mode-qualified fresh conversation identity'
     Assert-True ($harnessText -match 'enterprise-hooks:install:elevation-required' -and
         $harnessText -match 'require an elevated administrator or LocalSystem token') `
         'native enterprise hooks require elevation in the standard-user connector contract'
