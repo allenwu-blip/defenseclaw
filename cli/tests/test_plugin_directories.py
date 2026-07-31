@@ -27,9 +27,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-
 import defenseclaw.inventory.plugin_directories as plugin_directories_module
+import pytest
 from defenseclaw.inventory.plugin_directories import (
     discover_exact_plugin_directory,
     discover_plugin_directories,
@@ -235,7 +234,9 @@ def test_codex_cache_accepts_missing_windows_direntry_identity(
                 st_mode=info.st_mode,
                 st_dev=0,
                 st_ino=0,
-                st_size=info.st_size,
+                # Windows DirEntry.stat() can report zero for directory size
+                # even when a named os.stat() exposes its allocation size.
+                st_size=0,
                 st_mtime_ns=info.st_mtime_ns,
                 st_ctime_ns=info.st_ctime_ns,
                 st_file_attributes=getattr(info, "st_file_attributes", 0),

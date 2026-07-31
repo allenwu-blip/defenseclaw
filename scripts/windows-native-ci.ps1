@@ -3274,14 +3274,21 @@ function Set-WizardCodexLegacyNonWaitingHook([object]$Specification) {
     try { $script = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($currentEncoded)) }
     catch { throw "cannot stage legacy Codex hook: invalid encoded command: $($_.Exception.Message)" }
 
-    $startPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*defenseclaw-hook\.exe'')\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+    $startPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*defenseclaw-hook\.exe'')\s+-ArgumentList\s+@\((?<arguments>''hook'',''--connector'',''codex''(?:,''--event'',''(?:''''|[^''])*'')?(?:,''--hook-contract'',''(?:''''|[^''])*'')?)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
     $start = [regex]::Match($script, $startPattern)
     if (-not $start.Success) {
         throw 'cannot stage legacy Codex hook: synchronous launcher expression is missing'
     }
+    $argumentLiterals = @([regex]::Matches(
+        $start.Groups['arguments'].Value,
+        "'(?:''|[^'])*'"
+    ))
+    if (($argumentLiterals.Value -join ',') -cne $start.Groups['arguments'].Value) {
+        throw 'cannot stage legacy Codex hook: launcher arguments are not exact PowerShell literals'
+    }
     $legacyScript = $script.Replace(
         $start.Value,
-        ('& ' + $start.Groups['file'].Value + ' hook --connector codex')
+        ('& ' + $start.Groups['file'].Value + ' ' + ($argumentLiterals.Value -join ' '))
     ).Replace('exit $hookProcess.ExitCode', 'exit $LASTEXITCODE')
     if ($legacyScript -ceq $script) {
         throw 'cannot stage legacy Codex hook: generated command did not change'

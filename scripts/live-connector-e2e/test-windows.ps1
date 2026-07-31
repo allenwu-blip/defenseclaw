@@ -1180,6 +1180,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Assert-WizardCodexLegacyLauncherNeedsRepair\b.*?(?=\r?\nfunction )'
     ).Value
+    $legacyLauncherFixture = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Set-WizardCodexLegacyNonWaitingHook\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($legacyLauncherFixture -match '--event' -and
+        $legacyLauncherFixture -match '--hook-contract' -and
+        $legacyLauncherFixture -match '\$argumentLiterals\.Value -join '' ''') `
+        'legacy Codex launcher fixture preserves current event and hook-contract bindings'
     $legacyWatchdogStop = $legacyLauncherAcceptance.IndexOf("@('watchdog', 'stop')", [StringComparison]::Ordinal)
     $legacyGatewayStop = $legacyLauncherAcceptance.IndexOf("@('stop')", [StringComparison]::Ordinal)
     $legacyFixture = $legacyLauncherAcceptance.IndexOf('Set-WizardCodexLegacyNonWaitingHook', [StringComparison]::Ordinal)

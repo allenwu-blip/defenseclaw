@@ -189,24 +189,33 @@ def _directory_entry_matches(
     if not stat.S_ISDIR(enumerated.st_mode) or not stat.S_ISDIR(named.st_mode):
         return False
     if enumerated.st_dev or enumerated.st_ino:
-        return (enumerated.st_dev, enumerated.st_ino) == (
+        return (
+            enumerated.st_dev,
+            enumerated.st_ino,
+            enumerated.st_size,
+            enumerated.st_mtime_ns,
+            enumerated.st_ctime_ns,
+        ) == (
             named.st_dev,
             named.st_ino,
+            named.st_size,
+            named.st_mtime_ns,
+            named.st_ctime_ns,
         )
     if (
-        enumerated.st_size,
         enumerated.st_mtime_ns,
         enumerated.st_ctime_ns,
     ) != (
-        named.st_size,
         named.st_mtime_ns,
         named.st_ctime_ns,
     ):
         return False
     # Windows DirEntry.stat() can expose 0/0 for dev/ino even though a named
-    # os.stat() returns the real file ID. The entry's type/reparse metadata was
-    # already validated above; the twice-checked named no-reparse identity is
-    # authoritative when the enumerated identity is unavailable.
+    # os.stat() returns the real file ID. It can likewise report directory size
+    # as zero while the named stat reports an allocation size. Directory size
+    # is not a portable identity field; the entry's type/reparse metadata and
+    # timestamps were already validated, and the twice-checked named
+    # no-reparse identity is authoritative when entry identity is unavailable.
     return True
 
 
