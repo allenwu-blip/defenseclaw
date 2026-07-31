@@ -128,3 +128,15 @@ def test_manual_live_matrix_keeps_cursor_macos_credential_gated() -> None:
     assert "- { connector: cursor,     os: macos-latest,   dcos: macos }" in workflow
     assert '[ "${MATRIX_CONNECTOR}" = "cursor" ] && [ -z "${CURSOR_API_KEY:-}" ]' in workflow
     assert "Cursor cell skipped: CURSOR_API_KEY is not configured" in workflow
+
+
+def test_manual_live_matrix_defers_runner_temp_to_step_scope() -> None:
+    workflow = (ROOT / ".github/workflows/connector-live-e2e.yml").read_text(encoding="utf-8")
+    live_job = workflow.split("\n  live-matrix:", 1)[1].split("\n  windows-live:", 1)[0]
+    job_env = live_job.split("\n    steps:", 1)[0]
+
+    assert "${{ runner.temp }}" not in job_env
+    assert (
+        'echo "HERMES_HOME=${RUNNER_TEMP}/hermes-home-${{ matrix.connector }}" '
+        '>> "$GITHUB_ENV"'
+    ) in live_job
