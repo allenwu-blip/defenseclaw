@@ -275,20 +275,30 @@ private-secret-name = "DefenseClaw must remain redacted"
                 "$($case.Name) writes a valid isolated port"
             Assert-True ([regex]::Matches($updated, '(?m)^gateway:[ \t]*(?=\r?$)').Count -eq 1) `
                 "$($case.Name) preserves exactly one gateway block"
-            Assert-True ([regex]::Matches(
-                $updated,
-                '(?m)^[ \t]*-[ \t]+name:[ \t]+windows-contract-jsonl[ \t]*(?=\r?$)'
-            ).Count -eq 1) "$($case.Name) writes exactly one explicit contract JSONL destination"
-            Assert-True ([regex]::Matches(
-                $updated,
-                '(?m)^[ \t]+kind:[ \t]+jsonl[ \t]*(?=\r?$)'
-            ).Count -eq 1) "$($case.Name) writes a local JSONL destination"
-            $jsonlPath = [regex]::Match(
-                $updated,
-                '(?m)^[ \t]+path:[ \t]+(?<literal>"(?:\\.|[^"\\])*")[ \t]*(?=\r?$)'
+            $inspection = Invoke-NativeProcess `
+                -FilePath $env:DEFENSECLAW_GATEWAY_BIN `
+                -ArgumentList @(
+                    'config-v8', 'effective',
+                    '--config', $casePath,
+                    '--data-dir', $caseRoot
+                ) `
+                -TimeoutSeconds 30 `
+                -AllowedExitCodes @(0) `
+                -LogPath (Join-Path $script:LogRoot (
+                    'gateway-port-effective-' + ($case.Name -replace '[^A-Za-z0-9]+', '-') + '.log'
+                ))
+            $effective = $inspection.StdOut | ConvertFrom-Json -Depth 100
+            Assert-True ($effective.gateway_api_port -eq $isolatedPort) `
+                "$($case.Name) canonical effective config retains the isolated gateway port"
+            $contractDestinations = @(
+                $effective.effective.destinations |
+                    Where-Object { $_.name -ceq 'windows-contract-jsonl' }
             )
-            Assert-True $jsonlPath.Success "$($case.Name) writes a JSON-quoted JSONL path"
-            Assert-True (($jsonlPath.Groups['literal'].Value | ConvertFrom-Json) -ceq (
+            Assert-True ($contractDestinations.Count -eq 1) `
+                "$($case.Name) writes exactly one explicit contract JSONL destination"
+            Assert-True ($contractDestinations[0].kind -ceq 'jsonl') `
+                "$($case.Name) writes a local JSONL destination"
+            Assert-True ($contractDestinations[0].transport.path -ceq (
                 Join-Path $caseRoot 'gateway.jsonl'
             )) "$($case.Name) roots JSONL evidence in the isolated profile"
         }

@@ -7,11 +7,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from defenseclaw.observability.v8_config import load_validate_v8
-from defenseclaw.observability.v8_writer import V8CandidateValidator, mutate_v8_config
-from defenseclaw.observability.v8_yaml import V8YAMLMutation
+_CLI_ROOT = Path(__file__).resolve().parents[1] / "cli"
+if str(_CLI_ROOT) not in sys.path:
+    sys.path.insert(0, str(_CLI_ROOT))
+
+from defenseclaw.observability.v8_config import load_validate_v8  # noqa: E402
+from defenseclaw.observability.v8_writer import (  # noqa: E402
+    V8CandidateValidator,
+    mutate_v8_config,
+)
+from defenseclaw.observability.v8_yaml import V8YAMLMutation  # noqa: E402
 
 
 def prepare_windows_contract_v8(
