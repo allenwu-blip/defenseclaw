@@ -2599,7 +2599,11 @@ func TestAPIHealthHandlerRejectsPut(t *testing.T) {
 
 func TestAPIStatusHandler(t *testing.T) {
 	health := NewSidecarHealth()
-	api := &APIServer{health: health, client: nil}
+	api := &APIServer{
+		health:     health,
+		client:     nil,
+		scannerCfg: &config.Config{DataDir: t.TempDir(), Environment: "windows"},
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
@@ -2617,6 +2621,13 @@ func TestAPIStatusHandler(t *testing.T) {
 	}
 	if result["gateway_hello"] != nil {
 		t.Error("gateway_hello should be absent when client is nil")
+	}
+	runtimeStatus, ok := result["runtime"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("response runtime = %#v; want object", result["runtime"])
+	}
+	if got := runtimeStatus["environment"]; got != "windows" {
+		t.Errorf("runtime environment = %#v; want %q", got, "windows")
 	}
 }
 

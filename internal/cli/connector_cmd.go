@@ -408,6 +408,7 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	}
 	opts := resolveConnectorOpts(dataDir)
 	if cfg != nil {
+		opts.CodexOtelEnvironment = cfg.Environment
 		opts.HookFailMode = cfg.EffectiveHookFailModeForConnector(name)
 		opts.GuardrailMode = cfg.EffectiveGuardrailModeForConnector(name)
 		opts.HILTEnabled = cfg.EffectiveHILTForConnector(name).Enabled

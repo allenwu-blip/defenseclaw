@@ -154,10 +154,11 @@ func TestCodexComponentTargetsUseOfficialCurrentLayouts(t *testing.T) {
 		}
 		targets := NewCodexConnector().ComponentTargets(active)
 		for component, want := range map[string]string{
-			"skill": filepath.Join(home, ".agents", "skills"),
-			"mcp":   filepath.Join(active, ".codex", "config.toml"),
-			"agent": filepath.Join(active, ".codex", "agents"),
-			"rule":  filepath.Join(active, ".codex", "rules"),
+			"skill":  filepath.Join(home, ".agents", "skills"),
+			"mcp":    filepath.Join(active, ".codex", "config.toml"),
+			"agent":  filepath.Join(active, ".codex", "agents"),
+			"rule":   filepath.Join(active, ".codex", "rules"),
+			"memory": filepath.Join(codexHome, "memories"),
 		} {
 			if !slices.Contains(targets[component], want) {
 				t.Errorf("%s targets=%v missing %q", component, targets[component], want)
@@ -178,6 +179,9 @@ func TestCodexComponentTargetsUseOfficialCurrentLayouts(t *testing.T) {
 			filepath.Join(active, ".mcp.json"),
 			filepath.Join(active, ".codex", "plugins"),
 			filepath.Join(filepath.Dir(home), "escape"),
+			filepath.Join(codexHome, "memory"),
+			filepath.Join(codexHome, "history"),
+			filepath.Join(codexHome, "history.jsonl"),
 		} {
 			for component, paths := range targets {
 				if slices.Contains(paths, stale) {

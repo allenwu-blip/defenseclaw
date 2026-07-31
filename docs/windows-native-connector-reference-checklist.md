@@ -9,7 +9,7 @@ machines, Bash, Git Bash, Cygwin, and MSYS are not qualifying evidence.
 
 ## OpenAI Codex reference evidence
 
-Evidence was rechecked on 2026-07-30.
+Evidence was rechecked on 2026-07-31.
 
 ### Eligibility and installation
 
@@ -60,6 +60,9 @@ Evidence was rechecked on 2026-07-30.
   `.codex\rules\*.rules` beside candidate project configs, followed by
   `%CODEX_HOME%\agents` and `%CODEX_HOME%\rules`. Project assets require a
   trusted project; filesystem presence alone does not prove activation.
+- Generated local memories live under `%CODEX_HOME%\memories`. Persisted
+  transcripts, when enabled, use the separate `%CODEX_HOME%\history.jsonl`
+  file and are not part of memory inventory.
 - Plugin marketplace precedence is repository
   `.agents\plugins\marketplace.json`, legacy-compatible repository
   `.claude-plugin\marketplace.json`, then personal
@@ -75,7 +78,10 @@ Evidence was rechecked on 2026-07-30.
   layers. JSON hook files use `commandWindows`; TOML uses `command_windows`.
 - DefenseClaw's native user setup writes the owned hook matrix to
   `%CODEX_HOME%\managed_config.toml`, and its marked OTel and `notify` fields to
-  `%CODEX_HOME%\config.toml`.
+  `%CODEX_HOME%\config.toml`. The OTel block pins the documented
+  `otel.environment` field to DefenseClaw's configured environment; Codex
+  otherwise defaults that field to `dev`. Doctor compares the file with the
+  authenticated live runtime environment and telemetry state.
 - Official configuration references:
   <https://learn.chatgpt.com/docs/codex/config-reference> and
   <https://learn.chatgpt.com/docs/hooks>.
@@ -84,7 +90,8 @@ Evidence was rechecked on 2026-07-30.
   [MCP](https://learn.chatgpt.com/docs/extend/mcp#connect-codex-to-an-mcp-server),
   [custom agents](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents),
   [rules](https://learn.chatgpt.com/docs/agent-configuration/rules#create-a-rules-file),
-  and [plugins](https://developers.openai.com/plugins/build/plugins).
+  [memories](https://learn.chatgpt.com/docs/customization/memories), and
+  [plugins](https://developers.openai.com/plugins/build/plugins).
 
 ### Versioned hook boundary
 
@@ -126,6 +133,15 @@ The current official hook reference lists eleven events:
   approval dialog.
 - `SessionEnd` is best-effort observation and telemetry. It is not a block or
   native ask surface.
+
+### Exploratory manual observation (not certification)
+
+On 2026-07-31, an authentic native Windows Codex session blocked the same
+policy-triggering tool on two attempts. This is retained only as exploratory
+local manual evidence. Codex appearing later in observe mode was attributable
+to a prior interactive setup and does not invalidate the two observed blocks.
+The observation is not packaged release-certification evidence and leaves all
+certification gates below open.
 
 The following matcher and continuation details are contract-supported only
 for the v3/v4 boundary (`>=0.133.0`). This is not a release-certification

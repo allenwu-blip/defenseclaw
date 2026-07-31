@@ -52,6 +52,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from defenseclaw.commands.cmd_doctor import (
     _active_connector,
     _check_codex_hooks,
+    _check_codex_otel_alignment,
     _check_connector_hooks,
     _check_connector_inventory,
     _check_cursor_configured_runtime,
@@ -68,6 +69,102 @@ from defenseclaw.commands.cmd_doctor import (
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
 )
+
+
+class TestCodexOtelAlignment(unittest.TestCase):
+    def _cfg(self, environment: str = "windows") -> MagicMock:
+        cfg = MagicMock()
+        cfg.environment = environment
+        cfg.gateway.api_port = 18970
+        cfg.gateway.resolved_token.return_value = "test-gateway-token"
+        return cfg
+
+    def _write_codex_config(self, home: str, body: str) -> None:
+        Path(home, "config.toml").write_text(body, encoding="utf-8")
+
+    def test_configured_and_live_environment_agree(self) -> None:
+        payload = {
+            "runtime": {"environment": "windows"},
+            "health": {"telemetry": {"state": "running"}},
+        }
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ,
+            {"CODEX_HOME": home},
+            clear=False,
+        ), patch(
+            "defenseclaw.commands.cmd_doctor._http_probe",
+            return_value=(200, json.dumps(payload)),
+        ):
+            self._write_codex_config(home, '[otel]\nenvironment = "windows"\n')
+            result = _DoctorResult()
+            _check_codex_otel_alignment(self._cfg(), result)
+
+        self.assertEqual([check["status"] for check in result.checks], ["pass", "pass"])
+        self.assertIn("'windows'", result.checks[0]["detail"])
+        self.assertIn("running", result.checks[1]["detail"])
+
+    def test_missing_codex_environment_exposes_dev_default(self) -> None:
+        payload = {
+            "runtime": {"environment": "windows"},
+            "health": {"telemetry": {"state": "running"}},
+        }
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ,
+            {"CODEX_HOME": home},
+            clear=False,
+        ), patch(
+            "defenseclaw.commands.cmd_doctor._http_probe",
+            return_value=(200, json.dumps(payload)),
+        ):
+            self._write_codex_config(home, "[otel]\nlog_user_prompt = true\n")
+            result = _DoctorResult()
+            _check_codex_otel_alignment(self._cfg(), result)
+
+        self.assertEqual(result.checks[0]["status"], "fail")
+        self.assertIn("Codex would use 'dev'", result.checks[0]["detail"])
+        self.assertEqual(result.checks[1]["status"], "pass")
+
+    def test_stale_runtime_environment_fails_authenticated_status(self) -> None:
+        payload = {
+            "runtime": {"environment": "dev"},
+            "health": {"telemetry": {"state": "running"}},
+        }
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ,
+            {"CODEX_HOME": home},
+            clear=False,
+        ), patch(
+            "defenseclaw.commands.cmd_doctor._http_probe",
+            return_value=(200, json.dumps(payload)),
+        ):
+            self._write_codex_config(home, '[otel]\nenvironment = "windows"\n')
+            result = _DoctorResult()
+            _check_codex_otel_alignment(self._cfg(), result)
+
+        self.assertEqual(result.checks[0]["status"], "pass")
+        self.assertEqual(result.checks[1]["status"], "fail")
+        self.assertIn("live runtime reports 'dev'", result.checks[1]["detail"])
+
+    def test_stopped_runtime_telemetry_fails_even_when_environment_matches(self) -> None:
+        payload = {
+            "runtime": {"environment": "windows"},
+            "health": {"telemetry": {"state": "stopped"}},
+        }
+        with tempfile.TemporaryDirectory() as home, patch.dict(
+            os.environ,
+            {"CODEX_HOME": home},
+            clear=False,
+        ), patch(
+            "defenseclaw.commands.cmd_doctor._http_probe",
+            return_value=(200, json.dumps(payload)),
+        ):
+            self._write_codex_config(home, '[otel]\nenvironment = "windows"\n')
+            result = _DoctorResult()
+            _check_codex_otel_alignment(self._cfg(), result)
+
+        self.assertEqual(result.checks[0]["status"], "pass")
+        self.assertEqual(result.checks[1]["status"], "fail")
+        self.assertIn("telemetry state is 'stopped'", result.checks[1]["detail"])
 
 
 class TestActiveConnectorResolver(unittest.TestCase):

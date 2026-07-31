@@ -5479,12 +5479,17 @@ func TestCodexSurgicalRestorePreservesOperatorTelemetryBackup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		setHookBinaryOverride(t, filepath.Join(dir, "DefenseClaw", windowsHookBinaryName))
 	}
-	opts := SetupOpts{DataDir: filepath.Join(dir, "defenseclaw"), APIAddr: "127.0.0.1:18970"}
+	opts := SetupOpts{
+		DataDir:              filepath.Join(dir, "defenseclaw"),
+		CodexOtelEnvironment: "windows",
+		APIAddr:              "127.0.0.1:18970",
+	}
 	managedOtel, err := buildCodexOtelBlockWithPathToken(opts, strings.Repeat("c", 64))
 	if err != nil {
 		t.Fatalf("build managed Codex OTel block: %v", err)
 	}
 	operatorOtel := map[string]interface{}{
+		"environment":     "staging",
 		"log_user_prompt": false,
 		"operator_note":   "preserve",
 		"exporter": map[string]interface{}{
@@ -5524,6 +5529,25 @@ func TestCodexSurgicalRestorePreservesOperatorTelemetryBackup(t *testing.T) {
 	}
 	if !codexValueMatches(cfg["notify"], operatorNotify) {
 		t.Fatalf("surgical restore changed operator Codex notify config: %#v", cfg["notify"])
+	}
+}
+
+func TestCodexSurgicalRestorePreservesEditedTelemetryEnvironment(t *testing.T) {
+	opts := SetupOpts{CodexOtelEnvironment: "windows", APIAddr: "127.0.0.1:18970"}
+	managedOtel, err := buildCodexOtelBlockWithPathToken(opts, strings.Repeat("d", 64))
+	if err != nil {
+		t.Fatalf("build managed Codex OTel block: %v", err)
+	}
+	managedOtel["environment"] = "operator-edited"
+	cfg := map[string]interface{}{"otel": managedOtel}
+
+	restoreCodexOtelEntries(cfg, codexConfigBackup{}, opts)
+	restoredOtel, ok := cfg["otel"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("surgical restore removed edited Codex OTel table: %#v", cfg)
+	}
+	if len(restoredOtel) != 1 || restoredOtel["environment"] != "operator-edited" {
+		t.Fatalf("surgical restore changed operator telemetry environment: %#v", restoredOtel)
 	}
 }
 

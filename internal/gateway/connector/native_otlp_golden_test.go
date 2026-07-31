@@ -35,10 +35,11 @@ import (
 func fixedSetupOpts(t *testing.T) SetupOpts {
 	t.Helper()
 	return SetupOpts{
-		APIAddr:       "127.0.0.1:18970",
-		APIToken:      "tok-test",
-		OTLPPathToken: strings.Repeat("a", 64),
-		DataDir:       t.TempDir(),
+		APIAddr:              "127.0.0.1:18970",
+		APIToken:             "tok-test",
+		OTLPPathToken:        strings.Repeat("a", 64),
+		DataDir:              t.TempDir(),
+		CodexOtelEnvironment: "windows",
 	}
 }
 
@@ -65,7 +66,7 @@ func TestScopedOTLPEndpointRecognitionIsExact(t *testing.T) {
 
 // TestNativeOTLPShape_Codex pins the codex [otel] table to the
 // schema-required shape. Codex's deserializer is kebab-case and
-// rejects missing keys, so this test guards the four documented
+// rejects missing keys, so this test guards the five documented
 // top-level fields and the per-signal exporter sub-shape.
 //
 // Equally important: this test ASSERTS that we do not emit
@@ -87,10 +88,23 @@ func TestNativeOTLPShape_Codex(t *testing.T) {
 		t.Fatalf("buildCodexOtelBlockWithPathToken: %v", err)
 	}
 
-	for _, want := range []string{"log_user_prompt", "exporter", "trace_exporter", "metrics_exporter"} {
+	for _, want := range []string{"environment", "log_user_prompt", "exporter", "trace_exporter", "metrics_exporter"} {
 		if _, ok := block[want]; !ok {
 			t.Errorf("missing required codex [otel] key %q", want)
 		}
+	}
+	if got := block["environment"]; got != opts.CodexOtelEnvironment {
+		t.Errorf("codex [otel].environment = %#v; want configured environment %q", got, opts.CodexOtelEnvironment)
+	}
+	defaultBlock, err := buildCodexOtelBlockWithPathToken(
+		SetupOpts{APIAddr: opts.APIAddr},
+		pathToken,
+	)
+	if err != nil {
+		t.Fatalf("build default Codex OTel block: %v", err)
+	}
+	if got := defaultBlock["environment"]; got != "dev" {
+		t.Errorf("default codex [otel].environment = %#v; want official default %q", got, "dev")
 	}
 
 	// Guard against accidentally re-adding service_name /
@@ -154,6 +168,29 @@ func TestNativeOTLPShape_Codex(t *testing.T) {
 		if got := hdrs["authorization"]; got != "Bearer "+pathToken {
 			t.Errorf("%s.otlp-http.headers[authorization] = %q; want connector-scoped bearer", signal, got)
 		}
+	}
+}
+
+func TestCodexOtelEnvironmentFollowsSetupEnvironment(t *testing.T) {
+	t.Parallel()
+	token := strings.Repeat("e", 64)
+	for _, tc := range []struct {
+		name string
+		opts SetupOpts
+		want string
+	}{
+		{name: "configured", opts: SetupOpts{APIAddr: "127.0.0.1:18970", CodexOtelEnvironment: "windows"}, want: "windows"},
+		{name: "official default", opts: SetupOpts{APIAddr: "127.0.0.1:18970"}, want: "dev"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			block, err := buildCodexOtelBlockWithPathToken(tc.opts, token)
+			if err != nil {
+				t.Fatalf("build Codex OTel block: %v", err)
+			}
+			if got := block["environment"]; got != tc.want {
+				t.Fatalf("otel.environment = %#v; want %q", got, tc.want)
+			}
+		})
 	}
 }
 

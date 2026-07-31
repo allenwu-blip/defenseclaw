@@ -41,6 +41,11 @@ import urllib.request
 
 import click
 
+try:  # Python 3.11+; the project supports 3.10 via its pinned fallback.
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
+
 from defenseclaw import ux
 from defenseclaw.audit_actions import ACTION_DOCTOR
 from defenseclaw.connector_paths import (
@@ -1536,6 +1541,128 @@ def _check_codex_hooks(
         _check_generated_hook_freshness(cfg, "codex", "Codex hooks", r)
     else:
         _emit("fail", "Codex hooks", f"hook script not found at {hook_script}", r=r)
+
+
+def _check_codex_otel_alignment(cfg, r: _DoctorResult) -> None:
+    """Bind Codex's configured OTel tag to trusted live runtime status.
+
+    Codex defaults ``otel.environment`` to ``dev`` when Setup omits it, while
+    DefenseClaw's telemetry runtime uses ``cfg.environment``. Read the actual
+    CODEX_HOME document and the authenticated local status endpoint so Doctor
+    cannot report those two distinct environments as one healthy setup.
+    """
+    expected = str(getattr(cfg, "environment", "") or "").strip()
+    config_path = os.path.join(codex_home(), "config.toml")
+    try:
+        with open(config_path, "rb") as fh:
+            raw = fh.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("config.toml exceeds the 1 MiB Doctor limit")
+        document = tomllib.loads(raw.decode("utf-8"))
+        otel = document.get("otel", {}) if isinstance(document, dict) else {}
+        actual = otel.get("environment", "") if isinstance(otel, dict) else ""
+        if not isinstance(actual, str):
+            raise TypeError("otel.environment is not a string")
+        actual = actual.strip()
+    except FileNotFoundError:
+        actual = ""
+        config_error = f"config.toml not found under CODEX_HOME ({config_path})"
+    except (OSError, UnicodeError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
+        actual = ""
+        config_error = f"could not validate CODEX_HOME/config.toml: {exc}"
+    else:
+        config_error = ""
+
+    if config_error:
+        _emit("fail", "Codex OTel environment", config_error, r=r)
+    elif not expected:
+        _emit("fail", "Codex OTel environment", "DefenseClaw environment is empty", r=r)
+    elif not actual:
+        _emit(
+            "fail",
+            "Codex OTel environment",
+            f"otel.environment is missing (Codex would use 'dev'); expected {expected!r}",
+            r=r,
+        )
+    elif actual != expected:
+        _emit(
+            "fail",
+            "Codex OTel environment",
+            f"config.toml reports {actual!r}; DefenseClaw config reports {expected!r}",
+            r=r,
+        )
+    else:
+        _emit("pass", "Codex OTel environment", f"config.toml and DefenseClaw use {expected!r}", r=r)
+
+    try:
+        api_port = int(getattr(cfg.gateway, "api_port", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        api_port = 0
+    token_resolver = getattr(getattr(cfg, "gateway", None), "resolved_token", None)
+    token = token_resolver() if callable(token_resolver) else ""
+    if not 1 <= api_port <= 65_535 or not token:
+        _emit(
+            "skip",
+            "Codex OTel runtime",
+            "authenticated runtime telemetry status is unavailable",
+            r=r,
+        )
+        return
+
+    code, body = _http_probe(
+        f"http://127.0.0.1:{api_port}/status",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=3.0,
+        response_limit=64 * 1024,
+        allow_truncation=False,
+    )
+    if code != 200:
+        detail = "gateway is unreachable" if code == 0 else f"authenticated status returned HTTP {code}"
+        _emit("skip", "Codex OTel runtime", detail, r=r)
+        return
+    try:
+        payload = json.loads(body)
+        runtime_info = payload.get("runtime", {}) if isinstance(payload, dict) else {}
+        health = payload.get("health", {}) if isinstance(payload, dict) else {}
+        telemetry = health.get("telemetry", {}) if isinstance(health, dict) else {}
+        runtime_environment = runtime_info.get("environment", "") if isinstance(runtime_info, dict) else ""
+        telemetry_state = telemetry.get("state", telemetry.get("status", "")) if isinstance(telemetry, dict) else ""
+        if not isinstance(runtime_environment, str) or not isinstance(telemetry_state, str):
+            raise TypeError
+        runtime_environment = runtime_environment.strip()
+        telemetry_state = telemetry_state.strip().lower()
+    except (json.JSONDecodeError, TypeError):
+        _emit("fail", "Codex OTel runtime", "authenticated runtime telemetry status is malformed", r=r)
+        return
+
+    if not runtime_environment:
+        _emit(
+            "fail",
+            "Codex OTel runtime",
+            "authenticated status omits runtime.environment; the running gateway is stale",
+            r=r,
+        )
+    elif runtime_environment != expected:
+        _emit(
+            "fail",
+            "Codex OTel runtime",
+            f"live runtime reports {runtime_environment!r}; DefenseClaw config reports {expected!r}",
+            r=r,
+        )
+    elif telemetry_state not in {"running", "healthy"}:
+        _emit(
+            "fail",
+            "Codex OTel runtime",
+            f"environment is {runtime_environment!r}, but telemetry state is {telemetry_state or 'unknown'!r}",
+            r=r,
+        )
+    else:
+        _emit(
+            "pass",
+            "Codex OTel runtime",
+            f"live telemetry is {telemetry_state} in environment {runtime_environment!r}",
+            r=r,
+        )
 
 
 def _check_windsurf_hooks(cfg, r: _DoctorResult, *, platform_name: str | None = None) -> None:
@@ -3999,6 +4126,8 @@ def doctor(
             continue
         with _doctor_label_suffix(f"[{_conn}]" if _multi_hooks else ""):
             _check_connector_hooks(cfg, _conn, r)
+            if _conn == "codex":
+                _check_codex_otel_alignment(cfg, r)
             # Human-approval (HILT) support is per-connector: each connector
             # has a different native ask surface AND may carry its own hilt
             # override, so run it for EVERY active connector (tagged like the

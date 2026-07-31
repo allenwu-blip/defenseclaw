@@ -144,7 +144,7 @@ export default function HomePage() {
       <section className="editorial-section" aria-labelledby="coverage-heading">
         <div className="editorial-shell">
           <SectionIntro eyebrow="Connector-aware enforcement" title="Use the strongest control each agent exposes" id="coverage-heading">
-            DefenseClaw normalizes the decision contract while preserving the difference between native ask, downgraded confirm, and pre-execution blocking.
+            DefenseClaw normalizes the decision contract while preserving the difference between native ask, review-only alerts, and pre-execution blocking.
           </SectionIntro>
           <CapabilityMatrixWrapper className="connector-preview" ariaLabel="Connector capability preview">
             <table>

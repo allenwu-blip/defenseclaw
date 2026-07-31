@@ -2499,9 +2499,10 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 	agentExecutable := connector.LoadCachedAgentExecutable(s.currentConfig().DataDir, conn.Name())
 	contractResolution := connector.ResolveHookContract(conn.Name(), agentVersion)
 	setupOpts := connector.SetupOpts{
-		DataDir:   s.currentConfig().DataDir,
-		ProxyAddr: proxyAddr,
-		APIAddr:   apiAddr,
+		DataDir:              s.currentConfig().DataDir,
+		CodexOtelEnvironment: s.currentConfig().Environment,
+		ProxyAddr:            proxyAddr,
+		APIAddr:              apiAddr,
 		// Bake the gateway token into hook scripts so claude-code-hook.sh
 		// and codex-hook.sh can authenticate against the API server's
 		// auth middleware. ResolvedToken checks env vars first, then
@@ -3423,20 +3424,21 @@ func (s *Sidecar) connectorSetupOptsChecked(conn connector.Connector, apiToken, 
 		return connector.SetupOpts{}, err
 	}
 	return connector.SetupOpts{
-		DataDir:            s.currentConfig().DataDir,
-		ProxyAddr:          proxyAddr,
-		APIAddr:            apiAddr,
-		APIToken:           setupTokens.connectorToken,
-		HookAPIToken:       setupTokens.hookToken,
-		HookAPITokenScoped: setupTokens.hookTokenScoped,
-		WorkspaceDir:       s.currentConfig().ConnectorWorkspaceDir(),
-		HookFailMode:       s.currentConfig().EffectiveHookFailModeForConnector(conn.Name()),
-		GuardrailMode:      s.currentConfig().EffectiveGuardrailModeForConnector(conn.Name()),
-		HILTEnabled:        s.currentConfig().EffectiveHILTForConnector(conn.Name()).Enabled,
-		InstallCodeGuard:   false,
-		AgentVersion:       agentVersion,
-		AgentExecutable:    agentExecutable,
-		HookContractID:     contractResolution.Contract.ContractID,
+		DataDir:              s.currentConfig().DataDir,
+		CodexOtelEnvironment: s.currentConfig().Environment,
+		ProxyAddr:            proxyAddr,
+		APIAddr:              apiAddr,
+		APIToken:             setupTokens.connectorToken,
+		HookAPIToken:         setupTokens.hookToken,
+		HookAPITokenScoped:   setupTokens.hookTokenScoped,
+		WorkspaceDir:         s.currentConfig().ConnectorWorkspaceDir(),
+		HookFailMode:         s.currentConfig().EffectiveHookFailModeForConnector(conn.Name()),
+		GuardrailMode:        s.currentConfig().EffectiveGuardrailModeForConnector(conn.Name()),
+		HILTEnabled:          s.currentConfig().EffectiveHILTForConnector(conn.Name()).Enabled,
+		InstallCodeGuard:     false,
+		AgentVersion:         agentVersion,
+		AgentExecutable:      agentExecutable,
+		HookContractID:       contractResolution.Contract.ContractID,
 	}, nil
 }
 

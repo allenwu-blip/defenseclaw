@@ -848,6 +848,7 @@ func codexComponentTargets(cwd string) map[string][]string {
 		"mcp":    {},
 		"agent":  {},
 		"rule":   {},
+		"memory": {},
 	}
 
 	codexHome := connector.CodexHomeDir()
@@ -860,6 +861,7 @@ func codexComponentTargets(cwd string) map[string][]string {
 		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(codexHome, "config.toml"))...)
 		targets["agent"] = append(targets["agent"], childFilesWithExtension(filepath.Join(codexHome, "agents"), ".toml")...)
 		targets["rule"] = append(targets["rule"], childFilesWithExtension(filepath.Join(codexHome, "rules"), ".rules")...)
+		targets["memory"] = append(targets["memory"], existingFiles(filepath.Join(codexHome, "memories"))...)
 	}
 	if runtime.GOOS != "windows" {
 		targets["skill"] = append(targets["skill"], childDirs(filepath.FromSlash("/etc/codex/skills"))...)
@@ -1045,8 +1047,8 @@ func (a *APIServer) scanCodexComponent(ctx context.Context, component, target st
 		)
 		result, err = ms.Scan(scanCtx, target)
 	default:
-		// Agent and rule targets participate in inventory/discovery, but there
-		// is no dedicated Go policy scanner for those file formats yet.
+		// Agent, rule, and memory targets participate in inventory/discovery,
+		// but there is no dedicated Go policy scanner for those formats yet.
 		return false
 	}
 	if err != nil {

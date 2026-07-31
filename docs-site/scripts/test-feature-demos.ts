@@ -90,6 +90,20 @@ describe('feature demo catalog', () => {
     }
   });
 
+  it('models Codex as a non-resumable review-only alert', () => {
+    const scenario = featureDemos.find((entry) => entry.id === 'hitl-native-approval');
+    const variant = scenario!.variants!.find((entry) => entry.id === 'codex');
+    const finalStep = variant!.steps.at(-1)!;
+    const outcome = scenario!.outcomes.find((entry) => entry.id === finalStep.outcomeId)!;
+    const codexSurface = JSON.stringify({ variant, outcome, evidence: scenario!.evidence });
+
+    assert.equal(outcome.kind, 'review');
+    assert.match(codexSurface, /alert\/systemMessage/i);
+    assert.match(codexSurface, /raw_action=confirm/i);
+    assert.match(codexSurface, /cannot resume|non-resumable/i);
+    assert.doesNotMatch(codexSurface, /Prompt through DefenseClaw TUI/i);
+  });
+
   it('preserves admission workflow boundaries', () => {
     const skill = featureDemos.find((scenario) => scenario.id === 'skill-quarantine');
     const skillIds = skill!.steps.map((current) => current.id);

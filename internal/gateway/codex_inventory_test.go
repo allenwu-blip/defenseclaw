@@ -35,6 +35,9 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 		filepath.Join(codexHome, "plugins", "cache", "market", "installed-plugin", "local"),
 		filepath.Join(codexHome, "agents"),
 		filepath.Join(codexHome, "rules"),
+		filepath.Join(codexHome, "memories"),
+		filepath.Join(codexHome, "memory"),
+		filepath.Join(codexHome, "history"),
 		filepath.Join(repo, ".git"),
 		filepath.Join(repo, ".agents", "skills", "repo-skill"),
 		filepath.Join(repo, ".agents", "plugins"),
@@ -53,6 +56,7 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 		filepath.Join(codexHome, "config.toml"):              `project_root_markers = [".git"]` + "\n",
 		filepath.Join(codexHome, "agents", "personal.toml"):  `name = "personal"` + "\n",
 		filepath.Join(codexHome, "rules", "personal.rules"):  `prefix_rule(pattern=["git"])` + "\n",
+		filepath.Join(codexHome, "history.jsonl"):            `{"session":"separate history surface"}` + "\n",
 		filepath.Join(repo, ".codex", "config.toml"):         `[mcp_servers.fs]` + "\n",
 		filepath.Join(repo, ".codex", "agents", "repo.toml"): `name = "repo"` + "\n",
 		filepath.Join(repo, ".codex", "rules", "repo.rules"): `prefix_rule(pattern=["go"])` + "\n",
@@ -90,6 +94,9 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 				filepath.Join(codexHome, "rules", "personal.rules"),
 				filepath.Join(repo, ".codex", "rules", "repo.rules"),
 			},
+			"memory": {
+				filepath.Join(codexHome, "memories"),
+			},
 		}
 		for component, wants := range expected {
 			for _, want := range wants {
@@ -102,6 +109,9 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 			filepath.Join(repo, ".codex", "skills"),
 			filepath.Join(repo, ".mcp.json"),
 			filepath.Join(repo, ".codex", "plugins"),
+			filepath.Join(codexHome, "memory"),
+			filepath.Join(codexHome, "history"),
+			filepath.Join(codexHome, "history.jsonl"),
 		} {
 			for component, got := range targets {
 				if slices.Contains(got, stale) {

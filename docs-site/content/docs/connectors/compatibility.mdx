@@ -41,8 +41,8 @@ until their integrated packaged and authentic official-client gates pass. See th
 | <ConnectorLabel id="omnigent" /> | hook contract | `>=0.7.0` / pinned custom-policy API | `omnigent-custom-policy-v1` / `v1` | prompt, tool_call, tool_result |
 
 Open-ended contracts leave `max_exclusive` empty until an upstream release
-publishes a breaking hook change. Codex is the current exception: its v1 and
-v2 ranges have explicit upper bounds because later releases add hook events.
+publishes a breaking hook change. Codex is the current exception: its v1, v2,
+and v3 ranges have explicit upper bounds because later releases add hook events.
 Installed versions and selected contracts are recorded in
 `hook_contract_lock.json` for doctor drift checks.
 

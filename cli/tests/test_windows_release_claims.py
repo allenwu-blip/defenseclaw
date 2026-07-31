@@ -206,6 +206,36 @@ def test_connector_matrix_delegates_current_support_to_the_website() -> None:
         assert f'<ConnectorLabel id="{connector_id}" />' in compatibility
 
 
+def test_codex_compatibility_docs_bound_v1_through_v3() -> None:
+    compatibility = (
+        ROOT / "docs-site/content/docs/connectors/compatibility.mdx"
+    ).read_text(encoding="utf-8")
+    text = " ".join(compatibility.split())
+
+    for version_range in (
+        ">=0.124.0, <0.129.0",
+        ">=0.129.0, <0.133.0",
+        ">=0.133.0, <0.145.0",
+    ):
+        assert f"`{version_range}`" in compatibility
+    assert "v1, v2, and v3 ranges have explicit upper bounds" in text
+    assert "v1 and v2 ranges have explicit upper bounds" not in text
+
+
+def test_codex_docs_keep_memories_and_history_separate() -> None:
+    connector_page = (
+        ROOT / "docs-site/content/docs/connectors/codex.mdx"
+    ).read_text(encoding="utf-8")
+    checklist = (
+        ROOT / "docs/windows-native-connector-reference-checklist.md"
+    ).read_text(encoding="utf-8")
+
+    assert "`$CODEX_HOME/memories/`" in connector_page
+    assert "`$CODEX_HOME/history.jsonl` is a separate" in connector_page
+    assert "%CODEX_HOME%\\memories" in checklist
+    assert "%CODEX_HOME%\\history.jsonl" in checklist
+
+
 def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
     connector_index = (ROOT / "docs-site/content/docs/connectors/index.mdx").read_text(
         encoding="utf-8"

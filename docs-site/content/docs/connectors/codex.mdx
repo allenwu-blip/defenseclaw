@@ -46,6 +46,10 @@ exporter configuration. The credential is separate from both the gateway
 master token and the Codex hook credential, is accepted only for matching Codex
 OTLP over loopback, and cannot call management or another connector.
 Do not print or copy the managed exporter header or its protected sidecar.
+Setup also pins Codex's documented `otel.environment` field to DefenseClaw's
+configured environment (Codex otherwise defaults it to `dev`). Doctor compares
+that on-disk value with authenticated live runtime metadata and telemetry
+health so a stale gateway or configuration drift is visible.
 
 Redaction is configured through the v8 bucket/profile policy: edit
 `observability.destinations[].routes[].selector.buckets` and
@@ -150,6 +154,9 @@ DefenseClaw follows the current Codex layouts rather than Claude Code's
   copying instruction text into the AIBOM.
 - Rules: `*.rules` below `rules/` beside each candidate active config layer,
   including project `.codex/rules/` and `$CODEX_HOME/rules/`.
+- Memories: generated local-memory state under `$CODEX_HOME/memories/`.
+  `$CODEX_HOME/history.jsonl` is a separate transcript-history file and is not
+  reported as a memory store.
 - Plugins: exact local `source.path` entries from repository and personal
   `.agents/plugins/marketplace.json`, the repository's lower-precedence
   legacy-compatible `.claude-plugin/marketplace.json`, plus preview inventory

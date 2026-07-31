@@ -316,7 +316,7 @@ human_approval: true
 hitl_min_severity: high
 connectors:
   claudecode: native_ask
-  codex: downgraded_confirm
+  codex: alert_system_message
 critical_behavior: always_block` },
       { id: 'hitl-audit', label: 'approval-audit.json', language: 'json', source: `{
   "connector": "claudecode",
@@ -338,14 +338,14 @@ critical_behavior: always_block` },
       { id: 'hitl-high', label: 'Finding', value: 'system.path-change · HIGH', detail: 'HIGH meets the configured approval threshold.', tone: 'warning' },
       { id: 'hitl-enabled', label: 'Mode', value: 'Action + HITL', detail: 'HITL only participates in action mode.', tone: 'warning' },
       { id: 'hitl-native', label: 'Claude Code', value: 'Native ask', detail: 'The approval appears in the agent surface.', tone: 'success' },
-      { id: 'hitl-codex', label: 'Codex', value: 'Downgraded confirm', detail: 'Codex does not expose native ask in the capability matrix.', tone: 'info' },
+      { id: 'hitl-codex', label: 'Codex', value: 'Alert/systemMessage', detail: 'The original confirm is preserved as raw_action for review, but Codex does not pause.', tone: 'info' },
       { id: 'operator-approved', label: 'Operator', value: 'Approve', detail: 'The action resumes and the decision is audited.', tone: 'success' },
       { id: 'operator-denied', label: 'Operator', value: 'Deny', detail: 'The agent receives the denial reason.', tone: 'danger' },
     ],
     outcomes: [
       { id: 'hitl-approved', kind: 'allow', label: 'Approve and continue', reason: 'Operator approved the HIGH-risk action', action: 'Audit and resume agent' },
       { id: 'hitl-denied', kind: 'block', label: 'Deny action', reason: 'Operator denied the HIGH-risk action', action: 'Audit and return reason' },
-      { id: 'codex-confirm', kind: 'pause', label: 'Downgraded confirm', reason: 'Codex has no native ask event', action: 'Prompt through DefenseClaw TUI' },
+      { id: 'codex-review', kind: 'review', label: 'Review-only alert/systemMessage', reason: 'Codex has no native ask event; raw_action=confirm is preserved', action: 'Record for audit or TUI review; cannot resume the hook' },
     ],
     steps: [
       step('hitl-fire', 'Hook fires', 'PreToolUse captures the pending action.', 'hitl-event', ['hitl-hook'], [{ tabId: 'hitl-event', start: 2, end: 5, tone: 'info' }]),
@@ -365,14 +365,14 @@ critical_behavior: always_block` },
         step('deny-native', 'Native ask', 'Action + HITL produces a native Claude Code prompt.', 'hitl-config', ['hitl-enabled', 'hitl-native'], [{ tabId: 'hitl-config', start: 1, end: 7, tone: 'warning' }]),
         step('deny-final', 'Deny', 'The pre-authored denial branch stops the action.', 'hitl-denied-audit', ['operator-denied'], [{ tabId: 'hitl-denied-audit', start: 2, end: 6, tone: 'danger' }], 'hitl-denied'),
       ] },
-      { id: 'codex', label: 'Codex', description: 'Show the downgraded confirm path.', steps: [
+      { id: 'codex', label: 'Codex', description: 'Show the non-resumable review-only alert path.', steps: [
         step('codex-hook', 'Inspect', 'The connector presents the same HIGH finding.', 'hitl-event', ['hitl-high'], [{ tabId: 'hitl-event', start: 4, end: 6, tone: 'warning' }]),
-        step('codex-final', 'Downgrade', 'Without native ask, DefenseClaw returns confirm.', 'hitl-config', ['hitl-codex'], [{ tabId: 'hitl-config', start: 4, end: 7, tone: 'info' }], 'codex-confirm'),
+        step('codex-final', 'Surface alert', 'Without native ask, DefenseClaw emits an alert/systemMessage for review; it cannot resume the hook.', 'hitl-config', ['hitl-codex'], [{ tabId: 'hitl-config', start: 4, end: 7, tone: 'info' }], 'codex-review'),
       ] },
     ],
     boundaries: {
-      did: ['Pause a HIGH finding before execution', 'Use connector capability to choose native ask or downgraded confirm', 'Audit the chosen branch'],
-      didNot: ['Offer HITL in observe mode', 'Offer approval for CRITICAL findings', 'Execute either branch in the browser'],
+      did: ['Show a native pause only where the connector supports it', 'Use connector capability to choose native ask or a review-only alert', 'Audit the chosen branch'],
+      didNot: ['Offer HITL in observe mode', 'Offer approval for CRITICAL findings', 'Resume a Codex hook from an alert or TUI review', 'Execute either branch in the browser'],
     },
   },
   {

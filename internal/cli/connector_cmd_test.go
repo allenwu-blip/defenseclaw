@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pelletier/go-toml/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
@@ -330,6 +331,7 @@ func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Gateway.Token = "master-token-must-not-be-registered"
+	cfg.Environment = "windows"
 	cfg.Guardrail.Enabled = true
 	cfg.Guardrail.HookFailMode = "open"
 	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
@@ -353,6 +355,14 @@ func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 	}
 	if bytes.Contains(codexRegistration, []byte(hookToken)) {
 		t.Fatal("selected registration exposes the connector-scoped hook token")
+	}
+	var codexConfig map[string]interface{}
+	if err := toml.Unmarshal(codexRegistration, &codexConfig); err != nil {
+		t.Fatalf("parse reconciled Codex config: %v", err)
+	}
+	otel, ok := codexConfig["otel"].(map[string]interface{})
+	if !ok || otel["environment"] != cfg.Environment {
+		t.Fatalf("reconciled Codex OTel environment = %#v; want %q", otel["environment"], cfg.Environment)
 	}
 	otlpToken, err := connector.LoadOTLPPathToken(dataDir, connector.OTLPScopeCodex)
 	if err != nil || otlpToken == "" {

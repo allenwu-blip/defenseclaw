@@ -846,6 +846,9 @@ func (c *CodexConnector) ComponentTargets(cwd string) map[string][]string {
 		"mcp":   {filepath.Join(codexDir, "config.toml")},
 		"agent": {filepath.Join(codexDir, "agents")},
 		"rule":  {filepath.Join(codexDir, "rules")},
+		"memory": {
+			filepath.Join(codexDir, "memories"),
+		},
 	}
 	if personalSkills := CodexPersonalSkillsPath(); strings.TrimSpace(personalSkills) != "" {
 		targets["skill"] = append(targets["skill"], personalSkills)
@@ -2055,7 +2058,18 @@ func buildCodexOtelBlockWithPathToken(opts SetupOpts, pathToken string) (map[str
 	if err != nil {
 		return nil, err
 	}
+	// Codex officially supports otel.environment and otherwise defaults it to
+	// "dev". Pin the same environment used by DefenseClaw's live telemetry
+	// runtime so Setup, Doctor, and emitted Codex telemetry cannot disagree.
+	block["environment"] = codexOtelEnvironment(opts)
 	return block, nil
+}
+
+func codexOtelEnvironment(opts SetupOpts) string {
+	if environment := strings.TrimSpace(opts.CodexOtelEnvironment); environment != "" {
+		return environment
+	}
+	return "dev"
 }
 
 func buildCodexOtelBlock(opts SetupOpts) map[string]interface{} {
@@ -3040,6 +3054,7 @@ func restoreCodexOtelEntries(cfg map[string]interface{}, backup codexConfigBacku
 		return
 	}
 
+	currentLooksManaged := codexOtelBlockLooksManaged(current, opts)
 	var originalValue interface{}
 	originalDecoded := false
 	original := map[string]interface{}(nil)
@@ -3099,6 +3114,34 @@ func restoreCodexOtelEntries(cfg map[string]interface{}, backup codexConfigBacku
 		delete(current, key)
 	}
 
+	// Setup owns otel.environment only while it retains the exact value Setup
+	// wrote and either the current table still carries a managed exporter or a
+	// pristine [otel] pre-image proves which value preceded Setup. This avoids
+	// claiming an unrelated operator's coincidentally identical environment.
+	managedEnvironment := codexOtelEnvironment(opts)
+	if value, exists := current["environment"]; exists && value == managedEnvironment &&
+		(currentLooksManaged || originalDecoded) {
+		if original != nil {
+			if saved, hadSaved := original["environment"]; hadSaved {
+				if originalLooksManaged && saved == managedEnvironment {
+					delete(current, "environment")
+				} else {
+					current["environment"] = saved
+				}
+			} else {
+				delete(current, "environment")
+			}
+		} else {
+			delete(current, "environment")
+		}
+	}
+	if _, exists := current["environment"]; !exists && original != nil {
+		if saved, hadSaved := original["environment"]; hadSaved &&
+			!(originalLooksManaged && saved == managedEnvironment) {
+			current["environment"] = saved
+		}
+	}
+
 	// Setup owns log_user_prompt only while it retains the value Setup wrote.
 	// A current false/non-boolean value is an operator edit and must survive.
 	if value, exists := current["log_user_prompt"]; exists && value == true {
@@ -3122,7 +3165,7 @@ func restoreCodexOtelEntries(cfg map[string]interface{}, backup codexConfigBacku
 	// Setup replaced the original [otel] table wholesale. Re-add displaced
 	// unrelated original keys, but never overwrite a current operator edit.
 	for key, saved := range original {
-		if key == "log_user_prompt" || codexOtelExporterKey(key) {
+		if key == "environment" || key == "log_user_prompt" || codexOtelExporterKey(key) {
 			continue
 		}
 		if _, exists := current[key]; !exists {
@@ -3153,6 +3196,10 @@ func codexOtelTableIsEntirelyManaged(current map[string]interface{}, opts SetupO
 	sawManagedExporter := false
 	for key, value := range current {
 		switch key {
+		case "environment":
+			if value != codexOtelEnvironment(opts) {
+				return false
+			}
 		case "log_user_prompt":
 			if value != true {
 				return false

@@ -130,6 +130,17 @@ func mustConnectorSetupOpts(t *testing.T, s *Sidecar, conn connector.Connector, 
 	return opts
 }
 
+func TestConnectorSetupOptsCarryCodexOtelEnvironment(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.Environment = "windows"
+	conn := &bootStubConnector{stubConnector: stubConnector{name: "codex"}}
+
+	opts := mustConnectorSetupOpts(t, s, conn, "tok", "127.0.0.1:4000", "127.0.0.1:18970")
+	if opts.CodexOtelEnvironment != s.cfg.Environment {
+		t.Fatalf("setup environment = %q; want %q", opts.CodexOtelEnvironment, s.cfg.Environment)
+	}
+}
+
 // TestSetupOneConnector_SetupErrorReturnsWithoutRollback verifies that a
 // Setup() failure surfaces as an error and does NOT trigger a teardown: there
 // is nothing to roll back because Setup never reached a verified state.

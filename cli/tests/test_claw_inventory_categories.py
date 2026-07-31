@@ -458,14 +458,27 @@ class MemoryAdapterTests(unittest.TestCase):
         self.assertEqual(out[0]["settings_source"], settings)
         self.assertFalse(out[0]["activation_verified"])
 
-    def test_codex_memory_multiple_candidates(self):
-        os.makedirs(os.path.join(self.tmp, ".codex", "memory"))
-        os.makedirs(os.path.join(self.tmp, ".codex", "history"))
-        out = _memory_for_connector("codex", _FakeCfg())
-        sources = sorted(e["source"] for e in out)
-        self.assertEqual(len(sources), 2)
-        self.assertTrue(any(s.endswith("memory") for s in sources))
-        self.assertTrue(any(s.endswith("history") for s in sources))
+    def test_codex_memory_uses_codex_home_memories_only(self):
+        codex_home = os.path.join(self.tmp, "custom-codex-home")
+        memories = os.path.join(codex_home, "memories")
+        os.makedirs(memories)
+        with open(os.path.join(memories, "summary.md"), "w") as fh:
+            fh.write("generated memory")
+
+        # These stale directory assumptions and the separate transcript file
+        # must not be reported as Codex memory stores.
+        os.makedirs(os.path.join(codex_home, "memory"))
+        os.makedirs(os.path.join(codex_home, "history"))
+        with open(os.path.join(codex_home, "history.jsonl"), "w") as fh:
+            fh.write('{"session":"separate history surface"}\n')
+
+        with patch.dict(os.environ, {"CODEX_HOME": codex_home}, clear=False):
+            out = _memory_for_connector("codex", _FakeCfg())
+
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["id"], "memories")
+        self.assertEqual(out[0]["source"], memories)
+        self.assertEqual(out[0]["entry_count"], 1)
 
     def test_unknown_connector_returns_empty(self):
         self.assertEqual(_memory_for_connector("openclaw", _FakeCfg()), [])

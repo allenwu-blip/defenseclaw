@@ -1835,10 +1835,7 @@ def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         candidates = [claude_resolution.path] if claude_resolution.path else []
     elif name == "codex":
         connector_home = connector_paths.connector_home(name)
-        candidates = [
-            os.path.join(connector_home, "memory"),
-            os.path.join(connector_home, "history"),
-        ]
+        candidates = [os.path.join(connector_home, "memories")]
     elif name == "zeptoclaw":
         candidates = [os.path.join(home, ".zeptoclaw", "memory")]
     else:
