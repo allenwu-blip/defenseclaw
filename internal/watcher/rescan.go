@@ -582,7 +582,7 @@ func (w *InstallWatcher) scannerFingerprint(evt InstallEvent) string {
 			"llm_base_url="+llm.BaseURL,
 		)
 	case InstallPlugin:
-		bin := w.cfg.Scanners.PluginScanner
+		bin := scanner.NewPluginScanner(w.cfg.Scanners.PluginScanner).BinaryPath
 		llm := w.cfg.ResolveLLM("scanners.plugin")
 		parts = append(parts,
 			"binary="+bin,
