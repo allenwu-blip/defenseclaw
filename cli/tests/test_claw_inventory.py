@@ -2901,8 +2901,12 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             inv = build_claw_aibom(cfg, live=True)
 
         self.assertEqual(inv["connector"], "opencode")
-        self.assertIn("oc-skill", {row["id"] for row in inv["skills"]})
-        self.assertIn("oc-plugin", {row["id"] for row in inv["plugins"]})
+        if os.name == "nt":
+            self.assertNotIn("oc-skill", {row["id"] for row in inv["skills"]})
+            self.assertNotIn("oc-plugin", {row["id"] for row in inv["plugins"]})
+        else:
+            self.assertIn("oc-skill", {row["id"] for row in inv["skills"]})
+            self.assertIn("oc-plugin", {row["id"] for row in inv["plugins"]})
         self.assertIn("npm-plugin@1.0.0", {row["id"] for row in inv["plugins"]})
         self.assertIn("file-tool", {row["id"] for row in inv["tools"]})
         self.assertIn("review", {row["id"] for row in inv["tools"]})

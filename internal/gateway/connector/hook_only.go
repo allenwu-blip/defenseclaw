@@ -523,6 +523,18 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 
 	switch c.name {
 	case "opencode":
+		if runtime.GOOS == "windows" {
+			// Preserve PR #655's Windows component boundary. The managed
+			// bridge plugin still has its explicit Setup destination, but
+			// generic inventory/watchers must not create unproven OpenCode
+			// skill, plugin, agent, rule, or MCP paths around it.
+			caps.MCP = unsupportedSurface("OpenCode MCP component management is not supported on Windows.")
+			caps.Skills = unsupportedSurface("OpenCode skill paths are not supported on Windows.")
+			caps.Rules = unsupportedSurface("OpenCode rule paths are not supported on Windows.")
+			caps.Plugins = unsupportedSurface("OpenCode plugin inventory paths are not supported on Windows.")
+			caps.Agents = unsupportedSurface("OpenCode agent paths are not supported on Windows.")
+			break
+		}
 		configDir := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_DIR"))
 		if configDir == "" {
 			configDir = homePath(".config", "opencode")
@@ -716,7 +728,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			},
 		}
 	case "windsurf":
-		if preserveWindsurfWindowsCapabilities(&caps, opts, runtime.GOOS) {
+		if preserveWindsurfNonDarwinCapabilities(&caps, opts, runtime.GOOS) {
 			break
 		}
 		caps.MCP = SurfaceCapability{
@@ -949,23 +961,25 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			RequiresOptIn:  true,
 			Notes:          []string{"OpenHands loads file-based subagents from .agents/agents/*.md first and .openhands/agents/*.md as the legacy fallback. Built-in general-purpose/code-explorer/bash-runner agents are runtime-provided and are not filesystem assets; default/explore/bash are deprecated aliases."},
 		}
-		caps.Telemetry = TelemetryCapability{
-			NativeOTLP:    true,
-			NativeSignals: []string{"traces"},
-			HookSignals:   []string{"logs", "metrics", "traces"},
-			Env: []EnvRequirement{
-				{Name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point OpenHands SDK native traces at the DefenseClaw gateway."},
-				{Name: "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", Scope: EnvScopeProcess, Required: false, Description: "Set to http/protobuf for DefenseClaw OTLP trace ingestion."},
-				{Name: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry the connector-scoped bearer and OpenHands source/client attribution."},
-			},
-			AuthMode:         "scoped-header-token-loopback",
-			EndpointTemplate: "http://" + opts.APIAddr + "/v1/traces",
-			SourceModes:      []string{"native", "hook"},
-			Notes: []string{
-				"OpenHands CLI 1.16.0 bundles SDK 1.21.0; standalone SDK 1.39.1 preserves the same Laminar process-environment OTEL trace-export contract. The SDK review does not change the CLI compatibility range.",
-				"DefenseClaw does not persist OTEL variables in OpenHands config or mutate shell profiles; launch OpenHands with the rendered process environment.",
-				"Native trace attributes are not claimed as cross-rail identity until a stable exported session attribute is source-documented and live-validated.",
-			},
+		if runtime.GOOS == "darwin" {
+			caps.Telemetry = TelemetryCapability{
+				NativeOTLP:    true,
+				NativeSignals: []string{"traces"},
+				HookSignals:   []string{"logs", "metrics", "traces"},
+				Env: []EnvRequirement{
+					{Name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point OpenHands SDK native traces at the DefenseClaw gateway."},
+					{Name: "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", Scope: EnvScopeProcess, Required: false, Description: "Set to http/protobuf for DefenseClaw OTLP trace ingestion."},
+					{Name: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry the connector-scoped bearer and OpenHands source/client attribution."},
+				},
+				AuthMode:         "scoped-header-token-loopback",
+				EndpointTemplate: "http://" + opts.APIAddr + "/v1/traces",
+				SourceModes:      []string{"native", "hook"},
+				Notes: []string{
+					"OpenHands CLI 1.16.0 bundles SDK 1.21.0; standalone SDK 1.39.1 preserves the same Laminar process-environment OTEL trace-export contract. The SDK review does not change the CLI compatibility range.",
+					"DefenseClaw does not persist OTEL variables in OpenHands config or mutate shell profiles; launch OpenHands with the rendered process environment.",
+					"Native trace attributes are not claimed as cross-rail identity until a stable exported session attribute is source-documented and live-validated.",
+				},
+			}
 		}
 	default:
 		caps.MCP = unsupportedSurface("")
@@ -977,8 +991,8 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 	return caps
 }
 
-func preserveWindsurfWindowsCapabilities(caps *ConnectorCapabilities, opts SetupOpts, goos string) bool {
-	if goos != "windows" {
+func preserveWindsurfNonDarwinCapabilities(caps *ConnectorCapabilities, opts SetupOpts, goos string) bool {
+	if goos == "darwin" {
 		return false
 	}
 	caps.MCP = SurfaceCapability{
@@ -988,19 +1002,19 @@ func preserveWindsurfWindowsCapabilities(caps *ConnectorCapabilities, opts Setup
 		ReadPaths:     windsurfMCPPaths(),
 		DiscoveryOnly: true,
 		RequiresOptIn: true,
-		Notes:         []string{"DefenseClaw preserves the PR #655 Windows discovery-only MCP contract."},
+		Notes:         []string{"DefenseClaw preserves the existing discovery-only MCP contract outside macOS."},
 	}
 	caps.Rules = SurfaceCapability{
 		Supported:     true,
 		Scope:         "workspace",
 		ReadPaths:     existingWindsurfRulePaths(opts),
 		DiscoveryOnly: true,
-		Notes:         []string{"Windsurf rule writes remain deferred on Windows unless a documented/pre-existing path is present."},
+		Notes:         []string{"Windsurf rule writes remain deferred outside macOS unless a documented/pre-existing path is present."},
 	}
 	caps.CodeGuard.Supported = true
 	caps.CodeGuard.InstallTargets = []string{"rule"}
-	caps.CodeGuard.Notes = append(caps.CodeGuard.Notes, "Windsurf CodeGuard preserves the PR #655 Windows rule-only contract.")
-	caps.Skills = unsupportedSurface("Windsurf skills remain unsupported by the PR #655 Windows connector.")
+	caps.CodeGuard.Notes = append(caps.CodeGuard.Notes, "Windsurf CodeGuard preserves the existing rule-only contract outside macOS.")
+	caps.Skills = unsupportedSurface("Windsurf skills remain unsupported outside the native macOS connector.")
 	caps.Plugins = pluginsAreOpenClawOnly()
 	caps.Agents = unsupportedSurface("Windsurf agent/subagent asset installation is not supported.")
 	return true
@@ -1918,16 +1932,21 @@ func pluginsAreOpenClawOnly() SurfaceCapability {
 }
 
 func cursorSkillPaths(opts SetupOpts) []string {
-	return []string{
+	paths := []string{
 		homePath(".cursor", "skills"),
 		homePath(".agents", "skills"),
-		homePath(".claude", "skills"),
-		homePath(".codex", "skills"),
 		workspacePath(opts, ".cursor", "skills"),
 		workspacePath(opts, ".agents", "skills"),
-		workspacePath(opts, ".claude", "skills"),
-		workspacePath(opts, ".codex", "skills"),
 	}
+	if runtime.GOOS == "darwin" {
+		paths = append(paths,
+			homePath(".claude", "skills"),
+			homePath(".codex", "skills"),
+			workspacePath(opts, ".claude", "skills"),
+			workspacePath(opts, ".codex", "skills"),
+		)
+	}
+	return paths
 }
 
 func hermesSkillReadPaths() []string {

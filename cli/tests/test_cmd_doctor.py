@@ -678,6 +678,7 @@ class DoctorHookReachabilityTests(unittest.TestCase):
                 fh.write("a" * 64)
             os.chmod(path, 0o600)
 
+    @unittest.skipIf(os.name == "nt", "POSIX OpenHands hook fixture")
     def test_openhands_hooks_accept_sdk_home_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = os.path.join(tmp, "home")
@@ -992,6 +993,7 @@ class DoctorHookReachabilityTests(unittest.TestCase):
             self.assertEqual(result.failed, 1, result.checks)
             self.assertIn("inside DefenseClaw data dir", result.checks[0]["detail"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX Copilot hook fixture")
     def test_copilot_hooks_verify_workspace_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = os.path.join(tmp, "repo")

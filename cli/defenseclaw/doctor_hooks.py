@@ -1046,7 +1046,7 @@ def _codex_policy_executable(data_dir: str) -> str:
         raise _InspectionError("policy-blocked", f"selected Codex executable is not absolute: {executable!r}")
     executable = os.path.abspath(executable)
     extension = os.path.splitext(executable)[1].casefold()
-    if os.name == "nt" and extension != ".exe":
+    if extension in {".bat", ".cmd", ".ps1"} or (os.name == "nt" and extension != ".exe"):
         raise _InspectionError(
             "policy-blocked",
             "selected Codex policy executable is not a native Windows .exe image",
@@ -3039,7 +3039,9 @@ def _contract_evidence(
         if len(raw) > 2 * 1024 * 1024:
             raise _InspectionError("stale", "hook contract lock is too large")
         lock = json.loads(raw.decode("utf-8"))
-    except _InspectionError:
+    except _InspectionError as exc:
+        if exc.state == "missing":
+            raise _InspectionError("stale", f"hook contract lock is missing: {lock_path}") from exc
         raise
     except (OSError, UnicodeError, ValueError) as exc:
         raise _InspectionError("stale", f"hook contract lock is unreadable: {exc}") from exc

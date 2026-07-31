@@ -1350,6 +1350,7 @@ class TestPluginMultiConnectorSemantics(PluginCommandTestBase):
         self.assertTrue(os.path.isdir(os.path.join(self.hermes_root, "narrow")))
         self.assertEqual(mock_scan.call_count, 1)
 
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS Antigravity plugin surface")
     @patch("defenseclaw.scanner.plugin.PluginScannerWrapper.scan")
     def test_install_antigravity_uses_documented_plugin_dir(self, mock_scan):
         mock_scan.side_effect = lambda path, **_kwargs: self._clean_scan_result(path)
@@ -1376,6 +1377,7 @@ class TestPluginMultiConnectorSemantics(PluginCommandTestBase):
         self.assertTrue(os.path.isfile(os.path.join(installed, "plugin.json")))
         mock_scan.assert_called_once_with(installed)
 
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS Antigravity plugin surface")
     @patch("defenseclaw.scanner.plugin.PluginScannerWrapper.scan")
     def test_install_antigravity_requires_root_plugin_manifest(self, mock_scan):
         antigravity_root = os.path.join(self.tmp_dir, "antigravity", "plugins")
@@ -1395,6 +1397,7 @@ class TestPluginMultiConnectorSemantics(PluginCommandTestBase):
         self.assertFalse(os.path.exists(os.path.join(antigravity_root, "not-an-antigravity-plugin")))
         mock_scan.assert_not_called()
 
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS Antigravity plugin surface")
     @patch("defenseclaw.scanner.plugin.PluginScannerWrapper.scan")
     def test_install_antigravity_requires_cli_manifest_name(self, mock_scan):
         antigravity_root = os.path.join(self.tmp_dir, "antigravity", "plugins")

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -329,10 +330,13 @@ class TestClaudeAutoMemory:
             workspace_dir=str(tmp_path),
         )
         windsurf = connector_paths.skill_dirs("windsurf", workspace_dir=str(tmp_path))
-        assert os.path.join(str(tmp_path), ".windsurf", "skills") in windsurf
-        assert os.path.join(str(tmp_path), ".agents", "skills") in windsurf
-        assert os.path.join(str(tmp_path / "home"), ".codeium", "windsurf", "skills") in windsurf
-        assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in windsurf
+        if sys.platform == "darwin":
+            assert os.path.join(str(tmp_path), ".windsurf", "skills") in windsurf
+            assert os.path.join(str(tmp_path), ".agents", "skills") in windsurf
+            assert os.path.join(str(tmp_path / "home"), ".codeium", "windsurf", "skills") in windsurf
+            assert os.path.join(str(tmp_path / "home"), ".agents", "skills") in windsurf
+        else:
+            assert windsurf == []
         assert connector_paths._windsurf_skill_dirs(
             str(tmp_path),
             platform_name="nt",
@@ -711,9 +715,12 @@ class TestPluginDirs:
                 str(tmp_path / "home"), ".gemini", "antigravity-cli", "plugins"
             )
         opencode = connector_paths.plugin_dirs("opencode", workspace_dir=str(tmp_path))
-        assert os.path.join(str(tmp_path), ".opencode", "plugins") in opencode
-        assert os.path.join(str(tmp_path / "home"), ".config", "opencode", "plugins") in opencode
-        assert os.path.join(str(tmp_path), "opencode-custom", "plugins") in opencode
+        if os.name == "nt":
+            assert opencode == []
+        else:
+            assert os.path.join(str(tmp_path), ".opencode", "plugins") in opencode
+            assert os.path.join(str(tmp_path / "home"), ".config", "opencode", "plugins") in opencode
+            assert os.path.join(str(tmp_path), "opencode-custom", "plugins") in opencode
 
     def test_no_overlap_between_connectors(self, tmp_path, monkeypatch):
         """Switching connectors must change the path set — pins the

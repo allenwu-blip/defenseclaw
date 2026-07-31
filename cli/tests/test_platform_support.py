@@ -37,7 +37,6 @@ from defenseclaw.platform_support import (
     PROXY_CONNECTORS,
     SUPPORTED,
     UNSUPPORTED,
-    DARWIN_CONNECTOR_SUPPORT,
     WINDOWS_CONNECTOR_SUPPORT,
     WINDOWS_NOT_CERTIFIED_CONNECTORS,
     WINDOWS_PREVIEW_CONNECTORS,
@@ -231,7 +230,7 @@ def test_antigravity_product_alias_is_canonical_and_visible() -> None:
     assert _normalize_connector_arg("agy") == "antigravity"
     assert setup_group.commands["agy"] is setup_group.commands["antigravity"]
     with patch("defenseclaw.platform_support.host_os", return_value="darwin"):
-        result = CliRunner().invoke(setup_group, ["--help"])
+        result = CliRunner().invoke(setup_group, ["--help"], terminal_width=240)
     assert result.exit_code == 0, result.output
     assert "agy" in result.output
     assert "Antigravity: preview on darwin" in result.output

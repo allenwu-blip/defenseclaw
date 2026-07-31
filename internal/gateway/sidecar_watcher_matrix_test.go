@@ -267,7 +267,7 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 		{
 			name:            "windsurf",
 			ctor:            func() connector.Connector { return connector.NewWindsurfConnector() },
-			expectSkillSrc:  watcherDirsFromConnector,
+			expectSkillSrc:  watcherDirsFromDefault,
 			expectPluginSrc: watcherDirsFromDefault,
 		},
 		{
@@ -302,6 +302,9 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 	wcfg.Skill.Enabled = true
 	wcfg.Plugin.Enabled = true
 	cfg := &config.Config{}
+	if runtime.GOOS == "darwin" {
+		cases[2].expectSkillSrc = watcherDirsFromConnector
+	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

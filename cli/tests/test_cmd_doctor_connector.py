@@ -530,6 +530,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertIn("timeout=30 seconds", r.checks[-1]["detail"])
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS shell adapter fixture")
     def test_cursor_doctor_validates_managed_macos_shell_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg, hooks_path, _runtime = self._cursor_runtime_case(
@@ -1103,6 +1104,7 @@ class TestCheckHookHealth(unittest.TestCase):
         self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertIn("not found", r.checks[-1]["detail"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX shell adapter fixture")
     def test_hermes_structured_health_requires_all_23_exact_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = MagicMock()

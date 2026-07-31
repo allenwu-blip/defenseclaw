@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -76,9 +77,13 @@ func TestCodexComponentTargetsUseCurrentOfficialSurfaces(t *testing.T) {
 	}
 
 	targets := codexComponentTargets(workspace)
+	pluginTargets := []string{currentPaths[1]}
+	if runtime.GOOS == "darwin" {
+		pluginTargets = append(pluginTargets, currentFiles[0], currentFiles[2])
+	}
 	for component, expected := range map[string][]string{
 		"skill":  {currentPaths[0], currentPaths[2]},
-		"plugin": {currentPaths[1], currentFiles[0], currentFiles[2]},
+		"plugin": pluginTargets,
 		"mcp":    {currentFiles[1], currentFiles[3]},
 	} {
 		for _, path := range expected {

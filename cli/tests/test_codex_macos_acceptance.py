@@ -8,6 +8,8 @@ import json
 import os
 import stat
 import subprocess
+import sys
+import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,6 +82,7 @@ def test_codex_macos_outdatedness_decision_separates_compatibility_and_certifica
     assert all(label in ledger for label in ("**OUTDATED**", "**CURRENT**", "**UNCERTIFIED**"))
 
 
+@unittest.skipUnless(sys.platform == "darwin", "native macOS signing fixture")
 def test_macos_codex_signature_admission_checks_team_identifier_and_quarantine(
     tmp_path: Path,
     monkeypatch,
@@ -108,6 +111,7 @@ def test_macos_codex_signature_admission_checks_team_identifier_and_quarantine(
     assert agent_selection._macos_codex_binary_is_trusted(str(executable))
 
 
+@unittest.skipUnless(sys.platform == "darwin", "native macOS signing fixture")
 def test_macos_codex_signature_admission_rejects_quarantine(
     tmp_path: Path,
     monkeypatch,
@@ -135,6 +139,7 @@ def test_macos_codex_signature_admission_rejects_quarantine(
     assert not agent_selection._macos_codex_binary_is_trusted(str(executable))
 
 
+@unittest.skipUnless(sys.platform == "darwin", "native macOS signing fixture")
 def test_macos_codex_signature_admission_rejects_wrong_architecture(
     tmp_path: Path,
     monkeypatch,
@@ -213,6 +218,7 @@ def test_codex_custom_agent_and_deprecated_command_inventory(tmp_path: Path) -> 
     ]
 
 
+@unittest.skipUnless(sys.platform == "darwin", "native macOS architecture fixture")
 def test_macos_release_evidence_requires_latest_authenticated_complete_run() -> None:
     validator = _load_macos_evidence_validator()
     digest = "a" * 64

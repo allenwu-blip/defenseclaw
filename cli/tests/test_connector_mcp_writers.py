@@ -2402,6 +2402,9 @@ class TestCoverage:
                     m.setenv("HOME", str(tmp_path / "oc-home"))
                     set_mcp_server(name, "x", {"command": "y"})
                     assert (tmp_path / "oc-home" / ".config" / "opencode" / "opencode.json").is_file()
+            elif name == "windsurf" and os.name == "nt":
+                with pytest.raises(MCPWriteUnsupportedError):
+                    set_mcp_server(name, "x", {"command": "y"})
             else:
                 # All other connectors have a documented MCP write path.
                 # Use chdir + isolated HOME so the test doesn't trash

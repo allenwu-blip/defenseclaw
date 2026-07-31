@@ -1768,13 +1768,13 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "plugins"): (
             "~/.config/opencode/{plugin,plugins}/*.{js,ts}",
             "./.opencode/{plugin,plugins}/*.{js,ts}",
-            "opencode.json[c] (plugin packages)",
+            "opencode.json\\[c] (plugin packages)",
             f"{opencode_plugin} (DefenseClaw bridge)",
         ),
         ("opencode", "agents"): (
             "~/.config/opencode/{agent,agents}/*.md",
             "./.opencode/{agent,agents}/*.md",
-            "opencode.json[c] (agent map)",
+            "opencode.json\\[c] (agent map)",
         ),
         ("opencode", "tools"): (
             "~/.config/opencode/{tool,tools}/*.{js,ts}",
@@ -1782,8 +1782,8 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.opencode/{tool,tools,command,commands}",
         ),
         ("opencode", "config"): (
-            "~/.config/opencode/opencode.json[c]",
-            "<workspace-or-parent>/{opencode.json[c],.opencode/opencode.json[c]}",
+            "~/.config/opencode/opencode.json\\[c]",
+            "<workspace-or-parent>/{opencode.json\\[c],.opencode/opencode.json\\[c]}",
             "AGENTS.md / CLAUDE.md / config instructions",
             opencode_plugin,
         ),

@@ -195,6 +195,7 @@ def test_windsurf_macos_bundle_metadata_requires_matching_product_and_executable
 
 def test_windsurf_macos_candidates_never_probe_path(monkeypatch) -> None:
     monkeypatch.setattr(ad, "_is_macos_host", lambda: True)
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: False)
     monkeypatch.setattr(
         ad,
         "_which",

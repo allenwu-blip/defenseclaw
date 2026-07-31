@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -422,12 +423,16 @@ func TestCopilotUserPromptTransformedIsMutationNoOp(t *testing.T) {
 }
 
 func TestCopilotResponseSemanticsStayEventScoped(t *testing.T) {
+	permissionRequest := map[string]interface{}{"behavior": "deny", "message": "policy denied"}
+	if runtime.GOOS == "darwin" {
+		permissionRequest["interrupt"] = true
+	}
 	policyCases := []struct {
 		event string
 		want  map[string]interface{}
 	}{
 		{"preToolUse", map[string]interface{}{"permissionDecision": "deny", "permissionDecisionReason": "policy denied"}},
-		{"permissionRequest", map[string]interface{}{"behavior": "deny", "message": "policy denied", "interrupt": true}},
+		{"permissionRequest", permissionRequest},
 		{"agentStop", map[string]interface{}{"decision": "block", "reason": "policy denied"}},
 		{"subagentStop", map[string]interface{}{"decision": "block", "reason": "policy denied"}},
 	}

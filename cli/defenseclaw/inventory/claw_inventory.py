@@ -2075,11 +2075,9 @@ def _agents_from_codex_toml_dirs(
                 isinstance(data.get(field), str) and data[field].strip()
                 for field in required
             )
-            # The macOS connector follows Codex's native loadability contract:
-            # incomplete TOML is ignored by the client. Keep PR #655's richer
-            # Windows custody inventory, where ineligible rows are surfaced for
-            # operator review instead of being treated as active agents.
-            if not eligible and os.name != "nt":
+            # Codex ignores incomplete custom-agent TOML on every platform.
+            # Do not admit an unloadable file as an active inventory row.
+            if not eligible:
                 continue
             row: dict[str, Any] = {
                 "id": agent_id,

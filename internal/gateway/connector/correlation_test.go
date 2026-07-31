@@ -349,8 +349,12 @@ func TestCopilotNativeTelemetryDoesNotOverclaimLogsOrW3C(t *testing.T) {
 			t.Fatalf("undocumented Copilot cross-rail trace link: %v", spec.AllowedInferenceRules)
 		}
 	}
-	if spec.Completeness.NativeOTLP != CorrelationCompletenessPartial {
-		t.Fatalf("native completeness=%q, want partial", spec.Completeness.NativeOTLP)
+	wantCompleteness := CorrelationCompletenessAbsent
+	if runtime.GOOS == "darwin" {
+		wantCompleteness = CorrelationCompletenessPartial
+	}
+	if spec.Completeness.NativeOTLP != wantCompleteness {
+		t.Fatalf("native completeness=%q, want %s", spec.Completeness.NativeOTLP, wantCompleteness)
 	}
 }
 

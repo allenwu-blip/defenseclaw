@@ -3358,7 +3358,10 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "OmniGent's effective config.yaml policy_modules and server-wide policies",
         "~/.defenseclaw/hooks/defenseclaw_omnigent_policy.py",
         "OmniGent Python environment defenseclaw_omnigent.pth import-path file",
-        "Opt-in native OTLP requires OMNIGENT_TELEMETRY_ENABLED=true plus documented OTEL process variables; shell startup files are not modified",
+        (
+            "Opt-in native OTLP requires OMNIGENT_TELEMETRY_ENABLED=true plus documented "
+            "OTEL process variables; shell startup files are not modified"
+        ),
     ),
 }
 
@@ -5454,7 +5457,8 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     if connector in native_otel_connectors:
         if connector == "omnigent":
             click.echo(
-                "    • Native OTel — opt-in; inactive until OMNIGENT_TELEMETRY_ENABLED=true and OTEL_* are exported for the OmniGent process"
+                "    • Native OTel — opt-in; inactive until OMNIGENT_TELEMETRY_ENABLED=true "
+                "and OTEL_* are exported for the OmniGent process"
             )
         elif connector == "codex":
             click.echo(
