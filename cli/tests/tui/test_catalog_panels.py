@@ -291,7 +291,10 @@ def test_catalog_empty_connector_stays_unowned_and_hook_connector_labels_contrac
         "opencode", "config"
     )
     assert ".config/opencode/opencode.json" in connector_source_label("opencode", "mcps")
+    assert "~/.opencode/opencode.json" in connector_source_label("opencode", "mcps")
     assert str(opencode_home / "opencode.json") in connector_source_label("opencode", "mcps")
+    assert "OPENCODE_CONFIG_CONTENT" in connector_source_label("opencode", "mcps")
+    assert "enterprise precedence excluded" in connector_source_label("opencode", "mcps")
     assert str(opencode_home / "opencode.json") in mcp_unset_target_for_connector("opencode")
     assert "<workspace>/opencode.json" in mcp_unset_target_for_connector("opencode")
     assert "unsupported" in connector_source_label("opencode", "skills")

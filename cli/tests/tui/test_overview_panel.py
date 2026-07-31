@@ -667,8 +667,12 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     # advertises "unmanaged in v1".
     opencode_mcps = connector_source_label("opencode", "mcps")
     assert ".config/opencode/opencode.json" in opencode_mcps
+    assert "~/.opencode/opencode.json" in opencode_mcps
     assert str(opencode_home / "opencode.json") in opencode_mcps
     assert "unmanaged" not in opencode_mcps
+    assert "OPENCODE_CONFIG" in opencode_mcps
+    assert "OPENCODE_CONFIG_CONTENT" in opencode_mcps
+    assert "enterprise precedence excluded" in opencode_mcps
     assert str(opencode_home / "plugins" / "defenseclaw.js") in connector_source_label(
         "opencode", "config"
     )

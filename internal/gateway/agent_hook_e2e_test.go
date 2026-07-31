@@ -282,6 +282,40 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 	}
 }
 
+func TestHandleAgentHook_OpenCodeLoadHeartbeat(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			name: "dedicated load event",
+			body: `{"hook_event_name":"defenseclaw.plugin.loaded","load_heartbeat":true}`,
+		},
+		{
+			name: "ordinary hook carries recovery proof",
+			body: `{"hook_event_name":"tool.execute.before","load_heartbeat":true,"tool_name":"read"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Guardrail.Connector = "opencode"
+			health := NewSidecarHealth()
+			api := &APIServer{scannerCfg: cfg, health: health}
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/opencode/hook", strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			api.handleAgentHook("opencode").ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			row := connByName(health.Snapshot().Connectors)["opencode"]
+			if row.LastLoadHeartbeatAt == nil {
+				t.Fatal("OpenCode load proof did not record a connector load heartbeat")
+			}
+		})
+	}
+}
+
 func TestHandleAgentHook_AntigravityRequiresRegisteredEvent(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Guardrail.Mode = "action"

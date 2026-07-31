@@ -1102,6 +1102,7 @@ class TestCheckHookHealth(unittest.TestCase):
     def _cfg(self, data_dir: str, connector: str, paths: list[str]) -> MagicMock:
         cfg = MagicMock()
         cfg.data_dir = data_dir
+        cfg.gateway.api_port = 18970
         with open(os.path.join(data_dir, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
             json.dump(
                 {"connectors": {connector: {"locations": {"hook_config_paths": paths}}}},
@@ -1179,11 +1180,49 @@ class TestCheckHookHealth(unittest.TestCase):
                 encoding="utf-8",
             )
             r = _DoctorResult()
-            _check_hook_health(self._cfg(tmp, "opencode", [hook]), "opencode", r)
+            health = json.dumps(
+                {"connectors": [{"name": "opencode", "load_heartbeat_at": "2026-07-31T12:00:00Z"}]},
+            )
+            with patch(
+                "defenseclaw.commands.cmd_doctor._http_probe",
+                return_value=(200, health),
+            ):
+                _check_hook_health(self._cfg(tmp, "opencode", [hook]), "opencode", r)
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertEqual(r.checks[-1]["label"], "OpenCode hooks")
         self.assertIn("does not revalidate the Windows DACL", r.checks[-1]["detail"])
         self.assertIn("not tamper-proof", r.checks[-1]["detail"])
+        self.assertIn("load heartbeat received", r.checks[-1]["detail"])
+
+    def test_opencode_missing_load_heartbeat_warns_about_pure_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hook = Path(tmp) / "defenseclaw.js"
+            body = b"// defenseclaw managed plugin\n"
+            hook.write_bytes(body)
+            backup = Path(tmp) / "connector_backups" / "opencode" / "config.json"
+            backup.parent.mkdir(parents=True)
+            backup.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "connector": "opencode",
+                        "logical_name": "config",
+                        "path": str(hook),
+                        "post_sha256": hashlib.sha256(body).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            r = _DoctorResult()
+            health = json.dumps({"connectors": [{"name": "opencode", "requests": 0}]})
+            with patch(
+                "defenseclaw.commands.cmd_doctor._http_probe",
+                return_value=(200, health),
+            ):
+                _check_hook_health(self._cfg(tmp, "opencode", [str(hook)]), "opencode", r)
+
+        self.assertEqual(r.checks[-1]["status"], "warn")
+        self.assertIn("--pure", r.checks[-1]["detail"])
 
     def test_opencode_tamper_fails_digest_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1234,8 +1273,15 @@ class TestCheckHookHealth(unittest.TestCase):
             )
             cfg = MagicMock()
             cfg.data_dir = str(data_dir)
+            cfg.gateway.api_port = 18970
             r = _DoctorResult()
-            with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(config_home)}):
+            health = json.dumps(
+                {"connectors": [{"name": "opencode", "load_heartbeat_at": "2026-07-31T12:00:00Z"}]},
+            )
+            with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(config_home)}), patch(
+                "defenseclaw.commands.cmd_doctor._http_probe",
+                return_value=(200, health),
+            ):
                 _check_hook_health(cfg, "opencode", r)
 
         self.assertEqual(r.checks[-1]["status"], "pass")

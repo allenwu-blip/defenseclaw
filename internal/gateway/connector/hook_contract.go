@@ -713,17 +713,19 @@ var builtinHookContracts = map[string][]HookContract{
 	"opencode": {{
 		Connector:               "opencode",
 		ContractID:              "opencode-hooks-v1",
-		MinAgentVersion:         "0.0.0",
-		DefaultForUnversioned:   true,
-		HookScriptVersion:       "v6",
+		MinAgentVersion:         "1.18.10",
+		MaxAgentVersion:         "1.18.11",
+		DefaultForUnversioned:   false,
+		HookScriptVersion:       "v7",
 		HookConfigPathTemplates: []string{"~/.config/opencode/plugins/defenseclaw.js"},
 		ResponseFieldName:       "hook_output",
 		// opencode exposes plugin hooks (not shell hooks). DefenseClaw's
 		// bridge plugin wires tool.execute.before (block) and
-		// tool.execute.after (observe). opencode has no hook-driven ask
-		// or context-injection channel, so blocking is the only active
-		// verdict and it is delivered by throwing inside the plugin.
+		// tool.execute.after (observe). OpenCode v1.18.10 also exposes
+		// permission.ask and chat/context mutation hooks; this focused bridge
+		// intentionally does not implement those surfaces.
 		Events: []string{
+			"defenseclaw.plugin.loaded",
 			"session.created", "session.updated", "session.status", "session.idle",
 			"session.compacted", "session.error", "session.deleted",
 			"tool.execute.before", "tool.execute.after",
@@ -744,8 +746,8 @@ var builtinHookContracts = map[string][]HookContract{
 		SupportsTraceparent: false,
 		Notes: []string{
 			"opencode (https://opencode.ai) auto-loads JS/TS plugins from ~/.config/opencode/plugins/ — there is no command-hook config file to patch. DefenseClaw writes a dependency-free bridge plugin (defenseclaw.js) whose tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) on a block decision, aborting the tool.",
-			"Block is the only active verdict: opencode has no hook-driven ask or context-injection surface. tool.execute.after is observe-only. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
-			"Contract is unbounded (min 0.0.0): the plugin hook API is documented as a stable contract rather than a versioned floor, matching the OpenHands precedent.",
+			"DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10 does expose permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
+			"Source-reviewed range is >=1.18.10,<1.18.11 with current pin 1.18.10. The bridge uses v1.18.10 plugin_origins ordering and MCP catalog sanitization, refuses ambiguous MCP identity, and refuses action-mode allow claims when a later plugin can mutate args.",
 		},
 	}},
 	"omnigent": {{

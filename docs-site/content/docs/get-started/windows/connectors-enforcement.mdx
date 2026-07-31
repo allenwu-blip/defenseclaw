@@ -260,7 +260,16 @@ execution:
 | `tool.execute.after` | Best-effort observe/telemetry only. The tool has already run, and the bridge does not await delivery. |
 | Generic lifecycle `event` dispatch | Best-effort observation only because OpenCode dispatches it without awaiting the plugin Promise. |
 
-OpenCode has no hook-driven native ask or context-injection response.
+OpenCode loads global plugins before project plugins and runs hooks in order.
+Bridge v7 checks the official v1.18.10 `plugin_origins` list; if a later plugin
+could mutate the shared args, action mode refuses an authoritative allow.
+Doctor also requires the bridge's config-hook load heartbeat, so a current file
+without runtime proof warns about stopped or `--pure`/external-plugin-disabled
+operation.
+
+OpenCode 1.18.10 exposes permission and chat/context plugin hooks, but the
+focused DefenseClaw bridge intentionally does not implement a native ask or
+context-injection response.
 `confirm` therefore falls back to allow with audit/alerting. Its plugin
 contract is in-process: OpenCode passes hook arguments and awaits the
 `tool.execute.before` Promise. There is no hook stdin, stdout response, or exit

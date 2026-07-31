@@ -856,17 +856,18 @@
         {
           "contract_id": "opencode-hooks-v1",
           "agent_version": {
-            "min_inclusive": "0.0.0",
-            "max_exclusive": ""
+            "min_inclusive": "1.18.10",
+            "max_exclusive": "1.18.11"
           },
-          "default_for_unversioned": true,
-          "hook_script_version": "v6",
+          "default_for_unversioned": false,
+          "hook_script_version": "v7",
           "hook_script": "opencode-plugin.js",
           "hook_config_path_templates": [
             "~/.config/opencode/plugins/defenseclaw.js"
           ],
           "response_field": "hook_output",
           "events": [
+            "defenseclaw.plugin.loaded",
             "session.created",
             "session.updated",
             "session.status",
@@ -895,8 +896,8 @@
           },
           "notes": [
             "opencode auto-loads JS/TS plugins from ~/.config/opencode/plugins/ — no command-hook config file to patch. DefenseClaw writes a dependency-free bridge plugin (defenseclaw.js) whose tool.execute.before POSTs to /api/v1/opencode/hook and throws on a block decision, aborting the tool.",
-            "Block is the only active verdict; tool.execute.after is observe-only. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
-            "Contract is unbounded (min 0.0.0): the plugin hook API is a stable contract rather than a versioned floor, matching the OpenHands precedent."
+            "DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10 exposes permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
+            "Source-reviewed range is >=1.18.10,<1.18.11 with current pin 1.18.10. The bridge uses v1.18.10 plugin_origins ordering and MCP catalog sanitization, refuses ambiguous MCP identity, and refuses action-mode allow claims when a later plugin can mutate args."
           ]
         }
       ]

@@ -23,7 +23,10 @@ The OpenCode connector wires DefenseClaw into [OpenCode](https://opencode.ai). O
 The direct native Windows implementation is preview pending the integrated
 packaged-Setup and pinned official-client release gates. The implementation
 being present in Setup and CI does not itself promote a certified release
-claim.
+claim. OpenCode 1.18.10 publishes CLI and Desktop assets for Windows x64 and
+ARM64, but DefenseClaw's current passive identity gate covers only the pinned
+CLI/npm x64 identity. It cannot yet distinguish a Desktop sidecar from the CLI
+or certify ARM64, so both surfaces remain explicitly unverified.
 </Callout>
 
 ## Setup
@@ -51,6 +54,15 @@ user or administrators. Doctor detects managed-plugin digest drift, and Setup
 repair/reconciliation restores the packaged registration. Restart OpenCode
 after Setup so the running client loads the new plugin.
 
+OpenCode reconciliation publishes the custody receipt before the plugin's
+atomic replacement, then publishes the contract lock and active runtime state.
+It reports success only after re-reading the plugin/receipt, scoped token,
+contract lock, and active connector marker as one current registration. A
+failure rolls back newly published OpenCode state instead of leaving a plugin
+for a later setup to repair. This proves registration consistency, not that a
+client process has loaded it; the post-restart load heartbeat is the separate
+runtime signal.
+
 OpenCode's [Windows guide](https://opencode.ai/docs/windows-wsl/) says that
 OpenCode can run directly on Windows while recommending WSL for the best
 experience. WSL is **recommended, not required**. The DefenseClaw Windows
@@ -68,15 +80,14 @@ and judge configuration.
 
 #### Version contract
 
-The current contract is `opencode-hooks-v1` (the plugin API is documented as a
-stable contract rather than a versioned floor, so the contract is unbounded —
-`min 0.0.0`). The last recorded cross-platform compatibility run remains
-OpenCode `1.16.2`. The native Windows release gate pins the official
+The current contract is `opencode-hooks-v1` / bridge `v7`, source-reviewed for
+`>=1.18.10,<1.18.11` with current pin `1.18.10`. Unversioned or other OpenCode
+builds are not treated as proven action-mode matches. The review pins the official
 [`v1.18.10` release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10),
-published July 30, 2026, which includes native `windows-x64` release assets and
-the `opencode-ai` npm package's `opencode.exe`. A Windows support release is
-published only after that pinned gate succeeds; changing the pin does not by
-itself record a validated version.
+published July 30, 2026, and its plugin/config/MCP source. This is source
+compatibility evidence only: packaged Setup and authentic official-client
+Windows validation remain unrecorded, `live` remains `false`, and the connector
+remains preview/not certified.
 
 ## Lifecycle events
 
@@ -85,10 +96,21 @@ itself record a validated version.
 | `tool.execute.before` | Right before a tool (`bash`, `read`, `edit`, …) executes | Inspect tool args; intercept risky commands | `block` → gateway returns `{decision: "deny", reason}`; the bridge `throw`s `new Error(reason)`, aborting the tool |
 | `tool.execute.after` | Immediately after a tool returns | Capture the official `title`, `output`, and `metadata` result fields for diagnostics. **Cannot block** — tool already ran. | Best-effort observe/telemetry; the bridge does not await delivery |
 
-OpenCode has no hook-driven ask or context-injection surface, so `confirm`
-verdicts fall back to allow. Findings on `tool.execute.after` are telemetry
-only. OpenCode's generic lifecycle `event` dispatch is also non-awaited, so
-DefenseClaw does not claim blocking or reliable delivery for lifecycle events.
+OpenCode 1.18.10 does expose `permission.ask`, `chat.params`, `chat.headers`,
+and experimental chat message/system transformation hooks. DefenseClaw
+intentionally does not implement or claim those ask/context surfaces in this
+focused bridge; `confirm` therefore has no native resumable approval path.
+Findings on `tool.execute.after` are telemetry only. OpenCode's generic
+lifecycle `event` dispatch is also non-awaited, so DefenseClaw does not claim
+blocking or reliable delivery for lifecycle events.
+
+OpenCode runs external plugin hooks sequentially. Its global plugin directory
+is loaded before project plugin directories, so a project plugin can mutate the
+shared `output.args` object after DefenseClaw's global pre-tool hook. Bridge v7
+uses the official v1.18.10 `plugin_origins` order to detect this condition. It
+still observes the pre-mutation arguments, but in action mode it refuses to
+return an authoritative allow when any later plugin exists. This is a bounded
+correction, not a plugin-order redesign.
 
 This is an in-process plugin contract, not a subprocess protocol. There is no
 hook stdin payload, stdout decision document, or hook exit-code convention:
@@ -104,7 +126,8 @@ DefenseClaw writes a single managed plugin file. Its `tool.execute.before` resol
 ```js
 "tool.execute.before": async (input, output) => {
   const verdict = await defenseclawPost("tool.execute.before", input.tool, output.args, cwd);
-  if (verdict) throw new Error(verdict.reason); // block: aborts the tool
+  if (verdict?.reason) throw new Error(verdict.reason); // policy block
+  if (verdict?.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE) throw new Error("unobservable later mutation");
 }
 ```
 
@@ -113,6 +136,12 @@ When the gateway is unreachable, the bridge honors the configured fail mode:
 claim applies only to the awaited `tool.execute.before` contract. Neither
 `tool.execute.after` nor non-awaited lifecycle delivery becomes enforceable
 when fail mode is closed.
+
+The plugin also emits a secret-free `defenseclaw.plugin.loaded` heartbeat from
+its awaited config hook. Doctor reports a warning when the managed file digest
+is current but the running sidecar has no heartbeat: OpenCode may be stopped or
+running with `--pure`/external plugins disabled. File presence alone is not
+reported as runtime health.
 
 ## Local surfaces
 
@@ -125,7 +154,33 @@ when fail mode is closed.
   </Folder>
 </Files>
 
-DefenseClaw v1 governs opencode tool execution via the bridge plugin. opencode merges MCP servers from the global `~/.config/opencode/opencode.json`, an explicitly pinned project's `opencode.json`, and `OPENCODE_CONFIG_DIR/opencode.json` or `.jsonc` when that custom directory is active; the custom directory is a later override, not a replacement for the earlier layers. `defenseclaw mcp list --connector opencode`, `defenseclaw mcp set <name> --connector opencode`, and `defenseclaw mcp unset <name> --connector opencode` read or update the top-level `mcp` map. Without an explicit workspace, writes honor `OPENCODE_CONFIG_DIR`; otherwise they target the pinned project, with the documented global path as the default. For local MCP servers, `mcp set` refuses commands outside trusted install prefixes unless you add the directory to `DEFENSECLAW_TRUSTED_BIN_PREFIXES` or pass `--force-untrusted-command` for that one write, because OpenCode will execute the stored command. The managed `defenseclaw.js` registration is reported as connector configuration, but ordinary skills, rules, plugins, agents, and custom-tool inventory remain unsupported and return no connector assets in v1; DefenseClaw does not imply enforcement or quarantine coverage for those OpenCode surfaces.
+DefenseClaw resolves the non-enterprise v1.18.10 config layers in effective
+order: authenticated remote `.well-known` provenance (typed unverified; never
+fetched offline), global `config.json`/`opencode.json`/`opencode.jsonc`,
+`OPENCODE_CONFIG`, an explicitly pinned project's JSON/JSONC files and
+`.opencode` directory, the user `~/.opencode` component directory,
+`OPENCODE_CONFIG_DIR`, and finally
+`OPENCODE_CONFIG_CONTENT`. JSONC, deep MCP overrides, and `enabled:false` are
+preserved; inline provenance is reported by label without disclosing its
+contents. A relative env path is resolved only when an explicit workspace is
+available, never against the daemon's unrelated cwd.
+
+`defenseclaw mcp list --connector opencode`, `mcp set`, and `mcp unset` operate
+on the top-level `mcp` map. Writes refuse while `OPENCODE_CONFIG_CONTENT` is
+active because an inline higher-precedence layer cannot be changed or restored
+atomically. Windows ProgramData managed config, MDM, Team/Program/cloud
+dashboard state, and other enterprise layers are excluded from this PR and
+typed as unverified; local results must not be read as final enterprise
+precedence. For runtime server-scoped policy, bridge v7 mirrors OpenCode's
+official server/tool sanitizer, maps the effective enabled MCP server names,
+and rejects sanitizer collisions or prefix ambiguity instead of guessing.
+
+For local MCP servers, `mcp set` refuses commands outside trusted install
+prefixes unless you explicitly trust the directory or force that one write.
+The managed `defenseclaw.js` registration is reported as connector
+configuration, but ordinary skills, rules, plugins, agents, and custom-tool
+inventory remain unsupported and return no connector assets in v1;
+DefenseClaw does not imply enforcement or quarantine coverage for them.
 
 ## Hook capabilities
 

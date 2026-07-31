@@ -310,10 +310,12 @@ func openCodeManagedPluginPresent(conn Connector, opts SetupOpts) (bool, error) 
 		return false, nil
 	}
 	for _, marker := range [][]byte{
-		[]byte("// defenseclaw-managed-plugin v6"),
+		[]byte("// defenseclaw-managed-plugin v7"),
 		[]byte(`"/api/v1/opencode/hook"`),
 		[]byte(`"tool.execute.before": async`),
-		[]byte(`if (verdict) throw new Error(verdict.reason);`),
+		[]byte(`if (verdict && verdict.reason) throw new Error(verdict.reason);`),
+		[]byte(`verdict.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE`),
+		[]byte(`hook_event_name: "defenseclaw.plugin.loaded"`),
 		[]byte(`"tool.execute.after": async`),
 		[]byte(`input && input.args`),
 		[]byte(`payload.tool_result = toolResult`),

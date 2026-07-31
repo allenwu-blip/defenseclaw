@@ -19,6 +19,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +80,9 @@ var (
 // code paths leave this at the default (real os.Exit).
 var connectorExit = os.Exit
 var connectorHookRuntimePaths = hookruntime.CurrentUserPaths
+var connectorSaveOpenCodeActive = connector.SaveActiveConnectors
+var connectorSaveOpenCodeLock = connector.SaveFreshHookContractLockEntry
+var connectorEnsureHookAPIToken = connector.EnsureHookAPIToken
 
 var connectorTeardownCmd = &cobra.Command{
 	Use:   "teardown",
@@ -420,23 +424,6 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 		// inherited for connectors that enforce failures independently.
 		opts.HookFailMode = "open"
 	}
-	hookToken, err := connector.LoadHookAPIToken(dataDir, name)
-	if err != nil {
-		return fmt.Errorf("connector reconcile: load scoped hook token: %w", err)
-	}
-	if hookToken == "" {
-		hookToken, err = connector.EnsureHookAPIToken(dataDir, name)
-		if err != nil {
-			return fmt.Errorf("connector reconcile: ensure scoped hook token: %w", err)
-		}
-	}
-	// Match the sidecar's least-privilege registration semantics: native hook
-	// connectors use the connector-scoped token for hook calls and, where
-	// supported by the vendor, native telemetry. Never write the gateway
-	// master token into agent-owned config.
-	opts.APIToken = hookToken
-	opts.HookAPIToken = hookToken
-	opts.HookAPITokenScoped = true
 	opts.AgentVersion = connector.LoadCachedAgentVersion(dataDir, name)
 	opts.AgentExecutable = connector.LoadCachedAgentExecutable(dataDir, name)
 	previous := connector.LoadHookContractLockEntry(dataDir, name)
@@ -465,13 +452,47 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("connector reconcile %s: hook contract compatibility drift", name)
 		}
 	}
-
-	if err := conn.Setup(cmd.Context(), opts); err != nil {
-		return fmt.Errorf("connector reconcile %s: %w", name, err)
+	hookToken, err := connector.LoadHookAPIToken(dataDir, name)
+	if err != nil {
+		return fmt.Errorf("connector reconcile: load scoped hook token: %w", err)
 	}
-	entry := connector.NewHookContractLockEntry(opts, conn, version.Current().BinaryVersion)
-	if err := connector.SaveHookContractLockEntry(dataDir, entry); err != nil {
-		return fmt.Errorf("connector reconcile %s lock: %w", name, err)
+	tokenCreated := false
+	if hookToken == "" {
+		hookToken, err = connectorEnsureHookAPIToken(dataDir, name)
+		if err != nil {
+			// Load proved this connector had no token before Ensure. The atomic
+			// publisher can still report a late error after replacement became
+			// visible, so remove any newly visible token before returning.
+			if cleanupErr := connector.RemoveHookAPIToken(dataDir, name); cleanupErr != nil {
+				return errors.Join(
+					fmt.Errorf("connector reconcile: ensure scoped hook token: %w", err),
+					fmt.Errorf("connector reconcile: remove ambiguously published scoped hook token: %w", cleanupErr),
+				)
+			}
+			return fmt.Errorf("connector reconcile: ensure scoped hook token: %w", err)
+		}
+		tokenCreated = true
+	}
+	// Match the sidecar's least-privilege registration semantics: native hook
+	// connectors use the connector-scoped token for hook calls and, where
+	// supported by the vendor, native telemetry. Never write the gateway
+	// master token into agent-owned config.
+	opts.APIToken = hookToken
+	opts.HookAPIToken = hookToken
+	opts.HookAPITokenScoped = true
+
+	if name == "opencode" {
+		if err := reconcileOpenCodeRegistration(cmd.Context(), dataDir, conn, opts, previous, tokenCreated); err != nil {
+			return fmt.Errorf("connector reconcile opencode: %w", err)
+		}
+	} else {
+		if err := conn.Setup(cmd.Context(), opts); err != nil {
+			return fmt.Errorf("connector reconcile %s: %w", name, err)
+		}
+		entry := connector.NewHookContractLockEntry(opts, conn, version.Current().BinaryVersion)
+		if err := connector.SaveHookContractLockEntry(dataDir, entry); err != nil {
+			return fmt.Errorf("connector reconcile %s lock: %w", name, err)
+		}
 	}
 	if connectorFlagJSON {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
@@ -482,6 +503,124 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 		})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "  %s %s runtime reconciled\n", Style("✓", "fg=green", "bold"), name)
+	return nil
+}
+
+func reconcileOpenCodeRegistration(
+	ctx context.Context,
+	dataDir string,
+	conn connector.Connector,
+	opts connector.SetupOpts,
+	previousLock connector.HookContractLockEntry,
+	tokenCreated bool,
+) error {
+	previousActive, activeStateExisted, err := connector.ReadActiveConnectorState(dataDir)
+	if err != nil {
+		if tokenCreated {
+			_ = connector.RemoveHookAPIToken(dataDir, "opencode")
+		}
+		return fmt.Errorf("read active runtime state: %w", err)
+	}
+	previouslyInactive := connector.ConnectorExplicitlyInactive(dataDir, "opencode")
+	registrationSnapshot, err := connector.CaptureOpenCodeRegistrationSnapshot(opts)
+	if err != nil {
+		if tokenCreated {
+			_ = connector.RemoveHookAPIToken(dataDir, "opencode")
+		}
+		return fmt.Errorf("capture registration rollback point: %w", err)
+	}
+	setupStarted := false
+	lockPublishAttempted := false
+	activePublishAttempted := false
+	rollback := func(cause error) error {
+		var rollbackErrs []error
+		if setupStarted {
+			if err := registrationSnapshot.Restore(); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore plugin transaction: %w", err))
+			} else if registrationSnapshot.InitiallyEmpty() {
+				if err := conn.VerifyClean(opts); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("verify plugin rollback: %w", err))
+				}
+			}
+		}
+		if lockPublishAttempted {
+			if err := connector.ClearHookContractLockEntry(dataDir, "opencode"); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("clear contract lock: %w", err))
+			} else if previousLock.Connector != "" {
+				if err := connector.SaveFreshHookContractLockEntry(dataDir, previousLock); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("restore contract lock: %w", err))
+				}
+			}
+		}
+		if activePublishAttempted {
+			if activeStateExisted {
+				if err := connector.SaveActiveConnectors(dataDir, previousActive); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("restore active runtime state: %w", err))
+				} else if previouslyInactive {
+					if _, err := connector.MarkConnectorInactive(dataDir, "opencode"); err != nil {
+						rollbackErrs = append(rollbackErrs, fmt.Errorf("restore inactive runtime marker: %w", err))
+					}
+				}
+			} else if err := connector.RemoveActiveConnectorState(dataDir); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("remove active runtime state: %w", err))
+			}
+		}
+		if tokenCreated {
+			if err := connector.RemoveHookAPIToken(dataDir, "opencode"); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("remove scoped token: %w", err))
+			}
+		}
+		if len(rollbackErrs) > 0 {
+			return errors.Join(cause, fmt.Errorf("OpenCode setup rollback failed: %w", errors.Join(rollbackErrs...)))
+		}
+		return cause
+	}
+
+	setupStarted = true
+	if err := conn.Setup(ctx, opts); err != nil {
+		return rollback(fmt.Errorf("setup plugin and custody receipt: %w", err))
+	}
+	current, err := connector.OpenCodeRegistrationCurrent(opts)
+	if err != nil || !current {
+		if err == nil {
+			err = errors.New("plugin and custody receipt are not current")
+		}
+		return rollback(fmt.Errorf("verify plugin publication: %w", err))
+	}
+
+	entry := connector.NewHookContractLockEntry(opts, conn, version.Current().BinaryVersion)
+	lockPublishAttempted = true
+	if err := connectorSaveOpenCodeLock(dataDir, entry); err != nil {
+		return rollback(fmt.Errorf("publish contract lock: %w", err))
+	}
+	active := append(append([]string(nil), previousActive...), "opencode")
+	activePublishAttempted = true
+	if err := connectorSaveOpenCodeActive(dataDir, active); err != nil {
+		return rollback(fmt.Errorf("publish active runtime state: %w", err))
+	}
+
+	loadedToken, tokenErr := connector.LoadHookAPIToken(dataDir, "opencode")
+	registrationCurrent, registrationErr := connector.OpenCodeRegistrationCurrent(opts)
+	activeCurrent := false
+	for _, activeName := range connector.LoadActiveConnectors(dataDir) {
+		if strings.EqualFold(activeName, "opencode") {
+			activeCurrent = true
+			break
+		}
+	}
+	lockCurrent := connector.OpenCodeHookContractLockEntryCurrent(dataDir, entry)
+	if registrationErr != nil || !registrationCurrent || tokenErr != nil || loadedToken != opts.APIToken ||
+		!activeCurrent || !lockCurrent {
+		return rollback(fmt.Errorf(
+			"activation verification failed (plugin=%t plugin_err=%v token=%t token_err=%v active=%t lock=%t)",
+			registrationCurrent,
+			registrationErr,
+			loadedToken == opts.APIToken,
+			tokenErr,
+			activeCurrent,
+			lockCurrent,
+		))
+	}
 	return nil
 }
 

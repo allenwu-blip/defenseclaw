@@ -1689,6 +1689,84 @@ class TestOpenCodeMCPReader:
         assert set(entries) == {"shared", "global-only"}
         assert entries["shared"].command == "custom-command"
 
+    def test_v11810_precedence_content_disabled_and_provenance(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        global_dir = home / ".config" / "opencode"
+        global_dir.mkdir(parents=True)
+        (global_dir / "config.json").write_text(
+            json.dumps({"mcp": {"shared": {"type": "local", "command": ["global"]}}}),
+        )
+        explicit = tmp_path / "explicit.jsonc"
+        explicit.write_text(
+            '// exact OPENCODE_CONFIG layer\n{"mcp":{"shared":{"command":["explicit"]}}}',
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG", str(explicit))
+        workspace = tmp_path / "workspace"
+        (workspace / ".opencode").mkdir(parents=True)
+        (workspace / "opencode.json").write_text(
+            json.dumps({"mcp": {"shared": {"command": ["project"]}}}),
+        )
+        (workspace / ".opencode" / "opencode.jsonc").write_text(
+            json.dumps({"mcp": {"shared": {"command": ["project-directory"]}}}),
+        )
+        home_component = home / ".opencode"
+        home_component.mkdir()
+        (home_component / "opencode.json").write_text(
+            json.dumps({"mcp": {"shared": {"command": ["home-directory"]}}}),
+        )
+        custom = tmp_path / "custom"
+        custom.mkdir()
+        (custom / "opencode.json").write_text(
+            json.dumps({"mcp": {"shared": {"command": ["custom-directory"]}}}),
+        )
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+        monkeypatch.setenv(
+            "OPENCODE_CONFIG_CONTENT",
+            json.dumps({"mcp": {"shared": {"enabled": False}}}),
+        )
+
+        entries = connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))
+
+        assert len(entries) == 1
+        assert entries[0].command == "custom-directory"
+        assert entries[0].disabled is True
+        assert entries[0].source == "OPENCODE_CONFIG_CONTENT"
+        assert entries[0].source_scope == "inline"
+
+        resolution = connector_paths._resolve_opencode_config(str(workspace))
+        first_scope = {}
+        for index, layer in enumerate(resolution.layers):
+            first_scope.setdefault(layer.source_scope, index)
+        assert first_scope["project-directory"] < first_scope["home-directory"]
+        assert first_scope["home-directory"] < first_scope["custom-directory"]
+        assert first_scope["custom-directory"] < first_scope["inline"]
+
+    def test_resolver_types_remote_and_programdata_as_unverified(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        resolution = connector_paths._resolve_opencode_config()
+
+        unverified = {(item.source_scope, item.source) for item in resolution.unverified}
+        assert ("remote", "authenticated .well-known/opencode") in unverified
+        assert ("managed-enterprise", "Windows ProgramData managed config") in unverified
+        assert all("ProgramData" not in layer.path for layer in resolution.layers)
+
+    def test_inline_content_refuses_non_authoritative_write(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("OPENCODE_CONFIG_CONTENT", '{"mcp":{}}')
+
+        with pytest.raises(connector_paths.MCPWriteUnsupportedError, match="inline"):
+            connector_paths._set_opencode_mcp_server(
+                "demo",
+                {"command": "demo"},
+            )
+
     def test_no_config_returns_empty(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
         home.mkdir()

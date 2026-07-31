@@ -2422,9 +2422,9 @@ class TestHermesWrites:
 
 # ---------------------------------------------------------------------------
 # opencode — full read+write parity (mcp.md M2/M5). Writes an explicitly
-# pinned project, then OPENCODE_CONFIG_DIR when active, otherwise the global
-# ~/.config/opencode/opencode.json, mapping into opencode's `mcp` schema
-# (type/command-argv/environment).
+# pinned project, then the higher-precedence ~/.opencode component and
+# OPENCODE_CONFIG_DIR when active, otherwise the global
+# ~/.config/opencode/opencode.json, mapping into opencode's `mcp` schema.
 # ---------------------------------------------------------------------------
 
 
@@ -2535,6 +2535,76 @@ class TestOpenCodeWrites:
         assert not self._global(tmp_path / "home").exists()
         names = {e.name for e in connector_paths.mcp_servers("opencode", workspace_dir=str(workspace))}
         assert names == {"demo"}
+
+    def test_workspace_updates_existing_project_component_jsonc(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        workspace = tmp_path / "ws"
+        component = workspace / ".opencode"
+        component.mkdir(parents=True)
+        target = component / "opencode.jsonc"
+        target.write_text(json.dumps({"theme": "tokyonight", "mcp": {}}))
+
+        set_mcp_server(
+            "opencode",
+            "demo",
+            {"command": "npx"},
+            workspace_dir=str(workspace),
+        )
+
+        data = json.loads(target.read_text())
+        assert data["theme"] == "tokyonight"
+        assert data["mcp"]["demo"]["command"] == ["npx"]
+        assert not (workspace / "opencode.json").exists()
+
+    def test_home_component_wins_over_project_write_target(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        home_component = home / ".opencode"
+        home_component.mkdir(parents=True)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+
+        set_mcp_server(
+            "opencode",
+            "demo",
+            {"command": "npx"},
+            workspace_dir=str(workspace),
+        )
+
+        target = home_component / "opencode.json"
+        assert json.loads(target.read_text())["mcp"]["demo"]["command"] == ["npx"]
+        assert not (workspace / "opencode.json").exists()
+
+    @pytest.mark.parametrize("variable", ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"])
+    def test_relative_env_path_without_workspace_refuses_write(
+        self, tmp_path, monkeypatch, variable
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv(variable, "relative-opencode")
+
+        with pytest.raises(MCPWriteUnsupportedError, match=variable):
+            set_mcp_server("opencode", "demo", {"command": "npx"})
+        with pytest.raises(MCPWriteUnsupportedError, match=variable):
+            unset_mcp_server("opencode", "demo")
+
+        assert not (tmp_path / "home" / ".config" / "opencode" / "opencode.json").exists()
+
+    def test_custom_config_dir_wins_with_workspace(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        custom = tmp_path / "custom-opencode"
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        set_mcp_server(
+            "opencode",
+            "demo",
+            {"command": "npx"},
+            workspace_dir=str(workspace),
+        )
+
+        assert (custom / "opencode.json").is_file()
+        assert not (workspace / "opencode.json").exists()
 
     def test_custom_config_dir_is_default_user_write_target(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))

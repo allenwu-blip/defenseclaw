@@ -619,6 +619,12 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertEqual(result.warned, 1)
         self.assertIn("no native human approval surface", result.checks[0]["detail"])
 
+        result = _DoctorResult()
+        _check_hilt_support(cfg, "opencode", result)
+        self.assertEqual(result.warned, 1)
+        self.assertIn("publishes permission.ask", result.checks[0]["detail"])
+        self.assertIn("intentionally does not implement", result.checks[0]["detail"])
+
         # Antigravity documents native ask only at PreToolUse. No override of
         # permission-bypass flags is claimed without persisted client evidence.
         result = _DoctorResult()

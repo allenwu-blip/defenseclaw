@@ -72,7 +72,7 @@
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       },
-      "notes": "Native Windows implementation is preview-only; authentic packaged Setup and official-client certification evidence remain pending."
+      "notes": "Source-reviewed contract is pinned to OpenCode 1.18.10 (reviewed range >=1.18.10,<1.18.11). Native Windows implementation remains preview/not_certified with live=false; authentic packaged Setup and official-client certification evidence remain pending."
     },
     "antigravity": {
       "version_probe": "agy --version",

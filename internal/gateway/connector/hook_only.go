@@ -72,6 +72,122 @@ type hookOnlyConnector struct {
 	loopbackWarn sync.Once
 }
 
+var openCodeWritePluginFile = atomicWriteFile
+
+type openCodeFileSnapshot struct {
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+// OpenCodeRegistrationSnapshot is an opaque, connector-local rollback point
+// for the plugin and its custody receipt. It intentionally exposes no token or
+// path contents outside this package.
+type OpenCodeRegistrationSnapshot struct {
+	pluginPath     string
+	plugin         openCodeFileSnapshot
+	backupPath     string
+	backup         openCodeFileSnapshot
+	initiallyEmpty bool
+}
+
+func snapshotOpenCodeRegistrationFile(path string) (openCodeFileSnapshot, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return openCodeFileSnapshot{}, nil
+		}
+		return openCodeFileSnapshot{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return openCodeFileSnapshot{}, fmt.Errorf("registration path is not a regular file: %s", path)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return openCodeFileSnapshot{}, err
+	}
+	mode := info.Mode().Perm()
+	if runtime.GOOS == "windows" {
+		// Go exposes synthetic 0666 mode bits for ordinary Windows files even
+		// when their DACL is private. Rollback publication must still take the
+		// atomic writer's owner-only path because the plugin contains a token and
+		// the custody receipt can contain restored operator bytes.
+		mode = 0o600
+	}
+	return openCodeFileSnapshot{data: body, mode: mode, existed: true}, nil
+}
+
+func restoreOpenCodeRegistrationFile(path string, snapshot openCodeFileSnapshot) error {
+	if !snapshot.existed {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	mode := snapshot.mode
+	if mode == 0 {
+		mode = 0o600
+	}
+	return atomicWriteFile(path, snapshot.data, mode)
+}
+
+func rollbackOpenCodePluginPublication(
+	pluginPath string,
+	pluginSnapshot openCodeFileSnapshot,
+	backupPath string,
+	backupSnapshot openCodeFileSnapshot,
+) error {
+	var errs []error
+	if err := restoreOpenCodeRegistrationFile(pluginPath, pluginSnapshot); err != nil {
+		errs = append(errs, fmt.Errorf("restore plugin: %w", err))
+	}
+	if err := restoreOpenCodeRegistrationFile(backupPath, backupSnapshot); err != nil {
+		errs = append(errs, fmt.Errorf("restore backup receipt: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+// CaptureOpenCodeRegistrationSnapshot records the exact pre-reconcile plugin
+// and receipt bytes after validating the plugin destination custody.
+func CaptureOpenCodeRegistrationSnapshot(opts SetupOpts) (*OpenCodeRegistrationSnapshot, error) {
+	conn := NewOpenCodeConnector()
+	pluginPath := conn.configPath(opts)
+	if err := prepareOpenCodePluginArtifactDestination(pluginPath); err != nil {
+		return nil, fmt.Errorf("prepare OpenCode plugin destination: %w", err)
+	}
+	backupPath := managedFileBackupPath(opts.DataDir, conn.name, "config")
+	plugin, err := snapshotOpenCodeRegistrationFile(pluginPath)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot OpenCode plugin: %w", err)
+	}
+	backup, err := snapshotOpenCodeRegistrationFile(backupPath)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot OpenCode custody receipt: %w", err)
+	}
+	return &OpenCodeRegistrationSnapshot{
+		pluginPath:     pluginPath,
+		plugin:         plugin,
+		backupPath:     backupPath,
+		backup:         backup,
+		initiallyEmpty: !plugin.existed && !backup.existed,
+	}, nil
+}
+
+// Restore atomically replaces or removes both connector-local files to match
+// the pre-reconcile snapshot.
+func (s *OpenCodeRegistrationSnapshot) Restore() error {
+	if s == nil {
+		return errors.New("OpenCode registration snapshot is nil")
+	}
+	return rollbackOpenCodePluginPublication(s.pluginPath, s.plugin, s.backupPath, s.backup)
+}
+
+// InitiallyEmpty reports whether rollback should leave no managed plugin
+// registration for VerifyClean to confirm.
+func (s *OpenCodeRegistrationSnapshot) InitiallyEmpty() bool {
+	return s != nil && s.initiallyEmpty
+}
+
 // NewOpenCodeConnector governs opencode (https://opencode.ai). Unlike the
 // shell-hook connectors, opencode has no command-hook config surface: it
 // auto-loads JavaScript/TypeScript plugins from
@@ -912,13 +1028,80 @@ func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
 	if err := prepareOpenCodePluginArtifactDestination(path); err != nil {
 		return fmt.Errorf("%s prepare plugin destination: %w", c.name, err)
 	}
+	backupPath := managedFileBackupPath(opts.DataDir, c.name, "config")
+	pluginSnapshot, err := snapshotOpenCodeRegistrationFile(path)
+	if err != nil {
+		return fmt.Errorf("%s snapshot plugin destination: %w", c.name, err)
+	}
+	backupSnapshot, err := snapshotOpenCodeRegistrationFile(backupPath)
+	if err != nil {
+		return fmt.Errorf("%s snapshot plugin backup receipt: %w", c.name, err)
+	}
+	rollback := func(setupErr error) error {
+		if rollbackErr := rollbackOpenCodePluginPublication(
+			path, pluginSnapshot, backupPath, backupSnapshot,
+		); rollbackErr != nil {
+			return errors.Join(setupErr, fmt.Errorf("%s rollback plugin publication: %w", c.name, rollbackErr))
+		}
+		return setupErr
+	}
 	if err := captureManagedFileBackup(opts.DataDir, c.name, "config", path); err != nil {
-		return fmt.Errorf("%s capture plugin backup: %w", c.name, err)
+		return rollback(fmt.Errorf("%s capture plugin backup: %w", c.name, err))
 	}
-	if err := atomicWriteFile(path, []byte(rendered), 0o600); err != nil {
-		return fmt.Errorf("%s write plugin: %w", c.name, err)
+	renderedBody := []byte(rendered)
+	// Finalize the custody receipt before the atomic plugin replacement. This
+	// ordering guarantees that a visible DefenseClaw plugin never precedes the
+	// backup/post-hash record needed to own and restore it.
+	if err := updateManagedFileBackupPostHashValue(
+		opts.DataDir,
+		c.name,
+		"config",
+		path,
+		managedFileSnapshotHash(renderedBody, true),
+	); err != nil {
+		return rollback(fmt.Errorf("%s finalize plugin backup receipt: %w", c.name, err))
 	}
-	return updateManagedFileBackupPostHash(opts.DataDir, c.name, "config", path)
+	receipt, err := loadManagedFileBackupPath(backupPath)
+	if err != nil || managedFileBackupExpectedHash(&receipt) != managedFileSnapshotHash(renderedBody, true) {
+		if err == nil {
+			err = errors.New("receipt post hash does not match rendered plugin")
+		}
+		return rollback(fmt.Errorf("%s verify plugin backup receipt: %w", c.name, err))
+	}
+	if err := openCodeWritePluginFile(path, renderedBody, 0o600); err != nil {
+		return rollback(fmt.Errorf("%s write plugin: %w", c.name, err))
+	}
+	return nil
+}
+
+// OpenCodeRegistrationCurrent verifies the connector-local publication unit:
+// the managed plugin is the exact rendered artifact and its custody receipt
+// names the same path and post-write digest. It does not claim that an
+// OpenCode process is running; runtime load is diagnosed separately by the
+// plugin heartbeat.
+func OpenCodeRegistrationCurrent(opts SetupOpts) (bool, error) {
+	conn := NewOpenCodeConnector()
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil || !present {
+		return false, err
+	}
+	path := conn.configPath(opts)
+	backup, err := loadManagedFileBackupPath(managedFileBackupPath(opts.DataDir, conn.name, "config"))
+	if err != nil {
+		return false, err
+	}
+	bound, err := validateManagedFileBackupTarget(backup, conn.name, "config", path)
+	if err != nil {
+		return false, err
+	}
+	body, info, err := readManagedTarget(bound)
+	if err != nil {
+		return false, err
+	}
+	if info == nil {
+		return false, nil
+	}
+	return managedFileBackupExpectedHash(&backup) == managedFileSnapshotHash(body, true), nil
 }
 
 // hookCommand returns the command an agent runs for this connector's hook. On

@@ -642,6 +642,92 @@ func TestReadMCPServersForConnector_OpenCode(t *testing.T) {
 	}
 }
 
+func TestReadMCPServersOpenCode_V11810PrecedenceJSONCAndDisabled(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	globalDir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(globalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(globalDir, "config.json"), []byte(`{
+		// global layer
+		"mcp": {"shared": {"type": "local", "command": ["global"}},},
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	explicit := filepath.Join(home, "explicit.jsonc")
+	if err := os.WriteFile(explicit, []byte(`{"mcp":{"shared":{"command":["explicit"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_CONFIG", explicit)
+	workspace := filepath.Join(home, "workspace")
+	projectDir := filepath.Join(workspace, ".opencode")
+	if err := os.MkdirAll(projectDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "opencode.json"), []byte(`{"mcp":{"shared":{"command":["project"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, "opencode.jsonc"), []byte(`{"mcp":{"shared":{"command":["project-directory"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	homeComponent := filepath.Join(home, ".opencode")
+	if err := os.MkdirAll(homeComponent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(homeComponent, "opencode.json"), []byte(`{"mcp":{"shared":{"command":["home-directory"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	customDir := filepath.Join(home, "custom")
+	if err := os.MkdirAll(customDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(customDir, "opencode.json"), []byte(`{"mcp":{"shared":{"command":["custom-directory"]}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("OPENCODE_CONFIG_DIR", customDir)
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"mcp":{"shared":{"enabled":false}}}`)
+
+	entries, err := readMCPServersOpenCode(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("entries = %+v, want one merged server", entries)
+	}
+	entry := entries[0]
+	if entry.Command != "custom-directory" || !entry.Disabled {
+		t.Fatalf("entry = %+v, want custom-directory preserved and disabled", entry)
+	}
+	if entry.Source != "OPENCODE_CONFIG_CONTENT" || entry.SourceScope != "inline" {
+		t.Fatalf("provenance = (%q, %q), want inline content", entry.Source, entry.SourceScope)
+	}
+
+	resolution := resolveOpenCodeConfig(workspace)
+	positions := map[string]int{}
+	for index, layer := range resolution.Layers {
+		if _, exists := positions[layer.Scope]; !exists {
+			positions[layer.Scope] = index
+		}
+	}
+	if !(positions["project-directory"] < positions["home-directory"] &&
+		positions["home-directory"] < positions["custom-directory"] &&
+		positions["custom-directory"] < positions["inline"]) {
+		t.Fatalf("layer positions = %+v, want project < home < custom < inline", positions)
+	}
+	var remote, managed bool
+	for _, source := range resolution.Unverified {
+		remote = remote || source.Scope == "remote"
+		managed = managed || source.Scope == "managed-enterprise"
+	}
+	if !remote || !managed {
+		t.Fatalf("unverified sources = %+v, want remote and managed-enterprise", resolution.Unverified)
+	}
+}
+
 // TestReadMCPServersForConnector_OpenCodeNeverReadsOpenClaw is the
 // Root-1 regression: opencode must read its own config, never
 // ~/.openclaw/openclaw.json, even when OpenClaw has servers and

@@ -1261,13 +1261,27 @@ def connector_source_label(connector: str, category: str) -> str:
     codex_config = connector_config_files("codex")[0]
     opencode_plugin = connector_config_files("opencode")[0]
     opencode_mcp_sources = [
+        "authenticated remote .well-known/opencode (mcp; provenance unverified locally)",
+        "~/.config/opencode/config.json (mcp)",
         "~/.config/opencode/opencode.json (mcp)",
-        "./opencode.json (mcp; explicit workspace)",
+        "~/.config/opencode/opencode.jsonc (mcp)",
+        "OPENCODE_CONFIG (mcp; explicit file)",
+        "<workspace>/opencode.json, opencode.jsonc (mcp)",
+        "<workspace>/.opencode/opencode.json, opencode.jsonc (mcp)",
+        "~/.opencode/opencode.json, opencode.jsonc (mcp; user component)",
     ]
     if os.environ.get("OPENCODE_CONFIG_DIR", "").strip():
         opencode_mcp_sources.append(
-            os.path.join(connector_home("opencode"), "opencode.json") + " (mcp; custom override)"
+            os.path.join(connector_home("opencode"), "opencode.json") + " / opencode.jsonc (mcp; custom override)"
         )
+    else:
+        opencode_mcp_sources.append("OPENCODE_CONFIG_DIR/opencode.json, opencode.jsonc (mcp; when set)")
+    opencode_mcp_sources.extend(
+        (
+            "OPENCODE_CONFIG_CONTENT (mcp; inline provenance, values never displayed)",
+            "ProgramData managed config (enterprise precedence excluded; unverified)",
+        )
+    )
     windsurf_configs = connector_config_files("windsurf") if connector == "windsurf" else []
     windsurf_hooks = windsurf_hook_config_path() if connector == "windsurf" else ""
     sources = {

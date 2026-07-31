@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -542,6 +543,228 @@ func TestConnectorReconcilePreservesClaudeCustodyAcrossPeerSetupAndRosterRefresh
 		assertConnectorReconcileStderr(t, name, stderr)
 	}
 	assertClaudeCustody("preserved roster reconciliation")
+}
+
+func TestConnectorReconcileOpenCodePublishesCompleteActivation(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", home)
+	defer withConnectorState(t, dataDir, "opencode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "closed"
+
+	stdout, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	assertConnectorReconcileStderr(t, "opencode", stderr)
+	if !strings.Contains(stdout, `"connector":"opencode"`) {
+		t.Fatalf("OpenCode reconcile output = %q", stdout)
+	}
+	pluginPath := filepath.Join(home, "plugins", "defenseclaw.js")
+	if _, err := os.Stat(pluginPath); err != nil {
+		t.Fatalf("OpenCode plugin missing after reconcile: %v", err)
+	}
+	backupPath := filepath.Join(dataDir, "connector_backups", "opencode", "config.json")
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("OpenCode custody receipt missing after reconcile: %v", err)
+	}
+	lock := connector.LoadHookContractLockEntry(dataDir, "opencode")
+	if lock.Connector != "opencode" || lock.ContractID != "opencode-hooks-v1" {
+		t.Fatalf("OpenCode contract lock = %+v", lock)
+	}
+	if got := connector.LoadActiveConnector(dataDir); got != "opencode" {
+		t.Fatalf("active connector = %q, want opencode", got)
+	}
+	token, err := connector.LoadHookAPIToken(dataDir, "opencode")
+	if err != nil || token == "" {
+		t.Fatalf("OpenCode scoped token = %q, %v", token, err)
+	}
+	current, err := connector.OpenCodeRegistrationCurrent(connector.SetupOpts{
+		DataDir:      dataDir,
+		APIAddr:      "127.0.0.1:18970",
+		APIToken:     token,
+		HookFailMode: "closed",
+	})
+	if err != nil || !current {
+		t.Fatalf("OpenCode registration current = %v, %v", current, err)
+	}
+}
+
+func TestConnectorReconcileOpenCodeRollsBackAllStateWhenActivationPublishFails(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	defer withConnectorState(t, dataDir, "opencode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "closed"
+
+	previousSave := connectorSaveOpenCodeActive
+	connectorSaveOpenCodeActive = func(dataDir string, names []string) error {
+		if err := previousSave(dataDir, names); err != nil {
+			return err
+		}
+		return errors.New("injected active-state publication failure")
+	}
+	t.Cleanup(func() { connectorSaveOpenCodeActive = previousSave })
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	if !strings.Contains(stderr, "injected active-state publication failure") {
+		t.Fatalf("OpenCode reconcile stderr = %q, want injected publication failure", stderr)
+	}
+	pluginPath := filepath.Join(home, "plugins", "defenseclaw.js")
+	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
+		t.Fatalf("failed reconcile left OpenCode plugin: %v", err)
+	}
+	backupPath := filepath.Join(dataDir, "connector_backups", "opencode", "config.json")
+	if _, err := os.Stat(backupPath); !os.IsNotExist(err) {
+		t.Fatalf("failed reconcile left OpenCode custody receipt: %v", err)
+	}
+	if lock := connector.LoadHookContractLockEntry(dataDir, "opencode"); lock.Connector != "" {
+		t.Fatalf("failed reconcile left OpenCode contract lock: %+v", lock)
+	}
+	if token, err := connector.LoadHookAPIToken(dataDir, "opencode"); err != nil || token != "" {
+		t.Fatalf("failed reconcile left OpenCode scoped token = %q, %v", token, err)
+	}
+	if got := connector.LoadActiveConnector(dataDir); got != "" {
+		t.Fatalf("failed reconcile left active connector %q", got)
+	}
+}
+
+func TestConnectorReconcileOpenCodeRemovesAmbiguouslyPublishedNewToken(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	defer withConnectorState(t, dataDir, "opencode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+
+	previousEnsure := connectorEnsureHookAPIToken
+	connectorEnsureHookAPIToken = func(dataDir, name string) (string, error) {
+		if _, err := previousEnsure(dataDir, name); err != nil {
+			return "", err
+		}
+		return "", errors.New("injected late token publication failure")
+	}
+	t.Cleanup(func() { connectorEnsureHookAPIToken = previousEnsure })
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	if !strings.Contains(stderr, "injected late token publication failure") {
+		t.Fatalf("OpenCode reconcile stderr = %q, want late token failure", stderr)
+	}
+	if token, err := connector.LoadHookAPIToken(dataDir, "opencode"); err != nil || token != "" {
+		t.Fatalf("failed token publication left scoped token = %q, %v", token, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "plugins", "defenseclaw.js")); !os.IsNotExist(err) {
+		t.Fatalf("token failure reached plugin publication: %v", err)
+	}
+}
+
+func TestConnectorReconcileOpenCodeRollsBackLateContractLockFailure(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	defer withConnectorState(t, dataDir, "opencode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "closed"
+
+	previousSave := connectorSaveOpenCodeLock
+	connectorSaveOpenCodeLock = func(dataDir string, entry connector.HookContractLockEntry) error {
+		if err := previousSave(dataDir, entry); err != nil {
+			return err
+		}
+		return errors.New("injected late contract-lock publication failure")
+	}
+	t.Cleanup(func() { connectorSaveOpenCodeLock = previousSave })
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	if !strings.Contains(stderr, "injected late contract-lock publication failure") {
+		t.Fatalf("OpenCode reconcile stderr = %q, want late lock failure", stderr)
+	}
+	if lock := connector.LoadHookContractLockEntry(dataDir, "opencode"); lock.Connector != "" {
+		t.Fatalf("late lock failure left OpenCode contract lock: %+v", lock)
+	}
+	if token, err := connector.LoadHookAPIToken(dataDir, "opencode"); err != nil || token != "" {
+		t.Fatalf("late lock failure left scoped token = %q, %v", token, err)
+	}
+	if got := connector.LoadActiveConnector(dataDir); got != "" {
+		t.Fatalf("late lock failure left active connector %q", got)
+	}
+	for _, path := range []string{
+		filepath.Join(home, "plugins", "defenseclaw.js"),
+		filepath.Join(dataDir, "connector_backups", "opencode", "config.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("late lock failure left publication %s: %v", path, err)
+		}
+	}
+}
+
+func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", home)
+	defer withConnectorState(t, dataDir, "opencode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "open"
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	assertConnectorReconcileStderr(t, "opencode", stderr)
+	pluginPath := filepath.Join(home, "plugins", "defenseclaw.js")
+	backupPath := filepath.Join(dataDir, "connector_backups", "opencode", "config.json")
+	pluginBefore, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupBefore, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockBefore := connector.LoadHookContractLockEntry(dataDir, "opencode")
+	tokenBefore, err := connector.LoadHookAPIToken(dataDir, "opencode")
+	if err != nil || tokenBefore == "" {
+		t.Fatalf("initial scoped token = %q, %v", tokenBefore, err)
+	}
+
+	cfg.Guardrail.HookFailMode = "closed"
+	previousSave := connectorSaveOpenCodeActive
+	connectorSaveOpenCodeActive = func(string, []string) error {
+		return errors.New("injected refresh publication failure")
+	}
+	t.Cleanup(func() { connectorSaveOpenCodeActive = previousSave })
+	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
+	if !strings.Contains(stderr, "injected refresh publication failure") {
+		t.Fatalf("OpenCode refresh stderr = %q, want injected failure", stderr)
+	}
+
+	pluginAfter, err := os.ReadFile(pluginPath)
+	if err != nil || !bytes.Equal(pluginAfter, pluginBefore) {
+		t.Fatalf("plugin was not restored byte-for-byte: equal=%v err=%v", bytes.Equal(pluginAfter, pluginBefore), err)
+	}
+	backupAfter, err := os.ReadFile(backupPath)
+	if err != nil || !bytes.Equal(backupAfter, backupBefore) {
+		t.Fatalf("custody receipt was not restored byte-for-byte: equal=%v err=%v", bytes.Equal(backupAfter, backupBefore), err)
+	}
+	lockAfter := connector.LoadHookContractLockEntry(dataDir, "opencode")
+	// Re-publishing the previous entry refreshes only its evidence timestamp;
+	// every contract and location field must remain identical.
+	lockAfter.UpdatedAt = lockBefore.UpdatedAt
+	if !reflect.DeepEqual(lockAfter, lockBefore) {
+		t.Fatalf("contract lock was not semantically restored: before=%+v after=%+v", lockBefore, lockAfter)
+	}
+	if got := connector.LoadActiveConnector(dataDir); got != "opencode" {
+		t.Fatalf("active connector after rollback = %q, want opencode", got)
+	}
+	if tokenAfter, err := connector.LoadHookAPIToken(dataDir, "opencode"); err != nil || tokenAfter != tokenBefore {
+		t.Fatalf("scoped token after rollback = %q, %v; want existing token", tokenAfter, err)
+	}
+	current, err := connector.OpenCodeRegistrationCurrent(connector.SetupOpts{
+		DataDir:      dataDir,
+		APIAddr:      "127.0.0.1:18970",
+		APIToken:     tokenBefore,
+		HookFailMode: "open",
+	})
+	if err != nil || !current {
+		t.Fatalf("existing OpenCode registration after rollback = %v, %v", current, err)
+	}
 }
 
 func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *testing.T) {

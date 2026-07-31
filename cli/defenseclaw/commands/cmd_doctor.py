@@ -624,7 +624,15 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
             "ZeptoClaw has no native ask surface; confirm verdicts alert with raw_action preserved",
             r=r,
         )
-    elif connector in {"hermes", "windsurf", "geminicli", "openhands", "opencode"}:
+    elif connector == "opencode":
+        _emit(
+            "warn",
+            "Human approval",
+            "OpenCode v1.18.10 publishes permission.ask, but the DefenseClaw preview bridge "
+            "intentionally does not implement or claim that surface",
+            r=r,
+        )
+    elif connector in {"hermes", "windsurf", "geminicli", "openhands"}:
         _emit(
             "warn",
             "Human approval",
@@ -1850,7 +1858,7 @@ def _powershell_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def _cursor_health_row(document: str) -> dict[str, object] | None:
+def _connector_health_row(document: str, connector: str) -> dict[str, object] | None:
     try:
         parsed = json.loads(document)
     except (json.JSONDecodeError, TypeError):
@@ -1858,10 +1866,50 @@ def _cursor_health_row(document: str) -> dict[str, object] | None:
     connectors = parsed.get("connectors") if isinstance(parsed, dict) else None
     if not isinstance(connectors, list):
         return None
+    target = connector.strip().lower()
     for row in connectors:
-        if isinstance(row, dict) and str(row.get("name") or "").strip().lower() == "cursor":
+        if isinstance(row, dict) and str(row.get("name") or "").strip().lower() == target:
             return row
     return None
+
+
+def _cursor_health_row(document: str) -> dict[str, object] | None:
+    return _connector_health_row(document, "cursor")
+
+
+def _opencode_load_heartbeat_status(cfg) -> tuple[str, str]:
+    """Report whether the managed OpenCode bridge actually loaded.
+
+    A current file digest cannot distinguish a normal OpenCode process from
+    ``--pure`` or another external-plugin-disabled launch. The bridge emits a
+    scoped, secret-free heartbeat from its v1.18.10 config hook; absence stays
+    a warning because Doctor cannot prove that OpenCode is currently running.
+    """
+    gateway = getattr(cfg, "gateway", None)
+    try:
+        api_port = int(getattr(gateway, "api_port", 0) or 0)
+    except (TypeError, ValueError):
+        api_port = 0
+    if not 1 <= api_port <= 65_535:
+        return "warn", "runtime load unverified: sidecar API port is unavailable"
+    code, body = _http_probe(
+        f"http://127.0.0.1:{api_port}/health",
+        timeout=3.0,
+        response_limit=_HEALTH_DOCUMENT_MAX_BYTES,
+        allow_truncation=False,
+    )
+    if code != 200:
+        return "warn", "runtime load unverified: sidecar /health is unavailable"
+    row = _connector_health_row(body, "opencode")
+    if row is None:
+        return "warn", "runtime load unverified: sidecar has no OpenCode connector row"
+    heartbeat = str(row.get("load_heartbeat_at") or "").strip()
+    if not heartbeat:
+        return (
+            "warn",
+            "no load heartbeat; OpenCode may be stopped or running with --pure/external plugins disabled",
+        )
+    return "pass", f"managed bridge load heartbeat received at {heartbeat}"
 
 
 def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
@@ -2265,12 +2313,14 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
                 if drift := _opencode_managed_plugin_drift(cfg, path):
                     _emit("fail", label, drift, r=r)
                 else:
+                    status, runtime_detail = _opencode_load_heartbeat_status(cfg)
                     _emit(
-                        "pass",
+                        status,
                         label,
                         f"managed plugin digest current at {path}; "
                         "Setup targets user/administrator-only access, but this row "
-                        "does not revalidate the Windows DACL and is not tamper-proof",
+                        "does not revalidate the Windows DACL and is not tamper-proof; "
+                        f"{runtime_detail}",
                         r=r,
                     )
             else:

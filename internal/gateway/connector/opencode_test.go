@@ -18,6 +18,7 @@ package connector
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -25,6 +26,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 // TestOpenCodeSetup_WritesBridgePlugin pins the plugin-artifact install
@@ -86,6 +89,10 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	if !present {
 		t.Fatal("managed OpenCode plugin was not recognized after Setup")
 	}
+	current, err := OpenCodeRegistrationCurrent(opts)
+	if err != nil || !current {
+		t.Fatalf("OpenCode registration publication = %v, %v; want plugin plus custody receipt", current, err)
+	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
@@ -95,6 +102,54 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	}
 	if err := conn.VerifyClean(opts); err != nil {
 		t.Errorf("VerifyClean after teardown: %v", err)
+	}
+}
+
+func TestOpenCodeSetupRollsBackPluginAndReceiptWhenFinalPublicationFails(t *testing.T) {
+	dir := testenv.PrivateTempDir(t)
+	pluginPath := filepath.Join(dir, "plugins", "defenseclaw.js")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pristine := []byte("// operator-owned plugin\n")
+	if err := os.WriteFile(pluginPath, pristine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousPath := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = pluginPath
+	t.Cleanup(func() { OpenCodePluginPathOverride = previousPath })
+
+	previousWriter := openCodeWritePluginFile
+	openCodeWritePluginFile = func(path string, body []byte, mode os.FileMode) error {
+		backup, err := loadManagedFileBackupPath(
+			managedFileBackupPath(filepath.Join(dir, "dc"), "opencode", "config"),
+		)
+		if err != nil {
+			t.Fatalf("custody receipt was not finalized before plugin publication: %v", err)
+		}
+		if backup.PostSHA256 != managedFileSnapshotHash(body, true) {
+			t.Fatalf("receipt post hash = %q, want rendered plugin digest", backup.PostSHA256)
+		}
+		return errors.New("injected final plugin publication failure")
+	}
+	t.Cleanup(func() { openCodeWritePluginFile = previousWriter })
+
+	opts := SetupOpts{
+		DataDir:  filepath.Join(dir, "dc"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-opencode-rollback",
+	}
+	err := NewOpenCodeConnector().Setup(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "injected final plugin publication failure") {
+		t.Fatalf("Setup error = %v, want injected publication failure", err)
+	}
+	body, readErr := os.ReadFile(pluginPath)
+	if readErr != nil || !reflect.DeepEqual(body, pristine) {
+		t.Fatalf("plugin rollback = %q, %v; want exact pristine bytes", body, readErr)
+	}
+	backupPath := managedFileBackupPath(opts.DataDir, "opencode", "config")
+	if _, statErr := os.Stat(backupPath); !os.IsNotExist(statErr) {
+		t.Fatalf("failed setup left a backup receipt: %v", statErr)
 	}
 }
 
@@ -129,7 +184,7 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 	text := string(body)
 	beforeStart := strings.Index(text, `"tool.execute.before": async`)
 	beforeAwait := strings.Index(text, `const verdict = await defenseclawPost(`)
-	beforeThrow := strings.Index(text, `if (verdict) throw new Error(verdict.reason);`)
+	beforeThrow := strings.Index(text, `if (verdict && verdict.reason) throw new Error(verdict.reason);`)
 	if beforeStart < 0 || beforeAwait < beforeStart || beforeThrow < beforeAwait {
 		t.Fatal("tool.execute.before must await the gateway verdict and throw synchronously on block")
 	}
@@ -173,6 +228,34 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 	)
 	if !ok || source.Value != "event-123" || source.IDKind != "source_event" {
 		t.Fatalf("source event correlation = (%+v, %v), want event-123", source, ok)
+	}
+}
+
+func TestOpenCodeBridgePinsPluginOrderMCPIdentityAndHeartbeat(t *testing.T) {
+	body, err := hookFS.ReadFile("hooks/opencode-plugin.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		"defenseclaw-managed-plugin v7",
+		"const DC_PLUGIN_URL = import.meta.url",
+		"Array.isArray(config.plugin_origins)",
+		"DC_ARGUMENTS_AUTHORITATIVE = ownIndex >= 0 && DC_LATER_PLUGIN_COUNT === 0",
+		`replace(/[^a-zA-Z0-9_-]/g, "_")`,
+		`mcp[name].enabled !== false`,
+		`return { status: "ambiguous", name: "" }`,
+		"payload.mcp_server_name = mcpIdentity.name",
+		`verdict.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE`,
+		`hook_event_name: "defenseclaw.plugin.loaded"`,
+		`load_heartbeat: true`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("OpenCode bridge is missing audited v1.18.10 behavior %q", want)
+		}
+	}
+	if strings.Contains(text, "mcp__") || strings.Contains(text, "mcp:") {
+		t.Fatal("OpenCode bridge must not fall back to another connector's MCP naming grammar")
 	}
 }
 

@@ -82,3 +82,18 @@ func TestOpenCodeSetupPublishesPrivatePluginOverRepairableReadACL(t *testing.T) 
 		t.Fatalf("OwnedHooksPresent after private publication = %v, %v", present, err)
 	}
 }
+
+func TestOpenCodeRegistrationSnapshotKeepsRollbackOwnerOnlyOnWindows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "defenseclaw.js")
+	if err := os.WriteFile(path, []byte("// rollback fixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err := snapshotOpenCodeRegistrationFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.existed || snapshot.mode != 0o600 {
+		t.Fatalf("snapshot = %+v, want existing owner-only rollback publication", snapshot)
+	}
+}

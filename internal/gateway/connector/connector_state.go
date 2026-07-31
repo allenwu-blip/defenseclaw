@@ -464,6 +464,45 @@ func SaveFreshHookContractLockEntry(dataDir string, entry HookContractLockEntry)
 	return saveHookContractLockEntry(dataDir, entry, true)
 }
 
+// OpenCodeHookContractLockEntryCurrent compares the persisted OpenCode entry
+// with Setup's expected evidence after applying the lock's canonical shared-
+// digest split. UpdatedAt is publication metadata and is intentionally ignored.
+func OpenCodeHookContractLockEntryCurrent(dataDir string, expected HookContractLockEntry) bool {
+	if normalizeConnectorName(expected.Connector) != "opencode" {
+		return false
+	}
+	lock := loadHookContractLock(dataDir)
+	stored, ok := lock.Connectors["opencode"]
+	if !ok {
+		return false
+	}
+	expected.Connector = "opencode"
+	expected.HookScriptDigests = cloneHookScriptDigests(expected.HookScriptDigests)
+	expectedShared := takeSharedHookScriptDigests(expected.HookScriptDigests)
+	removeSharedHookScriptDigests(expected.HookScriptDigests)
+	if len(expected.HookScriptDigests) == 0 {
+		// json omitempty canonicalizes a shared-only digest map to nil in the
+		// persisted connector entry.
+		expected.HookScriptDigests = nil
+	}
+	stored.UpdatedAt = ""
+	expected.UpdatedAt = ""
+	// Apply the same JSON representation transform used by persistence so
+	// nil and omitted empty fields compare in their canonical on-disk form.
+	expectedBody, err := json.Marshal(expected)
+	if err != nil {
+		return false
+	}
+	var canonicalExpected HookContractLockEntry
+	if err := json.Unmarshal(expectedBody, &canonicalExpected); err != nil {
+		return false
+	}
+	if !reflect.DeepEqual(stored, canonicalExpected) {
+		return false
+	}
+	return len(expectedShared) == 0 || reflect.DeepEqual(lock.SharedHookScriptDigests, expectedShared)
+}
+
 func saveHookContractLockEntry(dataDir string, entry HookContractLockEntry, forceRefresh bool) error {
 	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(entry.Connector) == "" {
 		return nil

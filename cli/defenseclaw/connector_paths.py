@@ -169,6 +169,33 @@ class MCPServerEntry:
 
 
 @dataclass(frozen=True)
+class OpenCodeConfigLayer:
+    """One locally representable OpenCode v1.18.10 config layer."""
+
+    source: str
+    source_scope: str
+    path: str = ""
+    data: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class OpenCodeUnverifiedConfigSource:
+    """A higher/lower precedence source deliberately not read offline."""
+
+    source: str
+    source_scope: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class OpenCodeConfigResolution:
+    """Precedence-ordered local layers plus explicitly unverified sources."""
+
+    layers: tuple[OpenCodeConfigLayer, ...] = ()
+    unverified: tuple[OpenCodeUnverifiedConfigSource, ...] = ()
+
+
+@dataclass(frozen=True)
 class ClaudeAutoMemoryResolution:
     """One offline resolution of Claude Code's project auto-memory path."""
 
@@ -2515,30 +2542,131 @@ def _read_antigravity_mcp_config(path: str) -> list[MCPServerEntry]:
     return _read_mcp_settings_block(path, keys=("mcpServers",))
 
 
-def _opencode_config_paths(workspace_dir: str | None) -> list[str]:
-    """Return opencode's MCP config search paths in effective merge order.
+def _opencode_env_path(value: str, workspace_dir: str | None) -> str:
+    """Resolve an OpenCode env path without borrowing the daemon's cwd."""
+    value = os.path.expanduser(value.strip())
+    if not value:
+        return ""
+    if os.path.isabs(value):
+        return os.path.abspath(value)
+    root = _workspace_dir(workspace_dir)
+    return os.path.abspath(os.path.join(root, value)) if root else ""
 
-    The global ``~/.config/opencode/opencode.json`` (and ``.jsonc``) is
-    always consulted; the project ``<workspace>/opencode.json`` (and
-    ``.jsonc``) is added only when an explicit workspace is pinned, so
-    the daemon never infers a project file from its own cwd. OpenCode
-    v1.18.10 then merges ``OPENCODE_CONFIG_DIR/opencode.json{,c}`` after
-    the project layer, so the active custom directory is last here too.
+
+def _opencode_layer(path: str, scope: str) -> OpenCodeConfigLayer:
+    data = _load_json_or_jsonc(path)
+    return OpenCodeConfigLayer(
+        source=os.path.abspath(path),
+        source_scope=scope,
+        path=os.path.abspath(path),
+        data=data if isinstance(data, dict) else None,
+    )
+
+
+def _resolve_opencode_config(workspace_dir: str | None = None) -> OpenCodeConfigResolution:
+    """Resolve non-enterprise OpenCode v1.18.10 config precedence.
+
+    Remote authenticated ``.well-known`` config and Windows ProgramData
+    managed config cannot be established safely by an offline connector read;
+    they are returned as typed, unverified sources and are never fetched or
+    opened here. Relative env paths require an explicit workspace so this
+    process never substitutes its own cwd for the OpenCode client's cwd.
     """
     home = str(Path.home())
-    paths = [
-        os.path.join(home, ".config", "opencode", "opencode.json"),
-        os.path.join(home, ".config", "opencode", "opencode.jsonc"),
-    ]
     root = _workspace_dir(workspace_dir)
+    candidates: list[tuple[str, str]] = [
+        (os.path.join(home, ".config", "opencode", "config.json"), "global"),
+        (os.path.join(home, ".config", "opencode", "opencode.json"), "global"),
+        (os.path.join(home, ".config", "opencode", "opencode.jsonc"), "global"),
+    ]
+    unverified = [
+        OpenCodeUnverifiedConfigSource(
+            source="authenticated .well-known/opencode",
+            source_scope="remote",
+            reason="requires OpenCode's authenticated runtime fetch",
+        ),
+    ]
+
+    explicit_raw = os.environ.get("OPENCODE_CONFIG", "")
+    if explicit_raw:
+        explicit = _opencode_env_path(explicit_raw, workspace_dir)
+        if explicit:
+            candidates.append((explicit, "custom-file"))
+        else:
+            unverified.append(
+                OpenCodeUnverifiedConfigSource(
+                    source="OPENCODE_CONFIG",
+                    source_scope="custom-file",
+                    reason="relative path has no explicit workspace",
+                ),
+            )
     if root:
-        paths.append(os.path.join(root, "opencode.json"))
-        paths.append(os.path.join(root, "opencode.jsonc"))
-    custom = _opencode_config_dir()
-    if custom:
-        paths.append(os.path.join(custom, "opencode.json"))
-        paths.append(os.path.join(custom, "opencode.jsonc"))
-    return _dedup(paths)
+        candidates.extend(
+            [
+                (os.path.join(root, "opencode.json"), "project"),
+                (os.path.join(root, "opencode.jsonc"), "project"),
+                (os.path.join(root, ".opencode", "opencode.json"), "project-directory"),
+                (os.path.join(root, ".opencode", "opencode.jsonc"), "project-directory"),
+            ],
+        )
+    candidates.extend(
+        [
+            (os.path.join(home, ".opencode", "opencode.json"), "home-directory"),
+            (os.path.join(home, ".opencode", "opencode.jsonc"), "home-directory"),
+        ],
+    )
+    custom_raw = os.environ.get("OPENCODE_CONFIG_DIR", "")
+    if custom_raw:
+        custom = _opencode_env_path(custom_raw, workspace_dir)
+        if custom:
+            candidates.extend(
+                [
+                    (os.path.join(custom, "opencode.json"), "custom-directory"),
+                    (os.path.join(custom, "opencode.jsonc"), "custom-directory"),
+                ],
+            )
+        else:
+            unverified.append(
+                OpenCodeUnverifiedConfigSource(
+                    source="OPENCODE_CONFIG_DIR",
+                    source_scope="custom-directory",
+                    reason="relative path has no explicit workspace",
+                ),
+            )
+
+    layers: list[OpenCodeConfigLayer] = []
+    seen: set[str] = set()
+    for path, scope in candidates:
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        layers.append(_opencode_layer(path, scope))
+
+    content = os.environ.get("OPENCODE_CONFIG_CONTENT", "")
+    if content:
+        parsed = _load_json_or_jsonc_content(content)
+        layers.append(
+            OpenCodeConfigLayer(
+                source="OPENCODE_CONFIG_CONTENT",
+                source_scope="inline",
+                data=parsed if isinstance(parsed, dict) else None,
+            ),
+        )
+
+    unverified.append(
+        OpenCodeUnverifiedConfigSource(
+            source="Windows ProgramData managed config",
+            source_scope="managed-enterprise",
+            reason="excluded from this non-enterprise connector; effective precedence is unverified",
+        ),
+    )
+    return OpenCodeConfigResolution(tuple(layers), tuple(unverified))
+
+
+def _opencode_config_paths(workspace_dir: str | None) -> list[str]:
+    """Return locally representable file layers in v1.18.10 merge order."""
+    return [layer.path for layer in _resolve_opencode_config(workspace_dir).layers if layer.path]
 
 
 def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
@@ -2547,20 +2675,32 @@ def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEnt
     opencode stores MCP servers under a top-level ``mcp`` map in its
     JSON/JSONC config — a different schema from the ``mcpServers`` shape
     every other connector uses. Global servers are read first, then the
-    pinned project and active custom-directory files layer on top, matching
-    how opencode itself loads them at runtime.
+    pinned project, user ``~/.opencode`` component, and active custom-directory
+    files layer on top, matching how opencode itself loads them at runtime.
     """
     order: list[str] = []
     entries: dict[str, dict[str, Any]] = {}
-    for path in _opencode_config_paths(workspace_dir):
-        for name, cfg in _read_opencode_mcp_block(path).items():
+    provenance: dict[str, tuple[str, str]] = {}
+    for layer in _resolve_opencode_config(workspace_dir).layers:
+        data = layer.data
+        servers = data.get("mcp") if isinstance(data, dict) else None
+        if not isinstance(servers, dict):
+            continue
+        for name_raw, cfg in servers.items():
+            if not isinstance(cfg, dict):
+                continue
+            name = str(name_raw)
             if name not in entries:
                 order.append(name)
             # OpenCode deep-merges config objects. Merge the raw entry before
             # projecting it into MCPServerEntry so a higher-precedence
             # enabled-only override preserves the lower command/url.
             entries[name] = _merge_opencode_mcp_config(entries.get(name, {}), cfg)
-    return [_opencode_entry_to_mcp(name, entries[name]) for name in order]
+            provenance[name] = (layer.source, layer.source_scope)
+    return [
+        _opencode_entry_to_mcp(name, entries[name], *provenance[name])
+        for name in order
+    ]
 
 
 def _read_opencode_mcp_block(path: str) -> dict[str, dict[str, Any]]:
@@ -2600,7 +2740,12 @@ def _merge_opencode_mcp_config(
     return merged
 
 
-def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
+def _opencode_entry_to_mcp(
+    name: str,
+    cfg: dict[str, Any],
+    source: str = "",
+    source_scope: str = "",
+) -> MCPServerEntry:
     """Map one opencode ``mcp`` entry to the connector-neutral schema.
 
     opencode local servers carry ``command`` as a single argv array
@@ -2613,7 +2758,21 @@ def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
     command_list = cfg.get("command")
     disabled = cfg.get("enabled", True) is False
     if kind == "remote" or (not kind and url and not command_list):
-        return MCPServerEntry(name=name, url=url, transport="remote", disabled=disabled)
+        raw_headers = cfg.get("headers")
+        headers = (
+            {str(k): str(v) for k, v in raw_headers.items()}
+            if isinstance(raw_headers, dict)
+            else {}
+        )
+        return MCPServerEntry(
+            name=name,
+            url=url,
+            transport="remote",
+            headers=headers,
+            disabled=disabled,
+            source=source,
+            source_scope=source_scope,
+        )
     command = ""
     args: list[str] = []
     if isinstance(command_list, list) and command_list:
@@ -2621,7 +2780,12 @@ def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
         args = [str(a) for a in command_list[1:]]
     elif isinstance(command_list, str):
         command = command_list
-    env = {str(k): str(v) for k, v in (cfg.get("environment", {}) or {}).items()}
+    raw_env = cfg.get("environment")
+    env = (
+        {str(k): str(v) for k, v in raw_env.items()}
+        if isinstance(raw_env, dict)
+        else {}
+    )
     return MCPServerEntry(
         name=name,
         command=command,
@@ -2629,7 +2793,22 @@ def _opencode_entry_to_mcp(name: str, cfg: dict[str, Any]) -> MCPServerEntry:
         env=env,
         transport="local",
         disabled=disabled,
+        source=source,
+        source_scope=source_scope,
     )
+
+
+def _load_json_or_jsonc_content(raw: str) -> Any:
+    """Parse JSON/JSONC text without ever logging the potentially secret text."""
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        try:
+            import json5  # type: ignore[import-untyped]
+
+            return json5.loads(raw)
+        except Exception:
+            return None
 
 
 def _load_json_or_jsonc(path: str) -> Any:
@@ -2644,15 +2823,7 @@ def _load_json_or_jsonc(path: str) -> Any:
             raw = f.read()
     except OSError:
         return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        try:
-            import json5  # type: ignore[import-untyped]
-
-            return json5.loads(raw)
-        except Exception:
-            return None
+    return _load_json_or_jsonc_content(raw)
 
 
 # --- Low-level file/CLI helpers --------------------------------------------
@@ -3441,8 +3612,10 @@ def _unset_antigravity_mcp_server(
 # where each entry is ``{type: local, command: [...], environment: {...},
 # enabled: bool}`` or ``{type: remote, url: ..., enabled: bool}`` — a
 # different shape from the ``mcpServers`` schema the other JSON connectors
-# use. Writes target an explicitly pinned project first, then the active
-# ``OPENCODE_CONFIG_DIR/opencode.json``, and otherwise the documented global
+# use. Writes target the highest writable local component layer: an active
+# ``OPENCODE_CONFIG_DIR``, the user ``~/.opencode`` component, an existing
+# project ``.opencode`` component, an explicitly pinned project root,
+# ``OPENCODE_CONFIG``, or the documented global
 # ``~/.config/opencode/opencode.json``.
 #
 # Write policy is plain JSON (documented, mcp.md M5 open decision): every
@@ -3455,11 +3628,34 @@ def _unset_antigravity_mcp_server(
 
 def _opencode_write_path(workspace_dir: str | None) -> str:
     root = _workspace_dir(workspace_dir)
-    config_root = root or _opencode_config_dir() or os.path.join(
-        str(Path.home()),
-        ".config",
-        "opencode",
-    )
+    custom_raw = os.environ.get("OPENCODE_CONFIG_DIR", "")
+    explicit_raw = os.environ.get("OPENCODE_CONFIG", "")
+    custom = _opencode_env_path(custom_raw, workspace_dir)
+    explicit = _opencode_env_path(explicit_raw, workspace_dir)
+    for variable, raw, resolved in (
+        ("OPENCODE_CONFIG_DIR", custom_raw, custom),
+        ("OPENCODE_CONFIG", explicit_raw, explicit),
+    ):
+        if raw.strip() and not resolved:
+            raise MCPWriteUnsupportedError(
+                f"refusing to write OpenCode MCP config because relative {variable} "
+                "requires an explicitly pinned workspace",
+            )
+    home_component = os.path.join(str(Path.home()), ".opencode")
+    if custom:
+        config_root = custom
+    elif os.path.isdir(home_component):
+        config_root = home_component
+    elif root:
+        project_component = os.path.join(root, ".opencode")
+        if os.path.isdir(project_component):
+            config_root = project_component
+        else:
+            config_root = root
+    elif explicit:
+        return explicit
+    else:
+        config_root = os.path.join(str(Path.home()), ".config", "opencode")
     # OpenCode loads .jsonc after .json in component directories. Update the
     # existing higher-precedence document when present so a same-name entry in
     # it cannot silently override a newly written lower-precedence JSON file.
@@ -3530,6 +3726,12 @@ def _set_opencode_mcp_server(
     *,
     workspace_dir: str | None = None,
 ) -> None:
+    if os.environ.get("OPENCODE_CONFIG_CONTENT", ""):
+        raise MCPWriteUnsupportedError(
+            "refusing to write OpenCode MCP config while OPENCODE_CONFIG_CONTENT "
+            "is active because the inline higher-precedence layer cannot be "
+            "updated or restored atomically",
+        )
     path = _opencode_write_path(workspace_dir)
     _reject_symlink_config(path)
     data = _read_opencode_doc_for_write(path)
@@ -3550,6 +3752,15 @@ def _unset_opencode_mcp_server(
     *,
     workspace_dir: str | None = None,
 ) -> bool:
+    if os.environ.get("OPENCODE_CONFIG_CONTENT", ""):
+        raise MCPWriteUnsupportedError(
+            "refusing to remove OpenCode MCP config while OPENCODE_CONFIG_CONTENT "
+            "is active because an inline declaration could remain effective",
+        )
+    # Resolve the highest writable target even though unset mutates every
+    # active file layer. This fails closed when a relative env path cannot be
+    # made authoritative without a pinned workspace.
+    _opencode_write_path(workspace_dir)
     updates: list[tuple[str, dict[str, Any]]] = []
     # OpenCode merges every active layer. Removing only the winning custom or
     # project declaration would let a same-name lower layer silently resurface,

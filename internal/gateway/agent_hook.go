@@ -519,6 +519,12 @@ func (a *APIServer) finalizeAgentHook(
 			return
 		}
 		a.health.RecordConnectorRequestFor(connectorName)
+		if connName(connectorName) == "opencode" {
+			loadProof, _ := req.Payload["load_heartbeat"].(bool)
+			if canonicalEvent(req.HookEventName) == "defenseclawpluginloaded" || loadProof {
+				a.health.RecordConnectorLoadHeartbeatFor(connectorName)
+			}
+		}
 		if resp.Action == "block" {
 			a.health.RecordToolBlockFor(connectorName)
 		}
