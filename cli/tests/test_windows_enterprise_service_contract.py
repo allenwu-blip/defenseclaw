@@ -779,6 +779,11 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
     required_fields: tuple[str, ...],
 ) -> None:
     assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
+    if script == BOOTSTRAP_SMOKE and os.environ.get("GITHUB_ACTIONS") == "true":
+        pytest.skip(
+            "the required public-bootstrap-acceptance job runs under a real "
+            "disposable standard user"
+        )
     repository_cache = ROOT / "Microsoft"
     assert not repository_cache.exists(), (
         f"PowerShell smoke started with repository cache residue: {repository_cache}"

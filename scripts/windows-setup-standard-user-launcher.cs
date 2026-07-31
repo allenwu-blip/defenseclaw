@@ -1174,9 +1174,7 @@ namespace DefenseClaw
                         out handleListBuffer);
                     STARTUPINFOEX startupInfo = new STARTUPINFOEX();
                     startupInfo.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
-                    // Headless capture inherits the parent's exact station and
-                    // desktop. Hosted runners do not necessarily grant a
-                    // filtered medium token access to winsta0\default.
+                    startupInfo.StartupInfo.lpDesktop = @"winsta0\default";
                     startupInfo.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
                     startupInfo.StartupInfo.hStdInput = stdinHandle;
                     startupInfo.StartupInfo.hStdOutput = stdoutHandle;
