@@ -11,8 +11,9 @@ commit
 
 ## Version decision
 
-- **OUTDATED:** No. DefenseClaw's shared range is `>=0.19.0`, and the latest
-  stable upstream release is `0.19.1`.
+- **OUTDATED:** No. DefenseClaw's macOS range is `>=0.19.0, <0.20.0`, and the
+  latest stable upstream release is `0.19.1`. Windows deliberately preserves
+  the earlier `>=0.19.0` range without a ceiling.
 - **CURRENT:** Yes. The tagged `VALID_HOOKS` inventory is exactly the 23 events
   in `hermes-hooks-v1`; the shell bridge still uses JSON stdin/stdout,
   `shlex.split`, synchronous `subprocess.run(..., shell=False)`, and the same
@@ -29,7 +30,7 @@ packaging, and Windows-preservation evidence has not been run for 0.18.
 
 | Surface | Official source | DefenseClaw result |
 | --- | --- | --- |
-| Latest release/version | [GitHub release](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.30), [`pyproject.toml`](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/pyproject.toml) | `0.19.1`; current within shared `>=0.19.0`. |
+| Latest release/version | [GitHub release](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.7.30), [`pyproject.toml`](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/pyproject.toml) | `0.19.1`; current within macOS `>=0.19.0, <0.20.0`. Windows remains unbounded above. |
 | macOS installation | [Platform support](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/website/docs/getting-started/platform-support.md), [installation](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/website/docs/getting-started/installation.md) | macOS is official; CLI install uses `install.sh`. DefenseClaw remains preview until its own certification closes. |
 | Home/config | [`hermes_constants.py`](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/hermes_constants.py), [configuration guide](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/website/docs/user-guide/configuration.md) | `HERMES_HOME` wins; macOS defaults to `~/.hermes`; effective config is `config.yaml`. |
 | Hook inventory/process | [`VALID_HOOKS`](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/hermes_cli/plugins.py), [`agent/shell_hooks.py`](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/agent/shell_hooks.py), [hook guide](https://github.com/NousResearch/hermes-agent/blob/v2026.7.30/website/docs/user-guide/features/hooks.md) | All 23 events; only `pre_tool_call` blocks, `pre_llm_call` injects context, and `pre_verify` continues verification. Hermes tokenizes the absolute POSIX command and runs it synchronously with `shell=False`; failures remain open. |
@@ -40,7 +41,7 @@ packaging, and Windows-preservation evidence has not been run for 0.18.
 
 | # | Surface | macOS result |
 | --- | --- | --- |
-| 1 | Registry, discovery, version, platform | **Implemented:** aliases, trusted discovery, `HERMES_HOME`, `>=0.19.0`. **Uncertified:** explicit macOS preview. |
+| 1 | Registry, discovery, version, platform | **Implemented:** aliases, trusted discovery, `HERMES_HOME`, macOS `>=0.19.0, <0.20.0`; the Windows overlay remains `>=0.19.0` without a ceiling. **Uncertified:** explicit macOS preview. |
 | 2 | CLI/help/aliases | **Implemented:** `setup hermes`, guardrail flags, status, teardown, verify, repair. |
 | 3 | TUI/setup/status/repair | **Implemented:** shared registry/status/Doctor expose preview, fail-open, no-ask constraints. |
 | 4 | Full `HERMES_HOME` Setup lifecycle | **Implemented:** only resolved `config.yaml` is patched; unchanged state restores exact bytes or absence. On drift, teardown removes owned hooks and three-way restores `hooks_auto_accept` while preserving unrelated edits. |

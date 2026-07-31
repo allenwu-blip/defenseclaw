@@ -30,18 +30,18 @@ bus events and cannot implement a native DefenseClaw ask verdict.
 | Classification | Result |
 | --- | --- |
 | OUTDATED | Earlier records omitted generic event variants and application/config/command/agent/plugin discovery paths, treated config `tools` permissions as tool declarations, and said OpenCode had no native OTLP implementation. |
-| CURRENT | The shared registry remains unversioned because OpenCode exposes a plugin API rather than a versioned hook file. Version 1.16.2 is the existing tested boundary and 1.18.10 is the latest source-reviewed candidate. The bridge uses the official awaited pre-tool throw contract, exact connector bearer authentication, fail-closed transport behavior, official post-tool arguments/results, observe-only post/event telemetry, managed backup, tamper repair, restart guidance, and hash-gated exact restore. |
+| CURRENT | The macOS/Linux registry accepts `>=1.16.2, <1.18.11` and installs the 35-event v7 bridge. Version 1.18.10 is the latest source-reviewed candidate. Windows deliberately preserves the unbounded/default nine-event v6 bridge. The bridge uses the official awaited pre-tool throw contract, exact connector bearer authentication, fail-closed transport behavior, official post-tool arguments/results, observe-only post/event telemetry, managed backup, tamper repair, restart guidance, and hash-gated exact restore. |
 | UNCERTIFIED | No durable green latest-version macOS run is retained. `last_validated_version`, timestamp, and run URL therefore remain empty. |
 
 ## Acceptance-surface disposition
 
 | Surface | Disposition |
 | --- | --- |
-| Registry, discovery, version, platform | Shared unversioned plugin contract; 1.16.2 tested and 1.18.10 source-reviewed; Darwin assets confirmed; explicit empty macOS certification record |
+| Registry, discovery, version, platform | macOS/Linux `>=1.16.2, <1.18.11`, v7 and 35 events; 1.18.10 source-reviewed; Windows remains unbounded/default on v6 with nine events; Darwin assets confirmed; explicit empty macOS certification record |
 | CLI, help, aliases | Existing `setup opencode` alias retained; source review does not create a certification pin |
 | TUI, setup, status, repair | Existing generic connector flows retained; macOS target generation now includes OpenCode |
 | Setup lifecycle and custody | Whole-file `defenseclaw.js`, owner-only credentials, exclusive guardian custody, digest verification, idempotent upgrade/repair, rollback on failed Setup, and hash-gated exact restore on teardown/uninstall/purge; drift is preserved |
-| Plugin and policy contract | Awaited `tool.execute.before`; after/event observe-only; `permission.ask` not claimed |
+| Plugin and policy contract | v7 recognizes 35 reviewed events; awaited `tool.execute.before` is the only blocking lane; after/event delivery is observe-only; `permission.ask` not claimed |
 | Native process and provenance | Official native Darwin release; root installer reads package metadata and never executes a user binary |
 | Gateway, auth, lifecycle | Connector-specific route accepts only the scoped bridge bearer (not loopback bypass or master key), with explicit fail mode and session/tool correlation |
 | Doctor, tamper, repair, restart | Plugin marker is directly verified; missing/drifted bridge is repairable; restart remains required because OpenCode loads plugins at startup |

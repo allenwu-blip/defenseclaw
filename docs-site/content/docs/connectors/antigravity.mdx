@@ -13,15 +13,19 @@ model provider directly, while its documented lifecycle hooks send local events
 to the authenticated DefenseClaw gateway. DefenseClaw does not proxy
 Antigravity model traffic.
 
-Google currently publishes Antigravity 2.0 v2.4.3 and CLI v1.1.8 (July 28,
-2026). The [official install page](https://antigravity.google/docs/cli/install)
+Google's official macOS installer manifest now publishes Antigravity CLI
+v1.1.9. The [official install page](https://antigravity.google/docs/cli/install)
 says the CLI runs natively on Windows, macOS, and Linux. Native macOS is an
 available DefenseClaw preview pending durable latest-version packaged and
 authenticated official-client evidence. The native Windows x64 implementation
 remains behind the not-certified platform gate.
-DefenseClaw's shared contract accepts `>=1.1.8`; macOS remains preview and a
-later release still requires the normal contract-drift review before it can be
-treated as validated on that platform.
+On macOS/Linux, DefenseClaw accepts the source-reviewed
+`>=1.1.8, <1.1.9` range. The preserved Windows contract accepts `>=1.1.8`
+without a ceiling, but Windows remains not certified. The latest 1.1.9 client
+is therefore rejected as unknown on macOS pending a new contract review; the
+ceiling must not be widened merely because the installer updated. A version
+match on either platform is compatibility evidence, not validation or
+certification.
 
 ## Native macOS setup
 
@@ -211,7 +215,9 @@ Windows and hook transitions: v1.0.8 corrected the shared
 `~/.gemini/config/hooks.json` path; v1.0.10 selected PowerShell as the Windows
 default shell; v1.0.15 fixed Windows output behavior; v1.1.1 fixed workspace
 hook loading; v1.1.7 fixed disabled plugins still running hooks; and v1.1.8 is
-the current CLI release.
+the latest source-reviewed CLI release. The official installer manifest now
+points to 1.1.9, which is outside the macOS compatibility ceiling pending
+review.
 
 ## Local customization surfaces
 

@@ -11,11 +11,11 @@ Primary-source recheck on 2026-07-30:
 | Item | Decision | Comparison with latest official macOS release |
 |---|---:|---|
 | Upstream macOS release | CURRENT | GitHub's latest release is 1.0.77, with official arm64 and x64 Darwin artifacts. |
-| DefenseClaw version bounds | CURRENT | On macOS, v1 is `[1.0.18, 1.0.76)` and v2 is `[1.0.76, unbounded)`, so latest resolves to v2 without claiming validation. PR #655's Windows lane remains pinned to its 13-event v1 contract. |
+| DefenseClaw version bounds | CURRENT | On Windows/macOS/Linux, v1 is `[1.0.18, 1.0.76)` and v2 is `[1.0.76, unbounded)`, so latest resolves to v2 without claiming validation. |
 | macOS `last_validated_version` | UNCERTIFIED | Empty by design because no authenticated green 1.0.77 macOS live run exists. |
 | Hook inventory | CURRENT | v2 contains all 14 currently documented events, including `userPromptTransformed`. |
 | Discovery paths/probe | CURRENT | `copilot version`; `$COPILOT_HOME/settings.json`, legacy `config.json`, MCP and hooks; current repository settings, hook, MCP, and cross-tool settings paths. |
-| Capability/native OTel | CURRENT / LIMITED | Official traces and metrics are claimed; native logs are not. Cleartext HTTP gateway wiring remains blocked. |
+| Capability/native OTel | CURRENT / LIMITED | Upstream documents traces and metrics; native logs are not documented. macOS models the exporter as `native_otlp=true`, but DefenseClaw does not auto-configure or certify it; Windows remains false. Cleartext HTTP gateway wiring remains blocked. |
 
 `CURRENT` means aligned with the latest official surface, not certified
 support. Only a reviewed green live cell may change `UNCERTIFIED`.
@@ -33,7 +33,7 @@ Classifications: **I** implemented, **L** limited, **N/A** not applicable,
 | Native process and provenance | I | Official arm64 artifact digest, Mach-O format, strict code signature, Developer ID team, hardened runtime, mode, and quarantine state are recorded in the durable evidence JSON. |
 | Gateway, auth, lifecycle | L | Command hooks use the existing scoped hook credential and loopback gateway lifecycle. Copilot login tokens remain in GitHub's supported environment variables or macOS Keychain and are never copied into DefenseClaw state. |
 | Doctor, tamper, repair | I/L | Doctor validates the pinned v1/v2 contract, exact event set, one owned handler per event, command-field isolation, timeout, registration symlink state, and executable target mode/type. Native Mach-O provenance is checked before passive execution. Authenticated runtime repair remains a live-test requirement. |
-| Official native OTel, audit, correlation | L/B | Official traces and metrics are modeled with conversation, turn, interaction, and tool-call IDs. Native logs are N/A. Copilot 1.0.76 disables cleartext `http://` OTLP export, so the current HTTP loopback gateway is not auto-wired; TLS termination or file-export ingestion is blocked follow-up work. Hook audit remains implemented. |
+| Official native OTel, audit, correlation | L/B | Upstream traces and metrics document conversation, turn, interaction, and tool-call IDs. Native logs are N/A. macOS records the upstream exporter capability as `native_otlp=true`, but DefenseClaw does not auto-configure or certify it; Windows remains false. Copilot 1.0.76 disables cleartext `http://` OTLP export, so the current HTTP loopback gateway is not auto-wired. Hook audit remains implemented. |
 | Extensions: MCP, skills, plugins, instructions, agents, hooks | I/L | MCP, skills, personal extensions, agents, instructions, hooks, and the two-level installed-plugin layout have documented user/workspace paths and honor `COPILOT_HOME`. macOS MDM settings and policy-hook paths are discovery-only. Plugin-provided extensions and LSP are inventoried through plugin provenance; DefenseClaw mutation of plugin state is intentionally not implemented. Separate “rules” and microagents are N/A beyond instruction and custom-agent files. |
 | Docs, matrices, limits | I | Connector docs and this acceptance map state current event count, native signal limits, transport block, and certification state. |
 | Deterministic, packaged, live, manual evidence | I/B | Contract/unit tests, the durable static probe, and `scripts/live-connector-e2e/verify-copilot-macos-release.sh` are packaged. The live driver consumes the requested-version input. An authenticated latest-version macOS lifecycle run is blocked by unavailable credentials; certification is not stamped. |

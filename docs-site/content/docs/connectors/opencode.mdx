@@ -68,14 +68,18 @@ and judge configuration.
 
 #### Version contract
 
-The shared `opencode-hooks-v1` registry contract remains unversioned because
-OpenCode exposes a plugin API rather than a versioned hook file. It has been
-tested with 1.16.2, while the candidate review also inspected the official
+OpenCode uses platform-specific `opencode-hooks-v1` contracts. On macOS and
+Linux, DefenseClaw accepts `>=1.16.2, <1.18.11` and installs the `v7` bridge,
+which recognizes 35 events: the two tool-execution hooks plus the reviewed
+generic event-bus variants. The candidate review inspected the official
 [`v1.18.10` release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10),
-published July 30, 2026, which includes native `windows-x64` release assets and
-the `opencode-ai` npm package's `opencode.exe`. A Windows support release is
-published only after that pinned gate succeeds; changing the pin does not by
-itself record a validated version.
+published July 30, 2026.
+
+Native Windows deliberately preserves the earlier unbounded/default version
+range and the nine-event `v6` bridge. It does not inherit the macOS/Linux
+ceiling or 35-event inventory. Windows remains preview pending packaged Setup
+and pinned official-client evidence; neither a compatible version nor changing
+the pin records certification.
 
 ## Lifecycle events
 
@@ -86,8 +90,11 @@ itself record a validated version.
 
 OpenCode has no hook-driven ask or context-injection surface, so `confirm`
 verdicts fall back to allow. Findings on `tool.execute.after` are telemetry
-only. OpenCode's generic lifecycle `event` dispatch is also non-awaited, so
-DefenseClaw does not claim blocking or reliable delivery for lifecycle events.
+only. On macOS/Linux, the v7 bridge also recognizes the reviewed generic event
+bus, but OpenCode dispatches that callback without awaiting its Promise, so
+DefenseClaw does not claim blocking or reliable delivery for those events.
+The preserved Windows v6 bridge recognizes only seven session lifecycle events
+plus the two tool hooks.
 
 This is an in-process plugin contract, not a subprocess protocol. There is no
 hook stdin payload, stdout decision document, or hook exit-code convention:
@@ -130,8 +137,10 @@ The `1.18.10` runtime awaits `tool.execute.before`, making a thrown error the
 enforcement boundary. Its generic event callback is observe-only. Although the
 plugin type package declares `permission.ask`, the tagged runtime does not
 dispatch that hook; `permission.asked` and `permission.replied` are audit
-events, not a native ask lane. OpenCode exposes no native OTLP exporter or
-traceparent hook contract, so correlation is gateway-generated.
+events, not a native ask lane. OpenCode 1.18.10 includes an experimental native
+OTLP logs/traces implementation, but DefenseClaw neither configures nor
+certifies it; the connector contract remains `native_otlp=false` and exposes no
+traceparent hook contract, so DefenseClaw correlation is gateway-generated.
 
 `last_validated_version` for macOS intentionally remains empty. Source review,
 deterministic tests, and a local packaged run do not substitute for a durable

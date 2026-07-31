@@ -1,6 +1,6 @@
 # Native macOS Antigravity Acceptance
 
-Status date: 2026-07-30
+Status date: 2026-07-31
 Scope: Google Antigravity CLI (`agy`) on native macOS only. Gemini CLI,
 proxy connectors, and other connector implementations are out of scope.
 
@@ -8,12 +8,13 @@ proxy connectors, and other connector implementations are out of scope.
 
 | Classification | Result |
 | --- | --- |
-| **OUTDATED** | The previous macOS platform claim said `supported` even though no macOS `last_validated_version` record existed. POSIX Doctor checked only for a script-name substring, passive discovery could execute an arbitrary `agy` found first on `PATH`, the `agy` product alias was not normalized, and extension discovery omitted documented rules and standalone agents. |
-| **CURRENT** | Google's official stable channel and changelog identify Antigravity CLI `1.1.8`, released 2026-07-28. DefenseClaw's shared contract recognizes `>=1.1.8`; only 1.1.8 has this macOS source review, and later compatible versions are not validation evidence until reviewed. The five-event `antigravity-hooks-v2` contract, global hook path, native macOS installer location, MCP schema, skills, plugins, rules, agents, and authentication boundary match the current primary documentation. |
+| **OUTDATED** | The previous macOS platform claim said `supported` even though no macOS `last_validated_version` record existed. The prior “latest is 1.1.8” statement is also stale: Google's official macOS installer manifest now publishes 1.1.9. |
+| **CURRENT / LIMITED** | DefenseClaw's reviewed macOS contract remains `>=1.1.8, <1.1.9`; Windows preserves `>=1.1.8` without a ceiling. The five-event 1.1.8 `antigravity-hooks-v2` contract and associated paths remain the reviewed implementation. The latest 1.1.9 release is correctly rejected as unknown on macOS pending a fresh contract review; its appearance in the manifest is not grounds to widen the ceiling. |
 | **UNCERTIFIED** | macOS remains `preview`. `validated_versions.json` intentionally has an empty macOS `last_validated_version`, timestamp, and run URL. The persistent authenticated macOS connector-lab workflow is a source-build regression harness, not current-head packaged certification evidence, so no certification stamp was added. |
 
 Primary sources:
 
+- [Official macOS arm64 installer manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json)
 - [Installation and authentication](https://antigravity.google/docs/cli/install)
 - [Changelog](https://antigravity.google/changelog)
 - [Hooks](https://antigravity.google/docs/hooks)
@@ -28,7 +29,7 @@ Primary sources:
 
 | # | Acceptance surface | macOS result |
 | --- | --- | --- |
-| 1 | Registry, discovery, version, platform | Implemented. `agy --version`; official `~/.local/bin/agy`; mandatory trusted-path admission before a passive Antigravity probe; shared gate `>=1.1.8`; macOS is available as `preview`, not certified. |
+| 1 | Registry, discovery, version, platform | Implemented. `agy --version`; official `~/.local/bin/agy`; mandatory trusted-path admission before a passive Antigravity probe; macOS gate `>=1.1.8, <1.1.9`, while Windows remains unbounded above. Latest 1.1.9 is unsupported on macOS pending review; macOS is `preview`, not certified. |
 | 2 | CLI, help, aliases | Implemented. `setup antigravity` remains canonical and `setup agy`/`init --connector agy` normalize to Antigravity, never Gemini CLI. |
 | 3 | TUI, setup, status, repair | Implemented. Antigravity remains visible with a preview marker. Setup/status use the Antigravity connector identity. Doctor reports exact contract drift and points to scoped setup repair. |
 | 4 | Narrow Setup custody and restoration | Implemented. Setup writes only five `defenseclaw-antigravity-*` keys in global `~/.gemini/config/hooks.json`. Exact pre-Setup bytes and mode are restored if unchanged; after operator drift, only DefenseClaw-owned keys are removed. `ANTIGRAVITY_CONFIG_DIR` is a DefenseClaw-internal, validated lifecycle binding for the selected profile, not a claimed upstream Antigravity override; Setup rejects unsafe path ancestry, overrides ambient state for the child operation, and restores it afterward. |

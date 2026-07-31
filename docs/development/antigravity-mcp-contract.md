@@ -29,8 +29,8 @@ Research refreshed: 2026-07-30.
 
 | Evidence | Official result |
 | --- | --- |
-| Current release | Antigravity 2.0 v2.4.3 and CLI v1.1.8, released 2026-07-28. |
-| DefenseClaw version gate | Shared contract `>=1.1.8`. Version 1.1.8 is source-reviewed; later compatible versions are not macOS validation evidence until reviewed. |
+| Current release | The official macOS installer manifest publishes CLI v1.1.9 as of 2026-07-31. Version 1.1.8 remains the latest source-reviewed contract. |
+| DefenseClaw version gate | macOS/Linux `>=1.1.8, <1.1.9`; Windows preserves `>=1.1.8` without a ceiling. The current 1.1.9 release is rejected as unknown on macOS pending contract review. |
 | Native support | The install page says the CLI runs natively on Windows, macOS, and Linux. DefenseClaw macOS is preview; Windows x64 is not certified. |
 | Install | macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh \| bash`, installing `~/.local/bin/agy`. Windows uses the published PowerShell/CMD installers and `%LOCALAPPDATA%\agy\bin\agy.exe`. |
 | Authentication | macOS Keychain or Windows Credential Manager stores secure token profiles; browser authentication is the fallback. No API-key-based headless authentication is documented. |

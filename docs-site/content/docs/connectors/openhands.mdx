@@ -54,12 +54,22 @@ configuration.
 
 #### Version contract
 
-DefenseClaw validates the installed OpenHands CLI version during setup when the trusted `openhands --version` probe succeeds. The latest official CLI is [`openhands` 1.16.0](https://pypi.org/project/openhands/), and the [official installation guide](https://docs.openhands.dev/openhands/usage/cli/installation) supports macOS. DefenseClaw's source-reviewed version knowledge is therefore **CURRENT**. The old `openhands-ai` live-driver package and Linux-only runtime assumption were **OUTDATED** and have been replaced by the official `openhands` Python 3.12 CLI path. Native macOS remains **UNCERTIFIED** until a genuine green latest-version live run supplies durable run evidence; `last_validated_version` intentionally stays empty.
+DefenseClaw validates the installed OpenHands CLI version during setup when the
+trusted `openhands --version` probe succeeds. On macOS and Linux,
+`openhands-hooks-v1` requires `>=1.12.0`, the first release that loads the
+user-global `~/.openhands/hooks.json` file. Source review covered
+[`openhands` 1.16.0](https://pypi.org/project/openhands/), and the
+[official installation guide](https://docs.openhands.dev/openhands/usage/cli/installation)
+supports macOS. That review is compatibility evidence, not certification;
+native macOS remains **UNCERTIFIED** and `last_validated_version` stays empty.
+The old `openhands-ai` live-driver package and Linux-only runtime assumption
+were **OUTDATED** and have been replaced by the official `openhands` Python
+3.12 CLI path.
 
-The shared registry currently treats the documented hooks as unversioned
-because upstream does not publish a stable hook-contract floor. Source review
-against CLI 1.16.0 is compatibility evidence, not a minimum-version guarantee
-or macOS certification.
+The runtime retains a Windows registry override with a zero version floor and
+`native_otlp=false`, but native Windows OpenHands setup is unsupported because
+the CLI requires WSL and DefenseClaw has no WSL connector path. That internal
+override is compatibility preservation, not a Windows support claim.
 
 <Callout type="warning">
 OpenHands checks `<workspace>/.openhands/hooks.json` first and then
@@ -138,16 +148,26 @@ File-based subagents use `.agents/agents/*.md`, with `.openhands/agents/*.md` as
 
 The resolved paths are captured in `~/.defenseclaw/hook_contract_lock.json` under `locations`, so `defenseclaw doctor` can report both the hook contract and the concrete hook/MCP/skill locations it is using.
 
-OpenHands CLI 1.16.0 bundles OpenHands SDK 1.21.0, whose
-[observability layer](https://github.com/OpenHands/software-agent-sdk/blob/v1.21.0/openhands-sdk/openhands/sdk/observability/laminar.py)
-enables **trace-only native OTLP** when the OpenHands process receives
+OpenHands CLI 1.16.0 remains the latest CLI, but the prior SDK review at 1.21.0
+is stale: the official
+[OpenHands SDK 1.39.1 release](https://github.com/OpenHands/software-agent-sdk/releases/tag/v1.39.1)
+([PyPI](https://pypi.org/project/openhands-sdk/1.39.1/)) was published on July
+30, 2026. The 1.21.0 source exposed **trace-only native
+OTLP** when the OpenHands process received
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (or the combined endpoint),
 `OTEL_EXPORTER_OTLP_TRACES_HEADERS`, and
-`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`. DefenseClaw models an
-authenticated loopback process environment with a connector-scoped bearer for
-this rail. Setup provisions and revokes that credential but does not
-persist those variables in `hooks.json` or mutate a shell profile, and
-OpenHands does not natively export OTLP logs or metrics.
+`OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf`. The macOS/Linux registry's
+`native_otlp=true` records this upstream, exporter-only capability. DefenseClaw
+does not auto-configure the OpenHands launch environment: Setup does not persist
+those variables in `hooks.json`, mutate a shell profile, or claim that an
+ordinary OpenHands launch exports traces. OpenHands does not natively export
+OTLP logs or metrics in the stale 1.21.0 review; 1.39.1 signal support is
+pending re-review.
+
+The SDK-derived hook-schema and native-OTLP evidence must be re-reviewed
+against 1.39.1 before DefenseClaw claims it is current. That stale evidence does
+not lower the CLI `>=1.12.0` floor, add a ceiling, add hook events, or establish
+new correlation identifiers.
 
 DefenseClaw also produces authenticated hook-derived audit, log, metric, and
 trace records, propagates W3C trace context through its managed hook runtime,
@@ -156,7 +176,7 @@ contain stable turn, action, tool-call, event, or model-response IDs. The SDK
 sets a Laminar trace-session association, but upstream does not document its
 exported OTLP attribute name as a stable cross-rail contract, so DefenseClaw
 does not claim hook/native identity equivalence or a native event-stream
-adapter.
+adapter. The Windows contract keeps native OTLP disabled.
 
 ## Hook capabilities
 

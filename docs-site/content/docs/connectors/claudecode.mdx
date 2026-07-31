@@ -51,6 +51,14 @@ Claude Code native Windows support is a preview. The hook and lifecycle
 contract is implemented, but no immutable packaged plus official-client
 Windows certification record is persisted.
 
+#### Version contract
+
+The shared `claudecode-hooks-v1` floor is `>=2.1.154`. macOS applies an
+additional protected-admission ceiling of `<2.1.219` because 2.1.219 introduced
+the release-only `DirectoryAdded` event without a published schema, ordering,
+or blocking contract. Windows retains the shared open ceiling. A version match
+selects a known hook contract; it does not certify either native platform.
+
 Native OTLP uses managed loopback exporter settings with a Claude-scoped
 Authorization bearer. Logs and metrics are enabled on every supported host.
 On macOS, DefenseClaw also enables Anthropic's documented enhanced-telemetry
