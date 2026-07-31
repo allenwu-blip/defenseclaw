@@ -93,6 +93,8 @@ _INSTALL_STATE_OPTIONAL_FIELDS = frozenset(
         "windsurf_hooks_path",
         "antigravity_config_dir",
         "opencode_config_dir",
+        "omnigent_config_home",
+        "hermes_home",
         "transaction_id",
     }
 )
@@ -500,6 +502,8 @@ def _validate_install_state(
             "claudecode",
             "copilot",
             "cursor",
+            "hermes",
+            "omnigent",
             "windsurf",
             "opencode",
             "none",

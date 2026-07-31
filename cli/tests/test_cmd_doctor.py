@@ -604,7 +604,10 @@ class DoctorGuardrailTests(unittest.TestCase):
         result = _DoctorResult()
         _check_hilt_support(cfg, "cursor", result)
         self.assertEqual(result.warned, 1)
-        self.assertIn("documented ask-capable", result.checks[0]["detail"])
+        self.assertIn(
+            "preToolUse accepts ask in the schema but does not enforce it",
+            result.checks[0]["detail"],
+        )
 
         result = _DoctorResult()
         _check_hilt_support(cfg, "geminicli", result)

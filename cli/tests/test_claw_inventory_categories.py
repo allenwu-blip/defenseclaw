@@ -38,7 +38,9 @@ from tests.environment import isolated_home_env
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from defenseclaw import connector_paths
 from defenseclaw.inventory.claw_inventory import (
+    _agents_from_copilot_dirs,
     _agents_for_connector,
     _memory_for_connector,
     _model_providers_for_connector,
@@ -211,6 +213,53 @@ class AgentsAdapterTests(unittest.TestCase):
             ["global-reviewer", "plugin-reviewer", "workspace-reviewer"],
         )
         self.assertTrue(all(agent["kind"] == "subagent" for agent in out))
+
+    def test_copilot_agents_reject_reparse_files(self):
+        agents_dir = os.path.join(self.tmp, "copilot-agents")
+        os.makedirs(agents_dir)
+        safe = os.path.join(agents_dir, "safe.md")
+        redirected = os.path.join(agents_dir, "redirected.md")
+        for path in (safe, redirected):
+            with open(path, "w", encoding="utf-8") as stream:
+                stream.write("# agent\n")
+        real_reject = connector_paths.reject_reparse_path
+
+        def reject_redirected(path: str) -> None:
+            if os.path.normcase(path) == os.path.normcase(redirected):
+                raise OSError("mocked Windows reparse point")
+            real_reject(path)
+
+        with patch.object(connector_paths, "reject_reparse_path", side_effect=reject_redirected):
+            out = _agents_from_copilot_dirs([agents_dir])
+
+        ids = {agent["id"] for agent in out}
+        self.assertIn("safe", ids)
+        self.assertNotIn("redirected", ids)
+
+    def test_antigravity_agents_reject_reparse_files_and_nested_directories(self):
+        workspace = os.path.join(self.tmp, "workspace")
+        agents_dir = os.path.join(workspace, ".agents", "agents")
+        nested = os.path.join(agents_dir, "redirected-nested")
+        direct = os.path.join(agents_dir, "redirected-direct.md")
+        os.makedirs(nested)
+        with open(os.path.join(nested, "agent.md"), "w", encoding="utf-8") as stream:
+            stream.write("# nested\n")
+        with open(direct, "w", encoding="utf-8") as stream:
+            stream.write("# direct\n")
+        real_reject = connector_paths.reject_reparse_path
+
+        def reject_redirected(path: str) -> None:
+            normalized = os.path.normcase(path)
+            if normalized in {os.path.normcase(direct), os.path.normcase(nested)}:
+                raise OSError("mocked Windows reparse point")
+            real_reject(path)
+
+        with patch.object(connector_paths, "reject_reparse_path", side_effect=reject_redirected):
+            out = _agents_for_connector("antigravity", _WorkspaceCfg(workspace))
+
+        ids = {agent["id"] for agent in out}
+        self.assertNotIn("redirected-direct", ids)
+        self.assertNotIn("redirected-nested", ids)
 
     def test_unknown_connector_returns_empty(self):
         out = _agents_for_connector("openclaw", _FakeCfg())

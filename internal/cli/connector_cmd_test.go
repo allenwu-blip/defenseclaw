@@ -475,9 +475,7 @@ func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 	claudeMode.HookFailMode = "closed"
 	cfg.Guardrail.Connectors["claudecode"] = claudeMode
 	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--json")
-	if stderr != "" {
-		t.Fatalf("Claude close reconcile: %s", stderr)
-	}
+	assertConnectorReconcileStderr(t, "claudecode", stderr)
 	closed := assertMixedHookContractsCurrent(t, dataDir, home)
 	if closed.Connectors["claudecode"].HookFailMode != "closed" || closed.Connectors["codex"].HookFailMode != "open" {
 		t.Fatalf("mixed lock modes are wrong: Claude=%q Codex=%q", closed.Connectors["claudecode"].HookFailMode, closed.Connectors["codex"].HookFailMode)
@@ -525,9 +523,7 @@ func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--json")
-	if stderr != "" {
-		t.Fatalf("legacy migration reconcile: %s", stderr)
-	}
+	assertConnectorReconcileStderr(t, "claudecode", stderr)
 	assertMixedHookContractsCurrent(t, dataDir, home)
 
 	// Reverse the mixed state and repeatedly switch one connector.  Every
@@ -536,9 +532,7 @@ func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 	claudeMode.HookFailMode = "open"
 	cfg.Guardrail.Connectors["claudecode"] = claudeMode
 	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--json")
-	if stderr != "" {
-		t.Fatalf("Claude reopen reconcile: %s", stderr)
-	}
+	assertConnectorReconcileStderr(t, "claudecode", stderr)
 	codexMode := cfg.Guardrail.Connectors["codex"]
 	codexMode.HookFailMode = "closed"
 	cfg.Guardrail.Connectors["codex"] = codexMode
@@ -553,9 +547,7 @@ func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 		claudeMode.HookFailMode = mode
 		cfg.Guardrail.Connectors["claudecode"] = claudeMode
 		_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--json")
-		if stderr != "" {
-			t.Fatalf("repeated Claude %s reconcile: %s", mode, stderr)
-		}
+		assertConnectorReconcileStderr(t, "claudecode", stderr)
 		assertMixedHookContractsCurrent(t, dataDir, home)
 	}
 }

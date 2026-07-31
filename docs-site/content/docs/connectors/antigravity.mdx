@@ -35,13 +35,11 @@ Google installs `agy.exe` under
 Credential Manager for secure token profiles, with browser authentication as
 the fallback.
 
-Native Setup exposes this implementation as a preview/not-certified choice:
-
-```powershell
-defenseclaw setup antigravity --yes
-defenseclaw setup antigravity --mode action --yes
-defenseclaw doctor
-```
+The native Setup/bootstrap lifecycle and manual validation harness implement
+this connector for integration testing. The ordinary `defenseclaw setup`
+CLI/TUI platform gate does not expose Antigravity while it is not certified;
+there is no supported public setup command until authentic packaged and
+official-client evidence is approved.
 
 DefenseClaw uses a native Windows process chain:
 

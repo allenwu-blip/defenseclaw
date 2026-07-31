@@ -31,10 +31,11 @@
 #     approved version (that stays a deliberate human edit of
 #     cli/defenseclaw/inventory/validated_versions.json).
 #
+# Native Windows x64 release certification remains closed for Claude Code.
 # The manual, source-built Windows cells here, including Claude Code, are
 # evidence-producing preview checks rather than release certification. Codex,
-# Claude Code, Cursor, and Antigravity remain pending authentic packaged plus
-# official-client evidence. Deterministic contract checks run in
+# Claude Code, Cursor, OpenCode, and Antigravity remain pending authentic
+# packaged plus official-client evidence. Deterministic contract checks run in
 # windows-native.yml; certification stays closed until those gates are integrated.
 # Antigravity's official client uses Windows Credential Manager/browser auth,
 # so its real-client cell runs only on a dedicated pre-authenticated runner.

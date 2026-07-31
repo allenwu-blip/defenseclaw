@@ -1087,7 +1087,9 @@ func TestNativeConnectorEndpointMatrix(t *testing.T) {
 				t.Errorf("authorization = %q", got)
 			}
 			wantBody := `{"event":"x"}`
-			if connector == "copilot" {
+			if connector == "codex" {
+				wantBody = `{"hook_event_name":"PreToolUse"}`
+			} else if connector == "copilot" {
 				wantBody = `{"sessionId":"s","timestamp":1,"cwd":"C:\\work","toolName":"powershell","toolArgs":{"command":"Get-ChildItem"}}`
 			}
 			if got := string(rt.gotBody); got != wantBody {
@@ -1124,6 +1126,30 @@ func TestCopilotEventBindingRequiresReviewedExactEvent(t *testing.T) {
 				t.Fatalf("unreviewed event %q reached the gateway", event)
 			}
 			if result.code != 0 || result.stdout != "" {
+				t.Fatalf(
+					"unreviewed event %q synthesized enforcement: code=%d stdout=%q stderr=%q",
+					event, result.code, result.stdout, result.stderr,
+				)
+			}
+		})
+	}
+}
+
+func TestAntigravityEventBindingRequiresReviewedExactEvent(t *testing.T) {
+	for _, event := range []string{"pretooluse", "futureEvent", ""} {
+		t.Run(fmt.Sprintf("event_%s", event), func(t *testing.T) {
+			rt := ok(`{"action":"allow"}`)
+			result := run(t, "antigravity", rt, func(opts *Options) {
+				opts.Event = event
+				opts.FailMode = "closed"
+				opts.StrictAvailability = true
+				opts.ManagedEnterprise = true
+				opts.Stdin = strings.NewReader(`{"hook_event_name":"PreToolUse","event":"PreToolUse"}`)
+			})
+			if rt.requests != 0 || rt.gotReq != nil {
+				t.Fatalf("unreviewed event %q reached the gateway", event)
+			}
+			if result.code != 0 || strings.Contains(result.stdout, `"deny"`) {
 				t.Fatalf(
 					"unreviewed event %q synthesized enforcement: code=%d stdout=%q stderr=%q",
 					event, result.code, result.stdout, result.stderr,

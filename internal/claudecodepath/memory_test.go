@@ -62,9 +62,9 @@ func TestResolveAutoMemoryHonorsFilePrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, value := range map[string]string{
-		filepath.Join(configDir, "settings.json"):                     filepath.Join(root, "user-memory"),
-		filepath.Join(project, ".claude", "settings.json"):           filepath.Join(root, "project-memory"),
-		filepath.Join(project, ".claude", "settings.local.json"):     filepath.Join(root, "local-memory"),
+		filepath.Join(configDir, "settings.json"):                filepath.Join(root, "user-memory"),
+		filepath.Join(project, ".claude", "settings.json"):       filepath.Join(root, "project-memory"),
+		filepath.Join(project, ".claude", "settings.local.json"): filepath.Join(root, "local-memory"),
 		managed: filepath.Join(root, "managed-memory"),
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

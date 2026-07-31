@@ -35,6 +35,12 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 from defenseclaw import connector_paths, file_permissions, windows_acl
 from defenseclaw.connector_paths import (
     KNOWN_CONNECTORS,
@@ -773,9 +779,11 @@ class TestClaudeCodeWrites:
 
     def test_parent_swap_before_native_replace_preserves_new_tree(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        config_home = tmp_path / ".claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
         data_home = tmp_path / "d"
         monkeypatch.setenv("DEFENSECLAW_HOME", str(data_home))
-        settings = tmp_path / ".claude.json"
+        settings = config_home / ".claude.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_bytes(b'{"theme":"original-tree"}\n')
         displaced = tmp_path / ".claude-displaced"
@@ -816,7 +824,7 @@ class TestClaudeCodeWrites:
 
         assert swapped
         assert settings.read_bytes() == external
-        assert (displaced / "settings.json").read_bytes() == b'{"theme":"original-tree"}\n'
+        assert (displaced / ".claude.json").read_bytes() == b'{"theme":"original-tree"}\n'
 
     @pytest.mark.skipif(os.name != "nt", reason="exact raw DACL contract is Windows-specific")
     def test_set_unset_preserves_exact_windows_security(self, tmp_path, monkeypatch):
@@ -1392,8 +1400,10 @@ class TestClaudeCodeWrites:
 
     def test_absent_settings_parent_swap_fails_closed(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
+        config_home = tmp_path / ".claude"
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_home))
         monkeypatch.setenv("DEFENSECLAW_HOME", str(tmp_path / "d"))
-        settings = tmp_path / ".claude.json"
+        settings = config_home / ".claude.json"
         displaced = tmp_path / ".claude-displaced"
         marker = b"operator tree"
         make_private = connector_paths.make_private_directory
@@ -1417,7 +1427,7 @@ class TestClaudeCodeWrites:
         assert swapped
         assert (settings.parent / "marker").read_bytes() == marker
         assert not settings.exists()
-        assert not (displaced / "settings.json").exists()
+        assert not (displaced / ".claude.json").exists()
 
     @pytest.mark.skipif(os.name != "nt", reason="Windows lock-leaf reparse contract")
     @pytest.mark.parametrize("reject_on", [1, 2], ids=["preexisting", "acquisition-race"])
@@ -2115,9 +2125,9 @@ class TestCodexWrites:
         far_away.mkdir()
         monkeypatch.chdir(far_away)
         assert restore_managed_mcp_backup(str(path)) is True
-        data = json.loads(path.read_text())
-        assert "demo" not in data["mcpServers"]
-        assert data["mcpServers"]["old"]["command"] == "old"
+        data = tomllib.loads(path.read_text())
+        assert "demo" not in data["mcp_servers"]
+        assert data["mcp_servers"]["old"]["command"] == "old"
 
 
 # ---------------------------------------------------------------------------

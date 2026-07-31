@@ -1991,7 +1991,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
     def test_claude_managed_enterprise_validates_the_winning_hook_matrix(self) -> None:
         runtime = self._runtime()
-        config = self._config("claudecode", str(runtime))
+        config = self._config("claudecode", f'"{runtime}"')
         document = json.loads(config.read_text(encoding="utf-8"))
         for groups in document["hooks"].values():
             for group in groups:
@@ -2034,7 +2034,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
     def test_claude_managed_enterprise_rejects_hkcu_hook_authority(self) -> None:
         runtime = self._runtime()
-        config = self._config("claudecode", str(runtime))
+        config = self._config("claudecode", f'"{runtime}"')
         document = json.loads(config.read_text(encoding="utf-8"))
         for groups in document["hooks"].values():
             for group in groups:

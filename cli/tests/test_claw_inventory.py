@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
+from defenseclaw import connector_paths
 from defenseclaw.config import (
     ClawConfig,
     Config,
@@ -957,7 +958,10 @@ class TestCLIIntegration(unittest.TestCase):
                     self.assertEqual(result.exit_code, 0, result.output)
                     data = json.loads(result.stdout)
                     self.assertEqual(data["errors"], [])
-                    self.assertEqual(len(data["limitations"]), 4)
+                    self.assertEqual(
+                        len(data["limitations"]),
+                        3 if connector == "codex" else 4,
+                    )
                     self.assertNotIn("failed", result.stderr.lower())
 
     def test_combined_codex_claude_has_four_limitations_without_warning(self):
@@ -1025,7 +1029,7 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertGreaterEqual(json_start, 0)
         data = json.loads(result.stdout[json_start:])
         self.assertEqual(len(data["errors"]), 1)
-        self.assertEqual(len(data["limitations"]), 4)
+        self.assertEqual(len(data["limitations"]), 3)
         self.assertIn("1 connector inventory command(s) failed", result.output)
 
 

@@ -86,7 +86,7 @@ or an advanced operation; it does not mean every listed subcommand is broken.
 | `reset` | no subcommands | **Supported** but destructive and confirmation-gated. It is not uninstall. |
 | `sandbox` | `init`, `setup` | **Unsupported** on native Windows. |
 | `settings` | `save` | **Supported**. |
-| `setup` | See the complete setup inventory below. | **Limited**: only connectors labeled supported, preview, or not certified in the capability matrix, plus documented optional-feature paths, apply on Windows. |
+| `setup` | See the complete setup inventory below. | **Limited**: only connectors labeled supported or preview in the capability matrix, plus documented optional-feature paths, apply on Windows. Not-certified connectors remain unavailable through the public CLI/TUI gate. |
 | `skill` | `allow`, `block`, `disable`, `enable`, `info`, `install`, `list`, `quarantine`, `restore`, `scan`, `search`, `unblock` | **Supported**, with the runtime-disable limits in the capability matrix. |
 | `status` | no subcommands | **Supported**; `--json` includes per-connector runtime posture. |
 | `tool` | `allow`, `block`, `list`, `status`, `unblock` | **Supported** local policy state. |
@@ -117,10 +117,12 @@ The public tree contains:
   `splunk dashboards apply/destroy/plan`.
 
 On native Windows, `claude-code`, `codex`, `cursor`, `windsurf`, `hermes`,
-`opencode`, and `omnigent` are selectable previews; `copilot` and
-`antigravity` remain selectable but not certified. Other aliases may
-remain visible because this is one cross-platform CLI; their presence does not
-override the platform gate. Gemini CLI is excluded from native Windows. Local
+`opencode`, and `omnigent` are selectable previews. `copilot` and
+`antigravity` have internal native lifecycle implementations, but remain
+not-certified and are rejected by ordinary CLI/TUI setup until authentic
+packaged and official-client evidence is approved. Other aliases may remain
+visible because this is one cross-platform CLI; their presence does not override
+the platform gate. Gemini CLI is excluded from native Windows. Local
 observability, Splunk, providers, webhooks, Galileo, registries, and remote
 destinations are optional and retain their own prerequisites.
 

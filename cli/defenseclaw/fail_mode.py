@@ -38,6 +38,7 @@ _EXPECTED_CONTRACTS = {
     ),
     "windsurf": frozenset({"windsurf-hooks-v1"}),
 }
+_UPSTREAM_FAIL_OPEN_CONNECTORS = frozenset({"antigravity", "copilot", "hermes"})
 _SHARED_HOOK_SCRIPTS = frozenset(
     {
         "inspect-tool.sh",
@@ -216,10 +217,10 @@ def connector_fail_mode_report(
     guardrail = cfg.guardrail
     resolver = getattr(guardrail, "effective_hook_fail_mode", None)
     configured = normalize_fail_mode(resolver(name) if callable(resolver) else getattr(guardrail, "hook_fail_mode", ""))
-    if name == "hermes":
+    if name in _UPSTREAM_FAIL_OPEN_CONNECTORS:
         return {
             "effective": "open",
-            "provenance": "hermes-upstream-fail-open",
+            "provenance": f"{name}-upstream-fail-open",
             "configured": configured,
             "desired": "open",
             "runtime": "open",
@@ -227,7 +228,7 @@ def connector_fail_mode_report(
             "drift": [],
             "sources": [
                 {"name": "config", "mode": configured},
-                {"name": "hermes-upstream", "mode": "open"},
+                {"name": f"{name}-upstream", "mode": "open"},
             ],
         }
     if name in _EXPECTED_CONTRACTS or name == "opencode":

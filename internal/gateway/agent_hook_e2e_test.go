@@ -270,6 +270,41 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 	}
 }
 
+func TestHandleAgentHook_AntigravityRequiresRegisteredEvent(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Guardrail.Mode = "action"
+	cfg.Guardrail.Connector = "antigravity"
+	api := &APIServer{scannerCfg: cfg, health: NewSidecarHealth()}
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{name: "missing", want: "Antigravity hook event registration is required"},
+		{name: "invalid", header: "pretooluse", want: "invalid Antigravity hook event"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/antigravity/hook",
+				strings.NewReader(`{"hook_event_name":"PreToolUse","event":"PreToolUse"}`),
+			)
+			req.Header.Set("Content-Type", "application/json")
+			if tc.header != "" {
+				req.Header.Set("X-DefenseClaw-Antigravity-Event", tc.header)
+			}
+			recorder := httptest.NewRecorder()
+
+			api.handleAgentHook("antigravity").ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), tc.want) {
+				t.Fatalf("status=%d body=%q, want 400 containing %q", recorder.Code, recorder.Body.String(), tc.want)
+			}
+		})
+	}
+}
+
 func TestHandleAgentHook_AntigravityInvocationEventsDoNotScanInventedContent(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Guardrail.Mode = "action"

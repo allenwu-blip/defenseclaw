@@ -168,14 +168,18 @@ func (a *APIServer) handleAgentHook(connectorName string) http.HandlerFunc {
 			// binds each synchronous handler to `--event`, and the bridge
 			// forwards that trusted registration value out-of-band so the raw
 			// official body remains unchanged for audit and provenance.
-			if event := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Antigravity-Event")); event != "" {
-				if !validAntigravityHookEvent(event) {
-					a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "invalid_event", int64(len(b)))
-					a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Antigravity hook event"})
-					return
-				}
-				registeredEvent = event
+			event := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Antigravity-Event"))
+			if event == "" {
+				a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "missing_event", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Antigravity hook event registration is required"})
+				return
 			}
+			if !validAntigravityHookEvent(event) {
+				a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "invalid_event", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Antigravity hook event"})
+				return
+			}
+			registeredEvent = event
 		}
 		if connectorName == "copilot" {
 			// Native camelCase Copilot bodies likewise omit event identity.
@@ -2333,15 +2337,7 @@ func isGenericToolInspectionEvent(event string) bool {
 func isPromptLikeEvent(event string) bool {
 	switch canonicalEvent(event) {
 	case "userpromptsubmit", "userpromptsubmitted", "userprompttransformed", "beforesubmitprompt", "preuserprompt", "subagentstart",
-		"prellmcall", "beforeagent", "beforemodel",
-		// Antigravity 2.0 spec: PreInvocation fires just before the
-		// agent makes an invocation (call) to the LLM. Best used for
-		// dynamically injecting context, modifying system instructions,
-		// or feeding custom workspace rules to the model right before
-		// it generates a response. Routes through inspectMessageContent
-		// with direction=prompt so prompt-content rules see the user
-		// prompt and transcript before they reach Gemini.
-		"preinvocation":
+		"prellmcall", "beforeagent", "beforemodel":
 		return true
 	default:
 		return false

@@ -5,7 +5,7 @@
   "connectors": {
     "codex": {
       "version_probe": "codex --version",
-      "live": true,
+      "live": false,
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
@@ -14,7 +14,7 @@
     },
     "claudecode": {
       "version_probe": "claude --version",
-      "live": true,
+      "live": false,
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
@@ -32,7 +32,7 @@
     },
     "cursor": {
       "version_probe": "agent --version",
-      "live": "pending-validation",
+      "live": false,
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
@@ -41,7 +41,7 @@
     },
     "copilot": {
       "version_probe": "copilot version",
-      "live": "pending-validation",
+      "live": false,
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
@@ -65,6 +65,14 @@
       "version_probe": "",
       "live": false,
       "notes": "contract-only (Layer A); no headless CLI/SDK"
+    },
+    "opencode": {
+      "version_probe": "opencode --version",
+      "live": false,
+      "os": {
+        "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
+      },
+      "notes": "Native Windows implementation is preview-only; authentic packaged Setup and official-client certification evidence remain pending."
     },
     "antigravity": {
       "version_probe": "agy --version",

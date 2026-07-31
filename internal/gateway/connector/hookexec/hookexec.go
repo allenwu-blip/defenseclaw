@@ -178,6 +178,14 @@ func Run(ctx context.Context, opts Options) int {
 			return failResponse(opts, sp, failMode, bindingErr.Error())
 		}
 		opts.Event = event
+	} else if strings.EqualFold(strings.TrimSpace(opts.Connector), "antigravity") {
+		opts.Event = strings.TrimSpace(opts.Event)
+		if !validAntigravityEvent(opts.Event) {
+			// Antigravity's official stdin schemas do not carry event identity.
+			// Setup binds a reviewed event into each protected command; never
+			// accept a payload-selected substitute when that binding is absent.
+			return failResponse(opts, sp, "open", "missing or unsupported Antigravity hook event binding")
+		}
 	} else {
 		opts.Event = resolveHookEvent(opts.Event, payload)
 	}

@@ -80,6 +80,8 @@ def _install_state(local_app_data: Path, profile: Path) -> dict[str, object]:
         "release_signing_required": True,
         "toolchain": {"go": "go1.25.0"},
         "installed_at_utc": "2026-07-28T12:00:00Z",
+        "omnigent_config_home": str(profile / ".omnigent"),
+        "hermes_home": str(local_app_data / "hermes"),
         "transaction_id": "1" * 32,
     }
 
@@ -672,6 +674,20 @@ def test_prepare_accepts_explicitly_absent_legacy_transaction_identity(
     state_path = local_app_data / "Programs" / "DefenseClaw" / "installer" / "install-state.json"
     state = _install_state(local_app_data, profile)
     del state["transaction_id"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    assert _prepare_from_tree(local_app_data, profile) is not None
+
+
+@pytest.mark.parametrize("connector", ["hermes", "omnigent"])
+def test_prepare_accepts_current_native_connector_identities(
+    tmp_path: Path,
+    connector: str,
+) -> None:
+    local_app_data, profile = _native_tree(tmp_path)
+    state_path = local_app_data / "Programs" / "DefenseClaw" / "installer" / "install-state.json"
+    state = _install_state(local_app_data, profile)
+    state["connector"] = connector
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     assert _prepare_from_tree(local_app_data, profile) is not None

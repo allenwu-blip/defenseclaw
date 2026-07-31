@@ -50,6 +50,7 @@ _CLAUDE_MANIFEST = ".claude-plugin/plugin.json"
 _MAX_MANIFEST_BYTES = 1_048_576
 _MAX_CONFIG_BYTES = 2_097_152
 _MAX_CLAUDE_CACHE_DEPTH = 4
+_MAX_CODEX_DIRECTORY_SNAPSHOT_ATTEMPTS = 3
 _CLAUDE_CACHE_SKIP_DIRS = frozenset(
     {"node_modules", ".git", ".hg", ".svn", "__pycache__"}
 )
@@ -187,6 +188,11 @@ def _directory_entry_matches(
     """Compare an entry snapshot without requiring unavailable Windows IDs."""
     if not stat.S_ISDIR(enumerated.st_mode) or not stat.S_ISDIR(named.st_mode):
         return False
+    if enumerated.st_dev or enumerated.st_ino:
+        return (enumerated.st_dev, enumerated.st_ino) == (
+            named.st_dev,
+            named.st_ino,
+        )
     if (
         enumerated.st_size,
         enumerated.st_mtime_ns,
@@ -197,11 +203,6 @@ def _directory_entry_matches(
         named.st_ctime_ns,
     ):
         return False
-    if enumerated.st_dev or enumerated.st_ino:
-        return (enumerated.st_dev, enumerated.st_ino) == (
-            named.st_dev,
-            named.st_ino,
-        )
     # Windows DirEntry.stat() can expose 0/0 for dev/ino even though a named
     # os.stat() returns the real file ID. The entry's type/reparse metadata was
     # already validated above; the twice-checked named no-reparse identity is
@@ -213,33 +214,38 @@ def _codex_child_directories(
     root: str,
 ) -> list[tuple[str, str, os.stat_result]]:
     """Return stable real child directories for Codex cache traversal."""
-    try:
-        before = _stable_directory_info(root)
-        with os.scandir(root) as iterator:
-            entries = sorted(iterator, key=lambda entry: entry.name.casefold())
-        after = _stable_directory_info(root)
-    except OSError:
-        return []
-    if _directory_identity(before) != _directory_identity(after):
-        return []
-
-    children: list[tuple[str, str, os.stat_result]] = []
-    for entry in entries:
+    for _attempt in range(_MAX_CODEX_DIRECTORY_SNAPSHOT_ATTEMPTS):
         try:
-            entry_info = entry.stat(follow_symlinks=False)
-            if (
-                entry.is_symlink()
-                or is_link_or_reparse(entry.path)
-                or not stat.S_ISDIR(entry_info.st_mode)
-            ):
-                continue
-            named = _stable_directory_info(entry.path)
-            if not _directory_entry_matches(entry_info, named):
-                continue
+            before = _stable_directory_info(root)
+            with os.scandir(root) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+            after = _stable_directory_info(root)
         except OSError:
             continue
-        children.append((entry.name, entry.path, named))
-    return children
+        if _directory_identity(before) != _directory_identity(after):
+            continue
+
+        children: list[tuple[str, str, os.stat_result]] = []
+        refresh_snapshot = False
+        for entry in entries:
+            try:
+                entry_info = entry.stat(follow_symlinks=False)
+                if (
+                    entry.is_symlink()
+                    or is_link_or_reparse(entry.path)
+                    or not stat.S_ISDIR(entry_info.st_mode)
+                ):
+                    continue
+                named = _stable_directory_info(entry.path)
+                if not _directory_entry_matches(entry_info, named):
+                    refresh_snapshot = True
+                    break
+            except OSError:
+                continue
+            children.append((entry.name, entry.path, named))
+        if not refresh_snapshot:
+            return children
+    return []
 
 
 def _codex_config_path(cache_root: str) -> str:

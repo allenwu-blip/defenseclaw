@@ -1674,7 +1674,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _agents_from_codex_toml_dirs(
             connector_paths.agent_dirs(
                 name,
-                workspace_dir=cfg.connector_workspace_dir(),
+                workspace_dir=_connector_workspace_dir(cfg),
             ),
         )
     if name == "zeptoclaw":
@@ -1875,18 +1875,20 @@ def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 
 def _agents_from_md_dir(agents_dir: str) -> list[dict[str, Any]]:
     """Each documented Markdown file under *agents_dir* is one agent."""
-    if not os.path.isdir(agents_dir):
+    entries = _safe_codex_directory_entries(agents_dir)
+    if entries is None:
         return []
     rows: list[dict[str, Any]] = []
-    try:
-        entries = sorted(os.listdir(agents_dir))
-    except OSError:
-        return []
     for entry in entries:
         full = os.path.join(agents_dir, entry)
-        if not os.path.isfile(full):
-            continue
         if not entry.lower().endswith(".md"):
+            continue
+        try:
+            connector_paths.reject_reparse_path(full)
+            info = os.stat(full, follow_symlinks=False)
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
             continue
         agent_id = os.path.splitext(entry)[0]
         rows.append(
@@ -1947,15 +1949,17 @@ def _agents_from_copilot_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
     ]
     seen_ids: set[str] = {os.path.normcase(agent_id) for agent_id in _COPILOT_BUILTIN_AGENTS}
     for agents_dir in agent_dirs:
-        if not os.path.isdir(agents_dir):
-            continue
-        try:
-            entries = sorted(os.listdir(agents_dir))
-        except OSError:
+        entries = _safe_codex_directory_entries(agents_dir)
+        if entries is None:
             continue
         for entry in entries:
             full = os.path.join(agents_dir, entry)
-            if not os.path.isfile(full):
+            try:
+                connector_paths.reject_reparse_path(full)
+                info = os.stat(full, follow_symlinks=False)
+            except OSError:
+                continue
+            if not stat.S_ISREG(info.st_mode):
                 continue
             lowered = entry.lower()
             if lowered.endswith(".agent.md"):
@@ -2125,15 +2129,22 @@ def _agents_from_antigravity_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]
     rows = _agents_from_md_dirs(agent_dirs)
     seen = {str(row.get("source") or "") for row in rows}
     for agents_dir in agent_dirs:
-        if not os.path.isdir(agents_dir):
-            continue
-        try:
-            entries = sorted(os.listdir(agents_dir))
-        except OSError:
+        entries = _safe_codex_directory_entries(agents_dir)
+        if entries is None:
             continue
         for entry in entries:
-            source = os.path.join(agents_dir, entry, "agent.md")
-            if not os.path.isfile(source) or source in seen:
+            nested = os.path.join(agents_dir, entry)
+            source = os.path.join(nested, "agent.md")
+            if source in seen:
+                continue
+            try:
+                connector_paths.reject_reparse_path(nested)
+                nested_info = os.stat(nested, follow_symlinks=False)
+                connector_paths.reject_reparse_path(source)
+                source_info = os.stat(source, follow_symlinks=False)
+            except OSError:
+                continue
+            if not stat.S_ISDIR(nested_info.st_mode) or not stat.S_ISREG(source_info.st_mode):
                 continue
             seen.add(source)
             rows.append(
@@ -2968,7 +2979,9 @@ def _enumerate_plugins_filesystem(
                 "origin": discovered.origin or plugin_dir,
                 "enabled": discovered.enabled,
                 "status": (
-                    "loaded"
+                    "no-manifest"
+                    if not manifest
+                    else "loaded"
                     if discovered.enabled
                     else "cache-unverified"
                     if discovered.cached and not discovered.activation_verified

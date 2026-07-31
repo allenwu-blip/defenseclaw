@@ -2252,6 +2252,8 @@ def _handler_targets_defenseclaw(handler: Any, connector: str) -> bool:
             args = handler.get("args")
             if isinstance(args, list) and all(isinstance(arg, str) for arg in args):
                 command = subprocess.list2cmdline([command, *args])
+        if _managed_hook_command(command, connector):
+            return True
         try:
             target, _args, _kind = _command_target(command, connector, allow_enterprise_managed=True)
         except _InspectionError:

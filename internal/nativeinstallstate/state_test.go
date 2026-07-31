@@ -36,8 +36,13 @@ func fixtureState(t *testing.T) (State, string) {
 		Runtime:              filepath.Join(root, "runtime", "python"),
 		CodexHome:            filepath.Join(t.TempDir(), "codex-home"),
 		ClaudeConfigDir:      filepath.Join(t.TempDir(), "claude-home"),
+		CopilotHome:          filepath.Join(t.TempDir(), "copilot-home"),
+		CursorHome:           filepath.Join(t.TempDir(), "cursor-home"),
 		WindsurfUserHome:     filepath.Join(t.TempDir(), "windsurf-profile"),
 		AntigravityConfigDir: filepath.Join(t.TempDir(), ".gemini", "config"),
+		OpenCodeConfigDir:    filepath.Join(t.TempDir(), "opencode-home"),
+		OmnigentConfigHome:   filepath.Join(t.TempDir(), "omnigent-home"),
+		HermesHome:           filepath.Join(t.TempDir(), "hermes-home"),
 	}
 	state.WindsurfHooksPath = filepath.Join(
 		state.WindsurfUserHome,
@@ -65,8 +70,13 @@ func TestLoadAtAndEnvironmentRehydrateDocumentedConnectorHomes(t *testing.T) {
 		"PATH=fixture",
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
+		"copilot_home=project-copilot",
+		"defenseclaw_cursor_config_home=project-cursor",
 		"windsurf_user_home=project-windsurf",
 		"windsurf_hook_config_path=project-windsurf-hooks",
+		"opencode_config_dir=project-opencode",
+		"omnigent_config_home=project-omnigent",
+		"hermes_home=project-hermes",
 		"DEFENSECLAW_HOME=project-data",
 		"ANTIGRAVITY_CONFIG_DIR=project-antigravity",
 		"GEMINI_CONFIG_DIR=project-gemini",
@@ -76,8 +86,13 @@ func TestLoadAtAndEnvironmentRehydrateDocumentedConnectorHomes(t *testing.T) {
 	for _, expected := range []string{
 		"CODEX_HOME=" + want.CodexHome,
 		"CLAUDE_CONFIG_DIR=" + want.ClaudeConfigDir,
+		"COPILOT_HOME=" + want.CopilotHome,
+		"DEFENSECLAW_CURSOR_CONFIG_HOME=" + want.CursorHome,
 		"WINDSURF_USER_HOME=" + want.WindsurfUserHome,
 		"WINDSURF_HOOK_CONFIG_PATH=" + want.WindsurfHooksPath,
+		"OPENCODE_CONFIG_DIR=" + want.OpenCodeConfigDir,
+		"OMNIGENT_CONFIG_HOME=" + want.OmnigentConfigHome,
+		"HERMES_HOME=" + want.HermesHome,
 		"DEFENSECLAW_HOME=" + want.DataRoot,
 		"DEFENSECLAW_INSTALL_ROOT=" + want.InstallRoot,
 	} {
@@ -108,8 +123,13 @@ func TestEnvironmentRemovesAmbientConnectorHomesFromLegacyState(t *testing.T) {
 		"PATH=fixture",
 		"CODEX_HOME=project-codex",
 		"claude_config_dir=project-claude",
+		"copilot_home=project-copilot",
+		"defenseclaw_cursor_config_home=project-cursor",
 		"windsurf_user_home=project-windsurf",
 		"windsurf_hook_config_path=project-windsurf-hooks",
+		"opencode_config_dir=project-opencode",
+		"omnigent_config_home=project-omnigent",
+		"hermes_home=project-hermes",
 		"antigravity_config_dir=project-antigravity",
 		"gemini_config_dir=project-gemini",
 		"defenseclaw_antigravity_config_home=project-internal",
@@ -117,8 +137,13 @@ func TestEnvironmentRemovesAmbientConnectorHomesFromLegacyState(t *testing.T) {
 	joined := strings.Join(env, "\n")
 	if strings.Contains(strings.ToUpper(joined), "CODEX_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "CLAUDE_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "COPILOT_HOME=") ||
+		strings.Contains(strings.ToUpper(joined), "DEFENSECLAW_CURSOR_CONFIG_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "WINDSURF_USER_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "WINDSURF_HOOK_CONFIG_PATH=") ||
+		strings.Contains(strings.ToUpper(joined), "OPENCODE_CONFIG_DIR=") ||
+		strings.Contains(strings.ToUpper(joined), "OMNIGENT_CONFIG_HOME=") ||
+		strings.Contains(strings.ToUpper(joined), "HERMES_HOME=") ||
 		strings.Contains(strings.ToUpper(joined), "ANTIGRAVITY_CONFIG_DIR=") ||
 		strings.Contains(strings.ToUpper(joined), "GEMINI_CONFIG_DIR=") ||
 		strings.Contains(strings.ToUpper(joined), "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME=") {
