@@ -10200,10 +10200,12 @@ func TestCodex_AgentPaths_Specifics(t *testing.T) {
 	if !slices.Contains(paths.GeneratedExecutables, filepath.Join(dataDir, "notify-bridge.sh")) {
 		t.Errorf("GeneratedExecutables = %v, missing notify bridge", paths.GeneratedExecutables)
 	}
-	if len(paths.GeneratedFiles) != 0 {
+	wantGenerated := []string{filepath.Join(dataDir, "hooks", otlpPathTokenFileName(OTLPScopeCodex))}
+	if !slices.Equal(paths.GeneratedFiles, wantGenerated) {
 		t.Errorf(
-			"GeneratedFiles = %v, want none; config.toml.lock is a transient external lock, not a DataDir artifact",
+			"GeneratedFiles = %v, want %v; config.toml.lock is a transient external lock, not a DataDir artifact",
 			paths.GeneratedFiles,
+			wantGenerated,
 		)
 	}
 }
@@ -10220,11 +10222,16 @@ func TestCodex_AgentPaths_UnmanagedParity(t *testing.T) {
 		ManagedEnterprise: false,
 	})
 	configPath := filepath.Join(tmpHome, ".codex", "config.toml")
-	if !slices.Equal(paths.PatchedFiles, []string{configPath}) {
-		t.Fatalf("unmanaged PatchedFiles = %v, want only %q", paths.PatchedFiles, configPath)
+	wantPatched := []string{configPath}
+	if runtime.GOOS == "windows" {
+		wantPatched = append(wantPatched, filepath.Join(filepath.Dir(configPath), codexManagedConfigLogicalName))
 	}
-	if len(paths.GeneratedFiles) != 0 {
-		t.Fatalf("unmanaged GeneratedFiles = %v, want none", paths.GeneratedFiles)
+	if !slices.Equal(paths.PatchedFiles, wantPatched) {
+		t.Fatalf("unmanaged PatchedFiles = %v, want %v", paths.PatchedFiles, wantPatched)
+	}
+	wantGenerated := []string{filepath.Join(dataDir, "hooks", otlpPathTokenFileName(OTLPScopeCodex))}
+	if !slices.Equal(paths.GeneratedFiles, wantGenerated) {
+		t.Fatalf("unmanaged GeneratedFiles = %v, want %v", paths.GeneratedFiles, wantGenerated)
 	}
 }
 
