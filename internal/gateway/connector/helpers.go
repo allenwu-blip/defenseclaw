@@ -652,6 +652,30 @@ func legacyWindowsNativePowerShellHookCommandForBinary(connector, hookBinary str
 	return windowsSystemPowerShellExe() + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + powershellEncodedCommand(script)
 }
 
+// legacyWindowsNativePowerShellHookCommandForCodexEvent reconstructs the exact
+// event-bound non-waiting Codex command emitted before WIN-AUD-069. Keep this
+// separate from the current Start-Process generator: it is accepted only as a
+// byte-exact ownership candidate for a finite built-in event/contract pair so
+// Setup can replace it during repair without claiming arbitrary PowerShell.
+func legacyWindowsNativePowerShellHookCommandForCodexEvent(event, contractID, hookBinary string) string {
+	arguments := []string{
+		powershellQuoteLiteral("hook"),
+		powershellQuoteLiteral("--connector"),
+		powershellQuoteLiteral("codex"),
+		powershellQuoteLiteral("--event"),
+		powershellQuoteLiteral(event),
+		powershellQuoteLiteral("--hook-contract"),
+		powershellQuoteLiteral(contractID),
+	}
+	script := strings.Join([]string{
+		"$ErrorActionPreference='Stop'",
+		"$env:NoDefaultCurrentDirectoryInExePath='1'",
+		"& " + powershellQuoteLiteral(hookBinary) + " " + strings.Join(arguments, " "),
+		"exit $LASTEXITCODE",
+	}, "; ")
+	return windowsSystemPowerShellExe() + " -NoLogo -NoProfile -NonInteractive -EncodedCommand " + powershellEncodedCommand(script)
+}
+
 func windowsSystemPowerShellExe() string {
 	// The system directory is resolved by a Windows API, never by mutable
 	// SystemRoot/WINDIR values inherited from the project launching an agent.
@@ -699,7 +723,8 @@ func isNativeHookCommand(cmd string) bool {
 	for _, hookBinary := range uniqueNonEmptyStrings(hookBinaries) {
 		for _, contract := range builtinHookContracts["codex"] {
 			for _, event := range contract.Events {
-				if cmd == windowsNativePowerShellHookCommandForCodexEvent(event, contract.ContractID, hookBinary) {
+				if cmd == windowsNativePowerShellHookCommandForCodexEvent(event, contract.ContractID, hookBinary) ||
+					cmd == legacyWindowsNativePowerShellHookCommandForCodexEvent(event, contract.ContractID, hookBinary) {
 					return true
 				}
 			}

@@ -2664,7 +2664,13 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
         }
         $null = $configured.Add([string]$name)
     }
-    $required = @('antigravity', 'codex', 'claudecode')
+    $required = @('codex', 'claudecode')
+    # Antigravity remains not-certified on Windows, so its packaged gate must
+    # not manufacture cleanup authority when setup correctly refuses to write.
+    if ($configured.Contains('antigravity') -or
+        @(Get-NativeConnectorBackupMarkers $DataRoot 'antigravity').Count -ne 0) {
+        $required += 'antigravity'
+    }
     if ($configured.Contains('copilot') -or
         @(Get-NativeConnectorBackupMarkers $DataRoot 'copilot').Count -ne 0) {
         $required += 'copilot'
@@ -3183,7 +3189,13 @@ function Assert-WizardHookRegistration(
             'sessionEnd', 'sessionStart', 'subagentStart', 'subagentStop',
             'userPromptSubmitted', 'userPromptTransformed'
         )
-        if ([int]$hookDocument.version -ne 1 -or [bool]$hookDocument.disableAllHooks) {
+        # Copilot's schema defaults an omitted disableAllHooks to false, and
+        # DefenseClaw does not add the optional field to a fresh registration.
+        # Use the property bag so StrictMode does not turn that valid omission
+        # into a harness failure. An explicit true still fails closed below.
+        $disableAllHooks = $hookDocument.PSObject.Properties['disableAllHooks']
+        if ([int]$hookDocument.version -ne 1 -or
+            ($null -ne $disableAllHooks -and [bool]$disableAllHooks.Value)) {
             throw 'wizard-selected Copilot registration does not use enabled schema version 1'
         }
         $registeredEvents = @($hookDocument.hooks.PSObject.Properties.Name | Sort-Object)
@@ -3547,7 +3559,7 @@ function Invoke-WizardConnectorAcceptance(
         [IO.Directory]::CreateDirectory((Split-Path -Parent $specification.ConfigPath)) | Out-Null
         $originalConfigBytes = [Text.UTF8Encoding]::new($false).GetBytes(
             "{`r`n  `"vendor`": {`"preserve`": true},`r`n  `"hooks`": {`r`n" +
-            "    `"pre_read_code`": [{`"powershell`": `"& 'C:\Vendor\audit.ps1'`", `"show_output`": false}]`r`n" +
+            "    `"pre_read_code`": [{`"powershell`": `"& 'C:\\Vendor\\audit.ps1'`", `"show_output`": false}]`r`n" +
             "  }`r`n}`r`n"
         )
         [IO.File]::WriteAllBytes($specification.ConfigPath, $originalConfigBytes)

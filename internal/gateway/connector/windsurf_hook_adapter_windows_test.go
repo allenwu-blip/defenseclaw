@@ -97,7 +97,11 @@ func runWindsurfAdapterTest(
 		"windsurf",
 		strings.TrimSuffix(adapter, ".ps1")+".sh",
 	)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Keep this outer process watchdog comfortably above the adapter's rendered
+	// two-second enforcement timeout. Hosted Windows can spend more than thirty
+	// seconds starting PowerShell and scanning the copied test executable under
+	// full-suite load; that startup time is outside the product timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(
 		ctx,

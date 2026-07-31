@@ -1184,6 +1184,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         $wizardAcceptance -match 'setup repair changed the selected' -and
         $wizardAcceptance -notmatch 'DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT') `
         'wizard connector acceptance validates canonical state, hooks, health, and repair without a contract override'
+    Assert-True ($wizardAcceptance -match "C:\\\\Vendor\\\\audit\.ps1") `
+        'Windsurf preservation fixture JSON-escapes its third-party Windows hook path'
+    $wizardHookValidation = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-WizardHookRegistration\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($wizardHookValidation -match
+        "\.PSObject\.Properties\['disableAllHooks'\]" -and
+        $wizardHookValidation -match
+        '\$null -ne \$disableAllHooks -and \[bool\]\$disableAllHooks\.Value' -and
+        $wizardHookValidation -notmatch '\$hookDocument\.disableAllHooks') `
+        'Copilot wizard validation treats omitted disableAllHooks as enabled while rejecting explicit true'
     Assert-True ($wizardAcceptance -match 'Get-WatchdogIdentity' -and
         $wizardAcceptance -match "@\('watchdog', 'status'\)" -and
         $wizardAcceptance -match 'wizard-started watchdog' -and
@@ -1689,7 +1701,8 @@ private-secret-name = "DefenseClaw must remain redacted"
             'defenseclaw-windows-contract-\$\{probeID\}'
         ).Count -ge 4 -and
         $harnessText.Contains('$probeID = [IO.Path]::GetFileNameWithoutExtension($scratch)') -and
-        $harnessText.Contains('$beforeTool $decisionDeadline $probe.ProbeID ''tool.execute.before''')) `
+        $harnessText.Contains('$probeSessionID = "defenseclaw-windows-contract-$probeID"') -and
+        $harnessText.Contains('$beforeTool $decisionDeadline $probe.SessionID ''tool.execute.before''')) `
         'OpenCode contract probes use and await a fresh correlation identity for every helper invocation'
     $isolatedCleanup = [regex]::Match($harnessText, '(?s)function Stop-IsolatedProcessTree\b.*?\n\}').Value
     Assert-True ($isolatedCleanup -match 'HashSet\[int\]' -and

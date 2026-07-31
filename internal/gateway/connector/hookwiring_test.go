@@ -380,14 +380,24 @@ func TestCodexSetupRepairsLegacyNonWaitingPowerShellCommand(t *testing.T) {
 	}
 
 	const hookBinary = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	const event = "PreToolUse"
+	const contractID = "codex-hooks-v4"
 	setHookBinaryOverride(t, hookBinary)
-	current := windowsNativePowerShellHookCommandForBinary("codex", hookBinary)
+	current := windowsNativePowerShellHookCommandForCodexEvent(event, contractID, hookBinary)
 	legacyCommands := []struct {
 		name    string
 		command string
 	}{
 		{name: "non-waiting", command: legacyWindowsNativePowerShellHookCommandForBinary("codex", hookBinary)},
 		{name: "unqualified-start-process", command: legacyUnqualifiedWindowsNativePowerShellHookCommandForBinary("codex", hookBinary)},
+		{
+			name: "event-bound-non-waiting",
+			command: legacyWindowsNativePowerShellHookCommandForCodexEvent(
+				event,
+				contractID,
+				hookBinary,
+			),
+		},
 	}
 	for _, testCase := range legacyCommands {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -407,11 +417,19 @@ func TestCodexSetupRepairsLegacyNonWaitingPowerShellCommand(t *testing.T) {
 					},
 				},
 			}
-			generated, err := buildCodexHooksTable(SetupOpts{}, filepath.Join(t.TempDir(), "managed_config.toml"), "")
+			opts := SetupOpts{
+				AgentVersion:   "codex-cli 0.145.0",
+				HookContractID: contractID,
+			}
+			generated, err := buildCodexHooksTable(
+				opts,
+				filepath.Join(t.TempDir(), "managed_config.toml"),
+				"",
+			)
 			if err != nil {
 				t.Fatalf("build Codex hooks: %v", err)
 			}
-			replacement := generated["PreToolUse"].([]interface{})
+			replacement := generated[event].([]interface{})
 			repaired, err := replaceOwnedCodexHookInPlace(existing, replacement, t.TempDir())
 			if err != nil {
 				t.Fatalf("repair legacy Codex hook: %v", err)
@@ -1332,6 +1350,41 @@ func TestBuildCodexHooksTableUsesSupportedTrustFlow(t *testing.T) {
 	}
 }
 
+func TestLegacyEventBoundCodexOwnershipIsStrictAndFinite(t *testing.T) {
+	const hookBinary = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, hookBinary)
+	legacy := legacyWindowsNativePowerShellHookCommandForCodexEvent(
+		"SessionStart",
+		"codex-hooks-v4",
+		hookBinary,
+	)
+	wantLegacyScript := "$ErrorActionPreference='Stop'; " +
+		"$env:NoDefaultCurrentDirectoryInExePath='1'; " +
+		"& 'C:\\Program Files\\DefenseClaw\\defenseclaw-hook.exe' " +
+		"'hook' '--connector' 'codex' '--event' 'SessionStart' " +
+		"'--hook-contract' 'codex-hooks-v4'; exit $LASTEXITCODE"
+	if got := decodePowerShellEncodedCommandForTest(t, legacy); got != wantLegacyScript {
+		t.Fatalf("legacy event-bound script = %q, want %q", got, wantLegacyScript)
+	}
+	if !isNativeHookCommand(legacy) {
+		t.Fatalf("exact legacy event-bound command was not recognized: %q", legacy)
+	}
+
+	for _, tampered := range []string{
+		legacyWindowsNativePowerShellHookCommandForCodexEvent("FutureEvent", "codex-hooks-v4", hookBinary),
+		legacyWindowsNativePowerShellHookCommandForCodexEvent("SessionStart", "codex-hooks-v999", hookBinary),
+		legacyWindowsNativePowerShellHookCommandForCodexEvent(
+			"SessionStart",
+			"codex-hooks-v4",
+			`C:\Temp\defenseclaw-hook.exe`,
+		),
+	} {
+		if isNativeHookCommand(tampered) {
+			t.Fatalf("ownership accepted tampered legacy event-bound command: %q", tampered)
+		}
+	}
+}
+
 func TestCodexEventBoundUnixCommandsCoverFiniteContracts(t *testing.T) {
 	const hookPath = "/home/u/.defenseclaw/hooks/codex-hook.sh"
 	const hooksDir = "/home/u/.defenseclaw/hooks"
@@ -1802,9 +1855,18 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 				groups := hooks["PreToolUse"].([]interface{})
 				handlers := groups[0].(map[string]interface{})["hooks"].([]interface{})
 				command := handlers[0].(map[string]interface{})["command_windows"].(string)
+				wantCommand := windowsNativePowerShellHookCommandForCodexEvent(
+					"PreToolUse",
+					"codex-hooks-v4",
+					defenseclawHookBinary(),
+				)
+				if command != wantCommand {
+					t.Errorf("Codex PreToolUse command_windows = %q, want %q", command, wantCommand)
+				}
 				decoded := decodePowerShellEncodedCommandForTest(t, command)
-				if !strings.Contains(decoded, windowsNativePowerShellStartForTest(defenseclawHookBinary(), connectorName)) {
-					t.Errorf("config missing native command_windows connector command for %s:\n%s", connectorName, text)
+				if !strings.Contains(decoded, "'--event','PreToolUse'") ||
+					!strings.Contains(decoded, "'--hook-contract','codex-hooks-v4'") {
+					t.Errorf("config missing event-bound native command_windows for %s:\n%s", connectorName, text)
 				}
 			} else if connectorName == "copilot" {
 				if !strings.Contains(text, "Microsoft.PowerShell.Management\\\\Start-Process") {

@@ -963,7 +963,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
                 $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
                 if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
                 $decision = Wait-HookDecisionAfter `
-                    $beforeTool $decisionDeadline $probe.ProbeID 'tool.execute.before'
+                    $beforeTool $decisionDeadline $probe.SessionID 'tool.execute.before'
                 if ($null -eq $decision -or $decision.action -cne 'allow' -or
                     $decision.raw_action -cne 'allow' -or $decision.would_block) {
                     throw 'OpenCode plugin readiness did not produce a canonical allow decision'
@@ -1886,6 +1886,7 @@ function Invoke-OpenCodePluginProbe(
     $safeLabel = $Label -replace '[^A-Za-z0-9.-]', '_'
     $scratch = Join-Path $StateRoot "opencode-plugin-$safeLabel-$([Guid]::NewGuid().ToString('N')).mjs"
     $probeID = [IO.Path]::GetFileNameWithoutExtension($scratch)
+    $probeSessionID = "defenseclaw-windows-contract-$probeID"
     $result = Invoke-NativeProcess -FilePath $node -ArgumentList @(
         $assertion,
         $pluginPath,
@@ -1893,7 +1894,7 @@ function Invoke-OpenCodePluginProbe(
         $Expected,
         $Command
     ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot "opencode-plugin-$safeLabel.log")
-    $result | Add-Member -NotePropertyName ProbeID -NotePropertyValue $probeID
+    $result | Add-Member -NotePropertyName SessionID -NotePropertyValue $probeSessionID
     return $result
 }
 
