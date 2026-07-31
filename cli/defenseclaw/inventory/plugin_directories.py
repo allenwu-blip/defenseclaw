@@ -199,20 +199,12 @@ def _directory_entry_matches(
             named.st_mtime_ns,
             named.st_ctime_ns,
         )
-    if (
-        enumerated.st_mtime_ns,
-        enumerated.st_ctime_ns,
-    ) != (
-        named.st_mtime_ns,
-        named.st_ctime_ns,
-    ):
-        return False
     # Windows DirEntry.stat() can expose 0/0 for dev/ino even though a named
-    # os.stat() returns the real file ID. Directory size can likewise differ
-    # between the enumerated and named views whether or not file IDs are
-    # available. It is not a portable directory identity field; the entry's
-    # type/reparse metadata, available file IDs, timestamps, and twice-checked
-    # named no-reparse identity are authoritative.
+    # os.stat() returns the real file ID. Its cached directory size and
+    # timestamps can likewise differ from the named view. When the entry has
+    # no usable identity, use it only for type/reparse filtering; the
+    # twice-checked named snapshot still binds file ID, timestamps, type, and
+    # no-reparse custody before and after traversal.
     return True
 
 

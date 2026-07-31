@@ -3045,7 +3045,7 @@ function Assert-WizardHookRegistration(
         }
         $registeredEvents = [Collections.Generic.List[string]]::new()
         $registeredContract = ''
-        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*'')\s+-ArgumentList\s+@\((?<arguments>''(?:''''|[^''])*''(?:,''(?:''''|[^''])*'')*)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*'')\s+-ArgumentList\s+@\((?<arguments>''(?:''''|[^''])*''(?:\s*,\s*''(?:''''|[^''])*'')*)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
         foreach ($tomlString in $tomlStrings) {
             $literal = $tomlString.Groups['literal'].Value
             if ($literal.StartsWith("'", [StringComparison]::Ordinal)) {
@@ -3085,7 +3085,6 @@ function Assert-WizardHookRegistration(
             }
             $expectedEvents = @($codexEventsByContract[$boundContract])
             if (-not $startProcess.Success -or
-                ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
                 [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
                 $arguments.Count -ne 7 -or
                 ($arguments -join "`0") -cne (@(
@@ -3093,6 +3092,7 @@ function Assert-WizardHookRegistration(
                     '--hook-contract', $boundContract
                 ) -join "`0") -or
                 $boundEvent -cnotin $expectedEvents -or
+                $script -notmatch '(?i)^\$ErrorActionPreference=''Stop'';\s+\$env:NoDefaultCurrentDirectoryInExePath=''1'';' -or
                 $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
                 $script -match '(?i)\$LASTEXITCODE') {
                 throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"

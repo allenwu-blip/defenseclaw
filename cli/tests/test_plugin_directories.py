@@ -302,7 +302,7 @@ def test_codex_cache_accepts_missing_windows_direntry_identity(
     ]
 
 
-def test_codex_cache_rejects_zero_identity_entry_with_mutated_metadata(
+def test_codex_cache_uses_named_snapshot_when_entry_identity_is_unavailable(
     tmp_path: Path,
 ) -> None:
     directory = tmp_path / "registry"
@@ -312,6 +312,37 @@ def test_codex_cache_rejects_zero_identity_entry_with_mutated_metadata(
         st_mode=named.st_mode,
         st_dev=0,
         st_ino=0,
+        st_size=named.st_size,
+        st_mtime_ns=named.st_mtime_ns + 1,
+        st_ctime_ns=named.st_ctime_ns,
+        st_file_attributes=getattr(named, "st_file_attributes", 0),
+    )
+
+    assert plugin_directories_module._directory_entry_matches(
+        enumerated,
+        named,
+    )
+
+
+def test_codex_cache_rejects_identified_entry_with_mutated_metadata(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "registry"
+    directory.mkdir()
+    observed = os.stat(directory, follow_symlinks=False)
+    named = SimpleNamespace(
+        st_mode=observed.st_mode,
+        st_dev=observed.st_dev or 1,
+        st_ino=observed.st_ino or 1,
+        st_size=observed.st_size,
+        st_mtime_ns=observed.st_mtime_ns,
+        st_ctime_ns=observed.st_ctime_ns,
+        st_file_attributes=getattr(observed, "st_file_attributes", 0),
+    )
+    enumerated = SimpleNamespace(
+        st_mode=named.st_mode,
+        st_dev=named.st_dev,
+        st_ino=named.st_ino,
         st_size=named.st_size,
         st_mtime_ns=named.st_mtime_ns + 1,
         st_ctime_ns=named.st_ctime_ns,

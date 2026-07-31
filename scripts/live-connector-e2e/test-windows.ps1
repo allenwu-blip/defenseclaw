@@ -1687,8 +1687,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         [regex]::Matches(
             $openCodeAssertionText,
             'defenseclaw-windows-contract-\$\{probeID\}'
-        ).Count -ge 4) `
-        'OpenCode contract probes use a fresh correlation identity for every helper invocation'
+        ).Count -ge 4 -and
+        $harnessText.Contains('$probeID = [IO.Path]::GetFileNameWithoutExtension($scratch)') -and
+        $harnessText.Contains('$beforeTool $decisionDeadline $probe.ProbeID ''tool.execute.before''')) `
+        'OpenCode contract probes use and await a fresh correlation identity for every helper invocation'
     $isolatedCleanup = [regex]::Match($harnessText, '(?s)function Stop-IsolatedProcessTree\b.*?\n\}').Value
     Assert-True ($isolatedCleanup -match 'HashSet\[int\]' -and
         $isolatedCleanup -match '\$ancestor\[0\]\.ParentProcessId' -and
@@ -1707,6 +1709,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText.Contains('function Get-WindsurfExpectedEventNames') -and
         $harnessText.Contains('has 0 DefenseClaw handlers for (?<event>[a-z_]+); expected exactly one') -and
         $harnessText.Contains('@(Get-WindsurfExpectedEventNames) -ccontains') -and
+        $harnessText.Contains("'copilot' {") -and
+        $harnessText.Contains('"registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
         'Doctor connector contract rejects connector-specific tampered hook commands with exit 1'
     Assert-True ($harnessText -match 'WriteAllBytes\(\$configPath, \$originalConfig\)' -and $harnessText -match 'doctor:windows-hook-recovery') 'Doctor connector contract restores the registration byte-for-byte and validates recovery'

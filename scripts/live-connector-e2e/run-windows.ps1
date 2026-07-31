@@ -958,11 +958,12 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
             $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
             try {
-                Invoke-OpenCodePluginProbe allow 'Write-Output dc-gateway-readiness' "readiness-$attempt" | Out-Null
+                $probe = Invoke-OpenCodePluginProbe allow `
+                    'Write-Output dc-gateway-readiness' "readiness-$attempt"
                 $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
                 if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
                 $decision = Wait-HookDecisionAfter `
-                    $beforeTool $decisionDeadline 'defenseclaw-windows-contract' 'tool.execute.before'
+                    $beforeTool $decisionDeadline $probe.ProbeID 'tool.execute.before'
                 if ($null -eq $decision -or $decision.action -cne 'allow' -or
                     $decision.raw_action -cne 'allow' -or $decision.would_block) {
                     throw 'OpenCode plugin readiness did not produce a canonical allow decision'
@@ -1884,13 +1885,16 @@ function Invoke-OpenCodePluginProbe(
     $assertion = Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-opencode-plugin.mjs'
     $safeLabel = $Label -replace '[^A-Za-z0-9.-]', '_'
     $scratch = Join-Path $StateRoot "opencode-plugin-$safeLabel-$([Guid]::NewGuid().ToString('N')).mjs"
-    return Invoke-NativeProcess -FilePath $node -ArgumentList @(
+    $probeID = [IO.Path]::GetFileNameWithoutExtension($scratch)
+    $result = Invoke-NativeProcess -FilePath $node -ArgumentList @(
         $assertion,
         $pluginPath,
         $scratch,
         $Expected,
         $Command
     ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot "opencode-plugin-$safeLabel.log")
+    $result | Add-Member -NotePropertyName ProbeID -NotePropertyValue $probeID
+    return $result
 }
 
 function Assert-OpenCodePluginContract {
@@ -2101,7 +2105,14 @@ function Assert-DoctorWindowsHookRegistration {
         $expectedTamperDetail = switch ($Connector) {
             'codex' { 'cannot be resolved' }
             'claudecode' { 'does not use the native hook runtime' }
-            'copilot' { 'not the DefenseClaw hook launcher' }
+            'copilot' {
+                $missingGatewayLauncher = [regex]::Replace(
+                    (Get-StableHookRuntimeExecutable),
+                    '(?i)defenseclaw-hook\.exe$',
+                    'defenseclaw-gateway.exe'
+                )
+                "registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"
+            }
             'cursor' { 'configured Cursor hook runtime is missing' }
             'hermes' { 'does not use the direct native DefenseClaw executable' }
             'windsurf' { 'cannot be resolved' }
