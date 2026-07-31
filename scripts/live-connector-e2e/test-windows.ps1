@@ -1696,10 +1696,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $hookDecisionWait -match '\$SessionID \$HookEvent') `
         'gateway hook readiness accepts only the current probe session and event decision'
     Assert-True ($openCodeAssertionText.Contains('const probeID = basename(scratchPath, ".mjs");') -and
+        $openCodeAssertionText.Contains(
+            'const toolCallID = `defenseclaw-windows-contract-${probeID}-${expected}-call`;'
+        ) -and
+        [regex]::Matches($openCodeAssertionText, 'callID: toolCallID').Count -eq 2 -and
         [regex]::Matches(
             $openCodeAssertionText,
             'defenseclaw-windows-contract-\$\{probeID\}'
-        ).Count -ge 4 -and
+        ).Count -ge 3 -and
         $harnessText.Contains('$probeID = [IO.Path]::GetFileNameWithoutExtension($scratch)') -and
         $harnessText.Contains('$probeSessionID = "defenseclaw-windows-contract-$probeID"') -and
         $harnessText.Contains('$beforeTool $decisionDeadline $probe.SessionID ''tool.execute.before''')) `
