@@ -2385,6 +2385,124 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(len(inv["skills"]), 1)
         self.assertEqual(inv["skills"][0]["id"], "alpha")
 
+    def test_copilot_agents_use_pinned_workspace_and_documented_ancestors(self):
+        from defenseclaw.inventory.claw_inventory import _agents_for_connector
+
+        cfg = _make_cfg_for_connector(self.tmp, "copilot")
+        home = os.path.join(self.tmp, "home")
+        copilot_home = os.path.join(home, "copilot")
+        repo = os.path.join(self.tmp, "repo")
+        package = os.path.join(repo, "packages", "service")
+        os.makedirs(os.path.join(repo, ".git"), exist_ok=True)
+        os.makedirs(package, exist_ok=True)
+        cfg.claw.workspace_dir = package
+        for root, name in (
+            (os.path.join(package, ".claude", "agents"), "package-agent"),
+            (os.path.join(repo, ".github", "agents"), "repo-agent"),
+            (os.path.join(copilot_home, "agents"), "user-agent"),
+        ):
+            os.makedirs(root, exist_ok=True)
+            with open(os.path.join(root, name + ".md"), "w", encoding="utf-8") as stream:
+                stream.write(f"---\nname: {name}\n---\n")
+        package_agents = os.path.join(package, ".github", "agents")
+        repo_agents = os.path.join(repo, ".github", "agents")
+        os.makedirs(package_agents, exist_ok=True)
+        with open(
+            os.path.join(package_agents, "reviewer.agent.md"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("---\ndescription: package reviewer\n---\n")
+        with open(
+            os.path.join(repo_agents, "reviewer.md"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("---\ndescription: lower-priority reviewer\n---\n")
+        with open(
+            os.path.join(package_agents, "ignored.json"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("{}")
+        with open(
+            os.path.join(package_agents, "code-review.md"),
+            "w",
+            encoding="utf-8",
+        ) as stream:
+            stream.write("---\ndescription: cannot shadow the built-in\n---\n")
+
+        with patch.dict(
+            os.environ,
+            {"HOME": home, "USERPROFILE": home, "COPILOT_HOME": copilot_home},
+            clear=False,
+        ):
+            rows = _agents_for_connector("copilot", cfg)
+
+        self.assertEqual(
+            {row["id"] for row in rows},
+            {
+                "code-review",
+                "explore",
+                "general-purpose",
+                "research",
+                "rubber-duck",
+                "security-review",
+                "task",
+                "package-agent",
+                "repo-agent",
+                "user-agent",
+                "reviewer",
+            },
+        )
+        reviewer = [row for row in rows if row["id"] == "reviewer"]
+        self.assertEqual(len(reviewer), 1)
+        self.assertEqual(
+            reviewer[0]["source"],
+            os.path.join(package_agents, "reviewer.agent.md"),
+        )
+        self.assertFalse(any(row["id"] == "ignored" for row in rows))
+        code_review = [row for row in rows if row["id"] == "code-review"]
+        self.assertEqual(len(code_review), 1)
+        self.assertEqual(code_review[0]["kind"], "built-in-agent")
+        self.assertTrue(code_review[0]["immutable"])
+
+        with patch.dict(
+            os.environ,
+            {"HOME": home, "USERPROFILE": home, "COPILOT_HOME": copilot_home},
+            clear=False,
+        ):
+            inventory = build_claw_aibom(
+                cfg,
+                live=True,
+                categories={"agents", "skills", "mcp"},
+            )
+        limitations = {row["category"]: row["reason"] for row in inventory["limitations"]}
+        self.assertIn("plugin-contributed agents", limitations["agents"])
+        self.assertIn("built-in agent set", limitations["agents"])
+        self.assertIn("cannot be shadowed", limitations["agents"])
+        self.assertIn("organization/enterprise", limitations["agents"])
+        self.assertIn("folder trust", limitations["mcp"])
+        self.assertIn("organization/remote skills", limitations["skills"])
+        self.assertEqual(
+            inventory["connector_mcp_files"],
+            [
+                os.path.join(package, ".mcp.json"),
+                os.path.join(package, ".github", "mcp.json"),
+                os.path.join(os.path.dirname(package), ".mcp.json"),
+                os.path.join(os.path.dirname(package), ".github", "mcp.json"),
+                os.path.join(repo, ".mcp.json"),
+                os.path.join(repo, ".github", "mcp.json"),
+                os.path.join(copilot_home, "mcp-config.json"),
+            ],
+        )
+        self.assertFalse(
+            any(
+                os.path.basename(path) in {"config.json", "defenseclaw.json"}
+                for path in inventory["connector_mcp_files"]
+            )
+        )
+
     def test_opencode_catalog_limits_unproven_asset_surfaces(self):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")
         home = self.tmp

@@ -1097,12 +1097,17 @@ function Assert-CopilotSynchronousWindowsHookConfig([string]$Config, [string]$Co
         throw "$Context is not a version-1 Copilot hook document"
     }
     $events = @(
-        'sessionStart', 'sessionEnd', 'userPromptSubmitted', 'preToolUse',
-        'postToolUse', 'postToolUseFailure', 'permissionRequest', 'agentStop',
-        'subagentStart', 'subagentStop', 'errorOccurred', 'preCompact', 'notification'
+        'sessionStart', 'sessionEnd', 'userPromptSubmitted',
+        'userPromptTransformed', 'preToolUse', 'postToolUse',
+        'postToolUseFailure', 'permissionRequest', 'agentStop', 'subagentStart',
+        'subagentStop', 'errorOccurred', 'preCompact', 'notification'
     )
+    $registeredEvents = @($document.hooks.PSObject.Properties.Name | Sort-Object)
+    if (($registeredEvents -join "`0") -cne (($events | Sort-Object) -join "`0")) {
+        throw "$Context does not contain the exact 14-event Copilot hook set"
+    }
     $commands = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    $pattern = '(?i)^\$ErrorActionPreference=''Stop'';\s+\$env:NoDefaultCurrentDirectoryInExePath=''1'';\s+\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''copilot''\)\s+-NoNewWindow\s+-Wait\s+-PassThru;\s+exit\s+\$hookProcess\.ExitCode$'
+    $pattern = '(?i)^\$ErrorActionPreference=''Stop'';\s+\$env:NoDefaultCurrentDirectoryInExePath=''1'';\s+\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''copilot'',''--event'',''(?<event>[a-zA-Z]+)''\)\s+-NoNewWindow\s+-Wait\s+-PassThru;\s+exit\s+\$hookProcess\.ExitCode$'
     foreach ($event in $events) {
         $property = $document.hooks.PSObject.Properties[$event]
         if ($null -eq $property) { throw "$Context is missing Copilot event $event" }
@@ -1117,12 +1122,17 @@ function Assert-CopilotSynchronousWindowsHookConfig([string]$Config, [string]$Co
             throw "$Context event $event has a malformed Windows command entry"
         }
         $command = [string]$entry.powershell
-        if ($command -notmatch $pattern -or $command -match '(?i)&\s+&|\$LASTEXITCODE') {
+        $match = [regex]::Match($command, $pattern)
+        if (-not $match.Success -or
+            $match.Groups['event'].Value -cne $event -or
+            $command -match '(?i)&\s+&|\$LASTEXITCODE') {
             throw "$Context event $event does not use the exact synchronous Copilot PowerShell command"
         }
         [void]$commands.Add($command)
     }
-    if ($commands.Count -ne 1) { throw "$Context uses inconsistent Copilot PowerShell commands" }
+    if ($commands.Count -ne $events.Count) {
+        throw "$Context does not use one exact event-bound Copilot PowerShell command per event"
+    }
 }
 
 function Assert-CursorSynchronousWindowsHookCommand(

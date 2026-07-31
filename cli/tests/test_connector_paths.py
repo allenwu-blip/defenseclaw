@@ -193,6 +193,59 @@ class TestSkillDirs:
             in openhands
         )
 
+    def test_copilot_skill_and_agent_dirs_follow_official_precedence(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        copilot_home = home / "custom-copilot"
+        repo = tmp_path / "repo"
+        package = repo / "packages" / "service"
+        package.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        custom = tmp_path / "custom-skills"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+        monkeypatch.setenv("COPILOT_SKILLS_DIRS", f"{custom},relative-skills")
+
+        skills = connector_paths.skill_dirs("copilot", workspace_dir=str(package))
+        assert skills == [
+            str(package / ".github" / "skills"),
+            str(package / ".agents" / "skills"),
+            str(package / ".claude" / "skills"),
+            str(package.parent / ".github" / "skills"),
+            str(repo / ".github" / "skills"),
+            str(copilot_home / "skills"),
+            str(home / ".agents" / "skills"),
+            str(custom),
+            str(package / "relative-skills"),
+        ]
+        assert connector_paths.copilot_agent_dirs(str(package)) == [
+            str(package / ".github" / "agents"),
+            str(package / ".claude" / "agents"),
+            str(package.parent / ".github" / "agents"),
+            str(package.parent / ".claude" / "agents"),
+            str(repo / ".github" / "agents"),
+            str(repo / ".claude" / "agents"),
+            str(copilot_home / "agents"),
+        ]
+        assert connector_paths.copilot_mcp_config_files(str(package)) == [
+            str(package / ".mcp.json"),
+            str(package / ".github" / "mcp.json"),
+            str(package.parent / ".mcp.json"),
+            str(package.parent / ".github" / "mcp.json"),
+            str(repo / ".mcp.json"),
+            str(repo / ".github" / "mcp.json"),
+            str(copilot_home / "mcp-config.json"),
+        ]
+
+    def test_copilot_non_repository_workspace_does_not_scan_filesystem_ancestors(self, tmp_path):
+        workspace = tmp_path / "not-a-repo" / "package"
+        workspace.mkdir(parents=True)
+
+        agents = connector_paths.copilot_agent_dirs(str(workspace))
+
+        assert str(workspace / ".github" / "agents") in agents
+        assert str(workspace.parent / ".github" / "agents") not in agents
+
     def test_openhands_skill_dirs_honor_workspace_override(self, tmp_path, monkeypatch):
         outside = tmp_path / "outside"
         workspace = tmp_path / "repo"
@@ -386,6 +439,54 @@ class TestMCPServers:
         openhands.parent.mkdir(parents=True)
         openhands.write_text(json.dumps({"mcpServers": {"o": {"command": "openhands-mcp"}}}))
         assert connector_paths.mcp_servers("openhands")[0].command == "openhands-mcp"
+
+    def test_copilot_mcp_reads_ancestors_and_deduplicates_by_priority(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        home = tmp_path / "home"
+        copilot_home = home / "copilot"
+        repo = tmp_path / "repo"
+        package = repo / "packages" / "service"
+        package.mkdir(parents=True)
+        (repo / ".git").mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+
+        sources = (
+            (
+                package / ".mcp.json",
+                {
+                    "shared": {"command": "package"},
+                    "package-only": {"command": "package-only"},
+                },
+            ),
+            (
+                repo / ".github" / "mcp.json",
+                {
+                    "shared": {"command": "repo"},
+                    "repo-only": {"command": "repo-only"},
+                },
+            ),
+            (
+                copilot_home / "mcp-config.json",
+                {
+                    "shared": {"command": "user"},
+                    "user-only": {"command": "user-only"},
+                },
+            ),
+        )
+        for path, servers in sources:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"mcpServers": servers}))
+
+        entries = connector_paths.mcp_servers("copilot", workspace_dir=str(package))
+        by_name = {entry.name: entry for entry in entries}
+
+        assert set(by_name) == {"shared", "package-only", "repo-only", "user-only"}
+        assert by_name["shared"].command == "package"
 
     def test_antigravity_reads_global_and_workspace_mcp_config(
         self,
@@ -853,9 +954,7 @@ class TestConnectorHome:
         monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(configured))
 
         assert connector_paths.connector_home("opencode") == str(configured)
-        assert connector_paths.connector_config_files("opencode") == [
-            str(configured / "plugins" / "defenseclaw.js")
-        ]
+        assert connector_paths.connector_config_files("opencode") == [str(configured / "plugins" / "defenseclaw.js")]
 
     def test_antigravity_home(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))

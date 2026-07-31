@@ -156,6 +156,71 @@ try {
     Assert-True $rejectedWrongShape `
         'Windsurf validator accepts only the safely quoted call-operator adapter command'
 
+    $copilotEvents = @(
+        'sessionStart', 'sessionEnd', 'userPromptSubmitted',
+        'userPromptTransformed', 'preToolUse', 'postToolUse',
+        'postToolUseFailure', 'permissionRequest', 'agentStop', 'subagentStart',
+        'subagentStop', 'errorOccurred', 'preCompact', 'notification'
+    )
+    $copilotHooks = [ordered]@{}
+    foreach ($event in $copilotEvents) {
+        $powershell = "`$ErrorActionPreference='Stop'; " +
+            "`$env:NoDefaultCurrentDirectoryInExePath='1'; " +
+            "`$hookProcess=Microsoft.PowerShell.Management\Start-Process " +
+            "-FilePath 'C:\Program Files\DefenseClaw\bin\defenseclaw-hook.exe' " +
+            "-ArgumentList @('hook','--connector','copilot','--event','$event') " +
+            "-NoNewWindow -Wait -PassThru; exit `$hookProcess.ExitCode"
+        $copilotHooks[$event] = @([ordered]@{
+            type = 'command'
+            powershell = $powershell
+            timeoutSec = 30
+        })
+    }
+    $copilotFixture = [ordered]@{ version = 1; hooks = $copilotHooks } |
+        ConvertTo-Json -Depth 8
+    Assert-CopilotSynchronousWindowsHookConfig $copilotFixture 'synthetic Copilot registration'
+
+    $copilotWrongEvent = $copilotFixture | ConvertFrom-Json
+    $copilotWrongEvent.hooks.preToolUse[0].powershell =
+        ([string]$copilotWrongEvent.hooks.preToolUse[0].powershell).Replace(
+            ",'preToolUse')",
+            ",'postToolUse')"
+        )
+    $wrongEventRejected = $false
+    try {
+        Assert-CopilotSynchronousWindowsHookConfig (
+            $copilotWrongEvent | ConvertTo-Json -Depth 8
+        ) 'mismatched synthetic Copilot registration'
+    } catch {
+        $wrongEventRejected = $true
+    }
+    Assert-True $wrongEventRejected 'Copilot live harness rejects a mismatched --event binding'
+
+    $copilotMissingEvent = $copilotFixture | ConvertFrom-Json
+    [void]$copilotMissingEvent.hooks.PSObject.Properties.Remove('userPromptTransformed')
+    $missingEventRejected = $false
+    try {
+        Assert-CopilotSynchronousWindowsHookConfig (
+            $copilotMissingEvent | ConvertTo-Json -Depth 8
+        ) '13-event synthetic Copilot registration'
+    } catch {
+        $missingEventRejected = $true
+    }
+    Assert-True $missingEventRejected 'Copilot live harness requires userPromptTransformed'
+
+    $copilotExtraEvent = $copilotFixture | ConvertFrom-Json
+    Add-Member -InputObject $copilotExtraEvent.hooks -MemberType NoteProperty `
+        -Name futureEvent -Value $copilotExtraEvent.hooks.preToolUse
+    $extraEventRejected = $false
+    try {
+        Assert-CopilotSynchronousWindowsHookConfig (
+            $copilotExtraEvent | ConvertTo-Json -Depth 8
+        ) 'extra-event synthetic Copilot registration'
+    } catch {
+        $extraEventRejected = $true
+    }
+    Assert-True $extraEventRejected 'Copilot live harness rejects unreviewed extra events'
+
     $safeRegistrationLocations = @(Get-DefenseClawRegistrationLocations @'
 notify = ["C:\synthetic-private-path\DefenseClaw\bin\launcher.exe", "notify"]
 

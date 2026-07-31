@@ -8,8 +8,8 @@ DefenseClaw certification result.
 
 GitHub officially supports running Copilot CLI directly from Windows
 PowerShell. The current stable release inspected for this decision was
-**1.0.76**: its changelog entry is dated **2026-07-29**, and the GitHub release
-published Windows x64/ARM64 ZIP and MSI assets on **2026-07-30 UTC**.
+**1.0.77**, released **2026-07-30**. The official release channel publishes
+native Windows x64/ARM64 ZIP and MSI assets.
 GitHub documents PowerShell 6+ for the CLI; its Windows hook tutorial requires
 PowerShell 7 (`pwsh`) on `PATH`.
 
@@ -42,6 +42,7 @@ continues to reject Copilot on Windows while its public status is
 - [Copilot CLI plugin reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference)
 - [Official `github/copilot-cli` repository](https://github.com/github/copilot-cli)
 - [Official releases](https://github.com/github/copilot-cli/releases)
+- [Current stable 1.0.77 release](https://github.com/github/copilot-cli/releases/tag/v1.0.77)
 - [Official changelog](https://raw.githubusercontent.com/github/copilot-cli/main/changelog.md)
 
 ## Installation, configuration, and inventory
@@ -56,8 +57,40 @@ Copilot reads user configuration under `%USERPROFILE%\.copilot` by default,
 or under `%COPILOT_HOME%` when that variable is set. The documented inventory
 includes `settings.json`, internal `config.json`, `mcp-config.json`, `agents`,
 `skills`, `hooks`, and `installed-plugins`. Workspace surfaces include
-`.github/mcp.json` or `.mcp.json`, `.github/agents`, `.github/skills`,
-`.agents/skills`, and `.github/hooks`.
+`.github/hooks` and these ordered asset locations:
+
+- agents: `.github/agents` then `.claude/agents` at every ancestor from the
+  pinned workspace to the Git root, followed by `%COPILOT_HOME%\agents`;
+  only `.md` and `.agent.md` files are agents, and the complete suffix is
+  removed for identity (`reviewer.agent.md` is `reviewer`);
+- MCP: `.mcp.json` then `.github/mcp.json` at every ancestor from the pinned
+  workspace to the Git root, followed by `%COPILOT_HOME%\mcp-config.json`;
+  higher-priority duplicate server names win. Static inventory reports
+  declarations regardless of folder trust; effective workspace activation
+  requires a trusted folder, or
+  `GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=true` in untrusted `-p` mode;
+- skills: immediate `.github/skills`, `.agents/skills`, and `.claude/skills`,
+  inherited parent `.github/skills`, `%COPILOT_HOME%\skills`,
+  `%USERPROFILE%\.agents\skills`, then `COPILOT_SKILLS_DIRS`.
+
+DefenseClaw inventories those documented local paths from the explicitly
+pinned workspace rather than its daemon working directory. Session
+`--additional-mcp-config`, plugin-provided/built-in/remote runtime MCP servers,
+plugin-owned agents/skills, and remote organization/enterprise agents/skills
+are not expanded from private or remote stores; the owning plugins are
+reported separately through the official read-only command below. The
+reviewed Copilot CLI 1.0.77 built-in agent IDs are emitted as immutable
+versioned-contract rows, and local files with those IDs cannot shadow them.
+
+The current official references disagree on custom-agent precedence. The
+dedicated [CLI command reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference#custom-agent-locations)
+puts project/ancestor agents before the user directory and gives `.github`
+precedence over `.claude` at each level. The
+[plugin-reference loading diagram](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference#loading-order-and-precedence)
+places the user directory first and groups the project conventions
+differently. DefenseClaw follows the dedicated custom-agent reference; real
+official-client certification must confirm the effective order before the
+connector can graduate from `not_certified`.
 
 The official read-only inventory command is
 `copilot plugins list --kind plugin --json`. DefenseClaw uses it only to
@@ -97,6 +130,13 @@ The current documented events are `sessionStart`, `sessionEnd`,
 DefenseClaw's `copilot-hooks-v2` contract registers that exact 14-event matrix
 for reviewed versions `>=1.0.76`; the bounded `copilot-hooks-v1` contract
 retains the earlier 13-event matrix for `>=1.0.18, <1.0.76`.
+Setup binds each registration to its exact event name and passes that trusted
+identity out-of-band to the authenticated gateway while preserving the
+official JSON body. Missing, unknown, wrong-case, or out-of-contract identities
+are rejected rather than inferred from body fields. Local, authentication,
+transport, timeout, and malformed-response failures always return empty stdout
+and exit 0; an inherited closed/strict setting cannot manufacture a Copilot
+deny.
 `userPromptTransformed` is mutation-only, so DefenseClaw observes its
 `transformedPrompt` but returns no modification. `notification` is explicitly
 asynchronous and fire-and-forget upstream; the other registered command hooks
@@ -139,7 +179,7 @@ claim that Copilot's Windows sandbox provides per-path filesystem enforcement.
 ## Certification still required
 
 Before changing `not_certified` to `supported`, the later Windows verification
-phase must run the packaged deterministic contract and a real official 1.0.76
+phase must run the packaged deterministic contract and a real official 1.0.77
 or newer client with an entitled credential. It must prove user-scope setup,
 restart/reconciliation, allow/ask/block/failure behavior, stdin/stdout/exit
 propagation, audit and protected-runtime evidence, tamper repair, exact

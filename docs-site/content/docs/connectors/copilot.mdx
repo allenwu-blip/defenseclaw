@@ -30,6 +30,34 @@ By default this is **global/user-scoped**: DefenseClaw writes hook entries into 
 
 If `COPILOT_HOME` is set, DefenseClaw uses that official Copilot configuration root instead of `~/.copilot` for hooks, MCP, skills, and agents.
 
+With an explicitly pinned workspace, inventory follows Copilot's documented
+precedence instead of the DefenseClaw daemon's current directory. It reads
+`.github/agents` and `.claude/agents` at each ancestor through the Git root;
+only `.md` and `.agent.md` files are agents, with the full suffix removed for
+identity. MCP inventory reads `.mcp.json` and `.github/mcp.json` at each
+ancestor, then the personal `mcp-config.json`, preserving name precedence.
+These are declarations, not proof of live activation: workspace MCP requires
+folder trust, or `GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=true` in untrusted
+prompt mode;
+skills include immediate `.github`, `.agents`, and `.claude` locations,
+inherited parent `.github/skills`, personal `~/.agents/skills`, and additional
+`COPILOT_SKILLS_DIRS` entries. Plugin-contributed agents/skills and built-in or
+organization/remote agents/skills are not expanded from private or remote
+stores. Session, plugin-contributed, built-in, and remote runtime MCP servers
+also require official-client live inspection.
+
+The reviewed Copilot CLI 1.0.77 built-in agent IDs are inventoried as immutable
+versioned-contract rows. Local custom files cannot shadow those built-ins;
+plugin-contributed and remote organization/enterprise agents still require a
+live session.
+
+GitHub's current custom-agent command reference and plugin-reference loading
+diagram disagree about whether project or personal agents load first and how
+the project conventions are grouped. DefenseClaw follows the dedicated
+custom-agent reference (project/ancestor first, `.github` before `.claude` at
+each level); official-client certification must confirm that order before this
+connector can graduate from `not_certified`.
+
 Read-only plugin inventory uses the official
 `copilot plugins list --kind plugin --json` command. DefenseClaw does not use
 that inventory path to install, enable, disable, or remove Copilot plugins.
@@ -119,7 +147,10 @@ non-pausing audit/alert fallback. `permissionRequest`, `agentStop`, and
 post-action `postToolUseFailure` event can provide recovery
 `additionalContext` but cannot block or reverse the failed tool.
 Copilot does not expose a fail-closed hook transport surface; `--fail-mode
-closed` cannot make an unavailable hook block the agent.
+closed`, inherited strict availability, missing auth, timeouts, and malformed
+responses cannot make an unavailable hook block the agent. The gateway also
+requires the exact trusted event-specific registration header and never
+infers Copilot event identity from stdin fields.
 
 </Tab>
 

@@ -862,13 +862,98 @@ def _gemini_skill_dirs(workspace_dir: str | None = None) -> list[str]:
 
 
 def _copilot_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    workspace = _workspace_dir(workspace_dir)
+    ancestors = _copilot_workspace_ancestors(workspace)
+    project: list[str] = []
+    if ancestors:
+        # Current-project precedence is exact: GitHub, Agents, then Claude.
+        project.extend(
+            [
+                os.path.join(ancestors[0], ".github", "skills"),
+                os.path.join(ancestors[0], ".agents", "skills"),
+                os.path.join(ancestors[0], ".claude", "skills"),
+            ]
+        )
+        # The official inherited skill surface is parent .github/skills,
+        # deepest first, through the Git root.
+        project.extend(os.path.join(root, ".github", "skills") for root in ancestors[1:])
     return _dedup(
         [
+            *project,
             os.path.join(copilot_home(), "skills"),
-            _workspace_path(workspace_dir, ".github", "skills"),
-            _workspace_path(workspace_dir, ".agents", "skills"),
+            os.path.join(str(Path.home()), ".agents", "skills"),
+            *_copilot_custom_skill_dirs(workspace),
         ]
     )
+
+
+def copilot_agent_dirs(workspace_dir: str | None = None) -> list[str]:
+    """Return every documented local Copilot custom-agent directory.
+
+    Project agents are loaded at every ancestor from the pinned workspace to
+    the Git root, deepest first, with ``.github`` taking precedence over
+    ``.claude`` at each level. Plugin-contributed agents are deliberately not
+    expanded from an undocumented on-disk cache; callers inventory the plugin
+    itself through Copilot's official read-only command instead.
+    """
+
+    project: list[str] = []
+    for root in _copilot_workspace_ancestors(_workspace_dir(workspace_dir)):
+        project.extend(
+            [
+                os.path.join(root, ".github", "agents"),
+                os.path.join(root, ".claude", "agents"),
+            ]
+        )
+    return _dedup([*project, os.path.join(copilot_home(), "agents")])
+
+
+def copilot_mcp_config_files(workspace_dir: str | None = None) -> list[str]:
+    """Return documented local Copilot MCP files in effective priority order."""
+
+    project: list[str] = []
+    for root in _copilot_workspace_ancestors(_workspace_dir(workspace_dir)):
+        project.extend(
+            [
+                os.path.join(root, ".mcp.json"),
+                os.path.join(root, ".github", "mcp.json"),
+            ]
+        )
+    return _dedup([*project, os.path.join(copilot_home(), "mcp-config.json")])
+
+
+def _copilot_workspace_ancestors(workspace_dir: str) -> list[str]:
+    if not workspace_dir:
+        return []
+    current = os.path.abspath(workspace_dir)
+    candidates: list[str] = []
+    while True:
+        candidates.append(current)
+        if os.path.exists(os.path.join(current, ".git")):
+            return candidates
+        parent = os.path.dirname(current)
+        if parent == current:
+            # A pinned non-repository workspace has only its immediate
+            # project surface; never scan unrelated filesystem ancestors.
+            return candidates[:1]
+        current = parent
+
+
+def _copilot_custom_skill_dirs(workspace_dir: str) -> list[str]:
+    out: list[str] = []
+    for raw in os.environ.get("COPILOT_SKILLS_DIRS", "").split(","):
+        candidate = os.path.expanduser(_expand(raw.strip()))
+        if not candidate:
+            continue
+        if not os.path.isabs(candidate):
+            if not workspace_dir:
+                # Relative custom paths are meaningful only in Copilot's
+                # launch workspace. Do not reinterpret them against the
+                # long-lived DefenseClaw daemon directory.
+                continue
+            candidate = os.path.join(workspace_dir, candidate)
+        out.append(os.path.abspath(candidate))
+    return _dedup(out)
 
 
 def _openhands_skill_dirs(workspace_dir: str | None = None) -> list[str]:
@@ -1157,13 +1242,11 @@ def _gemini_mcp_servers() -> list[MCPServerEntry]:
 
 def _copilot_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
     entries: list[MCPServerEntry] = []
-    entries.extend(_read_dotmcp_json(os.path.join(copilot_home(), "mcp-config.json")))
-    github_mcp = _workspace_path(workspace_dir, ".github", "mcp.json")
-    if github_mcp:
-        entries.extend(_read_dotmcp_json(github_mcp))
-    project_mcp = _workspace_path(workspace_dir, ".mcp.json")
-    if project_mcp:
-        entries.extend(_read_dotmcp_json(project_mcp))
+    # Copilot loads both workspace forms at every ancestor through the Git
+    # root. Deeper entries are visited first so name deduplication below
+    # preserves the documented higher-priority registration.
+    for path in copilot_mcp_config_files(workspace_dir):
+        entries.extend(_read_dotmcp_json(path))
     return _dedup_mcp_entries(entries)
 
 

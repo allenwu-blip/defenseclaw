@@ -604,7 +604,7 @@ func TestOversizedPayload(t *testing.T) {
 		"codex":      {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"openhands":  {stdout: `{"decision":"deny","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"cursor":     {stdout: cursorFallbackOutput("PreToolUse", true, "DefenseClaw hook payload too large") + "\n", code: 2},
-		"copilot":    {stdout: "", code: 2},
+		"copilot":    {stdout: "", code: 0},
 		"geminicli":  {stdout: "", code: 2},
 		"hermes":     {stdout: "", code: 0},
 		"windsurf":   {stdout: "", code: 2},
@@ -1077,15 +1077,69 @@ func TestNativeConnectorEndpointMatrix(t *testing.T) {
 	}
 }
 
-func TestCopilotEventHeaderRequiresReviewedExactEvent(t *testing.T) {
+func TestCopilotEventBindingRequiresReviewedExactEvent(t *testing.T) {
 	for _, event := range []string{"PreToolUse", "futureEvent", ""} {
 		t.Run(fmt.Sprintf("event_%s", event), func(t *testing.T) {
 			rt := ok(`{"action":"allow"}`)
-			run(t, "copilot", rt, func(opts *Options) {
+			result := run(t, "copilot", rt, func(opts *Options) {
 				opts.Event = event
+				opts.FailMode = "closed"
+				opts.StrictAvailability = true
+				opts.ManagedEnterprise = true
 			})
-			if got := rt.gotReq.Header.Get("X-DefenseClaw-Copilot-Event"); got != "" {
-				t.Fatalf("unreviewed event %q produced trusted header %q", event, got)
+			if rt.requests != 0 || rt.gotReq != nil {
+				t.Fatalf("unreviewed event %q reached the gateway", event)
+			}
+			if result.code != 0 || result.stdout != "" {
+				t.Fatalf(
+					"unreviewed event %q synthesized enforcement: code=%d stdout=%q stderr=%q",
+					event, result.code, result.stdout, result.stderr,
+				)
+			}
+		})
+	}
+}
+
+func TestCopilotFailuresAlwaysFailOpen(t *testing.T) {
+	type failureCase struct {
+		name   string
+		rt     *stubRT
+		mutate func(*Options)
+	}
+	cases := []failureCase{
+		{name: "auth", rt: &stubRT{status: 401, body: "unauthorized"}},
+		{name: "network", rt: &stubRT{err: errors.New("connection refused")}},
+		{name: "timeout", rt: &stubRT{err: context.DeadlineExceeded}},
+		{name: "server", rt: &stubRT{status: 503, body: "unavailable"}},
+		{name: "malformed", rt: ok("not-json")},
+		{name: "oversized", rt: ok(`{"action":"allow"}`), mutate: func(o *Options) {
+			o.MaxBody = 2
+			o.Stdin = strings.NewReader(`{"sessionId":"s"}`)
+		}},
+		{name: "missing-token", rt: ok(`{"action":"allow"}`), mutate: func(o *Options) {
+			o.Token = ""
+			o.HookDir = filepath.Join(o.Home, "no-token")
+		}},
+		{name: "unavailable-home", rt: ok(`{"action":"allow"}`), mutate: func(o *Options) {
+			o.Home = filepath.Join(t.TempDir(), "missing")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := run(t, "copilot", tc.rt, func(o *Options) {
+				o.Event = "preToolUse"
+				o.FailMode = "closed"
+				o.StrictAvailability = true
+				o.ManagedEnterprise = true
+				if tc.mutate != nil {
+					tc.mutate(o)
+				}
+			})
+			if result.code != 0 || result.stdout != "" {
+				t.Fatalf(
+					"Copilot failure synthesized enforcement: code=%d stdout=%q stderr=%q",
+					result.code, result.stdout, result.stderr,
+				)
 			}
 		})
 	}

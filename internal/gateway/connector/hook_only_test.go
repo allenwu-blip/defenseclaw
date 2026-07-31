@@ -1587,6 +1587,102 @@ func TestCopilotHomeOverrideDrivesHooksAndInventory(t *testing.T) {
 	}
 }
 
+func TestCopilotInventoryReadsOfficialWorkspacePrecedence(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.Mkdir(filepath.Join(repo, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(repo, "packages", "service")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	custom := filepath.Join(t.TempDir(), "custom-skills")
+	t.Setenv("COPILOT_SKILLS_DIRS", custom+",relative-skills")
+	opts := SetupOpts{WorkspaceDir: workspace}
+	caps := NewCopilotConnector().Capabilities(opts)
+
+	wantSkillPrefix := []string{
+		filepath.Join(workspace, ".github", "skills"),
+		filepath.Join(workspace, ".agents", "skills"),
+		filepath.Join(workspace, ".claude", "skills"),
+		filepath.Join(filepath.Dir(workspace), ".github", "skills"),
+		filepath.Join(repo, ".github", "skills"),
+	}
+	if len(caps.Skills.ReadPaths) < len(wantSkillPrefix) {
+		t.Fatalf("Copilot skill read paths too short: %v", caps.Skills.ReadPaths)
+	}
+	for i, want := range wantSkillPrefix {
+		if caps.Skills.ReadPaths[i] != want {
+			t.Fatalf("Copilot skill read path %d=%q, want %q; all=%v", i, caps.Skills.ReadPaths[i], want, caps.Skills.ReadPaths)
+		}
+	}
+	for _, want := range []string{custom, filepath.Join(workspace, "relative-skills")} {
+		if !stringInSlice(caps.Skills.ReadPaths, want) {
+			t.Fatalf("Copilot skill read paths missing %q: %v", want, caps.Skills.ReadPaths)
+		}
+	}
+
+	wantMCP := []string{
+		filepath.Join(workspace, ".mcp.json"),
+		filepath.Join(workspace, ".github", "mcp.json"),
+		filepath.Join(filepath.Dir(workspace), ".mcp.json"),
+		filepath.Join(filepath.Dir(workspace), ".github", "mcp.json"),
+		filepath.Join(repo, ".mcp.json"),
+		filepath.Join(repo, ".github", "mcp.json"),
+		copilotHomePath("mcp-config.json"),
+	}
+	if !sameStrings(caps.MCP.ConfigPaths, wantMCP) {
+		t.Fatalf("Copilot MCP read paths=%v, want %v", caps.MCP.ConfigPaths, wantMCP)
+	}
+
+	wantAgents := []string{
+		filepath.Join(workspace, ".github", "agents"),
+		filepath.Join(workspace, ".claude", "agents"),
+		filepath.Join(filepath.Dir(workspace), ".github", "agents"),
+		filepath.Join(filepath.Dir(workspace), ".claude", "agents"),
+		filepath.Join(repo, ".github", "agents"),
+		filepath.Join(repo, ".claude", "agents"),
+	}
+	for i, want := range wantAgents {
+		if caps.Agents.ReadPaths[i] != want {
+			t.Fatalf("Copilot agent read path %d=%q, want %q; all=%v", i, caps.Agents.ReadPaths[i], want, caps.Agents.ReadPaths)
+		}
+	}
+	for _, forbidden := range []string{
+		filepath.Join(workspace, ".claude", "skills"),
+		filepath.Join(workspace, ".claude", "agents"),
+		custom,
+	} {
+		if stringInSlice(caps.Skills.WritePaths, forbidden) || stringInSlice(caps.Agents.WritePaths, forbidden) {
+			t.Fatalf("discovery-only Copilot path became writable: %q", forbidden)
+		}
+	}
+}
+
+func TestCopilotShellBootstrapFailuresAlwaysOpen(t *testing.T) {
+	script, err := hookFS.ReadFile("hooks/copilot-hook.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(script)
+	if strings.Contains(body, "exit 2") {
+		t.Fatalf("Copilot shell bootstrap contains a fail-closed exit: %s", body)
+	}
+	for _, required := range []string{
+		`HOME="$(cd ~ 2>/dev/null && pwd)" || exit 0`,
+		`HOOK_BASE="$(cd -P -- "$HOOK_PARENT" 2>/dev/null && pwd)" || exit 0`,
+		`HOOK_DIR="$(cd -P -- "$HOOK_PARENT" 2>/dev/null && pwd)" || exit 0`,
+		`if [ ! -r "${HOOK_DIR}/_hardening.sh" ]; then`,
+		`if ! . "${HOOK_DIR}/_hardening.sh"; then`,
+		`if ! defenseclaw_harden_resources; then`,
+		`if ! defenseclaw_harden_env; then`,
+	} {
+		if !strings.Contains(body, required) {
+			t.Errorf("Copilot shell bootstrap missing fail-open guard %q", required)
+		}
+	}
+}
+
 func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Copilot selects the powershell hook field only on Windows")
@@ -2030,6 +2126,12 @@ func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 				t.Fatalf("read hook script: %v", err)
 			}
 			want := `FAIL_MODE="${DEFENSECLAW_FAIL_MODE:-` + tc.wantFailMode + `}"`
+			if tc.connector.Name() == "copilot" {
+				want = `FAIL_MODE="open"`
+				if strings.Contains(string(body), "DEFENSECLAW_FAIL_MODE:-") {
+					t.Fatalf("Copilot shell hook still accepts an inherited closed fail mode:\n%s", string(body))
+				}
+			}
 			if !strings.Contains(string(body), want) {
 				t.Fatalf("hook script missing %s:\n%s", want, string(body))
 			}

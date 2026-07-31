@@ -626,18 +626,20 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
 			Scope:           "workspace,user",
-			ConfigPaths:     []string{copilotHomePath("mcp-config.json"), workspacePath(opts, ".github", "mcp.json"), workspacePath(opts, ".mcp.json")},
+			ConfigPaths:     copilotMCPReadPaths(opts),
 			WritePaths:      []string{copilotHomePath("mcp-config.json"), workspacePath(opts, ".github", "mcp.json")},
 			SupportsBackup:  true,
 			SupportsRestore: true,
+			Notes:           []string{"Reads declared .mcp.json and .github/mcp.json from the pinned workspace through its Git root, then the Copilot user config. Declaration inventory is independent of folder trust; effective workspace activation requires a trusted folder, or GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=true in untrusted prompt mode. Session --additional-mcp-config, plugin, built-in, and remote runtime servers require official-client live inspection."},
 		}
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{copilotHomePath("skills"), workspacePath(opts, ".github", "skills"), workspacePath(opts, ".agents", "skills")},
+			ReadPaths:      copilotSkillReadPaths(opts),
 			WritePaths:     []string{copilotHomePath("skills"), workspacePath(opts, ".github", "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
+			Notes:          []string{"Reads documented local project, inherited .github, personal, and COPILOT_SKILLS_DIRS sources in Copilot precedence order. Plugin, built-in, and organization/remote skills are not expanded from private caches; plugins are listed separately through Copilot's official read-only command."},
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:      true,
@@ -656,10 +658,11 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Agents = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{copilotHomePath("agents"), workspacePath(opts, ".github", "agents")},
+			ReadPaths:      copilotAgentReadPaths(opts),
 			WritePaths:     []string{copilotHomePath("agents"), workspacePath(opts, ".github", "agents")},
 			InstallTargets: []string{"agent"},
 			RequiresOptIn:  true,
+			Notes:          []string{"Reads .github/agents and .claude/agents from the pinned workspace through its Git root, then the Copilot user home. Inventory includes the reviewed Copilot CLI 1.0.77 built-in IDs, which cannot be shadowed. Plugin-contributed and remote organization/enterprise agents require official-client live-session inspection; owning plugins are listed separately."},
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
@@ -1346,6 +1349,113 @@ func workspacePath(opts SetupOpts, parts ...string) string {
 	}
 	all := append([]string{root}, parts...)
 	return filepath.Join(all...)
+}
+
+func copilotSkillReadPaths(opts SetupOpts) []string {
+	roots := copilotWorkspaceAncestors(opts)
+	paths := make([]string, 0, len(roots)+6)
+	if len(roots) > 0 {
+		paths = append(paths,
+			filepath.Join(roots[0], ".github", "skills"),
+			filepath.Join(roots[0], ".agents", "skills"),
+			filepath.Join(roots[0], ".claude", "skills"),
+		)
+		for _, root := range roots[1:] {
+			paths = append(paths, filepath.Join(root, ".github", "skills"))
+		}
+	}
+	paths = append(paths, copilotHomePath("skills"), homePath(".agents", "skills"))
+	for _, raw := range strings.Split(os.Getenv("COPILOT_SKILLS_DIRS"), ",") {
+		path := strings.TrimSpace(raw)
+		if path == "" {
+			continue
+		}
+		if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+			path = filepath.Join(homePath(), path[2:])
+		} else if !filepath.IsAbs(path) {
+			if workspaceRoot(opts) == "" {
+				// Relative custom paths belong to Copilot's launch
+				// workspace, not the gateway daemon's current directory.
+				continue
+			}
+			path = filepath.Join(workspaceRoot(opts), path)
+		}
+		paths = append(paths, path)
+	}
+	return copilotUniquePaths(paths)
+}
+
+func copilotAgentReadPaths(opts SetupOpts) []string {
+	roots := copilotWorkspaceAncestors(opts)
+	paths := make([]string, 0, len(roots)*2+1)
+	for _, root := range roots {
+		paths = append(paths,
+			filepath.Join(root, ".github", "agents"),
+			filepath.Join(root, ".claude", "agents"),
+		)
+	}
+	paths = append(paths, copilotHomePath("agents"))
+	return copilotUniquePaths(paths)
+}
+
+func copilotMCPReadPaths(opts SetupOpts) []string {
+	roots := copilotWorkspaceAncestors(opts)
+	paths := make([]string, 0, len(roots)*2+1)
+	for _, root := range roots {
+		paths = append(paths,
+			filepath.Join(root, ".mcp.json"),
+			filepath.Join(root, ".github", "mcp.json"),
+		)
+	}
+	paths = append(paths, copilotHomePath("mcp-config.json"))
+	return copilotUniquePaths(paths)
+}
+
+func copilotWorkspaceAncestors(opts SetupOpts) []string {
+	root := strings.TrimSpace(workspaceRoot(opts))
+	if root == "" {
+		return nil
+	}
+	if absolute, err := filepath.Abs(root); err == nil {
+		root = absolute
+	}
+	current := filepath.Clean(root)
+	candidates := make([]string, 0, 4)
+	for {
+		candidates = append(candidates, current)
+		if _, err := os.Stat(filepath.Join(current, ".git")); err == nil {
+			return candidates
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			// A pinned non-repository workspace has only its immediate
+			// project surface; never scan unrelated filesystem ancestors.
+			return candidates[:1]
+		}
+		current = parent
+	}
+}
+
+func copilotUniquePaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		key := path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, path)
+	}
+	return out
 }
 
 func workspaceRootOutsideDataDir(root, dataDir string) bool {

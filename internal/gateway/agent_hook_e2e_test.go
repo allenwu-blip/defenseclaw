@@ -320,6 +320,34 @@ func TestHandleAgentHook_AntigravityInvocationEventsDoNotScanInventedContent(t *
 	}
 }
 
+func TestCopilotHookRejectsMissingOrInvalidTrustedEvent(t *testing.T) {
+	api := &APIServer{}
+	handler := http.HandlerFunc(api.handleAgentHook("copilot"))
+	body := `{"sessionId":"s","timestamp":1,"cwd":"C:\\work","eventName":"preToolUse","toolName":"powershell","toolArgs":{"command":"Get-ChildItem"}}`
+
+	for _, tc := range []struct {
+		name   string
+		header string
+	}{
+		{name: "missing"},
+		{name: "wrong case", header: "PreToolUse"},
+		{name: "unknown", header: "futureEvent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/copilot/hook", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			if tc.header != "" {
+				req.Header.Set("X-DefenseClaw-Copilot-Event", tc.header)
+			}
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, req)
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want 400; body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
 // TestHandleAgentHook_FullChain_SyntheticPath drives the
 // codex-notify synthetic hook path top-to-bottom and asserts that:
 //

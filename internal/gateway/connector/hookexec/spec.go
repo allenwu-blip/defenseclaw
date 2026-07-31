@@ -120,10 +120,7 @@ var specs = map[string]spec{
 	"copilot": {
 		connector: "copilot", hookName: "copilot-hook", errLabel: "copilot",
 		subject: "copilot tool", endpoint: "/api/v1/copilot/hook",
-		outputField: "hook_output", style: styleHookEcho,
-		oversizedClosed:   failResult{exit: blockExit},
-		unreachableStrict: failResult{body: `{"permissionDecision":"deny","permissionDecisionReason":"` + failedClosed + `"}`, exit: blockExit},
-		responseClosed:    failResult{body: `{"permissionDecision":"deny","permissionDecisionReason":"` + failedClosed + `"}`, exit: 0},
+		outputField: "hook_output", style: styleHookEcho, failOpenOnly: true,
 	},
 	"geminicli": {
 		connector: "geminicli", hookName: "geminicli-hook", errLabel: "geminicli",

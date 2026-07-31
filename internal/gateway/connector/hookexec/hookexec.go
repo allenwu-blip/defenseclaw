@@ -159,6 +159,14 @@ func Run(ctx context.Context, opts Options) int {
 		return handleOversized(opts, sp, failMode)
 	}
 	opts.Event = resolveHookEvent(opts.Event, payload)
+	if opts.Connector == "copilot" && !validCopilotEvent(opts.Event) {
+		// Copilot's official camelCase stdin bodies do not identify the
+		// event. Setup supplies the reviewed event through an exact --event
+		// binding; never infer it from a body field or forward an untrusted
+		// registration. This is a local integration failure, so Copilot must
+		// receive its documented fail-open result.
+		return failResponse(opts, sp, failMode, "missing or unsupported Copilot hook event binding")
+	}
 	if opts.HTTPClient == nil {
 		requestTimeout := hookRequestTimeout(opts.Connector, opts.Event) - time.Since(startedAt)
 		if requestTimeout <= 0 {

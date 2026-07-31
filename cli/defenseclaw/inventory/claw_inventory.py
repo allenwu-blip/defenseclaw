@@ -705,12 +705,14 @@ def _aibom_target_path(inv: dict[str, Any], cfg: Config) -> str:
 def _collect_mcp_config_files(connector: str, cfg: Config) -> list[str]:
     """Return the on-disk MCP config files for *connector*.
 
-    Re-uses :func:`connector_paths.connector_config_files` and filters
-    for entries that look like an MCP-aware file. We err on the side of
-    "show what could be the source" — the renderer is read-only and
-    operators benefit from seeing both the existing file and the
-    expected location.
+    Copilot's MCP surface is distinct from its settings and hooks, and spans
+    every pinned workspace ancestor. Other connectors reuse
+    :func:`connector_paths.connector_config_files` and retain the historical
+    extension filter.
     """
+    if connector_paths.normalize(connector) == "copilot":
+        return connector_paths.copilot_mcp_config_files(_connector_workspace_dir(cfg))
+
     candidates = connector_paths.connector_config_files(
         connector,
         openclaw_config=cfg.claw.config_file,
@@ -1515,6 +1517,38 @@ _FILESYSTEM_ONLY_CONNECTOR_NOTES: dict[str, str] = {
     "memory": "memory backend is private to the framework",
 }
 
+_PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
+    (
+        "copilot",
+        "skills",
+    ): (
+        "documented local project, inherited, personal, and COPILOT_SKILLS_DIRS "
+        "sources are inventoried; plugin, built-in, and organization/remote "
+        "skills are not expanded from private or remote stores"
+    ),
+    (
+        "copilot",
+        "agents",
+    ): (
+        "documented local project/ancestor and personal agents plus the "
+        "reviewed Copilot CLI 1.0.77 built-in agent set are inventoried; "
+        "built-ins cannot be shadowed by local files, while plugin-contributed "
+        "agents and remote organization/enterprise agents require "
+        "official-client live-session inspection"
+    ),
+    (
+        "copilot",
+        "mcp",
+    ): (
+        "documented workspace/ancestor and personal MCP configuration is "
+        "inventoried in priority order irrespective of folder trust; effective "
+        "workspace activation requires a trusted folder (or "
+        "GITHUB_COPILOT_PROMPT_MODE_WORKSPACE_MCP=true in untrusted prompt "
+        "mode), while session flag, plugin-contributed, built-in, and remote "
+        "runtime servers require official-client live inspection"
+    ),
+}
+
 
 def _collect_filesystem_category(
     connector: str,
@@ -1560,7 +1594,8 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * codex      — ``agents/*`` below the precedence-aware connector home
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` array
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
-    * copilot    — ``.github/agents`` and ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
+    * copilot    — precedence-aware project/ancestor agents plus
+      ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
     * cursor     — explicitly pinned project ``.cursor/agents`` and user ``~/.cursor/agents``
     * antigravity — global/workspace custom agents plus plugin agent components
     """
@@ -1582,12 +1617,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
             ]
         )
     if name == "copilot":
-        return _agents_from_md_dirs(
-            [
-                os.path.join(os.getcwd(), ".github", "agents"),
-                os.path.join(connector_paths.connector_home(name), "agents"),
-            ]
-        )
+        return _agents_from_copilot_dirs(connector_paths.copilot_agent_dirs(_connector_workspace_dir(cfg)))
     if name == "cursor":
         workspace = cfg.connector_workspace_dir()
         return _agents_from_md_dirs(
@@ -1751,6 +1781,74 @@ def _agents_from_md_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
                 continue
             seen.add(key)
             rows.append(row)
+    return rows
+
+
+_COPILOT_BUILTIN_AGENTS: tuple[str, ...] = (
+    "code-review",
+    "explore",
+    "general-purpose",
+    "research",
+    "rubber-duck",
+    "security-review",
+    "task",
+)
+
+
+def _agents_from_copilot_dirs(agent_dirs: list[str]) -> list[dict[str, Any]]:
+    """Enumerate effective Copilot agents using its exact identity contract.
+
+    Copilot accepts only ``*.md`` and ``*.agent.md`` custom-agent files.
+    The compound ``.agent.md`` suffix is the extension, so
+    ``reviewer.agent.md`` has the ID ``reviewer``. Directories arrive in
+    official precedence order; the first occurrence of an ID wins. The
+    versioned built-in set is emitted first because official documentation
+    says built-in agents are always present and cannot be overridden.
+    """
+
+    rows: list[dict[str, Any]] = [
+        {
+            "id": agent_id,
+            "name": agent_id,
+            "source": "official-contract:copilot-cli-1.0.77",
+            "kind": "built-in-agent",
+            "immutable": True,
+        }
+        for agent_id in _COPILOT_BUILTIN_AGENTS
+    ]
+    seen_ids: set[str] = {os.path.normcase(agent_id) for agent_id in _COPILOT_BUILTIN_AGENTS}
+    for agents_dir in agent_dirs:
+        if not os.path.isdir(agents_dir):
+            continue
+        try:
+            entries = sorted(os.listdir(agents_dir))
+        except OSError:
+            continue
+        for entry in entries:
+            full = os.path.join(agents_dir, entry)
+            if not os.path.isfile(full):
+                continue
+            lowered = entry.lower()
+            if lowered.endswith(".agent.md"):
+                agent_id = entry[: -len(".agent.md")]
+            elif lowered.endswith(".md"):
+                agent_id = entry[: -len(".md")]
+            else:
+                continue
+            if not agent_id:
+                continue
+            identity = os.path.normcase(agent_id)
+            if identity in seen_ids:
+                continue
+            seen_ids.add(identity)
+            rows.append(
+                {
+                    "id": agent_id,
+                    "name": agent_id,
+                    "source": full,
+                    "kind": "subagent",
+                }
+            )
     return rows
 
 
@@ -2193,6 +2291,20 @@ def _build_aibom_from_filesystem(
     # capability gaps, not failed commands. Keep them typed and separate so
     # automation never has to infer semantics from human-readable text.
     limitations: list[InventoryLimitation] = []
+    for (partial_connector, cat_key), note in _PARTIAL_CONNECTOR_NOTES.items():
+        if partial_connector != connector or cat_key not in cats:
+            continue
+        result = results.get(cat_key)
+        if result is None or result.error is not None:
+            continue
+        limitations.append(
+            {
+                "connector": connector,
+                "category": cat_key,
+                "status": InventoryCapabilityStatus.UNSUPPORTED,
+                "reason": note,
+            }
+        )
     for cat_key, note in _FILESYSTEM_ONLY_CONNECTOR_NOTES.items():
         if cat_key not in cats:
             continue
@@ -2201,7 +2313,11 @@ def _build_aibom_from_filesystem(
         if connector == "cursor" and cat_key == "agents":
             continue
         result = results.get(cat_key)
-        if result is None or result.items or result.error is not None:
+        if result is None or result.error is not None:
+            continue
+        if (connector, cat_key) in _PARTIAL_CONNECTOR_NOTES:
+            continue
+        if result.items:
             continue
         limitations.append(
             {

@@ -182,14 +182,18 @@ func (a *APIServer) handleAgentHook(connectorName string) http.HandlerFunc {
 			// The authenticated bridge forwards Setup's event-specific
 			// registration argument in a private header. Keep the official
 			// stdin object unchanged for audit and schema-drift evidence.
-			if event := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Copilot-Event")); event != "" {
-				if !connector.ValidCopilotHookEvent(event) {
-					a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "invalid_event", int64(len(b)))
-					a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Copilot hook event"})
-					return
-				}
-				registeredEvent = event
+			event := strings.TrimSpace(r.Header.Get("X-DefenseClaw-Copilot-Event"))
+			if event == "" {
+				a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "missing_event", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Copilot hook event registration is required"})
+				return
 			}
+			if !connector.ValidCopilotHookEvent(event) {
+				a.recordConnectorHookRejection(r.Context(), connectorName, "unknown", "invalid_event", int64(len(b)))
+				a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid Copilot hook event"})
+				return
+			}
+			registeredEvent = event
 		}
 
 		profile := a.hookProfileForConnector(connectorName)
