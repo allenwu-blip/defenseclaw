@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
@@ -109,8 +110,16 @@ namespace DefenseClaw
             var treeKill = typeof(Process).GetMethod("Kill", new Type[] { typeof(bool) });
             if (entireProcessTree && treeKill != null)
             {
-                treeKill.Invoke(process, new object[] { true });
-                return;
+                try
+                {
+                    treeKill.Invoke(process, new object[] { true });
+                    return;
+                }
+                catch (TargetInvocationException exception)
+                {
+                    if (exception.InnerException != null) throw exception.InnerException;
+                    throw;
+                }
             }
             if (entireProcessTree)
             {
@@ -129,7 +138,14 @@ namespace DefenseClaw
                 }
                 if (process.HasExited) return;
             }
-            process.Kill();
+            try
+            {
+                process.Kill();
+            }
+            catch (InvalidOperationException)
+            {
+                // The process exited between the state check and kill request.
+            }
         }
 
         public bool CompleteOutput(int timeoutMilliseconds)
@@ -436,10 +452,6 @@ namespace DefenseClaw
             ref TOKEN_MANDATORY_LABEL information,
             int informationLength);
 
-        [DllImport("advapi32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool IsTokenRestricted(IntPtr token);
-
         [DllImport(
             "advapi32.dll",
             EntryPoint = "CreateProcessAsUserW",
@@ -608,6 +620,15 @@ namespace DefenseClaw
             return primary;
         }
 
+        private static bool IsAdministrator(IntPtr token)
+        {
+            using (WindowsIdentity identity = new WindowsIdentity(token))
+            {
+                WindowsPrincipal principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+        }
+
         private static void ValidateStandardUserPrimaryToken(
             IntPtr token,
             LaunchTokenKind kind,
@@ -625,6 +646,11 @@ namespace DefenseClaw
             {
                 throw new InvalidOperationException(label + " token remains elevated");
             }
+            if (IsAdministrator(token))
+            {
+                throw new InvalidOperationException(
+                    label + " token retains enabled administrator membership");
+            }
 
             int elevationType = GetTokenInteger(token, TokenElevationType, "TokenElevationType");
             if (kind == LaunchTokenKind.LinkedLimited)
@@ -636,9 +662,14 @@ namespace DefenseClaw
                 }
                 return;
             }
-            if (!IsTokenRestricted(token))
+            // LUA_TOKEN can mark administrator groups deny-only without adding
+            // a restricting-SID list, so IsTokenRestricted is not the right
+            // proof. Effective membership above plus the default elevation
+            // type is the standard-user contract for this UAC-disabled path.
+            if (elevationType != TokenElevationTypeDefault)
             {
-                throw new InvalidOperationException(label + " fallback token is not restricted");
+                throw new InvalidOperationException(
+                    label + " fallback token is not TokenElevationTypeDefault");
             }
         }
 
@@ -770,9 +801,13 @@ namespace DefenseClaw
             try
             {
                 token = OpenToken(GetCurrentProcess(), TOKEN_QUERY);
-                if (IsElevated(token)) return false;
-                return GetTokenInteger(token, TokenElevationType, "TokenElevationType") ==
-                    TokenElevationTypeLimited || IsTokenRestricted(token);
+                if (IsElevated(token) || IsAdministrator(token)) return false;
+                int elevationType = GetTokenInteger(
+                    token,
+                    TokenElevationType,
+                    "TokenElevationType");
+                return elevationType == TokenElevationTypeLimited ||
+                    elevationType == TokenElevationTypeDefault;
             }
             finally
             {

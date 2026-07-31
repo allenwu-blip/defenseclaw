@@ -54,6 +54,8 @@ var codexPolicyInspector = inspectCodexEffectivePolicy
 
 var codexSystemRequirementsPathForInspection = codexSystemRequirementsPath
 
+var codexSystemRequirementsFileOpen = os.Open
+
 var codexAppServerCommand = func(ctx context.Context, executable string) *exec.Cmd {
 	return newCodexAppServerCommand(ctx, executable)
 }
@@ -271,7 +273,7 @@ func readBoundedCodexSystemRequirements(path string) ([]byte, bool, error) {
 	if info.Size() > codexPolicyMessageLimit {
 		return nil, false, fmt.Errorf("exceeds %d bytes", codexPolicyMessageLimit)
 	}
-	file, err := os.Open(path)
+	file, err := codexSystemRequirementsFileOpen(path)
 	if err != nil {
 		return nil, false, err
 	}
@@ -280,8 +282,8 @@ func readBoundedCodexSystemRequirements(path string) ([]byte, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if !openedInfo.Mode().IsRegular() || openedInfo.Size() > codexPolicyMessageLimit {
-		return nil, false, fmt.Errorf("requirements source changed type or exceeds %d bytes", codexPolicyMessageLimit)
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(info, openedInfo) || openedInfo.Size() > codexPolicyMessageLimit {
+		return nil, false, fmt.Errorf("requirements source changed identity, type, or exceeds %d bytes", codexPolicyMessageLimit)
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, codexPolicyMessageLimit+1))
 	if err != nil {

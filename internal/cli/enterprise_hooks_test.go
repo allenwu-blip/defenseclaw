@@ -347,6 +347,19 @@ func TestWriteEnterpriseHookGuardianStateRevokesRemovedManifestTarget(t *testing
 }
 
 func TestEnterpriseHookGuardianStateRejectsSparseOversizedInput(t *testing.T) {
+	originalCfg := cfg
+	originalTrust := enterpriseHookGuardianStateFileTrustCheck
+	trustChecked := false
+	cfg = &config.Config{DeploymentMode: "managed_enterprise"}
+	enterpriseHookGuardianStateFileTrustCheck = func(string) error {
+		trustChecked = true
+		return nil
+	}
+	t.Cleanup(func() {
+		cfg = originalCfg
+		enterpriseHookGuardianStateFileTrustCheck = originalTrust
+	})
+
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, hookGuardianStateFile)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o600)
@@ -363,6 +376,9 @@ func TestEnterpriseHookGuardianStateRejectsSparseOversizedInput(t *testing.T) {
 	_, exists, err := loadEnterpriseHookGuardianState(dataDir)
 	if !exists || err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized state exists=%v error=%v, want bounded refusal", exists, err)
+	}
+	if !trustChecked {
+		t.Fatal("guardian state was read before managed trust validation")
 	}
 }
 

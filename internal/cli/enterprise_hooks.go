@@ -79,6 +79,13 @@ var (
 	enterpriseHookAuthorizationFileTrustCheck = func(path string) error {
 		return managed.ValidateTrustedFilePath(path, "hook guardian authorization")
 	}
+	enterpriseHookGuardianStateFileTrustCheck = func(path string) error {
+		return managed.ValidateTrustedServiceRuntimeFilePath(
+			path,
+			"hook guardian state",
+			os.Getenv(managed.WindowsServiceAccountEnv),
+		)
+	}
 	enterpriseHooksRemoveManagedPolicy  = enterprisehooks.RemoveManagedPolicy
 	enterpriseHookScopedTokenMinter     = enterpriseHookScopedToken
 	enterpriseHookScopedOTLPTokenMinter = enterpriseHookScopedOTLPToken
@@ -596,6 +603,11 @@ func loadEnterpriseHookGuardianState(dataDir string) (enterpriseHookGuardianStat
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return enterpriseHookGuardianState{}, true, fmt.Errorf("hook guardian state is not a regular file: %s", path)
+	}
+	if cfg != nil && managed.IsManagedEnterprise(cfg.DeploymentMode) {
+		if err := enterpriseHookGuardianStateFileTrustCheck(path); err != nil {
+			return enterpriseHookGuardianState{}, true, fmt.Errorf("validate hook guardian state %s: %w", path, err)
+		}
 	}
 	data, err := readEnterpriseHookBoundedFile(
 		path,

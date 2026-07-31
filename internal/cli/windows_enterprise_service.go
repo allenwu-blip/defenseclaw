@@ -227,8 +227,9 @@ func runWindowsEnterpriseLifecycle(
 	args := windowsEnterprisePowerShellArgs(action, opts)
 	executable, executableErr := windowsEnterpriseExecutableResolver()
 	if executableErr != nil {
-		if strings.EqualFold(strings.TrimSpace(action), "upgrade") &&
-			strings.TrimSpace(opts.cliBinary) != "" {
+		normalizedAction := strings.ToLower(strings.TrimSpace(action))
+		if normalizedAction == "uninstall" ||
+			(normalizedAction == "upgrade" && strings.TrimSpace(opts.cliBinary) != "") {
 			return failPreflight(fmt.Errorf(
 				"resolve the running Windows enterprise CLI executable: %w",
 				executableErr,

@@ -213,7 +213,7 @@ func installWindowsClaudeManagedResultSecure(ctx context.Context, opts InstallOp
 			return cause
 		}
 		if err := os.MkdirAll(transaction.hookDir, 0o700); err != nil {
-			return fmt.Errorf("enterprise hooks: create per-user hook runtime: %w", err)
+			return fail(fmt.Errorf("enterprise hooks: create per-user hook runtime: %w", err))
 		}
 		if err := connector.WriteHookScriptsForConnectorObjectWithOpts(transaction.hookDir, setup, conn); err != nil {
 			return fail(fmt.Errorf("enterprise hooks: write managed Claude Code hook runtime: %w", err))

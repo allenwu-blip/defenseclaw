@@ -157,7 +157,32 @@ func runWindowsManagedHooksTeardown(
 	if err != nil {
 		return fail(err)
 	}
-	stateRoot := filepath.Dir(filepath.Dir(opts.OwnershipPath))
+	ownershipPath := opts.OwnershipPath
+	installDir := filepath.Dir(ownershipPath)
+	stateRoot := filepath.Dir(installDir)
+	if ownershipPath == "" || !filepath.IsAbs(ownershipPath) ||
+		strings.TrimSpace(ownershipPath) != ownershipPath ||
+		filepath.Clean(ownershipPath) != ownershipPath ||
+		!strings.EqualFold(filepath.Base(ownershipPath), "codex-requirements-ownership.json") ||
+		!strings.EqualFold(filepath.Base(installDir), "install") ||
+		stateRoot == installDir || stateRoot == filepath.Dir(stateRoot) {
+		return fail(errors.New("managed-hook teardown received a noncanonical protected ownership path"))
+	}
+	runtimeDir, err := exactWindowsCodexLayoutEnv("DEFENSECLAW_HOME")
+	if err != nil {
+		return fail(err)
+	}
+	expectedStateRoot := filepath.Dir(runtimeDir)
+	if !strings.EqualFold(filepath.Base(runtimeDir), "runtime") ||
+		!sameWindowsEnterprisePathCLI(stateRoot, expectedStateRoot) {
+		return fail(errors.New("managed-hook teardown ownership path does not match the protected state root"))
+	}
+	if err := managed.ValidateTrustedRuntimeDir(
+		stateRoot,
+		"Windows enterprise managed-hook teardown state root",
+	); err != nil {
+		return fail(err)
+	}
 	report.ManifestPath = filepath.Join(stateRoot, "hook-guardian", "targets.yaml")
 	report.JournalPath = filepath.Join(
 		stateRoot,
@@ -165,11 +190,8 @@ func runWindowsManagedHooksTeardown(
 		windowsManagedHooksTeardownJournalFile,
 	)
 	if !sameWindowsEnterprisePathCLI(
-		report.ManifestPath,
-		filepath.Join(filepath.Dir(filepath.Dir(opts.OwnershipPath)), "hook-guardian", "targets.yaml"),
-	) || !sameWindowsEnterprisePathCLI(
 		report.JournalPath,
-		filepath.Join(filepath.Dir(opts.OwnershipPath), windowsManagedHooksTeardownJournalFile),
+		filepath.Join(installDir, windowsManagedHooksTeardownJournalFile),
 	) {
 		return fail(errors.New("managed-hook teardown derived a noncanonical protected layout"))
 	}

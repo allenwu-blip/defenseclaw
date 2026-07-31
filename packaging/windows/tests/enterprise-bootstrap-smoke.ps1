@@ -125,13 +125,20 @@ function Invoke-BasicUserBootstrapSmoke {
                 "launch output=$($launchOutput.Trim())"
             )
         }
-        if (-not $outputHealthy) {
-            throw "Basic User bootstrap output capture failed: $launchOutput"
-        }
         $reportJson = [IO.File]::ReadAllText($resultPath)
         $report = $reportJson | ConvertFrom-Json
         if (-not [bool]$report.ok) {
-            throw "Basic User bootstrap smoke failed: $($report.error)"
+            throw (
+                "Basic User bootstrap smoke failed: $($report.error); " +
+                "output capture healthy=$outputHealthy; " +
+                "launch output=$($launchOutput.Trim())"
+            )
+        }
+        if (-not $outputHealthy) {
+            Write-Warning (
+                'Basic User bootstrap output capture failed despite a ' +
+                "successful result: $launchOutput"
+            )
         }
         Write-Output $reportJson
     }

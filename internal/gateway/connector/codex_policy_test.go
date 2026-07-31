@@ -161,14 +161,35 @@ func TestInspectUnmanagedCodexSystemRequirementsMissingParentRemainsAbsent(t *te
 	}
 }
 
-func TestInspectManagedCodexSystemRequirementsRejectsUserWritableSourceOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows managed policy trust contract")
+func TestReadBoundedCodexSystemRequirementsRejectsReplacementBeforeOpen(t *testing.T) {
+	originalOpen := codexSystemRequirementsFileOpen
+	t.Cleanup(func() { codexSystemRequirementsFileOpen = originalOpen })
+	dir := t.TempDir()
+	path := filepath.Join(dir, "requirements.toml")
+	replacement := filepath.Join(dir, "replacement.toml")
+	for _, candidate := range []string{path, replacement} {
+		if err := os.WriteFile(candidate, []byte("allow_managed_hooks_only = true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
+	codexSystemRequirementsFileOpen = func(string) (*os.File, error) {
+		return os.Open(replacement)
+	}
+
+	if _, _, err := readBoundedCodexSystemRequirements(path); err == nil ||
+		!strings.Contains(err.Error(), "changed identity") {
+		t.Fatalf("replacement read error = %v, want changed-identity refusal", err)
+	}
+}
+
+func TestInspectManagedCodexSystemRequirementsRejectsUserWritableSource(t *testing.T) {
 	original := codexSystemRequirementsPathForInspection
 	t.Cleanup(func() { codexSystemRequirementsPathForInspection = original })
 	path := filepath.Join(t.TempDir(), "requirements.toml")
 	if err := os.WriteFile(path, []byte("allow_managed_hooks_only = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o666); err != nil {
 		t.Fatal(err)
 	}
 	codexSystemRequirementsPathForInspection = func() (string, error) { return path, nil }
@@ -179,28 +200,31 @@ func TestInspectManagedCodexSystemRequirementsRejectsUserWritableSourceOnWindows
 	}
 }
 
-func TestInspectManagedCodexSystemRequirementsFailsClosedWhenParentMissingOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows managed policy trust contract")
-	}
+func TestInspectManagedCodexSystemRequirementsMissingParentPlatformContract(t *testing.T) {
 	original := codexSystemRequirementsPathForInspection
 	t.Cleanup(func() { codexSystemRequirementsPathForInspection = original })
 	path := filepath.Join(t.TempDir(), "missing", "Codex", "requirements.toml")
 	codexSystemRequirementsPathForInspection = func() (string, error) { return path, nil }
 
-	if _, err := inspectCodexSystemRequirementsForMode(true); err == nil ||
-		!strings.Contains(strings.ToLower(err.Error()), "parent") ||
+	policy, err := inspectCodexSystemRequirementsForMode(true)
+	if runtime.GOOS != "windows" {
+		if err != nil || policy.AllowManagedHooksOnly != nil || policy.Source != path {
+			t.Fatalf("managed missing-parent Unix policy=%+v err=%v, want absent source", policy, err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "parent") ||
 		!strings.Contains(strings.ToLower(err.Error()), "pre-provision") {
-		t.Fatalf("managed missing-parent requirements error = %v", err)
+		t.Fatalf("managed missing-parent Windows requirements error = %v", err)
 	}
 }
 
-func TestInspectManagedCodexPolicyNeverExecutesUserWritableBinaryOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows managed executable trust contract")
-	}
+func TestInspectManagedCodexPolicyNeverExecutesUserWritableBinary(t *testing.T) {
 	executable := filepath.Join(t.TempDir(), "codex.exe")
 	if err := os.WriteFile(executable, []byte("not a trusted binary"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(executable, 0o777); err != nil {
 		t.Fatal(err)
 	}
 	originalCommand := codexAppServerCommand

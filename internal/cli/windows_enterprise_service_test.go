@@ -608,6 +608,7 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 	}
 	for _, test := range []struct {
 		name          string
+		action        string
 		installRoot   string
 		executable    func() (string, error)
 		programFiles  func() (string, error)
@@ -635,6 +636,17 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 			errorContains: "resolve the running Windows enterprise CLI executable",
 		},
 		{
+			name:   "uninstall executable resolution",
+			action: "uninstall",
+			executable: func() (string, error) {
+				return "", errors.New("executable unavailable")
+			},
+			programFiles: func() (string, error) {
+				return `C:\Program Files`, nil
+			},
+			errorContains: "resolve the running Windows enterprise CLI executable",
+		},
+		{
 			name: "default root resolution",
 			executable: func() (string, error) {
 				return `C:\release\defenseclaw.exe`, nil
@@ -646,6 +658,14 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			action := test.action
+			if action == "" {
+				action = "upgrade"
+			}
+			cliBinary := `C:\release\defenseclaw.exe`
+			if action == "uninstall" {
+				cliBinary = ""
+			}
 			runnerCalled := false
 			windowsEnterpriseCommandRunner = func(
 				context.Context,
@@ -664,10 +684,10 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 			err := runWindowsEnterpriseLifecycle(
 				context.Background(),
 				cmd,
-				"upgrade",
+				action,
 				&windowsEnterpriseLifecycleOptions{
 					installRoot: test.installRoot,
-					cliBinary:   `C:\release\defenseclaw.exe`,
+					cliBinary:   cliBinary,
 					jsonOutput:  true,
 				},
 			)
@@ -680,7 +700,7 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 			assertWindowsEnterprisePreflightFailureJSON(
 				t,
 				output.String(),
-				"upgrade",
+				action,
 				test.errorContains,
 			)
 		})

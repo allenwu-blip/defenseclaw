@@ -42,6 +42,9 @@ func TestInstallRejectsInvalidNativeWindowsRequestBeforeSideEffects(t *testing.T
 }
 
 func TestValidateHookContractUsesManagedLockAndRuntimeReaders(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("strict managed runtime artifacts are native Windows-only")
+	}
 	t.Setenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT", "")
 	const oversizedManagedArtifact = int64(4<<20 + 1)
 	conn := connector.NewClaudeCodeConnector()

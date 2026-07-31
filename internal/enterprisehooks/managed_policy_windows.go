@@ -221,6 +221,11 @@ func PublishWindowsClaudeManagedPolicyTargets(rawTargets []string) error {
 				"enterprise hooks: refusing to enroll Claude targets without an existing verified managed policy",
 			)
 		}
+		if state.SchemaVersion != 2 {
+			return errors.New(
+				"enterprise hooks: legacy Claude managed policy state must be repaired before exact-set publication",
+			)
+		}
 		existing := make(map[string]struct{}, len(state.TargetSIDs))
 		for _, sid := range state.TargetSIDs {
 			existing[sid] = struct{}{}
@@ -254,7 +259,6 @@ func PublishWindowsClaudeManagedPolicyTargets(rawTargets []string) error {
 			}
 			return nil
 		}
-		state.SchemaVersion = 2
 		state.TargetSIDs = targets
 		body, err := json.MarshalIndent(state, "", "  ")
 		if err != nil {

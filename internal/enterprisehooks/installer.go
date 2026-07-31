@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -831,10 +832,14 @@ func validateHookContract(mode string, conn connector.Connector, opts connector.
 	if connector.HookContractNeedsActionOverride(resolution) {
 		return fmt.Errorf("enterprise hooks: connector %s agent version %q is not verified against a known hook contract: %s", conn.Name(), opts.AgentVersion, resolution.Reason)
 	}
+	// Native Windows managed runtimes are administrator-published regular
+	// files. Unix guardians intentionally install hardened per-user symlinks,
+	// so keep their established contract reader and digest semantics.
+	strictManagedRuntime := opts.ManagedEnterprise && runtime.GOOS == "windows"
 	previous, err := connector.LoadHookContractLockEntryForMode(
 		opts.DataDir,
 		conn.Name(),
-		opts.ManagedEnterprise,
+		strictManagedRuntime,
 	)
 	if err != nil {
 		return fmt.Errorf("enterprise hooks: load hook contract lock: %w", err)
@@ -844,7 +849,7 @@ func validateHookContract(mode string, conn connector.Connector, opts connector.
 			opts,
 			conn,
 			version.Current().BinaryVersion,
-			opts.ManagedEnterprise,
+			strictManagedRuntime,
 		)
 		if err != nil {
 			return fmt.Errorf("enterprise hooks: hash managed hook runtime: %w", err)
