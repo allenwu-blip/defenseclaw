@@ -365,7 +365,6 @@ func TestUpdateInstalledPathOwnershipRecordsCreatedValue(t *testing.T) {
 func TestWizardChoiceMappings(t *testing.T) {
 	connectors := []wizardChoice{
 		{Label: "Configure later", Value: "none"},
-		{Label: "Google Antigravity", Value: "antigravity"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
@@ -416,7 +415,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "antigravity", "codex", "claudecode", "copilot", "cursor", "hermes", "windsurf", "omnigent", "opencode"} {
+	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot", "cursor", "hermes", "windsurf", "omnigent", "opencode"} {
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode

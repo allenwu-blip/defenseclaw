@@ -77,7 +77,7 @@
     "antigravity": {
       "version_probe": "agy --version",
       "live": false,
-      "notes": "Native Windows x64 implementation and contract checks are present but certification remains pending integrated packaged and official-client validation. Real official-client E2E is manual on a dedicated pre-authenticated Windows runner because Google documents Windows Credential Manager/browser auth, not API-key bootstrap.",
+      "notes": "Native Windows x64 implementation and contract checks are present but certification remains pending integrated packaged and official-client validation. The vendor updater manifest and official release page reported CLI 1.1.9 on 2026-07-31; that is availability metadata only and is not a validation record. The current manual delta confirms only public not_certified gate rejection; no protected-client, authentication, or client-provenance test occurred, and shared readiness remains integration-owned. Enterprise/managed, Team, ProgramData, cloud-dashboard, MDM, and organization-policy surfaces remain out of scope and unverified. Real official-client E2E is manual on a dedicated pre-authenticated Windows runner because Google documents Windows Credential Manager/browser auth, not API-key bootstrap.",
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       }

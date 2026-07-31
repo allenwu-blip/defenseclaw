@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import locale
 import ntpath
@@ -55,7 +56,11 @@ from defenseclaw.connector_paths import (
     omnigent_config_path,
     windsurf_hook_config_path,
 )
-from defenseclaw.file_permissions import atomic_write_private_bytes
+from defenseclaw.file_permissions import (
+    atomic_write_private_bytes,
+    open_regular_file_no_follow,
+    reject_reparse_path,
+)
 
 # Sentinel error returned by ``_version_for_binary`` when a connector
 # binary resolves outside the trusted install prefixes. Callers (e.g.
@@ -73,6 +78,7 @@ CACHE_TTL_SECONDS = 86_400
 CACHE_FILENAME = "agent_discovery.json"
 VERSION_TIMEOUT_SECONDS = 2.0
 PACKAGE_MANAGER_CONFIG_TIMEOUT_SECONDS = 5.0
+_ANTIGRAVITY_BINARY_MAX_BYTES = 256 << 20
 _WINDOWS_LOCAL_APP_DATA_FOLDER_ID = "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
 
 # Canonical install prefixes that we trust enough to exec
@@ -674,6 +680,10 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 # LOCALAPPDATA override, and retain the ACL-chain admission
                 # checks applied to every built-in prefix.
                 os.path.join(codex_local_app_data, "cursor-agent"),
+                # Google's Windows installer writes the Antigravity CLI only
+                # to this token-bound product directory and verifies its
+                # updater-manifest SHA-512 before publication.
+                os.path.join(codex_local_app_data, "agy", "bin"),
             )
         )
     if local_app_data:
@@ -689,8 +699,6 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 # Hermes/uv installs the native uvx.exe launcher here. Keep
                 # the prefix product-specific; never trust all LOCALAPPDATA.
                 os.path.join(local_app_data, "hermes", "bin"),
-                os.path.join(local_app_data, "agy", "bin"),
-                os.path.join(local_app_data, "Programs", "antigravity"),
                 os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"),
                 os.path.join(local_app_data, "Programs", "Devin"),
                 os.path.join(local_app_data, "Programs", "Windsurf"),
@@ -1046,7 +1054,11 @@ def _scan_agent(
             name,
             candidate,
             spec.version_args,
-            require_trusted_binary_paths=require_trusted_binary_paths,
+            require_trusted_binary_paths=(
+                True
+                if name == "antigravity" and _is_windows_host()
+                else require_trusted_binary_paths
+            ),
             data_dir=data_dir,
         )
         if candidate_version and not candidate_error:
@@ -1668,14 +1680,36 @@ def _version_for_agent_binary(
 ) -> tuple[str, str]:
     """Probe a CLI, or read metadata for a GUI that must not be launched."""
 
+    if name == "antigravity" and _is_windows_host():
+        if not _is_canonical_antigravity_windows_binary(binary_path):
+            return "", "binary is not the official token-bound LocalAppData\\agy\\bin\\agy.exe path"
+        if not _is_trusted_binary_path(binary_path, data_dir=data_dir):
+            return "", UNTRUSTED_PREFIX_ERROR
+        try:
+            before_digest = _stable_binary_sha512(binary_path)
+        except OSError as exc:
+            return "", f"official Antigravity CLI digest inspection failed: {exc}"
+        version, error = _version_for_binary(
+            binary_path,
+            version_args,
+            require_trusted_binary_paths=True,
+            data_dir=data_dir,
+        )
+        if error:
+            return version, error
+        try:
+            after_digest = _stable_binary_sha512(binary_path)
+        except OSError as exc:
+            return "", f"official Antigravity CLI digest revalidation failed: {exc}"
+        if before_digest != after_digest:
+            return "", "official Antigravity CLI changed during its version probe"
+        return version, ""
+
     command_name = _binary_command_name(binary_path)
     if (
-        (name == "antigravity" and command_name == "antigravity")
-        or (
-            name == "windsurf"
-            and _is_windows_host()
-            and command_name in {"devin", "devin-desktop", "windsurf"}
-        )
+        name == "windsurf"
+        and _is_windows_host()
+        and command_name in {"devin", "devin-desktop", "windsurf"}
     ):
         return _windows_file_version_for_binary(
             binary_path,
@@ -1683,9 +1717,7 @@ def _version_for_agent_binary(
             # GUI product roots. Always apply Windows canonical-path and ACL
             # admission before trusting metadata from either lane; the global
             # execution-probe opt-in does not weaken this connector boundary.
-            require_trusted_binary_paths=(
-                True if name == "windsurf" else require_trusted_binary_paths
-            ),
+            require_trusted_binary_paths=True,
             data_dir=data_dir,
         )
     return _version_for_binary(
@@ -1694,6 +1726,60 @@ def _version_for_agent_binary(
         require_trusted_binary_paths=require_trusted_binary_paths,
         data_dir=data_dir,
     )
+
+
+def _is_canonical_antigravity_windows_binary(binary_path: str) -> bool:
+    candidate = _path_key(binary_path)
+    return any(
+        candidate == _path_key(os.path.join(root, "agy", "bin", "agy.exe"))
+        for root in _windows_current_user_local_app_data_roots()
+    )
+
+
+def _stable_binary_sha512(binary_path: str) -> str:
+    """Hash one stable no-follow executable and reject oversize/replacement races."""
+
+    fd = open_regular_file_no_follow(binary_path)
+    try:
+        before = os.fstat(fd)
+        if before.st_size > _ANTIGRAVITY_BINARY_MAX_BYTES:
+            raise OSError(
+                f"binary exceeds {_ANTIGRAVITY_BINARY_MAX_BYTES} byte provenance limit"
+            )
+        digest = hashlib.sha512()
+        remaining = _ANTIGRAVITY_BINARY_MAX_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(1 << 20, remaining))
+            if not chunk:
+                break
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if remaining == 0:
+            raise OSError(
+                f"binary exceeds {_ANTIGRAVITY_BINARY_MAX_BYTES} byte provenance limit"
+            )
+        after = os.fstat(fd)
+        if (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise OSError("binary changed while it was hashed")
+        reject_reparse_path(binary_path)
+        named = os.stat(binary_path, follow_symlinks=False)
+        if not os.path.samestat(before, named):
+            raise OSError("binary was replaced while it was hashed")
+        return digest.hexdigest()
+    finally:
+        os.close(fd)
 
 
 def _windows_file_version_for_binary(
@@ -1825,6 +1911,13 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
 
     if not spec.binary_name:
         return ()
+    if name == "antigravity" and _is_windows_host():
+        return tuple(
+            candidate
+            for root in _windows_current_user_local_app_data_roots()
+            for candidate in (os.path.join(root, "agy", "bin", "agy.exe"),)
+            if os.path.isfile(candidate)
+        )
     candidates: list[str] = []
     # Cursor made ``agent`` its primary CLI entrypoint on 2026-01-08 while
     # retaining ``cursor-agent`` as a compatibility alias. The Desktop
@@ -1858,16 +1951,6 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
             # probe, not directory naming, decides whether a candidate works.
             for candidate in sorted(desktop_bin.glob("*/codex.exe")):
                 if candidate.is_file():
-                    candidates.append(os.path.abspath(candidate))
-
-    if name == "antigravity":
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            for candidate in (
-                os.path.join(local_app_data, "agy", "bin", "agy.exe"),
-                os.path.join(local_app_data, "Programs", "antigravity", "Antigravity.exe"),
-            ):
-                if os.path.isfile(candidate):
                     candidates.append(os.path.abspath(candidate))
 
     if name == "windsurf":
@@ -1973,8 +2056,6 @@ def _windows_binary_candidates(connector: str, binary_name: str) -> tuple[str, .
             prefixes.insert(0, os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"))
     elif connector == "windsurf" and local_app_data:
         prefixes.insert(0, os.path.join(local_app_data, "Programs", "Windsurf", "bin"))
-    elif connector == "antigravity" and local_app_data:
-        prefixes.insert(0, os.path.join(local_app_data, "agy", "bin"))
     elif connector == "opencode" and home:
         prefixes.insert(0, os.path.join(home, ".opencode", "bin"))
 

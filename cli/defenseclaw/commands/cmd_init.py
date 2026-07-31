@@ -42,12 +42,16 @@ from defenseclaw.paths import (
     bundled_rego_dir,
     bundled_splunk_bridge_dir,
 )
+from defenseclaw.process_liveness import _process_image_path_windows
 from defenseclaw.safety import DotenvValueError, sanitize_dotenv_value
 
 _stdout_is_tty = terminal_checkbox.stdout_is_tty
 _supports_terminal_redraw = terminal_checkbox.supports_terminal_redraw
 _checkbox_key_name = terminal_checkbox.checkbox_key_name
 _render_checkbox_menu = terminal_checkbox.render_checkbox_menu
+_INTERNAL_SETUP_CONNECTOR_ENV = "DEFENSECLAW_INTERNAL_SETUP_CONNECTOR"
+_INTERNAL_SETUP_PARENT_ENV = "DEFENSECLAW_INTERNAL_SETUP_PARENT"
+_WINDOWS_SETUP_EXECUTABLE = "DefenseClawSetup-x64.exe"
 
 
 @click.command("init")
@@ -66,7 +70,6 @@ _render_checkbox_menu = terminal_checkbox.render_checkbox_menu
 @click.option("--yes", "-y", is_flag=True, help="Assume defaults/yes for first-run prompts.")
 @click.option("--rescan-agents", is_flag=True, help="Refresh cached local agent discovery before choosing a connector.")
 @click.option("--native-setup-copilot", is_flag=True, hidden=True)
-@click.option("--native-setup-antigravity", is_flag=True, hidden=True)
 @click.option(
     "--connector",
     type=click.Choice(
@@ -189,7 +192,6 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
     yes: bool,
     rescan_agents: bool,
     native_setup_copilot: bool,
-    native_setup_antigravity: bool,
     connector: str | None,
     profile: str | None,
     observe_all: bool,
@@ -247,28 +249,21 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
         start_gateway=start_gateway,
         verify=verify,
     )
-    installer_antigravity = (
-        native_setup_antigravity
-        and _native_setup_antigravity_invocation_allowed(
-            connector=connector,
-            requested_connectors=requested_connectors,
-            skip_install=skip_install,
-            non_interactive=non_interactive,
-            yes=yes,
-            sandbox=sandbox,
-            observe_all=observe_all,
-            action_connectors=action_connectors,
-            start_gateway=start_gateway,
-            verify=verify,
-        )
+    installer_antigravity = _native_setup_antigravity_invocation_allowed(
+        connector=connector,
+        requested_connectors=requested_connectors,
+        skip_install=skip_install,
+        non_interactive=non_interactive,
+        yes=yes,
+        sandbox=sandbox,
+        observe_all=observe_all,
+        action_connectors=action_connectors,
+        start_gateway=start_gateway,
+        verify=verify,
     )
     if native_setup_copilot and not installer_copilot:
         raise click.ClickException(
             "--native-setup-copilot is reserved for the exact non-interactive native Windows Setup invocation"
-        )
-    if native_setup_antigravity and not installer_antigravity:
-        raise click.ClickException(
-            "--native-setup-antigravity is reserved for the exact non-interactive native Windows Setup invocation"
         )
     for requested in requested_connectors:
         if requested == "none":
@@ -1883,10 +1878,11 @@ def _native_setup_antigravity_invocation_allowed(
     start_gateway: bool | None,
     verify: bool | None,
 ) -> bool:
-    """Recognize only Setup's narrow pre-certification Antigravity bootstrap."""
+    """Recognize only Setup's parent-bound pre-certification bootstrap."""
 
     return (
         platform_support.host_os() == "windows"
+        and _internal_antigravity_setup_parent_matches()
         and _normalize_connector_arg(connector) == "antigravity"
         and requested_connectors == ["antigravity"]
         and skip_install
@@ -1898,6 +1894,25 @@ def _native_setup_antigravity_invocation_allowed(
         and start_gateway is False
         and verify is False
     )
+
+
+def _internal_antigravity_setup_parent_matches() -> bool:
+    """Bind the internal bootstrap to the actual packaged Setup parent process."""
+
+    if os.environ.get(_INTERNAL_SETUP_CONNECTOR_ENV, "").strip().lower() != "antigravity":
+        return False
+    expected = os.environ.get(_INTERNAL_SETUP_PARENT_ENV, "").strip()
+    if not expected or not os.path.isabs(expected):
+        return False
+    if os.path.basename(expected).casefold() != _WINDOWS_SETUP_EXECUTABLE.casefold():
+        return False
+    try:
+        actual = _process_image_path_windows(os.getppid())
+    except OSError:
+        return False
+    if not actual:
+        return False
+    return os.path.normcase(os.path.abspath(actual)) == os.path.normcase(os.path.abspath(expected))
 
 
 def _render_first_run_report(report, renderer) -> None:

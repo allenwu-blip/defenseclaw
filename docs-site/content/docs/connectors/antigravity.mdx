@@ -13,9 +13,12 @@ model provider directly, while its documented lifecycle hooks send local events
 to the authenticated DefenseClaw gateway. DefenseClaw does not proxy
 Antigravity model traffic.
 
-Google currently publishes Antigravity 2.0 v2.4.3 and CLI v1.1.8 (July 28,
-2026). The [official install page](https://antigravity.google/docs/cli/install)
-says the CLI runs natively on Windows, macOS, and Linux. The
+Google currently publishes Antigravity 2.0 v2.4.3. Its updater manifest and
+[official CLI releases](https://github.com/google-antigravity/antigravity-cli/releases)
+publish CLI v1.1.9 (July 31, 2026). This is vendor availability metadata, not
+DefenseClaw validation or certification. The
+[official install page](https://antigravity.google/docs/cli/install) says the
+CLI runs natively on Windows, macOS, and Linux. The
 [download page](https://antigravity.google/download) provides native Windows
 x64 and ARM64 clients; DefenseClaw's native Windows x64 implementation remains
 behind the not-certified platform gate pending packaged and official-client validation. Windows 10
@@ -33,7 +36,16 @@ Google installs `agy.exe` under
 `%LOCALAPPDATA%\agy\bin` (normally
 `C:\Users\<Username>\AppData\Local\agy\bin`). Authentication uses Windows
 Credential Manager for secure token profiles, with browser authentication as
-the fallback.
+the fallback. The vendor installer verifies the manifest-provided SHA-512.
+DefenseClaw discovery accepts only the token-bound Known Folder form of this
+canonical path, applies its trusted ACL boundary, and checks a stable no-follow
+SHA-512 across the version probe. It does not claim a vendor signer pin or
+certification.
+
+The current manual delta confirms only that public Setup rejects Antigravity as
+`not_certified`. No protected-client, authentication, or client-provenance test
+occurred, so it contributes no certification evidence. Shared readiness remains
+integration-owned.
 
 The native Setup/bootstrap lifecycle and manual validation harness implement
 this connector for integration testing. The ordinary `defenseclaw setup`
@@ -153,8 +165,12 @@ Claude Code fields such as `systemMessage`, `additionalContext`, and
 - connector-scoped gateway authentication and runtime freshness;
 - stale, malformed, foreign, missing, or inconsistent registrations.
 
-Doctor never executes command text read from `hooks.json`. Use
-`defenseclaw doctor --fix` or rerun Setup to reconcile drift.
+Doctor never executes command text read from `hooks.json`. Because this preview
+remains `not_certified`, public `defenseclaw setup antigravity` and
+`defenseclaw doctor --fix` do not repair it. For an existing recorded packaged
+installation, run the cached DefenseClaw Setup `/repair` action without a
+`CONNECTOR` override; that already-supported maintenance path reloads the
+recorded connector and reconciles its native registration.
 
 Teardown restores the pre-Setup file when it is unchanged. If an operator
 edited it, teardown removes only DefenseClaw-owned current and legacy commands,
@@ -179,7 +195,10 @@ Windows and hook transitions: v1.0.8 corrected the shared
 `~/.gemini/config/hooks.json` path; v1.0.10 selected PowerShell as the Windows
 default shell; v1.0.15 fixed Windows output behavior; v1.1.1 fixed workspace
 hook loading; v1.1.7 fixed disabled plugins still running hooks; and v1.1.8 is
-the current CLI release.
+the compatibility floor for the five-event contract. The current v1.1.9
+updater/release metadata does not document a replacement hook schema, so
+DefenseClaw does not infer one from the version delta and does not promote the
+connector beyond `not_certified` / `live: false`.
 
 ## Local customization surfaces
 
@@ -193,6 +212,14 @@ the current CLI release.
         <File name="SKILL.md" />
       </Folder>
     </Folder>
+    <Folder name="plugins">
+      <Folder name="<plugin>">
+        <Folder name="rules" />
+      </Folder>
+    </Folder>
+  </Folder>
+  <Folder name="~/.gemini">
+    <File name="GEMINI.md" />
   </Folder>
   <Folder name="<workspace>/.agents">
     <File name="hooks.json" />
@@ -200,10 +227,19 @@ the current CLI release.
     <Folder name="agents" />
     <Folder name="skills" />
     <Folder name="plugins" />
+    <Folder name="rules" />
+  </Folder>
+  <Folder name="<workspace>/.agent">
+    <Folder name="rules" />
   </Folder>
 </Files>
 
 DefenseClaw writes hooks only to the global file to avoid duplicated global and
 workspace evaluation. MCP and AgentSkills retain their documented global and
 workspace behavior; rules plus standalone and plugin-contained agents remain
-discovery-only as listed in the connector matrix.
+discovery-only as listed in the connector matrix. Rule inventory reads bounded,
+stable bytes without following links or reparse points from global `GEMINI.md`,
+current `.agents/rules`, legacy `.agent/rules`, and plugin `rules/*.md` sources.
+
+Enterprise/managed, Team, ProgramData, cloud-dashboard, MDM, and organization
+policy surfaces are outside this connector preview and remain unverified.

@@ -462,8 +462,14 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("not_certified", result.output)
 
-    def test_native_setup_antigravity_bootstrap_seeds_canonical_config(self):
-        with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
+    def test_internal_antigravity_bootstrap_seeds_canonical_config(self):
+        with patch(
+            "defenseclaw.commands.cmd_init.platform_support.host_os",
+            return_value="windows",
+        ), patch(
+            "defenseclaw.commands.cmd_init._internal_antigravity_setup_parent_matches",
+            return_value=True,
+        ):
             result = self._invoke([
                 "--non-interactive",
                 "--yes",
@@ -474,7 +480,6 @@ class TestInitFirstRunBackend(unittest.TestCase):
                 "--skip-install",
                 "--no-start-gateway",
                 "--no-verify",
-                "--native-setup-antigravity",
                 "--json-summary",
             ])
 
@@ -488,16 +493,44 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.assertEqual(cfg["claw"]["mode"], "antigravity")
         self.assertEqual(cfg["guardrail"]["connector"], "antigravity")
 
-    def test_native_setup_antigravity_escape_hatch_rejects_non_setup_shape(self):
+    def test_removed_antigravity_bootstrap_flag_is_rejected_even_with_setup_shape(self):
         with patch("defenseclaw.commands.cmd_init.platform_support.host_os", return_value="windows"):
             result = self._invoke([
+                "--non-interactive",
+                "--yes",
                 "--connector",
                 "antigravity",
+                "--profile",
+                "observe",
+                "--skip-install",
+                "--no-start-gateway",
+                "--no-verify",
                 "--native-setup-antigravity",
             ])
 
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("reserved for the exact non-interactive native Windows Setup invocation", result.output)
+        self.assertIn("No such option", result.output)
+        self.assertIn("--native-setup-antigravity", result.output)
+
+    def test_internal_antigravity_bootstrap_requires_actual_setup_parent(self):
+        from defenseclaw.commands import cmd_init
+
+        expected = os.path.join(self.tmp_dir, "DefenseClawSetup-x64.exe")
+        environment = {
+            cmd_init._INTERNAL_SETUP_CONNECTOR_ENV: "antigravity",
+            cmd_init._INTERNAL_SETUP_PARENT_ENV: expected,
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "defenseclaw.commands.cmd_init._process_image_path_windows",
+            return_value=expected,
+        ):
+            self.assertTrue(cmd_init._internal_antigravity_setup_parent_matches())
+
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "defenseclaw.commands.cmd_init._process_image_path_windows",
+            return_value=os.path.join(self.tmp_dir, "powershell.exe"),
+        ):
+            self.assertFalse(cmd_init._internal_antigravity_setup_parent_matches())
 
     def test_sandbox_flag_reports_explicit_scope(self):
         with patch("defenseclaw.platform_support.host_os", return_value="linux"):

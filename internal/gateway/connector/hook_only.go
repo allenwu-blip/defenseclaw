@@ -788,10 +788,10 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:     true,
-			Scope:         "workspace,user",
+			Scope:         "workspace,user,plugin",
 			ReadPaths:     antigravityRuleReadPaths(opts),
 			DiscoveryOnly: true,
-			Notes:         []string{"Antigravity rules are discovery-only; DefenseClaw does not write rules until activation metadata and file naming are documented."},
+			Notes:         []string{"Antigravity global GEMINI.md, current .agents/rules, legacy .agent/rules, and plugin rules are bounded no-follow discovery-only sources. DefenseClaw does not write rules."},
 		}
 		caps.Plugins = SurfaceCapability{
 			Supported:      true,
@@ -2105,10 +2105,11 @@ func antigravitySkillWritePaths(opts SetupOpts) []string {
 }
 
 func antigravityRuleReadPaths(opts SetupOpts) []string {
-	return uniqueNonEmptyStrings([]string{
+	return uniqueNonEmptyStrings(append([]string{
 		homePath(".gemini", "GEMINI.md"),
 		antigravityWorkspacePath(opts, ".agents", "rules"),
-	})
+		antigravityWorkspacePath(opts, ".agent", "rules"),
+	}, antigravityPluginPaths(opts)...))
 }
 
 func antigravityPluginPaths(opts SetupOpts) []string {

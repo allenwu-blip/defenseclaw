@@ -61,6 +61,8 @@ const (
 	nativeConnectorStateLimit  = int64(64 << 10)
 	nativeConfigRosterLimit    = int64(4 << 20)
 	maxRunCommandUTF16Units    = 260
+	internalSetupConnectorEnv  = "DEFENSECLAW_INTERNAL_SETUP_CONNECTOR"
+	internalSetupParentEnv     = "DEFENSECLAW_INTERNAL_SETUP_PARENT"
 )
 
 var (
@@ -1786,9 +1788,20 @@ func validateMachineVersion(output []byte, expectedName, expectedVersion, expect
 
 func runInitialConfigurationWithEnv(root, dataRoot string, opts options, env []string) error {
 	args := initialConfigurationArgs(opts)
+	setupExecutable := ""
+	if opts.Connector == "antigravity" {
+		var err error
+		setupExecutable, err = os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve internal Setup parent: %w", err)
+		}
+		if !strings.EqualFold(filepath.Base(setupExecutable), setupArtifactName) {
+			return fmt.Errorf("internal Antigravity bootstrap requires %s parent", setupArtifactName)
+		}
+	}
 	output, err := runCapturedSetupCommand(
 		setupConfigurationTimeout,
-		env,
+		initialConfigurationEnv(env, opts.Connector, setupExecutable),
 		filepath.Join(root, "bin", "defenseclaw.exe"),
 		args...,
 	)
@@ -1837,11 +1850,31 @@ func initialConfigurationArgs(opts options) []string {
 		// not_certified platform classification.
 		args = append(args, "--native-setup-copilot")
 	case "antigravity":
-		// Antigravity remains publicly not_certified. Native Setup alone may
-		// seed canonical state before the home-bound maintenance reconcile.
-		args = append(args, "--native-setup-antigravity")
+		// Antigravity remains publicly not_certified. Native Setup binds the
+		// verified parent executable through the child environment instead of
+		// exposing a CLI flag that an operator could reproduce manually.
 	}
 	return args
+}
+
+func initialConfigurationEnv(input []string, connector, setupExecutable string) []string {
+	filtered := make([]string, 0, len(input)+2)
+	for _, entry := range input {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && (strings.EqualFold(name, internalSetupConnectorEnv) ||
+			strings.EqualFold(name, internalSetupParentEnv)) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	if connector != "antigravity" || setupExecutable == "" {
+		return filtered
+	}
+	return append(
+		filtered,
+		internalSetupConnectorEnv+"=antigravity",
+		internalSetupParentEnv+"="+setupExecutable,
+	)
 }
 
 func runCanonicalInitializationWithEnv(root, dataRoot string, env []string) error {
@@ -2630,6 +2663,10 @@ func parseArgs(args []string) (options, error) {
 	if !validConnector(opts.Connector) {
 		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
 	}
+	if opts.ConnectorSet && opts.Connector == "antigravity" &&
+		(opts.Action == "install" || opts.Action == "repair" || opts.Action == "upgrade") {
+		return opts, errors.New("Antigravity is not_certified and cannot be selected by public Setup; repair or upgrade an existing recorded installation without a CONNECTOR override")
+	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
 	}
@@ -2691,7 +2728,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=antigravity|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

@@ -64,6 +64,10 @@ from defenseclaw.safety import is_symlink
 # surface; consumers can distinguish it from the seven-category v3 schema.
 INVENTORY_VERSION = 4
 
+_ANTIGRAVITY_RULE_FILE_MAX_BYTES = 1 << 20
+_ANTIGRAVITY_RULE_DIRECTORY_MAX_ENTRIES = 4096
+_ANTIGRAVITY_RULE_INVENTORY_MAX_FILES = 16_384
+
 ALL_CATEGORIES: frozenset[str] = frozenset(
     ["skills", "plugins", "mcp", "agents", "rules", "tools", "models", "memory"]
 )
@@ -1801,6 +1805,8 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     """Enumerate documented local rule/instruction files without evaluating them."""
     normalized = connector_paths.normalize(connector)
+    if normalized == "antigravity":
+        return _antigravity_rules(cfg)
     if normalized == "copilot":
         return _copilot_instruction_rules(_connector_workspace_dir(cfg))
     if normalized == "cursor":
@@ -2270,6 +2276,69 @@ def _copilot_instruction_imports(payload: bytes, parent: str, *, limit: int) -> 
         if len(out) >= limit:
             break
     return out
+
+
+def _antigravity_rules(cfg: Config) -> list[dict[str, Any]]:
+    """Inventory bounded, stable Antigravity rule bytes from documented roots."""
+
+    workspace = _connector_workspace_dir(cfg)
+    rows: list[dict[str, Any]] = []
+
+    def add_file(path: str, *, scope: str, kind: str, rule_id: str | None = None) -> None:
+        if len(rows) >= _ANTIGRAVITY_RULE_INVENTORY_MAX_FILES:
+            return
+        try:
+            payload = connector_paths._read_bounded_stable_file(
+                path,
+                max_bytes=_ANTIGRAVITY_RULE_FILE_MAX_BYTES,
+            )
+        except OSError:
+            return
+        filename = os.path.basename(path)
+        rows.append(
+            {
+                "id": rule_id or os.path.splitext(filename)[0],
+                "name": filename,
+                "source": os.path.abspath(path),
+                "kind": kind,
+                "scope": scope,
+                "trust_required": scope in {"project", "plugin"},
+                "size_bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+
+    add_file(
+        os.path.join(os.path.expanduser("~"), ".gemini", "GEMINI.md"),
+        scope="user",
+        kind="instruction-rule",
+        rule_id="GEMINI",
+    )
+
+    if workspace:
+        for rules_dir, kind in (
+            (os.path.join(workspace, ".agents", "rules"), "instruction-rule"),
+            (os.path.join(workspace, ".agent", "rules"), "legacy-instruction-rule"),
+        ):
+            for entry in _safe_bounded_directory_entries(rules_dir) or ():
+                if entry.lower().endswith(".md"):
+                    add_file(os.path.join(rules_dir, entry), scope="project", kind=kind)
+
+    for plugin_dir in connector_paths.plugin_dirs("antigravity", workspace_dir=workspace):
+        for plugin_name in _safe_bounded_directory_entries(plugin_dir) or ():
+            plugin_root = os.path.join(plugin_dir, plugin_name)
+            rules_dir = os.path.join(plugin_root, "rules")
+            for entry in _safe_bounded_directory_entries(rules_dir) or ():
+                if not entry.lower().endswith(".md"):
+                    continue
+                add_file(
+                    os.path.join(rules_dir, entry),
+                    scope="plugin",
+                    kind="plugin-rule",
+                    rule_id=f"{plugin_name}:{os.path.splitext(entry)[0]}",
+                )
+
+    return rows
 
 
 def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
@@ -2853,6 +2922,33 @@ def _safe_codex_directory_entries(path: str) -> list[str] | None:
         if not stat.S_ISDIR(after.st_mode) or not os.path.samestat(before, after):
             return None
         return entries
+    except OSError:
+        return None
+
+
+def _safe_bounded_directory_entries(
+    path: str,
+    *,
+    max_entries: int = _ANTIGRAVITY_RULE_DIRECTORY_MAX_ENTRIES,
+) -> list[str] | None:
+    """List one stable real directory, refusing rather than truncating overflow."""
+
+    try:
+        connector_paths.reject_reparse_path(path)
+        before = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(before.st_mode):
+            return None
+        entries: list[str] = []
+        with os.scandir(path) as iterator:
+            for entry in iterator:
+                entries.append(entry.name)
+                if len(entries) > max_entries:
+                    return None
+        connector_paths.reject_reparse_path(path)
+        after = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISDIR(after.st_mode) or not os.path.samestat(before, after):
+            return None
+        return sorted(entries, key=str.casefold)
     except OSError:
         return None
 

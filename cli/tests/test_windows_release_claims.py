@@ -261,6 +261,17 @@ def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
     setup_source = (
         ROOT / "cli/defenseclaw/commands/cmd_setup.py"
     ).read_text(encoding="utf-8")
+    research_contract = (
+        ROOT / "docs/development/antigravity-mcp-contract.md"
+    ).read_text(encoding="utf-8")
+    compatibility = (
+        ROOT / "docs-site/content/docs/connectors/compatibility.mdx"
+    ).read_text(encoding="utf-8")
+    validated = json.loads(
+        (ROOT / "cli/defenseclaw/inventory/validated_versions.json").read_text(
+            encoding="utf-8"
+        )
+    )["connectors"]["antigravity"]
     matrix = json.loads(
         (ROOT / "docs-site/data/capability-matrix.json").read_text(encoding="utf-8")
     )
@@ -277,6 +288,17 @@ def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
     assert "<workspace>/.agents/hooks.json" in config_reference
     assert "only hard-blocking claim for the connector" in connector_page_text
     assert "does not document non-zero hook exit status as enforcement" in connector_page_text
+    assert "CLI v1.1.9" in connector_page
+    assert "CLI v1.1.9" in research_contract
+    assert "`>=1.1.8`" in compatibility
+    assert "currently publish `1.1.9`" in compatibility
+    assert validated["live"] is False
+    assert validated["os"]["windows"]["last_validated_version"] == ""
+    assert "availability metadata only" in validated["notes"]
+    assert "only public not_certified gate rejection" in validated["notes"]
+    assert "no protected-client, authentication, or client-provenance test occurred" in validated["notes"]
+    assert "shared readiness remains integration-owned" in validated["notes"]
+    assert "remain out of scope and unverified" in validated["notes"]
 
     combined = "\n".join((connector_index, connector_page, config_reference, setup_source))
     assert "Claude-Code-compatible" not in combined

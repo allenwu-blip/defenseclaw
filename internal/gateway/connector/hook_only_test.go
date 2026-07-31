@@ -600,6 +600,22 @@ func TestAntigravityConnector_CapabilityContract(t *testing.T) {
 	if !caps.Rules.Supported || !caps.Rules.DiscoveryOnly || len(caps.Rules.WritePaths) != 0 {
 		t.Fatalf("Antigravity rules should be discovery-only with no write paths: %+v", caps.Rules)
 	}
+	if caps.Rules.Scope != "workspace,user,plugin" {
+		t.Fatalf("Antigravity rule scope = %q, want workspace,user,plugin", caps.Rules.Scope)
+	}
+	for _, want := range []string{
+		filepath.Join(home, ".gemini", "GEMINI.md"),
+		filepath.Join(workspace, ".agents", "rules"),
+		filepath.Join(workspace, ".agent", "rules"),
+		filepath.Join(home, ".gemini", "config", "plugins"),
+		filepath.Join(home, ".gemini", "antigravity-cli", "plugins"),
+		filepath.Join(workspace, ".agents", "plugins"),
+		filepath.Join(workspace, "_agents", "plugins"),
+	} {
+		if !stringInSlice(caps.Rules.ReadPaths, want) {
+			t.Fatalf("Antigravity rule read paths missing %q: %v", want, caps.Rules.ReadPaths)
+		}
+	}
 	if !caps.Plugins.Supported || caps.Plugins.DiscoveryOnly || !caps.Plugins.RequiresOptIn {
 		t.Fatalf("Antigravity plugins should expose explicit opt-in install support: %+v", caps.Plugins)
 	}

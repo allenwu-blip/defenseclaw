@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -374,17 +375,93 @@ func TestCopilotInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
 	}
 }
 
-func TestAntigravityInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
+func TestAntigravityInitializationHasNoPublicBootstrapFlag(t *testing.T) {
 	args := initialConfigurationArgs(options{Connector: "antigravity", Mode: "action"})
 	want := []string{
 		"init", "--skip-install", "--non-interactive", "--yes",
 		"--connector", "antigravity",
 		"--profile", "action",
 		"--no-start-gateway", "--no-verify",
-		"--native-setup-antigravity",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("Antigravity initialization args = %v, want %v", args, want)
+	}
+}
+
+func TestAntigravityInitializationEnvironmentBindsVerifiedSetupParent(t *testing.T) {
+	setupPath := filepath.Join(`C:\Program Files\DefenseClaw`, setupArtifactName)
+	env := initialConfigurationEnv(
+		[]string{
+			"SAFE_SETTING=kept",
+			internalSetupConnectorEnv + "=attacker-value",
+			internalSetupParentEnv + `=C:\attacker.exe`,
+		},
+		"antigravity",
+		setupPath,
+	)
+	if got := envValue(env, "SAFE_SETTING"); got != "kept" {
+		t.Fatalf("safe environment value = %q, want kept", got)
+	}
+	if got := envValue(env, internalSetupConnectorEnv); got != "antigravity" {
+		t.Fatalf("internal connector binding = %q, want antigravity", got)
+	}
+	if got := envValue(env, internalSetupParentEnv); got != setupPath {
+		t.Fatalf("internal parent binding = %q, want %q", got, setupPath)
+	}
+
+	publicEnv := initialConfigurationEnv(env, "none", "")
+	if got := envValue(publicEnv, internalSetupConnectorEnv); got != "" {
+		t.Fatalf("public initialization retained internal connector binding %q", got)
+	}
+	if got := envValue(publicEnv, internalSetupParentEnv); got != "" {
+		t.Fatalf("public initialization retained internal parent binding %q", got)
+	}
+}
+
+func TestParseArgsRejectsPublicAntigravitySetupSelection(t *testing.T) {
+	for _, args := range [][]string{
+		{"/quiet", "CONNECTOR=antigravity"},
+		{"/repair", "/quiet", "CONNECTOR=antigravity"},
+		{"/upgrade", "/quiet", "CONNECTOR=antigravity"},
+	} {
+		if _, err := parseArgs(args); err == nil || !strings.Contains(err.Error(), "not_certified") {
+			t.Fatalf("parseArgs(%q) error = %v, want not_certified public Setup refusal", args, err)
+		}
+	}
+}
+
+func TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride(t *testing.T) {
+	for _, action := range []string{"/repair", "/upgrade"} {
+		opts, err := parseArgs([]string{action, "/quiet"})
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", action, err)
+		}
+		if opts.ConnectorSet || opts.Connector != "none" {
+			t.Fatalf("parseArgs(%q) introduced connector authority: %+v", action, opts)
+		}
+	}
+}
+
+func TestPrintUsageDoesNotAdvertisePublicAntigravitySelection(t *testing.T) {
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readEnd.Close()
+	previous := os.Stdout
+	os.Stdout = writeEnd
+	defer func() { os.Stdout = previous }()
+
+	printUsage()
+	if err := writeEnd.Close(); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(readEnd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "CONNECTOR=antigravity") {
+		t.Fatalf("public Setup usage still advertises Antigravity selection: %s", payload)
 	}
 }
 

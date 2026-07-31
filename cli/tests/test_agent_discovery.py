@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -94,6 +95,54 @@ def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(
     assert calls == [
         (r"C:\Users\tester\AppData\Local\Programs\Devin\Devin.exe", True),
     ]
+
+
+def test_antigravity_windows_version_probe_requires_canonical_stable_digest(monkeypatch) -> None:
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(ad, "_is_canonical_antigravity_windows_binary", lambda _path: True)
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda *_args, **_kwargs: True)
+    digests = iter(("a" * 128, "a" * 128))
+    monkeypatch.setattr(ad, "_stable_binary_sha512", lambda _path: next(digests))
+
+    def version_probe(path, args, **kwargs):
+        assert path == r"C:\Users\tester\AppData\Local\agy\bin\agy.exe"
+        assert args == ("--version",)
+        assert kwargs["require_trusted_binary_paths"] is True
+        return "1.1.9", ""
+
+    monkeypatch.setattr(ad, "_version_for_binary", version_probe)
+
+    result = ad._version_for_agent_binary(
+        "antigravity",
+        r"C:\Users\tester\AppData\Local\agy\bin\agy.exe",
+        ("--version",),
+        require_trusted_binary_paths=False,
+    )
+
+    assert result == ("1.1.9", "")
+
+    changed = iter(("a" * 128, "b" * 128))
+    monkeypatch.setattr(ad, "_stable_binary_sha512", lambda _path: next(changed))
+    version, error = ad._version_for_agent_binary(
+        "antigravity",
+        r"C:\Users\tester\AppData\Local\agy\bin\agy.exe",
+        ("--version",),
+        require_trusted_binary_paths=False,
+    )
+    assert version == ""
+    assert "changed during its version probe" in error
+
+
+def test_antigravity_binary_digest_is_bounded_and_matches_stable_bytes(monkeypatch, tmp_path) -> None:
+    binary = tmp_path / "agy.exe"
+    payload = b"stable official cli bytes"
+    binary.write_bytes(payload)
+
+    assert ad._stable_binary_sha512(str(binary)) == hashlib.sha512(payload).hexdigest()
+
+    monkeypatch.setattr(ad, "_ANTIGRAVITY_BINARY_MAX_BYTES", len(payload) - 1)
+    with pytest.raises(OSError, match="provenance limit"):
+        ad._stable_binary_sha512(str(binary))
 
 
 def test_omnigent_version_probe_uses_bounded_slow_start_timeout(monkeypatch) -> None:
@@ -634,20 +683,21 @@ def test_antigravity_windows_cli_fallback_is_detected(
     agy.parent.mkdir(parents=True)
     agy.write_bytes(b"test executable")
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
-    monkeypatch.setattr(
-        ad,
-        "_version_for_agent_binary",
-        lambda name, path, _args, **_kwargs: (
-            ("1.0.13", "") if name == "antigravity" and path == str(agy) else ("", "bad")
-        ),
-    )
+    probes: list[tuple[str, str, bool]] = []
+
+    def version_probe(name, path, _args, **kwargs):
+        probes.append((name, path, kwargs["require_trusted_binary_paths"]))
+        return ("1.1.9", "") if name == "antigravity" and path == str(agy) else ("", "bad")
+
+    monkeypatch.setattr(ad, "_version_for_agent_binary", version_probe)
 
     signal = ad._scan_agent("antigravity")
 
     assert signal.installed is True
     assert signal.binary_path == str(agy)
     assert signal.config_path == ""
-    assert signal.version == "1.0.13"
+    assert signal.version == "1.1.9"
+    assert probes == [("antigravity", str(agy), True)]
 
 
 def test_antigravity_config_evidence_ignores_undocumented_home_overrides(monkeypatch, tmp_path):
@@ -670,7 +720,7 @@ def test_antigravity_config_evidence_ignores_undocumented_home_overrides(monkeyp
     assert signal.config_path == str(hooks)
 
 
-def test_antigravity_gui_fallback_reads_metadata_without_launch(
+def test_antigravity_windows_discovery_rejects_path_and_gui_fallbacks(
     monkeypatch,
     tmp_path,
     windows_host_no_path,
@@ -680,31 +730,47 @@ def test_antigravity_gui_fallback_reads_metadata_without_launch(
     gui = local_app_data / "Programs" / "antigravity" / "Antigravity.exe"
     gui.parent.mkdir(parents=True)
     gui.write_bytes(b"test executable")
+    path_decoy = tmp_path / "path" / "agy.exe"
+    path_decoy.parent.mkdir(parents=True)
+    path_decoy.write_bytes(b"path decoy")
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
-    monkeypatch.setattr(ad, "_windows_file_version_for_binary", lambda path, **_kwargs: ("2.2.1", ""))
+    monkeypatch.setattr(ad, "_which", lambda _name: str(path_decoy))
     monkeypatch.setattr(
-        ad.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("GUI executable was launched")),
+        ad,
+        "_version_for_agent_binary",
+        lambda *_args, **_kwargs: pytest.fail("non-canonical Antigravity binary was probed"),
     )
 
     signal = ad._scan_agent("antigravity")
 
-    assert signal.installed is True
-    assert signal.binary_path == str(gui)
+    assert signal.installed is False
+    assert signal.binary_path == ""
     assert signal.config_path == ""
-    assert signal.version == "2.2.1"
+    assert signal.version == ""
 
 
 def test_antigravity_windows_roots_are_narrow_trusted_prefixes(monkeypatch, tmp_path):
-    local_app_data = tmp_path / "local-app-data"
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    token_local_app_data = tmp_path / "token-local-app-data"
+    ambient_local_app_data = tmp_path / "ambient-local-app-data"
+    monkeypatch.setenv("LOCALAPPDATA", str(ambient_local_app_data))
+    monkeypatch.setattr(
+        ad,
+        "_windows_current_user_local_app_data_roots",
+        lambda: (str(token_local_app_data),),
+    )
 
     prefixes = {ad._path_key(path) for path in ad._windows_default_trusted_bin_prefixes()}
 
-    assert ad._path_key(str(local_app_data / "agy" / "bin")) in prefixes
-    assert ad._path_key(str(local_app_data / "Programs" / "antigravity")) in prefixes
-    assert ad._path_key(str(local_app_data)) not in prefixes
+    assert ad._path_key(str(token_local_app_data / "agy" / "bin")) in prefixes
+    assert ad._path_key(str(ambient_local_app_data / "agy" / "bin")) not in prefixes
+    assert ad._path_key(str(ambient_local_app_data / "Programs" / "antigravity")) not in prefixes
+    assert ad._path_key(str(token_local_app_data)) not in prefixes
+    assert ad._is_canonical_antigravity_windows_binary(
+        str(token_local_app_data / "agy" / "bin" / "agy.exe")
+    )
+    assert not ad._is_canonical_antigravity_windows_binary(
+        str(ambient_local_app_data / "agy" / "bin" / "agy.exe")
+    )
 
 
 def test_codex_desktop_runtime_is_a_narrow_trusted_prefix(monkeypatch, tmp_path):

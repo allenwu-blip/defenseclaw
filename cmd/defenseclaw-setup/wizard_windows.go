@@ -210,7 +210,6 @@ type wizardChoice struct {
 var (
 	wizardConnectorChoices = []wizardChoice{
 		{Label: "Configure later", Value: "none"},
-		{Label: "Google Antigravity", Value: "antigravity"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},

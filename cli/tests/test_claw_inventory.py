@@ -3171,6 +3171,61 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertIn("triage", {row["id"] for row in inv["tools"]})
         self.assertNotIn("antigravity:tools", {e["command"] for e in inv["errors"]})
 
+    def test_antigravity_rules_are_bounded_no_follow_across_documented_sources(self):
+        cfg = _make_cfg_for_connector(self.tmp, "antigravity")
+        home = self.tmp
+        cfg.claw.workspace_dir = os.path.join(self.tmp, "workspace")
+        workspace = cfg.connector_workspace_dir()
+        plugin_rule = os.path.join(
+            home,
+            ".gemini",
+            "config",
+            "plugins",
+            "review-bundle",
+            "rules",
+            "plugin.md",
+        )
+        sources = {
+            os.path.join(home, ".gemini", "GEMINI.md"): "global",
+            os.path.join(workspace, ".agents", "rules", "current.md"): "current",
+            os.path.join(workspace, ".agent", "rules", "legacy.md"): "legacy",
+            plugin_rule: "plugin",
+        }
+        for path, payload in sources.items():
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+
+        oversized = os.path.join(workspace, ".agents", "rules", "oversized.md")
+        with open(oversized, "wb") as handle:
+            handle.truncate(1 + (1 << 20))
+        outside = os.path.join(self.tmp, "outside-rule.md")
+        with open(outside, "w", encoding="utf-8") as handle:
+            handle.write("outside")
+        linked = os.path.join(workspace, ".agents", "rules", "linked.md")
+        try:
+            os.symlink(outside, linked)
+        except OSError:
+            linked = ""
+
+        with patch.dict(
+            os.environ,
+            {"HOME": home, "USERPROFILE": home},
+            clear=False,
+        ):
+            inv = build_claw_aibom(cfg, live=True)
+
+        rows = {os.path.normcase(row["source"]): row for row in inv["rules"]}
+        self.assertEqual(set(rows), {os.path.normcase(path) for path in sources})
+        self.assertNotIn(os.path.normcase(oversized), rows)
+        if linked:
+            self.assertNotIn(os.path.normcase(linked), rows)
+        for path, payload in sources.items():
+            row = rows[os.path.normcase(path)]
+            self.assertEqual(row["size_bytes"], len(payload))
+            self.assertRegex(row["sha256"], r"^[0-9a-f]{64}$")
+        self.assertEqual(rows[os.path.normcase(plugin_rule)]["scope"], "plugin")
+
     def test_codex_expected_limitations_are_not_errors(self):
         cfg = _make_cfg_for_connector(self.tmp, "codex")
         with self._patch_skill_dirs([]), \
