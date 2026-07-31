@@ -232,8 +232,8 @@ def test_antigravity_product_alias_is_canonical_and_visible() -> None:
     with patch("defenseclaw.platform_support.host_os", return_value="darwin"):
         result = CliRunner().invoke(setup_group, ["--help"], terminal_width=240)
     assert result.exit_code == 0, result.output
-    assert "agy" in result.output
-    assert "Antigravity: preview on darwin" in result.output
+    assert re.search(r"(?m)^  agy\s+.*Antigravity", result.output)
+    assert re.search(r"(?m)^  antigravity\s+.*Antigravity", result.output)
 
 
 def test_supported_connectors_preserves_order_and_available_windows_scope() -> None:

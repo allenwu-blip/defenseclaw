@@ -330,7 +330,7 @@ class TestClaudeAutoMemory:
             workspace_dir=str(tmp_path),
         )
         windsurf = connector_paths.skill_dirs("windsurf", workspace_dir=str(tmp_path))
-        if sys.platform == "darwin":
+        if sys.platform != "win32":
             assert os.path.join(str(tmp_path), ".windsurf", "skills") in windsurf
             assert os.path.join(str(tmp_path), ".agents", "skills") in windsurf
             assert os.path.join(str(tmp_path / "home"), ".codeium", "windsurf", "skills") in windsurf
