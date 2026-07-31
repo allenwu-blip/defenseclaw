@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/defenseclaw/defenseclaw/internal/hookruntime"
 )
 
 func TestConnectorLifecycleConfigHomeSelectsExactNativeBinding(t *testing.T) {
@@ -78,6 +80,39 @@ func TestConnectorLifecycleCommandArgsBindsConfigHomeExplicitly(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("connector lifecycle args = %q, want %q", args, want)
+	}
+}
+
+func TestHermesLifecycleCommandArgsBindStableHookRuntimeExplicitly(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "data")
+	hermesHome := filepath.Join(root, "hermes")
+	stableHook := filepath.Join(root, "HookRuntime", hookruntime.LauncherName)
+	previous := currentUserHookRuntimePaths
+	currentUserHookRuntimePaths = func() (hookruntime.Paths, error) {
+		return hookruntime.Paths{Launcher: stableHook}, nil
+	}
+	t.Cleanup(func() { currentUserHookRuntimePaths = previous })
+
+	args, err := connectorLifecycleCommandArgs(
+		dataRoot,
+		"hermes",
+		"teardown",
+		[]string{"HERMES_HOME=" + hermesHome},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"connector", "teardown",
+		"--connector", "hermes",
+		"--data-dir", dataRoot,
+		"--config-home", hermesHome,
+		"--hook-executable", stableHook,
+		"--json",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("Hermes lifecycle args = %q, want %q", args, want)
 	}
 }
 

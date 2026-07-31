@@ -33,6 +33,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -623,6 +624,89 @@ func TestWindowsHermesDirectHookCommandQuotesAndRejectsUnsafePaths(t *testing.T)
 		if got := windowsHermesDirectHookCommand(invalid); got != "" {
 			t.Errorf("unsafe Hermes path %q produced command %q", invalid, got)
 		}
+	}
+}
+
+func TestHermesDirectNativeHookOwnershipIsExact(t *testing.T) {
+	const owned = `C:\Program Files\DefenseClaw\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, owned)
+
+	exact := windowsHermesDirectHookCommand(owned)
+	if !isNativeHookCommand(exact) {
+		t.Fatalf("exact Hermes direct command was not recognized as owned: %q", exact)
+	}
+
+	for name, command := range map[string]string{
+		"bare PATH executable":      `defenseclaw-hook.exe hook --connector hermes`,
+		"unquoted absolute path":    `C:/Program Files/DefenseClaw/defenseclaw-hook.exe hook --connector hermes`,
+		"single-quoted path":        `'C:/Program Files/DefenseClaw/defenseclaw-hook.exe' hook --connector hermes`,
+		"backslash serialization":   `"C:\Program Files\DefenseClaw\defenseclaw-hook.exe" hook --connector hermes`,
+		"PowerShell call operator":  `& "C:/Program Files/DefenseClaw/defenseclaw-hook.exe" hook --connector hermes`,
+		"foreign matching basename": `"C:/Other Product/defenseclaw-hook.exe" hook --connector hermes`,
+		"extra argument":            `"C:/Program Files/DefenseClaw/defenseclaw-hook.exe" hook --connector hermes --verbose`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if isNativeHookCommand(command) {
+				t.Errorf("non-exact Hermes command was recognized as owned: %q", command)
+			}
+		})
+	}
+}
+
+func TestHermesMaintenanceCommandPreservesStableLauncherAcrossQuarantine(t *testing.T) {
+	const temporary = `C:\Users\Kevin\AppData\Local\Temp\DefenseClaw-maintenance\defenseclaw-hook.exe`
+	const stable = `C:\Users\Kevin\AppData\Local\DefenseClaw\HookRuntime\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, temporary)
+
+	conn := NewHermesConnector()
+	opts := SetupOpts{
+		DataDir:        t.TempDir(),
+		HookExecutable: stable,
+	}
+	command := conn.hookCommandForOS("windows", opts)
+	want := `"C:/Users/Kevin/AppData/Local/DefenseClaw/HookRuntime/defenseclaw-hook.exe" hook --connector hermes`
+	if command != want {
+		t.Fatalf("maintenance Hermes command = %q, want stable command %q", command, want)
+	}
+	if isNativeHookCommand(command) {
+		t.Fatal("temporary process identity unexpectedly claimed the separately bound stable command")
+	}
+
+	configPath := filepath.Join(testenv.PrivateTempDir(t), "config.yaml")
+	if err := patchHermesHooks(configPath, command, stable); err != nil {
+		t.Fatal(err)
+	}
+	config, err := readYAMLObject(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, ok := config["hooks"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Hermes maintenance registration has no hooks map: %#v", config)
+	}
+	entries, ok := hooks["pre_tool_call"].([]interface{})
+	if !ok || len(entries) != 1 {
+		t.Fatalf("Hermes maintenance pre_tool_call entries = %#v", hooks["pre_tool_call"])
+	}
+	entry, ok := entries[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Hermes maintenance pre_tool_call entry = %#v", entries[0])
+	}
+	if got, _ := entry["command"].(string); got != command {
+		t.Fatalf("Hermes maintenance registration command = %q, want exact %q", got, command)
+	} else if strings.Contains(got, "& ") || strings.Contains(strings.ToLower(got), "powershell") ||
+		strings.Contains(strings.ToLower(got), "bash") || strings.Contains(got, ".ps1") {
+		t.Fatalf("Hermes maintenance registration introduced a shell wrapper: %q", got)
+	}
+	if err := removeHermesHooks(configPath, command, nil); err != nil {
+		t.Fatal(err)
+	}
+	cleaned, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(cleaned, []byte(command)) {
+		t.Fatalf("Hermes teardown did not remove the exact stable command:\n%s", cleaned)
 	}
 }
 

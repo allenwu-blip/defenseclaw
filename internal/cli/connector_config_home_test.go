@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
+	"github.com/defenseclaw/defenseclaw/internal/hookruntime"
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
@@ -130,7 +131,16 @@ func TestBindHermesLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testing.T
 	bound := filepath.Join(root, "bound-hermes")
 	t.Setenv("HERMES_HOME", ambient)
 	connectorFlagConfigHome = bound
-	t.Cleanup(func() { connectorFlagConfigHome = "" })
+	connectorFlagHookExe = filepath.Join(root, "HookRuntime", "defenseclaw-hook.exe")
+	previousPaths := connectorHookRuntimePaths
+	connectorHookRuntimePaths = func() (hookruntime.Paths, error) {
+		return hookruntime.Paths{Launcher: connectorFlagHookExe}, nil
+	}
+	t.Cleanup(func() {
+		connectorFlagConfigHome = ""
+		connectorFlagHookExe = ""
+		connectorHookRuntimePaths = previousPaths
+	})
 
 	restore, err := bindConnectorLifecycleConfigHome("hermes")
 	if err != nil {
@@ -142,6 +152,43 @@ func TestBindHermesLifecycleConfigHomeOverridesAmbientAndRestoresIt(t *testing.T
 	restore()
 	if got := os.Getenv("HERMES_HOME"); got != ambient {
 		t.Fatalf("restored HERMES_HOME = %q, want %q", got, ambient)
+	}
+}
+
+func TestHermesLifecycleHookExecutableBindingRequiresExactNativePath(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "hermes")
+	valid := filepath.Join(root, "HookRuntime", "defenseclaw-hook.exe")
+	previousPaths := connectorHookRuntimePaths
+	connectorHookRuntimePaths = func() (hookruntime.Paths, error) {
+		return hookruntime.Paths{Launcher: valid}, nil
+	}
+	t.Cleanup(func() { connectorHookRuntimePaths = previousPaths })
+	for name, executable := range map[string]string{
+		"missing":        "",
+		"relative":       filepath.Join("HookRuntime", "defenseclaw-hook.exe"),
+		"wrong basename": filepath.Join(root, "HookRuntime", "defenseclaw-gateway.exe"),
+		"foreign path":   filepath.Join(root, "OtherRuntime", "defenseclaw-hook.exe"),
+		"quoted":         `"` + valid + `"`,
+		"newline":        valid + "\nother.exe",
+	} {
+		t.Run(name, func(t *testing.T) {
+			connectorFlagHookExe = executable
+			t.Cleanup(func() { connectorFlagHookExe = "" })
+			if err := validateConnectorLifecycleHookExecutable("hermes", home); err == nil {
+				t.Fatalf("unsafe Hermes maintenance hook executable %q was accepted", executable)
+			}
+		})
+	}
+
+	connectorFlagHookExe = valid
+	t.Cleanup(func() { connectorFlagHookExe = "" })
+	if err := validateConnectorLifecycleHookExecutable("hermes", home); err != nil {
+		t.Fatalf("valid Hermes maintenance hook executable rejected: %v", err)
+	}
+	opts := resolveConnectorOpts(filepath.Join(root, "data"))
+	if opts.HookExecutable != valid {
+		t.Fatalf("resolved HookExecutable = %q, want exact %q", opts.HookExecutable, valid)
 	}
 }
 
@@ -299,6 +346,13 @@ func TestConnectorConfigHomeFlagIsMaintenanceOnly(t *testing.T) {
 	flag := connectorCmd.PersistentFlags().Lookup("config-home")
 	if flag == nil || !flag.Hidden {
 		t.Fatal("config-home flag must remain hidden from the operator surface")
+	}
+}
+
+func TestConnectorHookExecutableFlagIsMaintenanceOnly(t *testing.T) {
+	flag := connectorCmd.PersistentFlags().Lookup("hook-executable")
+	if flag == nil || !flag.Hidden {
+		t.Fatal("hook-executable flag must remain hidden from the operator surface")
 	}
 }
 

@@ -339,6 +339,9 @@ func (sp spec) decide(opts Options, body []byte) int {
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return failResponse(opts, sp, normalizeFailMode(opts.FailMode), "invalid JSON response")
 	}
+	if sp.connector == "hermes" {
+		return decideHermes(opts, sp, fields)
+	}
 
 	action, ok := rawString(fields, "action")
 	if !ok || (action != "allow" && action != "block" && action != "confirm") {
@@ -421,6 +424,71 @@ func (sp spec) decide(opts Options, body []byte) int {
 	default:
 		return 0
 	}
+}
+
+func decideHermes(opts Options, sp spec, fields map[string]json.RawMessage) int {
+	action, ok := rawString(fields, "action")
+	if !ok {
+		return failResponse(opts, sp, "open", "invalid or missing action in Hermes gateway response")
+	}
+	rawOutput, present := fields[sp.outputField]
+	if !present || strings.TrimSpace(string(rawOutput)) == "null" {
+		return 0
+	}
+	var output map[string]json.RawMessage
+	if err := json.Unmarshal(rawOutput, &output); err != nil || output == nil {
+		return failResponse(opts, sp, "open", "invalid Hermes hook_output object")
+	}
+
+	valid := false
+	switch strings.ToLower(strings.TrimSpace(opts.Event)) {
+	case "pre_tool_call":
+		valid = action == "block" && (validHermesBlockOutput(output, "decision", "reason") ||
+			validHermesBlockOutput(output, "action", "message"))
+	case "pre_llm_call":
+		valid = (action == "allow" || action == "alert") &&
+			exactJSONKeys(output, "context") &&
+			nonEmptyJSONString(output, "context")
+	case "pre_verify":
+		outputAction, outputActionOK := rawString(output, "action")
+		valid = action == "continue" &&
+			exactJSONKeys(output, "action", "message") &&
+			outputActionOK && outputAction == "continue" &&
+			nonEmptyJSONString(output, "message")
+	}
+	if !valid {
+		return failResponse(opts, sp, "open", "unsupported or contradictory Hermes gateway response")
+	}
+	fmt.Fprintln(opts.Stdout, compactField(fields, sp.outputField))
+	return 0
+}
+
+func validHermesBlockOutput(output map[string]json.RawMessage, decisionKey, reasonKey string) bool {
+	decision, ok := rawString(output, decisionKey)
+	return exactJSONKeys(output, decisionKey, reasonKey) &&
+		ok && decision == "block" &&
+		nonEmptyJSONString(output, reasonKey)
+}
+
+func nonEmptyJSONString(fields map[string]json.RawMessage, key string) bool {
+	raw, ok := fields[key]
+	if !ok {
+		return false
+	}
+	var value string
+	return json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value) != ""
+}
+
+func exactJSONKeys(fields map[string]json.RawMessage, keys ...string) bool {
+	if len(fields) != len(keys) {
+		return false
+	}
+	for _, key := range keys {
+		if _, ok := fields[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // handleMissingToken mirrors defenseclaw_handle_missing_token: log the bypass,
@@ -605,11 +673,20 @@ func resolveHookEvent(explicit string, payload []byte) string {
 	}
 	var envelope struct {
 		HookEventName string `json:"hook_event_name"`
+		Event         string `json:"event"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(envelope.HookEventName)
+	hookEventName := strings.TrimSpace(envelope.HookEventName)
+	event := strings.TrimSpace(envelope.Event)
+	if hookEventName != "" && event != "" && !strings.EqualFold(hookEventName, event) {
+		return ""
+	}
+	if hookEventName != "" {
+		return hookEventName
+	}
+	return event
 }
 
 func hookRequestTimeout(connector, event string) time.Duration {

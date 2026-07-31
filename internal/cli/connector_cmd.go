@@ -28,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
+	"github.com/defenseclaw/defenseclaw/internal/hookruntime"
 	"github.com/defenseclaw/defenseclaw/internal/managed"
 	"github.com/defenseclaw/defenseclaw/internal/version"
 )
@@ -70,12 +71,14 @@ var (
 	connectorFlagJSON       bool
 	connectorFlagDataDir    string
 	connectorFlagConfigHome string
+	connectorFlagHookExe    string
 )
 
 // connectorExit is the indirection used in place of os.Exit so tests can
 // observe the exit code without terminating the test binary. Production
 // code paths leave this at the default (real os.Exit).
 var connectorExit = os.Exit
+var connectorHookRuntimePaths = hookruntime.CurrentUserPaths
 
 var connectorTeardownCmd = &cobra.Command{
 	Use:   "teardown",
@@ -155,6 +158,9 @@ func init() {
 	connectorCmd.PersistentFlags().StringVar(&connectorFlagConfigHome, "config-home", "",
 		"Bind native connector maintenance to an installer-validated configuration home")
 	_ = connectorCmd.PersistentFlags().MarkHidden("config-home")
+	connectorCmd.PersistentFlags().StringVar(&connectorFlagHookExe, "hook-executable", "",
+		"Bind native connector maintenance to an installer-validated hook launcher")
+	_ = connectorCmd.PersistentFlags().MarkHidden("hook-executable")
 
 	connectorCmd.AddCommand(connectorTeardownCmd)
 	connectorCmd.AddCommand(connectorVerifyCmd)
@@ -210,6 +216,9 @@ func resolveConnectorDataDir() string {
 func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 	home := connectorFlagConfigHome
 	if home == "" {
+		if err := validateConnectorLifecycleHookExecutable(connectorName, home); err != nil {
+			return nil, err
+		}
 		return func() {}, nil
 	}
 	if strings.TrimSpace(home) != home || strings.ContainsAny(home, "\x00\r\n") ||
@@ -218,6 +227,9 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 	}
 	if err := validateConnectorLifecycleConfigHomePath(home); err != nil {
 		return nil, fmt.Errorf("config home path is unsafe: %w", err)
+	}
+	if err := validateConnectorLifecycleHookExecutable(connectorName, home); err != nil {
+		return nil, err
 	}
 
 	variable := ""
@@ -260,6 +272,38 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 	}, nil
 }
 
+func validateConnectorLifecycleHookExecutable(connectorName, configHome string) error {
+	executable := connectorFlagHookExe
+	if executable == "" {
+		if connectorName == "hermes" && configHome != "" {
+			return fmt.Errorf("Hermes maintenance hook executable is empty")
+		}
+		return nil
+	}
+	if connectorName != "hermes" {
+		return fmt.Errorf("explicit hook executable is unsupported for connector %q", connectorName)
+	}
+	if configHome == "" {
+		return fmt.Errorf("explicit Hermes hook executable requires an installer-bound config home")
+	}
+	if strings.TrimSpace(executable) != executable ||
+		strings.ContainsAny(executable, "\"\x00\r\n") ||
+		!filepath.IsAbs(executable) ||
+		filepath.Clean(executable) != executable ||
+		!strings.EqualFold(filepath.Base(executable), "defenseclaw-hook.exe") {
+		return fmt.Errorf("Hermes maintenance hook executable is not an absolute normalized DefenseClaw launcher path")
+	}
+	paths, err := connectorHookRuntimePaths()
+	if err != nil {
+		return fmt.Errorf("resolve canonical Hermes hook executable: %w", err)
+	}
+	canonical := strings.TrimSpace(paths.Launcher)
+	if canonical == "" || executable != canonical {
+		return fmt.Errorf("Hermes maintenance hook executable is not the exact canonical stable HookRuntime launcher")
+	}
+	return nil
+}
+
 // newConnectorRegistryWithPlugins mirrors the sidecar startup path
 // (NewGuardrailProxy / APIServer.Run) by registering both the
 // built-in connectors AND any plugin connectors discovered under the
@@ -297,9 +341,10 @@ func newConnectorRegistryWithPlugins() *connector.Registry {
 // them mirrors what the sidecar would pass at boot.
 func resolveConnectorOpts(dataDir string) connector.SetupOpts {
 	opts := connector.SetupOpts{
-		DataDir:     dataDir,
-		ConfigHome:  connectorFlagConfigHome,
-		Interactive: false,
+		DataDir:        dataDir,
+		ConfigHome:     connectorFlagConfigHome,
+		HookExecutable: connectorFlagHookExe,
+		Interactive:    false,
 	}
 	if cfg == nil {
 		return opts

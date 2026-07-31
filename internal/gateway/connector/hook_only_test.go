@@ -17,6 +17,7 @@
 package connector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,7 @@ import (
 	"testing"
 
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
+	"gopkg.in/yaml.v3"
 )
 
 func TestHookOnlyConnector_CapabilityMatrix(t *testing.T) {
@@ -512,7 +514,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 // silently skips un-accepted hooks there). Teardown must heal a
 // previously-missing config back to absent.
 func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
 	prev := HermesConfigPathOverride
 	HermesConfigPathOverride = cfgPath
@@ -522,6 +524,12 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
+	}
+	if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")); err != nil {
+		t.Fatalf("canonical Hermes config.yaml backup was not captured: %v", err)
+	}
+	if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config")); !os.IsNotExist(err) {
+		t.Fatalf("legacy Hermes config backup was created: %v", err)
 	}
 
 	cfg, err := readYAMLObject(cfgPath)
@@ -569,7 +577,7 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 // and (2) Teardown heals a pre-existing config back to its pristine
 // bytes, preserving the user's hook and prior auto-accept choice.
 func TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -605,6 +613,228 @@ func TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig(t *testing.T)
 	}
 	if string(got) != pristine {
 		t.Fatalf("teardown did not heal config to pristine bytes\n got: %q\nwant: %q", string(got), pristine)
+	}
+}
+
+func TestHermesTeardownMigratesLegacyBackupAndRestoresExactBytes(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configHome := filepath.Join(root, "custom-hermes-home")
+	configPath := filepath.Join(configHome, "config.yaml")
+	pristine := []byte("hooks_auto_accept: false\r\noperator_setting: keep-exact\r\n")
+	if err := os.MkdirAll(configHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, pristine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+
+	conn := NewHermesConnector()
+	opts := SetupOpts{
+		DataDir:  filepath.Join(root, ".defenseclaw"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-test",
+	}
+	if err := captureManagedFileBackup(opts.DataDir, "hermes", "config", configPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchHermesHooks(configPath, conn.hookCommand(opts), opts.HookExecutable); err != nil {
+		t.Fatal(err)
+	}
+	if err := updateManagedFileBackupPostHash(opts.DataDir, "hermes", "config", configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(pristine) {
+		t.Fatalf("restored config.yaml bytes changed:\n got %q\nwant %q", got, pristine)
+	}
+	for _, logicalName := range []string{"config", "config.yaml"} {
+		if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", logicalName)); !os.IsNotExist(err) {
+			t.Fatalf("%s backup survived exact restoration: %v", logicalName, err)
+		}
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean: %v", err)
+	}
+}
+
+func TestHermesTeardownSurgicalCleanupRestoresAutoAcceptFromPristineCustody(t *testing.T) {
+	for _, test := range []struct {
+		name                string
+		pristine            string
+		userAutoAccept      interface{}
+		wantAutoAccept      interface{}
+		wantAutoAcceptFound bool
+	}{
+		{
+			name: "false",
+			pristine: "hooks_auto_accept: false\noperator_setting: keep\nhooks:\n" +
+				"  pre_tool_call:\n    - command: foreign-before-setup\n",
+			wantAutoAccept:      false,
+			wantAutoAcceptFound: true,
+		},
+		{
+			name: "absent",
+			pristine: "operator_setting: keep\nhooks:\n" +
+				"  pre_tool_call:\n    - command: foreign-before-setup\n",
+		},
+		{
+			name: "post-setup user edit survives",
+			pristine: "operator_setting: keep\nhooks:\n" +
+				"  pre_tool_call:\n    - command: foreign-before-setup\n",
+			userAutoAccept:      false,
+			wantAutoAccept:      false,
+			wantAutoAcceptFound: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := testenv.PrivateTempDir(t)
+			configPath := filepath.Join(root, "hermes", "config.yaml")
+			if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, []byte(test.pristine), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			previous := HermesConfigPathOverride
+			HermesConfigPathOverride = configPath
+			t.Cleanup(func() { HermesConfigPathOverride = previous })
+
+			conn := NewHermesConnector()
+			opts := SetupOpts{
+				DataDir:  filepath.Join(root, ".defenseclaw"),
+				APIAddr:  "127.0.0.1:18970",
+				APIToken: "tok-test",
+			}
+			if err := conn.Setup(context.Background(), opts); err != nil {
+				t.Fatalf("Setup: %v", err)
+			}
+
+			drifted, err := readYAMLObject(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			drifted["operator_edit"] = "after-setup"
+			if test.userAutoAccept != nil {
+				drifted["hooks_auto_accept"] = test.userAutoAccept
+			}
+			hooks := drifted["hooks"].(map[string]interface{})
+			hooks["pre_tool_call"] = append(
+				hooks["pre_tool_call"].([]interface{}),
+				map[string]interface{}{"command": "foreign-after-setup"},
+			)
+			driftedBytes, err := yaml.Marshal(drifted)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, driftedBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := conn.Teardown(context.Background(), opts); err != nil {
+				t.Fatalf("Teardown: %v", err)
+			}
+			cleaned, err := readYAMLObject(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotAutoAccept, gotAutoAcceptFound := cleaned["hooks_auto_accept"]
+			if gotAutoAcceptFound != test.wantAutoAcceptFound ||
+				(gotAutoAcceptFound && gotAutoAccept != test.wantAutoAccept) {
+				t.Fatalf(
+					"hooks_auto_accept = %#v, present=%t; want %#v, present=%t",
+					gotAutoAccept,
+					gotAutoAcceptFound,
+					test.wantAutoAccept,
+					test.wantAutoAcceptFound,
+				)
+			}
+			if cleaned["operator_setting"] != "keep" || cleaned["operator_edit"] != "after-setup" {
+				t.Fatalf("operator edits were not preserved: %#v", cleaned)
+			}
+			cleanedBytes, err := yaml.Marshal(cleaned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, foreign := range []string{"foreign-before-setup", "foreign-after-setup"} {
+				if !bytes.Contains(cleanedBytes, []byte(foreign)) {
+					t.Errorf("foreign hook %q was not preserved:\n%s", foreign, cleanedBytes)
+				}
+			}
+			if bytes.Contains(cleanedBytes, []byte(conn.hookCommand(opts))) {
+				t.Fatalf("DefenseClaw hook survived surgical cleanup:\n%s", cleanedBytes)
+			}
+			if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")); !os.IsNotExist(err) {
+				t.Fatalf("canonical backup survived surgical cleanup: %v", err)
+			}
+		})
+	}
+}
+
+func TestHermesTeardownRejectsTamperedPristineCustodyBeforeSurgicalCleanup(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("hooks_auto_accept: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+
+	conn := NewHermesConnector()
+	opts := SetupOpts{
+		DataDir:  filepath.Join(root, ".defenseclaw"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-test",
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	config, err := readYAMLObject(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config["operator_edit"] = "force-surgical-path"
+	drifted, err := yaml.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, drifted, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	backupPath := managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")
+	backup, err := loadManagedFileBackupPath(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backup.PristineBytes = []byte("hooks_auto_accept: true\n")
+	if err := writeManagedFileBackup(backupPath, backup); err != nil {
+		t.Fatal(err)
+	}
+
+	err = conn.Teardown(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "pristine custody hash") {
+		t.Fatalf("Teardown error = %v, want pristine custody hash rejection", err)
+	}
+	got, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(drifted) {
+		t.Fatalf("config changed after rejecting tampered custody:\n got %q\nwant %q", got, drifted)
 	}
 }
 

@@ -64,8 +64,9 @@ const (
 )
 
 var (
-	errInstalledProcessRunning = errors.New("an installed DefenseClaw process is still running")
-	errSetupCancelled          = errors.New("setup cancelled by user")
+	errInstalledProcessRunning  = errors.New("an installed DefenseClaw process is still running")
+	errSetupCancelled           = errors.New("setup cancelled by user")
+	currentUserHookRuntimePaths = hookruntime.CurrentUserPaths
 )
 
 func checkSetupContext(ctx context.Context) error {
@@ -1215,13 +1216,27 @@ func connectorLifecycleCommandArgs(dataRoot, connectorName, action string, env [
 	if err != nil {
 		return nil, err
 	}
-	return []string{
+	args := []string{
 		"connector", action,
 		"--connector", connectorName,
 		"--data-dir", dataRoot,
 		"--config-home", configHome,
-		"--json",
-	}, nil
+	}
+	if connectorName == "hermes" {
+		paths, err := currentUserHookRuntimePaths()
+		if err != nil {
+			return nil, fmt.Errorf("resolve stable Hermes hook launcher: %w", err)
+		}
+		hookExecutable := strings.TrimSpace(paths.Launcher)
+		if hookExecutable == "" ||
+			!filepath.IsAbs(hookExecutable) ||
+			filepath.Clean(hookExecutable) != hookExecutable ||
+			!strings.EqualFold(filepath.Base(hookExecutable), hookruntime.LauncherName) {
+			return nil, errors.New("stable Hermes hook launcher is not an absolute normalized DefenseClaw launcher path")
+		}
+		args = append(args, "--hook-executable", hookExecutable)
+	}
+	return append(args, "--json"), nil
 }
 
 func connectorLifecycleConfigHome(env []string, connectorName string) (string, error) {

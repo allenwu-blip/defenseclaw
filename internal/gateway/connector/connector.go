@@ -137,11 +137,12 @@ type SetupOpts struct {
 	// which client Setup validates.
 	AgentExecutable string
 
-	// HookExecutable pins the administrator-owned native hook launcher used by
-	// managed policy deployment. Ordinary per-user setup leaves this empty and
-	// resolves the packaged launcher through the installed-state contract.
-	// Enterprise installers must supply an absolute, independently trusted path
-	// so a privileged policy write never captures the caller's PATH or profile.
+	// HookExecutable pins an independently trusted native hook launcher.
+	// Managed policy deployment supplies its administrator-owned launcher.
+	// Native Windows Setup also supplies the stable HookRuntime launcher during
+	// maintenance so a quarantined/temporary gateway can reproduce the exact
+	// Hermes command originally registered. Ordinary per-user setup leaves this
+	// empty and resolves the packaged launcher through installed-state.
 	HookExecutable string
 
 	// ClaudeSettingsOverride is the exact file path or inline JSON supplied to

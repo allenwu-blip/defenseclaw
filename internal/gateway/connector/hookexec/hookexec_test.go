@@ -378,17 +378,17 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:  0,
 		},
 		{
-			name:       "hermes valid decision block echoes json exit 0",
+			name:       "hermes block without resolved event fails open",
 			connector:  "hermes",
 			respBody:   `{"action":"block","hook_output":{"decision":"block","reason":"no"}}`,
-			wantStdout: `{"decision":"block","reason":"no"}` + "\n",
+			wantStderr: "unsupported or contradictory",
 			wantCode:   0,
 		},
 		{
-			name:       "hermes valid pre llm context echoes json exit 0",
+			name:       "hermes context without resolved event fails open",
 			connector:  "hermes",
 			respBody:   `{"action":"alert","hook_output":{"context":"DefenseClaw policy context"}}`,
-			wantStdout: `{"context":"DefenseClaw policy context"}` + "\n",
+			wantStderr: "unsupported or contradictory",
 			wantCode:   0,
 		},
 		{
@@ -428,7 +428,6 @@ func TestDecisionGolden(t *testing.T) {
 }
 
 func TestHermesJSONStdinAndValidOutputShapes(t *testing.T) {
-	input := `{"event":"pre_tool_call","session_id":"hermes-session","extra":{"tool_name":"terminal","tool_input":{"command":"Get-ChildItem \"C:\\Program Files\""}}}`
 	for _, tc := range []struct {
 		name       string
 		event      string
@@ -450,14 +449,18 @@ func TestHermesJSONStdinAndValidOutputShapes(t *testing.T) {
 		{
 			name:       "bounded verification continue",
 			event:      "pre_verify",
-			response:   `{"action":"block","hook_output":{"action":"continue","message":"run focused verification"}}`,
+			response:   `{"action":"continue","hook_output":{"action":"continue","message":"run focused verification"}}`,
 			wantStdout: `{"action":"continue","message":"run focused verification"}` + "\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(
+				`{"event":%q,"session_id":"hermes-session","extra":{"tool_name":"terminal","tool_input":{"command":"Get-ChildItem \"C:\\Program Files\""}}}`,
+				tc.event,
+			)
 			rt := ok(tc.response)
 			result := run(t, "hermes", rt, func(opts *Options) {
-				opts.Event = tc.event
+				opts.Event = ""
 				opts.Stdin = strings.NewReader(input)
 			})
 			if result.code != 0 || result.stdout != tc.wantStdout || result.stderr != "" {
@@ -472,6 +475,68 @@ func TestHermesJSONStdinAndValidOutputShapes(t *testing.T) {
 			}
 			if got := string(rt.gotBody); got != input {
 				t.Fatalf("Hermes %s JSON stdin = %q, want %q", tc.event, got, input)
+			}
+		})
+	}
+}
+
+func TestHermesMalformedOrMismatchedGatewayOutputFailsOpen(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		event    string
+		response string
+	}{
+		{
+			name:     "missing top-level action",
+			event:    "pre_tool_call",
+			response: `{"hook_output":{"decision":"block","reason":"no"}}`,
+		},
+		{
+			name:     "allow contradicts block output",
+			event:    "pre_tool_call",
+			response: `{"action":"allow","hook_output":{"decision":"block","reason":"no"}}`,
+		},
+		{
+			name:     "block output on audit-only event",
+			event:    "post_tool_call",
+			response: `{"action":"block","hook_output":{"decision":"block","reason":"no"}}`,
+		},
+		{
+			name:     "block output has undocumented extra field",
+			event:    "pre_tool_call",
+			response: `{"action":"block","hook_output":{"decision":"block","reason":"no","systemMessage":"deny"}}`,
+		},
+		{
+			name:     "empty context",
+			event:    "pre_llm_call",
+			response: `{"action":"alert","hook_output":{"context":"  "}}`,
+		},
+		{
+			name:     "block action cannot synthesize bounded continue",
+			event:    "pre_verify",
+			response: `{"action":"block","hook_output":{"action":"continue","message":"retry"}}`,
+		},
+		{
+			name:     "non-object hook output",
+			event:    "pre_tool_call",
+			response: `{"action":"block","hook_output":"block"}`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"event":%q}`, tc.event)
+			result := run(t, "hermes", ok(tc.response), func(opts *Options) {
+				opts.Event = ""
+				opts.Stdin = strings.NewReader(input)
+				opts.FailMode = "closed"
+				opts.StrictAvailability = true
+			})
+			if result.code != 0 || result.stdout != "" {
+				t.Fatalf(
+					"Hermes mismatch synthesized enforcement: code=%d stdout=%q stderr=%q",
+					result.code,
+					result.stdout,
+					result.stderr,
+				)
 			}
 		})
 	}
@@ -1486,6 +1551,12 @@ func TestResolveHookEventPrefersExplicitFlagAndRejectsMalformedPayload(t *testin
 	}
 	if got := resolveHookEvent("", []byte(`{"hook_event_name":`)); got != "" {
 		t.Fatalf("malformed payload event=%q, want empty", got)
+	}
+	if got := resolveHookEvent("", []byte(`{"event":"pre_tool_call"}`)); got != "pre_tool_call" {
+		t.Fatalf("Hermes payload event=%q, want pre_tool_call", got)
+	}
+	if got := resolveHookEvent("", []byte(`{"hook_event_name":"Stop","event":"pre_tool_call"}`)); got != "" {
+		t.Fatalf("contradictory payload event=%q, want empty", got)
 	}
 	if got := hookRequestTimeout("claudecode", ""); got != 9*time.Second {
 		t.Fatalf("missing Claude event timeout=%s, want shortest safe budget 9s", got)

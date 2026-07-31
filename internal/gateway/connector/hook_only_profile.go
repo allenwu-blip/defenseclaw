@@ -45,6 +45,18 @@ func hookOnlyProfileMapVerdict(in HookVerdictInput) HookVerdictOutput {
 	}
 }
 
+func hermesProfileMapVerdict(in HookVerdictInput) HookVerdictOutput {
+	raw := normalizedGuardrailAction(in.RawAction)
+	if in.Mode == "action" && raw == "block" &&
+		canonicalHookEvent(in.Event) == "preverify" {
+		// "continue" is Hermes' documented bounded verification control. It
+		// neither vetoes the operation nor upgrades pre_verify into a block
+		// event, and observe mode continues to use the shared audit-only map.
+		return HookVerdictOutput{Action: "continue", WouldBlock: false}
+	}
+	return hookOnlyProfileMapVerdict(in)
+}
+
 func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 	reason := connectorReasonForProfile(in.Req.ConnectorName, in.Action, in.Req.ToolName, in.Reason)
 	var output map[string]interface{}
@@ -72,7 +84,7 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 		event := canonicalHookEvent(in.Req.HookEventName)
 		if in.Action == "block" && event == "pretoolcall" {
 			output = map[string]interface{}{"decision": "block", "reason": reason}
-		} else if in.Action == "block" && event == "preverify" {
+		} else if in.Action == "continue" && event == "preverify" {
 			output = map[string]interface{}{"action": "continue", "message": reason}
 		} else if event == "prellmcall" && in.AdditionalContext != "" {
 			output = map[string]interface{}{"context": in.AdditionalContext}

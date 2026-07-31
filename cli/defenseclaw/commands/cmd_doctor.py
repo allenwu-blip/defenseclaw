@@ -1601,7 +1601,7 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 _HOOK_HEALTH_LABELS = {
-    "hermes": "Hermes hooks",
+    "hermes": "Hermes hooks (preview; fail-open)",
     "cursor": "Cursor hooks",
     "windsurf": "Windsurf hooks",
     "geminicli": "Gemini CLI hooks",

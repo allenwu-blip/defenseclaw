@@ -561,7 +561,7 @@ func TestHermesProfileRespond_Parity(t *testing.T) {
 		{
 			name:      "pre_verify_block_keeps_bounded_verification_loop_going",
 			event:     "pre_verify",
-			action:    "block",
+			action:    "continue",
 			rawAction: "block",
 			reason:    "run the required focused verification",
 			expected: map[string]interface{}{
@@ -631,6 +631,46 @@ func TestHermesProfileRespond_Parity(t *testing.T) {
 				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
 			}
 		})
+	}
+}
+
+func TestHermesProfileMapAndRespondPreVerifyContinue(t *testing.T) {
+	caps := HookCapability{
+		CanBlock:    true,
+		BlockEvents: []string{"pre_tool_call"},
+	}
+	mapped := hermesProfileMapVerdict(HookVerdictInput{
+		Mode:      "action",
+		Event:     "pre_verify",
+		RawAction: "block",
+		Caps:      caps,
+	})
+	if mapped.Action != "continue" || mapped.WouldBlock {
+		t.Fatalf("mapped verdict = %#v, want bounded continue without block attribution", mapped)
+	}
+	out := hookOnlyProfileRespond(HookRespondInput{
+		Req:       HookProfileRequest{ConnectorName: "hermes", HookEventName: "pre_verify"},
+		Action:    mapped.Action,
+		RawAction: "block",
+		Reason:    "run the required focused verification",
+		Caps:      caps,
+	})
+	want := map[string]interface{}{
+		"action":  "continue",
+		"message": "run the required focused verification",
+	}
+	if !reflect.DeepEqual(out.Output, want) {
+		t.Fatalf("pre_verify output = %#v, want %#v", out.Output, want)
+	}
+
+	observe := hermesProfileMapVerdict(HookVerdictInput{
+		Mode:      "observe",
+		Event:     "pre_verify",
+		RawAction: "block",
+		Caps:      caps,
+	})
+	if observe.Action != "allow" || !observe.WouldBlock {
+		t.Fatalf("observe verdict = %#v, want audit-only allow/would-block", observe)
 	}
 }
 

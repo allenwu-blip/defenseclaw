@@ -337,6 +337,12 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 		MapVerdict:          hookOnlyProfileMapVerdict,
 		Respond:             hookOnlyProfileRespond,
 	}
+	if c.name == "hermes" {
+		// Hermes pre_verify is a bounded-control surface, not a blocking
+		// surface. Keep it out of BlockEvents while allowing its documented
+		// synchronous {"action":"continue"} response to reach the responder.
+		profile.MapVerdict = hermesProfileMapVerdict
+	}
 	if c.name == "geminicli" {
 		profile.NativeOTLP = geminiCLINativeOTLPSpec(opts)
 	}
@@ -796,7 +802,15 @@ func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
 // teardown, and VerifyClean so the JSON/YAML hook removers (which match on the
 // exact command string) recognize the entries DefenseClaw added.
 func (c *hookOnlyConnector) hookCommand(opts SetupOpts) string {
-	return hookInvocationCommand(c.name, filepath.Join(opts.DataDir, "hooks", c.scriptName))
+	return c.hookCommandForOS(runtime.GOOS, opts)
+}
+
+func (c *hookOnlyConnector) hookCommandForOS(goos string, opts SetupOpts) string {
+	unixCommand := filepath.Join(opts.DataDir, "hooks", c.scriptName)
+	if goos == "windows" && c.name == "hermes" && strings.TrimSpace(opts.HookExecutable) != "" {
+		return windowsHermesDirectHookCommand(opts.HookExecutable)
+	}
+	return hookInvocationCommandFor(goos, c.name, unixCommand)
 }
 
 // Teardown restores the host agent's config (or removes our entries when
@@ -837,7 +851,12 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		errs = append(errs, fmt.Sprintf("restore config backup: %v", err))
 	case restored:
 	case !restored:
-		if err := c.removeConfigEntries(path, c.hookCommand(opts), opts); err != nil {
+		if err := c.removeConfigEntriesWithManagedBackup(
+			opts,
+			logicalName,
+			path,
+			c.hookCommand(opts),
+		); err != nil {
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
 			discardManagedFileBackup(opts.DataDir, c.name, logicalName)
@@ -1087,7 +1106,7 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 	var err error
 	switch c.name {
 	case "hermes":
-		err = patchHermesHooks(path, hookScript)
+		err = patchHermesHooks(path, hookScript, opts.HookExecutable)
 	case "cursor":
 		err = patchCursorHooks(
 			path,
@@ -1121,28 +1140,53 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 }
 
 func (c *hookOnlyConnector) managedBackupLogicalName() string {
-	if c.name == "antigravity" {
+	switch c.name {
+	case "antigravity":
 		return "hooks.json"
+	case "hermes":
+		return "config.yaml"
+	default:
+		return "config"
 	}
-	return "config"
 }
 
 func (c *hookOnlyConnector) migrateManagedBackup(opts SetupOpts) error {
-	if c.name != "antigravity" {
+	switch c.name {
+	case "antigravity", "hermes":
+		return migrateManagedFileBackupLogicalName(
+			opts.DataDir,
+			c.name,
+			"config",
+			c.managedBackupLogicalName(),
+		)
+	default:
 		return nil
 	}
-	return migrateManagedFileBackupLogicalName(
+}
+
+func (c *hookOnlyConnector) removeConfigEntriesWithManagedBackup(
+	opts SetupOpts,
+	logicalName, path, hookScript string,
+) error {
+	if c.name != "hermes" {
+		return c.removeConfigEntries(path, hookScript, opts)
+	}
+	backup, err := loadManagedFileBackupForTransform(
 		opts.DataDir,
 		c.name,
-		"config",
-		c.managedBackupLogicalName(),
+		logicalName,
+		path,
 	)
+	if err != nil {
+		return fmt.Errorf("load Hermes pristine custody: %w", err)
+	}
+	return removeHermesHooks(path, hookScript, backup)
 }
 
 func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string, opts SetupOpts) error {
 	switch c.name {
 	case "hermes":
-		return removeHermesHooks(path, hookScript)
+		return removeHermesHooks(path, hookScript, nil)
 	case "geminicli":
 		return removeGeminiConfigEntries(path, hookScript)
 	case "cursor":
@@ -1478,7 +1522,7 @@ func addSurfaceTargets(targets map[string][]string, key string, cap SurfaceCapab
 	targets[key] = uniqueNonEmptyStrings(append(append([]string{}, cap.ReadPaths...), cap.ConfigPaths...))
 }
 
-func patchHermesHooks(path, hookScript string) error {
+func patchHermesHooks(path, hookScript, hookExecutable string) error {
 	cfg, err := readYAMLObject(path)
 	if err != nil {
 		return err
@@ -1499,6 +1543,15 @@ func patchHermesHooks(path, hookScript string) error {
 	// the key even when the prior value was false. The managed-file backup
 	// restores the operator's exact prior bytes on teardown.
 	cfg["hooks_auto_accept"] = true
+	hookCommand := shellWord(hookScript)
+	if bound := windowsHermesDirectHookCommand(hookExecutable); bound != "" && hookScript == bound {
+		// Native maintenance may run from a quarantined or temporary gateway,
+		// so generic process-local ownership cannot identify the stable command
+		// that Setup explicitly bound. Preserve that exact direct argv without
+		// adding shell quoting; Hermes will pass it through shlex.split and
+		// subprocess.run(shell=False).
+		hookCommand = hookScript
+	}
 	for _, spec := range []struct {
 		event   string
 		matcher string
@@ -1528,7 +1581,7 @@ func patchHermesHooks(path, hookScript string) error {
 		{"kanban_task_blocked", ""},
 	} {
 		entry := map[string]interface{}{
-			"command": shellWord(hookScript),
+			"command": hookCommand,
 			"timeout": 30,
 		}
 		if spec.matcher != "" {
@@ -1543,7 +1596,11 @@ func patchHermesHooks(path, hookScript string) error {
 	return atomicWriteFile(path, data, 0o600)
 }
 
-func removeHermesHooks(path, hookScript string) error {
+func removeHermesHooks(path, hookScript string, backup *managedFileBackup) error {
+	pristineAutoAccept, pristineHadAutoAccept, pristineKnown, err := hermesPristineAutoAccept(backup)
+	if err != nil {
+		return err
+	}
 	cfg, err := readYAMLObject(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1557,11 +1614,45 @@ func removeHermesHooks(path, hookScript string) error {
 		}
 		pruneEmptyMapArrays(hooks)
 	}
+	// Setup writes exactly boolean true. Restore the captured value/absence
+	// only while that installed scalar remains unchanged; a later operator edit
+	// belongs to the operator and survives surgical hook cleanup.
+	currentAutoAccept, currentAutoAcceptPresent := cfg["hooks_auto_accept"]
+	if pristineKnown && currentAutoAcceptPresent && currentAutoAccept == true {
+		if pristineHadAutoAccept {
+			cfg["hooks_auto_accept"] = pristineAutoAccept
+		} else {
+			delete(cfg, "hooks_auto_accept")
+		}
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
 	return atomicWriteFile(path, data, 0o600)
+}
+
+func hermesPristineAutoAccept(backup *managedFileBackup) (interface{}, bool, bool, error) {
+	if backup == nil {
+		return nil, false, false, nil
+	}
+	if !backup.Existed {
+		if backup.PristineSHA256 != managedBackupMissingHash || len(backup.PristineBytes) != 0 {
+			return nil, false, false, fmt.Errorf("Hermes pristine custody for a missing config is inconsistent")
+		}
+		return nil, false, true, nil
+	}
+	if backup.PristineSHA256 != sha256Hex(backup.PristineBytes) {
+		return nil, false, false, fmt.Errorf("Hermes pristine custody hash does not match its captured config bytes")
+	}
+	var pristine map[string]interface{}
+	if len(bytes.TrimSpace(backup.PristineBytes)) != 0 {
+		if err := yaml.Unmarshal(backup.PristineBytes, &pristine); err != nil {
+			return nil, false, false, fmt.Errorf("parse Hermes pristine custody: %w", err)
+		}
+	}
+	value, present := pristine["hooks_auto_accept"]
+	return value, present, true, nil
 }
 
 func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed bool) error {
