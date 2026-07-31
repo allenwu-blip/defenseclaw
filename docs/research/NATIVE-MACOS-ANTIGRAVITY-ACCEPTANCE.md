@@ -8,14 +8,15 @@ proxy connectors, and other connector implementations are out of scope.
 
 | Classification | Result |
 | --- | --- |
-| **OUTDATED** | The previous macOS platform claim said `supported` even though no macOS `last_validated_version` record existed. The prior “latest is 1.1.8” statement is also stale: Google's official macOS installer manifest now publishes 1.1.9. |
-| **CURRENT / LIMITED** | DefenseClaw's reviewed macOS contract remains `>=1.1.8, <1.1.9`; Windows preserves `>=1.1.8` without a ceiling. The five-event 1.1.8 `antigravity-hooks-v2` contract and associated paths remain the reviewed implementation. The latest 1.1.9 release is correctly rejected as unknown on macOS pending a fresh contract review; its appearance in the manifest is not grounds to widen the ceiling. |
+| **OUTDATED** | The previous macOS platform claim said `supported` even though no macOS `last_validated_version` record existed. POSIX Doctor checked only for a script-name substring, passive discovery could execute an arbitrary `agy` found first on `PATH`, the `agy` product alias was not normalized, and extension discovery omitted documented rules and standalone agents. |
+| **CURRENT** | Google's official stable channel identifies Antigravity CLI `1.1.9`, released 2026-07-31. DefenseClaw recognizes macOS versions `>=1.1.8, <1.1.10` after reviewing the official 1.1.9 arm64 and x64 artifacts. The five-event `antigravity-hooks-v2` contract, global hook path, native macOS installer location, MCP schema, skills, plugins, rules, agents, and authentication boundary remain compatible. |
 | **UNCERTIFIED** | macOS remains `preview`. `validated_versions.json` intentionally has an empty macOS `last_validated_version`, timestamp, and run URL. The persistent authenticated macOS connector-lab workflow is a source-build regression harness, not current-head packaged certification evidence, so no certification stamp was added. |
 
 Primary sources:
 
 - [Official macOS arm64 installer manifest](https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json)
 - [Installation and authentication](https://antigravity.google/docs/cli/install)
+- [CLI 1.1.9 release](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.1.9)
 - [Changelog](https://antigravity.google/changelog)
 - [Hooks](https://antigravity.google/docs/hooks)
 - [MCP](https://antigravity.google/docs/mcp)
@@ -25,15 +26,28 @@ Primary sources:
 - [CLI custom agents](https://antigravity.google/docs/cli/commands/agents)
 - [Gemini CLI migration](https://antigravity.google/docs/cli/gcli-migration)
 
+## CLI 1.1.9 artifact review
+
+| Evidence | Result |
+| --- | --- |
+| Official GitHub macOS arm64 asset | SHA-256 `bbc42c75f6e603fd35a70f353f2963e74bb4ea261f89e4256f5f60a78f95bb84`; `agy --version` reports `1.1.9`. |
+| Official GitHub macOS x64 asset | SHA-256 `8daa903f5135072b3921dbac90f449cb8a778102b03853e8691146665cad06bd`. |
+| Stable updater manifests | Both Darwin architectures resolve to `1.1.9`; their published SHA-512 values are `4bb5c759cec7e5aa7738f9d5259bb29bc8899fb616a0979be5b192ddade9f143d493ede30dcc1475298ef4060c013bf75a992adc041be8955762b2c5a3061f1b` (arm64) and `2e61abdf7d627e6ad24bfefeed8bb35a00a538adc00398106270e635015f78969327f776791053d2cb6b92912824912fa2eaf65ac9224fafcd3d0aad7ebd8e8d` (x64). |
+| Native provenance | Both 1.1.9 archives contain one regular Mach-O executable named `antigravity`; both binaries use hardened runtime and carry Google team identifier `EQHXZ8M8AV`, matching reviewed 1.1.8 provenance. |
+| Contract comparison | The five events, every documented payload/response field, and hooks/MCP/skills/plugins/rules/agents paths are present in both 1.1.9 architectures and match 1.1.8. The only help-surface addition is `--disable-slash-commands` for print-mode skill expansion. |
+| Hook behavior changes | The release bounds repeated `Stop` continuations and corrects `PostToolUse` so it fires only for tool steps and honors matchers. These are compatible fixes; no event, registration shape, payload, response, or enforcement claim changes. |
+| MCP, skills, and permissions | Interactive MCP startup now loads servers in the background, while headless and one-shot runs still wait for their toolset. Print mode now expands slash commands and skills. Conversation-scoped permission persistence and the broader system temp-directory grant remain vendor runtime behavior. None changes DefenseClaw's MCP schema, inventory paths, custody, telemetry, or policy boundary. |
+| Support decision | Raise the reviewed macOS/non-Windows ceiling from `<1.1.9` to `<1.1.10`. Keep macOS `preview`, leave certification fields blank, and keep the Windows open ceiling and certification state unchanged. |
+
 ## Twelve-surface review
 
 | # | Acceptance surface | macOS result |
 | --- | --- | --- |
-| 1 | Registry, discovery, version, platform | Implemented. `agy --version`; official `~/.local/bin/agy`; mandatory trusted-path admission before a passive Antigravity probe; macOS gate `>=1.1.8, <1.1.9`, while Windows remains unbounded above. Latest 1.1.9 is unsupported on macOS pending review; macOS is `preview`, not certified. |
+| 1 | Registry, discovery, version, platform | Implemented. `agy --version`; official `~/.local/bin/agy`; mandatory trusted-path admission before a passive Antigravity probe; reviewed macOS gate `>=1.1.8, <1.1.10`; macOS is available as `preview`, not certified. |
 | 2 | CLI, help, aliases | Implemented. `setup antigravity` remains canonical and `setup agy`/`init --connector agy` normalize to Antigravity, never Gemini CLI. |
 | 3 | TUI, setup, status, repair | Implemented. Antigravity remains visible with a preview marker. Setup/status use the Antigravity connector identity. Doctor reports exact contract drift and points to scoped setup repair. |
 | 4 | Narrow Setup custody and restoration | Implemented. Setup writes only five `defenseclaw-antigravity-*` keys in global `~/.gemini/config/hooks.json`. Exact pre-Setup bytes and mode are restored if unchanged; after operator drift, only DefenseClaw-owned keys are removed. `ANTIGRAVITY_CONFIG_DIR` is a DefenseClaw-internal, validated lifecycle binding for the selected profile, not a claimed upstream Antigravity override; Setup rejects unsafe path ancestry, overrides ambient state for the child operation, and restores it afterward. |
-| 5 | Hook contract | Current. Exactly `PreInvocation`, `PreToolUse`, `PostToolUse`, `PostInvocation`, and `Stop`; direct lists for invocation/stop and matcher groups for tool events. Only `PreToolUse` claims deny/ask. |
+| 5 | Hook contract | Current through 1.1.9. Exactly `PreInvocation`, `PreToolUse`, `PostToolUse`, `PostInvocation`, and `Stop`; direct lists for invocation/stop and matcher groups for tool events. Only `PreToolUse` claims deny/ask. Version 1.1.9 fixes `PostToolUse` matcher application and bounds repeated `Stop` continuations without widening DefenseClaw's enforcement claims. |
 | 6 | Native process and provenance | Implemented. Native `agy` invokes the managed POSIX hook script synchronously. Passive discovery executes version probes only from trusted prefixes. No Gemini CLI or proxy executable is substituted. |
 | 7 | Gateway, auth, lifecycle | Implemented. Connector-scoped token, Antigravity route, setup/teardown, loopback gateway, event-bound trusted header, and event-specific fail-open outputs are distinct from Gemini CLI. |
 | 8 | Doctor, tamper, repair | Implemented. macOS Doctor passively validates all keys, shapes, timeouts, runtime path, and event bindings without executing config text; duplicate workspace registration is warned. |

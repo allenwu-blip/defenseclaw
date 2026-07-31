@@ -653,7 +653,7 @@ var builtinHookContracts = map[string][]HookContract{
 		Connector:               "antigravity",
 		ContractID:              "antigravity-hooks-v2",
 		MinAgentVersion:         "1.1.8",
-		MaxAgentVersion:         "1.1.9",
+		MaxAgentVersion:         "1.1.10",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v8",
 		HookConfigPathTemplates: []string{"~/.gemini/config/hooks.json"},
@@ -683,7 +683,8 @@ var builtinHookContracts = map[string][]HookContract{
 		},
 		SupportsTraceparent: true,
 		Notes: []string{
-			"Only CLI 1.1.8 is currently source-reviewed. The 1.1.9 exclusive ceiling prevents later patches from being classified as known without a fresh contract review.",
+			"CLI 1.1.8 and 1.1.9 are artifact-reviewed on macOS. The 1.1.10 exclusive ceiling prevents later patches from being classified as known without a fresh contract review.",
+			"CLI 1.1.9 bounds repeated Stop-hook continuations and fixes PostToolUse firing and matcher evaluation without changing the five-event schema or its payload and response fields.",
 			"Antigravity 2.0 documents five lifecycle events. PreToolUse and PostToolUse use matcher groups with nested handlers; PreInvocation, PostInvocation, and Stop use direct handler lists.",
 			"Hard blocking is claimed only for synchronous PreToolUse stdout {\"decision\":\"deny\"}. decision=ask provides native confirmation. Google does not document non-zero hook exit codes as an enforcement interface.",
 			"PostToolUse output is {}. PreInvocation and PostInvocation may return injectSteps; DefenseClaw uses ephemeralMessage only for context. Stop requires a decision, where continue re-enters the loop and any other value permits stopping; DefenseClaw returns allow and does not claim Stop blocking.",

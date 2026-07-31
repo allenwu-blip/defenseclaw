@@ -40,7 +40,7 @@ and the connector pages.
 | <ConnectorLabel id="copilot" /> | hook contract | `>=1.0.18, <1.0.76` on Windows/macOS/Linux | `copilot-hooks-v1` / `v7` (13 events) | prompt, tool_call, tool_result |
 | <ConnectorLabel id="copilot" /> | hook contract | `>=1.0.76` on Windows/macOS/Linux | `copilot-hooks-v2` / `v7` (14 events) | prompt, tool_call, tool_result |
 | <ConnectorLabel id="openhands" /> | hook contract | macOS/Linux `>=1.12.0`; Windows registry floor `>=0.0.0` (native setup unsupported) | `openhands-hooks-v1` / `v6` (6 events) | prompt, tool_call, tool_result, event_content |
-| <ConnectorLabel id="antigravity" /> | hook contract | macOS/Linux `>=1.1.8, <1.1.9`; Windows `>=1.1.8` (not certified) | `antigravity-hooks-v2` / `v8` (5 events) | tool_call, event_content |
+| <ConnectorLabel id="antigravity" /> | hook contract | macOS/Linux `>=1.1.8, <1.1.10`; Windows `>=1.1.8` (not certified) | `antigravity-hooks-v2` / `v8` (5 events) | tool_call, event_content |
 | <ConnectorLabel id="opencode" /> | hook contract | macOS/Linux `>=1.16.2, <1.18.11` | `opencode-hooks-v1` / `v7` (35 events) | tool_call, tool_result, event_content |
 | <ConnectorLabel id="opencode" /> | hook contract | Windows `>=0.0.0` (unbounded/default) | `opencode-hooks-v1` / `v6` (9 events) | tool_call, tool_result |
 | <ConnectorLabel id="omnigent" /> | hook contract | `>=0.7.0` / pinned custom-policy API | `omnigent-custom-policy-v1` / `v1` | prompt, tool_call, tool_result |
@@ -65,9 +65,9 @@ the 14-event v2 contract that adds `userPromptTransformed`. OpenHands requires
 `1.12.0` on macOS/Linux because that release first
 loads the user-global hook file. OpenCode's reviewed macOS/Linux contract spans
 `>=1.16.2, <1.18.11` and registers 35 events; Windows retains the unbounded
-nine-event v6 contract. Antigravity (`agy`) is limited to the source-reviewed
-`>=1.1.8, <1.1.9` range on macOS/Linux while Windows keeps the previous open
-ceiling. OmniGent is pinned to `>=0.7.0`. Claude Code is pinned to `2.1.154`:
+nine-event v6 contract. Antigravity (`agy`) is source- and artifact-reviewed
+through 1.1.9, so macOS/Linux accepts `>=1.1.8, <1.1.10` while Windows keeps
+the previous open ceiling. OmniGent is pinned to `>=0.7.0`. Claude Code is pinned to `2.1.154`:
 `2.1.152` supplied the current hook surface, and `2.1.154` added the plugin
 `defaultEnabled` semantics used by inventory. Gemini CLI consumer/free/Google
 AI Pro/Ultra service ended on June 18, 2026; its non-Windows version contract
@@ -75,10 +75,9 @@ applies only to the continuing enterprise, Google Cloud, and paid API-key
 audience.
 
 These compatibility ranges are not validation stamps. OpenCode 1.18.10,
-OpenHands CLI 1.16.0, and Antigravity 1.1.8 have source or artifact review
+OpenHands CLI 1.16.0, and Antigravity 1.1.9 have source or artifact review
 records, but their macOS validation entries remain blank pending durable hosted
-evidence. Antigravity 1.1.9 is now latest and is intentionally outside the
-macOS/Linux ceiling pending review. Claude Code's shared floor remains 2.1.154 for plugin-state
+evidence. Claude Code's shared floor remains 2.1.154 for plugin-state
 attribution; macOS protected admission additionally rejects 2.1.219 and later
 because the release-only `DirectoryAdded` event has no published hook schema.
 

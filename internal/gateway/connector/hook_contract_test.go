@@ -35,11 +35,14 @@ func TestAntigravityDefaultCapabilitiesMatchResolvedContract(t *testing.T) {
 }
 
 func TestAntigravityContractDoesNotAutoCertifyFuturePatches(t *testing.T) {
-	if got := ResolveHookContract("antigravity", "1.1.8"); got.Status != HookCompatibilityKnown {
-		t.Fatalf("Antigravity 1.1.8 compatibility=%q want known", got.Status)
+	contract := hookContractsForOS("antigravity", "darwin")[0]
+	for _, version := range []string{"1.1.8", "1.1.9"} {
+		if !versionInRange(version, contract.MinAgentVersion, contract.MaxAgentVersion) {
+			t.Fatalf("Antigravity %s should match macOS range [%s,%s)", version, contract.MinAgentVersion, contract.MaxAgentVersion)
+		}
 	}
-	if got := ResolveHookContract("antigravity", "1.1.9"); got.Status != HookCompatibilityUnknown {
-		t.Fatalf("Antigravity 1.1.9 compatibility=%q want unknown", got.Status)
+	if versionInRange("1.1.10", contract.MinAgentVersion, contract.MaxAgentVersion) {
+		t.Fatalf("Antigravity 1.1.10 should not match macOS range [%s,%s)", contract.MinAgentVersion, contract.MaxAgentVersion)
 	}
 }
 
@@ -70,7 +73,7 @@ func TestMacOSContractUpdatesPreserveWindowsPR655Contracts(t *testing.T) {
 
 	darwinAntigravity := contract("darwin", "antigravity", "antigravity-hooks-v2")
 	windowsAntigravity := contract("windows", "antigravity", "antigravity-hooks-v2")
-	if darwinAntigravity.MaxAgentVersion != "1.1.9" || windowsAntigravity.MaxAgentVersion != "" {
+	if darwinAntigravity.MaxAgentVersion != "1.1.10" || windowsAntigravity.MaxAgentVersion != "" {
 		t.Errorf("Antigravity maximums darwin=%q windows=%q", darwinAntigravity.MaxAgentVersion, windowsAntigravity.MaxAgentVersion)
 	}
 

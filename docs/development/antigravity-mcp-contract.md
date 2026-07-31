@@ -8,7 +8,7 @@
 
 Scope: Google's Antigravity (`agy`) connector. This pins native Windows eligibility, hook enforcement, file paths, and JSON shapes DefenseClaw relies on.
 
-Research refreshed: 2026-07-30.
+Research refreshed: 2026-07-31.
 
 ## Official Sources
 
@@ -22,6 +22,7 @@ Research refreshed: 2026-07-30.
 - [Antigravity CLI Migration](https://antigravity.google/docs/gcli-migration)
 - [Antigravity Changelog](https://antigravity.google/changelog)
 - [Antigravity CLI install](https://antigravity.google/docs/cli/install)
+- [Antigravity CLI 1.1.9 release](https://github.com/google-antigravity/antigravity-cli/releases/tag/1.1.9)
 - [Antigravity downloads](https://antigravity.google/download)
 - [Google I/O 2026 feature deep dive](https://antigravity.google/blog/google-io-2026-feature-deep-dive)
 
@@ -29,8 +30,8 @@ Research refreshed: 2026-07-30.
 
 | Evidence | Official result |
 | --- | --- |
-| Current release | The official macOS installer manifest publishes CLI v1.1.9 as of 2026-07-31. Version 1.1.8 remains the latest source-reviewed contract. |
-| DefenseClaw version gate | macOS/Linux `>=1.1.8, <1.1.9`; Windows preserves `>=1.1.8` without a ceiling. The current 1.1.9 release is rejected as unknown on macOS pending contract review. |
+| Current release | Antigravity 2.0 v2.4.3 and CLI v1.1.9, released 2026-07-31. |
+| DefenseClaw version gate | macOS/non-Windows contract `>=1.1.8, <1.1.10`. Versions 1.1.8 and 1.1.9 are artifact-reviewed on macOS; Windows remains open-ended and uncertified. |
 | Native support | The install page says the CLI runs natively on Windows, macOS, and Linux. DefenseClaw macOS is preview; Windows x64 is not certified. |
 | Install | macOS/Linux: `curl -fsSL https://antigravity.google/cli/install.sh \| bash`, installing `~/.local/bin/agy`. Windows uses the published PowerShell/CMD installers and `%LOCALAPPDATA%\agy\bin\agy.exe`. |
 | Authentication | macOS Keychain or Windows Credential Manager stores secure token profiles; browser authentication is the fallback. No API-key-based headless authentication is documented. |
@@ -57,6 +58,12 @@ The output contracts are event-specific:
 `PreToolUse` and `PostToolUse` use matcher groups with nested `hooks`.
 PreInvocation, PostInvocation, and Stop use direct handler lists; matchers are
 ignored for those events. Reusing Claude Code response fields is not valid.
+
+CLI 1.1.9 retains this complete schema. Its hook changes are compatible fixes:
+`PostToolUse` no longer fires for non-tool steps and now honors its matcher,
+while repeated `Stop` decisions are bounded so an always-continuing hook cannot
+hang the CLI forever. DefenseClaw still returns an allow-stop decision and does
+not claim `Stop` as a blocking surface.
 
 ## Contract Decisions
 

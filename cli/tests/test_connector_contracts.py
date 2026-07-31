@@ -72,11 +72,16 @@ class TestConnectorContractManifest(unittest.TestCase):
             self.assertTrue(compat.supported)
 
     def test_antigravity_cli_alias_resolves_without_becoming_gemini_cli(self) -> None:
-        antigravity = resolve_connector_contract("agy", "Antigravity CLI v1.1.8")
+        antigravity = resolve_connector_contract("agy", "Antigravity CLI v1.1.9")
         self.assertEqual(antigravity.connector, "antigravity")
         self.assertEqual(antigravity.status, STATUS_KNOWN)
         self.assertEqual(antigravity.contract.contract_id, "antigravity-hooks-v2")
+        self.assertEqual(antigravity.contract.max_agent_version, "1.1.10")
         self.assertNotEqual(antigravity.connector, "geminicli")
+
+        future = resolve_connector_contract("agy", "Antigravity CLI v1.1.10")
+        self.assertEqual(future.status, STATUS_UNKNOWN)
+        self.assertFalse(future.supported)
 
     def test_codex_version_range_matches_contract(self) -> None:
         expected = (
@@ -292,7 +297,7 @@ class TestConnectorContractManifest(unittest.TestCase):
 
         darwin_antigravity = contract(darwin, "antigravity", "antigravity-hooks-v2")
         windows_antigravity = contract(windows, "antigravity", "antigravity-hooks-v2")
-        self.assertEqual(darwin_antigravity.max_agent_version, "1.1.9")
+        self.assertEqual(darwin_antigravity.max_agent_version, "1.1.10")
         self.assertEqual(windows_antigravity.max_agent_version, "")
 
         darwin_openhands = contract(darwin, "openhands", "openhands-hooks-v1")
