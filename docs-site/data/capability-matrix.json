@@ -75,8 +75,7 @@
           "beforeMCPExecution",
           "beforeReadFile",
           "beforeTabFileRead",
-          "beforeSubmitPrompt",
-          "subagentStart"
+          "beforeSubmitPrompt"
         ],
         "supportsFailClosed": true,
         "scope": "user"
