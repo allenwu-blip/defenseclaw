@@ -131,6 +131,32 @@ func TestInspectCodexPolicyFailsClosedForLegacyLockEvidence(t *testing.T) {
 	}
 }
 
+func TestInspectCodexPolicyAgentlessDriftIsDarwinExploratoryOnly(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("agentless Codex contract smoke exception is Darwin-only")
+	}
+	dir := testenv.PrivateTempDir(t)
+	receipt := []byte(`{"schema_version":1,"updated_at":"2026-07-31T00:00:00Z","selections":{}}`)
+	if err := atomicWriteFile(filepath.Join(dir, agentSelectionFile), receipt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := codexSystemRequirementsPathForInspection
+	t.Cleanup(func() { codexSystemRequirementsPathForInspection = original })
+	codexSystemRequirementsPathForInspection = func() (string, error) {
+		return filepath.Join(dir, "missing-system-requirements.toml"), nil
+	}
+
+	t.Setenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT", "")
+	if _, err := inspectCodexEffectivePolicy(context.Background(), SetupOpts{DataDir: dir}); err == nil ||
+		!strings.Contains(err.Error(), "invalid or expired") {
+		t.Fatalf("production receipt error = %v, want fail-closed rejection", err)
+	}
+	t.Setenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT", "1")
+	if _, err := inspectCodexEffectivePolicy(context.Background(), SetupOpts{DataDir: dir}); err != nil {
+		t.Fatalf("explicit agentless contract drift fallback: %v", err)
+	}
+}
+
 func TestInspectCodexPolicyWithAppServer(t *testing.T) {
 	original := codexAppServerCommand
 	t.Cleanup(func() { codexAppServerCommand = original })

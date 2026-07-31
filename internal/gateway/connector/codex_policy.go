@@ -105,6 +105,8 @@ func inspectCodexEffectivePolicy(ctx context.Context, opts SetupOpts) (codexEffe
 	}
 
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		allowAgentlessDrift := runtime.GOOS == "darwin" &&
+			os.Getenv("DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT") == "1"
 		if entry, exists := loadProtectedCodexContractEntry(opts.DataDir); exists {
 			hasExecutableEvidence := strings.TrimSpace(entry.AgentExecutable) != "" ||
 				strings.TrimSpace(entry.AgentExecutableSource) != "" ||
@@ -119,7 +121,7 @@ func inspectCodexEffectivePolicy(ctx context.Context, opts SetupOpts) (codexEffe
 			// fallback, but never accept a partially populated/tampered receipt.
 		}
 		if path := filepath.Join(opts.DataDir, agentSelectionFile); strings.TrimSpace(opts.DataDir) != "" {
-			if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
+			if _, err := os.Lstat(path); !allowAgentlessDrift && (err == nil || !os.IsNotExist(err)) {
 				return codexEffectivePolicy{}, errors.New(
 					"Codex setup selection receipt is invalid or expired; rerun fresh trusted setup discovery",
 				)

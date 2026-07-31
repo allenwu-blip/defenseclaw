@@ -151,5 +151,6 @@ def test_contract_matrix_uses_isolated_opencode_calls_and_trusts_omnigent_owner(
     assert "-${expected}-call`" in opencode_probe
     assert opencode_probe.count("callID: toolCallID") == 2
     assert 'IFS= read -r omnigent_shebang < "$(command -v omnigent)"' in workflow
+    assert "os.path.realpath(sys.executable)" in workflow
     assert "DEFENSECLAW_TRUSTED_BIN_PREFIXES=%s" in workflow
     assert '"$(dirname "${omnigent_python}")" >> "$GITHUB_ENV"' in workflow

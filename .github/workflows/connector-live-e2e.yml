@@ -280,6 +280,8 @@ jobs:
           uv tool install --python 3.12 --force omnigent==0.7.0
           IFS= read -r omnigent_shebang < "$(command -v omnigent)"
           omnigent_python="${omnigent_shebang#\#!}"
+          omnigent_python="$("${omnigent_python}" -I -c \
+            'import os, sys; print(os.path.realpath(sys.executable))')"
           printf 'DEFENSECLAW_TRUSTED_BIN_PREFIXES=%s\n' \
             "$(dirname "${omnigent_python}")" >> "$GITHUB_ENV"
 
