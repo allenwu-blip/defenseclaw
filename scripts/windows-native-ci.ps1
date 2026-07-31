@@ -5559,11 +5559,14 @@ function Invoke-Contract {
     $codexHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'codex-home')).TrimEnd('\')
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
     $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
-    $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'cursor-home')).TrimEnd('\')
+    # Cursor publishes no configuration-home override. Exercise its authentic
+    # profile-relative contract under this disposable profile instead of
+    # treating DefenseClaw's internal custody binding as a vendor selector.
+    $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.cursor')).TrimEnd('\')
     $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
     $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
     $null = Assert-WindowsNativePathsDisjoint @(
-        $contractHome, $codexHome, $claudeHome, $copilotHome, $cursorHome, $hermesHome, $openCodeHome
+        $contractHome, $codexHome, $claudeHome, $copilotHome, $hermesHome, $openCodeHome
     )
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
@@ -5629,7 +5632,7 @@ function Invoke-Contract {
 
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
-            (Test-Path -LiteralPath $defaultCursorHome) -or
+            (Test-Path -LiteralPath (Join-Path $defaultCursorHome 'hooks.json')) -or
             (Test-Path -LiteralPath $defaultHermesHome) -or
             (Test-Path -LiteralPath $defaultWindsurfConfig) -or
             (Test-Path -LiteralPath $defaultOpenCodeHome)) {
@@ -5657,11 +5660,16 @@ function Invoke-Contract {
         $defaultConnectorHomes = @(
             $defaultCodexHome,
             $defaultClaudeHome,
-            $defaultCursorHome,
+            (Join-Path $defaultCursorHome 'hooks.json'),
             $defaultHermesHome,
             $defaultWindsurfConfig,
             $defaultOpenCodeHome
         )
+        if ($Connector -eq 'cursor') {
+            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object {
+                $_ -cne (Join-Path $defaultCursorHome 'hooks.json')
+            })
+        }
         if ($Connector -eq 'windsurf') {
             $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultWindsurfConfig })
         }

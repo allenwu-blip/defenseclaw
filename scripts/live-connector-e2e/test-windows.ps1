@@ -400,7 +400,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $resolverCodexHome = Join-Path $resolverRoot 'codex-home'
         $resolverClaudeHome = Join-Path $resolverRoot 'claude-home'
         $resolverCopilotHome = Join-Path $resolverRoot 'copilot-home'
-        $resolverCursorHome = Join-Path $resolverRoot 'cursor-home'
+        $resolverCursorHome = Join-Path $resolverProfile '.cursor'
         $resolverHermesHome = Join-Path $resolverRoot 'hermes-home'
         $resolverOpenCodeHome = Join-Path $resolverRoot 'opencode-home'
         foreach ($path in @(
@@ -433,6 +433,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True ($env:CODEX_HOME -eq [IO.Path]::GetFullPath($resolverCodexHome) -and
             $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome)) `
             'packaged connector home guard preserves exact installer-recorded homes'
+        $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-cursor-home'
+        [IO.Directory]::CreateDirectory($env:DEFENSECLAW_CURSOR_CONFIG_HOME) | Out-Null
+        $spoofedCursorHomeRejected = $false
+        try { Assert-PackagedConnectorHomes $resolverRoot $resolverProfile }
+        catch {
+            $spoofedCursorHomeRejected = $_.Exception.Message.Contains(
+                'documented USERPROFILE\.cursor path'
+            )
+        }
+        Assert-True $spoofedCursorHomeRejected `
+            'packaged connector home guard rejects a non-vendor Cursor home override'
+        $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
         $env:CODEX_HOME = Join-Path $temp 'operator-codex-home'
         [IO.Directory]::CreateDirectory($env:CODEX_HOME) | Out-Null
         $escapedHomeRejected = $false
@@ -1536,11 +1548,13 @@ private-secret-name = "DefenseClaw must remain redacted"
         'native harness preserves packaged connector homes and otherwise binds disposable defaults'
     $packagedHomeGuard = [regex]::Match($harnessText, '(?s)function Assert-PackagedConnectorHomes\b.*?\n\}').Value
     Assert-True ($packagedHomeGuard -match 'Assert-WindowsNativePathsDisjoint' -and
+        $packagedHomeGuard -match '\$officialCursorHome' -and
+        $packagedHomeGuard -match 'documented USERPROFILE\\\.cursor path' -and
         $packagedHomeGuard -match 'Test-PathWithin' -and
         $packagedHomeGuard -match 'Assert-DisposableNoReparseAncestors' -and
         $packagedHomeGuard -match '-RequireExists' -and
         $packagedHomeGuard -match '\$env:HERMES_HOME = \$homes\[5\]') `
-        'packaged connector homes are disjoint, contained, existing, and non-reparse'
+        'packaged connector homes are authentic, contained, existing, and non-reparse'
     Assert-True ($harnessText -match 'timeout-handling' -and $harnessText -match 'telemetry pass') 'contract records timeout and telemetry evidence'
     foreach ($rule in @(
         'CMD-WIN-REMOVE-ITEM-RF', 'CMD-WIN-RMDIR-SQ', 'CMD-WIN-IWR-IEX', 'CMD-WIN-REG-PERSIST',
@@ -1685,12 +1699,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''codex-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''claude-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''copilot-home''' -and
-        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''cursor-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractHome ''\.cursor''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
-        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$cursorHome, \$hermesHome, \$openCodeHome\s*\)' -and
+        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome, \$openCodeHome\s*\)' -and
         $contractInstall -ge 0) `
-        'connector contract constructs every pairwise-disjoint recorded connector home'
+        'connector contract uses Cursor official profile custody and disjoint real-override homes'
     foreach ($homeAssignment in @(
         '$env:CODEX_HOME = $codexHome',
         '$env:CLAUDE_CONFIG_DIR = $claudeHome',

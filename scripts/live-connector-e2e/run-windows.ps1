@@ -118,9 +118,20 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         Protect-TestDirectory $copilotHome
     }
     $cursorHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_CURSOR_CONFIG_HOME')
+    $officialCursorHome = [IO.Path]::GetFullPath(
+        (Join-Path $ProfileHome '.cursor')
+    ).TrimEnd('\')
     if ([string]::IsNullOrWhiteSpace($cursorHome)) {
-        $cursorHome = Join-Path $Root 'cursor-home'
+        $cursorHome = $officialCursorHome
         Protect-TestDirectory $cursorHome
+    }
+    $cursorHome = [IO.Path]::GetFullPath($cursorHome).TrimEnd('\')
+    if (-not [string]::Equals(
+            $cursorHome,
+            $officialCursorHome,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'packaged Cursor home must be the documented USERPROFILE\.cursor path'
     }
     $hermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
     if ([string]::IsNullOrWhiteSpace($hermesHome)) {
@@ -128,15 +139,26 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         Protect-TestDirectory $hermesHome
     }
     $openCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
-    $homes = @(Assert-WindowsNativePathsDisjoint @(
+    # Cursor publishes no configuration-home override. Its official .cursor
+    # directory is intentionally nested beneath ProfileHome; every connector
+    # with a real override remains pairwise disjoint from that profile.
+    $disjointHomes = @(Assert-WindowsNativePathsDisjoint @(
         $ProfileHome,
         $codexHome,
         $claudeHome,
         $copilotHome,
-        $cursorHome,
         $hermesHome,
         $openCodeHome
     ))
+    $homes = @(
+        $disjointHomes[0],
+        $disjointHomes[1],
+        $disjointHomes[2],
+        $disjointHomes[3],
+        $cursorHome,
+        $disjointHomes[4],
+        $disjointHomes[5]
+    )
     $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     foreach ($connectorHome in $homes) {
         if (-not (Test-PathWithin $connectorHome $rootPath)) {
