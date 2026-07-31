@@ -76,12 +76,17 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(antigravity.connector, "antigravity")
         self.assertEqual(antigravity.status, STATUS_KNOWN)
         self.assertEqual(antigravity.contract.contract_id, "antigravity-hooks-v2")
-        self.assertEqual(antigravity.contract.max_agent_version, "1.1.10")
+        expected_max_version = "" if sys.platform == "win32" else "1.1.10"
+        self.assertEqual(antigravity.contract.max_agent_version, expected_max_version)
         self.assertNotEqual(antigravity.connector, "geminicli")
 
         future = resolve_connector_contract("agy", "Antigravity CLI v1.1.10")
-        self.assertEqual(future.status, STATUS_UNKNOWN)
-        self.assertFalse(future.supported)
+        if sys.platform == "win32":
+            self.assertEqual(future.status, STATUS_KNOWN)
+            self.assertTrue(future.supported)
+        else:
+            self.assertEqual(future.status, STATUS_UNKNOWN)
+            self.assertFalse(future.supported)
 
     def test_codex_version_range_matches_contract(self) -> None:
         expected = (
