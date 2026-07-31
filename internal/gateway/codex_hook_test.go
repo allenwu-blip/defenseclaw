@@ -77,12 +77,16 @@ func TestCodexComponentTargetsUseCurrentOfficialSurfaces(t *testing.T) {
 	}
 
 	targets := codexComponentTargets(workspace)
+	skillTargets := []string{currentPaths[2]}
+	if runtime.GOOS != "windows" {
+		skillTargets = append([]string{currentPaths[0]}, skillTargets...)
+	}
 	pluginTargets := []string{currentPaths[1]}
 	if runtime.GOOS == "darwin" {
 		pluginTargets = append(pluginTargets, currentFiles[0], currentFiles[2])
 	}
 	for component, expected := range map[string][]string{
-		"skill":  {currentPaths[0], currentPaths[2]},
+		"skill":  skillTargets,
 		"plugin": pluginTargets,
 		"mcp":    {currentFiles[1], currentFiles[3]},
 	} {
