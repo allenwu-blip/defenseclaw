@@ -26,6 +26,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
 $script:CopilotConfiguredMode = ''
+$script:AntigravityConfiguredMode = ''
 
 function Get-SecretValues {
     $names = @(
@@ -781,6 +782,82 @@ function Invoke-Tool([string]$Name, [string[]]$Arguments, [int[]]$Allowed = @(0)
     return Invoke-NativeProcess -FilePath $file -ArgumentList $Arguments -InputPath $InputPath -TimeoutSeconds $Timeout -AllowedExitCodes $Allowed -LogPath $log
 }
 
+function Get-RegisteredHookEvent([string]$EventName, [string]$PayloadPath) {
+    if ($Connector -eq 'antigravity') { return 'PreToolUse' }
+    if ($Connector -eq 'hermes') { return 'pre_tool_call' }
+    try {
+        $payload = [IO.File]::ReadAllText($PayloadPath) | ConvertFrom-Json -ErrorAction Stop
+        $payloadEvent = [string](Get-JsonPropertyValue $payload 'hook_event_name')
+    } catch {
+        throw "cannot resolve the registered $Connector event from $PayloadPath`: $($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($payloadEvent)) { $payloadEvent = $EventName }
+    if ($Connector -eq 'copilot') {
+        $registeredEvent = switch ($payloadEvent) {
+            'SessionStart' { 'sessionStart' }
+            'PreToolUse' { 'preToolUse' }
+            default { $payloadEvent }
+        }
+        return $registeredEvent
+    }
+    if ($Connector -eq 'cursor' -and $payloadEvent -ceq 'PreToolUse') { return 'preToolUse' }
+    if ($Connector -eq 'windsurf' -and $payloadEvent -ceq 'PreToolUse') { return 'pre_run_command' }
+    if ($Connector -eq 'opencode' -and $payloadEvent -ceq 'PreToolUse') { return 'tool.execute.before' }
+    return $payloadEvent
+}
+
+function Get-NativeHookArguments([string]$RegisteredEvent) {
+    $arguments = @('hook', '--connector', $Connector, '--event', $RegisteredEvent)
+    if ($Connector -eq 'codex') {
+        $config = Get-EffectiveConnectorConfigPath 'codex'
+        if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+            throw "Codex registration is unavailable while resolving the hook contract: $config"
+        }
+        $command = Get-CodexWindowsHookCommand ([IO.File]::ReadAllText($config))
+        $contract = [regex]::Match(
+            $command.Script,
+            "(?i)'--hook-contract','(?<value>codex-hooks-v[0-9]+)'"
+        )
+        if (-not $contract.Success) {
+            throw 'Codex registration has no finite installer-bound hook contract'
+        }
+        $arguments += @('--hook-contract', $contract.Groups['value'].Value)
+    }
+    return $arguments
+}
+
+function ConvertTo-CopilotOfficialToolPayload([string]$PayloadPath, [string]$Label) {
+    try {
+        $payload = [IO.File]::ReadAllText($PayloadPath) | ConvertFrom-Json -ErrorAction Stop
+        $toolInput = Get-JsonPropertyValue $payload 'tool_input'
+        $command = [string](Get-JsonPropertyValue $toolInput 'command')
+        $sessionID = [string](Get-JsonPropertyValue $payload 'session_id')
+    } catch {
+        throw "cannot convert the Copilot tool payload $PayloadPath`: $($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        throw "Copilot tool payload has no command: $PayloadPath"
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionID)) {
+        $sessionID = "defenseclaw-windows-contract-$Label"
+    }
+    $official = [ordered]@{
+        sessionId = $sessionID
+        timestamp = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+        cwd = $StateRoot
+        toolName = 'powershell'
+        toolArgs = [ordered]@{ command = $command }
+    }
+    $safeLabel = $Label -replace '[^A-Za-z0-9.-]', '_'
+    $officialPath = Join-Path $StateRoot "copilot-$safeLabel-$([Guid]::NewGuid().ToString('N')).json"
+    [IO.File]::WriteAllText(
+        $officialPath,
+        ($official | ConvertTo-Json -Depth 5 -Compress),
+        [Text.UTF8Encoding]::new($false)
+    )
+    return $officialPath
+}
+
 function Wait-GatewayHookReady([int]$Timeout = 90) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Timeout)
     $hookExecutable = Get-StableHookRuntimeExecutable
@@ -877,19 +954,39 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         throw "gateway hook API did not become semantically ready within ${Timeout}s; last probe: $lastError"
     }
 
+    if ($Connector -eq 'opencode') {
+        for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
+            $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+            try {
+                Invoke-OpenCodePluginProbe allow 'Write-Output dc-gateway-readiness' "readiness-$attempt" | Out-Null
+                $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
+                if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
+                $decision = Wait-HookDecisionAfter `
+                    $beforeTool $decisionDeadline 'defenseclaw-windows-contract' 'tool.execute.before'
+                if ($null -eq $decision -or $decision.action -cne 'allow' -or
+                    $decision.raw_action -cne 'allow' -or $decision.would_block) {
+                    throw 'OpenCode plugin readiness did not produce a canonical allow decision'
+                }
+                Write-Result 'gateway-hook-readiness' pass `
+                    "stable native OpenCode plugin allow after $attempt probe(s)"
+                return
+            } catch {
+                $lastError = Protect-LogText $_.Exception.Message
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        throw "gateway hook API did not become semantically ready within ${Timeout}s; last probe: $lastError"
+    }
+
     for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
         $probeID = "dc-windows-ready-$Connector-$([Guid]::NewGuid().ToString('N'))"
-        $sessionPath = Join-Path $probeRoot "session-$attempt.json"
         $toolPath = Join-Path $probeRoot "tool-$attempt.json"
-        $sessionPayload = [ordered]@{
-            hook_event_name = 'SessionStart'
-            session_id = $probeID
-            turn_id = "$probeID-turn"
-            agent_id = "$Connector-readiness"
-            agent_name = "$Connector Windows readiness"
-            agent_type = "$Connector-cli"
+        $toolEvent = switch ($Connector) {
+            'copilot' { 'preToolUse' }
+            'cursor' { 'preToolUse' }
+            'windsurf' { 'pre_run_command' }
+            default { 'PreToolUse' }
         }
-        $toolEvent = 'PreToolUse'
         $toolPayload = [ordered]@{
             hook_event_name = $toolEvent
             session_id = $probeID
@@ -901,11 +998,6 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
             tool_input = [ordered]@{ command = 'echo dc-gateway-readiness' }
         }
         [IO.File]::WriteAllText(
-            $sessionPath,
-            ($sessionPayload | ConvertTo-Json -Depth 6 -Compress),
-            [Text.UTF8Encoding]::new($false)
-        )
-        [IO.File]::WriteAllText(
             $toolPath,
             ($toolPayload | ConvertTo-Json -Depth 6 -Compress),
             [Text.UTF8Encoding]::new($false)
@@ -914,26 +1006,15 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         try {
             $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
             $probeTimeout = [Math]::Min(15, $remaining)
-            $beforeSession = @(Get-EventLines $script:GatewayJsonl).Count
-            $sessionResult = Invoke-NativeProcess -FilePath $hookExecutable `
-                -ArgumentList @('hook', '--connector', $Connector, '--event', 'SessionStart') `
-                -InputPath $sessionPath -TimeoutSeconds $probeTimeout -AllowedExitCodes @(0, 2) `
-                -LogPath (Join-Path $script:LogRoot "gateway-readiness-$attempt-session.log")
-            $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
-            if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
-            $sessionDecision = Wait-HookDecisionAfter `
-                $beforeSession $decisionDeadline $probeID 'SessionStart'
-            if ($sessionResult.ExitCode -ne 0 -or $null -eq $sessionDecision -or
-                $sessionDecision.action -cne 'allow' -or $sessionDecision.raw_action -cne 'allow' -or
-                $sessionDecision.would_block) {
-                throw "SessionStart readiness did not produce a canonical allow decision (exit=$($sessionResult.ExitCode))"
-            }
-            $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
-            $probeTimeout = [Math]::Min(15, $remaining)
             $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+            $toolInputPath = if ($Connector -eq 'copilot') {
+                ConvertTo-CopilotOfficialToolPayload $toolPath "readiness-$attempt"
+            } else {
+                $toolPath
+            }
             $toolResult = Invoke-NativeProcess -FilePath $hookExecutable `
-                -ArgumentList @('hook', '--connector', $Connector, '--event', $toolEvent) `
-                -InputPath $toolPath -TimeoutSeconds $probeTimeout -AllowedExitCodes @(0, 2) `
+                -ArgumentList (Get-NativeHookArguments $toolEvent) `
+                -InputPath $toolInputPath -TimeoutSeconds $probeTimeout -AllowedExitCodes @(0, 2) `
                 -LogPath (Join-Path $script:LogRoot "gateway-readiness-$attempt-tool.log")
             $decisionDeadline = [DateTime]::UtcNow.AddSeconds(2)
             if ($decisionDeadline -gt $deadline) { $decisionDeadline = $deadline }
@@ -945,7 +1026,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
                 throw "$toolEvent readiness did not produce a canonical allow decision (exit=$($toolResult.ExitCode))"
             }
             Write-Result 'gateway-hook-readiness' pass `
-                "stable native SessionStart -> $toolEvent allow after $attempt probe(s)"
+                "stable native $toolEvent allow after $attempt probe(s)"
             return
         } catch {
             $lastError = Protect-LogText $_.Exception.Message
@@ -1044,6 +1125,26 @@ function Invoke-Setup([string]$Mode) {
         Wait-Gateway
         return
     }
+    if ($Connector -eq 'antigravity') {
+        if ($script:AntigravityConfiguredMode -cne $Mode) {
+            Invoke-Tool 'defenseclaw' @(
+                'init', '--skip-install', '--non-interactive', '--yes',
+                '--connector', 'antigravity', '--profile', $Mode,
+                '--no-start-gateway', '--no-verify', '--native-setup-antigravity'
+            ) | Out-Null
+            Set-IsolatedGatewayPort
+            $script:AntigravityConfiguredMode = $Mode
+        }
+        $antigravityHome = Resolve-EffectiveConnectorHome 'antigravity'
+        Invoke-Tool 'defenseclaw-gateway' @(
+            'connector', 'reconcile', '--connector', 'antigravity',
+            '--data-dir', $env:DEFENSECLAW_HOME,
+            '--config-home', $antigravityHome, '--json'
+        ) | Out-Null
+        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+        Wait-Gateway
+        return
+    }
     $subcommand = switch ($Connector) {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
@@ -1086,9 +1187,9 @@ function Get-ConnectorToolName {
     switch ($Connector) {
         'claudecode' { 'PowerShell' }
         'copilot' { 'powershell' }
-        'cursor' { 'shell' }
+        'cursor' { 'run_terminal_cmd' }
         'hermes' { 'execute_command' }
-        'windsurf' { 'powershell' }
+        'windsurf' { 'run_command' }
         default { 'shell' }
     }
 }
@@ -1127,8 +1228,39 @@ function Get-CodexWindowsHookCommand([string]$Config) {
 }
 
 function Assert-CodexSynchronousWindowsHookCommand([object]$CodexCommand, [string]$Context) {
-    $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
-    if ($CodexCommand.Script -notmatch $startProcessPattern -or
+    $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*'')\s+-ArgumentList\s+@\((?<arguments>''(?:''''|[^''])*''(?:,''(?:''''|[^''])*'')*)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+    $startProcess = [regex]::Match($CodexCommand.Script, $startProcessPattern)
+    $argumentLiterals = if ($startProcess.Success) {
+        @([regex]::Matches($startProcess.Groups['arguments'].Value, "'(?:''|[^'])*'"))
+    } else {
+        @()
+    }
+    $arguments = @($argumentLiterals | ForEach-Object {
+        $_.Value.Substring(1, $_.Value.Length - 2).Replace("''", "'")
+    })
+    $file = if ($startProcess.Success) {
+        $literal = $startProcess.Groups['file'].Value
+        $literal.Substring(1, $literal.Length - 2).Replace("''", "'")
+    } else {
+        ''
+    }
+    $contractEvents = @{
+        'codex-hooks-v1' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'Stop')
+        'codex-hooks-v2' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PreCompact', 'PostCompact', 'Stop')
+        'codex-hooks-v3' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact', 'Stop')
+        'codex-hooks-v4' = @('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact', 'Stop', 'SessionEnd')
+    }
+    $event = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
+    $contract = if ($arguments.Count -eq 7) { $arguments[6] } else { '' }
+    if (-not $startProcess.Success -or
+        ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
+        [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
+        $arguments.Count -ne 7 -or
+        ($arguments -join "`0") -cne (@(
+            'hook', '--connector', 'codex', '--event', $event, '--hook-contract', $contract
+        ) -join "`0") -or
+        -not $contractEvents.ContainsKey($contract) -or
+        $event -cnotin @($contractEvents[$contract]) -or
         $CodexCommand.Script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
         $CodexCommand.Script -match '(?i)\$LASTEXITCODE') {
         throw "$Context does not use the exact synchronous native hook command"
@@ -1537,22 +1669,45 @@ function Invoke-Teardown {
 
 function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow', 'block')][string]$Expected, [bool]$RequireGatewayBlock = $false) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $registeredEvent = if ($Connector -eq 'antigravity') {
-        'PreToolUse'
-    } elseif ($Connector -eq 'hermes') {
-        'pre_tool_call'
+    $registeredEvent = Get-RegisteredHookEvent $EventName $Payload
+    $result = if ($Connector -eq 'opencode') {
+        if ($registeredEvent.StartsWith('session.', [StringComparison]::Ordinal)) {
+            Invoke-OpenCodePluginProbe lifecycle $registeredEvent $EventName
+        } else {
+            try {
+                $payloadDocument = [IO.File]::ReadAllText($Payload) | ConvertFrom-Json -ErrorAction Stop
+                $command = [string](Get-JsonPropertyValue (Get-JsonPropertyValue $payloadDocument 'tool_input') 'command')
+            } catch {
+                throw "OpenCode hook payload is invalid: $($_.Exception.Message)"
+            }
+            Invoke-OpenCodePluginProbe $Expected $command $EventName
+        }
     } else {
-        $EventName
+        $hookInputPath = if ($Connector -eq 'copilot') {
+            ConvertTo-CopilotOfficialToolPayload $Payload $EventName
+        } else {
+            $Payload
+        }
+        Invoke-Tool 'defenseclaw-hook' (Get-NativeHookArguments $registeredEvent) @(0, 2) -InputPath $hookInputPath
     }
-    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $registeredEvent) @(0, 2) -InputPath $Payload
     Start-Sleep -Milliseconds 800
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw "$EventName did not reach the gateway" }
-    if ($Expected -eq 'allow' -and $result.ExitCode -ne 0) { throw "$EventName should allow but exited $($result.ExitCode)" }
-    if ($Expected -eq 'block' -and $result.ExitCode -ne 2 -and $result.StdOut -notmatch '(?i)block|deny') { throw "$EventName did not shape a block decision" }
+    if ($result.ExitCode -ne 0 -and $Expected -eq 'allow') { throw "$EventName should allow but exited $($result.ExitCode)" }
+    if ($Connector -ne 'opencode' -and $Expected -eq 'block' -and
+        $result.ExitCode -ne 2 -and $result.StdOut -notmatch '(?i)block|deny') {
+        throw "$EventName did not shape a block decision"
+    }
     if ($Expected -eq 'block' -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no gateway block verdict" }
     if ($RequireGatewayBlock -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no observe-mode would-block verdict" }
-    Write-Result "$EventName`:fires" pass "jsonl line $before"
-    Write-Result "$EventName`:verdict" pass "exit=$($result.ExitCode) expected=$Expected"
+    $delivery = if ($Connector -ne 'opencode') {
+        "exit=$($result.ExitCode)"
+    } elseif ($registeredEvent.StartsWith('session.', [StringComparison]::Ordinal)) {
+        'plugin-lifecycle-contract'
+    } else {
+        'plugin-throw-contract'
+    }
+    Write-Result "$EventName`:fires" pass "jsonl line $before event=$registeredEvent"
+    Write-Result "$EventName`:verdict" pass "$delivery expected=$Expected"
 }
 
 function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$Root) {
@@ -1573,7 +1728,14 @@ function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$R
         return $path
     }
     $toolName = if ($Connector -eq 'opencode') { 'bash' } else { Get-ConnectorToolName }
-    $toolEvent = if ($Connector -eq 'hermes') { 'pre_tool_call' } else { 'PreToolUse' }
+    $toolEvent = switch ($Connector) {
+        'copilot' { 'preToolUse' }
+        'cursor' { 'preToolUse' }
+        'hermes' { 'pre_tool_call' }
+        'windsurf' { 'pre_run_command' }
+        'opencode' { 'tool.execute.before' }
+        default { 'PreToolUse' }
+    }
     $payload = [ordered]@{
         hook_event_name = $toolEvent
         session_id = "dc-windows-contract-$Connector"
@@ -1597,14 +1759,24 @@ function Invoke-DangerousHook(
     [string]$Sentinel
 ) {
     $before = @(Get-EventLines $script:GatewayJsonl).Count
-    $eventName = if ($Connector -eq 'antigravity') {
-        'PreToolUse'
-    } elseif ($Connector -eq 'hermes') {
-        'pre_tool_call'
+    $eventName = Get-RegisteredHookEvent "PreTool-$Name" $Payload
+    $result = if ($Connector -eq 'opencode') {
+        try {
+            $payloadDocument = [IO.File]::ReadAllText($Payload) | ConvertFrom-Json -ErrorAction Stop
+            $command = [string](Get-JsonPropertyValue (Get-JsonPropertyValue $payloadDocument 'tool_input') 'command')
+        } catch {
+            throw "OpenCode dangerous-command payload is invalid: $($_.Exception.Message)"
+        }
+        $expectedPluginVerdict = if ($Mode -eq 'action') { 'block' } else { 'allow' }
+        Invoke-OpenCodePluginProbe $expectedPluginVerdict $command "dangerous-$Name-$Mode"
     } else {
-        "PreTool-$Name"
+        $hookInputPath = if ($Connector -eq 'copilot') {
+            ConvertTo-CopilotOfficialToolPayload $Payload "dangerous-$Name-$Mode"
+        } else {
+            $Payload
+        }
+        Invoke-Tool 'defenseclaw-hook' (Get-NativeHookArguments $eventName) @(0, 2) $hookInputPath
     }
-    $result = Invoke-Tool 'defenseclaw-hook' @('hook', '--connector', $Connector, '--event', $eventName) @(0, 2) $Payload
 
     $decision = $null
     for ($attempt = 0; $attempt -lt 30 -and $null -eq $decision; $attempt++) {
@@ -1629,7 +1801,8 @@ function Invoke-DangerousHook(
         }
     }
     if (Test-Path -LiteralPath $Sentinel) { throw "$Name command input executed and created $Sentinel" }
-    Write-Result "dangerous-command:$Name`:$Mode" pass "exit=$($result.ExitCode) action=$($decision.action) raw=block would_block=$($decision.would_block) enforced=$($decision.enforced) rule=$RuleID sentinel=absent"
+    $delivery = if ($Connector -eq 'opencode') { 'plugin-throw-contract' } else { "exit=$($result.ExitCode)" }
+    Write-Result "dangerous-command:$Name`:$Mode" pass "$delivery action=$($decision.action) raw=block would_block=$($decision.would_block) enforced=$($decision.enforced) rule=$RuleID sentinel=absent"
 }
 
 function Invoke-DangerousCommandCorpus([ValidateSet('observe', 'action')][string]$Mode) {
@@ -1694,6 +1867,28 @@ function Get-TreeFingerprint([string]$Root) {
     }
 }
 
+function Invoke-OpenCodePluginProbe(
+    [ValidateSet('allow', 'block', 'lifecycle')][string]$Expected,
+    [string]$Command,
+    [string]$Label
+) {
+    $pluginPath = Get-EffectiveConnectorConfigPath 'opencode'
+    if (-not (Test-Path -LiteralPath $pluginPath -PathType Leaf)) {
+        throw "OpenCode managed plugin is missing: $pluginPath"
+    }
+    $node = (Get-Command 'node.exe' -ErrorAction Stop).Source
+    $assertion = Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-opencode-plugin.mjs'
+    $safeLabel = $Label -replace '[^A-Za-z0-9.-]', '_'
+    $scratch = Join-Path $StateRoot "opencode-plugin-$safeLabel-$([Guid]::NewGuid().ToString('N')).mjs"
+    return Invoke-NativeProcess -FilePath $node -ArgumentList @(
+        $assertion,
+        $pluginPath,
+        $scratch,
+        $Expected,
+        $Command
+    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot "opencode-plugin-$safeLabel.log")
+}
+
 function Assert-OpenCodePluginContract {
     $label = 'OpenCode hooks'
     $pluginPath = Get-EffectiveConnectorConfigPath 'opencode'
@@ -1726,23 +1921,8 @@ function Assert-OpenCodePluginContract {
     }
     Write-Result 'doctor:windows-hook-registration' pass "label=$label target=$pluginPath digest=current user-admin-boundary=reported"
 
-    $node = (Get-Command 'node.exe' -ErrorAction Stop).Source
-    $assertion = Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-opencode-plugin.mjs'
-    $scratch = Join-Path $StateRoot 'opencode-plugin-contract.mjs'
-    Invoke-NativeProcess -FilePath $node -ArgumentList @(
-        $assertion,
-        $pluginPath,
-        $scratch,
-        'allow',
-        'Write-Output defenseclaw-opencode-allow'
-    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'opencode-plugin-allow.log') | Out-Null
-    Invoke-NativeProcess -FilePath $node -ArgumentList @(
-        $assertion,
-        $pluginPath,
-        $scratch,
-        'block',
-        "Get-Content -LiteralPath 'C:\Windows\System32\config\SAM'"
-    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'opencode-plugin-block.log') | Out-Null
+    Invoke-OpenCodePluginProbe allow 'Write-Output defenseclaw-opencode-allow' 'contract-allow' | Out-Null
+    Invoke-OpenCodePluginProbe block "Get-Content -LiteralPath 'C:\Windows\System32\config\SAM'" 'contract-block' | Out-Null
     Write-Result 'opencode:plugin-before' pass 'allow returned and denied tool threw synchronously; after remained observe-only'
 
     $original = [IO.File]::ReadAllBytes($pluginPath)
@@ -1923,8 +2103,12 @@ function Assert-DoctorWindowsHookRegistration {
             'windsurf' { 'cannot be resolved' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
         }
-        if ($tamperedCheck.status -ne 'fail' -or
-            $tamperedCheck.detail -notmatch [regex]::Escape($expectedTamperDetail)) {
+        $tamperDetailMatched = $tamperedCheck.detail -match [regex]::Escape($expectedTamperDetail)
+        if ($Connector -eq 'windsurf' -and
+            $tamperedCheck.detail -match 'has 0 DefenseClaw handlers for (?:pre|post)_mcp_tool_use; expected exactly one') {
+            $tamperDetailMatched = $true
+        }
+        if ($tamperedCheck.status -ne 'fail' -or -not $tamperDetailMatched) {
             throw "Doctor did not reject the tampered $Connector hook command: $($tamperedCheck.status) $($tamperedCheck.detail)"
         }
         $repairSubcommand = Get-ConnectorRepairSubcommand
@@ -2566,6 +2750,7 @@ function Invoke-ContractRun {
         # Keep Antigravity publicly not_certified while allowing this
         # installer-shaped packaged contract to seed canonical state.
         $initArgs += '--native-setup-antigravity'
+        $script:AntigravityConfiguredMode = 'observe'
     }
     Invoke-Tool 'defenseclaw' $initArgs | Out-Null
     Set-IsolatedGatewayPort

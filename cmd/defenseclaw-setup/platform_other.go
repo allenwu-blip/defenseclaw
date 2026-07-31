@@ -68,14 +68,11 @@ func defaultInstallRoot() (string, error) { return "", errors.New("windows-only 
 func defaultDataRoot() (string, error)    { return "", errors.New("windows-only operation") }
 func defaultProfileRoot() (string, error) { return "", errors.New("windows-only operation") }
 func officialAntigravityConfigHomeForTransaction(dataRoot string) (string, error) {
-	// Setup cannot mutate on non-Windows hosts. This deterministic synthetic
-	// profile keeps the host-independent journal tests runnable without
-	// weakening the native-Windows Known Folder resolver above.
-	home := connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
-	if home == "" {
-		return "", errors.New("test data root is not a profile-scoped DefenseClaw root")
-	}
-	return home, nil
+	// Setup cannot mutate on non-Windows hosts. Keep host-independent journal
+	// tests deterministic for arbitrary synthetic roots without pretending that
+	// a DataRoot sibling is the official Antigravity home. The Windows build
+	// ignores DataRoot and resolves the current Profile Known Folder directly.
+	return filepath.Join(dataRoot, ".test-only-antigravity-config"), nil
 }
 func defaultHermesHome() (string, error)                    { return "", errors.New("windows-only operation") }
 func defaultOpenClawRoot() (string, error)                  { return "", errors.New("windows-only operation") }

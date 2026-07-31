@@ -3027,35 +3027,66 @@ function Assert-WizardHookRegistration(
     }
     $registration = [IO.File]::ReadAllText($Specification.ConfigPath)
     if ($Specification.Connector -eq 'codex') {
-        $tomlString = [regex]::Match(
+        $tomlStrings = @([regex]::Matches(
             $registration,
             '(?m)^\s*command_windows\s*=\s*(?<literal>"(?:\\.|[^"\\])*"|''[^'']*'')\s*$'
-        )
-        if (-not $tomlString.Success) { throw 'wizard-selected Codex registration has no command_windows override' }
-        $literal = $tomlString.Groups['literal'].Value
-        if ($literal.StartsWith("'", [StringComparison]::Ordinal)) {
-            $command = $literal.Substring(1, $literal.Length - 2)
-        } else {
-            try { $command = $literal | ConvertFrom-Json -ErrorAction Stop }
-            catch { throw "wizard-selected Codex command_windows is malformed: $($_.Exception.Message)" }
-        }
-        $encoded = [regex]::Match($command, '(?i)(?:^|\s)-EncodedCommand\s+([A-Za-z0-9+/=]+)(?:\s|$)')
-        if (-not $encoded.Success) { throw 'wizard-selected Codex registration does not use EncodedCommand' }
-        try { $script = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded.Groups[1].Value)) }
-        catch { throw "wizard-selected Codex command is not valid UTF-16LE Base64: $($_.Exception.Message)" }
-        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex'',''--event'',''(?<event>[A-Za-z]+)'',''--hook-contract'',''(?<contract>codex-hooks-v[0-9]+)''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
-        $startProcess = [regex]::Match($script, $startProcessPattern)
+        ))
         $codexV3Events = @(
             'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
             'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact',
             'PostCompact', 'Stop'
         )
-        if (-not $startProcess.Success -or
-            $startProcess.Groups['event'].Value -cnotin $codexV3Events -or
-            $startProcess.Groups['contract'].Value -cne 'codex-hooks-v3' -or
-            $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
-            $script -match '(?i)\$LASTEXITCODE') {
-            throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"
+        if ($tomlStrings.Count -ne $codexV3Events.Count) {
+            throw "wizard-selected Codex registration has $($tomlStrings.Count) command_windows overrides, expected $($codexV3Events.Count)"
+        }
+        $registeredEvents = [Collections.Generic.List[string]]::new()
+        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])*'')\s+-ArgumentList\s+@\((?<arguments>''(?:''''|[^''])*''(?:,''(?:''''|[^''])*'')*)\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+        foreach ($tomlString in $tomlStrings) {
+            $literal = $tomlString.Groups['literal'].Value
+            if ($literal.StartsWith("'", [StringComparison]::Ordinal)) {
+                $command = $literal.Substring(1, $literal.Length - 2)
+            } else {
+                try { $command = $literal | ConvertFrom-Json -ErrorAction Stop }
+                catch { throw "wizard-selected Codex command_windows is malformed: $($_.Exception.Message)" }
+            }
+            $encoded = [regex]::Match($command, '(?i)(?:^|\s)-EncodedCommand\s+([A-Za-z0-9+/=]+)(?:\s|$)')
+            if (-not $encoded.Success) { throw 'wizard-selected Codex registration does not use EncodedCommand' }
+            try { $script = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded.Groups[1].Value)) }
+            catch { throw "wizard-selected Codex command is not valid UTF-16LE Base64: $($_.Exception.Message)" }
+            $startProcess = [regex]::Match($script, $startProcessPattern)
+            $argumentLiterals = if ($startProcess.Success) {
+                @([regex]::Matches($startProcess.Groups['arguments'].Value, "'(?:''|[^'])*'"))
+            } else {
+                @()
+            }
+            $arguments = @($argumentLiterals | ForEach-Object {
+                $_.Value.Substring(1, $_.Value.Length - 2).Replace("''", "'")
+            })
+            $file = if ($startProcess.Success) {
+                $fileLiteral = $startProcess.Groups['file'].Value
+                $fileLiteral.Substring(1, $fileLiteral.Length - 2).Replace("''", "'")
+            } else {
+                ''
+            }
+            $event = if ($arguments.Count -eq 7) { $arguments[4] } else { '' }
+            if (-not $startProcess.Success -or
+                ($argumentLiterals.Value -join ',') -cne $startProcess.Groups['arguments'].Value -or
+                [IO.Path]::GetFileName($file) -cne 'defenseclaw-hook.exe' -or
+                $arguments.Count -ne 7 -or
+                ($arguments -join "`0") -cne (@(
+                    'hook', '--connector', 'codex', '--event', $event,
+                    '--hook-contract', 'codex-hooks-v3'
+                ) -join "`0") -or
+                $event -cnotin $codexV3Events -or
+                $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
+                $script -match '(?i)\$LASTEXITCODE') {
+                throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"
+            }
+            $registeredEvents.Add($event)
+        }
+        if ((($registeredEvents | Sort-Object) -join "`0") -cne
+            (($codexV3Events | Sort-Object) -join "`0")) {
+            throw "wizard-selected Codex registration does not contain the exact codex-hooks-v3 event set: $($Specification.ConfigPath)"
         }
     } elseif ($Specification.Connector -eq 'antigravity') {
         try { $hooks = $registration | ConvertFrom-Json -ErrorAction Stop }

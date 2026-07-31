@@ -291,6 +291,28 @@ def test_codex_cache_rejects_zero_identity_entry_with_mutated_metadata(
     )
 
 
+def test_codex_cache_accepts_nonportable_directory_size_with_identity(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "registry"
+    directory.mkdir()
+    named = os.stat(directory, follow_symlinks=False)
+    enumerated = SimpleNamespace(
+        st_mode=named.st_mode,
+        st_dev=named.st_dev,
+        st_ino=named.st_ino,
+        st_size=named.st_size + 4096,
+        st_mtime_ns=named.st_mtime_ns,
+        st_ctime_ns=named.st_ctime_ns,
+        st_file_attributes=getattr(named, "st_file_attributes", 0),
+    )
+
+    assert plugin_directories_module._directory_entry_matches(
+        enumerated,
+        named,
+    )
+
+
 @requires_symlink_privilege
 def test_codex_cache_rejects_reparse_ancestor(tmp_path: Path) -> None:
     actual_home = tmp_path / "actual-codex-home"

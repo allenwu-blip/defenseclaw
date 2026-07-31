@@ -1572,6 +1572,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     $contractRun = [regex]::Match($harnessText, '(?s)function Invoke-ContractRun\b.*?\n\}').Value
     Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?\$initArgs \+= ''--native-setup-antigravity''') `
         'packaged Antigravity contract uses the narrow native Setup bootstrap without changing public certification'
+    $connectorSetup = [regex]::Match($harnessText, '(?s)function Invoke-Setup\b.*?\n\}').Value
+    Assert-True ($connectorSetup -match '(?s)\$Connector -eq ''antigravity''.*?--native-setup-antigravity' -and
+        $connectorSetup -match '(?s)''reconcile''.*?''--connector'', ''antigravity''.*?''--config-home'', \$antigravityHome') `
+        'packaged Antigravity mode changes remain inside the installer-only bootstrap and exact official-home reconcile'
     Assert-True ($contractRun -match "(?s)try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?Invoke-Setup action.*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT") `
         'unversioned fixture override is removed before Doctor tamper validation'
     $liveRun = [regex]::Match($harnessText, '(?s)function Invoke-LiveRun\b.*?\n\}').Value
@@ -1626,16 +1630,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $gatewayWait -match '\$probeTimeout = \[Math\]::Min\(15, \$remaining\)' -and
         $gatewayWait -match 'Wait-GatewayHookReady -Timeout \$remaining') `
         'gateway readiness requires bounded status and native hook API probes'
-    $readinessSession = $gatewayHookReadiness.IndexOf(
-        "-ArgumentList @('hook', '--connector', `$Connector, '--event', 'SessionStart')",
-        [StringComparison]::Ordinal
-    )
     $readinessTool = $gatewayHookReadiness.IndexOf(
-        "-ArgumentList @('hook', '--connector', `$Connector, '--event', `$toolEvent)",
-        [StringComparison]::Ordinal
-    )
-    $readinessSessionDecision = $gatewayHookReadiness.IndexOf(
-        '$beforeSession $decisionDeadline $probeID ''SessionStart''',
+        '-ArgumentList (Get-NativeHookArguments $toolEvent)',
         [StringComparison]::Ordinal
     )
     $readinessToolDecision = $gatewayHookReadiness.IndexOf(
@@ -1643,21 +1639,36 @@ private-secret-name = "DefenseClaw must remain redacted"
         [StringComparison]::Ordinal
     )
     Assert-True ($gatewayHookReadiness -match 'Get-StableHookRuntimeExecutable' -and
-        $readinessSession -ge 0 -and $readinessTool -gt $readinessSession -and
-        $readinessSessionDecision -gt $readinessSession -and
+        $gatewayHookReadiness -match "'copilot' \{ 'preToolUse' \}" -and
+        $gatewayHookReadiness -match "'cursor' \{ 'preToolUse' \}" -and
+        $gatewayHookReadiness -match "'windsurf' \{ 'pre_run_command' \}" -and
+        $gatewayHookReadiness -match 'Invoke-OpenCodePluginProbe allow' -and
+        $readinessTool -ge 0 -and
         $readinessToolDecision -gt $readinessTool) `
-        'gateway restart readiness exercises the stable native SessionStart to connector-specific pre-tool path'
+        'gateway restart readiness exercises each connector-specific native pre-tool path'
     Assert-True ($gatewayHookReadiness -match "'--connector', 'hermes', '--event', 'pre_tool_call'" -and
         $gatewayHookReadiness -match '\$probeID ''pre_tool_call''' -and
         $gatewayHookReadiness -match 'canonical fail-open allow decision') `
         'Hermes readiness uses its official event name and forced fail-open effective posture'
-    Assert-True ($gatewayHookReadiness -match '\$sessionDecision\.action -cne ''allow''' -and
-        $gatewayHookReadiness -match '\$sessionDecision\.raw_action -cne ''allow''' -and
-        $gatewayHookReadiness -match '\$sessionDecision\.would_block' -and
-        $gatewayHookReadiness -match '\$toolDecision\.action -cne ''allow''' -and
+    Assert-True ($gatewayHookReadiness -match '\$toolDecision\.action -cne ''allow''' -and
         $gatewayHookReadiness -match '\$toolDecision\.raw_action -cne ''allow''' -and
         $gatewayHookReadiness -match '\$toolDecision\.would_block') `
         'gateway restart readiness requires canonical non-blocking allow decisions'
+    $copilotPayloadContract = [regex]::Match(
+        $harnessText,
+        '(?s)function ConvertTo-CopilotOfficialToolPayload\b.*?\n\}'
+    ).Value
+    Assert-True ($copilotPayloadContract -match 'sessionId\s*=' -and
+        $copilotPayloadContract -match 'timestamp\s*=' -and
+        $copilotPayloadContract -match 'cwd\s*=' -and
+        $copilotPayloadContract -match 'toolName\s*=\s*''powershell''' -and
+        $copilotPayloadContract -match 'toolArgs\s*=' -and
+        $copilotPayloadContract -notmatch 'hook_event_name\s*=' -and
+        [regex]::Matches(
+            $harnessText,
+            'ConvertTo-CopilotOfficialToolPayload\s+\$'
+        ).Count -eq 3) `
+        'Copilot readiness and policy probes preserve the exact event-free official tool body'
     $latestHookDecision = [regex]::Match(
         $harnessText,
         '(?s)function Get-LatestHookDecision\b.*?\n\}'
@@ -1685,6 +1696,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'doctor:windows-hook-tamper' -and
         $harnessText -match 'cannot be resolved' -and
         $harnessText -match 'does not use the native hook runtime' -and
+        $harnessText.Contains('has 0 DefenseClaw handlers for (?:pre|post)_mcp_tool_use; expected exactly one') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
         'Doctor connector contract rejects connector-specific tampered hook commands with exit 1'
     Assert-True ($harnessText -match 'WriteAllBytes\(\$configPath, \$originalConfig\)' -and $harnessText -match 'doctor:windows-hook-recovery') 'Doctor connector contract restores the registration byte-for-byte and validates recovery'
