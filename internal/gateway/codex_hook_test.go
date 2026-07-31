@@ -39,7 +39,7 @@ func TestCodexComponentTargetsUseCurrentOfficialSurfaces(t *testing.T) {
 
 	currentPaths := []string{
 		filepath.Join(homeDir, ".agents", "skills", "personal-skill"),
-		filepath.Join(codexHome, "plugins", "cache", "installed-plugin"),
+		filepath.Join(codexHome, "plugins", "cache", "market", "installed-plugin", "local"),
 		filepath.Join(workspace, ".agents", "skills", "project-skill"),
 	}
 	for _, path := range currentPaths {

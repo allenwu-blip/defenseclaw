@@ -139,12 +139,6 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 // neither path can reintroduce generic fields that an event does not accept.
 func CursorHookOutput(event, action, reason, additional string) map[string]interface{} {
 	event = canonicalHookEvent(event)
-	if runtime.GOOS == "darwin" && event == "subagentstart" {
-		if action == "block" || action == "confirm" {
-			return map[string]interface{}{"continue": true, "permission": "deny", "user_message": reason, "agent_message": reason}
-		}
-		return map[string]interface{}{"continue": true, "permission": "allow"}
-	}
 	switch event {
 	case "beforesubmitprompt":
 		if action == "block" {

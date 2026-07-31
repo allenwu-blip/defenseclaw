@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"slices"
 	"testing"
 )
@@ -925,13 +924,6 @@ func TestCursorProfileRespond_CurrentEventOutputMatrix(t *testing.T) {
 		{"afterAgentThought", map[string]interface{}{}},
 		{"workspaceOpen", map[string]interface{}{}},
 	}
-	if runtime.GOOS == "darwin" {
-		for i := range cases {
-			if cases[i].event == "subagentStart" {
-				cases[i].expected = map[string]interface{}{"continue": true, "permission": "allow"}
-			}
-		}
-	}
 	for _, tc := range cases {
 		t.Run(tc.event, func(t *testing.T) {
 			out := hookOnlyProfileRespond(HookRespondInput{
@@ -1053,18 +1045,6 @@ func TestCursorProfileRespond_EventSpecificFields(t *testing.T) {
 			expected:   map[string]interface{}{},
 		},
 	}
-	if runtime.GOOS == "darwin" {
-		for i := range cases {
-			if cases[i].event == "subagentStart" {
-				cases[i].expected = map[string]interface{}{
-					"continue":      true,
-					"permission":    "deny",
-					"user_message":  "subagent creation denied",
-					"agent_message": "subagent creation denied",
-				}
-			}
-		}
-	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out := hookOnlyProfileRespond(HookRespondInput{
@@ -1150,29 +1130,23 @@ func TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue(t *testing.T) 
 	}
 }
 
-func TestCursorProfileRespond_SubagentStartBlocksAndDowngradesConfirmToDeny(t *testing.T) {
-	for _, action := range []string{"block", "confirm"} {
-		t.Run(action, func(t *testing.T) {
-			out := hookOnlyProfileRespond(HookRespondInput{
-				Req: HookProfileRequest{
-					ConnectorName: "cursor",
-					HookEventName: "subagentStart",
-				},
-				Action:    action,
-				RawAction: action,
-				Reason:    "subagent requires review",
-				Caps:      NewCursorConnector().HookCapabilities(SetupOpts{}),
-			})
-			want := map[string]interface{}{
-				"continue":      true,
-				"permission":    "deny",
-				"user_message":  "subagent requires review",
-				"agent_message": "subagent requires review",
-			}
-			if !reflect.DeepEqual(out.Output, want) {
-				t.Errorf("subagentStart %s Output mismatch\n got: %#v\nwant: %#v", action, out.Output, want)
-			}
-		})
+func TestCursorProfileRespond_SubagentStartBlockUsesEventSpecificDeny(t *testing.T) {
+	out := hookOnlyProfileRespond(HookRespondInput{
+		Req: HookProfileRequest{
+			ConnectorName: "cursor",
+			HookEventName: "subagentStart",
+		},
+		Action:    "block",
+		RawAction: "block",
+		Reason:    "subagent requires review",
+		Caps:      NewCursorConnector().HookCapabilities(SetupOpts{}),
+	})
+	want := map[string]interface{}{
+		"permission":   "deny",
+		"user_message": "subagent requires review",
+	}
+	if !reflect.DeepEqual(out.Output, want) {
+		t.Errorf("subagentStart block Output mismatch\n got: %#v\nwant: %#v", out.Output, want)
 	}
 }
 

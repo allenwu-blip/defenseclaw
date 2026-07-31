@@ -856,13 +856,8 @@ func codexComponentTargets(cwd string) map[string][]string {
 		targets["skill"] = append(targets["skill"], childDirs(personalSkills)...)
 	}
 	if strings.TrimSpace(codexHome) != "" {
-		if runtime.GOOS == "darwin" {
-			targets["plugin"] = append(targets["plugin"],
-				childDirs(filepath.Join(codexHome, "plugins", "cache"))...)
-		} else {
-			targets["plugin"] = append(targets["plugin"],
-				codexInstalledPluginDirs(filepath.Join(codexHome, "plugins", "cache"))...)
-		}
+		targets["plugin"] = append(targets["plugin"],
+			codexInstalledPluginDirs(filepath.Join(codexHome, "plugins", "cache"))...)
 		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(codexHome, "config.toml"))...)
 		targets["agent"] = append(targets["agent"], childFilesWithExtension(filepath.Join(codexHome, "agents"), ".toml")...)
 		targets["rule"] = append(targets["rule"], childFilesWithExtension(filepath.Join(codexHome, "rules"), ".rules")...)
