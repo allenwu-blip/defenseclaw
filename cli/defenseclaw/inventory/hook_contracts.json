@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "defenseclaw_version": "0.5.0",
   "runtime_lock_file": "hook_contract_lock.json",
   "description": "DefenseClaw hook connector compatibility contracts. Each hook connector maps agent CLI version ranges to the hook script contract DefenseClaw knows how to install, decode, evaluate, and respond to.",
@@ -374,6 +374,13 @@
             "max_exclusive": "0.20.0"
           },
           "default_for_unversioned": true,
+          "platform_overrides": {
+            "windows": {
+              "agent_version": {
+                "max_exclusive": ""
+              }
+            }
+          },
           "hook_script_version": "v6",
           "hook_script": "hermes-hook.sh",
           "hook_config_path_templates": [
@@ -703,6 +710,13 @@
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
+          "platform_overrides": {
+            "windows": {
+              "native_otlp": false,
+              "native_otlp_auth": "",
+              "native_otlp_signals": []
+            }
+          },
           "hook_script_version": "v7",
           "hook_script": "copilot-hook.sh",
           "hook_config_path_templates": [
@@ -732,7 +746,12 @@
             "tool_result"
           ],
           "supports_traceparent": true,
-          "native_otlp": false,
+          "native_otlp": true,
+          "native_otlp_auth": "otel-exporter-headers",
+          "native_otlp_signals": [
+            "metrics",
+            "traces"
+          ],
           "capabilities": {
             "can_block": true,
             "can_ask_native": true,
@@ -770,6 +789,13 @@
             "max_exclusive": "1.1.9"
           },
           "default_for_unversioned": true,
+          "platform_overrides": {
+            "windows": {
+              "agent_version": {
+                "max_exclusive": ""
+              }
+            }
+          },
           "hook_script_version": "v8",
           "hook_script": "antigravity-hook.sh",
           "hook_config_path_templates": [
@@ -847,6 +873,14 @@
           ],
           "supports_traceparent": true,
           "native_otlp": true,
+          "platform_overrides": {
+            "windows": {
+              "agent_version": {
+                "min_inclusive": "0.0.0"
+              },
+              "native_otlp": false
+            }
+          },
           "capabilities": {
             "can_block": true,
             "can_ask_native": false,
@@ -880,6 +914,31 @@
             "max_exclusive": "1.18.11"
           },
           "default_for_unversioned": false,
+          "platform_overrides": {
+            "windows": {
+              "agent_version": {
+                "min_inclusive": "0.0.0",
+                "max_exclusive": ""
+              },
+              "default_for_unversioned": true,
+              "hook_script_version": "v6",
+              "events": [
+                "session.created",
+                "session.updated",
+                "session.status",
+                "session.idle",
+                "session.compacted",
+                "session.error",
+                "session.deleted",
+                "tool.execute.before",
+                "tool.execute.after"
+              ],
+              "aid_surfaces": [
+                "tool_call",
+                "tool_result"
+              ]
+            }
+          },
           "hook_script_version": "v7",
           "hook_script": "opencode-plugin.js",
           "hook_config_path_templates": [

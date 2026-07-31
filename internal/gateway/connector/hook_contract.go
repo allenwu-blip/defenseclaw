@@ -870,6 +870,10 @@ func hookContractByID(connectorName, contractID string) (HookContract, bool) {
 }
 
 func ResolveHookContract(connectorName, rawVersion string) HookContractResolution {
+	return resolveHookContractForOS(connectorName, rawVersion, runtime.GOOS)
+}
+
+func resolveHookContractForOS(connectorName, rawVersion, goos string) HookContractResolution {
 	name := normalizeConnectorName(connectorName)
 	if proxyConnectorsWithoutHookGate[name] {
 		raw := strings.TrimSpace(rawVersion)
@@ -881,7 +885,7 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 			Reason:            "proxy/chat connector; no hook contract gate",
 		}
 	}
-	contracts := KnownHookContracts(name)
+	contracts := hookContractsForOS(name, goos)
 	if len(contracts) == 0 {
 		return HookContractResolution{
 			Connector:  name,
@@ -894,14 +898,6 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 	normalized := NormalizeAgentVersion(name, raw)
 	if raw == "" {
 		contract := defaultHookContract(contracts)
-		// PR #655's native-Windows connector is intentionally pinned to the
-		// historical 13-event contract. The 14-event v2 delta in this branch
-		// is macOS/POSIX-only until separately validated on Windows.
-		if name == "copilot" && runtime.GOOS == "windows" {
-			if windowsContract, ok := hookContractByID(name, "copilot-hooks-v1"); ok {
-				contract = windowsContract
-			}
-		}
 		return HookContractResolution{
 			Connector:         name,
 			RawVersion:        "",
@@ -918,19 +914,6 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 			NormalizedVersion: "",
 			Status:            HookCompatibilityUnknown,
 			Reason:            "could not normalize agent version",
-		}
-	}
-	if name == "copilot" && runtime.GOOS == "windows" {
-		if contract, ok := hookContractByID(name, "copilot-hooks-v1"); ok &&
-			versionInRange(normalized, contract.MinAgentVersion, "") {
-			return HookContractResolution{
-				Connector:         name,
-				RawVersion:        raw,
-				NormalizedVersion: normalized,
-				Status:            HookCompatibilityKnown,
-				Reason:            "matched preserved native-Windows hook contract copilot-hooks-v1",
-				Contract:          contract,
-			}
 		}
 	}
 	for _, contract := range contracts {

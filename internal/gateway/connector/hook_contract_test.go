@@ -99,6 +99,33 @@ func TestMacOSContractUpdatesPreserveWindowsPR655Contracts(t *testing.T) {
 	if !darwinCopilot.NativeOTLP || windowsCopilot.NativeOTLP {
 		t.Errorf("Copilot v2 native OTLP darwin=%v windows=%v", darwinCopilot.NativeOTLP, windowsCopilot.NativeOTLP)
 	}
+	windowsCopilotV1 := contract("windows", "copilot", "copilot-hooks-v1")
+	if windowsCopilotV1.MaxAgentVersion != "1.0.76" || windowsCopilotV1.DefaultForUnversioned ||
+		!windowsCopilot.DefaultForUnversioned || len(windowsCopilot.Events) != 14 {
+		t.Errorf("Copilot Windows selection metadata v1=(max=%q default=%v) v2=(default=%v events=%d)",
+			windowsCopilotV1.MaxAgentVersion, windowsCopilotV1.DefaultForUnversioned,
+			windowsCopilot.DefaultForUnversioned, len(windowsCopilot.Events))
+	}
+	if selected := defaultHookContract(hookContractsForOS("copilot", "windows")); selected.ContractID != "copilot-hooks-v2" {
+		t.Errorf("Copilot Windows default contract=%q want copilot-hooks-v2", selected.ContractID)
+	}
+	for _, test := range []struct {
+		goos       string
+		version    string
+		contractID string
+	}{
+		{goos: "darwin", version: "", contractID: "copilot-hooks-v2"},
+		{goos: "darwin", version: "GitHub Copilot CLI 1.0.76", contractID: "copilot-hooks-v2"},
+		{goos: "windows", version: "", contractID: "copilot-hooks-v2"},
+		{goos: "windows", version: "GitHub Copilot CLI 1.0.75", contractID: "copilot-hooks-v1"},
+		{goos: "windows", version: "GitHub Copilot CLI 1.0.76", contractID: "copilot-hooks-v2"},
+		{goos: "windows", version: "GitHub Copilot CLI 1.0.77", contractID: "copilot-hooks-v2"},
+	} {
+		resolved := resolveHookContractForOS("copilot", test.version, test.goos)
+		if resolved.Contract.ContractID != test.contractID {
+			t.Errorf("Copilot %s version %q contract=%q want %q", test.goos, test.version, resolved.Contract.ContractID, test.contractID)
+		}
+	}
 }
 
 func sharedHookBytes(t *testing.T, hookDir string) map[string][]byte {
@@ -392,22 +419,37 @@ func TestContentEnvelopeKeyDeclarations(t *testing.T) {
 }
 
 func TestHookContractsManifestMatchesRuntime(t *testing.T) {
+	type manifestAgentVersion struct {
+		Exact        []string `json:"exact"`
+		MinInclusive string   `json:"min_inclusive"`
+		MaxExclusive string   `json:"max_exclusive"`
+	}
+	type manifestAgentVersionOverride struct {
+		Exact        *[]string `json:"exact"`
+		MinInclusive *string   `json:"min_inclusive"`
+		MaxExclusive *string   `json:"max_exclusive"`
+	}
+	type manifestContractOverride struct {
+		AgentVersion          *manifestAgentVersionOverride `json:"agent_version"`
+		DefaultForUnversioned *bool                         `json:"default_for_unversioned"`
+		HookScriptVersion     *string                       `json:"hook_script_version"`
+		Events                *[]string                     `json:"events"`
+		AIDSurfaces           *[]string                     `json:"aid_surfaces"`
+		NativeOTLP            *bool                         `json:"native_otlp"`
+	}
 	type manifestContract struct {
-		ContractID   string `json:"contract_id"`
-		AgentVersion struct {
-			Exact        []string `json:"exact"`
-			MinInclusive string   `json:"min_inclusive"`
-			MaxExclusive string   `json:"max_exclusive"`
-		} `json:"agent_version"`
-		DefaultForUnversioned   bool     `json:"default_for_unversioned"`
-		HookScriptVersion       string   `json:"hook_script_version"`
-		HookConfigPathTemplates []string `json:"hook_config_path_templates"`
-		ResponseField           string   `json:"response_field"`
-		Events                  []string `json:"events"`
-		AIDSurfaces             []string `json:"aid_surfaces"`
-		SupportsTraceparent     bool     `json:"supports_traceparent"`
-		NativeOTLP              bool     `json:"native_otlp"`
-		ContentEnvelopeKey      string   `json:"content_envelope_key"`
+		ContractID              string                              `json:"contract_id"`
+		AgentVersion            manifestAgentVersion                `json:"agent_version"`
+		PlatformOverrides       map[string]manifestContractOverride `json:"platform_overrides"`
+		DefaultForUnversioned   bool                                `json:"default_for_unversioned"`
+		HookScriptVersion       string                              `json:"hook_script_version"`
+		HookConfigPathTemplates []string                            `json:"hook_config_path_templates"`
+		ResponseField           string                              `json:"response_field"`
+		Events                  []string                            `json:"events"`
+		AIDSurfaces             []string                            `json:"aid_surfaces"`
+		SupportsTraceparent     bool                                `json:"supports_traceparent"`
+		NativeOTLP              bool                                `json:"native_otlp"`
+		ContentEnvelopeKey      string                              `json:"content_envelope_key"`
 		Capabilities            struct {
 			CanBlock           bool     `json:"can_block"`
 			CanAskNative       bool     `json:"can_ask_native"`
@@ -423,7 +465,8 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 		Contracts         []manifestContract `json:"contracts"`
 	}
 	type manifest struct {
-		Connectors map[string]manifestConnector `json:"connectors"`
+		SchemaVersion int                          `json:"schema_version"`
+		Connectors    map[string]manifestConnector `json:"connectors"`
 	}
 
 	path := filepath.Join("..", "..", "..", "cli", "defenseclaw", "inventory", "hook_contracts.json")
@@ -434,6 +477,52 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 	var gotManifest manifest
 	if err := json.Unmarshal(payload, &gotManifest); err != nil {
 		t.Fatalf("unmarshal hook contract manifest: %v", err)
+	}
+	if gotManifest.SchemaVersion != 2 {
+		t.Fatalf("hook contract manifest schema_version=%d want 2", gotManifest.SchemaVersion)
+	}
+
+	contractForOS := func(contract manifestContract, goos string) manifestContract {
+		override, ok := contract.PlatformOverrides[goos]
+		if !ok {
+			return contract
+		}
+		if override.AgentVersion != nil {
+			if override.AgentVersion.Exact != nil {
+				contract.AgentVersion.Exact = append([]string(nil), (*override.AgentVersion.Exact)...)
+			}
+			if override.AgentVersion.MinInclusive != nil {
+				contract.AgentVersion.MinInclusive = *override.AgentVersion.MinInclusive
+			}
+			if override.AgentVersion.MaxExclusive != nil {
+				contract.AgentVersion.MaxExclusive = *override.AgentVersion.MaxExclusive
+			}
+		}
+		if override.DefaultForUnversioned != nil {
+			contract.DefaultForUnversioned = *override.DefaultForUnversioned
+		}
+		if override.HookScriptVersion != nil {
+			contract.HookScriptVersion = *override.HookScriptVersion
+		}
+		if override.Events != nil {
+			contract.Events = append([]string(nil), (*override.Events)...)
+		}
+		if override.AIDSurfaces != nil {
+			contract.AIDSurfaces = append([]string(nil), (*override.AIDSurfaces)...)
+		}
+		if override.NativeOTLP != nil {
+			contract.NativeOTLP = *override.NativeOTLP
+		}
+		return contract
+	}
+	for name, spec := range gotManifest.Connectors {
+		for _, contract := range spec.Contracts {
+			for platformName := range contract.PlatformOverrides {
+				if platformName != "darwin" && platformName != "linux" && platformName != "windows" {
+					t.Fatalf("%s/%s has unknown platform override %q", name, contract.ContractID, platformName)
+				}
+			}
+		}
 	}
 
 	for _, proxy := range []string{"openclaw", "zeptoclaw"} {
@@ -456,7 +545,24 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 		}
 	}
 
-	for name, runtimeContracts := range builtinHookContracts {
+	type runtimeCase struct {
+		goos      string
+		name      string
+		contracts []HookContract
+	}
+	runtimeCases := []runtimeCase{}
+	for _, goos := range []string{"darwin", "windows"} {
+		for name := range builtinHookContracts {
+			runtimeCases = append(runtimeCases, runtimeCase{
+				goos:      goos,
+				name:      name,
+				contracts: hookContractsForOS(name, goos),
+			})
+		}
+	}
+	for _, runtimeCase := range runtimeCases {
+		name := runtimeCase.name
+		runtimeContracts := runtimeCase.contracts
 		spec, ok := gotManifest.Connectors[name]
 		if !ok {
 			t.Fatalf("manifest missing hook connector %s", name)
@@ -476,6 +582,7 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s manifest missing contract %s", name, runtime.ContractID)
 			}
+			manifestContract = contractForOS(manifestContract, runtimeCase.goos)
 			if manifestContract.AgentVersion.MinInclusive != runtime.MinAgentVersion {
 				t.Fatalf("%s min version=%q want %q", runtime.ContractID, manifestContract.AgentVersion.MinInclusive, runtime.MinAgentVersion)
 			}
