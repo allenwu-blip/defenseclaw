@@ -74,6 +74,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    @unittest.skipUnless(os.name == "nt", "Windows Known Folder contract")
     def test_claude_managed_paths_use_program_files_known_folder(self) -> None:
         trusted = self.root / "Trusted Program Files"
         attacker = self.root / "Attacker Program Files"
@@ -88,6 +89,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
         self.assertEqual(paths, (str(trusted / "ClaudeCode" / "managed-settings.json"),))
 
+    @unittest.skipUnless(os.name == "nt", "Windows Known Folder contract")
     def test_claude_managed_paths_fail_closed_without_known_folder(self) -> None:
         with patch("defenseclaw.doctor_hooks._windows_known_folder_path", return_value=""):
             with self.assertRaisesRegex(_InspectionError, "trusted Windows Program Files"):

@@ -50,7 +50,7 @@ _CLAUDE_MANIFEST = ".claude-plugin/plugin.json"
 _MAX_MANIFEST_BYTES = 1_048_576
 _MAX_CONFIG_BYTES = 2_097_152
 _MAX_CLAUDE_CACHE_DEPTH = 4
-_MAX_CODEX_DIRECTORY_SNAPSHOT_ATTEMPTS = 3
+_MAX_CODEX_DIRECTORY_SNAPSHOT_ATTEMPTS = 8
 _CLAUDE_CACHE_SKIP_DIRS = frozenset(
     {"node_modules", ".git", ".hg", ".svn", "__pycache__"}
 )
@@ -301,7 +301,15 @@ def _is_codex_cache_root(root: str, connector: str) -> bool:
 
 def _discover_codex_cache(cache_root: str) -> list[PluginDirectory]:
     """Discover exact ``registry/name/version`` Codex manifest roots."""
+    plugins_root = os.path.dirname(os.path.normpath(cache_root))
+    codex_home = os.path.dirname(plugins_root)
     try:
+        # POSIX permits symlinked system ancestors, so reject_reparse_path()
+        # only checks the leaf and its immediate parent there. Validate the
+        # complete declared Codex cache chain explicitly without climbing
+        # above the client-owned home.
+        _stable_directory_info(codex_home)
+        _stable_directory_info(plugins_root)
         cache_identity = _stable_directory_info(cache_root)
     except OSError:
         return []

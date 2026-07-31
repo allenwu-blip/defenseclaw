@@ -326,6 +326,13 @@ def discover_skill_directories(
 
     try:
         root_identity = _stable_directory_info(skill_root)
+        if system_containers:
+            system_path = os.path.join(skill_root, ".system")
+            if os.path.lexists(system_path):
+                _stable_directory_info(
+                    system_path,
+                    containment_root=skill_root,
+                )
         entries = _stable_child_directories(skill_root)
     except OSError:
         return []

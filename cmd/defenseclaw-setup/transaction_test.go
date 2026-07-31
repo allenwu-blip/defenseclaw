@@ -659,10 +659,7 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	transaction.CopilotHome = transaction.PreviousCopilotHome
 	transaction.PreviousCursorHome = filepath.Join(filepath.Dir(dataRoot), ".cursor")
 	transaction.CursorHome = transaction.PreviousCursorHome
-	officialAntigravityHome, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	officialAntigravityHome := connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
 	transaction.PreviousAntigravityConfigDir = officialAntigravityHome
 	transaction.AntigravityConfigDir = transaction.PreviousAntigravityConfigDir
 	transaction.PreviousOpenCodeConfigDir = filepath.Join(filepath.Dir(dataRoot), ".config", "opencode")
@@ -3805,11 +3802,7 @@ func testSetupTransactionForRoots(action, installRoot, dataRoot, maintenancePath
 	}
 	antigravityConfigDir := ""
 	if action == "install" {
-		var err error
-		antigravityConfigDir, err = defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
-		if err != nil {
-			panic(fmt.Sprintf("resolve test Antigravity configuration home: %v", err))
-		}
+		antigravityConfigDir = connectorDefaultHomeBesideDataRoot(dataRoot, "antigravity")
 	}
 	uninstallPathOwned := action == "uninstall" && previous != nil && previous.PathEntryOwned
 	uninstallPathSeparatorReused := uninstallPathOwned && previous.PathSeparatorReused

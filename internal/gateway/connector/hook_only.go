@@ -2188,9 +2188,13 @@ var antigravityLifecycleEvents = []string{
 }
 
 func antigravityOwnedHookCommands(hookScript string) []string {
+	return antigravityOwnedHookCommandsForOS(runtime.GOOS, hookScript)
+}
+
+func antigravityOwnedHookCommandsForOS(goos, hookScript string) []string {
 	commands := []string{hookScript}
 	for _, event := range antigravityLifecycleEvents {
-		commands = append(commands, antigravityHookInvocationCommandForEvent(runtime.GOOS, event, hookScript))
+		commands = append(commands, antigravityHookInvocationCommandForEvent(goos, event, hookScript))
 	}
 	return uniqueNonEmptyStrings(commands)
 }
@@ -2225,6 +2229,10 @@ func antigravityOwnedHookCommands(hookScript string) []string {
 // user-profile path segments for Antigravity to mis-tokenize, and the launcher
 // lookup does not depend on Antigravity's current directory or PATH.
 func patchAntigravityHooks(path, hookScript string) error {
+	return patchAntigravityHooksForOS(path, hookScript, runtime.GOOS)
+}
+
+func patchAntigravityHooksForOS(path, hookScript, goos string) error {
 	cfg, err := readJSONObject(path)
 	if err != nil {
 		return err
@@ -2233,7 +2241,7 @@ func patchAntigravityHooks(path, hookScript string) error {
 		key := "defenseclaw-antigravity-" + strings.ToLower(event)
 		handler := map[string]interface{}{
 			"type":    "command",
-			"command": antigravityHookInvocationCommandForEvent(runtime.GOOS, event, hookScript),
+			"command": antigravityHookInvocationCommandForEvent(goos, event, hookScript),
 			"timeout": 30,
 		}
 		var handlers []interface{}

@@ -2104,7 +2104,8 @@ def _list_host_plugins(connector: str, cfg) -> list[dict[str, Any]]:
         return []
     out: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    workspace_dir = cfg.connector_workspace_dir()
+    workspace_resolver = getattr(cfg, "connector_workspace_dir", None)
+    workspace_dir = workspace_resolver() if callable(workspace_resolver) else ""
     for d in dirs:
         for entry in _scan_plugin_dir(
             d,

@@ -26,6 +26,9 @@ $installer = Join-Path $root 'scripts\install.ps1'
 $mock = Join-Path $PSScriptRoot 'testdata\windows-mock.ps1'
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("dc-windows-harness-test-" + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temp) | Out-Null
+$script:LogRoot = Join-Path $temp 'logs'
+[IO.Directory]::CreateDirectory($script:LogRoot) | Out-Null
+$script:CommandIndex = 0
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "assertion failed: $Message" }
@@ -679,8 +682,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     $payloadPath = Join-Path $temp 'hook-payload.json'
     $payload = '{"hook":"stdin-sentinel"}'
     [IO.File]::WriteAllText($payloadPath, $payload)
-    $script:LogRoot = Join-Path $temp 'logs'
-    $script:CommandIndex = 0
     $stdin = Invoke-Tool 'pwsh' @('-NoProfile', '-File', $mock, '-Action', 'stdin') @(0) -InputPath $payloadPath
     Assert-True ($stdin.StdOut.Trim() -eq $payload) 'Invoke-Tool forwards the payload file to native stdin'
 

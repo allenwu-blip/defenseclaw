@@ -32,7 +32,7 @@
         "canBlock": true,
         "canAskNative": false,
         "askEvents": [],
-        "blockEvents": ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"],
+        "blockEvents": ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "SubagentStop", "PreCompact", "PostCompact", "Stop"],
         "supportsFailClosed": true,
         "scope": "user"
       },
@@ -74,7 +74,8 @@
           "beforeMCPExecution",
           "beforeReadFile",
           "beforeTabFileRead",
-          "beforeSubmitPrompt"
+          "beforeSubmitPrompt",
+          "subagentStart"
         ],
         "supportsFailClosed": true,
         "scope": "user"
@@ -169,8 +170,7 @@
           "preToolUse",
           "permissionRequest",
           "agentStop",
-          "subagentStop",
-          "postToolUseFailure"
+          "subagentStop"
         ],
         "supportsFailClosed": false,
         "scope": "user,workspace"

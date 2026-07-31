@@ -3043,8 +3043,16 @@ function Assert-WizardHookRegistration(
         if (-not $encoded.Success) { throw 'wizard-selected Codex registration does not use EncodedCommand' }
         try { $script = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded.Groups[1].Value)) }
         catch { throw "wizard-selected Codex command is not valid UTF-16LE Base64: $($_.Exception.Message)" }
-        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
-        if ($script -notmatch $startProcessPattern -or
+        $startProcessPattern = '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+''(?:''''|[^''])*defenseclaw-hook\.exe''\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex'',''--event'',''(?<event>[A-Za-z]+)'',''--hook-contract'',''(?<contract>codex-hooks-v[0-9]+)''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+        $startProcess = [regex]::Match($script, $startProcessPattern)
+        $codexV3Events = @(
+            'SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest',
+            'PostToolUse', 'SubagentStart', 'SubagentStop', 'PreCompact',
+            'PostCompact', 'Stop'
+        )
+        if (-not $startProcess.Success -or
+            $startProcess.Groups['event'].Value -cnotin $codexV3Events -or
+            $startProcess.Groups['contract'].Value -cne 'codex-hooks-v3' -or
             $script -notmatch '(?i)exit\s+\$hookProcess\.ExitCode' -or
             $script -match '(?i)\$LASTEXITCODE') {
             throw "wizard-selected Codex registration does not use its exact synchronous native hook command: $($Specification.ConfigPath)"

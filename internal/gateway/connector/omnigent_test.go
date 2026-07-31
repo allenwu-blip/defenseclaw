@@ -1253,8 +1253,9 @@ func TestOmnigentVerifyCleanFindsEditedImportShimAtCustomPath(t *testing.T) {
 	if err := os.WriteFile(pthPath, []byte("/operator/edited/path\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := conn.Teardown(context.Background(), opts); err != nil {
-		t.Fatal(err)
+	if err := conn.Teardown(context.Background(), opts); err == nil ||
+		!strings.Contains(err.Error(), "managed pth remains") {
+		t.Fatalf("Teardown error = %v, want edited custom .pth residue", err)
 	}
 	if err := conn.VerifyClean(opts); err == nil || !strings.Contains(err.Error(), "managed pth remains") {
 		t.Fatalf("VerifyClean error = %v, want edited custom .pth residue", err)

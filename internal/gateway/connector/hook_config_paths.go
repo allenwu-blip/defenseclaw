@@ -121,6 +121,26 @@ func ownedHookCommandNeedlesFor(goos string, opts SetupOpts, conn Connector) []s
 	if !ok {
 		return nil
 	}
+	scriptNames := owner.HookScriptNames(opts)
+	if len(scriptNames) != 0 {
+		hookScript := filepath.Join(opts.DataDir, "hooks", scriptNames[0])
+		switch conn.Name() {
+		case "copilot":
+			events := copilotCurrentHookEvents
+			if provider, profileOK := conn.(HookProfileProvider); profileOK {
+				if resolved := provider.HookProfile(opts).SupportedEvents; len(resolved) != 0 {
+					events = resolved
+				}
+			}
+			needles := make([]string, 0, len(events))
+			for _, event := range events {
+				needles = append(needles, copilotHookInvocationCommandForEvent(goos, event, hookScript))
+			}
+			return uniqueNonEmptyStrings(needles)
+		case "antigravity":
+			return antigravityOwnedHookCommandsForOS(goos, hookScript)
+		}
+	}
 	if goos == "windows" {
 		if conn.Name() == "cursor" || conn.Name() == "windsurf" {
 			unixCommand := filepath.Join(opts.DataDir, "hooks", conn.Name()+"-hook.sh")

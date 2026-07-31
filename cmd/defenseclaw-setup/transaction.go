@@ -1321,13 +1321,14 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	if transaction.Action == "install" {
 		// Current Antigravity registrations have exactly one vendor-documented
 		// global home. Arbitrary predecessor paths are valid only in Previous*
-		// custody fields used for restoration and migration.
-		officialAntigravityHome, err := defaultConnectorConfigHome(
-			filepath.Join(".gemini", "config"),
+		// custody fields used for restoration and migration. DataRoot has
+		// already been bound to the current user's expected Known Folder, so
+		// deriving its fixed sibling keeps this validation host-independent
+		// for transaction recovery without weakening that binding.
+		officialAntigravityHome := connectorDefaultHomeBesideDataRoot(
+			transaction.DataRoot,
+			"antigravity",
 		)
-		if err != nil {
-			return fmt.Errorf("resolve official Antigravity configuration home: %w", err)
-		}
 		if !samePath(transaction.AntigravityConfigDir, officialAntigravityHome) {
 			return errors.New("install transaction has a non-official Antigravity configuration home")
 		}

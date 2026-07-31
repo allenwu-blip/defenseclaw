@@ -499,6 +499,64 @@ func TestOwnedHookNeedles_WindowsSurvivesConfigEscaping(t *testing.T) {
 	}
 }
 
+func TestEventBoundOwnedHookNeedlesMatchRegisteredCommands(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		connector *hookOnlyConnector
+	}{
+		{
+			name:      "copilot",
+			connector: NewCopilotConnector(),
+		},
+		{
+			name:      "antigravity",
+			connector: NewAntigravityConnector(),
+		},
+	} {
+		for _, goos := range []string{"linux", "windows"} {
+			t.Run(tc.name+"/"+goos, func(t *testing.T) {
+				root := t.TempDir()
+				opts := SetupOpts{DataDir: filepath.Join(root, "defenseclaw")}
+				hookScript := filepath.Join(opts.DataDir, "hooks", tc.connector.scriptName)
+				path := filepath.Join(root, "hooks.json")
+				hooks := make(map[string]interface{})
+				if tc.name == "copilot" {
+					for _, event := range copilotCurrentHookEvents {
+						key := "bash"
+						if goos == "windows" {
+							key = "powershell"
+						}
+						hooks[event] = []interface{}{map[string]interface{}{
+							key: copilotHookInvocationCommandForEvent(goos, event, hookScript),
+						}}
+					}
+				} else {
+					for _, event := range antigravityLifecycleEvents {
+						hooks[event] = map[string]interface{}{
+							"command": antigravityHookInvocationCommandForEvent(goos, event, hookScript),
+						}
+					}
+				}
+				data, err := json.Marshal(map[string]interface{}{"hooks": hooks})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				needles := ownedHookCommandNeedlesFor(goos, opts, tc.connector)
+				present, err := configFileReferencesHook(path, needles)
+				if err != nil {
+					t.Fatalf("configFileReferencesHook: %v", err)
+				}
+				if !present {
+					t.Fatalf("event-bound %s config did not match owned needles: %v", tc.name, needles)
+				}
+			})
+		}
+	}
+}
+
 func TestConfigFileReferencesHookIgnoresDecoyPathOutsideCommandField(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	needle := "/home/alice/.defenseclaw/hooks/cursor-hook.sh"

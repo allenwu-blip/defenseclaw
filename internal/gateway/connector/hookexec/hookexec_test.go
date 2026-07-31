@@ -108,6 +108,10 @@ func runWithContext(
 	}
 	if connector == "codex" {
 		opts.HookContractID = "codex-hooks-v4"
+	} else if connector == "copilot" {
+		// Copilot's official registration binds the exact camelCase event
+		// out-of-band because stdin does not carry an event discriminator.
+		opts.Event = "preToolUse"
 	}
 	if mutate != nil {
 		mutate(&opts)
@@ -316,17 +320,17 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:   0,
 		},
 		{
-			name:       "codex block without output emits inline json exit 0",
+			name:       "codex block without output emits PreToolUse decision exit 0",
 			connector:  "codex",
 			respBody:   `{"action":"block","reason":"matched: secret"}`,
-			wantStdout: `{"decision":"block","reason":"matched: secret"}` + "\n",
+			wantStdout: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"matched: secret"}}` + "\n",
 			wantCode:   0,
 		},
 		{
-			name:       "codex block without output or reason uses default exit 0",
+			name:       "codex block without output or reason uses PreToolUse default exit 0",
 			connector:  "codex",
 			respBody:   `{"action":"block"}`,
-			wantStdout: `{"decision":"block","reason":"Blocked by DefenseClaw Codex policy."}` + "\n",
+			wantStdout: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Blocked by DefenseClaw Codex policy."}}` + "\n",
 			wantCode:   0,
 		},
 		{
@@ -634,7 +638,7 @@ func TestOversizedPayload(t *testing.T) {
 		code   int
 	}{
 		"claudecode": {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
-		"codex":      {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
+		"codex":      {stdout: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DefenseClaw hook payload too large"}}` + "\n", code: 0},
 		"openhands":  {stdout: `{"decision":"deny","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"cursor":     {stdout: cursorFallbackOutput("PreToolUse", true, "DefenseClaw hook payload too large") + "\n", code: 2},
 		"copilot":    {stdout: "", code: 0},
@@ -701,8 +705,11 @@ func TestUnreachable(t *testing.T) {
 		r := run(t, "codex", &stubRT{status: 503, body: "boom"}, func(o *Options) {
 			o.StrictAvailability = true
 		})
-		if r.code != 2 {
-			t.Fatalf("code = %d, want 2", r.code)
+		if r.code != 0 {
+			t.Fatalf("code = %d, want 0 for structured Codex deny", r.code)
+		}
+		if r.stdout != `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DefenseClaw hook failed closed"}}`+"\n" {
+			t.Errorf("stdout = %q", r.stdout)
 		}
 	})
 }
@@ -879,8 +886,11 @@ func TestResponseFailure(t *testing.T) {
 		r := run(t, "codex", ok("this is not json"), func(o *Options) {
 			o.FailMode = "closed"
 		})
-		if r.code != 2 {
-			t.Fatalf("code = %d, want 2", r.code)
+		if r.code != 0 {
+			t.Fatalf("code = %d, want 0 for structured Codex deny", r.code)
+		}
+		if r.stdout != `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DefenseClaw hook failed closed"}}`+"\n" {
+			t.Errorf("stdout = %q", r.stdout)
 		}
 		if !strings.Contains(r.stderr, "invalid JSON response") {
 			t.Errorf("stderr = %q, want invalid JSON", r.stderr)

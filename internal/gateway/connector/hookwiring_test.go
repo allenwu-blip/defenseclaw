@@ -863,8 +863,8 @@ func main() {
 
 // TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse
 // runs the actual native hook entrypoint against isolated state. Antigravity
-// does not use process exit status as an enforcement interface, so even strict
-// availability must retain the connector's event-specific fail-open response
+// does not use process exit status as an enforcement interface, so strict
+// availability must retain the connector's event-specific synchronous response
 // when its scoped token is deliberately absent.
 func TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse(t *testing.T) {
 	if runtime.GOOS != "windows" {
@@ -899,7 +899,7 @@ func TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse(t
 	}
 	setHookBinaryOverride(t, helper)
 
-	command := windowsNativePowerShellHookCommand("antigravity")
+	command := antigravityHookInvocationCommandForEvent("windows", "PreToolUse", "")
 	ctx, cancel := context.WithTimeout(context.Background(), windowsNativePowerShellTestTimeout)
 	defer cancel()
 	cmd := windowsNativePowerShellTestProcess(ctx, "antigravity", command)
@@ -922,12 +922,13 @@ func TestWindowsNativePowerShellHookCommandPreservesAntigravityFailureResponse(t
 		t.Fatalf("Antigravity generated command exit = %d, want fail-open 0\ncommand: %s\nstdout: %s\nstderr: %s",
 			got, command, stdout.String(), stderr.String())
 	}
-	if got := strings.TrimSpace(stdout.String()); got != "{}" {
-		t.Fatalf("Antigravity failure response = %q, want {}", got)
+	wantFailure := `{"decision":"deny","reason":"DefenseClaw policy service is unavailable."}`
+	if got := strings.TrimSpace(stdout.String()); got != wantFailure {
+		t.Fatalf("Antigravity failure response = %q, want %s", got, wantFailure)
 	}
 	if diagnostic := strings.ToLower(stderr.String()); !strings.Contains(diagnostic, "missing gateway token") ||
 		!strings.Contains(diagnostic, "event-specific failure response") {
-		t.Fatalf("Antigravity fail-open provenance was not preserved on stderr: %q", stderr.String())
+		t.Fatalf("Antigravity failure-response provenance was not preserved on stderr: %q", stderr.String())
 	}
 }
 
