@@ -22,11 +22,11 @@ import os
 import stat
 from dataclasses import dataclass
 
-from defenseclaw.safety import is_symlink
 from defenseclaw.file_permissions import (
     open_regular_file_no_follow,
     reject_reparse_path,
 )
+from defenseclaw.safety import is_symlink
 
 _SKILL_MARKERS = ("SKILL.md", "skill.json", "README.md")
 

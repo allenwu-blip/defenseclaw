@@ -40,6 +40,7 @@ import yaml
 from defenseclaw import connector_paths
 from defenseclaw.config import Config, SkillActionsConfig, _expand
 from defenseclaw.file_permissions import open_regular_file_no_follow
+
 try:
     import tomllib
 except ModuleNotFoundError:

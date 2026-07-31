@@ -31,6 +31,10 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
     import tomli as tomllib
 
+from defenseclaw.file_permissions import (
+    open_regular_file_no_follow,
+    reject_reparse_path,
+)
 from defenseclaw.inventory.plugin_identity import (
     AmbiguousPluginIdentityError,
     PluginIdentityError,
@@ -38,10 +42,6 @@ from defenseclaw.inventory.plugin_identity import (
     filesystem_identity_key,
     is_link_or_reparse,
     validate_plugin_id,
-)
-from defenseclaw.file_permissions import (
-    open_regular_file_no_follow,
-    reject_reparse_path,
 )
 from defenseclaw.safety import is_symlink, is_within_roots
 
