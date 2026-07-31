@@ -55,7 +55,8 @@ write; setup stops with a clear error instead of attempting a privileged
 system-Python install. Native Windows setup requires the official `uv tool`
 layout and a fresh protected executable selection; discovery, setup, repair,
 and later reconciliation bind the exact `omnigent.exe` digest to the connector
-lock.
+lock. Direct `uv.exe` and tool-Python metadata probes have connector-owned
+deadlines; setup does not fall back to a shell or an unbounded child process.
 
 The native Windows Setup executable accepts the explicit
 `CONNECTOR=omnigent` preview selection. Its transaction ledger records the
@@ -63,7 +64,9 @@ exact previous and current `OMNIGENT_CONFIG_HOME`, carries that binding through
 repair and upgrade, reconciles all three managed backup identities, and retains
 failed teardown evidence for retry or deferred uninstall. This implemented
 lifecycle remains preview-only until the advisory packaged Setup and official
-client validation completes successfully.
+client validation completes successfully. Connector setup and teardown share a
+process-local plus owned cross-process lifecycle lock; scoped credentials are
+refreshed inside that transaction and revoked only after clean teardown.
 
 All three managed files are backed up. Teardown restores unchanged files byte-for-byte and removes only DefenseClaw-owned YAML entries when the operator has edited the config.
 
@@ -85,6 +88,15 @@ without an approval pause. A post-phase DENY uses OmniGent's built-in
 denial/sentinel behavior; the bridge does not supply custom replacement data
 and cannot undo a tool call or model request that already completed. The bridge
 also honors fail-open or fail-closed behavior when the gateway is unavailable.
+Request events use OmniGent 0.7.0's official structured
+`{user_content, attachments}` shape. DefenseClaw forwards the typed prompt and
+a bounded list of attachment filename, content type, and decoded text fields;
+it retains the documented bare-string and content-block compatibility shapes.
+All ordinary normalization, trace propagation, serialization, transport, read,
+and response-parse exceptions pass through the configured bridge fail mode.
+The bridge connects directly to the configured gateway with ambient
+HTTP(S)/Windows proxies disabled and rejects redirects so its scoped credential
+and inspected content stay on that origin.
 
 The official extension is an awaited in-process Python function. It does not
 read policy events from stdin, write verdicts to stdout, or communicate an
@@ -96,21 +108,24 @@ governs transport and invalid-response handling inside the bridge.
 
 Policy evaluations always produce DefenseClaw hook logs, counters, and spans. When OmniGent has an active OpenTelemetry span, the bridge forwards its W3C `traceparent`; otherwise the gateway starts a new trace.
 
-OmniGent also supports native OTLP through standard process environment variables. This channel is **not active after setup**: DefenseClaw does not edit shell startup files or the OmniGent launcher. Export the variables in the process that starts OmniGent. Load the generated gateway token from DefenseClaw's mode-`0600` dotenv file without printing it:
+OmniGent also supports native OTLP through standard process environment
+variables. This channel is **not active after setup**: DefenseClaw does not
+edit shell startup files or the OmniGent launcher. Export the variables in the
+process that starts OmniGent. Native OTLP uses its own connector-scoped token;
+it does not reuse the policy-hook token or the gateway master credential.
+Setup creates the owner-only token and successful teardown revokes it.
 
-```bash
-set -a
-. ~/.defenseclaw/.env
-set +a
-
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:18970"
-export OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
-export OTEL_EXPORTER_OTLP_HEADERS="x-defenseclaw-source=omnigent,x-defenseclaw-client=omnigent-otel/1.0,x-defenseclaw-token=${DEFENSECLAW_GATEWAY_TOKEN}"
-export OTEL_LOGS_EXPORTER="otlp"
-export OTEL_METRICS_EXPORTER="otlp"
-export OTEL_TRACES_EXPORTER="otlp"
-export OMNIGENT_OTEL_CAPTURE_CONTENT="false"
-omnigent server --config ~/.omnigent/config.yaml
+```powershell
+$tokenPath = Join-Path $env:USERPROFILE '.defenseclaw\hooks\.otlp-omnigent.token'
+$otlpToken = [IO.File]::ReadAllText($tokenPath).Trim()
+$env:OTEL_EXPORTER_OTLP_ENDPOINT = 'http://127.0.0.1:18970'
+$env:OTEL_EXPORTER_OTLP_PROTOCOL = 'http/protobuf'
+$env:OTEL_EXPORTER_OTLP_HEADERS = "authorization=Bearer%20$otlpToken,x-defenseclaw-source=omnigent,x-defenseclaw-client=omnigent-otel%2F1.0"
+$env:OTEL_LOGS_EXPORTER = 'otlp'
+$env:OTEL_METRICS_EXPORTER = 'otlp'
+$env:OTEL_TRACES_EXPORTER = 'otlp'
+$env:OMNIGENT_OTEL_CAPTURE_CONTENT = 'false'
+omnigent server --config (Join-Path $env:OMNIGENT_CONFIG_HOME 'config.yaml')
 ```
 
 Logs, metrics, and traces use OpenTelemetry packages present in OmniGent's

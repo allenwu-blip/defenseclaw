@@ -634,7 +634,7 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		HookFailMode:           resolveHookFailMode(opts, conn),
 		UpdatedAt:              time.Now().UTC().Format(time.RFC3339),
 	}
-	if runtime.GOOS == "windows" && entry.Connector == "codex" {
+	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "omnigent") {
 		executable, digest, ok := setupSelectedAgentExecutableEvidence(opts.AgentExecutable)
 		if ok {
 			entry.AgentExecutable = executable

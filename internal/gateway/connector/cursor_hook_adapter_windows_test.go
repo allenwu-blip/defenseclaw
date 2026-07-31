@@ -41,6 +41,7 @@ const cursorAdapterHelperMode = "TEST_CURSOR_ADAPTER_MODE"
 const cursorAdapterPIDFileEnv = "TEST_CURSOR_ADAPTER_PID_FILE"
 const windsurfAdapterHelperMode = "TEST_WINDSURF_ADAPTER_MODE"
 const windsurfAdapterExitCodeEnv = "TEST_WINDSURF_ADAPTER_EXIT_CODE"
+const omnigentProbeHelperMode = "TEST_OMNIGENT_PROBE_MODE"
 
 func TestMain(m *testing.M) {
 	switch os.Getenv(cursorAdapterHelperMode) {
@@ -60,6 +61,22 @@ func TestMain(m *testing.M) {
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
 	default:
+		switch os.Getenv(omnigentProbeHelperMode) {
+		case "parent":
+			child := exec.Command(os.Args[0])
+			child.Env = append(os.Environ(), omnigentProbeHelperMode+"=descendant")
+			child.Stdout = os.Stdout
+			child.Stderr = os.Stderr
+			if err := child.Start(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(12)
+			}
+			time.Sleep(30 * time.Second)
+			os.Exit(0)
+		case "descendant":
+			time.Sleep(30 * time.Second)
+			os.Exit(0)
+		}
 		if os.Getenv(windsurfAdapterHelperMode) == "result" {
 			payload, err := io.ReadAll(os.Stdin)
 			if err != nil || string(payload) != `{"source":"windsurf-adapter-probe"}` {

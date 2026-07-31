@@ -419,15 +419,19 @@ func TestNativeOTLPShape_Omnigent(t *testing.T) {
 	}
 	headers := splitOTelHeader(env["OTEL_EXPORTER_OTLP_HEADERS"])
 	wantHeaders := map[string]bool{
-		"x-defenseclaw-source=omnigent":          true,
-		"x-defenseclaw-client=omnigent-otel/1.0": true,
-		"x-defenseclaw-token=" + opts.APIToken:   true,
+		"x-defenseclaw-source=omnigent":              true,
+		"x-defenseclaw-client=omnigent-otel/1.0":     true,
+		"authorization=Bearer " + opts.OTLPPathToken: true,
 	}
 	for _, header := range headers {
 		delete(wantHeaders, header)
 	}
 	if len(wantHeaders) != 0 {
 		t.Errorf("OTEL_EXPORTER_OTLP_HEADERS missing entries %v; got %v", wantHeaders, env["OTEL_EXPORTER_OTLP_HEADERS"])
+	}
+	if strings.Contains(env["OTEL_EXPORTER_OTLP_HEADERS"], "x-defenseclaw-token") ||
+		strings.Contains(env["OTEL_EXPORTER_OTLP_HEADERS"], opts.APIToken) {
+		t.Errorf("OmniGent OTLP headers leaked the hook/general API token: %q", env["OTEL_EXPORTER_OTLP_HEADERS"])
 	}
 	attrs := splitOTelHeader(env["OTEL_RESOURCE_ATTRIBUTES"])
 	wantAttrs := map[string]bool{

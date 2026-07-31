@@ -52,18 +52,67 @@ foreach ($directory in @(
 function Invoke-NativeChecked {
     param(
         [Parameter(Mandatory)][string]$FilePath,
-        [Parameter(Mandatory)][string[]]$ArgumentList
+        [Parameter(Mandatory)][string[]]$ArgumentList,
+        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 120,
+        [int[]]$AcceptedExitCodes = @(0)
     )
-    & $FilePath @ArgumentList
-    if ($LASTEXITCODE -ne 0) {
-        throw "native process failed with exit code $LASTEXITCODE`: $FilePath"
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = [IO.Path]::GetFullPath($FilePath)
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    foreach ($argument in $ArgumentList) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    try {
+        if (-not $process.Start()) {
+            throw "native process did not start: $FilePath"
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $remaining = [Math]::Max(
+            1,
+            [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+        )
+        if (-not $process.WaitForExit($remaining)) {
+            $process.Kill($true)
+            if (-not $process.WaitForExit(10000)) {
+                throw "native process tree did not exit within 10 seconds after termination: $FilePath"
+            }
+            throw "native process timed out after $TimeoutSeconds seconds: $FilePath"
+        }
+        $remaining = [Math]::Max(
+            1,
+            [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+        )
+        $outputTasks = [Threading.Tasks.Task]::WhenAll(
+            [Threading.Tasks.Task[]]@($stdoutTask, $stderrTask)
+        )
+        if (-not $outputTasks.Wait($remaining)) {
+            throw "native process output did not close before the $TimeoutSeconds second deadline: $FilePath"
+        }
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($stderr) {
+            [Console]::Error.Write($stderr)
+        }
+        if ($process.ExitCode -notin $AcceptedExitCodes) {
+            throw "native process failed with exit code $($process.ExitCode)`: $FilePath"
+        }
+        return $stdout
+    } finally {
+        $process.Dispose()
     }
 }
 
 $uv = (Get-Command uv.exe -CommandType Application -ErrorAction Stop).Source
 Invoke-NativeChecked $uv @(
     'tool', 'install', '--python', '3.12', '--force', 'omnigent==0.7.0'
-)
+) -TimeoutSeconds 600
 $omnigent = Join-Path $env:UV_TOOL_BIN_DIR 'omnigent.exe'
 $omnigentPython = Join-Path $env:UV_TOOL_DIR 'omnigent\Scripts\python.exe'
 foreach ($required in @($omnigent, $omnigentPython)) {
@@ -71,8 +120,8 @@ foreach ($required in @($omnigent, $omnigentPython)) {
         throw "official OmniGent uv-tool installation is incomplete: $required"
     }
 }
-$version = (& $omnigent '--version' | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $version -notmatch '\b0\.7\.0\b') {
+$version = (Invoke-NativeChecked $omnigent @('--version') -TimeoutSeconds 30).Trim()
+if ($version -notmatch '\b0\.7\.0\b') {
     throw "official OmniGent version probe was not 0.7.0: $version"
 }
 
@@ -189,14 +238,14 @@ print(json.dumps(policy.defenseclaw_policy({
     "context": {"actor": {"client_id": "windows-native-contract"}},
 })))
 '@
-    $liveVerdict = (& $omnigentPython '-I' '-c' $policyProbe | Out-String).Trim() | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or [string]$liveVerdict.result -notin @('ALLOW', 'ASK', 'DENY')) {
+    $liveVerdict = (Invoke-NativeChecked $omnigentPython @('-I', '-c', $policyProbe) -TimeoutSeconds 30).Trim() | ConvertFrom-Json
+    if ([string]$liveVerdict.result -notin @('ALLOW', 'ASK', 'DENY')) {
         throw 'official OmniGent Python environment did not execute the managed policy'
     }
 
     Invoke-NativeChecked $gateway @('stop')
-    $closedVerdict = (& $omnigentPython '-I' '-c' $policyProbe | Out-String).Trim() | ConvertFrom-Json
-    if ($LASTEXITCODE -ne 0 -or [string]$closedVerdict.result -cne 'DENY') {
+    $closedVerdict = (Invoke-NativeChecked $omnigentPython @('-I', '-c', $policyProbe) -TimeoutSeconds 30).Trim() | ConvertFrom-Json
+    if ([string]$closedVerdict.result -cne 'DENY') {
         throw 'OmniGent managed policy did not fail closed after the gateway stopped'
     }
 
@@ -208,11 +257,8 @@ print(json.dumps(policy.defenseclaw_policy({
     $server.Dispose()
 }
 
-& $setup '/uninstall' '/quiet' '/norestart'
-$uninstallExit = $LASTEXITCODE
-if ($uninstallExit -notin @(0, 3010)) {
-    throw "native Setup uninstall failed with exit code $uninstallExit"
-}
+Invoke-NativeChecked $setup @('/uninstall', '/quiet', '/norestart') `
+    -TimeoutSeconds 300 -AcceptedExitCodes @(0, 3010)
 foreach ($path in @($config, $module, $pth)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "native Setup uninstall did not restore the preexisting OmniGent file: $path"

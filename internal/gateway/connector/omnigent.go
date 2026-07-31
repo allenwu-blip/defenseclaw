@@ -12,7 +12,6 @@ package connector
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -24,7 +23,9 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/defenseclaw/defenseclaw/internal/processutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -39,6 +40,8 @@ const (
 var (
 	OmnigentConfigPathOverride       string
 	OmnigentSitePackagesPathOverride string
+	omnigentProcessProbeTimeout      = 15 * time.Second
+	omnigentLifecycleMu              sync.Mutex
 )
 
 // OmnigentConnector integrates through OmniGent's documented custom Python
@@ -78,12 +81,16 @@ func (c *OmnigentConnector) HookProfile(opts SetupOpts) HookProfile {
 }
 
 func omnigentNativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
+	otlpToken := strings.TrimSpace(opts.OTLPPathToken)
+	if otlpToken == "" && opts.DataDir != "" {
+		otlpToken, _ = LoadOTLPPathToken(opts.DataDir, OTLPScopeOmnigent)
+	}
 	headers := map[string]string{
 		"x-defenseclaw-source": "omnigent",
 		"x-defenseclaw-client": "omnigent-otel/1.0",
 	}
-	if opts.APIToken != "" {
-		headers["x-defenseclaw-token"] = opts.APIToken
+	if otlpToken != "" {
+		headers["authorization"] = "Bearer " + otlpToken
 	}
 	return &NativeOTLPSpec{
 		Kind:               NativeOTLPEnvBlock,
@@ -127,7 +134,7 @@ func (c *OmnigentConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Env: []EnvRequirement{
 				{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point OmniGent native OTLP at the DefenseClaw gateway."},
 				{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Scope: EnvScopeProcess, Required: false, Description: "Set to http/protobuf for DefenseClaw OTLP ingestion."},
-				{Name: "OTEL_EXPORTER_OTLP_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry x-defenseclaw-token, x-defenseclaw-source, and x-defenseclaw-client headers for native OTLP authentication and attribution."},
+				{Name: "OTEL_EXPORTER_OTLP_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry the connector-scoped Authorization bearer plus x-defenseclaw-source and x-defenseclaw-client headers for native OTLP authentication and attribution."},
 				{Name: "OTEL_LOGS_EXPORTER", Scope: EnvScopeProcess, Required: false, Description: "Set to otlp to enable OmniGent native log export."},
 				{Name: "OTEL_METRICS_EXPORTER", Scope: EnvScopeProcess, Required: false, Description: "Set to otlp to enable OmniGent native metric export."},
 				{Name: "OTEL_TRACES_EXPORTER", Scope: EnvScopeProcess, Required: false, Description: "Set to otlp to enable native traces."},
@@ -144,7 +151,49 @@ func (c *OmnigentConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 	}
 }
 
+func withOmnigentLifecycleTransaction(opts SetupOpts, fn func() error) error {
+	if strings.TrimSpace(opts.DataDir) == "" {
+		return errors.New("omnigent lifecycle transaction: empty data dir")
+	}
+	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
+		return fmt.Errorf("omnigent lifecycle transaction: create lock dir: %w", err)
+	}
+	omnigentLifecycleMu.Lock()
+	defer omnigentLifecycleMu.Unlock()
+	return withOwnedFileLock(filepath.Join(opts.DataDir, ".omnigent-lifecycle.lock"), fn)
+}
+
 func (c *OmnigentConnector) Setup(ctx context.Context, opts SetupOpts) error {
+	return withOmnigentLifecycleTransaction(opts, func() error {
+		return c.setupLocked(ctx, opts)
+	})
+}
+
+func (c *OmnigentConnector) setupLocked(ctx context.Context, opts SetupOpts) (retErr error) {
+	if opts.HookAPITokenScoped {
+		existingHookToken, err := LoadHookAPIToken(opts.DataDir, c.Name())
+		if err != nil {
+			return fmt.Errorf("omnigent inspect scoped hook token inside lifecycle transaction: %w", err)
+		}
+		hookToken, err := EnsureHookAPIToken(opts.DataDir, c.Name())
+		if err != nil {
+			return fmt.Errorf("omnigent refresh scoped hook token inside lifecycle transaction: %w", err)
+		}
+		createdHookToken := existingHookToken == ""
+		previousGatewayToken := c.gatewayToken
+		defer func() {
+			if retErr == nil || !createdHookToken {
+				return
+			}
+			c.gatewayToken = previousGatewayToken
+			if err := RemoveHookAPIToken(opts.DataDir, c.Name()); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("omnigent revoke scoped hook token after failed setup: %w", err))
+			}
+		}()
+		opts.APIToken = hookToken
+		opts.HookAPIToken = hookToken
+		c.gatewayToken = hookToken
+	}
 	sitePackages, err := omnigentSitePackages(ctx, opts)
 	if err != nil {
 		return err
@@ -188,6 +237,24 @@ func (c *OmnigentConnector) Setup(ctx context.Context, opts SetupOpts) error {
 		}
 		return errors.Join(rollbackErrs...)
 	}
+	existingOTLPToken, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOmnigent)
+	if err != nil {
+		return rollback(fmt.Errorf("omnigent inspect scoped OTLP token: %w", err))
+	}
+	otlpToken, err := resolveSetupOTLPPathToken(opts.DataDir, OTLPScopeOmnigent, opts.OTLPPathToken)
+	if err != nil {
+		return rollback(fmt.Errorf("omnigent scoped OTLP token: %w", err))
+	}
+	if existingOTLPToken == "" {
+		previousRollback := rollback
+		rollback = func(cause error) error {
+			if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeOmnigent); err != nil {
+				cause = errors.Join(cause, fmt.Errorf("omnigent revoke scoped OTLP token after failed setup: %w", err))
+			}
+			return previousRollback(cause)
+		}
+	}
+	opts.OTLPPathToken = otlpToken
 	for _, managed := range managedPaths {
 		logical, path := managed.logical, managed.path
 		if err := prepareOmnigentManagedBackup(opts.DataDir, c.Name(), logical, path); err != nil {
@@ -294,6 +361,12 @@ func restoreOmnigentFileSnapshot(snapshot omnigentFileSnapshot) error {
 }
 
 func (c *OmnigentConnector) Teardown(ctx context.Context, opts SetupOpts) error {
+	return withOmnigentLifecycleTransaction(opts, func() error {
+		return c.teardownLocked(ctx, opts)
+	})
+}
+
+func (c *OmnigentConnector) teardownLocked(ctx context.Context, opts SetupOpts) error {
 	paths := map[string]string{
 		"config": managedFileBackupTargetPath(opts.DataDir, c.Name(), "config", omnigentConfigPath()),
 		"module": managedFileBackupTargetPath(opts.DataDir, c.Name(), "module", omnigentPolicyModulePath(opts)),
@@ -338,7 +411,19 @@ func (c *OmnigentConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 			}
 		}
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if err := c.VerifyClean(opts); err != nil {
+		return err
+	}
+	if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeOmnigent); err != nil {
+		return fmt.Errorf("omnigent revoke scoped OTLP token: %w", err)
+	}
+	if err := RemoveHookAPIToken(opts.DataDir, c.Name()); err != nil {
+		return fmt.Errorf("omnigent revoke scoped hook token: %w", err)
+	}
+	return nil
 }
 
 func (c *OmnigentConnector) VerifyClean(opts SetupOpts) error {
@@ -387,6 +472,10 @@ func (c *OmnigentConnector) AgentPaths(opts SetupOpts) AgentPaths {
 			managedFileBackupPath(opts.DataDir, c.Name(), "config"),
 			managedFileBackupPath(opts.DataDir, c.Name(), "module"),
 			managedFileBackupPath(opts.DataDir, c.Name(), "pth"),
+		},
+		GeneratedFiles: []string{
+			filepath.Join(opts.DataDir, "hooks", otlpPathTokenFileName(OTLPScopeOmnigent)),
+			filepath.Join(opts.DataDir, "hooks", ".hook-omnigent.token"),
 		},
 	}
 	if pthPath != "" {
@@ -484,18 +573,15 @@ func omnigentSitePackages(ctx context.Context, opts SetupOpts) (string, error) {
 	if err := validateOmnigentInterpreter(pythonPath); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(
+	output, err := omnigentCommandOutput(
 		ctx,
 		pythonPath,
 		"-I",
 		"-c",
 		"import importlib.metadata as m,sysconfig; print(m.version('omnigent')); print(sysconfig.get_paths()['purelib'])",
 	)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("omnigent connector: resolve Python site-packages with %s: %w (%s)", pythonPath, err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("omnigent connector: resolve Python site-packages with %s: %w", pythonPath, err)
 	}
 	lines := omnigentNonEmptyOutputLines(output)
 	if len(lines) < 2 {
@@ -617,12 +703,15 @@ func resolveOmnigentUVToolPython(ctx context.Context, selected string) (string, 
 }
 
 func omnigentCommandOutput(ctx context.Context, executable string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, executable, args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	output, err := cmd.Output()
+	probeCtx, cancel := context.WithTimeout(ctx, omnigentProcessProbeTimeout)
+	defer cancel()
+	cmd := processutil.CommandContext(probeCtx, executable, args...)
+	output, err := processutil.CombinedOutputTree(cmd, false)
 	if err != nil {
-		return nil, fmt.Errorf("%w (%s)", err, strings.TrimSpace(stderr.String()))
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("native metadata probe timed out after %s: %w", omnigentProcessProbeTimeout, context.DeadlineExceeded)
+		}
+		return nil, fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(output)))
 	}
 	return output, nil
 }
