@@ -319,6 +319,23 @@ class TestConnectorContractManifest(unittest.TestCase):
             ),
         )
 
+        installed_but_unsupported = resolve_connector_contract(
+            "hermes", "Hermes Agent v0.17.0"
+        )
+        self.assertEqual(installed_but_unsupported.normalized_version, "0.17.0")
+        self.assertEqual(installed_but_unsupported.status, STATUS_UNKNOWN)
+        self.assertFalse(installed_but_unsupported.supported)
+
+        audited = resolve_connector_contract("hermes", "Hermes Agent v0.19.0")
+        self.assertEqual(audited.status, STATUS_KNOWN)
+        self.assertTrue(audited.supported)
+        self.assertEqual(audited.contract.contract_id, "hermes-hooks-v1")
+
+        latest_rechecked = resolve_connector_contract("hermes", "Hermes Agent v0.19.1")
+        self.assertEqual(latest_rechecked.status, STATUS_KNOWN)
+        self.assertTrue(latest_rechecked.supported)
+        self.assertEqual(latest_rechecked.contract.contract_id, "hermes-hooks-v1")
+
     def test_manifest_loader_preserves_unversioned_default_marker(self) -> None:
         _, contracts = _load_contracts_from_manifest(
             {
@@ -372,6 +389,27 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
             ok = _apply_hook_connector_setup(
                 self.app,
                 connector="codex",
+                mode="action",
+                restart=False,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(self.save_calls, 0)
+        self.assertEqual(self.app.cfg.claw.mode, "openclaw")
+        self.assertEqual(self.app.cfg.guardrail.connector, "openclaw")
+
+    def test_hermes_action_mode_detects_but_rejects_v017_before_save(self) -> None:
+        with patch(
+            "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+            return_value=_discovery(
+                "hermes",
+                installed=True,
+                version="Hermes Agent v0.17.0",
+            ),
+        ), patch.dict(os.environ, {"DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "0"}):
+            ok = _apply_hook_connector_setup(
+                self.app,
+                connector="hermes",
                 mode="action",
                 restart=False,
             )

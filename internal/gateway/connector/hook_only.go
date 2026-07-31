@@ -22,12 +22,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/defenseclaw/defenseclaw/internal/hermespath"
@@ -46,6 +48,46 @@ var (
 	AntigravityHooksPathOverride  string
 	OpenCodePluginPathOverride    string
 )
+
+const (
+	hermesAllowlistLogicalName      = "shell-hooks-allowlist.json"
+	hermesAllowlistFileName         = "shell-hooks-allowlist.json"
+	hermesAllowlistOwnerField       = "defenseclaw_managed"
+	hermesDirectNativeStateFileName = "hermes-direct-native-state.json"
+	hermesDirectNativeStateVersion  = 1
+	hermesDirectNativePending       = "pending_reload"
+	hermesDirectNativeDisabled      = "disabled_pending_reload"
+	hermesInventoryConfigMaxBytes   = 1 << 20
+)
+
+var hermesRequiredHooks = []struct {
+	event   string
+	matcher string
+}{
+	{"pre_tool_call", ".*"},
+	{"post_tool_call", ".*"},
+	{"transform_terminal_output", ""},
+	{"transform_tool_result", ""},
+	{"transform_llm_output", ""},
+	{"pre_llm_call", ""},
+	{"post_llm_call", ""},
+	{"pre_verify", ""},
+	{"pre_api_request", ""},
+	{"post_api_request", ""},
+	{"api_request_error", ""},
+	{"on_session_start", ""},
+	{"on_session_end", ""},
+	{"on_session_finalize", ""},
+	{"on_session_reset", ""},
+	{"subagent_start", ""},
+	{"subagent_stop", ""},
+	{"pre_gateway_dispatch", ""},
+	{"pre_approval_request", ""},
+	{"post_approval_response", ""},
+	{"kanban_task_claimed", ""},
+	{"kanban_task_completed", ""},
+	{"kanban_task_blocked", ""},
+}
 
 type hookOnlyConnector struct {
 	name        string
@@ -652,6 +694,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 
 	switch c.name {
 	case "hermes":
+		hermesHome := filepath.Dir(hermesConfigPath(opts))
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
 			Scope:           "user",
@@ -664,25 +707,36 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
 			Scope:          "user",
-			ReadPaths:      []string{filepath.Join(hermespath.HomeDir(), "skills")},
-			WritePaths:     []string{filepath.Join(hermespath.HomeDir(), "skills")},
+			ReadPaths:      hermesSkillPaths(hermesConfigPath(opts)),
+			WritePaths:     []string{filepath.Join(hermesHome, "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
+			Notes: []string{
+				"Inventory includes the default profile skills directory and existing skills.external_dirs resolved relative to HERMES_HOME.",
+				"Named/multiplex profiles are unsupported and are not folded into this single-profile connector.",
+			},
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill"}
 		caps.Plugins = SurfaceCapability{
 			Supported: true,
-			Scope:     "workspace,user",
-			ReadPaths: []string{
-				filepath.Join(hermespath.HomeDir(), "plugins"),
-				workspacePath(opts, ".hermes", "plugins"),
-			},
+			Scope:     "user,installation",
+			ReadPaths: hermesPluginPaths(hermesConfigPath(opts)),
 			Notes: []string{
 				"Hermes plugins are inventory/discovery-only in DefenseClaw v1; connector setup does not install or modify them.",
+				"Inventory includes the default-profile user directory, the official HERMES_HOME/hermes-agent checkout, and the vendor HERMES_BUNDLED_PLUGINS override when present; official-venv Python entry-point activation is reported by the CLI inventory adapter.",
+				"Project plugins depend on the Hermes process CWD plus HERMES_ENABLE_PROJECT_PLUGINS and remain unverified by this default-profile connector.",
 			},
 		}
-		caps.Rules = unsupportedSurface("Hermes rules are not a separate documented local surface.")
+		caps.Rules = SurfaceCapability{
+			Supported:     true,
+			Scope:         "user",
+			ReadPaths:     []string{filepath.Join(hermesHome, "SOUL.md")},
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Hermes SOUL.md is the default profile identity source; project context files are session/CWD conditional and remain unverified.",
+			},
+		}
 		caps.Agents = unsupportedSurface("Hermes subagent/agent asset locations are not installed by DefenseClaw v1.")
 	case "cursor":
 		caps.MCP = SurfaceCapability{
@@ -968,6 +1022,21 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 }
 
 func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
+	if c.name == "hermes" {
+		if err := validateHermesSingleProfile(c.configPath(opts)); err != nil {
+			return err
+		}
+		if err := ensureManagedBackupDirRestricted(opts.DataDir); err != nil {
+			return fmt.Errorf("prepare Hermes lifecycle state: %w", err)
+		}
+		return withOwnedFileLock(filepath.Join(opts.DataDir, ".hermes-lifecycle.lock"), func() error {
+			return c.setup(ctx, opts)
+		})
+	}
+	return c.setup(ctx, opts)
+}
+
+func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts) error {
 	_ = ctx
 	if c.pluginArtifact {
 		return c.setupPluginArtifact(opts)
@@ -1143,12 +1212,29 @@ func (c *hookOnlyConnector) hookCommandForOS(goos string, opts SetupOpts) string
 // Errors from the config and tombstone steps are joined so a tombstone
 // failure does not mask a config-restore failure (or vice versa).
 func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error {
+	if c.name == "hermes" {
+		if err := ensureManagedBackupDirRestricted(opts.DataDir); err != nil {
+			return fmt.Errorf("prepare Hermes lifecycle state: %w", err)
+		}
+		return withOwnedFileLock(filepath.Join(opts.DataDir, ".hermes-lifecycle.lock"), func() error {
+			return c.teardown(ctx, opts)
+		})
+	}
+	return c.teardown(ctx, opts)
+}
+
+func (c *hookOnlyConnector) teardown(ctx context.Context, opts SetupOpts) error {
 	_ = ctx
 	if c.pluginArtifact {
 		return c.teardownPluginArtifact(opts)
 	}
 	if err := c.migrateManagedBackup(opts); err != nil {
 		return fmt.Errorf("%s managed backup migration: %w", c.name, err)
+	}
+	if c.name == "hermes" && runtime.GOOS == "windows" && c.hookCommand(opts) != "" {
+		if err := writeHermesDirectNativeState(opts, c.hookCommand(opts), hermesDirectNativeDisabled); err != nil {
+			return fmt.Errorf("hermes disabled direct-native tombstone: %w", err)
+		}
 	}
 	var errs []string
 
@@ -1169,6 +1255,11 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
 			discardManagedFileBackup(opts.DataDir, c.name, logicalName)
+		}
+	}
+	if c.name == "hermes" {
+		if err := teardownHermesAllowlist(opts, c.hookCommand(opts)); err != nil {
+			errs = append(errs, fmt.Sprintf("restore shell hook allowlist: %v", err))
 		}
 	}
 
@@ -1249,6 +1340,9 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			if c.name == "hermes" {
+				return verifyHermesCleanup(opts, c.hookCommand(opts))
+			}
 			return c.verifyCursorHookArtifactsClean(opts)
 		}
 		return err
@@ -1306,7 +1400,54 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		(c.name == "windsurf" && bytes.Contains(data, []byte(legacyWindsurfWindowsHookCommand()))) {
 		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
+	if c.name == "hermes" {
+		return verifyHermesCleanup(opts, needle)
+	}
 	return c.verifyCursorHookArtifactsClean(opts)
+}
+
+func verifyHermesCleanup(opts SetupOpts, command string) error {
+	allowlistPath := filepath.Join(filepath.Dir(hermesConfigPath(opts)), hermesAllowlistFileName)
+	if _, err := os.Stat(allowlistPath); err == nil {
+		document, err := readHermesAllowlist(allowlistPath)
+		if err != nil {
+			return err
+		}
+		for _, raw := range document["approvals"].([]interface{}) {
+			entry, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if owned, _ := entry[hermesAllowlistOwnerField].(bool); owned {
+				return fmt.Errorf("hermes teardown incomplete: managed shell hook approval remains at %s", allowlistPath)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		return nil
+	}
+	statePath := filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName)
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return fmt.Errorf("hermes teardown incomplete: disabled direct-native tombstone is unavailable: %w", err)
+	}
+	var state struct {
+		SchemaVersion  int    `json:"schema_version"`
+		Connector      string `json:"connector"`
+		Status         string `json:"status"`
+		Command        string `json:"command"`
+		ReloadRequired bool   `json:"reload_required"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("hermes teardown incomplete: parse disabled direct-native tombstone: %w", err)
+	}
+	if state.SchemaVersion != hermesDirectNativeStateVersion || state.Connector != "hermes" ||
+		state.Status != hermesDirectNativeDisabled || state.Command != command || !state.ReloadRequired {
+		return fmt.Errorf("hermes teardown incomplete: disabled direct-native tombstone does not match the registered command")
+	}
+	return nil
 }
 
 func (c *hookOnlyConnector) verifyCursorHookArtifactsClean(opts SetupOpts) error {
@@ -1352,9 +1493,17 @@ func (c *hookOnlyConnector) SetCredentials(gatewayToken, masterKey string) {
 func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	caps := c.Capabilities(opts)
 	patched := uniqueNonEmptyStrings(append([]string{c.configPath(opts)}, caps.Telemetry.ConfigPaths...))
+	backups := []string{managedFileBackupPath(opts.DataDir, c.name, c.managedBackupLogicalName())}
+	if c.name == "hermes" {
+		patched = append(patched,
+			filepath.Join(filepath.Dir(c.configPath(opts)), hermesAllowlistFileName),
+			filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName),
+		)
+		backups = append(backups, managedFileBackupPath(opts.DataDir, c.name, hermesAllowlistLogicalName))
+	}
 	return AgentPaths{
-		PatchedFiles: patched,
-		BackupFiles:  []string{managedFileBackupPath(opts.DataDir, c.name, c.managedBackupLogicalName())},
+		PatchedFiles: uniqueNonEmptyStrings(patched),
+		BackupFiles:  backups,
 		HookScripts:  hookScriptPathsForConnector(opts, c),
 	}
 }
@@ -1393,6 +1542,13 @@ func (c *hookOnlyConnector) ComponentTargets(cwd string) map[string][]string {
 		nestedSkills, rules := cursorDiscoveredComponentPaths(cwd)
 		targets["skill"] = uniqueNonEmptyStrings(append(targets["skill"], nestedSkills...))
 		targets["rule"] = uniqueNonEmptyStrings(append(targets["rule"], rules...))
+	}
+	if c.name == "hermes" {
+		home := filepath.Dir(hermesConfigPath(opts))
+		targets["memory"] = []string{
+			filepath.Join(home, "memories", "MEMORY.md"),
+			filepath.Join(home, "memories", "USER.md"),
+		}
 	}
 	return targets
 }
@@ -1486,6 +1642,9 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("%s setup could not resolve a hook config path", c.name)
 	}
+	if c.name == "hermes" {
+		return setupHermesFiles(opts, path, hookScript)
+	}
 	if c.name == "copilot" {
 		if err := validateCopilotHookPolicy(opts, path); err != nil {
 			return err
@@ -1498,8 +1657,6 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 
 	var err error
 	switch c.name {
-	case "hermes":
-		err = patchHermesHooks(path, hookScript, opts.HookExecutable)
 	case "cursor":
 		err = patchCursorHooks(
 			path,
@@ -2396,6 +2553,533 @@ func addSurfaceTargets(targets map[string][]string, key string, cap SurfaceCapab
 	targets[key] = uniqueNonEmptyStrings(append(append([]string{}, cap.ReadPaths...), cap.ConfigPaths...))
 }
 
+type hermesFileSnapshot struct {
+	path      string
+	existed   bool
+	mode      os.FileMode
+	data      []byte
+	ownedHash string
+}
+
+func snapshotHermesFile(path string) (*hermesFileSnapshot, error) {
+	data, info, err := readManagedTarget(path)
+	if err != nil {
+		return nil, err
+	}
+	snapshot := &hermesFileSnapshot{path: path, existed: info != nil, data: data}
+	if info != nil {
+		snapshot.mode = info.Mode().Perm()
+	}
+	snapshot.ownedHash = managedFileSnapshotHash(data, info != nil)
+	return snapshot, nil
+}
+
+func (s *hermesFileSnapshot) markOwned() error {
+	data, info, err := readManagedTarget(s.path)
+	if err != nil {
+		return err
+	}
+	s.ownedHash = managedFileSnapshotHash(data, info != nil)
+	return nil
+}
+
+func rollbackHermesFiles(snapshots []*hermesFileSnapshot) error {
+	var errs []string
+	for i := len(snapshots) - 1; i >= 0; i-- {
+		snapshot := snapshots[i]
+		data, info, err := readManagedTarget(snapshot.path)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("inspect %s: %v", snapshot.path, err))
+			continue
+		}
+		if managedFileSnapshotHash(data, info != nil) != snapshot.ownedHash {
+			errs = append(errs, fmt.Sprintf("refusing to roll back tampered path %s", snapshot.path))
+			continue
+		}
+		if snapshot.existed {
+			mode := snapshot.mode
+			if mode == 0 {
+				mode = 0o600
+			}
+			if err := atomicWriteFile(snapshot.path, snapshot.data, mode); err != nil {
+				errs = append(errs, fmt.Sprintf("restore %s: %v", snapshot.path, err))
+			}
+		} else if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Sprintf("remove %s: %v", snapshot.path, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.New(strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func managedHermesBackupOwnsCurrent(dataDir, logicalName, targetPath string) (bool, error) {
+	backup, err := loadManagedFileBackupPath(managedFileBackupPath(dataDir, "hermes", logicalName))
+	if err != nil {
+		return false, err
+	}
+	if _, err := validateManagedFileBackupTarget(backup, "hermes", logicalName, targetPath); err != nil {
+		return false, err
+	}
+	if err := validateHermesManagedBackupPristine(&backup); err != nil {
+		return false, err
+	}
+	data, info, err := readManagedTarget(targetPath)
+	if err != nil {
+		return false, err
+	}
+	return managedFileBackupMatchesSnapshot(&backup, data, info != nil), nil
+}
+
+func setupHermesFiles(opts SetupOpts, configPath, hookScript string) (err error) {
+	allowlistPath := filepath.Join(filepath.Dir(configPath), hermesAllowlistFileName)
+	configBackupPath := managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")
+	allowlistBackupPath := managedFileBackupPath(opts.DataDir, "hermes", hermesAllowlistLogicalName)
+	statePath := filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName)
+	paths := []string{configPath, allowlistPath, configBackupPath, allowlistBackupPath}
+	if runtime.GOOS == "windows" {
+		paths = append(paths, statePath)
+	}
+	snapshots := make([]*hermesFileSnapshot, 0, len(paths))
+	byPath := map[string]*hermesFileSnapshot{}
+	for _, path := range paths {
+		snapshot, snapshotErr := snapshotHermesFile(path)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		snapshots = append(snapshots, snapshot)
+		byPath[path] = snapshot
+	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if rollbackErr := rollbackHermesFiles(snapshots); rollbackErr != nil {
+			err = fmt.Errorf("%w; Hermes setup rollback: %v", err, rollbackErr)
+		}
+	}()
+
+	if err = captureManagedFileBackup(opts.DataDir, "hermes", "config.yaml", configPath); err != nil {
+		return err
+	}
+	if err = byPath[configBackupPath].markOwned(); err != nil {
+		return err
+	}
+	if err = captureManagedFileBackup(opts.DataDir, "hermes", hermesAllowlistLogicalName, allowlistPath); err != nil {
+		return err
+	}
+	if err = byPath[allowlistBackupPath].markOwned(); err != nil {
+		return err
+	}
+	configCustodied, err := managedHermesBackupOwnsCurrent(opts.DataDir, "config.yaml", configPath)
+	if err != nil {
+		return err
+	}
+	allowlistCustodied, err := managedHermesBackupOwnsCurrent(opts.DataDir, hermesAllowlistLogicalName, allowlistPath)
+	if err != nil {
+		return err
+	}
+
+	if err = patchHermesHooks(configPath, hookScript, opts.HookExecutable); err != nil {
+		return err
+	}
+	if err = byPath[configPath].markOwned(); err != nil {
+		return err
+	}
+	if configCustodied {
+		if err = updateManagedFileBackupPostHash(opts.DataDir, "hermes", "config.yaml", configPath); err != nil {
+			return err
+		}
+		if err = byPath[configBackupPath].markOwned(); err != nil {
+			return err
+		}
+	}
+
+	command := hermesConfiguredHookCommand(hookScript, opts.HookExecutable)
+	if err = patchHermesAllowlist(allowlistPath, command, hermesHookExecutablePath(hookScript, opts.HookExecutable)); err != nil {
+		return err
+	}
+	if err = byPath[allowlistPath].markOwned(); err != nil {
+		return err
+	}
+	if allowlistCustodied {
+		if err = updateManagedFileBackupPostHash(opts.DataDir, "hermes", hermesAllowlistLogicalName, allowlistPath); err != nil {
+			return err
+		}
+		if err = byPath[allowlistBackupPath].markOwned(); err != nil {
+			return err
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		if err = writeHermesDirectNativeState(opts, command, hermesDirectNativePending); err != nil {
+			return err
+		}
+		if err = byPath[statePath].markOwned(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hermesConfiguredHookCommand(hookScript, hookExecutable string) string {
+	if bound := windowsHermesDirectHookCommand(hookExecutable); bound != "" && hookScript == bound {
+		return hookScript
+	}
+	return shellWord(hookScript)
+}
+
+func hermesHookExecutablePath(hookScript, hookExecutable string) string {
+	if windowsHermesDirectHookCommand(hookExecutable) == hookScript {
+		return hookExecutable
+	}
+	return hookScript
+}
+
+func readHermesAllowlist(path string) (map[string]interface{}, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{"approvals": []interface{}{}}, nil
+		}
+		return nil, err
+	}
+	var document map[string]interface{}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("parse Hermes shell hook allowlist: %w", err)
+	}
+	if document == nil {
+		return nil, fmt.Errorf("Hermes shell hook allowlist is not a JSON object")
+	}
+	if _, ok := document["approvals"].([]interface{}); !ok {
+		return nil, fmt.Errorf("Hermes shell hook allowlist approvals is not an array")
+	}
+	return document, nil
+}
+
+func hermesHookEventSet() map[string]struct{} {
+	events := make(map[string]struct{}, len(hermesRequiredHooks))
+	for _, spec := range hermesRequiredHooks {
+		events[spec.event] = struct{}{}
+	}
+	return events
+}
+
+func patchHermesAllowlist(path, command, executablePath string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("Hermes hook command is empty")
+	}
+	document, err := readHermesAllowlist(path)
+	if err != nil {
+		return err
+	}
+	approvals := document["approvals"].([]interface{})
+	events := hermesHookEventSet()
+	foreignExact := map[string]bool{}
+	kept := make([]interface{}, 0, len(approvals)+len(events))
+	for _, raw := range approvals {
+		entry, ok := raw.(map[string]interface{})
+		if !ok {
+			kept = append(kept, raw)
+			continue
+		}
+		event, _ := entry["event"].(string)
+		entryCommand, _ := entry["command"].(string)
+		_, requiredEvent := events[event]
+		owned, _ := entry[hermesAllowlistOwnerField].(bool)
+		if owned && requiredEvent && (entryCommand == command || strings.Contains(entryCommand, "--connector hermes") || strings.Contains(entryCommand, "hermes-hook.sh")) {
+			continue
+		}
+		if requiredEvent && entryCommand == command {
+			foreignExact[event] = true
+		}
+		kept = append(kept, raw)
+	}
+	approvedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	var scriptMTime interface{}
+	if info, statErr := os.Stat(executablePath); statErr == nil {
+		scriptMTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+	}
+	for _, spec := range hermesRequiredHooks {
+		if foreignExact[spec.event] {
+			continue
+		}
+		kept = append(kept, map[string]interface{}{
+			"event":                    spec.event,
+			"command":                  command,
+			"approved_at":              approvedAt,
+			"script_mtime_at_approval": scriptMTime,
+			hermesAllowlistOwnerField:  true,
+		})
+	}
+	document["approvals"] = kept
+	data, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(path, append(data, '\n'), 0o600)
+}
+
+func teardownHermesAllowlist(opts SetupOpts, command string) error {
+	logicalName := hermesAllowlistLogicalName
+	fallback := filepath.Join(filepath.Dir(hermesConfigPath(opts)), hermesAllowlistFileName)
+	path := managedFileBackupTargetPath(opts.DataDir, "hermes", logicalName, fallback)
+	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, "hermes", logicalName, path)
+	if err != nil {
+		return err
+	}
+	if restored {
+		return nil
+	}
+	backup, backupErr := loadManagedFileBackupForTransform(opts.DataDir, "hermes", logicalName, path)
+	if backupErr != nil && !os.IsNotExist(backupErr) {
+		return backupErr
+	}
+	if backup == nil {
+		if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+			return nil
+		} else if statErr != nil {
+			return statErr
+		}
+	}
+	if backupErr == nil && backup != nil {
+		if err := validateHermesManagedBackupPristine(backup); err != nil {
+			return err
+		}
+	}
+	document, err := readHermesAllowlist(path)
+	if err != nil {
+		return err
+	}
+	pristinePairs := map[string]bool{}
+	if backup != nil && backup.Existed && len(bytes.TrimSpace(backup.PristineBytes)) > 0 {
+		var pristine map[string]interface{}
+		if err := json.Unmarshal(backup.PristineBytes, &pristine); err != nil {
+			return fmt.Errorf("parse Hermes pristine allowlist custody: %w", err)
+		}
+		if approvals, ok := pristine["approvals"].([]interface{}); ok {
+			for _, raw := range approvals {
+				if entry, ok := raw.(map[string]interface{}); ok {
+					event, _ := entry["event"].(string)
+					entryCommand, _ := entry["command"].(string)
+					pristinePairs[event+"\x00"+entryCommand] = true
+				}
+			}
+		}
+	}
+	events := hermesHookEventSet()
+	approvals := document["approvals"].([]interface{})
+	kept := make([]interface{}, 0, len(approvals))
+	for _, raw := range approvals {
+		entry, ok := raw.(map[string]interface{})
+		if !ok {
+			kept = append(kept, raw)
+			continue
+		}
+		event, _ := entry["event"].(string)
+		entryCommand, _ := entry["command"].(string)
+		owned, _ := entry[hermesAllowlistOwnerField].(bool)
+		_, requiredEvent := events[event]
+		pair := event + "\x00" + entryCommand
+		if owned && requiredEvent && !pristinePairs[pair] {
+			if entryCommand != command {
+				return fmt.Errorf("Hermes allowlist entry %s has a tampered DefenseClaw command; refusing non-exact cleanup", event)
+			}
+			continue
+		}
+		if backup != nil && requiredEvent && entryCommand == command && !pristinePairs[pair] {
+			return fmt.Errorf("Hermes allowlist entry %s lost its DefenseClaw ownership marker; refusing ambiguous cleanup", event)
+		}
+		kept = append(kept, raw)
+	}
+	document["approvals"] = kept
+	data, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := atomicWriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	discardManagedFileBackup(opts.DataDir, "hermes", logicalName)
+	return nil
+}
+
+func writeHermesDirectNativeState(opts SetupOpts, command, status string) error {
+	if status != hermesDirectNativePending && status != hermesDirectNativeDisabled {
+		return fmt.Errorf("invalid Hermes direct-native state %q", status)
+	}
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("Hermes direct-native command is empty")
+	}
+	state := map[string]interface{}{
+		"schema_version":        hermesDirectNativeStateVersion,
+		"connector":             "hermes",
+		"status":                status,
+		"command":               command,
+		"reload_required":       true,
+		"running_host_verified": false,
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName), append(data, '\n'), 0o600)
+}
+
+func validateHermesSingleProfile(configPath string) error {
+	home := filepath.Clean(filepath.Dir(configPath))
+	if strings.EqualFold(filepath.Base(filepath.Dir(home)), "profiles") {
+		return fmt.Errorf("Hermes named profiles are unsupported by the single-HERMES_HOME connector; no changes made")
+	}
+	activeProfile := filepath.Join(home, "active_profile")
+	if info, err := os.Lstat(activeProfile); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("Hermes active_profile is not a regular non-symlink file")
+		}
+		if info.Size() > 4096 {
+			return fmt.Errorf("Hermes active_profile exceeds the bounded inspection limit")
+		}
+		data, readErr := os.ReadFile(activeProfile)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return fmt.Errorf("inspect Hermes active_profile: %w", readErr)
+		}
+		if profile := strings.TrimSpace(string(data)); profile != "" && !strings.EqualFold(profile, "default") {
+			return fmt.Errorf("Hermes active named profile %q is unsupported by the single-HERMES_HOME connector; no changes made", profile)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect Hermes active_profile: %w", err)
+	}
+	profilesDir := filepath.Join(home, "profiles")
+	if info, err := os.Lstat(profilesDir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("Hermes profiles path is not a regular directory")
+		}
+		directory, openErr := os.Open(profilesDir)
+		if openErr != nil {
+			return fmt.Errorf("inspect Hermes profiles directory: %w", openErr)
+		}
+		entries, readErr := directory.ReadDir(257)
+		closeErr := directory.Close()
+		if readErr != nil {
+			return fmt.Errorf("inspect Hermes profiles directory: %w", readErr)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("close Hermes profiles directory: %w", closeErr)
+		}
+		if len(entries) > 256 {
+			return fmt.Errorf("Hermes profiles directory exceeds the bounded inspection limit")
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				return fmt.Errorf("Hermes named profile %q is unsupported by the single-HERMES_HOME connector; no changes made", entry.Name())
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect Hermes profiles directory: %w", err)
+	}
+	cfg, err := readHermesBoundedConfig(configPath)
+	if err != nil {
+		return err
+	}
+	configMultiplex := hermesBool(cfg["multiplex_profiles"])
+	if gateway, ok := cfg["gateway"].(map[string]interface{}); ok && cfg["multiplex_profiles"] == nil {
+		configMultiplex = hermesBool(gateway["multiplex_profiles"])
+	}
+	if raw, present := os.LookupEnv("GATEWAY_MULTIPLEX_PROFILES"); present {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "yes", "on":
+			configMultiplex = true
+		case "0", "false", "no", "off":
+			configMultiplex = false
+		}
+	}
+	if configMultiplex {
+		return fmt.Errorf("Hermes multiplex profiles are unsupported by the single-HERMES_HOME connector; no changes made")
+	}
+	return nil
+}
+
+func readHermesBoundedConfig(path string) (map[string]interface{}, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("Hermes config is not a regular non-symlink file")
+	}
+	if info.Size() > hermesInventoryConfigMaxBytes {
+		return nil, fmt.Errorf("Hermes config exceeds the %d-byte inspection limit", hermesInventoryConfigMaxBytes)
+	}
+	return readYAMLObject(path)
+}
+
+func hermesBool(value interface{}) bool {
+	if boolean, ok := value.(bool); ok {
+		return boolean
+	}
+	if text, ok := value.(string); ok {
+		switch strings.ToLower(strings.TrimSpace(text)) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
+func hermesSkillPaths(configPath string) []string {
+	home := filepath.Dir(configPath)
+	paths := []string{filepath.Join(home, "skills")}
+	cfg, err := readHermesBoundedConfig(configPath)
+	if err != nil {
+		return paths
+	}
+	skills, _ := cfg["skills"].(map[string]interface{})
+	raw, ok := skills["external_dirs"]
+	if !ok {
+		return paths
+	}
+	entries := []interface{}{raw}
+	if list, ok := raw.([]interface{}); ok {
+		entries = list
+	}
+	if len(entries) > 256 {
+		entries = entries[:256]
+	}
+	for _, entry := range entries {
+		value, ok := entry.(string)
+		if !ok || strings.TrimSpace(value) == "" {
+			continue
+		}
+		value = os.ExpandEnv(strings.TrimSpace(value))
+		if strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
+			value = filepath.Join(userHomeDir(), value[2:])
+		} else if !filepath.IsAbs(value) {
+			value = filepath.Join(home, value)
+		}
+		value = filepath.Clean(value)
+		if info, statErr := os.Stat(value); statErr == nil && info.IsDir() {
+			paths = append(paths, value)
+		}
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func hermesPluginPaths(configPath string) []string {
+	home := filepath.Dir(configPath)
+	paths := []string{
+		filepath.Join(home, "plugins"),
+		filepath.Join(home, "hermes-agent", "plugins"),
+	}
+	if bundled := strings.TrimSpace(os.Getenv("HERMES_BUNDLED_PLUGINS")); bundled != "" {
+		paths = append(paths, filepath.Clean(bundled))
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
 func patchHermesHooks(path, hookScript, hookExecutable string) error {
 	cfg, err := readYAMLObject(path)
 	if err != nil {
@@ -2406,54 +3090,11 @@ func patchHermesHooks(path, hookScript, hookExecutable string) error {
 		hooks = map[string]interface{}{}
 		cfg["hooks"] = hooks
 	}
-	// Hermes prompts for per-(event, command) consent the first time it
-	// sees a shell hook and persists the decision to
-	// ~/.hermes/shell-hooks-allowlist.json. On non-TTY runs (the gateway
-	// daemon, cron, CI) there is no prompt, so an un-accepted hook is
-	// silently skipped and never fires. hooks_auto_accept is the
-	// documented escape hatch that lets all of DefenseClaw's lifecycle
-	// hooks register without an interactive prompt. Selecting Hermes
-	// Setup is an explicit request to register those hooks, so Setup sets
-	// the key even when the prior value was false. The managed-file backup
-	// restores the operator's exact prior bytes on teardown.
-	cfg["hooks_auto_accept"] = true
-	hookCommand := shellWord(hookScript)
-	if bound := windowsHermesDirectHookCommand(hookExecutable); bound != "" && hookScript == bound {
-		// Native maintenance may run from a quarantined or temporary gateway,
-		// so generic process-local ownership cannot identify the stable command
-		// that Setup explicitly bound. Preserve that exact direct argv without
-		// adding shell quoting; Hermes will pass it through shlex.split and
-		// subprocess.run(shell=False).
-		hookCommand = hookScript
-	}
-	for _, spec := range []struct {
-		event   string
-		matcher string
-	}{
-		{"pre_tool_call", ".*"},
-		{"post_tool_call", ".*"},
-		{"transform_terminal_output", ""},
-		{"transform_tool_result", ""},
-		{"transform_llm_output", ""},
-		{"pre_llm_call", ""},
-		{"post_llm_call", ""},
-		{"pre_verify", ""},
-		{"pre_api_request", ""},
-		{"post_api_request", ""},
-		{"api_request_error", ""},
-		{"on_session_start", ""},
-		{"on_session_end", ""},
-		{"on_session_finalize", ""},
-		{"on_session_reset", ""},
-		{"subagent_start", ""},
-		{"subagent_stop", ""},
-		{"pre_gateway_dispatch", ""},
-		{"pre_approval_request", ""},
-		{"post_approval_response", ""},
-		{"kanban_task_claimed", ""},
-		{"kanban_task_completed", ""},
-		{"kanban_task_blocked", ""},
-	} {
+	// Hermes' global hooks_auto_accept switch belongs to the operator. Setup
+	// leaves it byte-semantically untouched and separately provisions only the
+	// exact DefenseClaw (event, command) approvals in the vendor allowlist.
+	hookCommand := hermesConfiguredHookCommand(hookScript, hookExecutable)
+	for _, spec := range hermesRequiredHooks {
 		entry := map[string]interface{}{
 			"command": hookCommand,
 			"timeout": 30,
@@ -2471,9 +3112,10 @@ func patchHermesHooks(path, hookScript, hookExecutable string) error {
 }
 
 func removeHermesHooks(path, hookScript string, backup *managedFileBackup) error {
-	pristineAutoAccept, pristineHadAutoAccept, pristineKnown, err := hermesPristineAutoAccept(backup)
-	if err != nil {
-		return err
+	if backup != nil {
+		if err := validateHermesManagedBackupPristine(backup); err != nil {
+			return err
+		}
 	}
 	cfg, err := readYAMLObject(path)
 	if err != nil {
@@ -2488,17 +3130,6 @@ func removeHermesHooks(path, hookScript string, backup *managedFileBackup) error
 		}
 		pruneEmptyMapArrays(hooks)
 	}
-	// Setup writes exactly boolean true. Restore the captured value/absence
-	// only while that installed scalar remains unchanged; a later operator edit
-	// belongs to the operator and survives surgical hook cleanup.
-	currentAutoAccept, currentAutoAcceptPresent := cfg["hooks_auto_accept"]
-	if pristineKnown && currentAutoAcceptPresent && currentAutoAccept == true {
-		if pristineHadAutoAccept {
-			cfg["hooks_auto_accept"] = pristineAutoAccept
-		} else {
-			delete(cfg, "hooks_auto_accept")
-		}
-	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
@@ -2506,27 +3137,17 @@ func removeHermesHooks(path, hookScript string, backup *managedFileBackup) error
 	return atomicWriteFile(path, data, 0o600)
 }
 
-func hermesPristineAutoAccept(backup *managedFileBackup) (interface{}, bool, bool, error) {
-	if backup == nil {
-		return nil, false, false, nil
-	}
+func validateHermesManagedBackupPristine(backup *managedFileBackup) error {
 	if !backup.Existed {
 		if backup.PristineSHA256 != managedBackupMissingHash || len(backup.PristineBytes) != 0 {
-			return nil, false, false, fmt.Errorf("Hermes pristine custody for a missing config is inconsistent")
+			return fmt.Errorf("Hermes pristine custody for a missing file is inconsistent")
 		}
-		return nil, false, true, nil
+		return nil
 	}
 	if backup.PristineSHA256 != sha256Hex(backup.PristineBytes) {
-		return nil, false, false, fmt.Errorf("Hermes pristine custody hash does not match its captured config bytes")
+		return fmt.Errorf("Hermes pristine custody hash does not match its captured bytes")
 	}
-	var pristine map[string]interface{}
-	if len(bytes.TrimSpace(backup.PristineBytes)) != 0 {
-		if err := yaml.Unmarshal(backup.PristineBytes, &pristine); err != nil {
-			return nil, false, false, fmt.Errorf("parse Hermes pristine custody: %w", err)
-		}
-	}
-	value, present := pristine["hooks_auto_accept"]
-	return value, present, true, nil
+	return nil
 }
 
 var cursorHookEvents = []string{

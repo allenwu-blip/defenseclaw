@@ -140,9 +140,10 @@ class DoctorHermesMigrationTests(unittest.TestCase):
             ):
                 _check_hook_health(cfg, "hermes", result)
 
-            self.assertEqual(result.passed, 1, result.checks)
-            self.assertEqual(result.failed, 0, result.checks)
+            self.assertEqual(result.passed, 0, result.checks)
+            self.assertEqual(result.failed, 1, result.checks)
             self.assertIn(config_path, result.checks[0]["detail"])
+            self.assertIn("live=false", result.checks[0]["detail"])
 
     def test_warns_without_mutating_legacy_windows_config(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,6 +31,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import yaml
 from click.testing import CliRunner
 from defenseclaw import connector_paths
 from defenseclaw.config import (
@@ -2192,6 +2193,103 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             "defenseclaw.config.Config.mcp_servers",
             return_value=list(entries),
         )
+
+    def test_hermes_inventory_covers_default_profile_sources_without_live_claim(self):
+        cfg = _make_cfg_for_connector(self.tmp, "hermes")
+        hermes_home = Path(self.tmp) / "hermes-home"
+        bundled = Path(self.tmp) / "nix-store-plugins"
+        external = Path(self.tmp) / "external-skills"
+        hermes_site_packages = hermes_home / "hermes-agent" / "venv" / "Lib" / "site-packages"
+        for directory in (
+            hermes_home / "skills" / "local-skill",
+            external / "external-skill",
+            hermes_home / "plugins" / "user-plugin",
+            hermes_home / "plugins" / "memory-provider",
+            bundled / "image_gen" / "bundled-backend",
+            bundled / "platforms" / "slack",
+            bundled / "memory" / "not-a-general-plugin",
+            hermes_home / "memories",
+            hermes_site_packages,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "skills" / "local-skill" / "SKILL.md").write_text("# local", encoding="utf-8")
+        (external / "external-skill" / "SKILL.md").write_text("# external", encoding="utf-8")
+        (hermes_home / "plugins" / "user-plugin" / "plugin.yaml").write_text(
+            "name: user-plugin\nkind: standalone\nversion: 1.0\n",
+            encoding="utf-8",
+        )
+        (hermes_home / "plugins" / "memory-provider" / "plugin.yaml").write_text(
+            "name: memory-provider\nkind: exclusive\n",
+            encoding="utf-8",
+        )
+        (bundled / "image_gen" / "bundled-backend" / "plugin.yaml").write_text(
+            "name: bundled-backend\nkind: backend\n",
+            encoding="utf-8",
+        )
+        (bundled / "platforms" / "slack" / "plugin.yaml").write_text(
+            "name: slack\nkind: platform\n",
+            encoding="utf-8",
+        )
+        (bundled / "memory" / "not-a-general-plugin" / "plugin.yaml").write_text(
+            "name: not-a-general-plugin\nkind: exclusive\n",
+            encoding="utf-8",
+        )
+        (hermes_home / "SOUL.md").write_text("identity", encoding="utf-8")
+        (hermes_home / "memories" / "MEMORY.md").write_text("memory", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "skills": {"external_dirs": [str(external)]},
+                    "plugins": {"enabled": ["user-plugin", "pip-plugin"]},
+                    "memory": {"provider": "memory-provider"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        entrypoint = MagicMock()
+        entrypoint.name = "pip-plugin"
+        entrypoint.value = "pip_package:register"
+        entrypoint.group = "hermes_agent.plugins"
+        distribution = MagicMock()
+        distribution.version = "2.0"
+        distribution.entry_points = [entrypoint]
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(hermes_home),
+                "HERMES_BUNDLED_PLUGINS": str(bundled),
+            },
+            clear=False,
+        ), patch(
+            "defenseclaw.inventory.claw_inventory.importlib.metadata.distributions",
+            return_value=[distribution],
+        ):
+            inv = build_claw_aibom(
+                cfg,
+                live=True,
+                categories={"skills", "plugins", "rules", "memory"},
+            )
+
+        self.assertFalse(inv["live"])
+        self.assertEqual(inv["support_status"], "not_certified")
+        self.assertEqual(inv["release_channel"], "preview")
+        self.assertEqual({row["id"] for row in inv["skills"]}, {"local-skill", "external-skill"})
+        plugins = {row["id"]: row for row in inv["plugins"]}
+        self.assertTrue(plugins["user-plugin"]["enabled"])
+        self.assertTrue(plugins["image_gen/bundled-backend"]["enabled"])
+        self.assertEqual(plugins["image_gen/bundled-backend"]["source_kind"], "bundled-nix")
+        self.assertTrue(plugins["slack"]["enabled"])
+        self.assertNotIn("platforms/slack", plugins)
+        self.assertNotIn("memory/not-a-general-plugin", plugins)
+        self.assertTrue(plugins["pip-plugin"]["enabled"])
+        self.assertFalse(all(row["activation_verified"] for row in plugins.values()))
+        self.assertEqual(inv["rules"][0]["id"], "SOUL.md")
+        memory = {row["id"]: row for row in inv["memory"]}
+        self.assertIn("builtin", memory)
+        self.assertIn("memory-provider", memory)
+        limitation_categories = {row["category"] for row in inv["limitations"]}
+        self.assertTrue({"skills", "plugins", "rules", "memory"}.issubset(limitation_categories))
 
     def test_codex_skips_subprocess_and_walks_disk(self):
         """For connector=codex, build_claw_aibom must NOT shell out."""

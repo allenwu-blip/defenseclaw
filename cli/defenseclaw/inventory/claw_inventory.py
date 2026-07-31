@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import importlib.metadata
+import importlib.util
 import json
 import os
 import re
@@ -1805,6 +1807,25 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
 def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     """Enumerate documented local rule/instruction files without evaluating them."""
     normalized = connector_paths.normalize(connector)
+    if normalized == "hermes":
+        soul = os.path.join(connector_paths.hermes_home(), "SOUL.md")
+        try:
+            info = os.lstat(soul)
+        except OSError:
+            return []
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return []
+        return [
+            {
+                "id": "SOUL.md",
+                "name": "SOUL.md",
+                "source": soul,
+                "kind": "identity",
+                "scope": "default-profile",
+                "activation_source": "HERMES_HOME/SOUL.md",
+                "activation_verified": False,
+            }
+        ]
     if normalized == "antigravity":
         return _antigravity_rules(cfg)
     if normalized == "copilot":
@@ -2428,6 +2449,60 @@ def _memory_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         candidates = [os.path.join(connector_home, "memories")]
     elif name == "zeptoclaw":
         candidates = [os.path.join(home, ".zeptoclaw", "memory")]
+    elif name == "hermes":
+        hermes_home = connector_paths.hermes_home()
+        memories = os.path.join(hermes_home, "memories")
+        rows: list[dict[str, Any]] = []
+        files: list[str] = []
+        if os.path.isdir(memories) and not is_symlink(memories):
+            for filename in ("MEMORY.md", "USER.md"):
+                path = os.path.join(memories, filename)
+                try:
+                    info = os.lstat(path)
+                except OSError:
+                    continue
+                if stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                    files.append(path)
+        rows.append(
+            {
+                "id": "builtin",
+                "name": memories,
+                "source": memories,
+                "kind": "builtin-files",
+                "files": files,
+                "entry_count": len(files),
+                "activation_source": "HERMES_HOME/memories",
+                "activation_verified": False,
+            }
+        )
+        document, _error = connector_paths._read_hermes_config_bounded()
+        memory_config = document.get("memory") if isinstance(document, dict) else None
+        provider = memory_config.get("provider") if isinstance(memory_config, dict) else None
+        if isinstance(provider, str) and provider.strip() and provider.strip().casefold() not in {"builtin", "none"}:
+            provider_name = provider.strip()
+            provider_source = ""
+            for plugin_root in connector_paths.plugin_dirs("hermes"):
+                for candidate in (
+                    os.path.join(plugin_root, "memory", provider_name),
+                    os.path.join(plugin_root, provider_name),
+                ):
+                    if os.path.isdir(candidate) and not is_symlink(candidate):
+                        provider_source = candidate
+                        break
+                if provider_source:
+                    break
+            rows.append(
+                {
+                    "id": provider_name,
+                    "name": provider_name,
+                    "source": provider_source or connector_paths.hermes_config_path(),
+                    "kind": "memory-provider",
+                    "configured": True,
+                    "activation_source": "config.yaml:memory.provider",
+                    "activation_verified": False,
+                }
+            )
+        return rows
     else:
         return []
 
@@ -3428,6 +3503,36 @@ def _build_aibom_from_filesystem(
                     "reason": memory_resolution.limitation,
                 }
             )
+    if connector_paths.normalize(connector) == "hermes":
+        hermes_notes = {
+            "skills": (
+                "default-profile HERMES_HOME/skills and existing skills.external_dirs are inventoried; "
+                "named/multiplex profiles and session/project-conditional skill sources are unsupported or unverified"
+            ),
+            "plugins": (
+                "default-profile user, vendor bundled/Nix override, and official Hermes-venv entry-point metadata are "
+                "inventoried with config-derived activation provenance; runtime activation and project plugins "
+                "conditional on the Hermes process CWD plus HERMES_ENABLE_PROJECT_PLUGINS remain unverified"
+            ),
+            "rules": (
+                "default-profile SOUL.md is inventoried as identity; project AGENTS.md, CLAUDE.md, .hermes.md, and "
+                ".cursorrules depend on the Hermes session CWD and remain unverified"
+            ),
+            "memory": (
+                "default-profile MEMORY.md/USER.md and configured memory.provider are inventoried; provider-owned "
+                "external state requires loading the provider and remains unverified"
+            ),
+        }
+        for category, reason in hermes_notes.items():
+            if category in cats:
+                limitations.append(
+                    {
+                        "connector": connector,
+                        "category": category,
+                        "status": InventoryCapabilityStatus.UNVERIFIED,
+                        "reason": reason,
+                    }
+                )
     for cat_key, note in _FILESYSTEM_ONLY_CONNECTOR_NOTES.items():
         if connector == "codex" and cat_key == "agents":
             continue
@@ -3467,7 +3572,7 @@ def _build_aibom_from_filesystem(
         # connector was last activated (e.g. shows "antigravity" for a codex
         # scan). Mirrors single-connector installs where claw.mode == connector.
         "claw_mode": connector,
-        "live": True,
+        "live": connector_paths.normalize(connector) != "hermes",
         "skills": skills,
         "plugins": plugins,
         "mcp": mcps,
@@ -3479,6 +3584,10 @@ def _build_aibom_from_filesystem(
         "errors": errors,
         "limitations": limitations,
     }
+    if connector_paths.normalize(connector) == "hermes":
+        out["support_status"] = "not_certified"
+        out["release_channel"] = "preview"
+        out["profile_scope"] = "default-single-profile"
     _attach_connector_paths(out, cfg, connector)
     _sync_legacy_connector_paths(out)
     out["summary"] = _build_summary(out)
@@ -3686,6 +3795,243 @@ def _frontmatter_description(text: str) -> str:
     return ""
 
 
+def _read_hermes_plugin_manifest(path: str) -> dict[str, Any] | None:
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > 256 * 1024:
+            return None
+        descriptor = open_regular_file_no_follow(path)
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _hermes_bounded_scandir(path: str, limit: int) -> list[os.DirEntry[str]]:
+    entries: list[os.DirEntry[str]] = []
+    with os.scandir(path) as iterator:
+        for entry in iterator:
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+    return entries
+
+
+def _hermes_manifest_rows(
+    root: str,
+    source: str,
+    *,
+    skip_top_level: frozenset[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    if not os.path.isdir(root) or is_symlink(root):
+        return []
+    rows: list[dict[str, Any]] = []
+    visited = 0
+    try:
+        first_level = sorted(_hermes_bounded_scandir(root, 512), key=lambda item: item.name.casefold())
+    except OSError:
+        return []
+    for first in first_level:
+        if visited >= 512:
+            break
+        if first.name in skip_top_level:
+            continue
+        try:
+            if not first.is_dir(follow_symlinks=False):
+                continue
+        except OSError:
+            continue
+        visited += 1
+        direct_manifest = os.path.join(first.path, "plugin.yaml")
+        if _read_hermes_plugin_manifest(direct_manifest) is not None:
+            candidates = [(first.name, first.path)]
+        else:
+            candidates = []
+        try:
+            children = (
+                []
+                if candidates
+                else sorted(_hermes_bounded_scandir(first.path, 512 - visited), key=lambda item: item.name.casefold())
+            )
+        except OSError:
+            children = []
+        for child in children:
+            if visited >= 512:
+                break
+            try:
+                if child.is_dir(follow_symlinks=False):
+                    candidates.append((f"{first.name}/{child.name}", child.path))
+                    visited += 1
+            except OSError:
+                continue
+        for key, directory in candidates:
+            manifest_path = os.path.join(directory, "plugin.yaml")
+            manifest = _read_hermes_plugin_manifest(manifest_path)
+            if manifest is None:
+                continue
+            rows.append(
+                {
+                    "id": key,
+                    "name": str(manifest.get("name") or os.path.basename(directory)),
+                    "version": str(manifest.get("version") or ""),
+                    "description": str(manifest.get("description") or ""),
+                    "kind": str(manifest.get("kind") or "standalone"),
+                    "source_kind": source,
+                    "source": directory,
+                    "manifest": manifest_path,
+                }
+            )
+    return rows
+
+
+def _hermes_pip_entry_points() -> list[tuple[Any, str]]:
+    """Read plugin metadata from the official Hermes venv without executing it."""
+
+    install_root = os.path.join(connector_paths.hermes_home(), "hermes-agent")
+    site_packages: list[str] = []
+    for venv_name in ("venv", ".venv"):
+        venv_root = os.path.join(install_root, venv_name)
+        windows_site = os.path.join(venv_root, "Lib", "site-packages")
+        if os.path.isdir(windows_site) and not is_symlink(windows_site):
+            site_packages.append(windows_site)
+        unix_lib = os.path.join(venv_root, "lib")
+        try:
+            versions = _hermes_bounded_scandir(unix_lib, 16)
+        except OSError:
+            versions = []
+        for version in versions:
+            try:
+                if not version.name.startswith("python") or not version.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            candidate = os.path.join(version.path, "site-packages")
+            if os.path.isdir(candidate) and not is_symlink(candidate):
+                site_packages.append(candidate)
+
+    rows: list[tuple[Any, str]] = []
+    if site_packages:
+        try:
+            distributions = importlib.metadata.distributions(path=list(dict.fromkeys(site_packages)))
+            for distribution_index, distribution in enumerate(distributions):
+                if distribution_index >= 2048:
+                    break
+                version = str(getattr(distribution, "version", "") or "")
+                for entry in getattr(distribution, "entry_points", ()):
+                    if getattr(entry, "group", "") == "hermes_agent.plugins":
+                        rows.append((entry, version))
+                        if len(rows) >= 512:
+                            return rows
+        except Exception:  # noqa: BLE001 - corrupt installed metadata is an inventory gap.
+            return rows
+        return rows
+
+    # Advanced -NoVenv/source installs can deliberately share the current
+    # interpreter. Only consult its metadata when hermes_cli is import-visible;
+    # DefenseClaw's unrelated environment must not be presented as Hermes.
+    try:
+        hermes_spec = importlib.util.find_spec("hermes_cli")
+    except (ImportError, AttributeError, ValueError):
+        hermes_spec = None
+    if hermes_spec is None:
+        return rows
+    try:
+        entry_points = importlib.metadata.entry_points()
+        if hasattr(entry_points, "select"):
+            selected = entry_points.select(group="hermes_agent.plugins")
+        elif isinstance(entry_points, dict):
+            selected = entry_points.get("hermes_agent.plugins", [])
+        else:
+            selected = [entry for entry in entry_points if entry.group == "hermes_agent.plugins"]
+    except Exception:  # noqa: BLE001 - metadata corruption is an inventory gap.
+        return rows
+    for entry in list(selected)[:512]:
+        distribution = getattr(entry, "dist", None)
+        rows.append((entry, str(getattr(distribution, "version", "") or "")))
+    return rows
+
+
+def _enumerate_hermes_plugins() -> list[dict[str, Any]]:
+    """Mirror v0.19's bounded default-profile plugin source and activation order."""
+
+    home = connector_paths.hermes_home()
+    user_root = os.path.join(home, "plugins")
+    roots = connector_paths.plugin_dirs("hermes")
+    bundled_roots = [root for root in roots if os.path.normcase(root) != os.path.normcase(user_root)]
+    discovered: list[dict[str, Any]] = []
+    for root in bundled_roots:
+        source = "bundled-nix" if (os.environ.get("HERMES_BUNDLED_PLUGINS") or "").strip() else "bundled"
+        discovered.extend(
+            _hermes_manifest_rows(
+                root,
+                source,
+                skip_top_level=frozenset({"memory", "context_engine", "platforms", "model-providers"}),
+            )
+        )
+        discovered.extend(_hermes_manifest_rows(os.path.join(root, "platforms"), source))
+    discovered.extend(_hermes_manifest_rows(user_root, "user"))
+
+    for entry, version in _hermes_pip_entry_points():
+        discovered.append(
+            {
+                "id": str(entry.name),
+                "name": str(entry.name),
+                "version": version,
+                "description": "",
+                "kind": "standalone",
+                "source_kind": "entrypoint",
+                "source": str(entry.value),
+                "manifest": "",
+            }
+        )
+
+    # v0.19 resolves collisions in scan order: user beats bundled and the
+    # later entry-point source beats both. Preserve the final winner by ID.
+    winners: dict[str, dict[str, Any]] = {}
+    for row in discovered:
+        winners[str(row["id"])] = row
+
+    document, _error = connector_paths._read_hermes_config_bounded()
+    plugins_config = document.get("plugins") if isinstance(document, dict) else None
+    enabled_raw = plugins_config.get("enabled") if isinstance(plugins_config, dict) else None
+    disabled_raw = plugins_config.get("disabled") if isinstance(plugins_config, dict) else None
+    enabled = {str(item) for item in enabled_raw} if isinstance(enabled_raw, list) else set()
+    disabled = {str(item) for item in disabled_raw} if isinstance(disabled_raw, list) else set()
+
+    rows: list[dict[str, Any]] = []
+    for key in sorted(winners, key=str.casefold):
+        row = winners[key]
+        name = str(row.get("name") or key)
+        kind = str(row.get("kind") or "standalone")
+        source_kind = str(row.get("source_kind") or "")
+        if key in disabled or name in disabled:
+            configured = False
+            activation_source = "config.yaml:plugins.disabled"
+        elif kind == "exclusive":
+            configured = False
+            activation_source = "provider-selection-required"
+        elif kind == "model-provider":
+            configured = True
+            activation_source = "vendor model-provider discovery"
+        elif source_kind.startswith("bundled") and kind in {"backend", "platform"}:
+            configured = True
+            activation_source = "vendor bundled auto/deferred activation"
+        else:
+            configured = key in enabled or name in enabled
+            activation_source = "config.yaml:plugins.enabled" if configured else "vendor opt-in default"
+        row.update(
+            {
+                "enabled": configured,
+                "activation_status": "configured" if configured else "inactive",
+                "activation_source": activation_source,
+                "activation_verified": False,
+            }
+        )
+        rows.append(row)
+    return rows
+
+
 def _enumerate_plugins_filesystem(
     cfg: Config,
     connector: str | None = None,
@@ -3701,6 +4047,8 @@ def _enumerate_plugins_filesystem(
     names are deduplicated using Codex's active-plugin metadata. ``connector``
     scopes the walk for multi-connector focus (defaults to active).
     """
+    if connector_paths.normalize(connector or cfg.active_connector()) == "hermes":
+        return _enumerate_hermes_plugins()
     rows: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
     resolved_connector = connector or cfg.active_connector()

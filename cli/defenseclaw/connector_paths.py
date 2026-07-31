@@ -53,6 +53,7 @@ import base64
 import copy
 import errno
 import hashlib
+import importlib.util
 import json
 import ntpath
 import os
@@ -944,6 +945,120 @@ def hermes_legacy_config_path() -> str:
     return os.path.join(os.path.abspath(str(Path.home())), ".hermes", "config.yaml")
 
 
+_HERMES_CONFIG_INSPECTION_LIMIT = 1 << 20
+_HERMES_PROFILE_ENTRY_LIMIT = 256
+
+
+def _bounded_scandir(path: str, limit: int) -> list[os.DirEntry[str]]:
+    entries: list[os.DirEntry[str]] = []
+    with os.scandir(path) as iterator:
+        for entry in iterator:
+            entries.append(entry)
+            if len(entries) >= limit:
+                break
+    return entries
+
+
+def _read_hermes_config_bounded(path: str | None = None) -> tuple[dict[str, Any], str]:
+    """Read the selected Hermes config without following a final symlink."""
+
+    target = path or hermes_config_path()
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return {}, ""
+    except OSError as exc:
+        return {}, f"cannot inspect {target}: {exc}"
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return {}, f"{target} is not a regular non-symlink file"
+    if info.st_size > _HERMES_CONFIG_INSPECTION_LIMIT:
+        return {}, f"{target} exceeds the {_HERMES_CONFIG_INSPECTION_LIMIT}-byte inspection limit"
+    try:
+        descriptor = open_regular_file_no_follow(target)
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        return {}, f"cannot parse {target}: {exc}"
+    if not isinstance(document, dict):
+        return {}, f"{target} is not a YAML object"
+    return document, ""
+
+
+def _hermes_truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def hermes_profile_unsupported_reason(config_path: str | None = None) -> str:
+    """Return why a selected Hermes home is outside the single-profile contract."""
+
+    target = os.path.abspath(config_path or hermes_config_path())
+    home = os.path.dirname(target)
+    if os.path.basename(os.path.dirname(home)).casefold() == "profiles":
+        return (
+            "Hermes named profiles are unsupported by the single-HERMES_HOME "
+            "connector; select the default profile and retry"
+        )
+
+    active_profile = os.path.join(home, "active_profile")
+    try:
+        info = os.lstat(active_profile)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+            return "Hermes active_profile cannot be safely inspected"
+        descriptor = open_regular_file_no_follow(active_profile)
+        with os.fdopen(descriptor, encoding="utf-8") as handle:
+            profile = handle.read(4097).strip()
+        if profile and profile.casefold() != "default":
+            return (
+                f"Hermes active named profile {profile!r} is unsupported by the "
+                "single-HERMES_HOME connector"
+            )
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        return f"Hermes active_profile cannot be safely inspected: {exc}"
+
+    profiles_dir = os.path.join(home, "profiles")
+    try:
+        entries = _bounded_scandir(profiles_dir, _HERMES_PROFILE_ENTRY_LIMIT + 1)
+    except FileNotFoundError:
+        entries = []
+    except OSError as exc:
+        return f"Hermes profiles directory cannot be safely inspected: {exc}"
+    if len(entries) > _HERMES_PROFILE_ENTRY_LIMIT:
+        return "Hermes profiles directory exceeds the bounded inspection limit"
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                return (
+                    f"Hermes named profile {entry.name!r} is unsupported by the "
+                    "single-HERMES_HOME connector"
+                )
+        except OSError as exc:
+            return f"Hermes profile entry cannot be safely inspected: {exc}"
+
+    document, error = _read_hermes_config_bounded(target)
+    if error:
+        return f"Hermes profile topology is unverified: {error}"
+    multiplex = document.get("multiplex_profiles")
+    if multiplex is None and isinstance(document.get("gateway"), dict):
+        multiplex = document["gateway"].get("multiplex_profiles")
+    raw_override = os.environ.get("GATEWAY_MULTIPLEX_PROFILES")
+    if raw_override is not None:
+        token = raw_override.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            multiplex = True
+        elif token in {"0", "false", "no", "off"}:
+            multiplex = False
+    if _hermes_truthy(multiplex):
+        return (
+            "Hermes multiplex profiles are unsupported by the single-HERMES_HOME "
+            "connector"
+        )
+    return ""
+
+
 def omnigent_config_path() -> str:
     """Return OmniGent's effective user-level ``config.yaml`` path.
 
@@ -1637,7 +1752,25 @@ def _zeptoclaw_skill_dirs(workspace_dir: str | None = None) -> list[str]:
 
 
 def _hermes_skill_dirs() -> list[str]:
-    return [os.path.join(hermes_home(), "skills")]
+    home = hermes_home()
+    paths = [os.path.join(home, "skills")]
+    document, _error = _read_hermes_config_bounded()
+    skills = document.get("skills") if isinstance(document, dict) else None
+    raw_dirs = skills.get("external_dirs") if isinstance(skills, dict) else None
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return paths
+    for raw in raw_dirs[:_HERMES_PROFILE_ENTRY_LIMIT]:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        expanded = os.path.expandvars(os.path.expanduser(raw.strip()))
+        if not os.path.isabs(expanded):
+            expanded = os.path.join(home, expanded)
+        candidate = os.path.realpath(os.path.abspath(expanded))
+        if os.path.isdir(candidate):
+            paths.append(candidate)
+    return _dedup(paths)
 
 
 def _cursor_skill_dirs(workspace_dir: str | None = None) -> list[str]:
@@ -2225,12 +2358,25 @@ def _zeptoclaw_plugin_dirs() -> list[str]:
 
 
 def _hermes_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
-    return _dedup(
-        [
-            os.path.join(hermes_home(), "plugins"),
-            _workspace_path(workspace_dir, ".hermes", "plugins"),
-        ]
-    )
+    _ = workspace_dir  # project plugins are process-CWD/env conditional and unverified.
+    home = hermes_home()
+    paths = [
+        os.path.join(home, "plugins"),
+        # Official native installers place the tagged checkout (and therefore
+        # its bundled plugin tree) beside the data files under HERMES_HOME.
+        os.path.join(home, "hermes-agent", "plugins"),
+    ]
+    bundled_override = (os.environ.get("HERMES_BUNDLED_PLUGINS") or "").strip()
+    if bundled_override:
+        paths.append(os.path.abspath(os.path.expanduser(bundled_override)))
+    else:
+        try:
+            spec = importlib.util.find_spec("hermes_cli")
+        except (ImportError, AttributeError, ValueError):
+            spec = None
+        if spec is not None and spec.origin:
+            paths.append(os.path.join(os.path.dirname(os.path.dirname(spec.origin)), "plugins"))
+    return _dedup(paths)
 
 
 def _opencode_plugin_dirs(workspace_dir: str | None = None) -> list[str]:

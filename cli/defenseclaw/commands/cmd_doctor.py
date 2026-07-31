@@ -57,6 +57,7 @@ from defenseclaw.connector_paths import (
     copilot_settings_resolution,
     hermes_config_path,
     hermes_legacy_config_path,
+    hermes_profile_unsupported_reason,
     omnigent_config_path,
     windsurf_hook_config_path,
 )
@@ -1714,13 +1715,23 @@ def _check_hermes_hooks(
     search_path: str | None = None,
     pathext: str | None = None,
 ) -> None:
+    selected_config = config_path or hermes_config_path()
+    unsupported = hermes_profile_unsupported_reason(selected_config)
+    if unsupported:
+        _emit(
+            "fail",
+            "Hermes hooks (preview; fail-open)",
+            f"unsupported profile topology: {unsupported}",
+            r=r,
+        )
+        return
     if (platform_name or os.name) == "nt":
         _check_windows_native_hooks(
             cfg,
             "hermes",
             "Hermes hooks (preview; fail-open)",
             r,
-            config_path=config_path,
+            config_path=selected_config,
             install_root=install_root,
             search_path=search_path,
             pathext=pathext,
@@ -2499,6 +2510,14 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
                         f"{runtime_detail}",
                         r=r,
                     )
+            elif connector == "hermes":
+                _emit(
+                    "fail",
+                    label,
+                    f"on-disk registration is present at {path}, but running Hermes hosts "
+                    "are unverified; reload or restart every Hermes CLI/TUI/gateway/desktop/service host; live=false",
+                    r=r,
+                )
             else:
                 _emit("pass", label, f"reachable at {path}", r=r)
             return

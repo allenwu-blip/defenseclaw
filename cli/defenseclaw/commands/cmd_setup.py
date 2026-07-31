@@ -74,6 +74,7 @@ from defenseclaw.config import (
     load as load_config,
 )
 from defenseclaw.connector_contracts import (
+    HOOK_CONTRACTS,
     STATUS_KNOWN,
     STATUS_NOT_GATED,
     STATUS_UNVERSIONED,
@@ -3530,6 +3531,27 @@ def _connector_not_detected_message(label: str) -> str:
     return f"{label}: connector was not detected locally; setup will write DefenseClaw config anyway."
 
 
+def _connector_contract_upgrade_guidance(connector: str, label: str) -> str:
+    """Describe the registered hook-contract range without guessing upstream support."""
+
+    contracts = HOOK_CONTRACTS.get(normalize_connector(connector), ())
+    if len(contracts) != 1:
+        return f"Upgrade {label} to a version covered by a DefenseClaw hook contract, then rerun setup."
+
+    contract = contracts[0]
+    if contract.exact_agent_versions:
+        requirement = "one of " + ", ".join(contract.exact_agent_versions)
+    elif contract.min_agent_version and contract.max_agent_version:
+        requirement = f">={contract.min_agent_version} and <{contract.max_agent_version}"
+    elif contract.min_agent_version:
+        requirement = f">={contract.min_agent_version}"
+    elif contract.max_agent_version:
+        requirement = f"<{contract.max_agent_version}"
+    else:
+        requirement = "an explicitly supported version"
+    return f"Upgrade {label}; {contract.contract_id} requires {requirement}. Then rerun setup."
+
+
 def _check_connector_version_supported_for_setup(
     connector: str,
     *,
@@ -3692,19 +3714,27 @@ def _check_connector_version_supported_for_setup(
                 _emit_untrusted_prefix_setup_hints(resolved_bin, parent)
         return True
 
+    detected_state = (
+        "detected-but-unsupported-version"
+        if compatibility.normalized_version
+        else "detected-but-unrecognized-version"
+    )
     detail = (
-        f"{label}: installed version {version_display} is not covered by a "
+        f"{label}: {detected_state}; installed version {version_display} is not covered by a "
         f"DefenseClaw hook contract ({compatibility.reason})."
     )
     if probe_error:
         detail += f" Probe detail: {probe_error}."
+    upgrade_guidance = _connector_contract_upgrade_guidance(connector, label)
     if action_mode and not allow_drift:
         if emit:
             ux.err(detail)
+            ux.subhead(upgrade_guidance)
             ux.subhead("Set DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT=1 only for exploratory testing.")
         return False
     if emit:
         ux.warn(detail + " Continuing because setup is not in action mode or drift override is set.")
+        ux.subhead(upgrade_guidance)
     return True
 
 
@@ -5126,6 +5156,7 @@ def _apply_hook_connector_setup(
     judge_hook_connectors: str | None = None,
     allow_trusted_path_prompt: bool = True,
     trusted_prompt_cache: dict[str, bool] | None = None,
+    _downgrade_refused_action: bool = False,
 ) -> bool:
     """Pin DefenseClaw to *connector* in hook-driven mode.
 
@@ -5190,7 +5221,12 @@ def _apply_hook_connector_setup(
     if trusted_prompt_cache is not None:
         version_check_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
     if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
-        return False
+        if desired_mode == "action" and _downgrade_refused_action:
+            label = _CONNECTOR_META.get(connector, {}).get("label", connector)
+            ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
+            desired_mode = "observe"
+        else:
+            return False
 
     cfg = app.cfg
     gc = cfg.guardrail
@@ -5372,7 +5408,14 @@ def _apply_hook_connector_setup(
             connectors=_actives,
             wait_for_connector_ready=True,
         )
-        click.echo(f"  ✓ {_CONNECTOR_META[connector]['label']} connector setup complete")
+        if connector == "hermes":
+            click.echo("  ✓ Hermes on-disk hook registration staged")
+            ux.warn(
+                "Hermes callbacks are not live-verified: reload or restart every running "
+                "Hermes CLI, TUI, gateway, desktop, and service host before relying on registration changes."
+            )
+        else:
+            click.echo(f"  ✓ {_CONNECTOR_META[connector]['label']} connector setup complete")
 
     _log_setup_action(
         app,
@@ -5481,6 +5524,11 @@ def _print_connector_next_steps(connector: str, *, os_name: str | None = None) -
     click.echo("  Next steps:")
     click.echo("    • Verify gateway picked up the new connector: defenseclaw-gateway status")
     click.echo("    • Optionally launch the bundled local stack: defenseclaw setup local-observability up")
+    if connector == "hermes":
+        click.echo(
+            "    • Reload/restart every running Hermes CLI, TUI, gateway, desktop, and service host; "
+            "DefenseClaw does not manage Hermes PortableGit terminal behavior"
+        )
     if os_name == "nt":
         click.echo("    • Watch decisions live: defenseclaw tui")
         click.echo(
@@ -5565,6 +5613,8 @@ def _print_observability_summary(
                 ("hook failure posture", "upstream fail-open"),
                 ("native ask/approve", "unsupported"),
                 ("native OTel", "unsupported; hook-derived audit only"),
+                ("running Hermes hosts", "unverified; reload/restart required"),
+                ("certification", "preview; not_certified; live=false"),
             ]
         )
     for k, v in rows:
@@ -5760,6 +5810,10 @@ def _setup_observability_alias(
     if connector not in _HOOK_ENFORCED_CONNECTORS:
         raise click.ClickException(f"unsupported connector for hook alias: {connector!r}")
     _ensure_connector_available(connector)
+    if connector == "hermes":
+        unsupported = connector_paths.hermes_profile_unsupported_reason()
+        if unsupported:
+            raise click.ClickException(f"{unsupported}; no changes made")
 
     # Antigravity documents global customization at
     # ~/.gemini/config/hooks.json and workspace customization at
@@ -5871,32 +5925,11 @@ def _setup_observability_alias(
         judge_hook_connectors=judge_hook_connectors,
         allow_trusted_path_prompt=interactive,
         trusted_prompt_cache=trusted_prompt_cache,
+        _downgrade_refused_action=True,
     )
-    if not ok and normalized_mode == "action":
-        label = _CONNECTOR_META.get(connector, {}).get("label", connector)
-        ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
-        normalized_mode = "observe"
-        ok = _apply_hook_connector_setup(
-            app,
-            connector=connector,
-            mode=normalized_mode,
-            restart=restart,
-            allow_offline_audit=not restart,
-            workspace_dir=workspace_dir,
-            write_mode=write_mode,
-            rule_pack=rule_pack,
-            rule_pack_dir=rule_pack_dir,
-            block_message=block_message,
-            fail_mode=fail_mode,
-            hilt=human_approval,
-            hilt_min_severity=hilt_min_severity,
-            enable_judge=enable_judge,
-            judge_hook_connectors=judge_hook_connectors,
-            allow_trusted_path_prompt=interactive,
-            trusted_prompt_cache=trusted_prompt_cache,
-        )
     if not ok:
         raise click.ClickException(f"failed to configure {connector} (mode={normalized_mode}) — see errors above")
+    normalized_mode = app.cfg.guardrail.effective_mode(connector)
 
     if interactive:
         _prune_judge_gate_to_action_scope(app.cfg.guardrail, [connector])
@@ -6381,22 +6414,8 @@ def _apply_setup_batch(
             judge_hook_connectors=None,
             allow_trusted_path_prompt=allow_trusted_path_prompt,
             trusted_prompt_cache=trusted_prompt_cache,
+            _downgrade_refused_action=True,
         )
-        if not ok and (connector_mode or "").strip().lower() == "action":
-            label = _CONNECTOR_META.get(c, {}).get("label", c)
-            ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
-            ok = _apply_hook_connector_setup(
-                app,
-                connector=c,
-                mode="observe",
-                restart=False,
-                allow_offline_audit=not restart,
-                write_mode="add",
-                enable_judge=enable_judge,
-                judge_hook_connectors=None,
-                allow_trusted_path_prompt=allow_trusted_path_prompt,
-                trusted_prompt_cache=trusted_prompt_cache,
-            )
         if ok:
             applied.append(c)
 

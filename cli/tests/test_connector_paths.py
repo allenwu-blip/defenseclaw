@@ -29,6 +29,7 @@ import os
 from pathlib import Path
 
 import pytest
+import yaml
 from defenseclaw import connector_paths
 from defenseclaw.connector_paths import MCPServerEntry
 
@@ -400,6 +401,61 @@ class TestClaudeAutoMemory:
             os.path.join(str(tmp_path / "home"), ".openhands", "cache", "skills", "public-skills", "skills")
             in openhands
         )
+
+    def test_hermes_skill_dirs_include_existing_external_dirs(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        external = tmp_path / "shared-skills"
+        relative = hermes_home / "relative-skills"
+        external.mkdir()
+        relative.mkdir(parents=True)
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "skills": {
+                        "external_dirs": [str(external), "relative-skills", str(tmp_path / "missing")]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert connector_paths.skill_dirs("hermes") == [
+            str(hermes_home / "skills"),
+            str(external),
+            str(relative),
+        ]
+
+    @pytest.mark.parametrize(
+        ("fixture", "needle"),
+        [
+            ("named_home", "named profiles"),
+            ("profile_directory", "named profile"),
+            ("active_profile", "active named profile"),
+            ("multiplex_config", "multiplex profiles"),
+            ("multiplex_env", "multiplex profiles"),
+        ],
+    )
+    def test_hermes_profile_topology_is_rejected(self, fixture, needle, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        config = home / "config.yaml"
+        if fixture == "named_home":
+            config = home / "profiles" / "coder" / "config.yaml"
+        elif fixture == "profile_directory":
+            (home / "profiles" / "coder").mkdir(parents=True)
+        elif fixture == "active_profile":
+            (home / "active_profile").write_text("coder\n", encoding="utf-8")
+        elif fixture == "multiplex_config":
+            config.write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
+        elif fixture == "multiplex_env":
+            monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "on")
+        monkeypatch.setenv("HERMES_HOME", str(config.parent))
+
+        reason = connector_paths.hermes_profile_unsupported_reason(str(config))
+
+        assert needle in reason
 
     def test_copilot_skill_and_agent_dirs_follow_official_precedence(self, tmp_path, monkeypatch):
         home = tmp_path / "home"

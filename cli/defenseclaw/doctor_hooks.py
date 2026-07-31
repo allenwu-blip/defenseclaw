@@ -2730,11 +2730,6 @@ def _hook_json_value_targets_defenseclaw(value: Any, connector: str) -> bool:
 
 
 def _validate_hermes_hook_matrix(document: dict[str, Any]) -> int:
-    if document.get("hooks_auto_accept") is not True:
-        raise _InspectionError(
-            "stale",
-            "Hermes hooks_auto_accept is not true; non-interactive hook registration can be skipped",
-        )
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
         raise _InspectionError("missing", "Hermes hook registration has no hooks table")
@@ -2793,6 +2788,47 @@ def _validate_hermes_hook_matrix(document: dict[str, Any]) -> int:
         if any(_handler_targets_defenseclaw(entry, "hermes") for entry in entries):
             raise _InspectionError("stale", f"unexpected Hermes event {event} contains a DefenseClaw handler")
     return count
+
+
+def _validate_hermes_allowlist(config_path: str, command: str) -> int:
+    path = os.path.join(os.path.dirname(config_path), "shell-hooks-allowlist.json")
+    document = _read_config(path, "hermes-allowlist")
+    approvals = document.get("approvals")
+    if not isinstance(approvals, list):
+        raise _InspectionError("malformed", "Hermes shell hook allowlist approvals is not an array")
+    pairs: set[tuple[str, str]] = set()
+    for raw in approvals:
+        if not isinstance(raw, dict):
+            continue
+        event = raw.get("event")
+        approved_command = raw.get("command")
+        if isinstance(event, str) and isinstance(approved_command, str):
+            pairs.add((event, approved_command))
+    missing = [event for event in _HERMES_REQUIRED_HOOKS if (event, command) not in pairs]
+    if missing:
+        raise _InspectionError(
+            "stale",
+            "Hermes shell hook allowlist is missing exact DefenseClaw approvals for: "
+            + ", ".join(missing),
+        )
+    return len(_HERMES_REQUIRED_HOOKS)
+
+
+def _validate_hermes_pending_runtime_state(data_dir: str, command: str) -> None:
+    path = os.path.join(data_dir, "hooks", "hermes-direct-native-state.json")
+    state = _read_config(path, "hermes-runtime-state")
+    if (
+        state.get("schema_version") != 1
+        or state.get("connector") != "hermes"
+        or state.get("status") != "pending_reload"
+        or state.get("command") != command
+        or state.get("reload_required") is not True
+        or state.get("running_host_verified") is not False
+    ):
+        raise _InspectionError(
+            "stale",
+            "Hermes direct-native lifecycle state does not match the staged registration",
+        )
 
 
 def _split_windows(command: str) -> list[str]:
@@ -3314,6 +3350,8 @@ def validate_windows_hook_registration(
             pass
         elif connector == "hermes":
             matrix_entries = _validate_hermes_hook_matrix(document)
+            allowlist_entries = _validate_hermes_allowlist(config_path, command)
+            _validate_hermes_pending_runtime_state(data_dir, command)
         else:
             raise _InspectionError("foreign", f"unsupported Windows hook connector: {connector}")
         raw_target, _args, kind = _command_target(
@@ -3402,6 +3440,17 @@ def validate_windows_hook_registration(
                 "; limitations=exit 2 blocks only five documented pre-hooks; "
                 "non-2 hook errors fail open; post hooks are non-blocking "
                 "(Cascade response post-hooks are asynchronous); Restricted Mode disables hooks"
+            )
+        if connector == "hermes":
+            return WindowsHookCheck(
+                "pending-reload",
+                f"on-disk Windows-native {runtime} registration is valid; "
+                f"hook_entries={matrix_entries}; allowlist_entries={allowlist_entries}; "
+                f"target={resolved}; {evidence}; running Hermes CLI/TUI/gateway/desktop/service hosts "
+                "are unverified and must be reloaded or restarted; live=false",
+                command,
+                resolved,
+                raw_target,
             )
         return WindowsHookCheck(
             "healthy",

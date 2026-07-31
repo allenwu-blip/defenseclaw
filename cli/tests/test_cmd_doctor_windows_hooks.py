@@ -616,7 +616,33 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 assert isinstance(events["post_tool_call"], list)
                 events["post_tool_call"].append({"command": extra_command, "timeout": 30, "matcher": ".*"})
             path.write_text(
-                yaml.safe_dump({"hooks_auto_accept": True, "hooks": events}, sort_keys=False),
+                yaml.safe_dump({"hooks_auto_accept": False, "hooks": events}, sort_keys=False),
+                encoding="utf-8",
+            )
+            (path.parent / "shell-hooks-allowlist.json").write_text(
+                json.dumps(
+                    {
+                        "approvals": [
+                            {"event": event, "command": command}
+                            for event in doctor_hooks._HERMES_REQUIRED_HOOKS
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            state_dir = self.data / "hooks"
+            state_dir.mkdir(exist_ok=True)
+            (state_dir / "hermes-direct-native-state.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "connector": "hermes",
+                        "status": "pending_reload",
+                        "command": command,
+                        "reload_required": True,
+                        "running_host_verified": False,
+                    }
+                ),
                 encoding="utf-8",
             )
         elif connector == "claudecode":
@@ -666,16 +692,19 @@ class WindowsHookDoctorTests(unittest.TestCase):
         )
         return path
 
-    def test_hermes_direct_native_registration_is_healthy(self) -> None:
+    def test_hermes_direct_native_registration_is_pending_reload(self) -> None:
         runtime = self._runtime()
         command = f'"{runtime}" hook --connector hermes'
         config = self._config("hermes", command)
 
         check = self._validate("hermes", config)
 
-        self.assertTrue(check.healthy, check.detail)
-        self.assertIn("entries=23", check.detail)
+        self.assertFalse(check.healthy, check.detail)
+        self.assertEqual(check.state, "pending-reload")
+        self.assertIn("hook_entries=23", check.detail)
+        self.assertIn("allowlist_entries=23", check.detail)
         self.assertIn("Windows-native executable", check.detail)
+        self.assertIn("live=false", check.detail)
 
     def test_hermes_direct_command_matches_upstream_shlex_argv(self) -> None:
         command = (
@@ -693,7 +722,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             ],
         )
 
-    def test_hermes_rejects_shell_wrapper_and_missing_auto_accept(self) -> None:
+    def test_hermes_rejects_shell_wrapper_and_missing_exact_allowlist_pair(self) -> None:
         runtime = self._runtime()
         command = f"& '{runtime}' hook --connector hermes"
         config = self._config("hermes", command)
@@ -704,12 +733,13 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
         command = f'"{runtime}" hook --connector hermes'
         config = self._config("hermes", command)
-        document = yaml.safe_load(config.read_text(encoding="utf-8"))
-        document["hooks_auto_accept"] = False
-        config.write_text(yaml.safe_dump(document, sort_keys=False), encoding="utf-8")
+        allowlist = config.parent / "shell-hooks-allowlist.json"
+        document = json.loads(allowlist.read_text(encoding="utf-8"))
+        document["approvals"] = document["approvals"][1:]
+        allowlist.write_text(json.dumps(document), encoding="utf-8")
         stale = self._validate("hermes", config)
         self.assertFalse(stale.healthy)
-        self.assertIn("hooks_auto_accept", stale.detail)
+        self.assertIn("missing exact DefenseClaw approvals", stale.detail)
 
     def _validate(
         self,

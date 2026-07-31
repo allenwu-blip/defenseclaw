@@ -337,6 +337,41 @@ class TestPerConnectorWriteSurface(_BaseSetup):
         self.assertFalse(gc.judge.enabled)
         self.assertEqual(gc.judge.hook_connectors, [])
 
+    def test_direct_hermes_unsupported_version_downgrades_after_one_discovery(self):
+        signal = SimpleNamespace(
+            version="Hermes Agent v0.17.0",
+            installed=True,
+            error="",
+            binary_path=r"C:\Users\tester\AppData\Local\hermes\hermes-agent\venv\Scripts\hermes.exe",
+        )
+        disc = SimpleNamespace(agents={"hermes": signal})
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("defenseclaw.commands.cmd_setup._restart_services", return_value=None))
+            stack.enter_context(patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True))
+            stack.enter_context(patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None))
+            discover = stack.enter_context(
+                patch("defenseclaw.commands.cmd_setup.agent_discovery.discover_agents", return_value=disc)
+            )
+            res = _invoke(
+                ["hermes", "--yes", "--no-restart", "--mode", "action"],
+                self.app,
+            )
+
+        self.assertEqual(res.exit_code, 0, msg=res.output)
+        discover.assert_called_once_with(
+            use_cache=False,
+            refresh=True,
+            data_dir=self.app.cfg.data_dir,
+        )
+        self.assertEqual(res.output.count("detected-but-unsupported-version"), 1)
+        self.assertIn("installed version Hermes Agent v0.17.0", res.output)
+        self.assertIn("hermes-hooks-v1 requires >=0.19.0", res.output)
+        self.assertIn("requested action mode was refused; configuring observe mode instead", res.output)
+        self.assertNotIn("connector was not detected locally", res.output)
+        self.assertEqual(self.app.cfg.guardrail.connector, "hermes")
+        self.assertEqual(self.app.cfg.guardrail.mode, "observe")
+
     def test_guardrail_action_fallback_prunes_only_refused_connector_from_judge(self):
         self._seed_map("codex", "hermes")
         gc = self.app.cfg.guardrail

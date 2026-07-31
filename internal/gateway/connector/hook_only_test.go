@@ -776,13 +776,10 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 	}
 }
 
-// TestHermesSetup_WritesFullLifecycleAndAutoAccept pins the
-// hermes-hooks-v1 setup contract: Setup must register all 23 v0.19 hooks
-// event in the effective config.yaml `hooks:` block AND set hooks_auto_accept
-// so the hooks actually register on non-TTY/gateway runs (Hermes
-// silently skips un-accepted hooks there). Teardown must heal a
-// previously-missing config back to absent.
-func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
+// TestHermesSetup_WritesFullLifecycleAndScopedAllowlist pins the v0.19
+// contract: Setup registers all 23 hooks and only their exact allowlist pairs;
+// the operator's global hooks_auto_accept setting remains untouched.
+func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
 	prev := HermesConfigPathOverride
@@ -805,8 +802,8 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read hermes config after setup: %v", err)
 	}
-	if v, _ := cfg["hooks_auto_accept"].(bool); !v {
-		t.Fatalf("hooks_auto_accept not set true after setup: %#v", cfg["hooks_auto_accept"])
+	if value, present := cfg["hooks_auto_accept"]; present {
+		t.Fatalf("hooks_auto_accept was introduced by Setup: %#v", value)
 	}
 	hooks, ok := cfg["hooks"].(map[string]interface{})
 	if !ok {
@@ -829,6 +826,34 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 	if len(hooks) != 23 {
 		t.Errorf("Hermes hooks count = %d, want 23; got keys %v", len(hooks), mapKeys(hooks))
 	}
+	allowlistPath := filepath.Join(filepath.Dir(cfgPath), hermesAllowlistFileName)
+	allowlist, err := readHermesAllowlist(allowlistPath)
+	if err != nil {
+		t.Fatalf("read Hermes allowlist: %v", err)
+	}
+	approvals := allowlist["approvals"].([]interface{})
+	if len(approvals) != 23 {
+		t.Fatalf("Hermes approvals count = %d, want 23", len(approvals))
+	}
+	wantCommand := conn.hookCommand(opts)
+	seen := map[string]bool{}
+	for _, raw := range approvals {
+		entry := raw.(map[string]interface{})
+		if entry["command"] != wantCommand || entry[hermesAllowlistOwnerField] != true {
+			t.Fatalf("unexpected scoped approval: %#v", entry)
+		}
+		seen[entry["event"].(string)] = true
+	}
+	if len(seen) != 23 {
+		t.Fatalf("Hermes approval events = %v, want 23 unique events", seen)
+	}
+	statePath := filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName)
+	if runtime.GOOS == "windows" {
+		state, err := os.ReadFile(statePath)
+		if err != nil || !bytes.Contains(state, []byte(`"status": "pending_reload"`)) {
+			t.Fatalf("Hermes pending-reload state missing after setup: %s err=%v", state, err)
+		}
+	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
@@ -838,14 +863,23 @@ func TestHermesSetup_WritesFullLifecycleAndAutoAccept(t *testing.T) {
 	} else if !os.IsNotExist(err) {
 		t.Fatalf("stat after teardown: %v", err)
 	}
+	if _, err := os.Stat(allowlistPath); !os.IsNotExist(err) {
+		t.Fatalf("allowlist still exists after teardown of previously-missing file: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		state, err := os.ReadFile(statePath)
+		if err != nil || !bytes.Contains(state, []byte(`"status": "disabled_pending_reload"`)) {
+			t.Fatalf("Hermes disabled tombstone missing after teardown: %s err=%v", state, err)
+		}
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean: %v", err)
+	}
 }
 
-// TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig asserts
-// two coupled behaviors: (1) selecting Setup enables non-interactive
-// registration even when the prior hooks_auto_accept value was false,
-// and (2) Teardown heals a pre-existing config back to its pristine
-// bytes, preserving the user's hook and prior auto-accept choice.
-func TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
+// TestHermesSetup_PreservesExplicitAutoAcceptAndHealsUserConfig proves the
+// global consent choice is never used as connector-owned state.
+func TestHermesSetup_PreservesExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
@@ -869,8 +903,8 @@ func TestHermesSetup_OverridesExplicitAutoAcceptAndHealsUserConfig(t *testing.T)
 	if err != nil {
 		t.Fatalf("read after setup: %v", err)
 	}
-	if v, ok := cfg["hooks_auto_accept"].(bool); !ok || !v {
-		t.Fatalf("hooks_auto_accept was not enabled by Setup: %#v", cfg["hooks_auto_accept"])
+	if v, ok := cfg["hooks_auto_accept"].(bool); !ok || v {
+		t.Fatalf("hooks_auto_accept was changed by Setup: %#v", cfg["hooks_auto_accept"])
 	}
 
 	if err := conn.Teardown(context.Background(), opts); err != nil {
@@ -936,7 +970,7 @@ func TestHermesTeardownMigratesLegacyBackupAndRestoresExactBytes(t *testing.T) {
 	}
 }
 
-func TestHermesTeardownSurgicalCleanupRestoresAutoAcceptFromPristineCustody(t *testing.T) {
+func TestHermesTeardownSurgicalCleanupPreservesOperatorAutoAccept(t *testing.T) {
 	for _, test := range []struct {
 		name                string
 		pristine            string
@@ -1044,6 +1078,179 @@ func TestHermesTeardownSurgicalCleanupRestoresAutoAcceptFromPristineCustody(t *t
 			}
 			if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")); !os.IsNotExist(err) {
 				t.Fatalf("canonical backup survived surgical cleanup: %v", err)
+			}
+		})
+	}
+}
+
+func TestHermesAllowlistSurgicalCleanupPreservesForeignEntries(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("hooks_auto_accept: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	allowlistPath := filepath.Join(filepath.Dir(configPath), hermesAllowlistFileName)
+	const pristineAllowlist = "{\n  \"approvals\": [{\"event\":\"pre_tool_call\",\"command\":\"operator-hook\"}],\n  \"operator\": \"keep\"\n}\n"
+	if err := os.WriteFile(allowlistPath, []byte(pristineAllowlist), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+	conn := NewHermesConnector()
+	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	drifted, err := readHermesAllowlist(allowlistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drifted["operator_after"] = "keep-too"
+	drifted["approvals"] = append(drifted["approvals"].([]interface{}), map[string]interface{}{
+		"event": "future_event", "command": "operator-after",
+	})
+	body, err := json.MarshalIndent(drifted, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(allowlistPath, append(body, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	cleaned, err := readHermesAllowlist(allowlistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleaned["operator"] != "keep" || cleaned["operator_after"] != "keep-too" {
+		t.Fatalf("operator allowlist fields changed: %#v", cleaned)
+	}
+	approvals := cleaned["approvals"].([]interface{})
+	if len(approvals) != 2 {
+		t.Fatalf("approvals after surgical cleanup = %#v, want two foreign entries", approvals)
+	}
+	for _, raw := range approvals {
+		if entry := raw.(map[string]interface{}); entry[hermesAllowlistOwnerField] == true {
+			t.Fatalf("managed approval survived surgical cleanup: %#v", entry)
+		}
+	}
+}
+
+func TestHermesAllowlistTamperedOwnershipRefusesAmbiguousCleanup(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+	conn := NewHermesConnector()
+	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	allowlistPath := filepath.Join(filepath.Dir(configPath), hermesAllowlistFileName)
+	drifted, err := readHermesAllowlist(allowlistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := drifted["approvals"].([]interface{})[0].(map[string]interface{})
+	delete(first, hermesAllowlistOwnerField)
+	drifted["operator_edit"] = true
+	body, _ := json.MarshalIndent(drifted, "", "  ")
+	if err := os.WriteFile(allowlistPath, append(body, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = conn.Teardown(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "lost its DefenseClaw ownership marker") {
+		t.Fatalf("Teardown error = %v, want ambiguous ownership refusal", err)
+	}
+}
+
+func TestHermesAllowlistTamperedOwnedCommandRefusesNonExactCleanup(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+	conn := NewHermesConnector()
+	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	allowlistPath := filepath.Join(filepath.Dir(configPath), hermesAllowlistFileName)
+	drifted, err := readHermesAllowlist(allowlistPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := drifted["approvals"].([]interface{})[0].(map[string]interface{})
+	first["command"] = "operator-command --connector hermes"
+	drifted["operator_edit"] = true
+	body, _ := json.MarshalIndent(drifted, "", "  ")
+	if err := os.WriteFile(allowlistPath, append(body, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err = conn.Teardown(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "tampered DefenseClaw command") {
+		t.Fatalf("Teardown error = %v, want non-exact owned-command refusal", err)
+	}
+	remaining, readErr := readHermesAllowlist(allowlistPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if got := remaining["approvals"].([]interface{})[0].(map[string]interface{})["command"]; got != first["command"] {
+		t.Fatalf("tampered entry changed after refused cleanup: got %v want %v", got, first["command"])
+	}
+}
+
+func TestHermesSetupRejectsNamedAndMultiplexProfilesBeforeMutation(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		build func(t *testing.T, root string) string
+	}{
+		{"named HERMES_HOME", func(t *testing.T, root string) string {
+			return filepath.Join(root, "profiles", "coder", "config.yaml")
+		}},
+		{"named profile directory", func(t *testing.T, root string) string {
+			if err := os.MkdirAll(filepath.Join(root, "profiles", "coder"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(root, "config.yaml")
+		}},
+		{"active named profile", func(t *testing.T, root string) string {
+			if err := os.WriteFile(filepath.Join(root, "active_profile"), []byte("coder\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(root, "config.yaml")
+		}},
+		{"multiplex config", func(t *testing.T, root string) string {
+			path := filepath.Join(root, "config.yaml")
+			if err := os.WriteFile(path, []byte("gateway:\n  multiplex_profiles: true\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
+		{"multiplex environment", func(t *testing.T, root string) string {
+			t.Setenv("GATEWAY_MULTIPLEX_PROFILES", "yes")
+			return filepath.Join(root, "config.yaml")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := testenv.PrivateTempDir(t)
+			configPath := test.build(t, root)
+			previous := HermesConfigPathOverride
+			HermesConfigPathOverride = configPath
+			t.Cleanup(func() { HermesConfigPathOverride = previous })
+			dataDir := filepath.Join(root, "dc")
+			err := NewHermesConnector().Setup(context.Background(), SetupOpts{DataDir: dataDir})
+			if err == nil || !strings.Contains(err.Error(), "unsupported by the single-HERMES_HOME connector") {
+				t.Fatalf("Setup error = %v, want unsupported profile topology", err)
+			}
+			if _, statErr := os.Stat(dataDir); !os.IsNotExist(statErr) {
+				t.Fatalf("Setup mutated data dir before rejecting profile topology: %v", statErr)
 			}
 		})
 	}

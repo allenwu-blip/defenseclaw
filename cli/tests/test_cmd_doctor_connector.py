@@ -1128,16 +1128,17 @@ class TestCheckHookHealth(unittest.TestCase):
                 fh,
             )
 
-    def test_lock_path_with_marker_passes(self) -> None:
+    def test_lock_path_with_marker_requires_hermes_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             hook = os.path.join(tmp, "config.yaml")
             with open(hook, "w", encoding="utf-8") as fh:
                 fh.write("hooks:\n  - command: /x/hooks/hermes-hook.sh\n")
             r = _DoctorResult()
             _check_hook_health(self._cfg(tmp, "hermes", [hook]), "hermes", r)
-        self.assertEqual(r.checks[-1]["status"], "pass")
+        self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertEqual(r.checks[-1]["label"], "Hermes hooks (preview; fail-open)")
         self.assertIn(hook, r.checks[-1]["detail"])
+        self.assertIn("live=false", r.checks[-1]["detail"])
 
     def test_lock_path_without_marker_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -421,7 +421,8 @@
           "notes": [
             "Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event extra envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
             "pre_tool_call is the only blockable event; pre_llm_call injects context; pre_verify can continue the bounded verification loop. Transform hooks require Python string returns, pre_gateway_dispatch requires plugin skip/rewrite/allow results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output; Hermes never blocks on exit code or hook timeout so there is no fail-closed surface.",
-            "Multi-event registration requires hooks_auto_accept in the effective config.yaml on non-TTY/gateway runs (the upstream hook guide calls this cli-config.yaml); Setup writes it and the managed-backup heals it."
+            "Setup preserves the operator's hooks_auto_accept value and owns only the exact DefenseClaw (event, command) approvals in shell-hooks-allowlist.json. Running Hermes processes cache callbacks, so registration and revocation remain live=false/pending-reload until every affected CLI, gateway, desktop, or service host is reloaded or restarted; Windows teardown leaves an exact direct-native disabled tombstone for stale callbacks.",
+            "The v1 connector covers only the resolved default HERMES_HOME profile. Named-profile homes and multiplex gateways are unsupported. Default-profile inventory includes skills.external_dirs, SOUL.md, built-in memory plus memory.provider provenance, and bundled/Nix, user, and pip plugins; named-profile and project-conditional sources remain explicitly unverified."
           ]
         }
       ]
