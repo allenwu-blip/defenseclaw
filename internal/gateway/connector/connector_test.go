@@ -10200,6 +10200,32 @@ func TestCodex_AgentPaths_Specifics(t *testing.T) {
 	if !slices.Contains(paths.GeneratedExecutables, filepath.Join(dataDir, "notify-bridge.sh")) {
 		t.Errorf("GeneratedExecutables = %v, missing notify bridge", paths.GeneratedExecutables)
 	}
+	if len(paths.GeneratedFiles) != 0 {
+		t.Errorf(
+			"GeneratedFiles = %v, want none; config.toml.lock is a transient external lock, not a DataDir artifact",
+			paths.GeneratedFiles,
+		)
+	}
+}
+
+func TestCodex_AgentPaths_UnmanagedParity(t *testing.T) {
+	dataDir := t.TempDir()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("CODEX_HOME", "")
+
+	paths := NewCodexConnector().AgentPaths(SetupOpts{
+		DataDir:           dataDir,
+		ManagedEnterprise: false,
+	})
+	configPath := filepath.Join(tmpHome, ".codex", "config.toml")
+	if !slices.Equal(paths.PatchedFiles, []string{configPath}) {
+		t.Fatalf("unmanaged PatchedFiles = %v, want only %q", paths.PatchedFiles, configPath)
+	}
+	if len(paths.GeneratedFiles) != 0 {
+		t.Fatalf("unmanaged GeneratedFiles = %v, want none", paths.GeneratedFiles)
+	}
 }
 
 // TestClaudeCode_AgentPaths_Specifics pins the Claude Code footprint:
@@ -10600,6 +10626,34 @@ func TestWriteHookHelpers_RefusesDowngrade(t *testing.T) {
 	if !bytes.Equal(got, newer) {
 		t.Fatalf("downgrade gate failed — newer-on-disk helper was clobbered.\n"+
 			"want preserved:\n%s\n\ngot:\n%s", newer, got)
+	}
+}
+
+func TestWriteHookHelpersManagedOverwritesNewerTargetOwnedHelper(t *testing.T) {
+	dir := t.TempDir()
+	newer := []byte("#!/bin/bash\n# defenseclaw-managed-hook v99\n# target-controlled\n")
+	helperPath := filepath.Join(dir, "_hardening.sh")
+	if err := os.WriteFile(helperPath, newer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeHookHelpersForMode(dir, true); err != nil {
+		t.Fatalf("managed helper rewrite: %v", err)
+	}
+	want, err := hookFS.ReadFile("hooks/_hardening.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(helperPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf(
+			"managed helper retained target-controlled newer marker:\nwant:\n%s\n\ngot:\n%s",
+			want,
+			got,
+		)
 	}
 }
 

@@ -14,6 +14,14 @@ func codexSystemRequirementsPath() (string, error) {
 	return "/etc/codex/requirements.toml", nil
 }
 
+func validateCodexManagedAgentExecutable(string, bool) error {
+	return nil
+}
+
+func readCodexSystemRequirements(path string, _ bool) ([]byte, bool, error) {
+	return readLegacyCodexSystemRequirements(path)
+}
+
 func startCodexAppServerTree(cmd *exec.Cmd) (func(), error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err

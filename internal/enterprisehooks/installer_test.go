@@ -1132,9 +1132,13 @@ func TestInstallRefusesRootTarget(t *testing.T) {
 
 func TestLoadManifestValidatesEnabledTargets(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "targets.yaml")
+	targetIdentity := "  - user: alice\n"
+	if runtime.GOOS == "windows" {
+		targetIdentity = "  - user: alice\n    user_home: 'C:\\\\Users\\\\alice'\n    sid: S-1-5-21-1-2-3-1001\n"
+	}
 	if err := os.WriteFile(path, []byte(`
 targets:
-  - user: alice
+`+targetIdentity+`
     connector: codex
     agent_version: "codex-cli 0.142.0"
   - enabled: false
