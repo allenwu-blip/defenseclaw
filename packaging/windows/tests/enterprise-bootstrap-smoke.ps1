@@ -60,6 +60,7 @@ function Invoke-BasicUserBootstrapSmoke {
     ) "DefenseClaw-BootstrapRelay-$([Guid]::NewGuid().ToString('N'))"
     [void][IO.Directory]::CreateDirectory($relayRoot)
     $process = $null
+    $desktopGrant = $null
     try {
         # Hosted runners may grant the elevated token workspace access only
         # through its Administrators SID. The filtered LUA child must not rely
@@ -98,6 +99,11 @@ function Invoke-BasicUserBootstrapSmoke {
         if (-not ('DefenseClaw.SetupStandardUserLauncher' -as [type])) {
             Add-Type -Path $launcherSource -ErrorAction Stop
         }
+        $desktopLauncherSource = Join-Path `
+            $repoRoot 'scripts\windows-disposable-standard-user-launcher.cs'
+        if (-not ('DefenseClaw.DisposableStandardUserLauncher' -as [type])) {
+            Add-Type -Path $desktopLauncherSource -ErrorAction Stop
+        }
         $environment = @(
             [Environment]::GetEnvironmentVariables('Process').GetEnumerator() |
                 ForEach-Object {
@@ -108,6 +114,12 @@ function Invoke-BasicUserBootstrapSmoke {
             '-NoLogo', '-NoProfile', '-NonInteractive',
             '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
         )
+        # Hosted runners may grant this station/desktop only through the
+        # Administrators SID, which the CI-only LUA token makes deny-only.
+        $desktopGrant = [DefenseClaw.DisposableStandardUserLauncher]::
+            GrantInteractiveDesktop(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            )
         $process = [DefenseClaw.SetupStandardUserLauncher]::StartRestrictedWithCapture(
             $engine,
             $arguments,
@@ -163,24 +175,35 @@ function Invoke-BasicUserBootstrapSmoke {
         Write-Output $reportJson
     }
     finally {
-        if ($null -ne $process) {
-            try {
-                if (-not $process.HasExited) {
-                    $process.Kill($true)
-                    if (-not $process.WaitForExit(30000)) {
-                        throw (
-                            'Basic User bootstrap smoke process tree did not ' +
-                            'exit during cleanup'
-                        )
+        try {
+            if ($null -ne $process) {
+                try {
+                    if (-not $process.HasExited) {
+                        $process.Kill($true)
+                        if (-not $process.WaitForExit(30000)) {
+                            throw (
+                                'Basic User bootstrap smoke process tree did not ' +
+                                'exit during cleanup'
+                            )
+                        }
                     }
+                }
+                finally {
+                    $process.Dispose()
+                }
+            }
+        }
+        finally {
+            try {
+                if ($null -ne $desktopGrant) {
+                    $desktopGrant.Dispose()
                 }
             }
             finally {
-                $process.Dispose()
+                if ([IO.Directory]::Exists($relayRoot)) {
+                    [IO.Directory]::Delete($relayRoot, $true)
+                }
             }
-        }
-        if ([IO.Directory]::Exists($relayRoot)) {
-            [IO.Directory]::Delete($relayRoot, $true)
         }
     }
 }
