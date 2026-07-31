@@ -262,7 +262,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         )
         foreach ($case in $gatewayPortCases) {
             $caseRoot = Join-Path $temp ('gateway-port-' + ($case.Name -replace '[^A-Za-z0-9]+', '-'))
-            [IO.Directory]::CreateDirectory($caseRoot) | Out-Null
+            Protect-TestDirectory $caseRoot
             $env:DEFENSECLAW_HOME = $caseRoot
             $casePath = Join-Path $caseRoot 'config.yaml'
             [IO.File]::WriteAllText($casePath, $case.Body, [Text.UTF8Encoding]::new($false))
