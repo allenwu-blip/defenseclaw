@@ -40,8 +40,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from defenseclaw import connector_paths
 from defenseclaw.inventory.claw_inventory import (
-    _agents_from_copilot_dirs,
     _agents_for_connector,
+    _agents_from_copilot_dirs,
     _memory_for_connector,
     _model_providers_for_connector,
     _tools_for_connector,

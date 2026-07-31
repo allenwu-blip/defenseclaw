@@ -88,7 +88,7 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 			event:          "preToolUse",
 			toolName:       "run_terminal_cmd",
 			topLevelOutput: "hook_output",
-			expectAction:   "block",
+			expectAction:   "allow",
 		},
 		{
 			connector:      "windsurf",
@@ -241,6 +241,14 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 
 			if action, _ := parsed["action"].(string); action != sh.expectAction {
 				t.Errorf("dangerous request action=%q, want %q\nbody=%s", action, sh.expectAction, w.Body.String())
+			}
+			if sh.connector == "cursor" {
+				if rawAction, _ := parsed["raw_action"].(string); rawAction != "block" {
+					t.Errorf("Cursor raw_action=%q, want block\nbody=%s", rawAction, w.Body.String())
+				}
+				if wouldBlock, _ := parsed["would_block"].(bool); !wouldBlock {
+					t.Errorf("Cursor would_block=false, want true\nbody=%s", w.Body.String())
+				}
 			}
 			if sh.connector == "antigravity" {
 				output, ok := parsed["hook_output"].(map[string]interface{})

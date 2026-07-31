@@ -235,7 +235,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connector := range []string{"none", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {

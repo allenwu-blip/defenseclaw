@@ -256,7 +256,8 @@ class TestConnectorContractManifest(unittest.TestCase):
                 compat = resolve_connector_contract("cursor", raw_version)
                 self.assertEqual(compat.status, STATUS_KNOWN)
                 self.assertEqual(compat.contract.contract_id, "cursor-hooks-v1")
-                self.assertIn("subagentStart", compat.contract.capabilities["block_events"])
+                self.assertIn("subagentStart", compat.contract.events)
+                self.assertEqual(compat.contract.capabilities["block_events"], [])
                 self.assertNotIn("subagentStart", compat.contract.capabilities["ask_events"])
 
         for raw_version in (

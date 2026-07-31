@@ -67,13 +67,13 @@ actions:
   "trace_id": "trace-demo-017",
   "session_id": "demo-session-017",
   "connector": "cursor",
-  "decision": "block",
+  "decision": "would_block",
   "severity": "critical",
   "rules": [
     "secret.file-read",
     "shell.data-egress-pipe"
   ],
-  "executed": false
+  "authoritative": false
 }`,
   },
 ];
@@ -83,7 +83,7 @@ const runtimeEvidence = [
     id: 'runtime-hook',
     label: 'Interception point',
     value: 'beforeShellExecution',
-    detail: 'Cursor exposes a pre-execution hook that can block this action.',
+    detail: 'Cursor exposes a pre-execution hook for bounded inspection, but its user-level response is advisory.',
     tone: 'info' as const,
   },
   {
@@ -103,8 +103,8 @@ const runtimeEvidence = [
   {
     id: 'critical-map',
     label: 'Policy mapping',
-    value: 'critical → block',
-    detail: 'CRITICAL findings block unconditionally; HITL is not offered.',
+    value: 'critical → would_block',
+    detail: 'The configured CRITICAL block is recorded as advisory because Cursor merges higher-priority hooks above the user hook.',
     tone: 'danger' as const,
   },
   {
@@ -119,19 +119,19 @@ const runtimeEvidence = [
 const scenarios: ScenarioDefinition[] = [
   {
     id: 'runtime-secret-exfiltration',
-    title: 'Cursor attempts to send a sensitive file externally',
-    summary: 'DefenseClaw inspects a pending shell action, correlates two findings, and blocks it before execution.',
+    title: 'Cursor surfaces a sensitive outbound action',
+    summary: 'DefenseClaw inspects a pending shell action, correlates two findings, and records an advisory would-block decision.',
     syntheticDataNotice: 'Guided example · Synthetic event data',
     connectorIds: ['cursor'],
     tabs: runtimeTabs,
     evidence: runtimeEvidence,
     outcomes: [
       {
-        id: 'runtime-block',
-        kind: 'block',
-        label: 'Block before execution',
+        id: 'runtime-review',
+        kind: 'review',
+        label: 'Advisory would-block',
         reason: 'shell.data-egress-pipe reached CRITICAL severity',
-        action: 'Write a correlated enforcement event',
+        action: 'Write a correlated advisory event',
       },
     ],
     steps: [
@@ -140,12 +140,12 @@ const scenarios: ScenarioDefinition[] = [
       step('inspect-destination', 'Inspect destination', 'The same action targets an external synthetic destination.', 'cursor-event', ['secret-read', 'egress-pipe'], [{ tabId: 'cursor-event', start: 7, end: 9, tone: 'danger' }]),
       step('correlate', 'Correlate', 'Two rules combine into a CRITICAL exfiltration finding.', 'default-policy', ['secret-read', 'egress-pipe'], [{ tabId: 'default-policy', start: 5, end: 9, tone: 'danger' }]),
       step('resolve', 'Resolve policy', 'The active action mapping blocks CRITICAL findings without approval.', 'default-policy', ['egress-pipe', 'critical-map'], [{ tabId: 'default-policy', start: 10, end: 12, tone: 'danger' }]),
-      step('enforce', 'Enforce', 'Cursor keeps the shell action pending while DefenseClaw returns block.', 'cursor-event', ['runtime-hook', 'critical-map'], [{ tabId: 'cursor-event', start: 10, end: 10, tone: 'danger' }]),
-      step('record', 'Record evidence', 'The decision and findings share one traceable audit record.', 'audit-event', ['critical-map', 'audit-write'], [{ tabId: 'audit-event', start: 5, end: 13, tone: 'success' }], 'runtime-block', 1350),
+      step('enforce', 'Advise', 'DefenseClaw maps the configured block to would_block because Cursor user-hook authority is not exclusive.', 'cursor-event', ['runtime-hook', 'critical-map'], [{ tabId: 'cursor-event', start: 10, end: 10, tone: 'danger' }]),
+      step('record', 'Record evidence', 'The advisory decision and findings share one traceable audit record.', 'audit-event', ['critical-map', 'audit-write'], [{ tabId: 'audit-event', start: 5, end: 13, tone: 'success' }], 'runtime-review', 1350),
     ],
     boundaries: {
-      did: ['Inspected the event before execution', 'Correlated rule evidence and applied the active severity mapping', 'Recorded a synthetic enforcement event'],
-      didNot: ['Execute the displayed command', 'Send data to an external service', 'Offer HITL for a CRITICAL finding'],
+      did: ['Inspected the event before execution', 'Correlated rule evidence and applied the active severity mapping', 'Recorded a synthetic advisory event'],
+      didNot: ['Execute the displayed command', 'Send data to an external service', 'Claim an authoritative Cursor block or execution prevention'],
     },
   },
   {
@@ -446,7 +446,7 @@ critical_behavior: always_block` },
   "session_id": "demo-session-017",
   "connector": "cursor",
   "kind": "enforcement_decision",
-  "decision": "block",
+  "decision": "would_block",
   "rule": "shell.data-egress-pipe",
   "severity": "critical"
 }` },
@@ -467,7 +467,7 @@ exporters:
     outcomes: [{ id: 'telemetry-export', kind: 'export', label: 'Correlate and export', reason: 'Shared dimensions preserve decision context', action: 'Fan out to configured sinks' }],
     steps: [
       step('tool-span', 'Capture event', 'The pending tool action starts a correlated trace.', 'tool-event', ['trace-dimensions'], [{ tabId: 'tool-event', start: 2, end: 6, tone: 'info' }]),
-      step('decision-span', 'Join verdict', 'The enforcement decision keeps the trace, session, and connector.', 'verdict-event', ['trace-dimensions', 'decision-dimensions'], [{ tabId: 'verdict-event', start: 2, end: 9, tone: 'danger' }]),
+      step('decision-span', 'Join verdict', 'The advisory decision keeps the trace, session, and connector.', 'verdict-event', ['trace-dimensions', 'decision-dimensions'], [{ tabId: 'verdict-event', start: 2, end: 9, tone: 'danger' }]),
       step('audit-local', 'Write locally', 'SQLite and JSONL preserve durable evidence when enabled.', 'fanout', ['decision-dimensions', 'local-audit'], [{ tabId: 'fanout', start: 1, end: 3, tone: 'success' }]),
       step('export-configured', 'Export', 'Configured OTLP, Splunk, and webhook sinks receive the same dimensions.', 'fanout', ['local-audit', 'external-fanout'], [{ tabId: 'fanout', start: 4, end: 7, tone: 'success' }], 'telemetry-export'),
     ],

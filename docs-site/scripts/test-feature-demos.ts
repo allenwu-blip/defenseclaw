@@ -68,10 +68,14 @@ describe('feature demo catalog', () => {
     const cursor = matrix.connectors.find((connector) => connector.id === 'cursor');
     const claude = matrix.connectors.find((connector) => connector.id === 'claudecode');
     const codex = matrix.connectors.find((connector) => connector.id === 'codex');
-    assert.equal(cursor?.hooks.canBlock, true);
+    assert.equal(cursor?.hooks.canBlock, false);
     assert.equal(claude?.hooks.canBlock, true);
     assert.equal(claude?.hooks.canAskNative, true);
     assert.equal(codex?.hooks.canAskNative, false);
+
+    const cursorScenario = featureDemos.find((scenario) => scenario.id === 'runtime-secret-exfiltration');
+    assert.equal(cursorScenario?.outcomes.at(-1)?.kind, 'review');
+    assert.match(JSON.stringify(cursorScenario), /would_block/);
 
     for (const scenario of featureDemos) {
       const evidence = new Map(scenario.evidence.map((item) => [item.id, item]));
