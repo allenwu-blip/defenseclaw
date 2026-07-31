@@ -650,7 +650,15 @@ def _attach_connector_paths(
     except Exception:
         out["connector_skill_dirs"] = []
     try:
-        out["connector_plugin_dirs"] = list(cfg.plugin_dirs(connector))
+        out["connector_plugin_dirs"] = (
+            connector_paths.plugin_inventory_dirs(
+                connector,
+                openclaw_home=cfg.claw.home_dir,
+                workspace_dir=cfg.connector_workspace_dir(),
+            )
+            if connector == "cursor"
+            else list(cfg.plugin_dirs(connector))
+        )
     except Exception:
         out["connector_plugin_dirs"] = []
     try:
@@ -1553,6 +1561,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * zeptoclaw  — ``~/.zeptoclaw/agents.json`` array
     * geminicli  — ``.gemini/agents`` and ``~/.gemini/agents``
     * copilot    — ``.github/agents`` and ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
+    * cursor     — explicitly pinned project ``.cursor/agents`` and user ``~/.cursor/agents``
     """
     home = os.path.expanduser("~")
     name = (connector or "").lower()
@@ -1576,6 +1585,14 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
             [
                 os.path.join(os.getcwd(), ".github", "agents"),
                 os.path.join(connector_paths.connector_home(name), "agents"),
+            ]
+        )
+    if name == "cursor":
+        workspace = cfg.connector_workspace_dir()
+        return _agents_from_md_dirs(
+            [
+                os.path.join(workspace, ".cursor", "agents") if workspace else "",
+                os.path.join(home, ".cursor", "agents"),
             ]
         )
     return []
@@ -2136,6 +2153,10 @@ def _build_aibom_from_filesystem(
     for cat_key, note in _FILESYSTEM_ONLY_CONNECTOR_NOTES.items():
         if cat_key not in cats:
             continue
+        # Cursor has a documented local subagent surface. An empty directory is
+        # a successful empty inventory, not an unsupported capability.
+        if connector == "cursor" and cat_key == "agents":
+            continue
         result = results.get(cat_key)
         if result is None or result.items or result.error is not None:
             continue
@@ -2309,15 +2330,24 @@ def _enumerate_plugins_filesystem(
     documented manifest names (matches plugin_scanner._MANIFEST_CANDIDATES
     after S2.3): package.json, manifest.json, plugin.json,
     openclaw.plugin.json, .codex-plugin/plugin.json,
-    .claude-plugin/plugin.json. Codex cache registry buckets are expanded to
-    their exact manifest roots and logical names are deduplicated using Codex's
-    active-plugin metadata. ``connector`` scopes the walk for multi-connector
-    focus (defaults to active).
+    .claude-plugin/plugin.json, .cursor-plugin/plugin.json. Codex cache
+    registry buckets are expanded to their exact manifest roots and logical
+    names are deduplicated using Codex's active-plugin metadata. ``connector``
+    scopes the walk for multi-connector focus (defaults to active).
     """
     rows: list[dict[str, Any]] = []
     seen: dict[str, str] = {}
     resolved_connector = connector or cfg.active_connector()
-    for plugin_dir in cfg.plugin_dirs(connector):
+    plugin_dirs = (
+        connector_paths.plugin_inventory_dirs(
+            resolved_connector,
+            openclaw_home=cfg.claw.home_dir,
+            workspace_dir=cfg.connector_workspace_dir(),
+        )
+        if resolved_connector == "cursor"
+        else cfg.plugin_dirs(connector)
+    )
+    for plugin_dir in plugin_dirs:
         for discovered in discover_plugin_directories(plugin_dir, connector=resolved_connector):
             entry = discovered.id
             entry_key = filesystem_identity_key(entry, plugin_dir)
@@ -2357,6 +2387,7 @@ _PLUGIN_MANIFEST_FILES: tuple[str, ...] = (
     "openclaw.plugin.json",
     os.path.join(".codex-plugin", "plugin.json"),
     os.path.join(".claude-plugin", "plugin.json"),
+    os.path.join(".cursor-plugin", "plugin.json"),
 )
 
 

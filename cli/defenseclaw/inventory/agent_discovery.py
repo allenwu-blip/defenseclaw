@@ -667,6 +667,12 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 os.path.join(codex_local_app_data, "Programs", "OpenAI", "Codex", "bin"),
                 os.path.join(codex_local_app_data, "OpenAI", "Codex", "bin"),
                 os.path.join(codex_local_app_data, "OpenAI", "Codex", "runtimes"),
+                # Cursor's official native PowerShell installer writes the
+                # agent CLI and its agent/cursor-agent aliases directly here.
+                # Use the token-bound Known Folder root, never an ambient
+                # LOCALAPPDATA override, and retain the ACL-chain admission
+                # checks applied to every built-in prefix.
+                os.path.join(codex_local_app_data, "cursor-agent"),
             )
         )
     if local_app_data:
@@ -1968,8 +1974,13 @@ def _windows_binary_candidates(connector: str, binary_name: str) -> tuple[str, .
                 "Scripts",
             ),
         )
-    elif connector == "cursor" and local_app_data:
-        prefixes.insert(0, os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"))
+    elif connector == "cursor":
+        prefixes[0:0] = [
+            os.path.join(root, "cursor-agent")
+            for root in _windows_current_user_local_app_data_roots()
+        ]
+        if local_app_data:
+            prefixes.insert(0, os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"))
     elif connector == "windsurf" and local_app_data:
         prefixes.insert(0, os.path.join(local_app_data, "Programs", "Windsurf", "bin"))
     elif connector == "antigravity" and local_app_data:

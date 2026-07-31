@@ -2069,23 +2069,7 @@ func hookOutputFor(req agentHookRequest, action, rawAction, reason, additional s
 			return map[string]interface{}{"context": additional}
 		}
 	case "cursor":
-		switch action {
-		case "block":
-			// beforeSubmitPrompt is continue-gated: Cursor ignores
-			// `permission` there and only blocks on {"continue":false}.
-			// See hookOnlyProfileRespond (the active path) for the full
-			// rationale; kept in sync here for the legacy shaper.
-			if req.HookEventName == "beforeSubmitPrompt" {
-				return map[string]interface{}{"continue": false, "user_message": reason, "agent_message": reason}
-			}
-			return map[string]interface{}{"continue": true, "permission": "deny", "user_message": reason, "agent_message": reason}
-		case "confirm":
-			return map[string]interface{}{"continue": true, "permission": "ask", "user_message": reason, "agent_message": reason}
-		case "alert":
-			if additional != "" {
-				return map[string]interface{}{"continue": true, "permission": "allow", "agent_message": additional}
-			}
-		}
+		return connector.CursorHookOutput(req.HookEventName, action, reason, additional)
 	case "windsurf":
 		if action == "block" {
 			return map[string]interface{}{"message": reason}

@@ -866,17 +866,19 @@ func WriteHookScriptsForConnectorObject(hookDir, apiAddr, token string, c Connec
 // (see templateData.FailMode and defaultHookFailMode for the
 // contract):
 //
-//  1. An EXPLICIT operator value in opts.HookFailMode — either
-//     "open" or "closed" — always wins. The operator answered
+//  1. Cursor observe mode always resolves to "open"; host failClosed and
+//     adapter transport failures must not enforce outside action mode.
+//  2. Otherwise, an EXPLICIT operator value in opts.HookFailMode — either
+//     "open" or "closed" — wins. The operator answered
 //     `defenseclaw setup guardrail`'s fail-mode prompt (or used
 //     `defenseclaw guardrail fail-mode <value>`); silently
 //     overriding their answer would violate the operator-defined
 //     fail-mode contract documented in
 //     “GuardrailConfig.HookFailMode“.
-//  2. EMPTY/unset opts.HookFailMode uses the connector default. Cursor uses
+//  3. EMPTY/unset opts.HookFailMode uses the connector default. Cursor uses
 //     "open" to match the vendor's documented command-hook default; other
 //     connectors use defaultHookFailMode ("closed").
-//  3. Hook-only connectors may use explicit "closed" only when their
+//  4. Hook-only connectors may use explicit "closed" only when their
 //     documented hook surface supports fail-closed behavior. Unsupported
 //     connectors stay fail-open and rely on their config writer to omit
 //     vendor fail-closed fields.
@@ -910,11 +912,20 @@ func WriteHookScriptsForConnectorObjectWithOpts(hookDir string, opts SetupOpts, 
 
 // resolveHookFailMode picks the delivery/response fail mode for a hook render
 // given the operator's setup opts and the connector identity.
-// The explicit string in opts.HookFailMode always wins; an empty
-// value falls back to the connector-default and is upgraded to
-// "closed" when the operator has set the matching enforcement flag
-// for codex / claudecode (avarice F-0681).
+// The explicit string in opts.HookFailMode normally wins; Cursor first applies
+// its observe/action boundary because observe is never allowed to block.
+// An empty value falls back to the connector-default and is upgraded to
+// "closed" when the operator has set the matching enforcement flag for
+// codex / claudecode (avarice F-0681).
 func resolveHookFailMode(opts SetupOpts, c Connector) string {
+	if c != nil && c.Name() == "cursor" &&
+		!strings.EqualFold(strings.TrimSpace(opts.GuardrailMode), "action") {
+		// Cursor defaults command-hook failures to fail-open. DefenseClaw's
+		// observe mode must never turn either the host failClosed field or the
+		// native adapter's transport failures into a block, even if a global
+		// hook_fail_mode=closed is inherited from another connector.
+		return "open"
+	}
 	if strings.TrimSpace(opts.HookFailMode) != "" {
 		return normalizeHookFailMode(opts.HookFailMode)
 	}

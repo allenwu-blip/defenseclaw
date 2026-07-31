@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestMain(m *testing.M) {
 			fmt.Fprintln(os.Stderr, "adapter helper did not receive the expected input file")
 			os.Exit(3)
 		}
-		fmt.Print(`{"continue":true}`)
+		fmt.Print(`{"permission":"allow"}`)
 		os.Exit(0)
 	case "timeout":
 		if pidFile := os.Getenv(cursorAdapterPIDFileEnv); pidFile != "" {
@@ -164,8 +165,11 @@ func assertCursorAllowJSON(t *testing.T, stdout string) {
 	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
 		t.Fatalf("Cursor adapter stdout is not valid JSON: %v", err)
 	}
-	if response["continue"] != true {
-		t.Fatalf("Cursor adapter response = %#v, want continue=true", response)
+	if response["permission"] != "allow" {
+		t.Fatalf("Cursor adapter response = %#v, want permission=allow", response)
+	}
+	if _, ok := response["continue"]; ok {
+		t.Fatalf("Cursor adapter response = %#v, permission event must not carry continue", response)
 	}
 }
 
@@ -199,7 +203,7 @@ func TestCursorAdapterPreservesSuccessfulLauncherResponse(t *testing.T) {
 	t.Setenv(cursorAdapterHelperMode, "success")
 	adapter := renderCursorAdapterForTest(t, executable, 1_000, "open")
 	stdout, stderr, code := runCursorAdapterTest(
-		t, adapter, `{"source":"cursor-adapter-probe"}`, false,
+		t, adapter, `{"hook_event_name":"beforeShellExecution","source":"cursor-adapter-probe"}`, false,
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)
@@ -221,7 +225,7 @@ func TestCursorAdapterTimeoutKillsChildAndFailsOpen(t *testing.T) {
 	t.Setenv(cursorAdapterPIDFileEnv, pidFile)
 	adapter := renderCursorAdapterForTest(t, executable, 1_000, "open")
 	stdout, stderr, code := runCursorAdapterTest(
-		t, adapter, `{"source":"cursor-adapter-probe"}`, false,
+		t, adapter, `{"hook_event_name":"beforeShellExecution","source":"cursor-adapter-probe"}`, false,
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want fail-open 0; stderr=%q", code, stderr)
@@ -248,7 +252,7 @@ func TestCursorAdapterExceptionEmitsFailOpenJSON(t *testing.T) {
 	missingHook := filepath.Join(t.TempDir(), "missing-hook.exe")
 	adapter := renderCursorAdapterForTest(t, missingHook, 1_000, "open")
 	stdout, stderr, code := runCursorAdapterTest(
-		t, adapter, `{"source":"cursor-adapter-probe"}`, false,
+		t, adapter, `{"hook_event_name":"beforeShellExecution","source":"cursor-adapter-probe"}`, false,
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want fail-open 0; stderr=%q", code, stderr)
@@ -264,7 +268,7 @@ func TestCursorAdapterExceptionHonorsFailClosed(t *testing.T) {
 	missingHook := filepath.Join(t.TempDir(), "missing-hook.exe")
 	adapter := renderCursorAdapterForTest(t, missingHook, 1_000, "closed")
 	stdout, stderr, code := runCursorAdapterTest(
-		t, adapter, `{"source":"cursor-adapter-probe"}`, false,
+		t, adapter, `{"hook_event_name":"beforeShellExecution","source":"cursor-adapter-probe"}`, false,
 	)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want fail-closed 2; stderr=%q", code, stderr)
@@ -273,13 +277,69 @@ func TestCursorAdapterExceptionHonorsFailClosed(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &response); err != nil {
 		t.Fatalf("Cursor adapter stdout is not valid JSON: %v", err)
 	}
-	if response["permission"] != "deny" || response["continue"] != true {
+	if response["permission"] != "deny" {
 		t.Fatalf("Cursor adapter response = %#v, want concrete deny", response)
+	}
+	if _, ok := response["continue"]; ok {
+		t.Fatalf("Cursor adapter response = %#v, permission event must not carry continue", response)
 	}
 	if !strings.Contains(stderr, "Cursor hook adapter failed") {
 		t.Fatalf("stderr = %q, want adapter failure diagnostic", stderr)
 	}
 	assertNoCursorPayload(t, adapter)
+}
+
+func TestCursorAdapterFailureUsesExactEventSchema(t *testing.T) {
+	tests := []struct {
+		event    string
+		failMode string
+		wantCode int
+		want     map[string]interface{}
+	}{
+		{
+			event:    "beforeSubmitPrompt",
+			failMode: "closed",
+			wantCode: 2,
+			want: map[string]interface{}{
+				"continue":     false,
+				"user_message": "DefenseClaw hook unavailable",
+			},
+		},
+		{
+			event:    "subagentStart",
+			failMode: "closed",
+			wantCode: 2,
+			want: map[string]interface{}{
+				"permission":   "deny",
+				"user_message": "DefenseClaw hook unavailable",
+			},
+		},
+		{
+			event:    "sessionEnd",
+			failMode: "open",
+			wantCode: 0,
+			want:     map[string]interface{}{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.event+"/"+test.failMode, func(t *testing.T) {
+			missingHook := filepath.Join(t.TempDir(), "missing-hook.exe")
+			adapter := renderCursorAdapterForTest(t, missingHook, 1_000, test.failMode)
+			payload := `{"hook_event_name":"` + test.event + `","source":"cursor-adapter-probe"}`
+			stdout, stderr, code := runCursorAdapterTest(t, adapter, payload, false)
+			if code != test.wantCode {
+				t.Fatalf("exit code=%d, want %d; stderr=%q", code, test.wantCode, stderr)
+			}
+			var got map[string]interface{}
+			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+				t.Fatalf("stdout is not valid JSON: %v; stdout=%q", err, stdout)
+			}
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("response=%#v, want %#v", got, test.want)
+			}
+			assertNoCursorPayload(t, adapter)
+		})
+	}
 }
 
 func TestCursorAdapterReportsCleanupFailureWithoutPayloadContents(t *testing.T) {
@@ -291,7 +351,7 @@ func TestCursorAdapterReportsCleanupFailureWithoutPayloadContents(t *testing.T) 
 	adapter := renderCursorAdapterForTest(t, executable, 1_000, "open")
 	const sensitiveMarker = "cursor-adapter-probe-sensitive-cleanup"
 	stdout, stderr, code := runCursorAdapterTest(
-		t, adapter, `{"source":"`+sensitiveMarker+`"}`, true,
+		t, adapter, `{"hook_event_name":"beforeShellExecution","source":"`+sensitiveMarker+`"}`, true,
 	)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr)

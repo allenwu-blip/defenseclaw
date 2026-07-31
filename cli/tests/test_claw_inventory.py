@@ -42,6 +42,7 @@ from defenseclaw.config import (
 from defenseclaw.inventory.claw_inventory import (
     ALL_CATEGORIES,
     _admission_verdict,
+    _agents_for_connector,
     _build_actions_map_for_type,
     _build_scan_map_for_type,
     _build_summary,
@@ -2306,6 +2307,70 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(inv["connector"], "claudecode")
         ids = [s["id"] for s in inv["skills"]]
         self.assertIn("weather", ids)
+
+    def test_cursor_inventory_reads_local_plugins_and_scoped_subagents(self):
+        cfg = _make_cfg_for_connector(self.tmp, "cursor")
+        home = os.path.join(self.tmp, "home")
+        workspace = os.path.join(self.tmp, "workspace")
+        os.makedirs(workspace)
+        cfg.connector_workspace_dir = lambda: workspace  # type: ignore[method-assign]
+
+        _seed_plugin(
+            os.path.join(home, ".cursor", "plugins", "local"),
+            "review-tools",
+            manifest=".cursor-plugin/plugin.json",
+        )
+        user_agents = os.path.join(home, ".cursor", "agents")
+        project_agents = os.path.join(workspace, ".cursor", "agents")
+        os.makedirs(user_agents, exist_ok=True)
+        os.makedirs(project_agents, exist_ok=True)
+        with open(os.path.join(user_agents, "global-reviewer.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: global-reviewer\n---\n")
+        with open(os.path.join(project_agents, "project-reviewer.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: project-reviewer\n---\n")
+
+        with patch.dict(
+            os.environ,
+            {"HOME": home, "USERPROFILE": home},
+            clear=False,
+        ):
+            inv = build_claw_aibom(cfg, live=True)
+
+        self.assertEqual({row["id"] for row in inv["plugins"]}, {"review-tools"})
+        self.assertEqual(inv["plugins"][0]["manifest"], ".cursor-plugin/plugin.json")
+        self.assertEqual(
+            {row["id"] for row in inv["agents"]},
+            {"global-reviewer", "project-reviewer"},
+        )
+        self.assertEqual(
+            inv["connector_plugin_dirs"],
+            [os.path.join(home, ".cursor", "plugins", "local")],
+        )
+        self.assertEqual(cfg.plugin_dirs("cursor"), [])
+        self.assertNotIn("agents", {row["category"] for row in inv["limitations"]})
+
+    def test_cursor_inventory_does_not_infer_project_subagents_from_cwd(self):
+        cfg = _make_cfg_for_connector(self.tmp, "cursor")
+        home = os.path.join(self.tmp, "home")
+        cwd = os.path.join(self.tmp, "unselected-workspace")
+        os.makedirs(cwd)
+        user_agents = os.path.join(home, ".cursor", "agents")
+        project_agents = os.path.join(cwd, ".cursor", "agents")
+        os.makedirs(user_agents, exist_ok=True)
+        os.makedirs(project_agents, exist_ok=True)
+        with open(os.path.join(user_agents, "global-reviewer.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: global-reviewer\n---\n")
+        with open(os.path.join(project_agents, "unselected.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: unselected\n---\n")
+
+        with patch.dict(
+            os.environ,
+            {"HOME": home, "USERPROFILE": home},
+            clear=False,
+        ), patch("os.getcwd", return_value=cwd):
+            agents = _agents_for_connector("cursor", cfg)
+
+        self.assertEqual({row["id"] for row in agents}, {"global-reviewer"})
 
     def test_zeptoclaw_walks_disk(self):
         cfg = _make_cfg_for_connector(self.tmp, "zeptoclaw")

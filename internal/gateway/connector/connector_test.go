@@ -9152,6 +9152,20 @@ func TestSetupOpts_HookFailMode_RespectsOperatorChoice(t *testing.T) {
 			wantFailMode: "open",
 		},
 		{
+			name:         "cursor_observe_ignores_inherited_closed",
+			opts:         SetupOpts{APIAddr: "127.0.0.1:1", GuardrailMode: "observe", HookFailMode: "closed"},
+			connector:    NewCursorConnector(),
+			hookFile:     "cursor-hook.sh",
+			wantFailMode: "open",
+		},
+		{
+			name:         "cursor_action_closed_enforces",
+			opts:         SetupOpts{APIAddr: "127.0.0.1:1", GuardrailMode: "action", HookFailMode: "closed"},
+			connector:    NewCursorConnector(),
+			hookFile:     "cursor-hook.sh",
+			wantFailMode: "closed",
+		},
+		{
 			// The safer default is "closed": empty
 			// SetupOpts.HookFailMode renders the hook with
 			// FAIL_MODE=closed so response-layer failures (4xx,

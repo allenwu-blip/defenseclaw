@@ -1797,8 +1797,19 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
         response = json.loads(stdout)
     except (json.JSONDecodeError, TypeError):
         return False, "configured Cursor adapter returned no valid JSON response"
-    if not isinstance(response, dict) or response.get("continue") is not True:
-        return False, "configured Cursor adapter did not return an allow response"
+    if not isinstance(response, dict):
+        return False, "configured Cursor adapter did not return a sessionStart response object"
+    unexpected_fields = sorted(set(response) - {"env", "additional_context"})
+    if unexpected_fields:
+        return (
+            False,
+            "configured Cursor adapter returned invalid sessionStart fields: "
+            + ", ".join(unexpected_fields),
+        )
+    if "env" in response and not isinstance(response["env"], dict):
+        return False, "configured Cursor adapter returned invalid sessionStart env"
+    if "additional_context" in response and not isinstance(response["additional_context"], str):
+        return False, "configured Cursor adapter returned invalid sessionStart additional_context"
 
     after_code, after_body = _http_probe(
         health_url,
@@ -1817,7 +1828,7 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
     except (TypeError, ValueError):
         return False, "sidecar returned invalid Cursor counter values"
     if after_requests <= before_requests:
-        return False, "adapter returned allow JSON but the gateway Cursor request counter did not advance"
+        return False, "adapter returned sessionStart JSON but the gateway Cursor request counter did not advance"
     if after_errors > before_errors:
         return False, "gateway Cursor error counter increased during the runtime probe"
     return True, f"live round trip OK (requests {before_requests}->{after_requests})"
@@ -1830,7 +1841,7 @@ def _check_cursor_configured_runtime(
     r: _DoctorResult,
     *,
     platform_name: str | None = None,
-    probe_runtime: bool = True,
+    probe_runtime: bool = False,
 ) -> None:
     """Validate the exact command Cursor invokes, not generated shell assets.
 
@@ -1839,7 +1850,9 @@ def _check_cursor_configured_runtime(
     pipeline before invoking ``defenseclaw-hook.exe``. Parse the live
     hooks.json, verify every DefenseClaw-owned entry uses one consistent,
     reachable runtime, and ensure Cursor's host-side failClosed flag agrees
-    with the connector's effective observe/action mode.
+    with the connector's effective observe/action mode. Doctor is passive by
+    default: callers must explicitly opt in to ``probe_runtime`` because that
+    path delivers a synthetic event through the live gateway.
     """
     repair = "run `defenseclaw setup cursor --yes --restart` to reconcile the managed registration"
     try:

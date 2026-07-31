@@ -51,8 +51,12 @@ func HookContractNeedsActionOverride(resolution HookContractResolution) bool {
 // deciding whether a hook event is blockable/askable/AID-eligible; it should
 // never assume that "latest connector code" describes every installed agent.
 type HookContract struct {
-	Connector               string
-	ContractID              string
+	Connector  string
+	ContractID string
+	// ExactAgentVersions pins date-hash or other non-semver upstream builds
+	// without inventing a compatible range. When populated, exact-token
+	// matching takes precedence over MinAgentVersion/MaxAgentVersion.
+	ExactAgentVersions      []string
 	MinAgentVersion         string
 	MaxAgentVersion         string
 	DefaultForUnversioned   bool
@@ -396,7 +400,7 @@ var builtinHookContracts = map[string][]HookContract{
 	"cursor": {{
 		Connector:               "cursor",
 		ContractID:              "cursor-hooks-v1",
-		MinAgentVersion:         "1.7.0",
+		ExactAgentVersions:      []string{"2026.07.23-e383d2b"},
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v8",
 		HookConfigPathTemplates: []string{"~/.cursor/hooks.json"},
@@ -434,6 +438,7 @@ var builtinHookContracts = map[string][]HookContract{
 			},
 			BlockEvents: []string{
 				"preToolUse",
+				"subagentStart",
 				"beforeShellExecution",
 				"beforeMCPExecution",
 				"beforeReadFile",
@@ -445,12 +450,12 @@ var builtinHookContracts = map[string][]HookContract{
 		},
 		SupportsTraceparent: true,
 		Notes: []string{
-			"Cursor 1.7 introduced beta hooks for the agent loop.",
+			"Cursor 1.7 introduced beta hooks for the agent loop, but Cursor does not publish per-event introduction versions for the current 21-event reference. This preview contract is pinned only to the exact Cursor Agent build 2026.07.23-e383d2b published by the official native Windows installer inspected on 2026-07-30; it does not treat the separate Cursor Desktop 3.13 release as an Agent CLI version.",
 			"Cursor Agent uses agent as its primary CLI command; cursor-agent remains a compatibility alias.",
-			"Cursor native ask is enforced only for beforeShellExecution and beforeMCPExecution; preToolUse accepts ask in the schema but does not enforce it.",
+			"Cursor native ask is enforced only for beforeShellExecution and beforeMCPExecution. preToolUse and subagentStart expose allow/deny only; DefenseClaw never emits ask for them.",
 			"Command hooks fail open by default. An explicit action-mode closed fail mode writes failClosed=true so crashes, timeouts, and invalid JSON block.",
-			"sessionStart and sessionEnd are fire-and-forget, and Stop accepts only followup_message; none of these events is an enforcement gate.",
-			"Every command-hook invocation returns a non-empty JSON object; beforeSubmitPrompt uses continue while permission gates use permission.",
+			"sessionStart and sessionEnd are fire-and-forget policy-wise; sessionStart documents only env/additional_context output and sessionEnd has no output. stop and subagentStop accept only followup_message; none is a block or ask gate.",
+			"Every command-hook invocation returns a JSON object. beforeSubmitPrompt uses continue; the six permission gates use only their documented permission/message fields; postToolUse, preCompact, sessionStart, stop, subagentStop, and workspaceOpen retain their event-specific outputs; unsupported output events return {}.",
 		},
 	}},
 	"windsurf": {{
@@ -790,7 +795,7 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 		}
 	}
 	for _, contract := range contracts {
-		if versionInRange(normalized, contract.MinAgentVersion, contract.MaxAgentVersion) {
+		if contractMatchesAgentVersion(contract, raw, normalized) {
 			return HookContractResolution{
 				Connector:         name,
 				RawVersion:        raw,
@@ -808,6 +813,36 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 		Status:            HookCompatibilityUnknown,
 		Reason:            "no hook contract matches normalized agent version",
 	}
+}
+
+func contractMatchesAgentVersion(contract HookContract, raw, normalized string) bool {
+	if len(contract.ExactAgentVersions) != 0 {
+		return exactAgentVersionMatch(raw, contract.ExactAgentVersions)
+	}
+	return versionInRange(normalized, contract.MinAgentVersion, contract.MaxAgentVersion)
+}
+
+func exactAgentVersionMatch(raw string, expected []string) bool {
+	fields := strings.Fields(strings.TrimSpace(raw))
+	if len(fields) == 0 || len(fields) > 2 {
+		return false
+	}
+	token := fields[len(fields)-1]
+	if len(fields) == 2 {
+		command := strings.ToLower(strings.TrimSpace(fields[0]))
+		if command != "agent" && command != "cursor-agent" {
+			return false
+		}
+	}
+	if len(token) > 1 && (token[0] == 'v' || token[0] == 'V') {
+		token = token[1:]
+	}
+	for _, candidate := range expected {
+		if strings.EqualFold(token, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }
 
 func defaultHookContract(contracts []HookContract) HookContract {

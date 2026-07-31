@@ -634,109 +634,42 @@ func TestHermesProfileRespond_Parity(t *testing.T) {
 	}
 }
 
-// TestCursorProfileRespond_AlwaysEmitsEnvelope pins the cursor branch
-// of hookOnlyProfileRespond. Cursor's hook script is fail-closed on
-// empty stdout — a hook that returns nothing gets treated as a hook
-// failure and blocks the tool call. That means every code path in the
-// cursor case must produce a non-nil Output map, including the plain
-// allow case where earlier versions left it nil and every benign
-// prompt in Cursor would fail-close.
-func TestCursorProfileRespond_AlwaysEmitsEnvelope(t *testing.T) {
+func TestCursorProfileRespond_CurrentEventOutputMatrix(t *testing.T) {
 	cases := []struct {
-		name       string
-		action     string
-		rawAction  string
-		reason     string
-		additional string
-		expected   map[string]interface{}
+		event    string
+		expected map[string]interface{}
 	}{
-		{
-			name:      "block_renders_deny_permission",
-			action:    "block",
-			rawAction: "block",
-			reason:    "matched SEC-AWS-KEY",
-			expected: map[string]interface{}{
-				"continue":      true,
-				"permission":    "deny",
-				"user_message":  "matched SEC-AWS-KEY",
-				"agent_message": "matched SEC-AWS-KEY",
-			},
-		},
-		{
-			name:      "confirm_renders_ask_permission",
-			action:    "confirm",
-			rawAction: "confirm",
-			reason:    "shell command needs approval",
-			expected: map[string]interface{}{
-				"continue":      true,
-				"permission":    "ask",
-				"user_message":  "shell command needs approval",
-				"agent_message": "shell command needs approval",
-			},
-		},
-		{
-			name:       "alert_with_context_renders_allow_with_agent_message",
-			action:     "alert",
-			rawAction:  "alert",
-			additional: "DefenseClaw observed a HIGH cursor finding",
-			expected: map[string]interface{}{
-				"continue":      true,
-				"permission":    "allow",
-				"agent_message": "DefenseClaw observed a HIGH cursor finding",
-			},
-		},
-		{
-			// Regression guard: an alert with NO AdditionalContext used
-			// to fall through to a nil Output map, which produced an
-			// empty response body and tripped Cursor's failClosed=true.
-			// Must return the default allow envelope so the tool call
-			// proceeds and the finding still surfaces via the audit
-			// pipeline / other channels.
-			name:      "alert_without_context_falls_through_to_allow",
-			action:    "alert",
-			rawAction: "alert",
-			expected: map[string]interface{}{
-				"continue":   true,
-				"permission": "allow",
-			},
-		},
-		{
-			// Regression: plain allow used to leave Output nil, which
-			// produced an empty stdout in the hook script and tripped
-			// Cursor's failClosed=true guard. Must be a concrete allow.
-			name:      "allow_renders_explicit_allow_envelope",
-			action:    "allow",
-			rawAction: "allow",
-			expected: map[string]interface{}{
-				"continue":   true,
-				"permission": "allow",
-			},
-		},
-		{
-			name:      "empty_action_treated_as_allow",
-			action:    "",
-			rawAction: "",
-			expected: map[string]interface{}{
-				"continue":   true,
-				"permission": "allow",
-			},
-		},
+		{"sessionStart", map[string]interface{}{}},
+		{"sessionEnd", map[string]interface{}{}},
+		{"preToolUse", map[string]interface{}{"permission": "allow"}},
+		{"postToolUse", map[string]interface{}{}},
+		{"postToolUseFailure", map[string]interface{}{}},
+		{"subagentStart", map[string]interface{}{"permission": "allow"}},
+		{"subagentStop", map[string]interface{}{}},
+		{"beforeShellExecution", map[string]interface{}{"permission": "allow"}},
+		{"afterShellExecution", map[string]interface{}{}},
+		{"beforeMCPExecution", map[string]interface{}{"permission": "allow"}},
+		{"afterMCPExecution", map[string]interface{}{}},
+		{"beforeReadFile", map[string]interface{}{"permission": "allow"}},
+		{"afterFileEdit", map[string]interface{}{}},
+		{"beforeTabFileRead", map[string]interface{}{"permission": "allow"}},
+		{"afterTabFileEdit", map[string]interface{}{}},
+		{"beforeSubmitPrompt", map[string]interface{}{"continue": true}},
+		{"preCompact", map[string]interface{}{}},
+		{"stop", map[string]interface{}{}},
+		{"afterAgentResponse", map[string]interface{}{}},
+		{"afterAgentThought", map[string]interface{}{}},
+		{"workspaceOpen", map[string]interface{}{}},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.event, func(t *testing.T) {
 			out := hookOnlyProfileRespond(HookRespondInput{
 				Req: HookProfileRequest{
 					ConnectorName: "cursor",
-					// Permission-gated event: block→deny, confirm→ask,
-					// alert/allow→allow. beforeSubmitPrompt is continue-gated
-					// and covered separately (see
-					// TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue).
-					HookEventName: "beforeShellExecution",
+					HookEventName: tc.event,
 				},
-				Action:            tc.action,
-				RawAction:         tc.rawAction,
-				Reason:            tc.reason,
-				AdditionalContext: tc.additional,
+				Action:    "allow",
+				RawAction: "allow",
 				Caps: HookCapability{
 					CanBlock:     true,
 					CanAskNative: true,
@@ -746,10 +679,154 @@ func TestCursorProfileRespond_AlwaysEmitsEnvelope(t *testing.T) {
 				t.Errorf("FieldName=%q want hook_output", out.FieldName)
 			}
 			if out.Output == nil {
-				t.Fatalf("cursor Respond must never return nil Output — Cursor fail-closes on empty stdout")
+				t.Fatal("Cursor command hooks must return a JSON object, including {} for no-output events")
 			}
 			if !reflect.DeepEqual(out.Output, tc.expected) {
 				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
+			}
+		})
+	}
+}
+
+func TestCursorProfileRespond_EventSpecificFields(t *testing.T) {
+	cases := []struct {
+		name       string
+		event      string
+		action     string
+		rawAction  string
+		reason     string
+		additional string
+		expected   map[string]interface{}
+	}{
+		{
+			name:      "pre_tool_deny_supports_both_messages",
+			event:     "preToolUse",
+			action:    "block",
+			rawAction: "block",
+			reason:    "matched SEC-AWS-KEY",
+			expected: map[string]interface{}{
+				"permission":    "deny",
+				"user_message":  "matched SEC-AWS-KEY",
+				"agent_message": "matched SEC-AWS-KEY",
+			},
+		},
+		{
+			name:      "subagent_start_deny_has_no_agent_message",
+			event:     "subagentStart",
+			action:    "block",
+			rawAction: "block",
+			reason:    "subagent creation denied",
+			expected: map[string]interface{}{
+				"permission":   "deny",
+				"user_message": "subagent creation denied",
+			},
+		},
+		{
+			name:      "shell_confirm_is_native_ask",
+			event:     "beforeShellExecution",
+			action:    "confirm",
+			rawAction: "confirm",
+			reason:    "shell command needs approval",
+			expected: map[string]interface{}{
+				"permission":    "ask",
+				"user_message":  "shell command needs approval",
+				"agent_message": "shell command needs approval",
+			},
+		},
+		{
+			name:      "tab_read_deny_has_permission_only",
+			event:     "beforeTabFileRead",
+			action:    "block",
+			rawAction: "block",
+			reason:    "sensitive file",
+			expected:  map[string]interface{}{"permission": "deny"},
+		},
+		{
+			name:       "session_start_context",
+			event:      "sessionStart",
+			action:     "alert",
+			rawAction:  "alert",
+			additional: "session policy context",
+			expected:   map[string]interface{}{"additional_context": "session policy context"},
+		},
+		{
+			name:       "post_tool_context",
+			event:      "postToolUse",
+			action:     "alert",
+			rawAction:  "alert",
+			additional: "tool result context",
+			expected:   map[string]interface{}{"additional_context": "tool result context"},
+		},
+		{
+			name:       "pre_compact_user_message",
+			event:      "preCompact",
+			action:     "alert",
+			rawAction:  "alert",
+			additional: "context compaction observed",
+			expected:   map[string]interface{}{"user_message": "context compaction observed"},
+		},
+		{
+			name:       "subagent_stop_followup",
+			event:      "subagentStop",
+			action:     "allow",
+			rawAction:  "allow",
+			additional: "review the subagent result",
+			expected:   map[string]interface{}{"followup_message": "review the subagent result"},
+		},
+		{
+			name:       "workspace_open_does_not_invent_plugin_paths",
+			event:      "workspaceOpen",
+			action:     "alert",
+			rawAction:  "alert",
+			additional: "inventory finding",
+			expected:   map[string]interface{}{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := hookOnlyProfileRespond(HookRespondInput{
+				Req: HookProfileRequest{
+					ConnectorName: "cursor",
+					HookEventName: tc.event,
+				},
+				Action:            tc.action,
+				RawAction:         tc.rawAction,
+				Reason:            tc.reason,
+				AdditionalContext: tc.additional,
+				Caps:              NewCursorConnector().HookCapabilities(SetupOpts{}),
+			})
+			if !reflect.DeepEqual(out.Output, tc.expected) {
+				t.Errorf("Output mismatch\n got: %#v\nwant: %#v", out.Output, tc.expected)
+			}
+		})
+	}
+}
+
+func TestCursorProfileMapVerdict_SubagentStartDenyWithoutAsk(t *testing.T) {
+	caps := KnownHookContracts("cursor")[0].Capabilities
+	tests := []struct {
+		name           string
+		event          string
+		mode           string
+		rawAction      string
+		wantAction     string
+		wantWouldBlock bool
+	}{
+		{"action_block_subagent", "subagentStart", "action", "block", "block", false},
+		{"observe_block_subagent", "subagentStart", "observe", "block", "allow", true},
+		{"confirm_subagent_downgrades", "subagentStart", "action", "confirm", "alert", false},
+		{"confirm_shell_uses_native_ask", "beforeShellExecution", "action", "confirm", "confirm", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := hookOnlyProfileMapVerdict(HookVerdictInput{
+				Event:     tc.event,
+				Mode:      tc.mode,
+				RawAction: tc.rawAction,
+				Caps:      caps,
+			})
+			if out.Action != tc.wantAction || out.WouldBlock != tc.wantWouldBlock {
+				t.Fatalf("verdict=%+v want action=%q would_block=%v", out, tc.wantAction, tc.wantWouldBlock)
 			}
 		})
 	}
@@ -776,9 +853,8 @@ func TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue(t *testing.T) 
 		t.Errorf("FieldName=%q want hook_output", out.FieldName)
 	}
 	want := map[string]interface{}{
-		"continue":      false,
-		"user_message":  "matched SEC-AWS-KEY",
-		"agent_message": "matched SEC-AWS-KEY",
+		"continue":     false,
+		"user_message": "matched SEC-AWS-KEY",
 	}
 	if !reflect.DeepEqual(out.Output, want) {
 		t.Errorf("beforeSubmitPrompt block Output mismatch\n got: %#v\nwant: %#v", out.Output, want)

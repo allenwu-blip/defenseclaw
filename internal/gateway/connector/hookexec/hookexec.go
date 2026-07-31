@@ -389,6 +389,11 @@ func (sp spec) decide(opts Options, body []byte) int {
 	case styleHookEcho:
 		if output != "" {
 			fmt.Fprintln(opts.Stdout, output)
+		} else if sp.connector == "cursor" && (action == "block" || action == "confirm") {
+			if reason == "" {
+				reason = sp.defaultBlockReason
+			}
+			fmt.Fprintln(opts.Stdout, cursorActionOutput(opts.Event, action, reason))
 		} else {
 			return emitHookResult(opts, sp, sp.openAllow)
 		}
@@ -517,17 +522,23 @@ func emit(out io.Writer, r failResult) int {
 	return r.exit
 }
 
-// emitHookResult supplies Antigravity's required per-event stdout contract on
-// local/transport/response fallbacks. Only PreToolUse has a documented hard
-// deny. Other events return their documented no-op shape even when a generic
-// strict-availability result carries exit 2; Antigravity exit-code enforcement
-// is not documented, so the native bridge exits successfully after emitting
-// the structured response.
+// emitHookResult supplies event-specific stdout contracts on local, transport,
+// and response fallbacks. Cursor accepts different fields per event and treats
+// exit 2 as a generic block. Antigravity only documents structured PreToolUse
+// blocking, so its native bridge exits successfully after emitting that body.
 func emitHookResult(opts Options, sp spec, result failResult) int {
+	if sp.connector == "cursor" {
+		fmt.Fprintln(opts.Stdout, cursorFallbackOutput(
+			opts.Event,
+			result.closed || result.exit != 0,
+			result.body,
+		))
+		return result.exit
+	}
 	if sp.connector != "antigravity" {
 		return emit(opts.Stdout, result)
 	}
-	closed := result.exit != 0
+	closed := result.closed || result.exit != 0
 	var body string
 	switch strings.TrimSpace(opts.Event) {
 	case "PreToolUse":

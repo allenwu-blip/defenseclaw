@@ -246,6 +246,29 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(gemini.connector, "geminicli")
         self.assertEqual(gemini.status, STATUS_UNVERSIONED)
 
+    def test_cursor_current_preview_contract_is_pinned_to_exact_agent_build(self) -> None:
+        for raw_version in (
+            "2026.07.23-e383d2b",
+            "agent v2026.07.23-e383d2b",
+            "cursor-agent 2026.07.23-e383d2b",
+        ):
+            with self.subTest(raw_version=raw_version):
+                compat = resolve_connector_contract("cursor", raw_version)
+                self.assertEqual(compat.status, STATUS_KNOWN)
+                self.assertEqual(compat.contract.contract_id, "cursor-hooks-v1")
+                self.assertIn("subagentStart", compat.contract.capabilities["block_events"])
+                self.assertNotIn("subagentStart", compat.contract.capabilities["ask_events"])
+
+        for raw_version in (
+            "cursor-agent 2026.07.23-deadbee",
+            "cursor 3.13.21",
+            "Cursor Agent 2026.07.23-e383d2b",
+        ):
+            with self.subTest(raw_version=raw_version):
+                compat = resolve_connector_contract("cursor", raw_version)
+                self.assertEqual(compat.status, STATUS_UNKNOWN)
+                self.assertFalse(compat.supported)
+
     def test_openhands_cli_version_matches_documented_contract(self) -> None:
         compat = resolve_connector_contract("openhands", "OpenHands CLI 1.16.0")
         self.assertEqual(compat.status, STATUS_KNOWN)

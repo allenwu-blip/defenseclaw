@@ -78,7 +78,7 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 			output = map[string]interface{}{"context": in.AdditionalContext}
 		}
 	case "cursor":
-		output = cursorHookOutputForProfile(in.Req.HookEventName, in.Action, reason, in.AdditionalContext)
+		output = CursorHookOutput(in.Req.HookEventName, in.Action, reason, in.AdditionalContext)
 	case "windsurf":
 		if in.Action == "block" {
 			output = map[string]interface{}{"message": reason}
@@ -120,18 +120,21 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 	return HookRespondOutput{FieldName: "hook_output", Output: output}
 }
 
-func cursorHookOutputForProfile(event, action, reason, additional string) map[string]interface{} {
+// CursorHookOutput renders the exact event-native stdout object documented by
+// Cursor. It is shared by the profile path and the legacy gateway fallback so
+// neither path can reintroduce generic fields that an event does not accept.
+func CursorHookOutput(event, action, reason, additional string) map[string]interface{} {
 	event = canonicalHookEvent(event)
-	if event == "beforesubmitprompt" {
+	switch event {
+	case "beforesubmitprompt":
 		if action == "block" {
-			return map[string]interface{}{"continue": false, "user_message": reason, "agent_message": reason}
+			return map[string]interface{}{"continue": false, "user_message": reason}
 		}
 		return map[string]interface{}{"continue": true}
-	}
-	if event == "stop" {
-		// Cursor Stop hooks cannot veto termination. The only documented
-		// response is followup_message, which starts a follow-up turn rather
-		// than retroactively blocking the stop.
+	case "stop", "subagentstop":
+		// Cursor stop/subagentStop hooks cannot veto the completed lifecycle
+		// transition. Their only documented response is followup_message,
+		// which starts a bounded follow-up turn.
 		message := additional
 		if message == "" && action != "allow" {
 			message = reason
@@ -140,23 +143,53 @@ func cursorHookOutputForProfile(event, action, reason, additional string) map[st
 			return map[string]interface{}{"followup_message": message}
 		}
 		return map[string]interface{}{}
-	}
-	switch action {
-	case "block":
-		return map[string]interface{}{"continue": true, "permission": "deny", "user_message": reason, "agent_message": reason}
-	case "confirm":
-		return map[string]interface{}{"continue": true, "permission": "ask", "user_message": reason, "agent_message": reason}
-	case "alert":
+	case "sessionstart", "posttooluse":
+		// DefenseClaw does not mutate session environment or tool results.
+		// It can supply only the documented context field when the evaluator
+		// produced attributed context for these events.
 		if additional != "" {
-			return map[string]interface{}{"continue": true, "permission": "allow", "agent_message": additional}
+			return map[string]interface{}{"additional_context": additional}
 		}
-	}
-	switch event {
-	case "pretooluse", "beforeshellexecution", "beforemcpexecution", "beforereadfile", "beforetabfileread":
-		return map[string]interface{}{"continue": true, "permission": "allow"}
+		return map[string]interface{}{}
+	case "precompact":
+		if additional != "" {
+			return map[string]interface{}{"user_message": additional}
+		}
+		return map[string]interface{}{}
+	case "pretooluse":
+		return cursorPermissionOutput(action, reason, false, true, true)
+	case "subagentstart", "beforereadfile":
+		return cursorPermissionOutput(action, reason, false, true, false)
+	case "beforetabfileread":
+		return cursorPermissionOutput(action, reason, false, false, false)
+	case "beforeshellexecution", "beforemcpexecution":
+		return cursorPermissionOutput(action, reason, true, true, true)
 	default:
-		return map[string]interface{}{"continue": true}
+		// sessionEnd, postToolUseFailure, all after* observation events, and
+		// workspaceOpen have no DefenseClaw-owned event output. workspaceOpen
+		// accepts pluginPaths, but this connector does not inject plugins.
+		return map[string]interface{}{}
 	}
+}
+
+func cursorPermissionOutput(action, reason string, supportsAsk, supportsUserMessage, supportsAgentMessage bool) map[string]interface{} {
+	permission := "allow"
+	if action == "block" {
+		permission = "deny"
+	} else if action == "confirm" && supportsAsk {
+		permission = "ask"
+	}
+	output := map[string]interface{}{"permission": permission}
+	if permission == "allow" {
+		return output
+	}
+	if supportsUserMessage {
+		output["user_message"] = reason
+	}
+	if supportsAgentMessage {
+		output["agent_message"] = reason
+	}
+	return output
 }
 
 // antigravityHookOutputForProfile renders only fields documented by

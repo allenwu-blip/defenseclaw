@@ -18,6 +18,7 @@ package gateway
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -262,6 +263,7 @@ func TestHookOutputFor_AllConnectors_AllActions(t *testing.T) {
 
 		// cursor -- permission field; supports deny + ask + allow.
 		{connector: "cursor", event: "preToolUse", action: "block", rawAction: "block", expectedKey: "permission", expectedValue: "deny"},
+		{connector: "cursor", event: "subagentStart", action: "block", rawAction: "block", expectedKey: "permission", expectedValue: "deny"},
 		{connector: "cursor", event: "beforeShellExecution", action: "confirm", rawAction: "confirm", expectedKey: "permission", expectedValue: "ask"},
 
 		// windsurf -- minimal shape; only block surfaces a message.
@@ -310,6 +312,60 @@ func TestHookOutputFor_AllConnectors_AllActions(t *testing.T) {
 			if gotStr != tc.expectedValue {
 				t.Fatalf("hook_output[%s/%s/%s][%s] = %q, want %q",
 					tc.connector, tc.event, tc.action, tc.expectedKey, gotStr, tc.expectedValue)
+			}
+		})
+	}
+}
+
+func TestCursorLegacyHookOutputUsesEventSpecificSchemas(t *testing.T) {
+	tests := []struct {
+		name       string
+		event      string
+		action     string
+		additional string
+		want       map[string]interface{}
+	}{
+		{
+			name:   "subagent start deny has no ask or agent message",
+			event:  "subagentStart",
+			action: "block",
+			want: map[string]interface{}{
+				"permission":   "deny",
+				"user_message": "blocked",
+			},
+		},
+		{
+			name:       "subagent stop uses only followup",
+			event:      "subagentStop",
+			action:     "alert",
+			additional: "review child result",
+			want:       map[string]interface{}{"followup_message": "review child result"},
+		},
+		{
+			name:   "before submit deny omits permission and agent message",
+			event:  "beforeSubmitPrompt",
+			action: "block",
+			want: map[string]interface{}{
+				"continue":     false,
+				"user_message": "blocked",
+			},
+		},
+		{
+			name:   "after event has no invented fields",
+			event:  "postToolUseFailure",
+			action: "block",
+			want:   map[string]interface{}{},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := hookOutputFor(agentHookRequest{
+				ConnectorName: "cursor",
+				HookEventName: test.event,
+				ToolName:      "test-tool",
+			}, test.action, test.action, "blocked", test.additional, capsForConnector("cursor"))
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("hookOutputFor(%s) = %#v, want %#v", test.event, got, test.want)
 			}
 		})
 	}

@@ -23,6 +23,52 @@ process {
 end {
     $hook = '{{.HookBinaryPS}}'
     $failClosed = {{if eq .FailMode "closed"}}$true{{else}}$false{{end}}
+    $payload = $parts -join [Environment]::NewLine
+    $eventName = ""
+    try {
+        $parsedPayload = $payload | ConvertFrom-Json -ErrorAction Stop
+        if ($null -ne $parsedPayload.hook_event_name) {
+            $eventName = [string]$parsedPayload.hook_event_name
+        }
+    }
+    catch {
+        # The native launcher owns malformed-input handling. If the adapter
+        # itself fails first, an unknown event can emit only Cursor's exact
+        # no-fields response object.
+    }
+    function Get-CursorFallbackJson {
+        param(
+            [string]$EventName,
+            [bool]$Deny
+        )
+        if (-not $Deny) {
+            switch ($EventName) {
+                "beforeSubmitPrompt" { return '{"continue":true}' }
+                { $_ -in @(
+                    "preToolUse",
+                    "subagentStart",
+                    "beforeShellExecution",
+                    "beforeMCPExecution",
+                    "beforeReadFile",
+                    "beforeTabFileRead"
+                ) } { return '{"permission":"allow"}' }
+                default { return '{}' }
+            }
+        }
+        switch ($EventName) {
+            "beforeSubmitPrompt" {
+                return '{"continue":false,"user_message":"DefenseClaw hook unavailable"}'
+            }
+            { $_ -in @("preToolUse", "beforeShellExecution", "beforeMCPExecution") } {
+                return '{"permission":"deny","user_message":"DefenseClaw hook unavailable","agent_message":"DefenseClaw hook unavailable"}'
+            }
+            { $_ -in @("subagentStart", "beforeReadFile") } {
+                return '{"permission":"deny","user_message":"DefenseClaw hook unavailable"}'
+            }
+            "beforeTabFileRead" { return '{"permission":"deny"}' }
+            default { return '{}' }
+        }
+    }
     $payloadPath = Join-Path $PSScriptRoot (".cursor-input-" + [Guid]::NewGuid().ToString("N") + ".json")
     $exitCode = 2
     $responseWritten = $false
@@ -30,7 +76,6 @@ end {
         if (-not (Test-Path -LiteralPath $hook -PathType Leaf)) {
             throw "DefenseClaw hook launcher is missing: $hook"
         }
-        $payload = $parts -join [Environment]::NewLine
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         $payloadBytes = $utf8NoBom.GetBytes($payload)
         $stream = [IO.File]::Open(
@@ -98,14 +143,7 @@ end {
     catch {
         [Console]::Error.WriteLine("defenseclaw: Cursor hook adapter failed: " + $_.Exception.Message)
         if (-not $responseWritten) {
-            if ($failClosed) {
-                [Console]::Out.Write(
-                    '{"continue":true,"permission":"deny","user_message":"DefenseClaw hook unavailable"}'
-                )
-            }
-            else {
-                [Console]::Out.Write('{"continue":true}')
-            }
+            [Console]::Out.Write((Get-CursorFallbackJson -EventName $eventName -Deny $failClosed))
         }
         $exitCode = if ($failClosed) { 2 } else { 0 }
     }

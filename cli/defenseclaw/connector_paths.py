@@ -684,6 +684,30 @@ def plugin_dirs(
     return _openclaw_plugin_dirs(openclaw_home)
 
 
+def plugin_inventory_dirs(
+    connector: str | None,
+    *,
+    openclaw_home: str | None = None,
+    workspace_dir: str | None = None,
+) -> list[str]:
+    """Return read-only plugin discovery roots for *connector*.
+
+    Most connectors use the same roots for inventory and installation. Cursor
+    is intentionally different: its documented local-plugin root is an
+    applicable inventory surface, but DefenseClaw does not install, remove, or
+    otherwise claim custody of Cursor plugins. Write paths must continue to use
+    :func:`plugin_dirs`, which returns no Cursor target.
+    """
+
+    if normalize(connector) == "cursor":
+        return [os.path.join(str(Path.home()), ".cursor", "plugins", "local")]
+    return plugin_dirs(
+        connector,
+        openclaw_home=openclaw_home,
+        workspace_dir=workspace_dir,
+    )
+
+
 def mcp_servers(
     connector: str | None,
     *,

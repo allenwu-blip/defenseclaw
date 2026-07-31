@@ -299,22 +299,22 @@ func TestDecisionGolden(t *testing.T) {
 		{
 			name:       "cursor allow echoes hook_output exit 0",
 			connector:  "cursor",
-			respBody:   `{"hook_output":{"continue":true,"permission":"allow"}}`,
-			wantStdout: `{"continue":true,"permission":"allow"}` + "\n",
+			respBody:   `{"hook_output":{"permission":"allow"}}`,
+			wantStdout: `{"permission":"allow"}` + "\n",
 			wantCode:   0,
 		},
 		{
 			name:       "cursor allow without hook_output emits valid json",
 			connector:  "cursor",
 			respBody:   `{"action":"allow"}`,
-			wantStdout: cursorAllow() + "\n",
+			wantStdout: cursorFallbackOutput("PreToolUse", false, "") + "\n",
 			wantCode:   0,
 		},
 		{
 			name:       "cursor echoes hook_output exit 0",
 			connector:  "cursor",
-			respBody:   `{"hook_output":{"continue":true,"permission":"deny","user_message":"no"}}`,
-			wantStdout: `{"continue":true,"permission":"deny","user_message":"no"}` + "\n",
+			respBody:   `{"hook_output":{"permission":"deny","user_message":"no","agent_message":"no"}}`,
+			wantStdout: `{"permission":"deny","user_message":"no","agent_message":"no"}` + "\n",
 			wantCode:   0,
 		},
 		{
@@ -538,7 +538,7 @@ func TestOversizedPayload(t *testing.T) {
 		"claudecode": {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"codex":      {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"openhands":  {stdout: `{"decision":"deny","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
-		"cursor":     {stdout: cursorDeny("DefenseClaw hook payload too large") + "\n", code: 2},
+		"cursor":     {stdout: cursorFallbackOutput("PreToolUse", true, "DefenseClaw hook payload too large") + "\n", code: 2},
 		"copilot":    {stdout: "", code: 2},
 		"geminicli":  {stdout: "", code: 2},
 		"hermes":     {stdout: "", code: 0},
@@ -582,7 +582,7 @@ func TestUnreachable(t *testing.T) {
 		if r.code != 0 {
 			t.Fatalf("code = %d, want 0", r.code)
 		}
-		if r.stdout != cursorAllow()+"\n" {
+		if r.stdout != cursorFallbackOutput("PreToolUse", false, "")+"\n" {
 			t.Errorf("stdout = %q, want Cursor allow JSON", r.stdout)
 		}
 	})
@@ -753,7 +753,7 @@ func TestResponseFailure(t *testing.T) {
 		if r.code != 0 {
 			t.Fatalf("code = %d, want 0", r.code)
 		}
-		if r.stdout != cursorAllow()+"\n" {
+		if r.stdout != cursorFallbackOutput("PreToolUse", false, "")+"\n" {
 			t.Errorf("stdout = %q, want Cursor allow JSON", r.stdout)
 		}
 	})
@@ -766,7 +766,7 @@ func TestResponseFailure(t *testing.T) {
 		if r.code != 0 {
 			t.Fatalf("code = %d, want 0", r.code)
 		}
-		if r.stdout != cursorDeny("DefenseClaw hook failed closed")+"\n" {
+		if r.stdout != cursorFallbackOutput("PreToolUse", true, "DefenseClaw hook failed closed")+"\n" {
 			t.Errorf("stdout = %q", r.stdout)
 		}
 		if !strings.Contains(r.stderr, "possible token drift") {
@@ -893,7 +893,7 @@ func TestMissingToken(t *testing.T) {
 		if r.code != 0 {
 			t.Fatalf("code = %d, want 0", r.code)
 		}
-		if r.stdout != cursorAllow()+"\n" {
+		if r.stdout != cursorFallbackOutput("PreToolUse", false, "")+"\n" {
 			t.Errorf("stdout = %q, want Cursor allow JSON", r.stdout)
 		}
 	})
@@ -1018,6 +1018,114 @@ func TestAntigravityFailureFallbacksUseDocumentedEventOutput(t *testing.T) {
 			})
 			if result.code != 0 || result.stdout != tc.want {
 				t.Fatalf("code=%d stdout=%q want %q", result.code, result.stdout, tc.want)
+			}
+		})
+	}
+}
+
+func TestCursorFallbackOutputsUseDocumentedEventSchemas(t *testing.T) {
+	allowCases := map[string]string{
+		"sessionStart":         `{}`,
+		"sessionEnd":           `{}`,
+		"preToolUse":           `{"permission":"allow"}`,
+		"postToolUse":          `{}`,
+		"postToolUseFailure":   `{}`,
+		"subagentStart":        `{"permission":"allow"}`,
+		"subagentStop":         `{}`,
+		"beforeShellExecution": `{"permission":"allow"}`,
+		"afterShellExecution":  `{}`,
+		"beforeMCPExecution":   `{"permission":"allow"}`,
+		"afterMCPExecution":    `{}`,
+		"beforeReadFile":       `{"permission":"allow"}`,
+		"afterFileEdit":        `{}`,
+		"beforeTabFileRead":    `{"permission":"allow"}`,
+		"afterTabFileEdit":     `{}`,
+		"beforeSubmitPrompt":   `{"continue":true}`,
+		"preCompact":           `{}`,
+		"stop":                 `{}`,
+		"afterAgentResponse":   `{}`,
+		"afterAgentThought":    `{}`,
+		"workspaceOpen":        `{}`,
+	}
+	for event, want := range allowCases {
+		t.Run("allow/"+event, func(t *testing.T) {
+			if got := cursorFallbackOutput(event, false, ""); got != want {
+				t.Fatalf("cursorFallbackOutput(%q, allow) = %s, want %s", event, got, want)
+			}
+		})
+	}
+
+	const reason = "policy unavailable"
+	closedCases := map[string]string{
+		"preToolUse":           `{"permission":"deny","user_message":"policy unavailable","agent_message":"policy unavailable"}`,
+		"subagentStart":        `{"permission":"deny","user_message":"policy unavailable"}`,
+		"beforeShellExecution": `{"permission":"deny","user_message":"policy unavailable","agent_message":"policy unavailable"}`,
+		"beforeMCPExecution":   `{"permission":"deny","user_message":"policy unavailable","agent_message":"policy unavailable"}`,
+		"beforeReadFile":       `{"permission":"deny","user_message":"policy unavailable"}`,
+		"beforeTabFileRead":    `{"permission":"deny"}`,
+		"beforeSubmitPrompt":   `{"continue":false,"user_message":"policy unavailable"}`,
+	}
+	for event, want := range closedCases {
+		t.Run("closed/"+event, func(t *testing.T) {
+			if got := cursorFallbackOutput(event, true, reason); got != want {
+				t.Fatalf("cursorFallbackOutput(%q, closed) = %s, want %s", event, got, want)
+			}
+		})
+	}
+}
+
+func TestCursorResponseClosedUsesEventNativeDeny(t *testing.T) {
+	cases := map[string]string{
+		"preToolUse":         `{"permission":"deny","user_message":"DefenseClaw hook failed closed","agent_message":"DefenseClaw hook failed closed"}` + "\n",
+		"subagentStart":      `{"permission":"deny","user_message":"DefenseClaw hook failed closed"}` + "\n",
+		"beforeTabFileRead":  `{"permission":"deny"}` + "\n",
+		"beforeSubmitPrompt": `{"continue":false,"user_message":"DefenseClaw hook failed closed"}` + "\n",
+	}
+	for event, want := range cases {
+		t.Run(event, func(t *testing.T) {
+			result := run(t, "cursor", &stubRT{status: 401, body: "unauthorized"}, func(opts *Options) {
+				opts.Event = event
+				opts.FailMode = "closed"
+			})
+			if result.code != 0 {
+				t.Fatalf("code=%d, want structured deny with exit 0", result.code)
+			}
+			if result.stdout != want {
+				t.Fatalf("stdout=%q, want %q", result.stdout, want)
+			}
+		})
+	}
+}
+
+func TestCursorGatewayActionFallbackUsesEventNativeOutput(t *testing.T) {
+	cases := []struct {
+		event    string
+		response string
+		want     string
+	}{
+		{
+			event:    "preToolUse",
+			response: `{"action":"block","reason":"policy denied"}`,
+			want:     `{"permission":"deny","user_message":"policy denied","agent_message":"policy denied"}` + "\n",
+		},
+		{
+			event:    "subagentStop",
+			response: `{"action":"block","reason":"review child result"}`,
+			want:     `{"followup_message":"review child result"}` + "\n",
+		},
+		{
+			event:    "beforeShellExecution",
+			response: `{"action":"confirm","reason":"approve command"}`,
+			want:     `{"permission":"ask","user_message":"approve command","agent_message":"approve command"}` + "\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.event, func(t *testing.T) {
+			result := run(t, "cursor", ok(tc.response), func(opts *Options) {
+				opts.Event = tc.event
+			})
+			if result.code != 0 || result.stdout != tc.want {
+				t.Fatalf("code=%d stdout=%q, want exit 0 and %q", result.code, result.stdout, tc.want)
 			}
 		})
 	}
@@ -1298,7 +1406,7 @@ func TestCursorDisabledOrMissingHomeEmitsAllowJSON(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("code = %d, want 0", code)
 			}
-			if out.String() != cursorAllow()+"\n" {
+			if out.String() != cursorFallbackOutput("", false, "")+"\n" {
 				t.Fatalf("stdout = %q, want Cursor allow JSON", out.String())
 			}
 		})

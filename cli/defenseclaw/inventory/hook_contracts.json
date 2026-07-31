@@ -422,8 +422,9 @@
         {
           "contract_id": "cursor-hooks-v1",
           "agent_version": {
-            "min_inclusive": "1.7.0",
-            "max_exclusive": ""
+            "exact": [
+              "2026.07.23-e383d2b"
+            ]
           },
           "default_for_unversioned": true,
           "hook_script_version": "v8",
@@ -471,6 +472,7 @@
             ],
             "block_events": [
               "preToolUse",
+              "subagentStart",
               "beforeShellExecution",
               "beforeMCPExecution",
               "beforeReadFile",
@@ -481,12 +483,12 @@
             "scope": "user"
           },
           "notes": [
-            "Cursor 1.7 introduced beta hooks for the agent loop.",
+            "Cursor 1.7 introduced beta hooks for the agent loop, but Cursor does not publish per-event introduction versions for the current 21-event reference. This preview contract is pinned only to the exact Cursor Agent build 2026.07.23-e383d2b published by the official native Windows installer inspected on 2026-07-30; it does not treat the separate Cursor Desktop 3.13 release as an Agent CLI version.",
             "Cursor Agent uses agent as its primary CLI command; cursor-agent remains a compatibility alias.",
-            "Cursor native ask is enforced only for beforeShellExecution and beforeMCPExecution; preToolUse accepts ask in the schema but does not enforce it.",
+            "Cursor native ask is enforced only for beforeShellExecution and beforeMCPExecution. preToolUse and subagentStart expose allow/deny only; DefenseClaw never emits ask for them.",
             "Command hooks fail open by default. An explicit action-mode closed fail mode writes failClosed=true so crashes, timeouts, and invalid JSON block.",
-            "sessionStart and sessionEnd are fire-and-forget, and Stop accepts only followup_message; none of these events is an enforcement gate.",
-            "Every command-hook invocation returns a non-empty JSON object; beforeSubmitPrompt uses continue while permission gates use permission."
+            "sessionStart and sessionEnd are fire-and-forget policy-wise; sessionStart documents only env/additional_context output and sessionEnd has no output. stop and subagentStop accept only followup_message; none is a block or ask gate.",
+            "Every command-hook invocation returns a JSON object. beforeSubmitPrompt uses continue; the six permission gates use only their documented permission/message fields; postToolUse, preCompact, sessionStart, stop, subagentStop, and workspaceOpen retain their event-specific outputs; unsupported output events return {}."
           ]
         }
       ]

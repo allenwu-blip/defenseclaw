@@ -388,6 +388,27 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertIn("fire-and-forget=sessionStart,sessionEnd", r.checks[-1]["detail"])
         self.assertNotIn("inspect-tool.sh", r.checks[-1]["detail"])
 
+    @patch("defenseclaw.commands.cmd_doctor._probe_cursor_windows_runtime")
+    def test_cursor_doctor_is_passive_by_default(self, probe_mock) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, _runtime = self._cursor_runtime_case(
+                tmp,
+                mode="observe",
+                fail_closed=False,
+            )
+            r = _DoctorResult()
+            _check_cursor_configured_runtime(
+                cfg,
+                hooks_path,
+                "Cursor hooks",
+                r,
+                platform_name="nt",
+            )
+
+        probe_mock.assert_not_called()
+        self.assertEqual(r.checks[-1]["status"], "pass")
+        self.assertNotIn("live round trip", r.checks[-1]["detail"])
+
     def test_cursor_doctor_rejects_legacy_direct_windows_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg, hooks_path, _runtime = self._cursor_runtime_case(
@@ -479,7 +500,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
-    def test_cursor_windows_runtime_probe_requires_json_and_counter_advance(
+    def test_cursor_windows_runtime_probe_accepts_event_native_json_and_counter_advance(
         self,
         run_mock,
         http_probe_mock,
@@ -503,7 +524,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
         run_mock.return_value = subprocess.CompletedProcess(
             args=["powershell.exe"],
             returncode=0,
-            stdout=b'{"continue":true}',
+            stdout=b"{}",
             stderr=b"",
         )
         cfg = MagicMock()
@@ -522,6 +543,31 @@ class TestCheckConnectorHooks(unittest.TestCase):
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
+    def test_cursor_windows_runtime_probe_rejects_generic_continue_output(
+        self,
+        run_mock,
+        http_probe_mock,
+    ) -> None:
+        health = json.dumps(
+            {"connectors": [{"name": "cursor", "requests": 4, "errors": 0}]}
+        )
+        http_probe_mock.return_value = (200, health)
+        run_mock.return_value = subprocess.CompletedProcess(
+            args=["powershell.exe"],
+            returncode=0,
+            stdout=b'{"continue":true}',
+            stderr=b"",
+        )
+        cfg = MagicMock()
+        cfg.gateway.api_port = 18970
+
+        ok, detail = _probe_cursor_windows_runtime(cfg, r"C:\DefenseClaw\cursor-hook.ps1")
+
+        self.assertFalse(ok)
+        self.assertIn("invalid sessionStart fields: continue", detail)
+
+    @patch("defenseclaw.commands.cmd_doctor._http_probe")
+    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
     def test_cursor_windows_runtime_probe_rejects_fail_open_without_delivery(
         self,
         run_mock,
@@ -534,7 +580,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
         run_mock.return_value = subprocess.CompletedProcess(
             args=["powershell.exe"],
             returncode=0,
-            stdout=b'{"continue":true}',
+            stdout=b"{}",
             stderr=b"",
         )
         cfg = MagicMock()

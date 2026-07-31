@@ -69,6 +69,10 @@ func TestHookContractResolution(t *testing.T) {
 		{"claude_before_message_display", "claude-code", "Claude Code v2.1.151", HookCompatibilityUnknown, "", "2.1.151"},
 		{"claude_alias_known", "claude-code", "Claude Code v2.1.152", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.152"},
 		{"openhands_alias_known", "open-hands", "OpenHands 1.0.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.0.0"},
+		{"cursor_exact_agent_preview_pin", "cursor", "2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
+		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
+		{"cursor_other_agent_build_unknown", "cursor", "cursor-agent 2026.07.23-deadbee", HookCompatibilityUnknown, "", "2026.7.23"},
+		{"cursor_desktop_version_not_agent_contract", "cursor", "cursor 3.13.21", HookCompatibilityUnknown, "", "3.13.21"},
 		{"unversioned_uses_default", "cursor", "", HookCompatibilityUnversioned, "cursor-hooks-v1", ""},
 		{"openclaw_proxy_not_gated", "openclaw", "", HookCompatibilityNotGated, "", ""},
 		{"zeptoclaw_proxy_not_gated", "zeptoclaw", "zeptoclaw 0.5.0", HookCompatibilityNotGated, "", "0.5.0"},
@@ -271,8 +275,9 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 	type manifestContract struct {
 		ContractID   string `json:"contract_id"`
 		AgentVersion struct {
-			MinInclusive string `json:"min_inclusive"`
-			MaxExclusive string `json:"max_exclusive"`
+			Exact        []string `json:"exact"`
+			MinInclusive string   `json:"min_inclusive"`
+			MaxExclusive string   `json:"max_exclusive"`
 		} `json:"agent_version"`
 		DefaultForUnversioned   bool     `json:"default_for_unversioned"`
 		HookScriptVersion       string   `json:"hook_script_version"`
@@ -356,6 +361,9 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 			}
 			if manifestContract.AgentVersion.MaxExclusive != runtime.MaxAgentVersion {
 				t.Fatalf("%s max version=%q want %q", runtime.ContractID, manifestContract.AgentVersion.MaxExclusive, runtime.MaxAgentVersion)
+			}
+			if !sameStrings(manifestContract.AgentVersion.Exact, runtime.ExactAgentVersions) {
+				t.Fatalf("%s exact versions=%v want %v", runtime.ContractID, manifestContract.AgentVersion.Exact, runtime.ExactAgentVersions)
 			}
 			if manifestContract.DefaultForUnversioned != runtime.DefaultForUnversioned {
 				t.Fatalf("%s default_for_unversioned=%v want %v", runtime.ContractID, manifestContract.DefaultForUnversioned, runtime.DefaultForUnversioned)

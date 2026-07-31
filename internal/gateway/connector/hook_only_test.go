@@ -272,7 +272,7 @@ func TestHookOnlyConnector_SurfaceCapabilities(t *testing.T) {
 		mcpSupported bool
 	}{
 		{NewHermesConnector(), []string{"skill"}, false, true, true},
-		{NewCursorConnector(), []string{"skill", "rule"}, false, false, true},
+		{NewCursorConnector(), []string{"skill", "rule"}, false, true, true},
 		{NewWindsurfConnector(), []string{"rule"}, false, false, true},
 		{NewGeminiCLIConnector(), []string{"skill"}, true, false, true},
 		{NewCopilotConnector(), []string{"skill", "rule"}, true, false, true},
@@ -301,6 +301,34 @@ func TestHookOnlyConnector_SurfaceCapabilities(t *testing.T) {
 				t.Fatalf("Plugins.Supported = %v, want %v", caps.Plugins.Supported, tc.pluginsSupported)
 			}
 		})
+	}
+}
+
+func TestCursorConnector_InventoryOnlyPluginAndSubagentCapabilities(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	workspace := filepath.Join(dir, "repo")
+	testenv.SetHome(t, home)
+
+	caps := NewCursorConnector().Capabilities(SetupOpts{WorkspaceDir: workspace})
+
+	wantPlugins := []string{filepath.Join(home, ".cursor", "plugins", "local")}
+	if !caps.Plugins.Supported || !caps.Plugins.DiscoveryOnly || !sameStrings(caps.Plugins.ReadPaths, wantPlugins) {
+		t.Fatalf("Cursor plugin inventory capability drifted: %+v", caps.Plugins)
+	}
+	if len(caps.Plugins.WritePaths) != 0 || len(caps.Plugins.InstallTargets) != 0 {
+		t.Fatalf("Cursor plugins must remain inventory-only: %+v", caps.Plugins)
+	}
+
+	wantAgents := []string{
+		filepath.Join(workspace, ".cursor", "agents"),
+		filepath.Join(home, ".cursor", "agents"),
+	}
+	if !caps.Agents.Supported || !caps.Agents.DiscoveryOnly || !sameStrings(caps.Agents.ReadPaths, wantAgents) {
+		t.Fatalf("Cursor subagent inventory capability drifted: %+v", caps.Agents)
+	}
+	if len(caps.Agents.WritePaths) != 0 || len(caps.Agents.InstallTargets) != 0 {
+		t.Fatalf("Cursor subagents must remain inventory-only: %+v", caps.Agents)
 	}
 }
 
@@ -778,7 +806,7 @@ func TestAntigravityRemoveConfigEntriesPrunesLegacyWindowsCommand(t *testing.T) 
 	}
 
 	conn := NewAntigravityConnector()
-	if err := conn.removeConfigEntries(path, current); err != nil {
+	if err := conn.removeConfigEntries(path, current, SetupOpts{}); err != nil {
 		t.Fatalf("removeConfigEntries: %v", err)
 	}
 	after, err := os.ReadFile(path)
@@ -1289,10 +1317,11 @@ func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
 
 	conn := NewCursorConnector()
 	opts := SetupOpts{
-		DataDir:      filepath.Join(dir, "dc"),
-		APIAddr:      "127.0.0.1:18970",
-		APIToken:     "tok-test",
-		HookFailMode: "closed",
+		DataDir:       filepath.Join(dir, "dc"),
+		APIAddr:       "127.0.0.1:18970",
+		APIToken:      "tok-test",
+		HookFailMode:  "closed",
+		GuardrailMode: "action",
 	}
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
@@ -1305,9 +1334,9 @@ func TestCursorHooks_FailClosedOnlyWhenExplicit(t *testing.T) {
 		t.Fatalf("cursor hooks did not enable failClosed when explicitly requested:\n%s", string(data))
 	}
 
-	// Refreshing the same connector in observe/fail-open mode must replace the
+	// Refreshing the same connector in observe mode must replace the
 	// managed entries rather than retaining stale host-side enforcement.
-	opts.HookFailMode = "open"
+	opts.GuardrailMode = "observe"
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("observe refresh Setup: %v", err)
 	}
@@ -1404,6 +1433,63 @@ func TestCursorTeardownRefusesForeignRuntimeReplacement(t *testing.T) {
 	}
 }
 
+func TestCursorTeardownSurgicallyRemovesOnlyProvenOwnedCommands(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "hooks.json")
+	prev := CursorHooksPathOverride
+	CursorHooksPathOverride = cfgPath
+	t.Cleanup(func() { CursorHooksPathOverride = prev })
+
+	opts := SetupOpts{DataDir: filepath.Join(dir, "dc")}
+	owned := cursorOwnedHookCommands(opts)
+	if len(owned) < 3 {
+		t.Fatalf("owned Cursor commands = %v, want portable, adapter, and legacy native forms", owned)
+	}
+	foreignAdapter := "& " + powershellQuoteLiteral(filepath.Join(dir, "operator", "cursor-hook.ps1"))
+	foreignNative := windowsQuoteExe(filepath.Join(dir, "operator", windowsGatewayBinaryName)) +
+		" " + nativeHookFlag + "cursor"
+	entries := make([]interface{}, 0, len(owned)+2)
+	for _, command := range owned {
+		entries = append(entries, map[string]interface{}{"type": "command", "command": command})
+	}
+	for _, command := range []string{foreignAdapter, foreignNative} {
+		entries = append(entries, map[string]interface{}{"type": "command", "command": command})
+	}
+	fixture := map[string]interface{}{
+		"version": 1,
+		"hooks": map[string]interface{}{
+			"preToolUse": entries,
+		},
+	}
+	body, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := NewCursorConnector()
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	after, err := readJSONObject(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if structuredHookCommandReferences(after, owned) {
+		t.Fatalf("managed Cursor command survived teardown: %#v", after)
+	}
+	for _, command := range []string{foreignAdapter, foreignNative} {
+		if !structuredHookCommandReferences(after, []string{command}) {
+			t.Fatalf("foreign Cursor command %q was removed: %#v", command, after)
+		}
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean rejected foreign-only config: %v", err)
+	}
+}
+
 func TestCursorHooks_RefreshMigratesNativeCommandAndUpdatesFailClosed(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("direct-native to PowerShell adapter migration is Windows-specific")
@@ -1478,11 +1564,13 @@ func TestCursorHooks_RefreshMigratesNativeCommandAndUpdatesFailClosed(t *testing
 
 func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 	cases := []struct {
-		name         string
-		connector    *hookOnlyConnector
-		wantFailMode string
+		name          string
+		connector     *hookOnlyConnector
+		guardrailMode string
+		wantFailMode  string
 	}{
-		{name: "cursor_supports_fail_closed", connector: NewCursorConnector(), wantFailMode: "closed"},
+		{name: "cursor_action_supports_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "closed"},
+		{name: "cursor_observe_forces_fail_open", connector: NewCursorConnector(), guardrailMode: "observe", wantFailMode: "open"},
 		{name: "geminicli_supports_fail_closed", connector: NewGeminiCLIConnector(), wantFailMode: "closed"},
 		{name: "openhands_supports_fail_closed", connector: NewOpenHandsConnector(), wantFailMode: "closed"},
 		{name: "hermes_downgrades_to_fail_open", connector: NewHermesConnector(), wantFailMode: "open"},
@@ -1493,11 +1581,12 @@ func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			opts := SetupOpts{
-				DataDir:      filepath.Join(dir, "dc"),
-				APIAddr:      "127.0.0.1:18970",
-				APIToken:     "tok-test",
-				HookFailMode: "closed",
-				WorkspaceDir: dir,
+				DataDir:       filepath.Join(dir, "dc"),
+				APIAddr:       "127.0.0.1:18970",
+				APIToken:      "tok-test",
+				HookFailMode:  "closed",
+				GuardrailMode: tc.guardrailMode,
+				WorkspaceDir:  dir,
 			}
 			if err := WriteHookScriptsForConnectorObjectWithOpts(filepath.Join(dir, "hooks"), opts, tc.connector); err != nil {
 				t.Fatalf("WriteHookScriptsForConnectorObjectWithOpts: %v", err)

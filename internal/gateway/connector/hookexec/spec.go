@@ -16,7 +16,10 @@
 
 package hookexec
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // decisionStyle selects how a connector shapes a 2xx gateway response into
 // agent-native stdout + exit code. Each value corresponds to one of the
@@ -47,8 +50,9 @@ const (
 // failResult is a fail-closed outcome: an optional connector-native JSON body
 // printed to stdout and the exit code to return.
 type failResult struct {
-	body string
-	exit int
+	body   string
+	exit   int
+	closed bool
 }
 
 // spec is the immutable per-connector contract mirrored from the .sh hooks.
@@ -104,10 +108,14 @@ var specs = map[string]spec{
 		connector: "cursor", hookName: "cursor-hook", errLabel: "cursor",
 		subject: "cursor tool", endpoint: "/api/v1/cursor/hook",
 		outputField: "hook_output", style: styleHookEcho,
-		openAllow:         failResult{body: cursorAllow(), exit: 0},
-		oversizedClosed:   failResult{body: cursorDeny(tooLarge), exit: blockExit},
-		unreachableStrict: failResult{body: cursorDeny(failedClosed), exit: blockExit},
-		responseClosed:    failResult{body: cursorDeny(failedClosed), exit: 0},
+		defaultBlockReason: "Blocked by DefenseClaw Cursor policy.",
+		// Cursor fallback bodies are rendered from Options.Event at emission
+		// time. The body here is only the failure reason; no event accepts the
+		// old generic continue+permission+message object.
+		openAllow:         failResult{},
+		oversizedClosed:   failResult{body: tooLarge, exit: blockExit, closed: true},
+		unreachableStrict: failResult{body: failedClosed, exit: blockExit, closed: true},
+		responseClosed:    failResult{body: failedClosed, closed: true},
 	},
 	"copilot": {
 		connector: "copilot", hookName: "copilot-hook", errLabel: "copilot",
@@ -160,12 +168,52 @@ var specs = map[string]spec{
 	},
 }
 
-func cursorDeny(msg string) string {
-	return `{"continue":false,"permission":"deny","user_message":"` + msg + `","agent_message":"` + msg + `"}`
+func cursorFallbackOutput(event string, closed bool, reason string) string {
+	if closed {
+		return cursorActionOutput(event, "block", reason)
+	}
+	return cursorActionOutput(event, "allow", reason)
 }
 
-func cursorAllow() string {
-	return `{"continue":true}`
+func cursorActionOutput(event, action, reason string) string {
+	event = strings.ToLower(strings.TrimSpace(event))
+	if action != "block" {
+		if action == "confirm" {
+			switch event {
+			case "beforeshellexecution", "beforemcpexecution":
+				message := mustJSONString(reason)
+				return `{"permission":"ask","user_message":` + message + `,"agent_message":` + message + `}`
+			}
+		}
+		switch event {
+		case "beforesubmitprompt":
+			return `{"continue":true}`
+		case "pretooluse", "subagentstart", "beforereadfile", "beforetabfileread",
+			"beforeshellexecution", "beforemcpexecution":
+			return `{"permission":"allow"}`
+		default:
+			return `{}`
+		}
+	}
+
+	message := mustJSONString(reason)
+	switch event {
+	case "beforesubmitprompt":
+		return `{"continue":false,"user_message":` + message + `}`
+	case "pretooluse", "beforeshellexecution", "beforemcpexecution":
+		return `{"permission":"deny","user_message":` + message + `,"agent_message":` + message + `}`
+	case "subagentstart", "beforereadfile":
+		return `{"permission":"deny","user_message":` + message + `}`
+	case "beforetabfileread":
+		return `{"permission":"deny"}`
+	case "stop", "subagentstop":
+		return `{"followup_message":` + message + `}`
+	default:
+		// Cursor documents no response fields for lifecycle and after-events.
+		// If a strict local failure occurs before the event can be decoded,
+		// exit 2 remains Cursor's documented generic block signal.
+		return `{}`
+	}
 }
 
 func specFor(connector string) (spec, bool) {

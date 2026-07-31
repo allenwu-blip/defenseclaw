@@ -141,6 +141,7 @@ func NewCursorConnector() *hookOnlyConnector {
 				},
 				BlockEvents: []string{
 					"preToolUse",
+					"subagentStart",
 					"beforeShellExecution",
 					"beforeMCPExecution",
 					"beforeReadFile",
@@ -516,8 +517,29 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
-		caps.Plugins = pluginsAreOpenClawOnly()
-		caps.Agents = unsupportedSurface("Cursor subagent installation is not a documented local surface for this connector.")
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "user",
+			ReadPaths:     []string{homePath(".cursor", "plugins", "local")},
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Cursor local plugins use <plugin>/.cursor-plugin/plugin.json under ~/.cursor/plugins/local.",
+				"DefenseClaw inventories existing Cursor plugins only; connector setup does not install, remove, or modify them.",
+			},
+		}
+		caps.Agents = SurfaceCapability{
+			Supported: true,
+			Scope:     "workspace,user",
+			ReadPaths: uniqueNonEmptyStrings([]string{
+				workspacePath(opts, ".cursor", "agents"),
+				homePath(".cursor", "agents"),
+			}),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Cursor subagents are read from <workspace>/.cursor/agents and ~/.cursor/agents.",
+				"DefenseClaw inventories existing Cursor subagents only; connector setup does not install, remove, or modify them.",
+			},
+		}
 	case "windsurf":
 		caps.MCP = SurfaceCapability{
 			Supported:     true,
@@ -815,7 +837,7 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 		errs = append(errs, fmt.Sprintf("restore config backup: %v", err))
 	case restored:
 	case !restored:
-		if err := c.removeConfigEntries(path, c.hookCommand(opts)); err != nil {
+		if err := c.removeConfigEntries(path, c.hookCommand(opts), opts); err != nil {
 			errs = append(errs, fmt.Sprintf("remove hook entries: %v", err))
 		} else {
 			discardManagedFileBackup(opts.DataDir, c.name, logicalName)
@@ -911,14 +933,17 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		}
 		return nil
 	}
-	needle := c.hookCommand(opts)
 	if c.name == "cursor" {
 		var cfg map[string]interface{}
-		if err := json.Unmarshal(data, &cfg); err == nil &&
-			structuredHookCommandReferences(cfg, []string{needle}) {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return fmt.Errorf("%s teardown verification could not parse hook config %s: %w", c.name, path, err)
+		}
+		if structuredHookCommandReferences(cfg, cursorOwnedHookCommands(opts)) {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
+		return c.verifyCursorHookArtifactsClean(opts)
 	}
+	needle := c.hookCommand(opts)
 	if c.name == "copilot" {
 		var cfg map[string]interface{}
 		if err := json.Unmarshal(data, &cfg); err == nil && containsHookScript(cfg, needle) {
@@ -1114,13 +1139,15 @@ func (c *hookOnlyConnector) migrateManagedBackup(opts SetupOpts) error {
 	)
 }
 
-func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string) error {
+func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string, opts SetupOpts) error {
 	switch c.name {
 	case "hermes":
 		return removeHermesHooks(path, hookScript)
 	case "geminicli":
 		return removeGeminiConfigEntries(path, hookScript)
-	case "cursor", "copilot", "openhands":
+	case "cursor":
+		return removeJSONHookReferences(path, cursorOwnedHookCommands(opts)...)
+	case "copilot", "openhands":
 		return removeJSONHookReferences(path, hookScript)
 	case "windsurf":
 		return removeJSONHookReferences(path, hookScript, legacyWindsurfWindowsHookCommand())
@@ -1138,7 +1165,7 @@ func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string) error {
 
 func (c *hookOnlyConnector) effectiveFailClosed(opts SetupOpts) bool {
 	cap := c.HookCapabilities(opts)
-	return cap.SupportsFailClosed && strings.TrimSpace(opts.HookFailMode) == "closed"
+	return cap.SupportsFailClosed && resolveHookFailMode(opts, c) == "closed"
 }
 
 func hermesConfigPath(SetupOpts) string {
@@ -1586,10 +1613,16 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 func replaceManagedCursorHooks(raw interface{}, hookScript, legacyShellScript string, entry map[string]interface{}) []interface{} {
 	list, _ := raw.([]interface{})
 	out := make([]interface{}, 0, len(list)+1)
+	ownedCommands := uniqueNonEmptyStrings(append(
+		[]string{
+			hookScript,
+			legacyShellScript,
+			hookInvocationCommandFor("windows", "cursor", legacyShellScript),
+		},
+		legacyCursorNativeHookCommands()...,
+	))
 	for _, item := range list {
-		if managedHookCommandEntry(item, hookScript) ||
-			managedHookCommandEntry(item, legacyShellScript) ||
-			managedCursorNativeHookEntry(item) {
+		if managedCursorHookEntry(item, ownedCommands) {
 			continue
 		}
 		out = append(out, item)
@@ -1597,14 +1630,42 @@ func replaceManagedCursorHooks(raw interface{}, hookScript, legacyShellScript st
 	return append(out, entry)
 }
 
-func managedCursorNativeHookEntry(raw interface{}) bool {
-	entry, ok := raw.(map[string]interface{})
-	if !ok {
-		return false
+func cursorOwnedHookCommands(opts SetupOpts) []string {
+	portableScript := filepath.Join(opts.DataDir, "hooks", "cursor-hook.sh")
+	return uniqueNonEmptyStrings(append(
+		[]string{
+			portableScript,
+			hookInvocationCommandFor("windows", "cursor", portableScript),
+		},
+		legacyCursorNativeHookCommands()...,
+	))
+}
+
+// legacyCursorNativeHookCommands returns only direct-native command strings
+// emitted by the pre-adapter Windows implementation. Each executable path is
+// one of DefenseClaw's finite installer or legacy user-install locations.
+// Arbitrary commands that merely end in "hook --connector cursor" are foreign.
+func legacyCursorNativeHookCommands() []string {
+	binaries := append(
+		nativeHookBinaryOwnershipCandidates(),
+		defenseclawGatewayBinary(),
+		canonicalNativeWindowsInstalledGatewayBinary(),
+		filepath.Join(userHomeDir(), ".local", "bin", windowsGatewayBinaryName),
+	)
+	commands := make([]string, 0, len(binaries))
+	for _, binary := range uniqueNonEmptyStrings(binaries) {
+		commands = append(commands, windowsQuoteExe(binary)+" "+nativeHookFlag+"cursor")
 	}
-	command, _ := entry["command"].(string)
-	command = strings.TrimSpace(command)
-	return strings.HasSuffix(command, nativeHookFlag+"cursor") && isNativeHookCommand(command)
+	return uniqueNonEmptyStrings(commands)
+}
+
+func managedCursorHookEntry(raw interface{}, ownedCommands []string) bool {
+	for _, command := range ownedCommands {
+		if managedHookCommandEntry(raw, command) {
+			return true
+		}
+	}
+	return false
 }
 
 func patchWindsurfHooks(path, hookScript, legacyShellScript string) error {

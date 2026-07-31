@@ -429,6 +429,39 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 )
                 restart_mock.assert_not_called()
 
+    def test_cursor_observe_reports_fail_open_despite_explicit_closed_preference(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        self.app.cfg.guardrail.connectors = {
+            "cursor": PerConnectorGuardrailConfig(
+                mode="observe",
+                hook_fail_mode="closed",
+            )
+        }
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_services",
+                return_value=None,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack",
+                return_value=None,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+        ):
+            result = _invoke(["cursor", "--yes", "--mode", "observe", "--no-restart"], self.app)
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("cursor mode=observe", result.output)
+        self.assertIn(
+            "cursor hook failures=open (failClosed=false; vendor default is fail-open)",
+            result.output,
+        )
+        self.assertNotIn("failClosed=true", result.output)
+
     def test_yes_no_restart_setup_does_not_reference_missing_interactive_flag(self):
         for connector in ["hermes", "codex", "opencode"]:
             with (

@@ -1241,6 +1241,54 @@ def test_cursor_discovery_prefers_primary_agent_entrypoint(monkeypatch, tmp_path
     )
 
 
+def test_cursor_windows_discovery_uses_official_token_bound_agent_root(
+    monkeypatch,
+    tmp_path,
+    windows_host_no_path,
+):
+    known_local_app_data = tmp_path / "token-local-app-data"
+    redirected_local_app_data = tmp_path / "redirected-local-app-data"
+    primary = known_local_app_data / "cursor-agent" / "agent.exe"
+    primary.parent.mkdir(parents=True)
+    primary.write_bytes(b"native Cursor agent")
+    monkeypatch.setenv("LOCALAPPDATA", str(redirected_local_app_data))
+    monkeypatch.setattr(
+        ad,
+        "_windows_current_user_known_folder",
+        lambda identifier: (
+            str(known_local_app_data)
+            if identifier == "F1B32785-6FBA-4FCF-9D55-7B8E7F157091"
+            else ""
+        ),
+    )
+
+    candidates = ad._binary_candidates_for_agent("cursor", ad._SPECS["cursor"])
+    trusted = {ad._path_key(path) for path in ad._windows_default_trusted_bin_prefixes()}
+    official_root = known_local_app_data / "cursor-agent"
+
+    assert ad._path_key(str(primary)) in {ad._path_key(path) for path in candidates}
+    assert ad._path_key(str(official_root)) in trusted
+    assert ad._path_key(str(known_local_app_data)) not in trusted
+    assert ad._path_key(str(redirected_local_app_data / "cursor-agent" / "agent.exe")) not in {
+        ad._path_key(path) for path in candidates
+    }
+    monkeypatch.setattr(
+        ad,
+        "_version_for_agent_binary",
+        lambda name, path, _args, **_kwargs: (
+            ("2026.07.23-e383d2b", "")
+            if name == "cursor" and ad._path_key(path) == ad._path_key(str(primary))
+            else ("", "not launchable")
+        ),
+    )
+
+    signal = ad._scan_agent("cursor")
+
+    assert signal.installed is True
+    assert signal.binary_path == str(primary)
+    assert signal.version == "2026.07.23-e383d2b"
+
+
 def test_timeout_sets_error_and_does_not_mark_binary_only_install(monkeypatch, tmp_path):
     _pin_home(monkeypatch, tmp_path)
     monkeypatch.setattr(ad.shutil, "which", lambda name: "/usr/local/bin/codex")

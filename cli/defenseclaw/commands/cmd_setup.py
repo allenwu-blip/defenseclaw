@@ -3283,7 +3283,14 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "~/.cursor/hooks.json hooks",
         "<workspace>/.cursor/mcp.json MCP entries when configured explicitly",
         "<workspace>/.cursor/skills and <workspace>/.cursor/rules install surfaces",
-        "~/.defenseclaw/hooks/cursor-hook.sh",
+        (
+            "Existing ~/.cursor/plugins/local plugins and user/project "
+            ".cursor/agents subagents are inventoried read-only"
+        ),
+        (
+            "~/.defenseclaw/hooks/cursor-hook.ps1 on Windows; "
+            "~/.defenseclaw/hooks/cursor-hook.sh on non-Windows"
+        ),
     ),
     "windsurf": (
         "~/.codeium/windsurf/hooks.json hooks",
@@ -5315,7 +5322,12 @@ def _apply_hook_connector_setup(
     # edits on multi-connector installs.
     click.echo(f"  ✓ {connector} mode={desired_mode}")
     if connector == "cursor":
-        effective_fail_mode = gc.effective_hook_fail_mode("cursor") or "open"
+        requested_fail_mode = (gc.effective_hook_fail_mode("cursor") or "open").strip().lower()
+        effective_fail_mode = (
+            "closed"
+            if desired_mode == "action" and requested_fail_mode == "closed"
+            else "open"
+        )
         click.echo(
             f"  ✓ cursor hook failures={effective_fail_mode} "
             f"(failClosed={str(effective_fail_mode == 'closed').lower()}; vendor default is fail-open)"

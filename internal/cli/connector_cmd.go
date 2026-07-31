@@ -361,8 +361,15 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	opts := resolveConnectorOpts(dataDir)
 	if cfg != nil {
 		opts.HookFailMode = cfg.EffectiveHookFailModeForConnector(name)
+		opts.GuardrailMode = cfg.EffectiveGuardrailModeForConnector(name)
 		opts.HILTEnabled = cfg.EffectiveHILTForConnector(name).Enabled
 		opts.ManagedEnterprise = managed.IsManagedEnterprise(cfg.DeploymentMode)
+	}
+	if name == "cursor" && !strings.EqualFold(strings.TrimSpace(opts.GuardrailMode), "action") {
+		// Keep maintenance output and persisted lock evidence truthful: Cursor
+		// observe mode is always fail-open even when a global closed setting is
+		// inherited for connectors that enforce failures independently.
+		opts.HookFailMode = "open"
 	}
 	hookToken, err := connector.LoadHookAPIToken(dataDir, name)
 	if err != nil {

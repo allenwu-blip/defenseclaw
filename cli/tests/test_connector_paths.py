@@ -284,7 +284,12 @@ class TestPluginDirs:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home" / ".hermes"))
         monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "opencode-custom"))
         assert os.path.join(str(tmp_path / "home"), ".hermes", "plugins") in connector_paths.plugin_dirs("hermes")
+        # Cursor local plugins are inventory-only. The write/install path API
+        # intentionally remains empty so DefenseClaw cannot claim custody.
         assert connector_paths.plugin_dirs("cursor") == []
+        assert connector_paths.plugin_inventory_dirs("cursor") == [
+            os.path.join(str(tmp_path / "home"), ".cursor", "plugins", "local"),
+        ]
         assert connector_paths.plugin_dirs("windsurf") == []
         assert os.path.join(str(tmp_path / "home"), ".gemini", "extensions") in connector_paths.plugin_dirs("geminicli")
         assert os.path.join(str(tmp_path), ".gemini", "extensions") in connector_paths.plugin_dirs(
