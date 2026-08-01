@@ -1588,7 +1588,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupOtlpFixture -match "Get-NetTCPConnection -State Listen -LocalAddress '127\.0\.0\.1'" -and
         $setupOtlpFixture -match 'OwningProcess.*?process\.Id') `
         'seeded Setup upgrade uses an exact-PID-owned dynamic loopback OTLP sink'
-    Assert-True ($setupAcceptance -match "Start-SetupAcceptanceOtlpCollector \(Join-Path \$PSHOME 'pwsh\.exe'\)" -and
+    Assert-True ($setupAcceptance -match 'Start-SetupAcceptanceOtlpCollector \(Join-Path \$PSHOME ''pwsh\.exe''\)' -and
         $setupAcceptance -notmatch 'Start-SetupAcceptanceOtlpCollector \$python' -and
         $setupAcceptance -match 'endpoint: http://127\.0\.0\.1:\$setupOtlpPort' -and
         $setupAcceptance -match 'Stop-SetupAcceptanceOtlpCollector \$setupOtlpCollector') `
