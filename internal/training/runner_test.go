@@ -138,8 +138,8 @@ func TestGenerateScript_MLX(t *testing.T) {
 	if !strings.Contains(script, "mlx-lm-lora") {
 		t.Errorf("script does not contain mlx-lm-lora")
 	}
-	if !strings.Contains(script, "--train-mode dpo") {
-		t.Errorf("script does not contain --train-mode dpo")
+	if !strings.Contains(script, `--train-mode "${TRAIN_MODE}"`) {
+		t.Errorf("script does not contain quoted --train-mode variable")
 	}
 	if !strings.Contains(script, "mlx-community/Mistral-7B-v0.1-4bit") {
 		t.Errorf("script does not contain base model name")
@@ -152,6 +152,71 @@ func TestGenerateScript_MLX(t *testing.T) {
 	}
 	if !strings.Contains(script, "#!/usr/bin/env bash") {
 		t.Errorf("script does not contain bash shebang")
+	}
+}
+
+func TestGenerateScript_UnslothEscapesConfigValues(t *testing.T) {
+	cfg := RunConfig{
+		Backend:     "unsloth",
+		Algorithm:   "sft",
+		BaseModel:   "model\"; __import__('os').system('touch /tmp/pwned') #",
+		DatasetPath: "/data/train.jsonl\"\nprint('pwned')\n#",
+		OutputDir:   "/output/\" + __import__('os').getcwd() + \"",
+	}
+
+	script, err := generateTrainingScript(cfg)
+	if err != nil {
+		t.Fatalf("generateTrainingScript failed: %v", err)
+	}
+
+	for _, want := range []string{
+		`BASE_MODEL = "model\"; __import__('os').system('touch /tmp/pwned') #"`,
+		`DATASET_PATH = "/data/train.jsonl\"\nprint('pwned')\n#"`,
+		`OUTPUT_DIR = "/output/\" + __import__('os').getcwd() + \""`,
+		`model_name=BASE_MODEL`,
+		`data_files=DATASET_PATH`,
+		`output_dir=OUTPUT_DIR`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing escaped literal or variable use %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, `model_name="model";`) ||
+		strings.Contains(script, "\nprint('pwned')\n") ||
+		strings.Contains(script, `output_dir="/output/" +`) {
+		t.Fatalf("script contains executable interpolation:\n%s", script)
+	}
+}
+
+func TestGenerateScript_MLXQuotesConfigValues(t *testing.T) {
+	cfg := RunConfig{
+		Backend:     "mlx-lm-lora",
+		Algorithm:   "dpo",
+		BaseModel:   "model'; touch /tmp/pwned; echo '",
+		DatasetPath: "/data/train.jsonl\nuname -a",
+		OutputDir:   "/output/$(touch /tmp/pwned)",
+	}
+
+	script, err := generateTrainingScript(cfg)
+	if err != nil {
+		t.Fatalf("generateTrainingScript failed: %v", err)
+	}
+
+	for _, want := range []string{
+		`BASE_MODEL='model'\''; touch /tmp/pwned; echo '\''`,
+		"DATASET_PATH='/data/train.jsonl\nuname -a'",
+		`OUTPUT_DIR='/output/$(touch /tmp/pwned)'`,
+		`--model "${BASE_MODEL}"`,
+		`--data "${DATASET_PATH}"`,
+		`--output "${OUTPUT_DIR}"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("script missing shell-quoted literal or variable use %q:\n%s", want, script)
+		}
+	}
+	if strings.Contains(script, "--model model'; touch") ||
+		strings.Contains(script, "--output /output/$(touch") {
+		t.Fatalf("script contains unquoted shell interpolation:\n%s", script)
 	}
 }
 

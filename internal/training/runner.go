@@ -2,6 +2,7 @@ package training
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -165,22 +166,28 @@ func generateUnslothScript(cfg RunConfig) (string, error) {
 		return "", fmt.Errorf("unknown algorithm for unsloth: %s", cfg.Algorithm)
 	}
 
+	baseModel := pythonStringLiteral(cfg.BaseModel)
+	datasetPath := pythonStringLiteral(cfg.DatasetPath)
+	outputDir := pythonStringLiteral(cfg.OutputDir)
+
 	script := fmt.Sprintf(`#!/usr/bin/env python3
-"""
-Auto-generated training script for Unsloth
-Backend: unsloth
-Algorithm: %s
-Base Model: %s
-"""
+# Auto-generated training script for Unsloth.
+# Backend: unsloth
+# Algorithm: %s
+# Base Model: %s
 
 from unsloth import FastLanguageModel
 from trl import %s
 from datasets import load_dataset
 
+BASE_MODEL = %s
+DATASET_PATH = %s
+OUTPUT_DIR = %s
+
 # Load model
-print("Loading model: %s")
+print("Loading model: " + BASE_MODEL)
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name="%s",
+    model_name=BASE_MODEL,
     load_in_4bit=True,
     max_seq_length=4096
 )
@@ -198,8 +205,8 @@ model = FastLanguageModel.get_peft_model(
 )
 
 # Load dataset
-print("Loading dataset: %s")
-dataset = load_dataset("json", data_files="%s")
+print("Loading dataset: " + DATASET_PATH)
+dataset = load_dataset("json", data_files=DATASET_PATH)
 
 # Configure trainer
 print("Initializing trainer")
@@ -208,7 +215,7 @@ trainer = %s(
     tokenizer=tokenizer,
     train_dataset=dataset["train"],
     args=%s(
-        output_dir="%s",
+        output_dir=OUTPUT_DIR,
         num_train_epochs=3,
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
@@ -226,13 +233,13 @@ trainer.train()
 # Save GGUF
 print("Exporting to GGUF format")
 model.save_pretrained_gguf(
-    "%s",
+    OUTPUT_DIR,
     tokenizer,
     quantization_method="q4_k_m"
 )
 
 print("Training complete!")
-`, cfg.Algorithm, cfg.BaseModel, importExtra, cfg.BaseModel, cfg.BaseModel, cfg.DatasetPath, cfg.DatasetPath, trainerClass, configClass, cfg.OutputDir, cfg.OutputDir)
+`, cfg.Algorithm, scriptCommentValue(cfg.BaseModel), importExtra, baseModel, datasetPath, outputDir, trainerClass, configClass)
 
 	return script, nil
 }
@@ -244,6 +251,11 @@ func generateMLXScript(cfg RunConfig) (string, error) {
 		return "", fmt.Errorf("unknown algorithm for mlx-lm-lora: %s", cfg.Algorithm)
 	}
 
+	algorithm := strings.ToLower(cfg.Algorithm)
+	baseModel := shellSingleQuote(cfg.BaseModel)
+	datasetPath := shellSingleQuote(cfg.DatasetPath)
+	outputDir := shellSingleQuote(cfg.OutputDir)
+
 	script := fmt.Sprintf(`#!/usr/bin/env bash
 # Auto-generated training script for MLX
 # Backend: mlx-lm-lora
@@ -252,18 +264,23 @@ func generateMLXScript(cfg RunConfig) (string, error) {
 
 set -e
 
+TRAIN_MODE=%s
+BASE_MODEL=%s
+DATASET_PATH=%s
+OUTPUT_DIR=%s
+
 echo "Starting MLX training"
-echo "Algorithm: %s"
-echo "Model: %s"
-echo "Dataset: %s"
-echo "Output: %s"
+echo "Algorithm: ${TRAIN_MODE}"
+echo "Model: ${BASE_MODEL}"
+echo "Dataset: ${DATASET_PATH}"
+echo "Output: ${OUTPUT_DIR}"
 
 # Train
 mlx-lm-lora \
-  --train-mode %s \
-  --model %s \
-  --data %s \
-  --output %s \
+  --train-mode "${TRAIN_MODE}" \
+  --model "${BASE_MODEL}" \
+  --data "${DATASET_PATH}" \
+  --output "${OUTPUT_DIR}" \
   --batch-size 2 \
   --epochs 3 \
   --learning-rate 2e-4
@@ -272,16 +289,37 @@ mlx-lm-lora \
 echo "Exporting to GGUF format"
 mlx-lm-lora \
   --export-gguf \
-  --model %s \
-  --output %s/model.gguf \
+  --model "${OUTPUT_DIR}" \
+  --output "${OUTPUT_DIR}/model.gguf" \
   --quantize q4_k_m
 
 echo "Training complete!"
-`, cfg.Algorithm, cfg.BaseModel, cfg.Algorithm, cfg.BaseModel, cfg.DatasetPath, cfg.OutputDir,
-		cfg.Algorithm, cfg.BaseModel, cfg.DatasetPath, cfg.OutputDir,
-		cfg.OutputDir, cfg.OutputDir)
+`, algorithm, scriptCommentValue(cfg.BaseModel), shellSingleQuote(algorithm), baseModel, datasetPath, outputDir)
 
 	return script, nil
+}
+
+func pythonStringLiteral(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		// json.Marshal only fails for unsupported types or invalid numbers; string
+		// input is always encodable. Keep a defensive fallback for future edits.
+		return `""`
+	}
+	return string(encoded)
+}
+
+func shellSingleQuote(value string) string {
+	if value == "" {
+		return "''"
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func scriptCommentValue(value string) string {
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	return strings.TrimSpace(value)
 }
 
 // findGGUF searches for a .gguf file in the output directory
