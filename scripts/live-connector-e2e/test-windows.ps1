@@ -395,6 +395,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     $originalCursorHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_CURSOR_CONFIG_HOME')
     $originalHermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
     $originalOpenCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
+    $originalWindsurfUserHome = [Environment]::GetEnvironmentVariable('WINDSURF_USER_HOME')
+    $originalWindsurfHooksPath = [Environment]::GetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH')
     try {
         $resolverRoot = Join-Path $temp 'resolver-root'
         $resolverProfile = Join-Path $resolverRoot 'profile'
@@ -442,6 +444,17 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True ($env:CODEX_HOME -eq [IO.Path]::GetFullPath($resolverCodexHome) -and
             $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome)) `
             'packaged connector home guard preserves exact installer-recorded homes'
+        $expectedWindsurfHome = [IO.Path]::GetFullPath($knownProfile).TrimEnd('\')
+        $expectedWindsurfHooks = Join-Path $expectedWindsurfHome '.codeium\windsurf\hooks.json'
+        Assert-True ([string]::Equals(
+                $env:WINDSURF_USER_HOME,
+                $expectedWindsurfHome,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -and [string]::Equals(
+                $env:WINDSURF_HOOK_CONFIG_PATH,
+                $expectedWindsurfHooks,
+                [StringComparison]::OrdinalIgnoreCase
+            )) 'packaged gateway commands inherit exact FOLDERID_Profile Windsurf custody'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-cursor-home'
         [IO.Directory]::CreateDirectory($env:DEFENSECLAW_CURSOR_CONFIG_HOME) | Out-Null
         $spoofedCursorHomeRejected = $false
@@ -480,6 +493,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         )
         [Environment]::SetEnvironmentVariable('HERMES_HOME', $originalHermesHome)
         [Environment]::SetEnvironmentVariable('OPENCODE_CONFIG_DIR', $originalOpenCodeHome)
+        [Environment]::SetEnvironmentVariable('WINDSURF_USER_HOME', $originalWindsurfUserHome)
+        [Environment]::SetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH', $originalWindsurfHooksPath)
     }
     . $nativePathHelpers
     $disjointRoots = @(Assert-WindowsNativePathsDisjoint @(
@@ -1543,9 +1558,19 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($liveWorkflowText -notmatch '(?m)^  windows-(harness-static|contract):') 'deterministic Windows jobs moved out of live radar'
     Assert-True ($ciWorkflowText -notmatch '(?m)^  windows-(hook-path|installer-smoke):') 'legacy partial Windows jobs were removed'
     Assert-True ($harnessText -notmatch '(?i)\bwsl(?:\.exe)?\b|git bash|/bin/|Get-Command\s+(?:jq|tail|curl)|Invoke-Tool\s+''(?:jq|tail|curl)''') 'native harness has no WSL, Git Bash, or Unix utility dependency'
+    $packagedConnectorHomes = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-PackagedConnectorHomes\b.*?(?=\nfunction Get-StableHookRuntimeExecutable\b)'
+    ).Value
+    Assert-True ($packagedConnectorHomes -match "Resolve-EffectiveConnectorHome 'windsurf'" -and
+        $packagedConnectorHomes -match "Get-EffectiveConnectorConfigPath 'windsurf'" -and
+        $packagedConnectorHomes -match '\$env:WINDSURF_USER_HOME = \$windsurfUserHome' -and
+        $packagedConnectorHomes -match '\$env:WINDSURF_HOOK_CONFIG_PATH = \$windsurfHooksPath' -and
+        $packagedConnectorHomes -notmatch 'Join-Path \$env:USERPROFILE .*?windsurf') `
+        'packaged direct gateway commands preserve launcher-owned FOLDERID_Profile Windsurf custody'
     $setupOtlpFixture = [regex]::Match(
         $nativeHarnessText,
-        '(?s)function Start-SetupAcceptanceOtlpCollector\b.*?\n\}'
+        '(?s)function Start-SetupAcceptanceOtlpCollector\b.*?(?=\nfunction Stop-SetupAcceptanceOtlpCollector\b)'
     ).Value
     $setupOtlpCleanup = [regex]::Match(
         $nativeHarnessText,
@@ -1555,15 +1580,19 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Invoke-SetupAcceptance\b.*?\n\}'
     ).Value
-    Assert-True ($setupOtlpFixture -match 'ThreadingHTTPServer\(\(\"127\.0\.0\.1\", 0\)' -and
-        $setupOtlpFixture -match 'send_response\(200\)' -and
+    Assert-True ($setupOtlpFixture -match '\[Net\.Sockets\.TcpListener\]::new\(\[Net\.IPAddress\]::Loopback, 0\)' -and
+        $setupOtlpFixture -match 'if \(\$length -gt 16MB\)' -and
+        $setupOtlpFixture -match 'HTTP/1\.1 200 OK' -and
+        $setupOtlpFixture -match "ArgumentList\.Add\('-CommandWithArgs'\)" -and
+        $setupOtlpFixture -notmatch "ArgumentList\.Add\('-Command'\)" -and
         $setupOtlpFixture -match "Get-NetTCPConnection -State Listen -LocalAddress '127\.0\.0\.1'" -and
         $setupOtlpFixture -match 'OwningProcess.*?process\.Id') `
         'seeded Setup upgrade uses an exact-PID-owned dynamic loopback OTLP sink'
-    Assert-True ($setupAcceptance -match 'Start-SetupAcceptanceOtlpCollector \$python' -and
+    Assert-True ($setupAcceptance -match "Start-SetupAcceptanceOtlpCollector \(Join-Path \$PSHOME 'pwsh\.exe'\)" -and
+        $setupAcceptance -notmatch 'Start-SetupAcceptanceOtlpCollector \$python' -and
         $setupAcceptance -match 'endpoint: http://127\.0\.0\.1:\$setupOtlpPort' -and
         $setupAcceptance -match 'Stop-SetupAcceptanceOtlpCollector \$setupOtlpCollector') `
-        'Setup acceptance keeps migrated telemetry enabled and cleans its bounded OTLP fixture'
+        'Setup acceptance keeps migrated telemetry enabled with an external bounded OTLP fixture and cleans it'
     Assert-True ($setupOtlpCleanup -match '\$process\.Kill\(\$true\)' -and
         $setupOtlpCleanup -match 'WaitForExit\(5000\)' -and
         $setupOtlpCleanup -match 'Remove-Item -LiteralPath \$ready') `
@@ -1650,6 +1679,17 @@ private-secret-name = "DefenseClaw must remain redacted"
         $doctorSetupContract -match 'must be reloaded or restarted' -and
         $doctorSetupContract -match 'live=false') `
         'Hermes setup Doctor contract preserves truthful failed readiness with direct-native pending-reload evidence'
+    $hermesSetupContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-HermesWindowsHookConfig\b.*?(?=\nfunction Get-WindsurfExpectedEventNames\b)'
+    ).Value
+    Assert-True ($hermesSetupContract -match 'if "hooks_auto_accept" in document:' -and
+        $hermesSetupContract -match 'Setup introduced operator-owned hooks_auto_accept' -and
+        $hermesSetupContract -match 'shell-hooks-allowlist\.json' -and
+        $hermesSetupContract -match 'defenseclaw_managed' -and
+        $hermesSetupContract -match 'allowlist_entries' -and
+        $hermesSetupContract -notmatch 'hooks_auto_accept is not true') `
+        'Hermes packaged contract preserves operator consent and requires exactly 23 scoped owned approvals'
     Assert-True ($doctorContract.Contains("Assert-CursorSynchronousWindowsHookCommand `$config `$false 'Cursor setup'") -and
         $doctorContract.Contains("`$check.detail -notmatch 'mode=observe'") -and
         $doctorContract.Contains("`$check.detail -notmatch 'failClosed=false'") -and
@@ -1657,6 +1697,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $doctorContract.Contains("`$check.detail -notmatch 'authority=user-hook advisory'") -and
         $doctorContract.Contains("`$check.detail -notmatch 'hard-action=unsupported'")) `
         'Cursor contract preserves advisory observe/fail-open posture for its non-authoritative user hook'
+    Assert-True ($doctorContract -match "'cursor' \{ 'configured Cursor runtime does not match the contract lock' \}") `
+        'Cursor tamper contract expects exact lock rejection before missing-runtime diagnostics'
     Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
         'Windsurf contract uses the scoped Legacy Cascade Doctor label'
     Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `

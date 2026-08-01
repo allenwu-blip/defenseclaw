@@ -1989,7 +1989,7 @@ print(f'packaged gateway fixture uses isolated API port {cfg.gateway.api_port}')
     return $apiPort
 }
 
-function Start-SetupAcceptanceOtlpCollector([string]$Python, [string]$ReadyPath) {
+function Start-SetupAcceptanceOtlpCollector([string]$PowerShell, [string]$ReadyPath) {
     $ready = [IO.Path]::GetFullPath($ReadyPath)
     if (Test-Path -LiteralPath $ready) {
         throw "refusing to overwrite an existing Setup OTLP fixture ready file: $ready"
@@ -1998,52 +1998,95 @@ function Start-SetupAcceptanceOtlpCollector([string]$Python, [string]$ReadyPath)
     if (-not (Test-Path -LiteralPath $readyParent -PathType Container)) {
         throw "Setup OTLP fixture ready directory does not exist: $readyParent"
     }
+    if (-not (Test-Path -LiteralPath $PowerShell -PathType Leaf)) {
+        throw "Setup OTLP fixture PowerShell does not exist: $PowerShell"
+    }
     $code = @'
-import http.server
-import sys
+param([Parameter(Mandatory)][string]$ReadyPath)
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+try {
+    $listener.Start()
+    $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    $readyStream = [IO.FileStream]::new(
+        $ReadyPath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::None
+    )
+    try {
+        $readyBytes = [Text.Encoding]::ASCII.GetBytes([string]$port)
+        $readyStream.Write($readyBytes, 0, $readyBytes.Length)
+        $readyStream.Flush($true)
+    } finally {
+        $readyStream.Dispose()
+    }
 
-class OTLPHandler(http.server.BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", ""))
-        except ValueError:
-            self.send_error(400)
-            return
-        if length < 0 or length > 16 * 1024 * 1024:
-            self.send_error(413)
-            return
-        remaining = length
-        while remaining:
-            chunk = self.rfile.read(min(remaining, 64 * 1024))
-            if not chunk:
-                self.close_connection = True
-                return
-            remaining -= len(chunk)
-        self.send_response(200)
-        self.send_header("Content-Type", "application/x-protobuf")
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def log_message(self, _format, *args):
-        pass
-
-
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OTLPHandler)
-server.daemon_threads = True
-with open(sys.argv[1], "x", encoding="ascii", newline="\n") as ready:
-    ready.write(str(server.server_address[1]))
-server.serve_forever()
+    while ($true) {
+        $client = $listener.AcceptTcpClient()
+        try {
+            $client.ReceiveTimeout = 5000
+            $client.SendTimeout = 5000
+            $stream = $client.GetStream()
+            $headerBytes = [Collections.Generic.List[byte]]::new()
+            while ($headerBytes.Count -lt 65536) {
+                $next = $stream.ReadByte()
+                if ($next -lt 0) { break }
+                $headerBytes.Add([byte]$next)
+                $count = $headerBytes.Count
+                if ($count -ge 4 -and
+                    $headerBytes[$count - 4] -eq 13 -and
+                    $headerBytes[$count - 3] -eq 10 -and
+                    $headerBytes[$count - 2] -eq 13 -and
+                    $headerBytes[$count - 1] -eq 10) {
+                    break
+                }
+            }
+            $header = [Text.Encoding]::ASCII.GetString($headerBytes.ToArray())
+            if ($header -notmatch '(?im)^Content-Length:\s*([0-9]+)\s*$') {
+                continue
+            }
+            $length = [uint64]$Matches[1]
+            if ($length -gt 16MB) {
+                continue
+            }
+            if ($header -match '(?im)^Expect:\s*100-continue\s*$') {
+                $continue = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
+                $stream.Write($continue, 0, $continue.Length)
+            }
+            $buffer = [byte[]]::new(65536)
+            $remaining = $length
+            while ($remaining -gt 0) {
+                $requested = [int][Math]::Min([uint64]$buffer.Length, $remaining)
+                $read = $stream.Read($buffer, 0, $requested)
+                if ($read -le 0) { throw 'Setup OTLP fixture request body ended early' }
+                $remaining -= [uint64]$read
+            }
+            $response = [Text.Encoding]::ASCII.GetBytes(
+                "HTTP/1.1 200 OK`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+            )
+            $stream.Write($response, 0, $response.Length)
+            $stream.Flush()
+        } finally {
+            $client.Dispose()
+        }
+    }
+} finally {
+    $listener.Stop()
+}
 '@
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Python
+    $startInfo.FileName = [IO.Path]::GetFullPath($PowerShell)
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.ArgumentList.Add('-I')
-    $startInfo.ArgumentList.Add('-c')
+    $startInfo.ArgumentList.Add('-NoLogo')
+    $startInfo.ArgumentList.Add('-NoProfile')
+    $startInfo.ArgumentList.Add('-NonInteractive')
+    $startInfo.ArgumentList.Add('-CommandWithArgs')
     $startInfo.ArgumentList.Add($code)
+    $startInfo.ArgumentList.Add('-ReadyPath')
     $startInfo.ArgumentList.Add($ready)
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -2054,17 +2097,26 @@ server.serve_forever()
             throw 'failed to start the Setup OTLP fixture process'
         }
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
-        while (-not (Test-Path -LiteralPath $ready -PathType Leaf)) {
+        $rawPort = $null
+        while ($null -eq $rawPort) {
             $process.Refresh()
             if ($process.HasExited) {
                 throw "Setup OTLP fixture exited before readiness with code $($process.ExitCode)"
+            }
+            if (Test-Path -LiteralPath $ready -PathType Leaf) {
+                try {
+                    $rawPort = [IO.File]::ReadAllText($ready, [Text.Encoding]::ASCII).Trim()
+                    continue
+                } catch [IO.IOException] {
+                    # CreateNew plus FileShare.None makes publication atomic;
+                    # wait until the child has flushed and released the file.
+                }
             }
             if ([DateTime]::UtcNow -ge $deadline) {
                 throw 'timed out waiting for the Setup OTLP fixture ready file'
             }
             Start-Sleep -Milliseconds 50
         }
-        $rawPort = [IO.File]::ReadAllText($ready, [Text.Encoding]::ASCII).Trim()
         if ($rawPort -notmatch '^[0-9]{1,5}$') {
             throw "Setup OTLP fixture returned an invalid port: $rawPort"
         }
@@ -4065,7 +4117,7 @@ function Invoke-SetupAcceptance {
         # Preserve enabled v7 telemetry while making the seeded upgrade
         # deterministic: strict committed activation must reach a real local
         # destination instead of relying on an absent developer collector.
-        $setupOtlpCollector = Start-SetupAcceptanceOtlpCollector $python `
+        $setupOtlpCollector = Start-SetupAcceptanceOtlpCollector (Join-Path $PSHOME 'pwsh.exe') `
             (Join-Path $root 'setup-otlp-collector.port')
         $setupOtlpPort = [int]$setupOtlpCollector.Port
         $v7Fixture = @"

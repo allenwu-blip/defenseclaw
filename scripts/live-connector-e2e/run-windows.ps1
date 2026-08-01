@@ -115,6 +115,8 @@ function Get-EffectiveConnectorConfigPath(
 function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME')
     $claudeHome = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
+    $windsurfUserHome = Resolve-EffectiveConnectorHome 'windsurf'
+    $windsurfHooksPath = Get-EffectiveConnectorConfigPath 'windsurf'
     $copilotHome = [Environment]::GetEnvironmentVariable('COPILOT_HOME')
     if ([string]::IsNullOrWhiteSpace($copilotHome)) {
         $copilotHome = Join-Path $Root 'copilot-home'
@@ -179,6 +181,12 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $homes[4]
     $env:HERMES_HOME = $homes[5]
     $env:OPENCODE_CONFIG_DIR = $homes[6]
+    # Direct contract-harness gateway invocations must carry the same
+    # FOLDERID_Profile custody captured by Setup and supplied by the native
+    # startup launcher. These are existing internal install-state bindings,
+    # never public Windsurf configuration overrides.
+    $env:WINDSURF_USER_HOME = $windsurfUserHome
+    $env:WINDSURF_HOOK_CONFIG_PATH = $windsurfHooksPath
 }
 
 function Get-StableHookRuntimeExecutable {
@@ -1401,6 +1409,7 @@ function Assert-AntigravityWindowsHookCommands([string]$Config) {
 function Assert-HermesWindowsHookConfig([string]$ConfigPath, [string]$Context) {
     $code = @'
 import json
+import os
 import re
 import shlex
 import sys
@@ -1434,8 +1443,8 @@ expected = {
 }
 with open(sys.argv[1], encoding="utf-8") as stream:
     document = yaml.safe_load(stream) or {}
-if document.get("hooks_auto_accept") is not True:
-    raise SystemExit("hooks_auto_accept is not true")
+if "hooks_auto_accept" in document:
+    raise SystemExit("Setup introduced operator-owned hooks_auto_accept")
 hooks = document.get("hooks")
 if not isinstance(hooks, dict) or set(hooks) != set(expected):
     raise SystemExit(
@@ -1469,7 +1478,30 @@ for event, matcher in expected.items():
     commands.add(command)
 if len(commands) != 1:
     raise SystemExit("Hermes handlers do not share one command identity")
-print(json.dumps({"entries": len(expected), "command": next(iter(commands))}))
+command = next(iter(commands))
+allowlist_path = os.path.join(os.path.dirname(sys.argv[1]), "shell-hooks-allowlist.json")
+with open(allowlist_path, encoding="utf-8") as stream:
+    allowlist = json.load(stream)
+approvals = allowlist.get("approvals")
+if not isinstance(approvals, list):
+    raise SystemExit("Hermes allowlist approvals is not an array")
+owned = [
+    entry
+    for entry in approvals
+    if isinstance(entry, dict) and entry.get("defenseclaw_managed") is True
+]
+if len(owned) != len(expected):
+    raise SystemExit("Hermes allowlist does not contain exactly 23 scoped owned approvals")
+for entry in owned:
+    if entry.get("event") not in expected or entry.get("command") != command:
+        raise SystemExit("Hermes allowlist contains an unexpected scoped owned approval")
+if {entry["event"] for entry in owned} != set(expected):
+    raise SystemExit("Hermes allowlist scoped owned approval inventory mismatch")
+print(json.dumps({
+    "entries": len(expected),
+    "allowlist_entries": len(owned),
+    "command": command,
+}))
 '@
     $probe = Invoke-Tool 'python.exe' @(
         '-I', '-X', 'utf8', '-c', $code, ([IO.Path]::GetFullPath($ConfigPath))
@@ -1478,6 +1510,9 @@ print(json.dumps({"entries": len(expected), "command": next(iter(commands))}))
     catch { throw "$Context validation returned invalid JSON: $($_.Exception.Message)" }
     if ([int]$result.entries -ne 23) {
         throw "$Context validated $($result.entries) events instead of 23"
+    }
+    if ([int]$result.allowlist_entries -ne 23) {
+        throw "$Context validated $($result.allowlist_entries) scoped allowlist approvals instead of 23"
     }
 }
 
@@ -2125,7 +2160,7 @@ function Assert-DoctorWindowsHookRegistration {
                 )
                 "registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"
             }
-            'cursor' { 'configured Cursor hook runtime is missing' }
+            'cursor' { 'configured Cursor runtime does not match the contract lock' }
             'hermes' { 'does not use the direct native DefenseClaw executable' }
             'windsurf' { 'cannot be resolved' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
