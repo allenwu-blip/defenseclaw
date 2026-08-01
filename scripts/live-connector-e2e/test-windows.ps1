@@ -1621,8 +1621,13 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($setupAcceptance -match 'Start-SetupAcceptanceOtlpCollector \(Join-Path \$PSHOME ''pwsh\.exe''\)' -and
         $setupAcceptance -notmatch 'Start-SetupAcceptanceOtlpCollector \$python' -and
         $setupAcceptance -match 'endpoint: http://127\.0\.0\.1:\$setupOtlpPort' -and
+        ([regex]::Matches($setupAcceptance, '(?m)^    endpoint: http://127\.0\.0\.1:\$setupOtlpPort\s*$')).Count -eq 3 -and
+        ([regex]::Matches($setupAcceptance, '(?m)^    protocol: http\s*$')).Count -eq 3 -and
+        $setupAcceptance -match 'expected_endpoint = f"http://127\.0\.0\.1:\{int\(sys\.argv\[2\]\)\}"' -and
+        $setupAcceptance -match 'assert not otlp\.get\("signal_overrides"\)' -and
+        $setupAcceptance -match '\$configPath, \$setupOtlpPort' -and
         $setupAcceptance -match 'Stop-SetupAcceptanceOtlpCollector \$setupOtlpCollector') `
-        'Setup acceptance keeps migrated telemetry enabled with an external bounded OTLP fixture and cleans it'
+        'Setup acceptance pins every migrated signal to its external bounded OTLP fixture and cleans it'
     $setupOtlpMetricInterval = [regex]::Match(
         $setupAcceptance,
         '(?m)^\s*export_interval_s:\s*(?<seconds>[0-9]+)\s*$'

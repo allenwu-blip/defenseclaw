@@ -4475,15 +4475,24 @@ otel:
   endpoint: http://127.0.0.1:$setupOtlpPort
   traces:
     enabled: true
+    # Pin each signal explicitly so hosted-runner ambient OTLP variables
+    # cannot redirect the migrated acceptance traffic away from this exact
+    # PID-owned loopback collector.
+    endpoint: http://127.0.0.1:$setupOtlpPort
+    protocol: http
     sampler: always_on
   metrics:
     enabled: true
+    endpoint: http://127.0.0.1:$setupOtlpPort
+    protocol: http
     # Keep the fixture's first export strictly inside the gateway's fixed
     # 60-second startup-readiness deadline so acceptance cannot race timeout.
     export_interval_s: 5
     temporality: delta
   logs:
     enabled: true
+    endpoint: http://127.0.0.1:$setupOtlpPort
+    protocol: http
 "@.Replace("`r`n", "`n")
         [IO.File]::WriteAllText($configPath, $v7Fixture, [Text.UTF8Encoding]::new($false))
         $seedCursor = @'
@@ -4544,12 +4553,16 @@ otlp = next(
     for destination in observability.get("destinations", [])
     if destination.get("kind") == "otlp"
 )
+expected_endpoint = f"http://127.0.0.1:{int(sys.argv[2])}"
+assert otlp.get("endpoint") == expected_endpoint
+assert otlp.get("protocol") == "http/protobuf"
+assert not otlp.get("signal_overrides")
 assert (otlp.get("tls") or {}).get("insecure") is True
 assert (otlp.get("network_safety") or {}).get("allow_private_networks") is True
 assert (document.get("guardrail") or {}).get("retain_judge_bodies") is True
 assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"codex", "claudecode", "cursor"}
 '@
-        Invoke-Installed $python @('-I', '-c', $assertMigratedConfig, $configPath) -Timeout 120 `
+        Invoke-Installed $python @('-I', '-c', $assertMigratedConfig, $configPath, $setupOtlpPort) -Timeout 120 `
             -Log (Join-Path $logs 'setup-seeded-v8-contract.log') | Out-Null
         $migrationCursor = Get-Content -LiteralPath (Join-Path $dataRoot '.migration_state.json') `
             -Raw -Encoding UTF8 | ConvertFrom-Json
