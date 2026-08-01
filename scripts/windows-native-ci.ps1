@@ -2065,6 +2065,111 @@ try {
     $runspacePool.Open()
     $listener.Start()
     $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+
+    # Opening a runspace pool proves only that its minimum worker exists. Warm
+    # the complete bounded capacity before advertising the fixture so a strict
+    # gateway activation cannot be the first operation to pay for hosted-runner
+    # runspace creation. Every warmup is completed and disposed before the
+    # listener becomes externally ready.
+    $warmups = [Collections.Generic.List[object]]::new()
+    $warmupEntered = [Threading.CountdownEvent]::new(8)
+    $warmupRelease = [Threading.ManualResetEventSlim]::new($false)
+    $warmupCode = @(
+        'param([Threading.CountdownEvent]$Entered, [Threading.ManualResetEventSlim]$Release, [int]$Index);',
+        'if ($Index -lt 0 -or $Index -ge 8) { throw "invalid Setup OTLP warmup index" };',
+        '$Entered.Signal();',
+        'if (-not $Release.Wait(5000)) { throw "Setup OTLP warmup release timed out" }'
+    ) -join ' '
+    try {
+        for ($index = 0; $index -lt 8; $index++) {
+            $warmup = [Management.Automation.PowerShell]::Create()
+            try {
+                $warmup.RunspacePool = $runspacePool
+                [void]$warmup.AddScript($warmupCode).AddArgument($warmupEntered).AddArgument($warmupRelease).AddArgument($index)
+                $warmupHandle = $warmup.BeginInvoke()
+                [void]$warmups.Add([pscustomobject]@{
+                    PowerShell = $warmup
+                    Handle = $warmupHandle
+                })
+                $warmup = $null
+            } finally {
+                if ($null -ne $warmup) { $warmup.Dispose() }
+            }
+        }
+        if (-not $warmupEntered.Wait(5000)) {
+            throw 'Setup OTLP fixture did not enter all eight bounded runspaces'
+        }
+        $warmupRelease.Set()
+        foreach ($entry in $warmups) {
+            if (-not $entry.Handle.AsyncWaitHandle.WaitOne(5000)) {
+                throw 'Setup OTLP fixture runspace warmup timed out'
+            }
+            [void]$entry.PowerShell.EndInvoke($entry.Handle)
+        }
+    } finally {
+        $warmupRelease.Set()
+        foreach ($entry in $warmups) {
+            if (-not $entry.Handle.IsCompleted) {
+                try { $entry.PowerShell.Stop() } catch {}
+            }
+            try { $entry.Handle.AsyncWaitHandle.Dispose() } catch {}
+            try { $entry.PowerShell.Dispose() } catch {}
+        }
+        $warmupRelease.Dispose()
+        $warmupEntered.Dispose()
+    }
+
+    # Exercise the actual worker handler for every OTLP signal through the
+    # bound loopback socket before atomically publishing readiness. A listener
+    # that cannot accept, drain, and acknowledge a request must never become a
+    # valid migration destination.
+    $expectedResponse = "HTTP/1.1 200 OK`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+    foreach ($signal in @('logs', 'metrics', 'traces')) {
+        $probeClient = [Net.Sockets.TcpClient]::new()
+        $serverClient = $null
+        $probeWorker = $null
+        $probeHandle = $null
+        try {
+            $probeClient.ReceiveTimeout = 5000
+            $probeClient.SendTimeout = 5000
+            $probeClient.Connect([Net.IPAddress]::Loopback, $port)
+            $serverClient = $listener.AcceptTcpClient()
+            $probeWorker = [Management.Automation.PowerShell]::Create()
+            $probeWorker.RunspacePool = $runspacePool
+            [void]$probeWorker.AddScript($handler.ToString()).AddArgument($serverClient)
+            $probeHandle = $probeWorker.BeginInvoke()
+            $serverClient = $null
+
+            $request = [Text.Encoding]::ASCII.GetBytes(
+                "POST /v1/$signal HTTP/1.1`r`nHost: 127.0.0.1:$port`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+            )
+            $probeStream = $probeClient.GetStream()
+            $probeStream.Write($request, 0, $request.Length)
+            $probeStream.Flush()
+            $responseBytes = [Collections.Generic.List[byte]]::new()
+            while ($responseBytes.Count -lt 65536) {
+                $next = $probeStream.ReadByte()
+                if ($next -lt 0) { break }
+                $responseBytes.Add([byte]$next)
+            }
+            $response = [Text.Encoding]::ASCII.GetString($responseBytes.ToArray())
+            if ($response -cne $expectedResponse) {
+                throw "Setup OTLP fixture $signal worker returned an invalid response"
+            }
+            if (-not $probeHandle.AsyncWaitHandle.WaitOne(5000)) {
+                throw "Setup OTLP fixture $signal worker did not complete"
+            }
+            [void]$probeWorker.EndInvoke($probeHandle)
+        } finally {
+            if ($null -ne $probeHandle) {
+                try { $probeHandle.AsyncWaitHandle.Dispose() } catch {}
+            }
+            if ($null -ne $probeWorker) { $probeWorker.Dispose() }
+            if ($null -ne $serverClient) { $serverClient.Dispose() }
+            $probeClient.Dispose()
+        }
+    }
+
     $readyStream = [IO.FileStream]::new(
         $ReadyPath,
         [IO.FileMode]::CreateNew,
@@ -2228,6 +2333,73 @@ function Stop-SetupAcceptanceOtlpCollector([AllowNull()][object]$Collector) {
     } finally {
         $process.Dispose()
         Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Write-SetupAcceptanceConvergenceDiagnostics(
+    [string]$Logs,
+    [string]$DataRoot,
+    [AllowNull()][object]$Collector
+) {
+    $rows = [Collections.Generic.List[string]]::new()
+    [void]$rows.Add('schema=1')
+    if ($null -eq $Collector) {
+        [void]$rows.Add('collector=absent')
+    } else {
+        $process = [Diagnostics.Process]$Collector.Process
+        $port = [int]$Collector.Port
+        $ready = [string]$Collector.ReadyPath
+        $alive = $false
+        $processError = ''
+        try {
+            $process.Refresh()
+            $alive = -not $process.HasExited
+        } catch {
+            $processError = $_.Exception.GetType().Name
+        }
+        [void]$rows.Add("collector_pid=$($process.Id)")
+        [void]$rows.Add("collector_alive=$($alive.ToString().ToLowerInvariant())")
+        [void]$rows.Add("collector_port=$port")
+        [void]$rows.Add("ready_file_present=$((Test-Path -LiteralPath $ready -PathType Leaf).ToString().ToLowerInvariant())")
+        if ($processError) { [void]$rows.Add("collector_inspection_error=$processError") }
+
+        $listeners = @()
+        try {
+            $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' `
+                -LocalPort $port -ErrorAction Stop)
+            [void]$rows.Add("loopback_listener_count=$($listeners.Count)")
+            $owners = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique | Sort-Object)
+            [void]$rows.Add("loopback_listener_pids=$($owners -join ',')")
+            [void]$rows.Add("exact_listener_owned=$((
+                $alive -and $listeners.Count -eq 1 -and [int]$listeners[0].OwningProcess -eq $process.Id
+            ).ToString().ToLowerInvariant())")
+        } catch {
+            [void]$rows.Add("loopback_listener_error=$($_.Exception.GetType().Name)")
+        }
+    }
+    Write-BoundedText -Path (Join-Path $Logs 'setup-convergence-runtime.log') `
+        -Text ($rows -join "`n") -MaxBytes 16384
+
+    $gatewayLog = Join-Path $DataRoot 'gateway.log'
+    if (-not (Test-Path -LiteralPath $gatewayLog -PathType Leaf)) { return }
+    try {
+        $tail = @(Get-Content -LiteralPath $gatewayLog -Tail 512 -Encoding UTF8 -ErrorAction Stop)
+        $safe = Protect-WindowsNativeText ($tail -join "`n")
+        # The normal redactor removes known environment credentials and common
+        # authorization fields. This extra diagnostic-only pass also removes
+        # arbitrary token/password/credential values before the bounded log is
+        # copied out of the disposable user profile.
+        $safe = [regex]::Replace(
+            $safe,
+            '(?im)(?<prefix>\b(?:token|password|credential|secret)\b\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|\S+)',
+            '${prefix}***REDACTED***'
+        )
+        Write-BoundedText -Path (Join-Path $Logs 'setup-gateway-failure.log') `
+            -Text $safe -MaxBytes 262144
+    } catch {
+        Write-BoundedText -Path (Join-Path $Logs 'setup-gateway-failure.log') `
+            -Text "gateway failure log capture unavailable: $($_.Exception.GetType().Name)" `
+            -MaxBytes 16384
     }
 }
 
@@ -4219,10 +4391,25 @@ migration_state.save(sys.argv[1], state)
         $v7Hash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $gatewayBeforeSeededUpgrade = Get-GatewayIdentity $dataRoot
         $watchdogBeforeSeededUpgrade = Get-WatchdogIdentity $dataRoot
-        Invoke-WindowsSetupStandardUserProcess $setup @(
-            '/upgrade', '/quiet', '/norestart', 'INSTALLSCOPE=user',
-            'FROMVERSION=0.8.0'
-        ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-seeded-upgrade.log') | Out-Null
+        try {
+            Invoke-WindowsSetupStandardUserProcess $setup @(
+                '/upgrade', '/quiet', '/norestart', 'INSTALLSCOPE=user',
+                'FROMVERSION=0.8.0'
+            ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-seeded-upgrade.log') | Out-Null
+        } catch {
+            Write-SetupAcceptanceConvergenceDiagnostics $logs $dataRoot $setupOtlpCollector
+            if (Test-Path -LiteralPath $gateway -PathType Leaf) {
+                try {
+                    Invoke-Installed $gateway @('status') @(0, 1) 30 `
+                        (Join-Path $logs 'setup-failure-gateway-status.log') | Out-Null
+                } catch {
+                    Write-BoundedText -Path (Join-Path $logs 'setup-failure-gateway-status.log') `
+                        -Text "gateway failure status unavailable: $($_.Exception.GetType().Name)" `
+                        -MaxBytes 16384
+                }
+            }
+            throw
+        }
         $upgradedState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$upgradedState.version -ne $targetVersion) {
             throw "seeded setup upgrade version mismatch: $($upgradedState.version), expected $targetVersion"
