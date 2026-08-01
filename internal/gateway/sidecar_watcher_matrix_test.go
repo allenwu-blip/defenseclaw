@@ -222,15 +222,14 @@ func TestResolveWatcherDirs_NilConnectorFallsBackToConfigDefault(t *testing.T) {
 //     ownership aligned with each vendor surface rather than applying one
 //     connector's plugin semantics to all hook-only connectors.
 //
-//  2. Skills support varies: hermes/cursor/geminicli/copilot/openhands
+//  2. Skills support varies: hermes/cursor/windsurf/geminicli/copilot/openhands
 //     advertise their own skill paths so src.Skill must be
 //     watcherDirsFromConnector and the slice must contain a
-//     framework-owned subpath. windsurf intentionally does NOT
-//     advertise a skills surface ("Windsurf skills are not exposed
-//     as a documented local install surface."), so it falls back to
-//     watcherDirsFromDefault. This split is what justifies a
-//     dedicated matrix rather than reusing the openclaw/zeptoclaw/
-//     claudecode/codex one above.
+//     framework-owned subpath. Windsurf is limited to the documented
+//     legacy Cascade user/workspace skill roots; Devin Local remains
+//     outside this connector. This split is what justifies a dedicated
+//     matrix rather than reusing the openclaw/zeptoclaw/claudecode/codex
+//     one above.
 func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 	hermesSkillFragment := filepath.Join(".hermes", "skills")
 	hermesPluginFragment := filepath.Join(".hermes", "plugins")
@@ -265,7 +264,8 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 		{
 			name:            "windsurf",
 			ctor:            func() connector.Connector { return connector.NewWindsurfConnector() },
-			expectSkillSrc:  watcherDirsFromDefault,
+			expectSkillSrc:  watcherDirsFromConnector,
+			expectSkillFrag: filepath.Join(".codeium", "windsurf", "skills"),
 			expectPluginSrc: watcherDirsFromDefault,
 		},
 		{

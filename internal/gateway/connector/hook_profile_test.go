@@ -53,7 +53,11 @@ func TestHookProfileMatrix(t *testing.T) {
 		{"geminicli", true, NativeOTLPJSONBlock, true, false, true, true},
 		{"copilot", true, "", true, true, false, true},
 		{"openhands", true, "", true, false, true, true},
-		{"cursor", true, "", true, true, true, true},
+		// Cursor installs the native event schemas but its user hook is lower
+		// priority than project/team/enterprise hooks. The profile therefore
+		// advertises observation-only semantics instead of an authoritative
+		// block, native ask, or fail-closed boundary.
+		{"cursor", true, "", false, false, false, false},
 		{"windsurf", true, "", true, false, true, true},
 		{"hermes", true, "", true, false, false, true},
 		// opencode's JS bridge does not propagate W3C traceparent, so

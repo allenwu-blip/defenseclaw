@@ -835,7 +835,7 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	if len(approvals) != 23 {
 		t.Fatalf("Hermes approvals count = %d, want 23", len(approvals))
 	}
-	wantCommand := conn.hookCommand(opts)
+	wantCommand := hermesConfiguredHookCommand(conn.hookCommand(opts), opts.HookExecutable)
 	seen := map[string]bool{}
 	for _, raw := range approvals {
 		entry := raw.(map[string]interface{})
