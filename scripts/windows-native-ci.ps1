@@ -2494,6 +2494,11 @@ function Write-SetupAcceptanceConvergenceDiagnostics(
             # copied out of the disposable user profile.
             $safe = [regex]::Replace(
                 $safe,
+                '(?i)(?<prefix>"(?:token|password|credential|secret)"\s*:\s*")(?<value>(?:\\.|[^"\\])*)(?<suffix>")',
+                '${prefix}***REDACTED***${suffix}'
+            )
+            $safe = [regex]::Replace(
+                $safe,
                 '(?im)(?<prefix>\b(?:token|password|credential|secret)\b\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|\S+)',
                 '${prefix}***REDACTED***'
             )
