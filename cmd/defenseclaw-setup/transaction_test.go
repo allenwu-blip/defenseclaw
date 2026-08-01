@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -182,7 +183,7 @@ func TestRollbackInstallCleansIncompleteRecordedStagingTree(t *testing.T) {
 	assertPathAbsent(t, transaction.StagingPath)
 }
 
-func TestRollbackInstallPreservesPristineCurrentTreeWhenStagingProvesPrePublication(t *testing.T) {
+func TestRollbackInstallPreservesLockedOldTreeWhenStagingProvesPublicationNeverCreatedBackup(t *testing.T) {
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
@@ -198,7 +199,7 @@ func TestRollbackInstallPreservesPristineCurrentTreeWhenStagingProvesPrePublicat
 	renameCalls := 0
 	err := rollbackInstallFilesWithRename(transaction, func(string, string) error {
 		renameCalls++
-		return errors.New("pristine live tree must not be renamed")
+		return syscall.Errno(32)
 	})
 	if err != nil {
 		t.Fatalf("pre-publication rollback: %v", err)
@@ -3056,11 +3057,12 @@ func TestCommittedRecoveryRetriesCanonicalReleaseStateIdempotently(t *testing.T)
 	}
 }
 
-func TestInstallMutationQuiescenceRevokesHookBeforeStoppingRuntime(t *testing.T) {
+func TestInstallMutationQuiescenceDrainsLateExactCodexHookAfterRevokingLaunches(t *testing.T) {
 	t.Parallel()
-	transaction := setupTransaction{ID: testCurrentTransactionID}
+	transaction := setupTransaction{ID: testCurrentTransactionID, InstallRoot: "install"}
 	var calls []string
 	hookActive := true
+	lateHookRunning := true
 	err := quiesceSetupRuntimeForMutation(
 		transaction,
 		"gateway.exe",
@@ -3073,9 +3075,20 @@ func TestInstallMutationQuiescenceRevokesHookBeforeStoppingRuntime(t *testing.T)
 			hookActive = false
 			return nil
 		},
-		func(gatewayPath, dataRoot string) (serviceState, error) {
+		func(installRoot, transactionID string) error {
 			if hookActive {
-				t.Fatal("runtime stop began while stable-hook cold start remained authorized")
+				t.Fatal("hook child drain began before the stable launch gate was disabled")
+			}
+			if installRoot != "install" || transactionID != testCurrentTransactionID {
+				t.Fatalf("drain identity = %q, %q", installRoot, transactionID)
+			}
+			calls = append(calls, "hook:drain-late-child")
+			lateHookRunning = false
+			return nil
+		},
+		func(gatewayPath, dataRoot string) (serviceState, error) {
+			if hookActive || lateHookRunning {
+				t.Fatal("runtime stop began before stable-hook quiescence completed")
 			}
 			if gatewayPath != "gateway.exe" || dataRoot != "data" {
 				t.Fatalf("stop roots = %q, %q", gatewayPath, dataRoot)
@@ -3097,7 +3110,7 @@ func TestInstallMutationQuiescenceRevokesHookBeforeStoppingRuntime(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(calls, ","); got != "hook:disable,runtime:stop,runtime:verify-release" {
+	if got := strings.Join(calls, ","); got != "hook:disable,hook:drain-late-child,runtime:stop,runtime:verify-release" {
 		t.Fatalf("quiescence calls = %q", got)
 	}
 }
@@ -3105,6 +3118,7 @@ func TestInstallMutationQuiescenceRevokesHookBeforeStoppingRuntime(t *testing.T)
 func TestInstallMutationQuiescenceRefusesRuntimeStopWhenHookDisableFails(t *testing.T) {
 	t.Parallel()
 	disableErr := errors.New("stable hook state is locked")
+	drainCalled := false
 	stopCalled := false
 	verifyCalled := false
 	err := quiesceSetupRuntimeForMutation(
@@ -3112,6 +3126,10 @@ func TestInstallMutationQuiescenceRefusesRuntimeStopWhenHookDisableFails(t *test
 		"gateway.exe",
 		"data",
 		func(string) error { return disableErr },
+		func(string, string) error {
+			drainCalled = true
+			return nil
+		},
 		func(string, string) (serviceState, error) {
 			stopCalled = true
 			return serviceState{}, nil
@@ -3121,8 +3139,8 @@ func TestInstallMutationQuiescenceRefusesRuntimeStopWhenHookDisableFails(t *test
 			return nil
 		},
 	)
-	if !errors.Is(err, disableErr) || stopCalled || verifyCalled {
-		t.Fatalf("quiescence result = %v, stop=%t verify=%t", err, stopCalled, verifyCalled)
+	if !errors.Is(err, disableErr) || drainCalled || stopCalled || verifyCalled {
+		t.Fatalf("quiescence result = %v, drain=%t stop=%t verify=%t", err, drainCalled, stopCalled, verifyCalled)
 	}
 }
 
@@ -3141,6 +3159,13 @@ func TestUninstallMutationRevokesHookBeforeRuntimeReleaseAndTreeRename(t *testin
 			}
 			calls = append(calls, "hook:disable")
 			hookActive = false
+			return nil
+		},
+		func(installRoot, transactionID string) error {
+			if installRoot != transaction.InstallRoot || transactionID != transaction.ID {
+				t.Fatalf("uninstall drain identity = %q, %q", installRoot, transactionID)
+			}
+			calls = append(calls, "hook:drain")
 			return nil
 		},
 		func(gatewayPath, dataRoot string) (serviceState, error) {
@@ -3174,7 +3199,7 @@ func TestUninstallMutationRevokesHookBeforeRuntimeReleaseAndTreeRename(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "hook:disable,runtime:stop,runtime:verify-release,tree:rename"
+	want := "hook:disable,hook:drain,runtime:stop,runtime:verify-release,tree:rename"
 	if got := strings.Join(calls, ","); got != want {
 		t.Fatalf("uninstall mutation calls = %q, want %q", got, want)
 	}
@@ -3212,6 +3237,7 @@ func TestRollbackRestoreIncludesOwnedRuntimeStartedAfterIntent(t *testing.T) {
 	var restoreCalls []string
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(gatewayPath, gotDataRoot string) (serviceState, error) {
 			if gatewayPath != filepath.Join(installRoot, "bin", "defenseclaw-gateway.exe") || gotDataRoot != dataRoot {
 				t.Fatalf("stop roots = %q, %q", gatewayPath, gotDataRoot)
@@ -3243,7 +3269,7 @@ func TestRollbackRestoreIncludesOwnedRuntimeStartedAfterIntent(t *testing.T) {
 	}
 }
 
-func TestQuiescingRecoveryPreservesPriorGatewayIntentWithoutConnectorReadiness(t *testing.T) {
+func TestQuiescingRecoveryRestoresGatewayDespiteStaleClaudeReadiness(t *testing.T) {
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	previous := testInstallState(
 		installRoot,
@@ -3270,7 +3296,9 @@ func TestQuiescingRecoveryPreservesPriorGatewayIntentWithoutConnectorReadiness(t
 		transaction.TargetVersion,
 	))
 
-	connectorReady := false
+	savedClaudeVersion := "2.1.211"
+	currentClaudeVersion := "2.1.220"
+	connectorReady := savedClaudeVersion == currentClaudeVersion
 	launched := serviceState{}
 	phase := setupPhaseQuiescing
 	err := recoverSetupJournalPhase(setupJournal{
@@ -3281,6 +3309,7 @@ func TestQuiescingRecoveryPreservesPriorGatewayIntentWithoutConnectorReadiness(t
 		Rollback: func(got setupTransaction) error {
 			return rollbackSetupTransactionWithRuntime(
 				got,
+				func(string, string) error { return nil },
 				func(string, string) (serviceState, error) { return serviceState{}, nil },
 				func(string, string) error { return nil },
 				func(setupTransaction) error { return nil },
@@ -3340,6 +3369,7 @@ func TestUninstallRollbackRestoresHookBeforeServices(t *testing.T) {
 	var calls []string
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) {
 			t.Fatal("uninstall trash rollback unexpectedly stopped a fixed-path runtime")
 			return serviceState{}, nil
@@ -3397,6 +3427,7 @@ func TestUninstallRollbackPreservesInactiveHookPosture(t *testing.T) {
 	startCalled := false
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) { return serviceState{}, nil },
 		func(string, string) error { return nil },
 		restorePreviousStableHookRuntime,
@@ -3435,6 +3466,7 @@ func TestRollbackDoesNotRestartServicesWhenStableHookRestoreFails(t *testing.T) 
 	startCalled := false
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) { return serviceState{}, nil },
 		func(string, string) error { return nil },
 		func(setupTransaction) error { return restoreErr },
@@ -3481,6 +3513,7 @@ func TestRollbackRestoresOwnedRuntimeWhenFileRollbackFails(t *testing.T) {
 	restoreHookCalled := false
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) { return liveDuringRecovery, nil },
 		func(string, string) error { return nil },
 		func(setupTransaction) error {
@@ -3533,6 +3566,7 @@ func TestRollbackRestoresStoppedFreshRuntimeWhenFileRollbackFails(t *testing.T) 
 	var restored serviceState
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) { return liveDuringRecovery, nil },
 		func(string, string) error { return nil },
 		func(setupTransaction) error { return nil },
@@ -3547,6 +3581,80 @@ func TestRollbackRestoresStoppedFreshRuntimeWhenFileRollbackFails(t *testing.T) 
 	}
 	if restored != liveDuringRecovery {
 		t.Fatalf("rollback restored services = %+v, want %+v", restored, liveDuringRecovery)
+	}
+}
+
+func TestPublishedFailureRollbackDrainsLateHookBeforeRestoringFiles(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"1.0.0",
+	)
+	transaction := testSetupTransactionForRoots(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		&previous,
+	)
+	writeInstallTree(t, transaction.BackupPath, previous)
+	writeInstallTree(t, installRoot, testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		transaction.ID,
+		transaction.TargetVersion,
+	))
+	if err := os.WriteFile(
+		filepath.Join(installRoot, "bin", "defenseclaw-gateway.exe"),
+		[]byte("target gateway fixture"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	drained := false
+	var calls []string
+	err := rollbackSetupTransactionWithRuntime(
+		transaction,
+		func(gotRoot, gotTransactionID string) error {
+			if gotRoot != installRoot || gotTransactionID != transaction.ID {
+				t.Fatalf("drain identity = %q, %q", gotRoot, gotTransactionID)
+			}
+			calls = append(calls, "hook:drain")
+			drained = true
+			return nil
+		},
+		func(string, string) (serviceState, error) {
+			if !drained {
+				t.Fatal("runtime stop preceded late hook drain")
+			}
+			calls = append(calls, "runtime:stop")
+			return serviceState{}, nil
+		},
+		func(string, string) error {
+			calls = append(calls, "runtime:verify")
+			return nil
+		},
+		func(setupTransaction) error {
+			calls = append(calls, "hook:restore")
+			assertInstallVersion(t, installRoot, transaction, previous.Version)
+			assertPathAbsent(t, transaction.BackupPath)
+			return nil
+		},
+		func(string, string, serviceState) (serviceState, error) {
+			t.Fatal("rollback unexpectedly restored an inactive service")
+			return serviceState{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(calls, ","); got != "hook:drain,runtime:stop,runtime:verify,hook:restore" {
+		t.Fatalf("published rollback calls = %q", got)
 	}
 }
 
@@ -3587,6 +3695,7 @@ func TestRollbackRecoveryRequiresRuntimeReleaseBeforeTreeMutation(t *testing.T) 
 	var calls []string
 	err := rollbackSetupTransactionWithRuntime(
 		transaction,
+		func(string, string) error { return nil },
 		func(string, string) (serviceState, error) {
 			calls = append(calls, "authenticate-stop")
 			return serviceState{Gateway: true, Watchdog: true}, nil

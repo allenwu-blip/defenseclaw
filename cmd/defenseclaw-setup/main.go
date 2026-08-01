@@ -572,6 +572,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 		gatewayPath,
 		dataRoot,
 		disableStableHookRuntime,
+		drainOwnedStableHookProcesses,
 		func(path, root string) (serviceState, error) {
 			return stopOwnedServicesContext(ctx, path, root)
 		},
@@ -820,6 +821,7 @@ func runUninstallContext(ctx context.Context, opts options, installRoot, dataRoo
 		gatewayPath,
 		dataRoot,
 		disableStableHookRuntime,
+		drainOwnedStableHookProcesses,
 		func(path, root string) (serviceState, error) {
 			return stopOwnedServicesContext(ctx, path, root)
 		},

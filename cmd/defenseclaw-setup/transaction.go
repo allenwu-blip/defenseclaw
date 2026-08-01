@@ -52,6 +52,7 @@ type durableValueWriter func(string, any, bool) error
 type durableRenameFunc func(string, string) error
 type connectorLifecycleRunner func(string, string, string, string, []string) error
 type stableHookRuntimeSnapshotter func(string, string) (bool, error)
+type stableHookProcessDrainer func(string, string) error
 
 type userPathSnapshot struct {
 	Existed   bool   `json:"existed"`
@@ -2498,16 +2499,17 @@ func abortPreparedSetupTransaction(transaction setupTransaction) error {
 }
 
 func rollbackSetupTransaction(transaction setupTransaction) error {
-	return rollbackSetupTransactionWithServices(transaction, startMissingServices)
+	// Rollback is a recovery boundary even when it occurs in the invocation
+	// that created the transaction. Restore the exact prior service intent with
+	// recovery-only launch semantics so ambient connector version drift cannot
+	// strand the durable rollback. Target activation remains strict.
+	return rollbackSetupTransactionForRecovery(transaction)
 }
 
 func rollbackSetupTransactionForRecovery(transaction setupTransaction) error {
-	// A recovery invocation immediately continues into a new authenticated
-	// install or uninstall transaction. Restore the prior process identity and
-	// service intent without requiring stale connector locks to become ready;
-	// the continuing transaction will quiesce this exact-owned runtime again,
-	// and final target activation still performs the ordinary strict readiness
-	// check. The gateway validates the delegated launch/PID before returning.
+	// A later recovery invocation uses the same rollback-only launch posture as
+	// an in-process rollback. The gateway still validates the delegated launch
+	// and PID before returning.
 	return rollbackSetupTransactionWithServices(transaction, startMissingServicesForRecovery)
 }
 
@@ -2528,6 +2530,7 @@ func rollbackSetupTransactionWithServices(
 	}
 	return rollbackSetupTransactionWithRuntime(
 		transaction,
+		drainOwnedStableHookProcesses,
 		stopOwnedServices,
 		verifyOwnedRuntimeReleased,
 		restorePreviousStableHookRuntime,
@@ -2539,6 +2542,7 @@ func quiesceSetupRuntimeForMutation(
 	transaction setupTransaction,
 	gatewayPath, dataRoot string,
 	disableStableHook func(string) error,
+	drainStableHookProcesses stableHookProcessDrainer,
 	stopServices func(string, string) (serviceState, error),
 	verifyStopped func(string, string) error,
 ) error {
@@ -2548,6 +2552,13 @@ func quiesceSetupRuntimeForMutation(
 	// state instead of cold-starting the fixed-path replacement.
 	if err := disableStableHook(transaction.ID); err != nil {
 		return fmt.Errorf("disable stable hook runtime before setup mutation: %w", err)
+	}
+	// Disable is the launch linearization point. A full-hook child created by an
+	// invocation that acquired the mutex first may still be running after its
+	// stable parent releases the mutex, so authenticate and drain that exact
+	// parent/child generation before touching the old install tree.
+	if err := drainStableHookProcesses(transaction.InstallRoot, transaction.ID); err != nil {
+		return fmt.Errorf("drain stable hook children before setup mutation: %w", err)
 	}
 	if _, err := stopServices(gatewayPath, dataRoot); err != nil {
 		return fmt.Errorf("stop owned gateway runtime before setup mutation: %w", err)
@@ -2562,6 +2573,7 @@ func mutateUninstallTreeWithQuiescedRuntime(
 	transaction setupTransaction,
 	gatewayPath, dataRoot string,
 	disableStableHook func(string) error,
+	drainStableHookProcesses stableHookProcessDrainer,
 	stopServices func(string, string) (serviceState, error),
 	verifyStopped func(string, string) error,
 	mutate func() error,
@@ -2571,6 +2583,7 @@ func mutateUninstallTreeWithQuiescedRuntime(
 		gatewayPath,
 		dataRoot,
 		disableStableHook,
+		drainStableHookProcesses,
 		stopServices,
 		verifyStopped,
 	); err != nil {
@@ -2581,12 +2594,19 @@ func mutateUninstallTreeWithQuiescedRuntime(
 
 func rollbackSetupTransactionWithRuntime(
 	transaction setupTransaction,
+	drainStableHookProcesses stableHookProcessDrainer,
 	stopServices func(string, string) (serviceState, error),
 	verifyStopped func(string, string) error,
 	restoreStableHook func(setupTransaction) error,
 	startServices func(string, string, serviceState) (serviceState, error),
 ) error {
 	restoreServices := transaction.PreviousServices
+	// The caller has already disabled HookRuntime under its cross-process launch
+	// mutex. Drain only children whose exact parent/path/PID generation remains
+	// authenticated before any rollback rename is attempted.
+	if err := drainStableHookProcesses(transaction.InstallRoot, transaction.ID); err != nil {
+		return fmt.Errorf("drain stable hook children before setup rollback: %w", err)
+	}
 	currentGateway := filepath.Join(transaction.InstallRoot, "bin", "defenseclaw-gateway.exe")
 	if pathExists(currentGateway) {
 		if err := rejectReparseTree(transaction.InstallRoot); err != nil {
@@ -2737,10 +2757,12 @@ func nativeInstallRuntimeConvergenceOps() installRuntimeConvergenceOps {
 	return installRuntimeConvergenceOps{
 		disableStableHook:  disableStableHookRuntime,
 		configureAutoStart: configureGatewayAutoStart,
-		startServices:      startMissingServices,
-		verifyServices:     verifySelectedServices,
-		stopServices:       stopOwnedServices,
-		verifyStopped:      verifyOwnedServicesStopped,
+		// Committed target convergence deliberately retains the ordinary strict
+		// connector-readiness gate; only rollback restoration delegates it.
+		startServices:  startMissingServices,
+		verifyServices: verifySelectedServices,
+		stopServices:   stopOwnedServices,
+		verifyStopped:  verifyOwnedServicesStopped,
 	}
 }
 

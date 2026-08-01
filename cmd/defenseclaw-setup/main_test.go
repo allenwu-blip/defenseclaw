@@ -1042,7 +1042,7 @@ func TestManagedChildEnvPinsDataRoot(t *testing.T) {
 	}
 }
 
-func TestManagedRecoveryChildEnvDelegatesOnlyRecoveryReadiness(t *testing.T) {
+func TestFreshRollbackRecoveryEnvBypassesOnlyStaleClaudeReadiness(t *testing.T) {
 	t.Setenv(upgradeFreshProcessEnv, "untrusted")
 	env := managedRecoveryChildEnv(`C:\Users\test\.defenseclaw`)
 	count := 0

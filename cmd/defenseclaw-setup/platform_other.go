@@ -27,6 +27,7 @@ func waitForManagedProcessExitContext(_ context.Context, _ managedProcessProof, 
 func liveProcessWithinInstallRoot(_ string, _ ...string) (uint32, string, error) {
 	return 0, "", nil
 }
+func drainOwnedStableHookProcesses(_, _ string) error { return nil }
 func acquireSetupLock() (func() error, error) {
 	return func() error { return nil }, nil
 }
