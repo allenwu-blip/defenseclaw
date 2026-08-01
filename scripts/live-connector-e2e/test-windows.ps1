@@ -1623,6 +1623,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupAcceptance -match 'endpoint: http://127\.0\.0\.1:\$setupOtlpPort' -and
         $setupAcceptance -match 'Stop-SetupAcceptanceOtlpCollector \$setupOtlpCollector') `
         'Setup acceptance keeps migrated telemetry enabled with an external bounded OTLP fixture and cleans it'
+    $setupOtlpMetricInterval = [regex]::Match(
+        $setupAcceptance,
+        '(?m)^\s*export_interval_s:\s*(?<seconds>[0-9]+)\s*$'
+    )
+    Assert-True ($setupOtlpMetricInterval.Success -and
+        [int]$setupOtlpMetricInterval.Groups['seconds'].Value -gt 0 -and
+        [int]$setupOtlpMetricInterval.Groups['seconds'].Value -lt 60) `
+        'Setup acceptance metric export interval is positive and strictly inside the 60-second readiness deadline'
     Assert-True ($setupOtlpCleanup -match '\$process\.Kill\(\$true\)' -and
         $setupOtlpCleanup -match 'WaitForExit\(5000\)' -and
         $setupOtlpCleanup -match 'Remove-Item -LiteralPath \$ready') `

@@ -4478,7 +4478,9 @@ otel:
     sampler: always_on
   metrics:
     enabled: true
-    export_interval_s: 60
+    # Keep the fixture's first export strictly inside the gateway's fixed
+    # 60-second startup-readiness deadline so acceptance cannot race timeout.
+    export_interval_s: 5
     temporality: delta
   logs:
     enabled: true
