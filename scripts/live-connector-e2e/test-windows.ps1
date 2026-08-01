@@ -1583,6 +1583,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($setupOtlpFixture -match '\[Net\.Sockets\.TcpListener\]::new\(\[Net\.IPAddress\]::Loopback, 0\)' -and
         $setupOtlpFixture -match 'if \(\$length -gt 16MB\)' -and
         $setupOtlpFixture -match 'HTTP/1\.1 200 OK' -and
+        $setupOtlpFixture -match 'CreateRunspacePool\(1, 8\)' -and
+        $setupOtlpFixture -match 'if \(\$workers\.Count -ge 8\)' -and
+        $setupOtlpFixture -match '\$worker\.BeginInvoke\(\)' -and
+        $setupOtlpFixture -match 'A reset, timeout, or malformed request is isolated to its client' -and
         $setupOtlpFixture -match "ArgumentList\.Add\('-CommandWithArgs'\)" -and
         $setupOtlpFixture -notmatch "ArgumentList\.Add\('-Command'\)" -and
         $setupOtlpFixture -match "Get-NetTCPConnection -State Listen -LocalAddress '127\.0\.0\.1'" -and
@@ -1639,12 +1643,47 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
     Assert-True ($harnessText -match "Invoke-DangerousCommandCorpus observe" -and $harnessText -match "Invoke-DangerousCommandCorpus action") 'connector contract executes dangerous-command corpus in observe and action modes'
     Assert-True ($harnessText -match 'raw_action' -and $harnessText -match 'would_block' -and $harnessText -match 'enforced') 'dangerous-command contract asserts raw and enforced decisions'
+    $dangerousPayloadContract = [regex]::Match(
+        $harnessText,
+        '(?s)function New-DangerousCommandPayload\b.*?(?=\nfunction Invoke-DangerousHook\b)'
+    ).Value
+    Assert-True ($dangerousPayloadContract -match "ValidateSet\('observe', 'action'\).*?\`$Mode" -and
+        $dangerousPayloadContract -match '\$probeID = "\$Name-\$Mode"' -and
+        $dangerousPayloadContract -match 'conversationId = "dc-windows-contract-\$Connector-\$probeID"' -and
+        $dangerousPayloadContract -match 'session_id = "dc-windows-contract-\$Connector-\$Mode"' -and
+        $dangerousPayloadContract -match 'turn_id = "dc-windows-contract-\$Connector-\$probeID"' -and
+        $dangerousPayloadContract -match '(?s)\$Connector -eq ''codex''.*?event_id = "dc-windows-contract-\$Connector-\$probeID-event".*?tool_use_id = "dc-windows-contract-\$Connector-\$probeID-tool"' -and
+        $dangerousPayloadContract -match '\$path = Join-Path \$Root "\$probeID\.json"' -and
+        $harnessText -match 'New-DangerousCommandPayload \$case\.Name \$command \$payloadRoot \$Mode') `
+        'observe/action dangerous-command fixtures use distinct exact correlation and file identities'
+    $dangerousHookContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-DangerousHook\b.*?(?=\nfunction Invoke-DangerousCommandCorpus\b)'
+    ).Value
+    Assert-True ($dangerousHookContract -match "(?s)\`$telemetryMode = if \(\`$Connector -eq 'cursor'\) \{\s*#.*?\s*'observe'" -and
+        $dangerousHookContract -match "\`$effectiveObserve = \`$Mode -eq 'observe' -or \`$Connector -eq 'cursor'" -and
+        $dangerousHookContract -match "\`$decision\.raw_action -ne 'block'" -and
+        $dangerousHookContract -match 'Test-BlockVerdict' -and
+        $dangerousHookContract -match '\$decision\.rule_ids') `
+        'Cursor dangerous-command action checks preserve advisory observe/fail-open telemetry and exact block evidence'
+    $hookContract = [regex]::Match($harnessText, '(?s)function Invoke-Hook\b.*?(?=\nfunction New-DangerousCommandPayload\b)').Value
+    Assert-True ($hookContract -match '\$RequireGatewayBlock' -and
+        $hookContract -match '\$decision\.raw_action -ne ''block''' -and
+        $hookContract -match '\$decision\.mode -ne ''observe''' -and
+        $hookContract -match '\$decision\.action -ne ''allow''' -and
+        $hookContract -match '-not \[bool\]\$decision\.would_block' -and
+        $hookContract -match '\[bool\]\$decision\.enforced') `
+        'advisory block hook assertions require exact raw block, observe, would-block, and non-enforcement telemetry'
     Assert-True ($harnessText -match 'enterprise-hooks:install:elevation-required' -and
         $harnessText -match 'require an elevated administrator or LocalSystem token') `
         'native enterprise hooks require elevation in the standard-user connector contract'
     Assert-True ($harnessText -match 'Get-TreeFingerprint' -and $harnessText -match 'AllowedExitCodes @\(1\)') 'enterprise hooks elevation rejection is bounded, exit 1, and checks an unchanged tree'
     Assert-True ($harnessText -match 'Assert-DoctorWindowsHookRegistration' -and $harnessText -match 'healthy Windows-native executable registration') 'connector contract runs Doctor against the registered Windows hook executable'
     $contractRun = [regex]::Match($harnessText, '(?s)function Invoke-ContractRun\b.*?\n\}').Value
+    Assert-True ($contractRun -match "\`$actionBlockExpectation = if \(\`$Connector -eq 'cursor'\) \{ 'allow' \} else \{ 'block' \}" -and
+        $contractRun -match "\`$requireAdvisoryBlock = \`$Connector -eq 'cursor'" -and
+        $contractRun -match "(?s)Invoke-DangerousCommandCorpus action.*?Invoke-Hook 'PreTool-block'.*?\`$actionBlockExpectation \`$requireAdvisoryBlock") `
+        'Cursor final action-profile block probe remains advisory while every other connector requires enforcement'
     Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-setup:not-certified' -and
         $contractRun -match "connector 'antigravity' is not_certified on windows" -and
         $contractRun -notmatch 'native-setup-antigravity') `

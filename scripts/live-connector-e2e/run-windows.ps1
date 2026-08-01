@@ -1733,7 +1733,17 @@ function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow',
         throw "$EventName did not shape a block decision"
     }
     if ($Expected -eq 'block' -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no gateway block verdict" }
-    if ($RequireGatewayBlock -and -not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$EventName has no observe-mode would-block verdict" }
+    if ($RequireGatewayBlock) {
+        if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) {
+            throw "$EventName has no observe-mode would-block verdict"
+        }
+        $decision = Get-LatestHookDecision $script:GatewayJsonl $Connector $before
+        if ($null -eq $decision -or [string]$decision.raw_action -ne 'block' -or
+            [string]$decision.mode -ne 'observe' -or [string]$decision.action -ne 'allow' -or
+            -not [bool]$decision.would_block -or [bool]$decision.enforced) {
+            throw "$EventName did not retain exact advisory block telemetry"
+        }
+    }
     $delivery = if ($Connector -ne 'opencode') {
         "exit=$($result.ExitCode)"
     } elseif ($registeredEvent.StartsWith('session.', [StringComparison]::Ordinal)) {
@@ -1745,10 +1755,16 @@ function Invoke-Hook([string]$EventName, [string]$Payload, [ValidateSet('allow',
     Write-Result "$EventName`:verdict" pass "$delivery expected=$Expected"
 }
 
-function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$Root) {
+function New-DangerousCommandPayload(
+    [string]$Name,
+    [string]$Command,
+    [string]$Root,
+    [ValidateSet('observe', 'action')][string]$Mode
+) {
+    $probeID = "$Name-$Mode"
     if ($Connector -eq 'antigravity') {
         $payload = [ordered]@{
-            conversationId = "dc-windows-contract-$Connector"
+            conversationId = "dc-windows-contract-$Connector-$probeID"
             workspacePaths = @($Root)
             transcriptPath = (Join-Path $Root 'transcript.jsonl')
             artifactDirectoryPath = (Join-Path $Root 'artifacts')
@@ -1758,7 +1774,7 @@ function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$R
                 args = [ordered]@{ Cwd = $Root; CommandLine = $Command }
             }
         }
-        $path = Join-Path $Root "$Name.json"
+        $path = Join-Path $Root "$probeID.json"
         [IO.File]::WriteAllText($path, ($payload | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
         return $path
     }
@@ -1773,15 +1789,23 @@ function New-DangerousCommandPayload([string]$Name, [string]$Command, [string]$R
     }
     $payload = [ordered]@{
         hook_event_name = $toolEvent
-        session_id = "dc-windows-contract-$Connector"
-        turn_id = "dc-windows-contract-$Name"
+        session_id = "dc-windows-contract-$Connector-$Mode"
+        turn_id = "dc-windows-contract-$Connector-$probeID"
         agent_id = "$Connector-windows-contract"
         agent_name = "$Connector Windows contract"
         agent_type = "$Connector-cli"
         tool_name = $toolName
         tool_input = [ordered]@{ command = $Command }
     }
-    $path = Join-Path $Root "$Name.json"
+    if ($Connector -eq 'codex') {
+        # The observe and action corpora intentionally repeat the same command.
+        # Give those distinct synthetic Codex deliveries exact official source
+        # and tool identities so correlation replay protection does not treat
+        # the second policy-mode probe as a replay of the first.
+        $payload.event_id = "dc-windows-contract-$Connector-$probeID-event"
+        $payload.tool_use_id = "dc-windows-contract-$Connector-$probeID-tool"
+    }
+    $path = Join-Path $Root "$probeID.json"
     [IO.File]::WriteAllText($path, ($payload | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
     return $path
 }
@@ -1821,15 +1845,24 @@ function Invoke-DangerousHook(
     if ($null -eq $decision) { throw "$Name did not emit a connector hook_decision" }
     if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$Name has no underlying gateway block verdict" }
     if ([string]$decision.raw_action -ne 'block') { throw "$Name raw_action=$($decision.raw_action), expected block" }
-    $telemetryMode = if ($Mode -eq 'action') { 'enforce' } else { 'observe' }
+    $telemetryMode = if ($Connector -eq 'cursor') {
+        # Cursor's user hook is advisory because higher-priority settings can
+        # override it, so even an action-profile run must remain fail-open.
+        'observe'
+    } elseif ($Mode -eq 'action') {
+        'enforce'
+    } else {
+        'observe'
+    }
     if ([string]$decision.mode -ne $telemetryMode) { throw "$Name mode=$($decision.mode), expected $telemetryMode" }
     if (@($decision.rule_ids) -notcontains $RuleID) { throw "$Name hook_decision is missing rule $RuleID" }
 
-    if ($Mode -eq 'observe') {
+    $effectiveObserve = $Mode -eq 'observe' -or $Connector -eq 'cursor'
+    if ($effectiveObserve) {
         if ([string]$decision.action -ne 'allow' -or -not [bool]$decision.would_block -or [bool]$decision.enforced) {
-            throw "$Name observe decision action=$($decision.action) raw=$($decision.raw_action) would_block=$($decision.would_block) enforced=$($decision.enforced)"
+            throw "$Name advisory decision action=$($decision.action) raw=$($decision.raw_action) would_block=$($decision.would_block) enforced=$($decision.enforced)"
         }
-        if ($result.ExitCode -ne 0) { throw "$Name observe hook exited $($result.ExitCode), expected 0" }
+        if ($result.ExitCode -ne 0) { throw "$Name advisory hook exited $($result.ExitCode), expected 0" }
     } else {
         if ([string]$decision.action -ne 'block' -or [bool]$decision.would_block -or -not [bool]$decision.enforced) {
             throw "$Name action decision action=$($decision.action) raw=$($decision.raw_action) would_block=$($decision.would_block) enforced=$($decision.enforced)"
@@ -1872,7 +1905,7 @@ function Invoke-DangerousCommandCorpus([ValidateSet('observe', 'action')][string
         } else {
             "$($case.Command); Set-Content -LiteralPath '$sentinel' -Value 'unexpected-execution'"
         }
-        $payload = New-DangerousCommandPayload $case.Name $command $payloadRoot
+        $payload = New-DangerousCommandPayload $case.Name $command $payloadRoot $Mode
         Invoke-DangerousHook $case.Name $case.Rule $payload $Mode $sentinel
     }
     foreach ($path in @((Join-Path $removeTarget 'keep.txt'), (Join-Path $rmdirTarget 'keep.txt'))) {
@@ -2866,7 +2899,10 @@ function Invoke-ContractRun {
     if (Test-Path -LiteralPath $session) { Invoke-Hook 'SessionStart' $session allow }
     Invoke-Hook 'PreTool-allow' (Join-Path $golden 'pre_tool_allow.json') allow
     Invoke-DangerousCommandCorpus action
-    Invoke-Hook 'PreTool-block' (Join-Path $golden 'pre_tool_block.json') block
+    $actionBlockExpectation = if ($Connector -eq 'cursor') { 'allow' } else { 'block' }
+    $requireAdvisoryBlock = $Connector -eq 'cursor'
+    Invoke-Hook 'PreTool-block' (Join-Path $golden 'pre_tool_block.json') `
+        $actionBlockExpectation $requireAdvisoryBlock
     Assert-Evidence
     Invoke-Teardown
     Write-Result teardown pass 'observe and action setups restored connector configuration'

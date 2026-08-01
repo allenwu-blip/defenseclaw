@@ -2007,7 +2007,62 @@ param([Parameter(Mandatory)][string]$ReadyPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$handler = {
+    param([Parameter(Mandatory)][Net.Sockets.TcpClient]$Client)
+
+    Set-StrictMode -Version Latest
+    $ErrorActionPreference = 'Stop'
+    try {
+        $Client.ReceiveTimeout = 5000
+        $Client.SendTimeout = 5000
+        $stream = $Client.GetStream()
+        $headerBytes = [Collections.Generic.List[byte]]::new()
+        while ($headerBytes.Count -lt 65536) {
+            $next = $stream.ReadByte()
+            if ($next -lt 0) { break }
+            $headerBytes.Add([byte]$next)
+            $count = $headerBytes.Count
+            if ($count -ge 4 -and
+                $headerBytes[$count - 4] -eq 13 -and
+                $headerBytes[$count - 3] -eq 10 -and
+                $headerBytes[$count - 2] -eq 13 -and
+                $headerBytes[$count - 1] -eq 10) {
+                break
+            }
+        }
+        $header = [Text.Encoding]::ASCII.GetString($headerBytes.ToArray())
+        if ($header -notmatch '(?im)^Content-Length:\s*([0-9]+)\s*$') {
+            return
+        }
+        $length = [uint64]$Matches[1]
+        if ($length -gt 16MB) {
+            return
+        }
+        if ($header -match '(?im)^Expect:\s*100-continue\s*$') {
+            $continue = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
+            $stream.Write($continue, 0, $continue.Length)
+        }
+        $buffer = [byte[]]::new(65536)
+        $remaining = $length
+        while ($remaining -gt 0) {
+            $requested = [int][Math]::Min([uint64]$buffer.Length, $remaining)
+            $read = $stream.Read($buffer, 0, $requested)
+            if ($read -le 0) { throw 'Setup OTLP fixture request body ended early' }
+            $remaining -= [uint64]$read
+        }
+        $response = [Text.Encoding]::ASCII.GetBytes(
+            "HTTP/1.1 200 OK`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+        )
+        $stream.Write($response, 0, $response.Length)
+        $stream.Flush()
+    } finally {
+        $Client.Dispose()
+    }
+}
+$runspacePool = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, 8)
+$workers = [Collections.Generic.List[object]]::new()
 try {
+    $runspacePool.Open()
     $listener.Start()
     $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
     $readyStream = [IO.FileStream]::new(
@@ -2025,56 +2080,50 @@ try {
     }
 
     while ($true) {
+        for ($index = $workers.Count - 1; $index -ge 0; $index--) {
+            $entry = $workers[$index]
+            if (-not $entry.Handle.IsCompleted) { continue }
+            try {
+                $entry.PowerShell.EndInvoke($entry.Handle)
+            } catch {
+                # A reset, timeout, or malformed request is isolated to its client.
+            } finally {
+                $entry.PowerShell.Dispose()
+                $entry.Handle.AsyncWaitHandle.Dispose()
+                $workers.RemoveAt($index)
+            }
+        }
+        if ($workers.Count -ge 8) {
+            [void]$workers[0].Handle.AsyncWaitHandle.WaitOne(100)
+            continue
+        }
         $client = $listener.AcceptTcpClient()
+        $worker = [Management.Automation.PowerShell]::Create()
         try {
-            $client.ReceiveTimeout = 5000
-            $client.SendTimeout = 5000
-            $stream = $client.GetStream()
-            $headerBytes = [Collections.Generic.List[byte]]::new()
-            while ($headerBytes.Count -lt 65536) {
-                $next = $stream.ReadByte()
-                if ($next -lt 0) { break }
-                $headerBytes.Add([byte]$next)
-                $count = $headerBytes.Count
-                if ($count -ge 4 -and
-                    $headerBytes[$count - 4] -eq 13 -and
-                    $headerBytes[$count - 3] -eq 10 -and
-                    $headerBytes[$count - 2] -eq 13 -and
-                    $headerBytes[$count - 1] -eq 10) {
-                    break
-                }
-            }
-            $header = [Text.Encoding]::ASCII.GetString($headerBytes.ToArray())
-            if ($header -notmatch '(?im)^Content-Length:\s*([0-9]+)\s*$') {
-                continue
-            }
-            $length = [uint64]$Matches[1]
-            if ($length -gt 16MB) {
-                continue
-            }
-            if ($header -match '(?im)^Expect:\s*100-continue\s*$') {
-                $continue = [Text.Encoding]::ASCII.GetBytes("HTTP/1.1 100 Continue`r`n`r`n")
-                $stream.Write($continue, 0, $continue.Length)
-            }
-            $buffer = [byte[]]::new(65536)
-            $remaining = $length
-            while ($remaining -gt 0) {
-                $requested = [int][Math]::Min([uint64]$buffer.Length, $remaining)
-                $read = $stream.Read($buffer, 0, $requested)
-                if ($read -le 0) { throw 'Setup OTLP fixture request body ended early' }
-                $remaining -= [uint64]$read
-            }
-            $response = [Text.Encoding]::ASCII.GetBytes(
-                "HTTP/1.1 200 OK`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
-            )
-            $stream.Write($response, 0, $response.Length)
-            $stream.Flush()
+            $worker.RunspacePool = $runspacePool
+            [void]$worker.AddScript($handler.ToString()).AddArgument($client)
+            $handle = $worker.BeginInvoke()
+            [void]$workers.Add([pscustomobject]@{
+                PowerShell = $worker
+                Handle = $handle
+            })
+            $client = $null
+            $worker = $null
         } finally {
-            $client.Dispose()
+            if ($null -ne $worker) { $worker.Dispose() }
+            if ($null -ne $client) {
+                $client.Dispose()
+            }
         }
     }
 } finally {
     $listener.Stop()
+    foreach ($entry in $workers) {
+        try { $entry.PowerShell.Stop() } catch {}
+        try { $entry.PowerShell.Dispose() } catch {}
+        try { $entry.Handle.AsyncWaitHandle.Dispose() } catch {}
+    }
+    $runspacePool.Dispose()
 }
 '@
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
