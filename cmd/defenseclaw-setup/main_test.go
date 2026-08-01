@@ -1016,6 +1016,7 @@ func TestManagedChildEnvPinsDataRoot(t *testing.T) {
 	t.Setenv("DEFENSECLAW_HOME", `C:\untrusted`)
 	t.Setenv("PYTHONUTF8", "0")
 	t.Setenv("PYTHONIOENCODING", "cp1252")
+	t.Setenv(upgradeFreshProcessEnv, "1")
 	env := managedChildEnv(`C:\Users\test\.defenseclaw`)
 	counts := map[string]int{}
 	for _, entry := range env {
@@ -1024,6 +1025,9 @@ func TestManagedChildEnvPinsDataRoot(t *testing.T) {
 		}
 		if entry == "PYTHONUTF8=0" || entry == "PYTHONIOENCODING=cp1252" {
 			t.Fatalf("ambient Python encoding survived managedChildEnv: %q", entry)
+		}
+		if strings.HasPrefix(strings.ToUpper(entry), upgradeFreshProcessEnv+"=") {
+			t.Fatalf("ambient upgrade readiness delegation survived managedChildEnv: %q", entry)
 		}
 		counts[entry]++
 	}
@@ -1035,6 +1039,25 @@ func TestManagedChildEnvPinsDataRoot(t *testing.T) {
 		if counts[want] != 1 {
 			t.Fatalf("managed environment count for %q = %d, want 1", want, counts[want])
 		}
+	}
+}
+
+func TestManagedRecoveryChildEnvDelegatesOnlyRecoveryReadiness(t *testing.T) {
+	t.Setenv(upgradeFreshProcessEnv, "untrusted")
+	env := managedRecoveryChildEnv(`C:\Users\test\.defenseclaw`)
+	count := 0
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || !strings.EqualFold(name, upgradeFreshProcessEnv) {
+			continue
+		}
+		count++
+		if value != "1" {
+			t.Fatalf("recovery readiness marker = %q, want 1", value)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("recovery readiness marker count = %d, want 1", count)
 	}
 }
 

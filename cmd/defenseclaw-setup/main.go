@@ -63,6 +63,7 @@ const (
 	maxRunCommandUTF16Units    = 260
 	internalSetupConnectorEnv  = "DEFENSECLAW_INTERNAL_SETUP_CONNECTOR"
 	internalSetupParentEnv     = "DEFENSECLAW_INTERNAL_SETUP_PARENT"
+	upgradeFreshProcessEnv     = "DEFENSECLAW_UPGRADE_FRESH_PROCESS"
 )
 
 var (
@@ -2170,7 +2171,11 @@ func packagedTargetRuntimeEnv(input []string, root, dataRoot string) []string {
 }
 
 func startGateway(gatewayPath, dataRoot string) error {
-	output, err := runCapturedManagedServiceCommand(setupControlCommandTimeout, managedChildEnv(dataRoot), gatewayPath, "start")
+	return startGatewayWithEnv(gatewayPath, managedChildEnv(dataRoot))
+}
+
+func startGatewayWithEnv(gatewayPath string, env []string) error {
+	output, err := runCapturedManagedServiceCommand(setupControlCommandTimeout, env, gatewayPath, "start")
 	if err != nil {
 		return fmt.Errorf("start gateway: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2178,7 +2183,11 @@ func startGateway(gatewayPath, dataRoot string) error {
 }
 
 func startWatchdog(gatewayPath, dataRoot string) error {
-	output, err := runCapturedManagedServiceCommand(setupControlCommandTimeout, managedChildEnv(dataRoot), gatewayPath, "watchdog", "start")
+	return startWatchdogWithEnv(gatewayPath, managedChildEnv(dataRoot))
+}
+
+func startWatchdogWithEnv(gatewayPath string, env []string) error {
+	output, err := runCapturedManagedServiceCommand(setupControlCommandTimeout, env, gatewayPath, "watchdog", "start")
 	if err != nil {
 		return fmt.Errorf("start watchdog: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2234,15 +2243,19 @@ func stopOwnedServicesContext(ctx context.Context, gatewayPath, dataRoot string)
 }
 
 func startSelectedServices(gatewayPath, dataRoot string, wanted serviceState) (serviceState, error) {
+	return startSelectedServicesWithEnv(gatewayPath, dataRoot, wanted, managedChildEnv(dataRoot))
+}
+
+func startSelectedServicesWithEnv(gatewayPath, dataRoot string, wanted serviceState, env []string) (serviceState, error) {
 	started := serviceState{}
 	if wanted.Gateway {
-		if err := startGateway(gatewayPath, dataRoot); err != nil {
+		if err := startGatewayWithEnv(gatewayPath, env); err != nil {
 			return started, err
 		}
 		started.Gateway = true
 	}
 	if wanted.Watchdog {
-		if err := startWatchdog(gatewayPath, dataRoot); err != nil {
+		if err := startWatchdogWithEnv(gatewayPath, env); err != nil {
 			if started.Gateway {
 				_, _ = stopOwnedServices(gatewayPath, dataRoot)
 			}
@@ -2800,7 +2813,7 @@ func managedChildEnv(dataRoot string) []string {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok {
 			switch strings.ToUpper(name) {
-			case "DEFENSECLAW_HOME", "PYTHONIOENCODING", "PYTHONUTF8":
+			case "DEFENSECLAW_HOME", "PYTHONIOENCODING", "PYTHONUTF8", upgradeFreshProcessEnv:
 				continue
 			}
 		}
@@ -2812,6 +2825,10 @@ func managedChildEnv(dataRoot string) []string {
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
 	)
+}
+
+func managedRecoveryChildEnv(dataRoot string) []string {
+	return append(managedChildEnv(dataRoot), upgradeFreshProcessEnv+"=1")
 }
 
 func copyFile(source, target string) error {

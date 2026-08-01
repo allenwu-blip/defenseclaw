@@ -182,6 +182,56 @@ func TestRollbackInstallCleansIncompleteRecordedStagingTree(t *testing.T) {
 	assertPathAbsent(t, transaction.StagingPath)
 }
 
+func TestRollbackInstallPreservesPristineCurrentTreeWhenStagingProvesPrePublication(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
+	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
+	writeInstallTree(t, installRoot, previous)
+	writeInstallTree(t, transaction.StagingPath, testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		transaction.ID,
+		transaction.TargetVersion,
+	))
+
+	renameCalls := 0
+	err := rollbackInstallFilesWithRename(transaction, func(string, string) error {
+		renameCalls++
+		return errors.New("pristine live tree must not be renamed")
+	})
+	if err != nil {
+		t.Fatalf("pre-publication rollback: %v", err)
+	}
+	if renameCalls != 0 {
+		t.Fatalf("pre-publication rollback rename calls = %d, want 0", renameCalls)
+	}
+	assertInstallVersion(t, installRoot, transaction, previous.Version)
+	assertPathAbsent(t, transaction.StagingPath)
+	assertPathAbsent(t, transaction.BackupPath)
+}
+
+func TestRollbackInstallConfirmsDurableRestoreWhenStagingIsAbsent(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(installRoot, dataRoot, maintenancePath, testPreviousTransactionID, "1.0.0")
+	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, &previous)
+	writeInstallTree(t, installRoot, previous)
+
+	renameCalls := 0
+	err := rollbackInstallFilesWithRename(transaction, func(source, destination string) error {
+		renameCalls++
+		return os.Rename(source, destination)
+	})
+	if err != nil {
+		t.Fatalf("durable restored-tree confirmation: %v", err)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("durable restored-tree rename calls = %d, want 2", renameCalls)
+	}
+	assertInstallVersion(t, installRoot, transaction, previous.Version)
+	assertPathAbsent(t, transaction.BackupPath)
+}
+
 func TestRollbackFreshInstallRefusesStateLessPublishedTree(t *testing.T) {
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, nil)
@@ -3191,6 +3241,80 @@ func TestRollbackRestoreIncludesOwnedRuntimeStartedAfterIntent(t *testing.T) {
 	if got := strings.Join(restoreCalls, ","); got != "hook,services" {
 		t.Fatalf("rollback restore order = %q, want hook before services", got)
 	}
+}
+
+func TestQuiescingRecoveryPreservesPriorGatewayIntentWithoutConnectorReadiness(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	previous := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testPreviousTransactionID,
+		"1.0.0",
+	)
+	transaction := testSetupTransactionForRoots(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		&previous,
+	)
+	transaction.PreviousServices = serviceState{Gateway: true}
+	transaction.PreviousStableHookStatus = stableHookSnapshotActive
+	writeInstallTree(t, installRoot, previous)
+	writeInstallTree(t, transaction.StagingPath, testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		transaction.ID,
+		transaction.TargetVersion,
+	))
+
+	connectorReady := false
+	launched := serviceState{}
+	phase := setupPhaseQuiescing
+	err := recoverSetupJournalPhase(setupJournal{
+		SchemaVersion: setupJournalSchemaVersion,
+		Phase:         setupPhaseQuiescing,
+		Transaction:   transaction,
+	}, setupRecoveryOps{
+		Rollback: func(got setupTransaction) error {
+			return rollbackSetupTransactionWithRuntime(
+				got,
+				func(string, string) (serviceState, error) { return serviceState{}, nil },
+				func(string, string) error { return nil },
+				func(setupTransaction) error { return nil },
+				func(_ string, _ string, wanted serviceState) (serviceState, error) {
+					// Recovery owns readiness for the immediately following
+					// transaction. A validated process launch is sufficient here;
+					// the final target activation remains the strict readiness gate.
+					if connectorReady {
+						t.Fatal("fixture unexpectedly reported stale connector readiness")
+					}
+					launched = wanted
+					return wanted, nil
+				},
+			)
+		},
+		Transition: func(_ setupTransaction, from, to string) error {
+			if phase != from {
+				return fmt.Errorf("journal phase = %q, want %q", phase, from)
+			}
+			phase = to
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != setupPhaseComplete {
+		t.Fatalf("journal phase = %q, want complete", phase)
+	}
+	if launched != (serviceState{Gateway: true}) {
+		t.Fatalf("recovery launched services = %+v, want prior gateway intent", launched)
+	}
+	assertInstallVersion(t, installRoot, transaction, previous.Version)
+	assertPathAbsent(t, transaction.StagingPath)
 }
 
 func TestUninstallRollbackRestoresHookBeforeServices(t *testing.T) {

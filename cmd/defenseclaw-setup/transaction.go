@@ -1985,7 +1985,7 @@ func recoverPendingSetupTransaction(installRoot, dataRoot string) error {
 	paths := journalPaths(root)
 	return recoverSetupTransactionAt(paths.Journal, expected, setupRecoveryOps{
 		Abort:    abortPreparedSetupTransaction,
-		Rollback: rollbackSetupTransaction,
+		Rollback: rollbackSetupTransactionForRecovery,
 		Activate: activatePublishedSetupTransaction,
 		Converge: convergeRecoveredCommittedSetupTransaction,
 		Cleanup:  cleanupCommittedSetupTransaction,
@@ -2019,7 +2019,7 @@ func preparePendingSetupTransactionForUninstall(opts options, installRoot, dataR
 		recoverUninstall: func(journal setupJournal) error {
 			return recoverSetupJournalPhase(journal, setupRecoveryOps{
 				Abort:    abortPreparedSetupTransaction,
-				Rollback: rollbackSetupTransaction,
+				Rollback: rollbackSetupTransactionForRecovery,
 				Activate: activatePublishedSetupTransaction,
 				Converge: convergeRecoveredCommittedSetupTransaction,
 				Cleanup:  cleanupCommittedSetupTransaction,
@@ -2498,6 +2498,23 @@ func abortPreparedSetupTransaction(transaction setupTransaction) error {
 }
 
 func rollbackSetupTransaction(transaction setupTransaction) error {
+	return rollbackSetupTransactionWithServices(transaction, startMissingServices)
+}
+
+func rollbackSetupTransactionForRecovery(transaction setupTransaction) error {
+	// A recovery invocation immediately continues into a new authenticated
+	// install or uninstall transaction. Restore the prior process identity and
+	// service intent without requiring stale connector locks to become ready;
+	// the continuing transaction will quiesce this exact-owned runtime again,
+	// and final target activation still performs the ordinary strict readiness
+	// check. The gateway validates the delegated launch/PID before returning.
+	return rollbackSetupTransactionWithServices(transaction, startMissingServicesForRecovery)
+}
+
+func rollbackSetupTransactionWithServices(
+	transaction setupTransaction,
+	startServices func(string, string, serviceState) (serviceState, error),
+) error {
 	// A journal written by an older Setup may still have an active stable-hook
 	// generation. Revoke cold-start authority before stopping or replacing any
 	// fixed-path runtime during rollback.
@@ -2514,7 +2531,7 @@ func rollbackSetupTransaction(transaction setupTransaction) error {
 		stopOwnedServices,
 		verifyOwnedRuntimeReleased,
 		restorePreviousStableHookRuntime,
-		startMissingServices,
+		startServices,
 	)
 }
 
@@ -2830,6 +2847,18 @@ func startMissingServices(gatewayPath, dataRoot string, wanted serviceState) (se
 		Watchdog: wanted.Watchdog && !current.Watchdog,
 	}
 	return startSelectedServices(gatewayPath, dataRoot, missing)
+}
+
+func startMissingServicesForRecovery(gatewayPath, dataRoot string, wanted serviceState) (serviceState, error) {
+	current, err := inspectOwnedServices(gatewayPath, dataRoot)
+	if err != nil {
+		return serviceState{}, err
+	}
+	missing := serviceState{
+		Gateway:  wanted.Gateway && !current.Gateway,
+		Watchdog: wanted.Watchdog && !current.Watchdog,
+	}
+	return startSelectedServicesWithEnv(gatewayPath, dataRoot, missing, managedRecoveryChildEnv(dataRoot))
 }
 
 func activatePublishedSetupTransaction(transaction setupTransaction) error {
@@ -3459,15 +3488,20 @@ func rollbackInstallFilesWithRename(transaction setupTransaction, rename func(st
 		if !installStateMatchesSnapshot(state, transaction.PreviousState) {
 			return errors.New("previous installation is missing and no valid transaction backup remains")
 		}
-		// The prior rollback rename may have become visible while its
-		// write-through failed. Round-trip through the recorded backup name so
-		// this invocation obtains a confirmed durable rename before completing
-		// the intent journal.
-		if err := rename(transaction.InstallRoot, transaction.BackupPath); err != nil {
-			return err
-		}
-		if err := rename(transaction.BackupPath, transaction.InstallRoot); err != nil {
-			return err
+		if !pathExists(transaction.StagingPath) {
+			// With no staging tree, the prior rollback rename may have become
+			// visible while its write-through failed. Round-trip through the
+			// recorded backup name so this invocation obtains a confirmed durable
+			// rename before completing the intent journal. When staging still
+			// exists, publication never consumed it and the matching current tree
+			// is already the pristine pre-transaction install; renaming it again
+			// creates an unnecessary Windows sharing/ACL failure boundary.
+			if err := rename(transaction.InstallRoot, transaction.BackupPath); err != nil {
+				return fmt.Errorf("confirm durable restored install move to backup: %w", err)
+			}
+			if err := rename(transaction.BackupPath, transaction.InstallRoot); err != nil {
+				return fmt.Errorf("confirm durable restored install move to fixed path: %w", err)
+			}
 		}
 	} else if pathExists(transaction.InstallRoot) {
 		if pathExists(transaction.StagingPath) {
