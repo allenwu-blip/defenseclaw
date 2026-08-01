@@ -388,9 +388,17 @@ def test_certification_uses_active_token_without_requesting_user_password() -> N
     assert "[string]$ProtectedUserSID" in harness
     assert "ProtectedUserCredential" not in harness
     assert "WTSConnectState]::Active" in harness
-    assert "New-ScheduledTaskPrincipal" in harness
+    assert "New-ActiveUserScheduledTaskPrincipal" in harness
+    assert "-UserId $script:PrimarySID" in harness
     assert "-LogonType Interactive" in harness
     assert "-RunLevel Limited" in harness
+    assert "$task.RunEx(" in harness
+    assert "[int]0x0C" in harness
+    assert "[int]$script:PrimarySessionID" in harness
+    assert harness.count(
+        "Start-CertificationScheduledTaskInActiveSession $taskName"
+    ) == 6
+    assert "Start-ScheduledTask -TaskName $taskName" not in harness
     assert "no active interactive session token" not in harness
 
 
@@ -415,6 +423,7 @@ def test_active_user_results_use_pid_bound_administrator_owned_pipe() -> None:
     assert "$task.GetSecurityDescriptor(7)" in capture
     assert "$aces.Count -ne 3" in capture
     assert "$enginePIDs[0] -ne $clientPID" in capture
+    assert "[uint32]$launch.EnginePID -ne $clientPID" in capture
     assert "[string]$clientProcess.ExecutablePath" in capture
     assert "$script:PrimarySessionID" in capture
     assert "[string]$done.nonce -cne $nonce" in capture
@@ -426,6 +435,10 @@ def test_active_user_results_use_pid_bound_administrator_owned_pipe() -> None:
     assert "ReadToEndAsync" not in capture
     assert "CaptureTaskPIDBound = $true" in capture
     assert "CaptureUserWritableFilesTrusted = $false" in capture
+    assert "exit 251" in capture
+    assert harness.count(
+        "[uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID"
+    ) == 5
 
     # High-stakes probe output must cross the authenticated pipe directly.
     # The tested standard user must not be able to forge an elevated reader's
@@ -462,7 +475,7 @@ def test_certification_scheduled_tasks_are_removed_fail_closed() -> None:
     assert "$script:ScheduledTasks.Contains($safeTaskName)" in helper
     assert helper.count("Stop-ScheduledTask") == 1
     assert helper.count("Unregister-ScheduledTask") == 1
-    assert helper.count("-TaskPath '\\'") == 2
+    assert helper.count("-TaskPath '\\'") == 3
     assert "-ErrorAction SilentlyContinue" not in helper
     assert "Stopping is best-effort" in helper
     assert "Get-ScheduledTask -ErrorAction Stop" in helper

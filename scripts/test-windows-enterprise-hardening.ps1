@@ -1106,6 +1106,133 @@ function Assert-CertificationScheduledTaskName([string]$TaskName) {
     return $TaskName
 }
 
+function New-ActiveUserScheduledTaskPrincipal {
+    if ([string]::IsNullOrWhiteSpace($script:PrimarySID) -or
+        $script:PrimarySessionID -le 0) {
+        throw 'active-user scheduled-task identity is not initialized'
+    }
+    $principal = New-ScheduledTaskPrincipal `
+        -UserId $script:PrimarySID `
+        -LogonType Interactive `
+        -RunLevel Limited
+    try {
+        $resolvedSID = (
+            [Security.Principal.NTAccount]([string]$principal.UserId)
+        ).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw (
+            'Task Scheduler did not canonicalize the active-user SID to ' +
+            "a resolvable account: $($_.Exception.Message)"
+        )
+    }
+    if ($resolvedSID -cne $script:PrimarySID) {
+        throw (
+            'Task Scheduler canonicalized the active-user principal to ' +
+            "unexpected SID $resolvedSID"
+        )
+    }
+    return $principal
+}
+
+function Start-CertificationScheduledTaskInActiveSession(
+    [string]$TaskName,
+    [ValidateRange(5, 60)][int]$TimeoutSeconds = 30
+) {
+    $safeTaskName = Assert-CertificationScheduledTaskName $TaskName
+    if (-not $script:ScheduledTasks.Contains($safeTaskName)) {
+        throw (
+            'refusing to start an untracked certification scheduled task: ' +
+            $safeTaskName
+        )
+    }
+    $active = @(
+        Get-ActiveWTSSessions |
+            Where-Object {
+                [int]$_.session_id -eq $script:PrimarySessionID -and
+                [string]$_.sid -ceq $script:PrimarySID
+            }
+    )
+    if ($active.Count -ne 1) {
+        throw (
+            'the exact protected user is no longer active in WTS session ' +
+            $script:PrimarySessionID
+        )
+    }
+    $service = $folder = $task = $running = $process = $null
+    $enginePID = [uint32]0
+    try {
+        $service = New-Object -ComObject 'Schedule.Service'
+        $service.Connect()
+        $folder = $service.GetFolder('\')
+        $task = $folder.GetTask($safeTaskName)
+        # TASK_RUN_USE_SESSION_ID | TASK_RUN_USER_SID. Never let an elevated
+        # caller make Task Scheduler rediscover the target from a display name
+        # or choose a different interactive session.
+        $running = $task.RunEx(
+            $null,
+            [int]0x0C,
+            [int]$script:PrimarySessionID,
+            $script:PrimarySID
+        )
+        $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
+        do {
+            try {
+                $enginePID = [uint32]$running.EnginePID
+                if ($enginePID -gt 0) {
+                    $process = Get-CimInstance `
+                        Win32_Process `
+                        -Filter "ProcessId=$enginePID" `
+                        -ErrorAction Stop
+                    break
+                }
+            } catch {}
+            Start-Sleep -Milliseconds 50
+        } while ([DateTimeOffset]::UtcNow -lt $deadline)
+        if ($null -eq $process) {
+            $taskInfo = Get-ScheduledTaskInfo `
+                -TaskName $safeTaskName `
+                -TaskPath '\' `
+                -ErrorAction Stop
+            $resultValue = [uint32](
+                [int64]$taskInfo.LastTaskResult -band [int64]0xFFFFFFFFL
+            )
+            throw (
+                "scheduled task $safeTaskName did not start; state=" +
+                "$([string]$running.State); engine_pid=$enginePID; " +
+                ('last_result=0x{0:X8}' -f $resultValue)
+            )
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath) -or
+            -not [string]::Equals(
+                (ConvertTo-CanonicalPath ([string]$process.ExecutablePath)),
+                (ConvertTo-CanonicalPath $script:PowerShellExecutable),
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            [uint32]$process.SessionId -ne
+                [uint32]$script:PrimarySessionID) {
+            throw (
+                "scheduled task $safeTaskName did not start the exact " +
+                'PowerShell image in the protected WTS session'
+            )
+        }
+        return [pscustomobject]@{
+            EnginePID = $enginePID
+            InstanceGuid = [string]$running.InstanceGuid
+            SessionID = [int]$script:PrimarySessionID
+            UserSID = $script:PrimarySID
+        }
+    } finally {
+        foreach ($value in @($running, $task, $folder, $service)) {
+            if ($null -ne $value) {
+                try {
+                    [void][Runtime.InteropServices.Marshal]::
+                        FinalReleaseComObject($value)
+                } catch {}
+            }
+        }
+    }
+}
+
 function Remove-CertificationScheduledTask([string]$TaskName) {
     $safeTaskName = Assert-CertificationScheduledTaskName $TaskName
     if (-not $script:ScheduledTasks.Contains($safeTaskName)) {
@@ -1612,6 +1739,7 @@ try {
         $pipe.Dispose()
     }
 }
+if (-not [string]::IsNullOrWhiteSpace($errorText)) { exit 251 }
 '@.Replace('__PAYLOAD__', $payloadBase64)
     $wrapperPath = Join-Path $transportRoot 'capture-wrapper.ps1'
     [IO.File]::WriteAllText(
@@ -1646,10 +1774,7 @@ try {
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument $taskArguments
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds($TimeoutSeconds + 30)) `
         -AllowStartIfOnBatteries `
@@ -1673,7 +1798,7 @@ try {
             $taskName,
             $taskXML,
             [int]0x12,
-            $script:PrimaryUserName,
+            [string]$principal.UserId,
             $null,
             [int]3,
             $taskSecurityDescriptor
@@ -1691,9 +1816,20 @@ try {
     $script:ScheduledTasks.Add($taskName)
         Assert-ProtectedActiveUserCaptureTaskSecurity $taskName
         $connection = $server.WaitForConnectionAsync()
-        Start-ScheduledTask -TaskName $taskName
+        $launch = Start-CertificationScheduledTaskInActiveSession $taskName
         if (-not $connection.Wait(30000)) {
-            throw "$Label active-user task did not connect to its capture pipe"
+            $taskInfo = Get-ScheduledTaskInfo `
+                -TaskName $taskName `
+                -TaskPath '\' `
+                -ErrorAction Stop
+            $resultValue = [uint32](
+                [int64]$taskInfo.LastTaskResult -band [int64]0xFFFFFFFFL
+            )
+            throw (
+                "$Label active-user task PID $($launch.EnginePID) did not " +
+                'connect to its capture pipe; last_result=' +
+                ('0x{0:X8}' -f $resultValue)
+            )
         }
         $clientPID = [uint32](
             [DefenseClaw.Certification.ActiveUserCapturePipeNative]::
@@ -1703,11 +1839,13 @@ try {
             Get-ScheduledTaskEngineProcessIDs $taskName
         )
         if ($clientPID -eq 0 -or
+            [uint32]$launch.EnginePID -ne $clientPID -or
             $enginePIDs.Count -ne 1 -or
             $enginePIDs[0] -ne $clientPID) {
             throw (
                 "$Label capture client PID $clientPID is not the exact " +
-                "scheduled-task engine PID: $($enginePIDs -join ',')"
+                "RunEx PID $($launch.EnginePID) and scheduled-task " +
+                "engine PID: $($enginePIDs -join ',')"
             )
         }
         $clientProcess = Get-CimInstance `
@@ -1760,7 +1898,7 @@ try {
             [uint32]$done.pid -ne $clientPID) {
             throw (
                 "$Label authenticated capture receipt did not bind the " +
-                'exact nonce, SID, and scheduled-task PID'
+                'exact nonce, SID, and RunEx task PID'
             )
         }
         $stdoutText = [string]$done.stdout
@@ -1963,10 +2101,7 @@ try {
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds(150)) `
         -AllowStartIfOnBatteries `
@@ -1981,7 +2116,7 @@ try {
         -Force |
         Out-Null
     $script:ScheduledTasks.Add($taskName)
-    Start-ScheduledTask -TaskName $taskName
+    $launch = Start-CertificationScheduledTaskInActiveSession $taskName
     $readyJSON = Wait-Until `
         -Description "$Label fake listener bind" `
         -TimeoutSeconds 30 `
@@ -1997,6 +2132,7 @@ try {
             }
         }
     if ([string]$readyJSON.sid -ne $script:PrimarySID -or
+        [uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID -or
         [int]$readyJSON.port -ne $script:APIPort) {
         throw 'fake gateway listener did not bind as the exact active target SID'
     }
@@ -2205,10 +2341,7 @@ try {
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds(120)) `
         -AllowStartIfOnBatteries `
@@ -2223,7 +2356,7 @@ try {
         -Force |
         Out-Null
     $script:ScheduledTasks.Add($taskName)
-    Start-ScheduledTask -TaskName $taskName
+    $launch = Start-CertificationScheduledTaskInActiveSession $taskName
     $readyJSON = Wait-Until `
         -Description "$Label non-admin mutex squat" `
         -TimeoutSeconds 30 `
@@ -2239,6 +2372,7 @@ try {
             }
         }
     if ([string]$readyJSON.sid -ne $script:PrimarySID -or
+        [uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID -or
         [string]$readyJSON.mutex_name -cne $MutexName -or
         [string]$readyJSON.mode -cne $Mode -or
         -not [bool]$readyJSON.owns_mutex) {
@@ -2452,10 +2586,7 @@ try {
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds($TimeoutSeconds + 30)) `
         -AllowStartIfOnBatteries `
@@ -2470,7 +2601,7 @@ try {
         -Force |
         Out-Null
     $script:ScheduledTasks.Add($taskName)
-    Start-ScheduledTask -TaskName $taskName
+    $launch = Start-CertificationScheduledTaskInActiveSession $taskName
     $readyJSON = Wait-Until `
         -Description "$Label non-admin protected file lock" `
         -TimeoutSeconds 30 `
@@ -2486,6 +2617,7 @@ try {
             }
         }
     if ([string]$readyJSON.sid -ne $script:PrimarySID -or
+        [uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID -or
         -not [string]::Equals(
             [string]$readyJSON.path,
             (ConvertTo-CanonicalPath $Path),
@@ -2915,10 +3047,7 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds(150)) `
         -AllowStartIfOnBatteries `
@@ -2935,7 +3064,7 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
     $script:ScheduledTasks.Add($taskName)
     $readyJSON = $null
     try {
-        Start-ScheduledTask -TaskName $taskName
+        $launch = Start-CertificationScheduledTaskInActiveSession $taskName
         $started = Wait-Until `
             -Description "$Label sparse grow readiness" `
             -TimeoutSeconds 45 `
@@ -2969,6 +3098,7 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
         }
         $readyJSON = $started.ready
         if ([string]$readyJSON.sid -ne $script:PrimarySID -or
+            [uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID -or
             -not [string]::Equals(
                 [string]$readyJSON.path,
                 $canonical,
@@ -3295,6 +3425,7 @@ if ($sid -ne [string]$inputObject.expected_sid) {
     [string]$inputObject.ready,
     ([pscustomobject]@{
         sid = $sid
+        pid = [Diagnostics.Process]::GetCurrentProcess().Id
         ready = $true
     } | ConvertTo-Json -Compress),
     [Text.UTF8Encoding]::new($false)
@@ -3426,10 +3557,7 @@ if ($null -eq $result) {
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
         -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $script:PrimaryUserName `
-        -LogonType Interactive `
-        -RunLevel Limited
+    $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds(150)) `
         -AllowStartIfOnBatteries `
@@ -3445,7 +3573,7 @@ if ($null -eq $result) {
         Out-Null
     $script:ScheduledTasks.Add($taskName)
     try {
-        Start-ScheduledTask -TaskName $taskName
+        $launch = Start-CertificationScheduledTaskInActiveSession $taskName
         $readyJSON = Wait-Until `
             -Description "$Label medium-user temp-probe readiness" `
             -TimeoutSeconds 30 `
@@ -3459,6 +3587,7 @@ if ($null -eq $result) {
                 }
             }
         if ([string]$readyJSON.sid -ne $script:PrimarySID -or
+            [uint32]$readyJSON.pid -ne [uint32]$launch.EnginePID -or
             -not [bool]$readyJSON.ready) {
             throw "$Label medium-user temp probe used the wrong token"
         }
@@ -3470,6 +3599,7 @@ if ($null -eq $result) {
         TaskName = $taskName
         ReleasePath = $release
         EvidencePath = $evidence
+        PID = [uint32]$readyJSON.pid
     }
 }
 

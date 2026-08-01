@@ -150,11 +150,11 @@ mutations to:
 - `DefenseClawCertGateway_<id>` and `DefenseClawCertGuardian_<id>`;
 - one `DCEH<id-prefix>` local non-admin denial user;
 - short-lived, Administrators-owned `DefenseClawCert_<id>_*` scheduled tasks
-  with an exact protected three-ACE DACL; they run only in the already-active
-  user's interactive token at limited run level;
+  with an exact protected three-ACE DACL; `RunEx` binds them to the exact
+  resolved user SID and WTS session at limited run level;
 - short-lived `\\.\pipe\DefenseClawCert.<id>.<nonce>` capture channels owned
   by Administrators, with bounded target-SID data access and exact Task
-  Scheduler `EnginePID` binding;
+  Scheduler `RunEx` `EnginePID` binding;
 - `C:\Program Files\Cisco\DefenseClaw-Cert\<id>`;
 - `C:\ProgramData\Cisco\DefenseClaw-Cert\<id>`;
 - `C:\ProgramData\Cisco\DefenseClaw-Cert-Staging\<id>`;
