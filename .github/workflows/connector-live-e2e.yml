@@ -382,33 +382,12 @@ jobs:
       DC_E2E_RESULTS: ${{ github.workspace }}/connector-live-e2e-results.jsonl
       DC_DRIVER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'action' }}
       DC_E2E_AGENT_VERSION_REQUEST: ${{ github.event_name == 'workflow_dispatch' && inputs.version || 'latest' }}
-      # Provider keys are read directly by the agent CLIs (e.g. codex, claude)
-      # from the process environment. They are also written into
-      # ~/.defenseclaw/.env below so the gateway can reach them when needed.
-      # Empty secrets simply skip writing that key (see the seed step).
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-      # GitHub Copilot CLI authenticates with an entitled token through its
-      # documented highest-precedence environment variable.
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-      # Generic fallback key for the guardrail/judge if a connector needs it.
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-      # --- Alternative auth backends -----------------------------------------
-      # Azure OpenAI (Codex + OpenHands when DC_USE_AZURE=1). The key is a
-      # secret; the endpoint/deployment/version are non-secret config Variables.
-      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      # Non-secret provider configuration can stay at job scope. Provider
+      # secrets are scoped to the credentialed driver steps below so
+      # no-credential connectors do not inherit unrelated keys.
       AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
       AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
-      # Amazon Bedrock (Claude Code + OpenHands when DC_USE_BEDROCK=1). Either a
-      # Bedrock bearer token OR a standard AWS key pair satisfies the chain.
-      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       # Optional Bedrock model-id overrides (non-secret config Variables).
       CLAUDE_BEDROCK_MODEL: ${{ vars.CLAUDE_BEDROCK_MODEL }}
@@ -431,6 +410,7 @@ jobs:
           INPUT_OS: ${{ inputs.os }}
           MATRIX_CONNECTOR: ${{ matrix.connector }}
           MATRIX_OS: ${{ matrix.dcos }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
         run: |
           run=true
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
@@ -482,29 +462,15 @@ jobs:
             echo "${{ github.workspace }}/.venv/Scripts" >> "$GITHUB_PATH"
           fi
 
-      # Initialize DefenseClaw and stage provider keys into ~/.defenseclaw/.env.
-      # The driver re-runs `defenseclaw init` idempotently; doing it here lets
-      # us append keys before the gateway first starts. Only non-empty secrets
-      # are written, so a missing optional key never leaves a blank line.
-      - name: Seed DefenseClaw env
+      # Initialize DefenseClaw without exposing provider secrets to every
+      # connector cell. Credentialed drivers append their own scoped keys before
+      # starting the gateway.
+      - name: Initialize DefenseClaw env
         if: steps.select.outputs.run == 'true'
         run: |
           defenseclaw init
-          env_file="${HOME}/.defenseclaw/.env"
           mkdir -p "${HOME}/.defenseclaw"
-          touch "${env_file}"
-          write_key() {
-            local k="$1" v="$2"
-            [ -n "${v}" ] || return 0
-            grep -q "^${k}=" "${env_file}" 2>/dev/null && return 0
-            printf '%s=%s\n' "${k}" "${v}" >> "${env_file}"
-          }
-          write_key OPENAI_API_KEY    "${OPENAI_API_KEY:-}"
-          write_key ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}"
-          write_key GOOGLE_API_KEY    "${GOOGLE_API_KEY:-}"
-          write_key GEMINI_API_KEY    "${GEMINI_API_KEY:-}"
-          write_key CURSOR_API_KEY    "${CURSOR_API_KEY:-}"
-          write_key LLM_API_KEY       "${LLM_API_KEY:-}"
+          touch "${HOME}/.defenseclaw/.env"
 
       # For Cursor, confirm headless `agent -p` actually fires
       # ~/.cursor/hooks.json before spending a full live run on it. If hooks
@@ -513,11 +479,26 @@ jobs:
       - name: Validate Cursor headless hooks
         id: cursor_validate
         if: ${{ steps.select.outputs.run == 'true' && matrix.connector == 'cursor' }}
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
         run: bash scripts/live-connector-e2e/cursor-validation.sh
         continue-on-error: true
 
       - name: Live driver
         if: ${{ steps.select.outputs.run == 'true' && !(matrix.connector == 'cursor' && steps.cursor_validate.outputs.cursor_hooks_fire == '0') }}
+        env:
+          OPENAI_API_KEY: ${{ contains(fromJSON('["codex","opencode","openhands"]'), matrix.connector) && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
+          COPILOT_GITHUB_TOKEN: ${{ matrix.connector == 'copilot' && secrets.COPILOT_GITHUB_TOKEN || '' }}
+          LLM_API_KEY: ${{ matrix.connector == 'openhands' && secrets.LLM_API_KEY || '' }}
+          AZURE_OPENAI_API_KEY: ${{ contains(fromJSON('["codex","openhands"]'), matrix.connector) && secrets.AZURE_OPENAI_API_KEY || '' }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ contains(fromJSON('["claudecode","openhands"]'), matrix.connector) && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
+          AWS_ACCESS_KEY_ID: ${{ contains(fromJSON('["claudecode","openhands"]'), matrix.connector) && secrets.AWS_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ contains(fromJSON('["claudecode","openhands"]'), matrix.connector) && secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          AWS_SESSION_TOKEN: ${{ contains(fromJSON('["claudecode","openhands"]'), matrix.connector) && secrets.AWS_SESSION_TOKEN || '' }}
         run: bash scripts/live-connector-e2e/run.sh --layer live --connector "${{ matrix.connector }}"
 
       - name: Upload live results
@@ -558,10 +539,6 @@ jobs:
     env:
       DC_WINDOWS_STATE: ${{ github.workspace }}/.dc-e2e-${{ matrix.connector }}-live
       DC_E2E_RESULTS: ${{ github.workspace }}/connector-live-e2e-results.jsonl
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
       CODEX_VERSION: ${{ inputs.version }}
       CLAUDE_VERSION: ${{ inputs.version }}
       OPENCODE_VERSION: ${{ inputs.version }}
@@ -607,6 +584,11 @@ jobs:
       - name: Native Windows live harness
         if: steps.select.outputs.run == 'true'
         shell: pwsh
+        env:
+          OPENAI_API_KEY: ${{ contains(fromJSON('["codex","opencode"]'), matrix.connector) && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
+          LLM_API_KEY: ${{ contains(fromJSON('["codex","claudecode","opencode"]'), matrix.connector) && secrets.LLM_API_KEY || '' }}
         run: |
           ./scripts/live-connector-e2e/run-windows.ps1 `
             -Layer live `
