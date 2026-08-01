@@ -1989,7 +1989,11 @@ print(f'packaged gateway fixture uses isolated API port {cfg.gateway.api_port}')
     return $apiPort
 }
 
-function Start-SetupAcceptanceOtlpCollector([string]$PowerShell, [string]$ReadyPath) {
+function Start-SetupAcceptanceOtlpCollector(
+    [string]$PowerShell,
+    [string]$ReadyPath,
+    [string]$OutcomePath = ''
+) {
     $ready = [IO.Path]::GetFullPath($ReadyPath)
     if (Test-Path -LiteralPath $ready) {
         throw "refusing to overwrite an existing Setup OTLP fixture ready file: $ready"
@@ -2001,22 +2005,46 @@ function Start-SetupAcceptanceOtlpCollector([string]$PowerShell, [string]$ReadyP
     if (-not (Test-Path -LiteralPath $PowerShell -PathType Leaf)) {
         throw "Setup OTLP fixture PowerShell does not exist: $PowerShell"
     }
+    if ([string]::IsNullOrWhiteSpace($OutcomePath)) {
+        $OutcomePath = [IO.Path]::ChangeExtension($ready, '.requests.log')
+    }
+    $outcome = [IO.Path]::GetFullPath($OutcomePath)
+    if (Test-Path -LiteralPath $outcome) {
+        throw "refusing to overwrite an existing Setup OTLP fixture outcome ledger: $outcome"
+    }
+    $outcomeParent = [IO.Path]::GetDirectoryName($outcome)
+    if (-not (Test-Path -LiteralPath $outcomeParent -PathType Container)) {
+        throw "Setup OTLP fixture outcome directory does not exist: $outcomeParent"
+    }
     $code = @'
-param([Parameter(Mandatory)][string]$ReadyPath)
+param(
+    [Parameter(Mandatory)][string]$ReadyPath,
+    [Parameter(Mandatory)][string]$OutcomePath
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $handler = {
-    param([Parameter(Mandatory)][Net.Sockets.TcpClient]$Client)
+    param(
+        [Parameter(Mandatory)][Net.Sockets.TcpClient]$Client,
+        [Parameter(Mandatory)][string]$OutcomePath,
+        [Parameter(Mandatory)][object]$LedgerLock,
+        [Parameter(Mandatory)][ValidateSet('preflight', 'runtime')][string]$Phase
+    )
 
     Set-StrictMode -Version Latest
     $ErrorActionPreference = 'Stop'
+    $signal = 'unknown'
+    $contentLength = -1L
+    $drained = 0L
+    $outcome = 'exception'
     try {
         $Client.ReceiveTimeout = 5000
         $Client.SendTimeout = 5000
         $stream = $Client.GetStream()
         $headerBytes = [Collections.Generic.List[byte]]::new()
+        $headerComplete = $false
         while ($headerBytes.Count -lt 65536) {
             $next = $stream.ReadByte()
             if ($next -lt 0) { break }
@@ -2027,15 +2055,26 @@ $handler = {
                 $headerBytes[$count - 3] -eq 10 -and
                 $headerBytes[$count - 2] -eq 13 -and
                 $headerBytes[$count - 1] -eq 10) {
+                $headerComplete = $true
                 break
             }
         }
         $header = [Text.Encoding]::ASCII.GetString($headerBytes.ToArray())
+        if ($header -match '(?m)^POST [^ ]*/v1/(logs|metrics|traces)/?(?:\?[^ ]*)? HTTP/1\.[01]\r?$') {
+            $signal = $Matches[1].ToLowerInvariant()
+        }
+        if (-not $headerComplete) {
+            $outcome = 'header_limit'
+            return
+        }
         if ($header -notmatch '(?im)^Content-Length:\s*([0-9]+)\s*$') {
+            $outcome = 'content_length_missing'
             return
         }
         $length = [uint64]$Matches[1]
+        $contentLength = [int64]$length
         if ($length -gt 16MB) {
+            $outcome = 'body_limit'
             return
         }
         if ($header -match '(?im)^Expect:\s*100-continue\s*$') {
@@ -2049,19 +2088,68 @@ $handler = {
             $read = $stream.Read($buffer, 0, $requested)
             if ($read -le 0) { throw 'Setup OTLP fixture request body ended early' }
             $remaining -= [uint64]$read
+            $drained += [int64]$read
         }
         $response = [Text.Encoding]::ASCII.GetBytes(
             "HTTP/1.1 200 OK`r`nContent-Type: application/x-protobuf`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
         )
         $stream.Write($response, 0, $response.Length)
         $stream.Flush()
+        $outcome = 'http_200'
+    } catch {
+        $outcome = 'exception_' + $_.Exception.GetType().Name
+        throw
     } finally {
+        try {
+            [Threading.Monitor]::Enter($LedgerLock)
+            try {
+                $ledger = Get-Item -LiteralPath $OutcomePath -ErrorAction Stop
+                $row = '{0}|phase={1}|signal={2}|content_length={3}|drained={4}|outcome={5}' -f @(
+                    [DateTime]::UtcNow.ToString('o'), $Phase, $signal,
+                    $contentLength, $drained, $outcome
+                )
+                $rowBytes = [Text.Encoding]::UTF8.GetBytes($row + "`n")
+                if ($ledger.Length + $rowBytes.Length -le 524288) {
+                    $append = [IO.FileStream]::new(
+                        $OutcomePath,
+                        [IO.FileMode]::Append,
+                        [IO.FileAccess]::Write,
+                        [IO.FileShare]::Read
+                    )
+                    try {
+                        $append.Write($rowBytes, 0, $rowBytes.Length)
+                        $append.Flush()
+                    } finally {
+                        $append.Dispose()
+                    }
+                }
+            } finally {
+                [Threading.Monitor]::Exit($LedgerLock)
+            }
+        } catch {
+            # Request diagnostics must never change the bounded collector's
+            # transport outcome after its writeability was proven at startup.
+        }
         $Client.Dispose()
     }
 }
 $runspacePool = [Management.Automation.Runspaces.RunspaceFactory]::CreateRunspacePool(1, 8)
 $workers = [Collections.Generic.List[object]]::new()
+$ledgerLock = [object]::new()
 try {
+    $ledgerStream = [IO.FileStream]::new(
+        $OutcomePath,
+        [IO.FileMode]::CreateNew,
+        [IO.FileAccess]::Write,
+        [IO.FileShare]::Read
+    )
+    try {
+        $ledgerHeader = [Text.Encoding]::ASCII.GetBytes("schema=1`n")
+        $ledgerStream.Write($ledgerHeader, 0, $ledgerHeader.Length)
+        $ledgerStream.Flush($true)
+    } finally {
+        $ledgerStream.Dispose()
+    }
     $runspacePool.Open()
     $listener.Start()
     $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
@@ -2136,7 +2224,8 @@ try {
             $serverClient = $listener.AcceptTcpClient()
             $probeWorker = [Management.Automation.PowerShell]::Create()
             $probeWorker.RunspacePool = $runspacePool
-            [void]$probeWorker.AddScript($handler.ToString()).AddArgument($serverClient)
+            [void]$probeWorker.AddScript($handler.ToString()).AddArgument($serverClient).
+                AddArgument($OutcomePath).AddArgument($ledgerLock).AddArgument('preflight')
             $probeHandle = $probeWorker.BeginInvoke()
             $serverClient = $null
 
@@ -2206,7 +2295,8 @@ try {
         $worker = [Management.Automation.PowerShell]::Create()
         try {
             $worker.RunspacePool = $runspacePool
-            [void]$worker.AddScript($handler.ToString()).AddArgument($client)
+            [void]$worker.AddScript($handler.ToString()).AddArgument($client).
+                AddArgument($OutcomePath).AddArgument($ledgerLock).AddArgument('runtime')
             $handle = $worker.BeginInvoke()
             [void]$workers.Add([pscustomobject]@{
                 PowerShell = $worker
@@ -2242,6 +2332,8 @@ try {
     $startInfo.ArgumentList.Add($code)
     $startInfo.ArgumentList.Add('-ReadyPath')
     $startInfo.ArgumentList.Add($ready)
+    $startInfo.ArgumentList.Add('-OutcomePath')
+    $startInfo.ArgumentList.Add($outcome)
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
     $started = $false
@@ -2380,26 +2472,38 @@ function Write-SetupAcceptanceConvergenceDiagnostics(
     Write-BoundedText -Path (Join-Path $Logs 'setup-convergence-runtime.log') `
         -Text ($rows -join "`n") -MaxBytes 16384
 
-    $gatewayLog = Join-Path $DataRoot 'gateway.log'
-    if (-not (Test-Path -LiteralPath $gatewayLog -PathType Leaf)) { return }
-    try {
-        $tail = @(Get-Content -LiteralPath $gatewayLog -Tail 512 -Encoding UTF8 -ErrorAction Stop)
-        $safe = Protect-WindowsNativeText ($tail -join "`n")
-        # The normal redactor removes known environment credentials and common
-        # authorization fields. This extra diagnostic-only pass also removes
-        # arbitrary token/password/credential values before the bounded log is
-        # copied out of the disposable user profile.
-        $safe = [regex]::Replace(
-            $safe,
-            '(?im)(?<prefix>\b(?:token|password|credential|secret)\b\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|\S+)',
-            '${prefix}***REDACTED***'
-        )
-        Write-BoundedText -Path (Join-Path $Logs 'setup-gateway-failure.log') `
-            -Text $safe -MaxBytes 262144
-    } catch {
-        Write-BoundedText -Path (Join-Path $Logs 'setup-gateway-failure.log') `
-            -Text "gateway failure log capture unavailable: $($_.Exception.GetType().Name)" `
-            -MaxBytes 16384
+    foreach ($source in @(
+        [pscustomobject]@{
+            Path = (Join-Path $DataRoot 'gateway.log')
+            Output = 'setup-gateway-failure.log'
+            Label = 'gateway failure log'
+        },
+        [pscustomobject]@{
+            Path = (Join-Path $DataRoot 'gateway.jsonl')
+            Output = 'setup-gateway-jsonl-failure.log'
+            Label = 'gateway JSONL failure log'
+        }
+    )) {
+        if (-not (Test-Path -LiteralPath $source.Path -PathType Leaf)) { continue }
+        try {
+            $tail = @(Get-Content -LiteralPath $source.Path -Tail 512 -Encoding UTF8 -ErrorAction Stop)
+            $safe = Protect-WindowsNativeText ($tail -join "`n")
+            # The normal redactor removes known environment credentials and common
+            # authorization fields. This extra diagnostic-only pass also removes
+            # arbitrary token/password/credential values before the bounded log is
+            # copied out of the disposable user profile.
+            $safe = [regex]::Replace(
+                $safe,
+                '(?im)(?<prefix>\b(?:token|password|credential|secret)\b\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|\S+)',
+                '${prefix}***REDACTED***'
+            )
+            Write-BoundedText -Path (Join-Path $Logs $source.Output) `
+                -Text $safe -MaxBytes 262144
+        } catch {
+            Write-BoundedText -Path (Join-Path $Logs $source.Output) `
+                -Text "$($source.Label) capture unavailable: $($_.Exception.GetType().Name)" `
+                -MaxBytes 16384
+        }
     }
 }
 
@@ -4339,7 +4443,8 @@ function Invoke-SetupAcceptance {
         # deterministic: strict committed activation must reach a real local
         # destination instead of relying on an absent developer collector.
         $setupOtlpCollector = Start-SetupAcceptanceOtlpCollector (Join-Path $PSHOME 'pwsh.exe') `
-            (Join-Path $root 'setup-otlp-collector.port')
+            (Join-Path $root 'setup-otlp-collector.port') `
+            (Join-Path $logs 'setup-otlp-requests.log')
         $setupOtlpPort = [int]$setupOtlpCollector.Port
         $v7Fixture = @"
 # native Setup 0.8.0 observability migration acceptance fixture
