@@ -5707,6 +5707,28 @@ function Assert-PackagedRotationActionClosedPosture([object[]]$Posture) {
     }
 }
 
+function Assert-CursorCompatibilitySkillHomes([string[]]$Homes) {
+    foreach ($compatibilityHome in $Homes) {
+        if (-not (Test-Path -LiteralPath $compatibilityHome)) { continue }
+        $homeItem = Get-Item -LiteralPath $compatibilityHome -Force
+        $skills = [IO.Path]::GetFullPath((Join-Path $compatibilityHome 'skills'))
+        $children = @(Get-ChildItem -LiteralPath $compatibilityHome -Force)
+        if (-not $homeItem.PSIsContainer -or
+            ($homeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $children.Count -ne 1 -or
+            -not $children[0].PSIsContainer -or
+            ($children[0].Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath($children[0].FullName),
+                $skills,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -or
+            @(Get-ChildItem -LiteralPath $skills -Force).Count -ne 0) {
+            throw "Cursor contract wrote outside its empty documented compatibility skill root: $compatibilityHome"
+        }
+    }
+}
+
 function Assert-PackagedClaudeTokenRotation(
     [string]$Launcher,
     [string]$Python,
@@ -5983,9 +6005,25 @@ function Invoke-Contract {
             $defaultOpenCodeHome
         )
         if ($Connector -eq 'cursor') {
+            # Cursor documents user .claude/.codex skill compatibility roots.
+            # The gateway watcher creates those exact empty directories before
+            # monitoring them; that is discovery custody, not connector-config
+            # fallback. Reject every other child and every reparse boundary.
+            Assert-CursorCompatibilitySkillHomes @($defaultCodexHome, $defaultClaudeHome)
             $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object {
-                $_ -cne (Join-Path $defaultCursorHome 'hooks.json')
+                $_ -cne (Join-Path $defaultCursorHome 'hooks.json') -and
+                $_ -cne $defaultCodexHome -and
+                $_ -cne $defaultClaudeHome
             })
+            foreach ($defaultConfig in @(
+                (Join-Path $defaultCodexHome 'config.toml'),
+                (Join-Path $defaultCodexHome 'managed_config.toml'),
+                (Join-Path $defaultClaudeHome 'settings.json')
+            )) {
+                if (Test-Path -LiteralPath $defaultConfig) {
+                    throw "Cursor contract wrote to a default compatibility agent config: $defaultConfig"
+                }
+            }
         }
         if ($Connector -eq 'windsurf') {
             $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $officialWindsurfConfig })

@@ -114,6 +114,32 @@ try {
     . $harness -NoRun
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
 
+    $cursorCompatibilityHome = Join-Path $temp 'cursor-compatibility\.codex'
+    Assert-CursorCompatibilitySkillHomes @($cursorCompatibilityHome)
+    [IO.Directory]::CreateDirectory((Join-Path $cursorCompatibilityHome 'skills')) | Out-Null
+    Assert-CursorCompatibilitySkillHomes @($cursorCompatibilityHome)
+    [IO.File]::WriteAllText((Join-Path $cursorCompatibilityHome 'config.toml'), 'forbidden')
+    $cursorCompatibilityConfigRejected = $false
+    try {
+        Assert-CursorCompatibilitySkillHomes @($cursorCompatibilityHome)
+    } catch {
+        $cursorCompatibilityConfigRejected = $_.Exception.Message -match
+            'outside its empty documented compatibility skill root'
+    }
+    Assert-True $cursorCompatibilityConfigRejected `
+        'Cursor compatibility skill-home allowance rejects a default Codex config'
+    Remove-Item -LiteralPath (Join-Path $cursorCompatibilityHome 'config.toml') -Force
+    [IO.File]::WriteAllText((Join-Path $cursorCompatibilityHome 'skills\SKILL.md'), 'forbidden')
+    $cursorCompatibilityContentRejected = $false
+    try {
+        Assert-CursorCompatibilitySkillHomes @($cursorCompatibilityHome)
+    } catch {
+        $cursorCompatibilityContentRejected = $_.Exception.Message -match
+            'outside its empty documented compatibility skill root'
+    }
+    Assert-True $cursorCompatibilityContentRejected `
+        'Cursor compatibility skill-home allowance accepts only the watcher-created empty skills root'
+
     $windsurfAdapter = "C:\DefenseClaw Data\Kevin O'Brien\hooks\windsurf-hook.ps1"
     $windsurfPowerShell = "& '" + $windsurfAdapter.Replace("'", "''") + "'"
     $windsurfEvents = @(
@@ -1912,6 +1938,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         'connector contract restores the complete process environment in finally'
     Assert-True ($nativeHarnessText -match 'connector contract wrote to the default agent home' -and
         $nativeHarnessText -match 'connector contract wrote to the unrelated agent home' -and
+        $nativeHarnessText -match 'function Assert-CursorCompatibilitySkillHomes\b' -and
+        $nativeHarnessText -match 'Cursor contract wrote to a default compatibility agent config' -and
         $harnessText -match 'function Resolve-EffectiveConnectorHome\b' -and
         $harnessText -match '\$fileName = switch \(\$ConnectorName\)' -and
         $harnessText -match '''codex'' \{ ''managed_config\.toml'' \}' -and
