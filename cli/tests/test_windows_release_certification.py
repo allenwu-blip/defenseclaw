@@ -729,6 +729,36 @@ def test_setup_acceptance_validates_packaged_resources_before_first_run() -> Non
     assert acceptance.index(probe) < acceptance.index("'init', '--skip-install'")
 
 
+def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
+    start = _function("Start-SetupAcceptanceHealthSampler")
+    stop = _function("Stop-SetupAcceptanceHealthSampler")
+    acceptance = _function("Invoke-SetupAcceptance")
+
+    assert "host PowerShell outside the installed tree" in start
+    assert "Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1'" in start
+    assert "gateway_start_identity" in start
+    assert "[DateTime]::UnixEpoch.Ticks" in start
+    assert "$liveStartIdentity -cne $startIdentity" in start
+    assert "sidecar_instance_id" in start
+    assert "event_config_generation" in start
+    assert "health_telemetry_generation" in start
+    assert "health_config_generation" not in start
+    assert "[int]$candidate.provenance.config_generation -ne $healthConfigGeneration" in start
+    assert "$candidate.PSObject.Properties['observed_at']" in start
+    assert "$candidate.PSObject.Properties['timestamp']" in start
+    assert "AddMilliseconds(-250)" in start
+    assert "telemetry_last_error_digest" in start
+    assert "$stream.Length + $bytes.Length -le 65536" in start
+    assert "runtime\\python" not in start
+    assert "$process.Kill($true)" in stop
+    assert "(Join-Path $PSHOME 'pwsh.exe')" in acceptance
+    assert acceptance.index("Start-SetupAcceptanceHealthSampler") < acceptance.index(
+        "Invoke-WindowsSetupStandardUserProcess $setup @(",
+        acceptance.index("$gatewayBeforeSeededUpgrade"),
+    )
+    assert "Stop-SetupAcceptanceHealthSampler $setupHealthSampler" in acceptance
+
+
 def test_setup_uninstall_acceptance_retains_connector_cleanup_authority() -> None:
     acceptance = _function("Invoke-SetupAcceptance")
     authority = _function("Assert-NativeConnectorCleanupAuthorityPresent")

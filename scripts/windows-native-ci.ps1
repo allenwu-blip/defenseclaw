@@ -2428,6 +2428,217 @@ function Stop-SetupAcceptanceOtlpCollector([AllowNull()][object]$Collector) {
     }
 }
 
+function Start-SetupAcceptanceHealthSampler(
+    [string]$PowerShell,
+    [string]$OutcomePath,
+    [string]$DataRoot,
+    [int]$ApiPort,
+    [object]$PriorGateway,
+    [string]$ExpectedGateway,
+    [string]$InstallRoot
+) {
+    $hostPowerShell = [IO.Path]::GetFullPath($PowerShell)
+    $outcome = [IO.Path]::GetFullPath($OutcomePath)
+    $data = [IO.Path]::GetFullPath($DataRoot)
+    $expected = [IO.Path]::GetFullPath($ExpectedGateway)
+    if (-not (Test-Path -LiteralPath $hostPowerShell -PathType Leaf) -or
+        (Test-PathWithinOrEqual $hostPowerShell ([IO.Path]::GetFullPath($InstallRoot)))) {
+        throw 'Setup health sampler requires host PowerShell outside the installed tree'
+    }
+    if (Test-Path -LiteralPath $outcome) {
+        throw "refusing to overwrite Setup health diagnostics: $outcome"
+    }
+    if ($ApiPort -lt 1 -or $ApiPort -gt 65535 -or
+        [int]$PriorGateway.ProcessId -le 0 -or
+        [string]::IsNullOrWhiteSpace([string]$PriorGateway.StartIdentity)) {
+        throw 'Setup health sampler requires a valid API port and exact prior gateway identity'
+    }
+    $code = @'
+param($OutcomePath, $DataRoot, $ApiPort, $PriorPID, $PriorIdentity, $ExpectedGateway)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$utf8 = [Text.UTF8Encoding]::new($false)
+$pidPath = Join-Path $DataRoot 'gateway.pid'
+$jsonlPath = Join-Path $DataRoot 'gateway.jsonl'
+$stream = [IO.FileStream]::new($OutcomePath, 'CreateNew', 'Write', 'Read')
+try {
+    $header = $utf8.GetBytes("schema=1`n")
+    $stream.Write($header, 0, $header.Length)
+    $stream.Flush($true)
+    $last = ''
+    while ($true) {
+        try {
+            if ((Get-Item -LiteralPath $pidPath -ErrorAction Stop).Length -gt 16384) { throw 'pid bound' }
+            $identity = [IO.File]::ReadAllText($pidPath, $utf8) | ConvertFrom-Json -ErrorAction Stop
+            $gatewayPID = [int]$identity.pid
+            $startIdentity = [string]$identity.start_identity
+            if ($gatewayPID -le 0 -or $startIdentity -cnotmatch '^[0-9]+$' -or
+                ($gatewayPID -eq $PriorPID -and $startIdentity -ceq $PriorIdentity) -or
+                -not ([IO.Path]::GetFullPath([string]$identity.executable)).Equals(
+                    $ExpectedGateway, [StringComparison]::OrdinalIgnoreCase)) { throw 'identity mismatch' }
+            $process = Get-Process -Id $gatewayPID -ErrorAction Stop
+            if (-not ([IO.Path]::GetFullPath($process.Path)).Equals(
+                $ExpectedGateway, [StringComparison]::OrdinalIgnoreCase)) { throw 'image mismatch' }
+            $unixTicks = [long](
+                $process.StartTime.ToUniversalTime().Ticks - [DateTime]::UnixEpoch.Ticks
+            )
+            $liveStartIdentity = ([long]($unixTicks * 100)).ToString(
+                [Globalization.CultureInfo]::InvariantCulture
+            )
+            if ($liveStartIdentity -cne $startIdentity) { throw 'reused pid' }
+            $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' `
+                -LocalPort $ApiPort -ErrorAction Stop)
+            if ($listeners.Count -ne 1 -or [int]$listeners[0].OwningProcess -ne $gatewayPID) {
+                throw 'listener mismatch'
+            }
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/health" `
+                -TimeoutSec 1 -MaximumRedirection 0
+            $startedAt = [datetime]::Parse(
+                [string]$health.started_at,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            )
+            if ($startedAt.ToUniversalTime() -lt $process.StartTime.ToUniversalTime().AddSeconds(-2)) {
+                throw 'generation mismatch'
+            }
+            $healthConfigGeneration = [int]$health.telemetry.details.generation
+            $event = $null
+            foreach ($line in @(Get-Content -LiteralPath $jsonlPath -Tail 8 -Encoding UTF8)) {
+                if ($utf8.GetByteCount($line) -gt 65536) { continue }
+                try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                if ([string]$candidate.correlation.run_id -cnotmatch '^[0-9a-f-]{36}$' -or
+                    [string]$candidate.correlation.sidecar_instance_id -cnotmatch '^[0-9a-f-]{36}$' -or
+                    [int]$candidate.provenance.config_generation -ne $healthConfigGeneration) { continue }
+                $eventTimeProperty = $candidate.PSObject.Properties['observed_at']
+                if ($null -eq $eventTimeProperty) {
+                    $eventTimeProperty = $candidate.PSObject.Properties['timestamp']
+                }
+                if ($null -eq $eventTimeProperty) { continue }
+                $eventTime = [datetime]::MinValue
+                if (-not [datetime]::TryParse(
+                    [string]$eventTimeProperty.Value,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind,
+                    [ref]$eventTime
+                )) { continue }
+                # Both timestamps originate in the new process; 250 ms only
+                # accommodates serialization/scheduling order at startup.
+                if ($eventTime.ToUniversalTime() -lt $startedAt.ToUniversalTime().AddMilliseconds(-250)) { continue }
+                $event = $candidate
+            }
+            if ($null -eq $event) { throw 'run correlation unavailable' }
+            $destinations = @($health.telemetry.details.destinations | ForEach-Object {
+                $reasonProperty = $_.PSObject.Properties['reason']
+                $labels = @(
+                    [string]$_.name, [string]$_.kind, [string]$_.state,
+                    $(if ($null -eq $reasonProperty) { '' } else { [string]$reasonProperty.Value })
+                )
+                [ordered]@{
+                    name = if ($labels[0] -cmatch '^[a-z0-9_.-]{0,64}$') { $labels[0] } else { 'redacted' }
+                    kind = if ($labels[1] -cmatch '^[a-z0-9_.-]{0,64}$') { $labels[1] } else { 'redacted' }
+                    state = if ($labels[2] -cmatch '^[a-z0-9_.-]{0,64}$') { $labels[2] } else { 'redacted' }
+                    reason = if ($labels[3] -cmatch '^[a-z0-9_.-]{0,64}$') { $labels[3] } else { 'redacted' }
+                    generation = [int]$_.generation
+                }
+            })
+            $lastErrorDigest = ''
+            $lastErrorProperty = $health.telemetry.PSObject.Properties['last_error']
+            $lastError = if ($null -eq $lastErrorProperty) { '' } else { [string]$lastErrorProperty.Value }
+            if (-not [string]::IsNullOrWhiteSpace($lastError)) {
+                $bytes = $utf8.GetBytes($lastError)
+                $lastErrorDigest = '{0}:{1}' -f $bytes.Length,
+                    [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+            }
+            $telemetryState = [string]$health.telemetry.state
+            $retentionState = [string]$health.telemetry.details.retention_state
+            if ($telemetryState -cnotmatch '^[a-z0-9_.-]{0,64}$') { $telemetryState = 'redacted' }
+            if ($retentionState -cnotmatch '^[a-z0-9_.-]{0,64}$') { $retentionState = 'redacted' }
+            $record = [ordered]@{
+                observed_at = [DateTime]::UtcNow.ToString('o')
+                gateway_pid = $gatewayPID
+                gateway_start_identity = $startIdentity
+                listener_pid = [int]$listeners[0].OwningProcess
+                health_started_at = $startedAt.ToUniversalTime().ToString('o')
+                run_id = [string]$event.correlation.run_id
+                sidecar_instance_id = [string]$event.correlation.sidecar_instance_id
+                event_config_generation = [int]$event.provenance.config_generation
+                health_telemetry_generation = $healthConfigGeneration
+                provenance_generation = [int]$health.provenance.generation
+                telemetry_state = $telemetryState
+                telemetry_last_error_digest = $lastErrorDigest
+                retention_state = $retentionState
+                destinations = $destinations
+            }
+            $row = $record | ConvertTo-Json -Compress -Depth 8
+            $fingerprint = @(
+                $record.gateway_pid, $record.gateway_start_identity, $record.run_id,
+                $record.event_config_generation, $record.health_telemetry_generation,
+                $record.provenance_generation, $record.telemetry_state,
+                $record.telemetry_last_error_digest, $record.retention_state,
+                ($destinations | ConvertTo-Json -Compress -Depth 4)
+            ) -join '|'
+            $bytes = $utf8.GetBytes($row + "`n")
+            if ($fingerprint -cne $last -and $stream.Length + $bytes.Length -le 65536) {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+                $last = $fingerprint
+            }
+        } catch {
+            # Sampling is diagnostic-only; incomplete or stale generations are dropped.
+        }
+        Start-Sleep -Milliseconds 100
+    }
+} finally {
+    $stream.Dispose()
+}
+'@
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $hostPowerShell
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', $code,
+        $outcome, $data, [string]$ApiPort, [string]$PriorGateway.ProcessId,
+        [string]$PriorGateway.StartIdentity, $expected
+    )) { $startInfo.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $started = $false
+    try {
+        $started = $process.Start()
+        if (-not $started) { throw 'failed to start Setup health sampler' }
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $outcome -PathType Leaf)) {
+            $process.Refresh()
+            if ($process.HasExited) { throw "Setup health sampler exited with $($process.ExitCode)" }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Setup health sampler readiness timed out' }
+            Start-Sleep -Milliseconds 50
+        }
+        return [pscustomobject]@{ Process = $process }
+    } catch {
+        if ($started -and -not $process.HasExited) {
+            $process.Kill($true)
+            $process.WaitForExit(5000) | Out-Null
+        }
+        $process.Dispose()
+        throw
+    }
+}
+
+function Stop-SetupAcceptanceHealthSampler([AllowNull()][object]$Sampler) {
+    if ($null -eq $Sampler) { return }
+    $process = [Diagnostics.Process]$Sampler.Process
+    try {
+        $process.Refresh()
+        if (-not $process.HasExited) {
+            $process.Kill($true)
+            if (-not $process.WaitForExit(5000)) { throw 'Setup health sampler cleanup timed out' }
+        }
+    } finally {
+        $process.Dispose()
+    }
+}
+
 function Write-SetupAcceptanceConvergenceDiagnostics(
     [string]$Logs,
     [string]$DataRoot,
@@ -4267,6 +4478,7 @@ function Invoke-SetupAcceptance {
     }
     $acceptanceFailure = $null
     $setupOtlpCollector = $null
+    $setupHealthSampler = $null
     try {
         if ($disposableGithubRunner) {
             Invoke-WizardConfigureLaterAcceptance `
@@ -4442,6 +4654,7 @@ function Invoke-SetupAcceptance {
         $installedState.version = '0.8.0'
         $installedState | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $statePath -Encoding UTF8
         $configPath = Join-Path $dataRoot 'config.yaml'
+        $setupGatewayApiPort = Get-PackagedGatewayApiPort $python $dataRoot
         [IO.Directory]::CreateDirectory((Join-Path $dataRoot 'state')) | Out-Null
         $yamlDataRoot = $dataRoot.Replace("'", "''")
         # Preserve enabled v7 telemetry while making the seeded upgrade
@@ -4512,12 +4725,28 @@ migration_state.save(sys.argv[1], state)
         $v7Hash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $gatewayBeforeSeededUpgrade = Get-GatewayIdentity $dataRoot
         $watchdogBeforeSeededUpgrade = Get-WatchdogIdentity $dataRoot
+        $setupHealthSampler = Start-SetupAcceptanceHealthSampler `
+            (Join-Path $PSHOME 'pwsh.exe') `
+            (Join-Path $logs 'setup-seeded-health.jsonl') `
+            $dataRoot $setupGatewayApiPort $gatewayBeforeSeededUpgrade $gateway $installRoot
+        $seededUpgradeFailure = $null
         try {
             Invoke-WindowsSetupStandardUserProcess $setup @(
                 '/upgrade', '/quiet', '/norestart', 'INSTALLSCOPE=user',
                 'FROMVERSION=0.8.0'
             ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-seeded-upgrade.log') | Out-Null
         } catch {
+            $seededUpgradeFailure = $_
+        } finally {
+            try {
+                Stop-SetupAcceptanceHealthSampler $setupHealthSampler
+                $setupHealthSampler = $null
+            } catch {
+                if ($null -eq $seededUpgradeFailure) { throw }
+                Write-Warning "Setup health sampler cleanup failed after seeded upgrade failure: $($_.Exception.Message)"
+            }
+        }
+        if ($null -ne $seededUpgradeFailure) {
             Write-SetupAcceptanceConvergenceDiagnostics $logs $dataRoot $setupOtlpCollector
             if (Test-Path -LiteralPath $gateway -PathType Leaf) {
                 try {
@@ -4529,7 +4758,7 @@ migration_state.save(sys.argv[1], state)
                         -MaxBytes 16384
                 }
             }
-            throw
+            throw $seededUpgradeFailure
         }
         $upgradedState = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ([string]$upgradedState.version -ne $targetVersion) {
@@ -4893,6 +5122,12 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
                     Write-Warning "setup acceptance $configuredConnector teardown cleanup failed: $($_.Exception.Message)"
                 }
             }
+        }
+        try {
+            Stop-SetupAcceptanceHealthSampler $setupHealthSampler
+            $setupHealthSampler = $null
+        } catch {
+            Write-Warning "setup acceptance health sampler cleanup failed: $($_.Exception.Message)"
         }
         try {
             Stop-SetupAcceptanceOtlpCollector $setupOtlpCollector
