@@ -1258,7 +1258,8 @@ func (c *hookOnlyConnector) teardown(ctx context.Context, opts SetupOpts) error 
 		}
 	}
 	if c.name == "hermes" {
-		if err := teardownHermesAllowlist(opts, c.hookCommand(opts)); err != nil {
+		command := hermesConfiguredHookCommand(c.hookCommand(opts), opts.HookExecutable)
+		if err := teardownHermesAllowlist(opts, command); err != nil {
 			errs = append(errs, fmt.Sprintf("restore shell hook allowlist: %v", err))
 		}
 	}
@@ -1341,7 +1342,8 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			if c.name == "hermes" {
-				return verifyHermesCleanup(opts, c.hookCommand(opts))
+				command := hermesConfiguredHookCommand(c.hookCommand(opts), opts.HookExecutable)
+				return verifyHermesCleanup(opts, command)
 			}
 			return c.verifyCursorHookArtifactsClean(opts)
 		}
@@ -1401,7 +1403,7 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 	}
 	if c.name == "hermes" {
-		return verifyHermesCleanup(opts, needle)
+		return verifyHermesCleanup(opts, hermesConfiguredHookCommand(needle, opts.HookExecutable))
 	}
 	return c.verifyCursorHookArtifactsClean(opts)
 }
@@ -1431,6 +1433,18 @@ func verifyHermesCleanup(opts SetupOpts, command string) error {
 	statePath := filepath.Join(opts.DataDir, "hooks", hermesDirectNativeStateFileName)
 	data, err := os.ReadFile(statePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// A fresh profile has never registered a direct-native Hermes hook and
+			// therefore has no disabled state to prove. The lifecycle lock is a
+			// persistent marker: once Setup or Teardown has run, a missing state
+			// remains a cleanup failure instead of being mistaken for fresh state.
+			lockPath := filepath.Join(opts.DataDir, ".hermes-lifecycle.lock")
+			if _, lockErr := os.Lstat(lockPath); os.IsNotExist(lockErr) {
+				return nil
+			} else if lockErr != nil {
+				return fmt.Errorf("hermes teardown incomplete: inspect lifecycle marker: %w", lockErr)
+			}
+		}
 		return fmt.Errorf("hermes teardown incomplete: disabled direct-native tombstone is unavailable: %w", err)
 	}
 	var state struct {

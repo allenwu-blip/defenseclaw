@@ -53,10 +53,13 @@ function Resolve-EffectiveConnectorHome(
     [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'windsurf') {
-        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-            throw 'USERPROFILE is unavailable for the Windsurf profile-root binding'
+        $profile = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::UserProfile
+        )
+        if ([string]::IsNullOrWhiteSpace($profile)) {
+            throw 'Windows user profile known folder is unavailable for the Windsurf profile-root binding'
         }
-        return [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
+        return [IO.Path]::GetFullPath($profile).TrimEnd('\')
     }
     $environmentName = switch ($ConnectorName) {
         'codex' { 'CODEX_HOME' }
@@ -1539,7 +1542,10 @@ function Assert-DoctorHookRegistration {
     $label = Get-ConnectorHookLabel
     $rows = @($report.checks | Where-Object { $_.label -like "$label*" })
     if ($rows.Count -ne 1) { throw "doctor returned $($rows.Count) $label rows after setup" }
-    $expectedStatus = if ($Connector -eq 'hermes') { 'pending-reload' } else { 'pass' }
+    # Doctor's public status vocabulary is pass/fail/warn/skip. Hermes keeps
+    # the more specific pending-reload state in the detail while truthfully
+    # failing readiness until every running upstream host is restarted.
+    $expectedStatus = if ($Connector -eq 'hermes') { 'fail' } else { 'pass' }
     if ($rows[0].status -ne $expectedStatus) {
         throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)"
     }
@@ -1948,7 +1954,13 @@ function Assert-OpenCodePluginContract {
     $recovered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
     try { $recoveredReport = $recovered.StdOut | ConvertFrom-Json } catch { throw "Recovered Doctor run did not return JSON: $($_.Exception.Message)" }
     $recoveredChecks = @($recoveredReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
-    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne 'pass') {
+    # The gateway is intentionally stopped above so its self-healer cannot
+    # race the tamper assertion. A byte-for-byte restored OpenCode plugin is
+    # therefore digest-current but runtime-unverified until the restart below.
+    if ($recoveredChecks.Count -ne 1 -or
+        $recoveredChecks[0].status -ne 'warn' -or
+        $recoveredChecks[0].detail -notmatch 'managed plugin digest current' -or
+        $recoveredChecks[0].detail -notmatch 'runtime load unverified: sidecar /health is unavailable') {
         throw 'Doctor did not recover after restoring the OpenCode plugin byte-for-byte'
     }
     Write-Result 'doctor:windows-hook-recovery' pass 'original plugin restored byte-for-byte and digest validated'
@@ -1991,7 +2003,7 @@ function Assert-DoctorWindowsHookRegistration {
         }
         if (-not $nativeHookFound) { throw 'claudecode setup did not register the Windows native exec-form hook command' }
     } elseif ($Connector -eq 'cursor') {
-        $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config $true 'Cursor setup'
+        $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config $false 'Cursor setup'
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $config
     } elseif ($Connector -eq 'hermes') {
@@ -2019,7 +2031,7 @@ function Assert-DoctorWindowsHookRegistration {
         'windsurf' { 'healthy Windows-native PowerShell registration' }
         default { 'healthy Windows-native executable registration' }
     }
-    $expectedDoctorStatus = if ($Connector -eq 'hermes') { 'pending-reload' } else { 'pass' }
+    $expectedDoctorStatus = if ($Connector -eq 'hermes') { 'fail' } else { 'pass' }
     if ($check.status -ne $expectedDoctorStatus -or
         $check.detail -notmatch [regex]::Escape($expectedHealthyDetail)) {
         throw "Doctor did not validate the registered $Connector Windows hook: $($check.status) $($check.detail)"
@@ -2035,8 +2047,12 @@ function Assert-DoctorWindowsHookRegistration {
         throw "Doctor validated an unexpected hook target: $($check.detail)"
     }
     if ($Connector -eq 'cursor' -and
-        ($check.detail -notmatch 'failClosed=true' -or $check.detail -notmatch 'failure=fail-closed')) {
-        throw "Doctor did not expose Cursor action-mode fail-closed posture: $($check.detail)"
+        ($check.detail -notmatch 'mode=observe' -or
+         $check.detail -notmatch 'failClosed=false' -or
+         $check.detail -notmatch 'failure=fail-open' -or
+         $check.detail -notmatch 'authority=user-hook advisory' -or
+         $check.detail -notmatch 'hard-action=unsupported')) {
+        throw "Doctor did not expose Cursor's advisory fail-open posture: $($check.detail)"
     }
     if ($Connector -eq 'hermes' -and
         ($check.detail -notmatch 'hook_entries=23' -or

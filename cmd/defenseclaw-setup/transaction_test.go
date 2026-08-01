@@ -2027,14 +2027,10 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	officialCursorHome, err := defaultConnectorConfigHome(".cursor")
-	if err != nil {
-		t.Fatal(err)
-	}
 	if !samePath(transaction.PreviousCodexHome, codexHome) ||
 		!samePath(transaction.PreviousClaudeConfigDir, claudeHome) ||
 		!samePath(transaction.PreviousCopilotHome, copilotHome) ||
-		!samePath(transaction.PreviousCursorHome, officialCursorHome) ||
+		!samePath(transaction.PreviousCursorHome, cursorHome) ||
 		!samePath(transaction.PreviousAntigravityConfigDir, antigravityHome) ||
 		!samePath(transaction.PreviousOpenCodeConfigDir, openCodeHome) {
 		t.Fatalf(
@@ -2048,7 +2044,7 @@ func TestLegacyConnectorHomesFollowExactValidatedOrManagedBindings(t *testing.T)
 			codexHome,
 			claudeHome,
 			copilotHome,
-			officialCursorHome,
+			cursorHome,
 			antigravityHome,
 			openCodeHome,
 		)

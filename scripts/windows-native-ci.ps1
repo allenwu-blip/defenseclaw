@@ -1989,6 +1989,147 @@ print(f'packaged gateway fixture uses isolated API port {cfg.gateway.api_port}')
     return $apiPort
 }
 
+function Start-SetupAcceptanceOtlpCollector([string]$Python, [string]$ReadyPath) {
+    $ready = [IO.Path]::GetFullPath($ReadyPath)
+    if (Test-Path -LiteralPath $ready) {
+        throw "refusing to overwrite an existing Setup OTLP fixture ready file: $ready"
+    }
+    $readyParent = [IO.Path]::GetDirectoryName($ready)
+    if (-not (Test-Path -LiteralPath $readyParent -PathType Container)) {
+        throw "Setup OTLP fixture ready directory does not exist: $readyParent"
+    }
+    $code = @'
+import http.server
+import sys
+
+
+class OTLPHandler(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self.send_error(400)
+            return
+        if length < 0 or length > 16 * 1024 * 1024:
+            self.send_error(413)
+            return
+        remaining = length
+        while remaining:
+            chunk = self.rfile.read(min(remaining, 64 * 1024))
+            if not chunk:
+                self.close_connection = True
+                return
+            remaining -= len(chunk)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/x-protobuf")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, _format, *args):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), OTLPHandler)
+server.daemon_threads = True
+with open(sys.argv[1], "x", encoding="ascii", newline="\n") as ready:
+    ready.write(str(server.server_address[1]))
+server.serve_forever()
+'@
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Python
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.ArgumentList.Add('-I')
+    $startInfo.ArgumentList.Add('-c')
+    $startInfo.ArgumentList.Add($code)
+    $startInfo.ArgumentList.Add($ready)
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $started = $false
+    try {
+        $started = $process.Start()
+        if (-not $started) {
+            throw 'failed to start the Setup OTLP fixture process'
+        }
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $ready -PathType Leaf)) {
+            $process.Refresh()
+            if ($process.HasExited) {
+                throw "Setup OTLP fixture exited before readiness with code $($process.ExitCode)"
+            }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw 'timed out waiting for the Setup OTLP fixture ready file'
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        $rawPort = [IO.File]::ReadAllText($ready, [Text.Encoding]::ASCII).Trim()
+        if ($rawPort -notmatch '^[0-9]{1,5}$') {
+            throw "Setup OTLP fixture returned an invalid port: $rawPort"
+        }
+        $port = [int]$rawPort
+        if ($port -lt 1 -or $port -gt 65535) {
+            throw "Setup OTLP fixture returned an out-of-range port: $port"
+        }
+        $listeners = @()
+        do {
+            $process.Refresh()
+            if ($process.HasExited) {
+                throw "Setup OTLP fixture exited during listener verification with code $($process.ExitCode)"
+            }
+            $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' `
+                -LocalPort $port -ErrorAction SilentlyContinue)
+            if ($listeners.Count -eq 1 -and [int]$listeners[0].OwningProcess -eq $process.Id) {
+                break
+            }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                $owners = @($listeners | Select-Object -ExpandProperty OwningProcess -Unique)
+                throw "Setup OTLP fixture listener ownership mismatch for port ${port}: expected PID $($process.Id), observed $($owners -join ',')"
+            }
+            Start-Sleep -Milliseconds 50
+        } while ($true)
+        return [pscustomobject]@{
+            Process = $process
+            Port = $port
+            ReadyPath = $ready
+        }
+    } catch {
+        $failure = $_
+        try {
+            if ($started) {
+                $process.Refresh()
+            }
+            if ($started -and -not $process.HasExited) {
+                $process.Kill($true)
+                $process.WaitForExit(5000) | Out-Null
+            }
+        } finally {
+            $process.Dispose()
+            Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+        }
+        throw $failure
+    }
+}
+
+function Stop-SetupAcceptanceOtlpCollector([AllowNull()][object]$Collector) {
+    if ($null -eq $Collector) { return }
+    $process = [Diagnostics.Process]$Collector.Process
+    $ready = [string]$Collector.ReadyPath
+    try {
+        $process.Refresh()
+        if (-not $process.HasExited) {
+            $process.Kill($true)
+            if (-not $process.WaitForExit(5000)) {
+                throw "timed out stopping Setup OTLP fixture PID $($process.Id)"
+            }
+        }
+    } finally {
+        $process.Dispose()
+        Remove-Item -LiteralPath $ready -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Wait-PathsAbsent([string[]]$Paths, [int]$Attempts = 150) {
     for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
         $remaining = @($Paths | Where-Object { Test-Path -LiteralPath $_ })
@@ -3743,6 +3884,7 @@ function Invoke-SetupAcceptance {
         $env:PATH = "$fixtureSearchPath;$processPathBefore"
     }
     $acceptanceFailure = $null
+    $setupOtlpCollector = $null
     try {
         if ($disposableGithubRunner) {
             Invoke-WizardConfigureLaterAcceptance `
@@ -3920,6 +4062,12 @@ function Invoke-SetupAcceptance {
         $configPath = Join-Path $dataRoot 'config.yaml'
         [IO.Directory]::CreateDirectory((Join-Path $dataRoot 'state')) | Out-Null
         $yamlDataRoot = $dataRoot.Replace("'", "''")
+        # Preserve enabled v7 telemetry while making the seeded upgrade
+        # deterministic: strict committed activation must reach a real local
+        # destination instead of relying on an absent developer collector.
+        $setupOtlpCollector = Start-SetupAcceptanceOtlpCollector $python `
+            (Join-Path $root 'setup-otlp-collector.port')
+        $setupOtlpPort = [int]$setupOtlpCollector.Port
         $v7Fixture = @"
 # native Setup 0.8.0 observability migration acceptance fixture
 config_version: 7
@@ -3941,7 +4089,7 @@ gateway:
 otel:
   enabled: true
   protocol: http
-  endpoint: http://127.0.0.1:4318
+  endpoint: http://127.0.0.1:$setupOtlpPort
   traces:
     enabled: true
     sampler: always_on
@@ -4101,6 +4249,8 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
         # was launched with the prior port.
         Invoke-Installed $gateway @('stop') @(0, 1) 90 `
             (Join-Path $logs 'setup-before-minimal-config-stop.log') | Out-Null
+        Stop-SetupAcceptanceOtlpCollector $setupOtlpCollector
+        $setupOtlpCollector = $null
         $gatewayAcceptancePort = Set-MinimalGatewayAcceptanceConfig $python
         Invoke-Installed $startup @() -Timeout 90 -Log (Join-Path $logs 'setup-gateway-startup.log') | Out-Null
         Invoke-Installed $gateway @('watchdog', 'start') -Timeout 90 -Log (Join-Path $logs 'setup-watchdog-start.log') | Out-Null
@@ -4330,6 +4480,11 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
                     Write-Warning "setup acceptance $configuredConnector teardown cleanup failed: $($_.Exception.Message)"
                 }
             }
+        }
+        try {
+            Stop-SetupAcceptanceOtlpCollector $setupOtlpCollector
+        } catch {
+            Write-Warning "setup acceptance OTLP fixture cleanup failed: $($_.Exception.Message)"
         }
         if (Test-Path -LiteralPath $installRoot) {
             try {
@@ -5632,7 +5787,9 @@ function Invoke-Contract {
     $unrelatedGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
     $defaultHermesHome = Join-Path $contractHome 'AppData\Local\hermes'
-    $defaultWindsurfConfig = Join-Path $contractHome '.codeium\windsurf\hooks.json'
+    # Native Setup binds Cascade-only Windsurf custody to FOLDERID_Profile;
+    # changing process USERPROFILE below must not redirect that vendor path.
+    $officialWindsurfConfig = Join-Path $realProfile '.codeium\windsurf\hooks.json'
     $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
         foreach ($path in @(
@@ -5693,7 +5850,7 @@ function Invoke-Contract {
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath (Join-Path $defaultCursorHome 'hooks.json')) -or
             (Test-Path -LiteralPath $defaultHermesHome) -or
-            (Test-Path -LiteralPath $defaultWindsurfConfig) -or
+            (Test-Path -LiteralPath $officialWindsurfConfig) -or
             (Test-Path -LiteralPath $defaultOpenCodeHome)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
@@ -5721,7 +5878,7 @@ function Invoke-Contract {
             $defaultClaudeHome,
             (Join-Path $defaultCursorHome 'hooks.json'),
             $defaultHermesHome,
-            $defaultWindsurfConfig,
+            $officialWindsurfConfig,
             $defaultOpenCodeHome
         )
         if ($Connector -eq 'cursor') {
@@ -5730,7 +5887,7 @@ function Invoke-Contract {
             })
         }
         if ($Connector -eq 'windsurf') {
-            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $defaultWindsurfConfig })
+            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $officialWindsurfConfig })
         }
         foreach ($defaultHome in $defaultConnectorHomes) {
             if (Test-Path -LiteralPath $defaultHome) {
@@ -5743,7 +5900,7 @@ function Invoke-Contract {
             copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
             cursor = Join-Path $cursorHome 'hooks.json'
             hermes = Join-Path $hermesHome 'config.yaml'
-            windsurf = Join-Path $contractHome '.codeium\windsurf\hooks.json'
+            windsurf = $officialWindsurfConfig
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
             opencode = Join-Path $openCodeHome 'plugins\defenseclaw.js'
         }

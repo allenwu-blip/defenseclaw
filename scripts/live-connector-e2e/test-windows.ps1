@@ -422,6 +422,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
         $env:HERMES_HOME = $resolverHermesHome
         $env:OPENCODE_CONFIG_DIR = $resolverOpenCodeHome
+        $knownProfile = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::UserProfile
+        )
+        Assert-True (-not [string]::IsNullOrWhiteSpace($knownProfile) -and
+            (Resolve-EffectiveConnectorHome windsurf).Equals(
+                [IO.Path]::GetFullPath($knownProfile),
+                [StringComparison]::OrdinalIgnoreCase
+            )) 'Windsurf effective home follows FOLDERID_Profile instead of ambient USERPROFILE'
         Assert-True ((Resolve-EffectiveConnectorHome codex).Equals(
             [IO.Path]::GetFullPath($resolverCodexHome),
             [StringComparison]::OrdinalIgnoreCase
@@ -1535,6 +1543,31 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($liveWorkflowText -notmatch '(?m)^  windows-(harness-static|contract):') 'deterministic Windows jobs moved out of live radar'
     Assert-True ($ciWorkflowText -notmatch '(?m)^  windows-(hook-path|installer-smoke):') 'legacy partial Windows jobs were removed'
     Assert-True ($harnessText -notmatch '(?i)\bwsl(?:\.exe)?\b|git bash|/bin/|Get-Command\s+(?:jq|tail|curl)|Invoke-Tool\s+''(?:jq|tail|curl)''') 'native harness has no WSL, Git Bash, or Unix utility dependency'
+    $setupOtlpFixture = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Start-SetupAcceptanceOtlpCollector\b.*?\n\}'
+    ).Value
+    $setupOtlpCleanup = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Stop-SetupAcceptanceOtlpCollector\b.*?\n\}'
+    ).Value
+    $setupAcceptance = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Invoke-SetupAcceptance\b.*?\n\}'
+    ).Value
+    Assert-True ($setupOtlpFixture -match 'ThreadingHTTPServer\(\(\"127\.0\.0\.1\", 0\)' -and
+        $setupOtlpFixture -match 'send_response\(200\)' -and
+        $setupOtlpFixture -match "Get-NetTCPConnection -State Listen -LocalAddress '127\.0\.0\.1'" -and
+        $setupOtlpFixture -match 'OwningProcess.*?process\.Id') `
+        'seeded Setup upgrade uses an exact-PID-owned dynamic loopback OTLP sink'
+    Assert-True ($setupAcceptance -match 'Start-SetupAcceptanceOtlpCollector \$python' -and
+        $setupAcceptance -match 'endpoint: http://127\.0\.0\.1:\$setupOtlpPort' -and
+        $setupAcceptance -match 'Stop-SetupAcceptanceOtlpCollector \$setupOtlpCollector') `
+        'Setup acceptance keeps migrated telemetry enabled and cleans its bounded OTLP fixture'
+    Assert-True ($setupOtlpCleanup -match '\$process\.Kill\(\$true\)' -and
+        $setupOtlpCleanup -match 'WaitForExit\(5000\)' -and
+        $setupOtlpCleanup -match 'Remove-Item -LiteralPath \$ready') `
+        'Setup OTLP fixture cleanup terminates only its captured process tree and removes readiness state'
     Assert-True ($harnessText -match 'CLAUDE_CODE_USE_POWERSHELL_TOOL = ''1''' -and
         $harnessText -match 'https://claude\.ai/install\.ps1' -and
         $harnessText -match '\.local\\bin\\claude\.exe' -and
@@ -1611,12 +1644,19 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Codex certification never bypasses hook trust'
     $doctorContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorWindowsHookRegistration\b.*?\n\}').Value
     $doctorSetupContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorHookRegistration\b.*?\n\}').Value
-    Assert-True ($doctorSetupContract -match "expectedStatus = if \(\`$Connector -eq 'hermes'\) \{ 'pending-reload' \}" -and
+    Assert-True ($doctorSetupContract -match "expectedStatus = if \(\`$Connector -eq 'hermes'\) \{ 'fail' \}" -and
         $doctorSetupContract -match 'hook_entries=23' -and
         $doctorSetupContract -match 'allowlist_entries=23' -and
         $doctorSetupContract -match 'must be reloaded or restarted' -and
         $doctorSetupContract -match 'live=false') `
-        'Hermes setup Doctor contract preserves truthful direct-native pending-reload evidence'
+        'Hermes setup Doctor contract preserves truthful failed readiness with direct-native pending-reload evidence'
+    Assert-True ($doctorContract.Contains("Assert-CursorSynchronousWindowsHookCommand `$config `$false 'Cursor setup'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'mode=observe'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'failClosed=false'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'failure=fail-open'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'authority=user-hook advisory'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'hard-action=unsupported'")) `
+        'Cursor contract preserves advisory observe/fail-open posture for its non-authoritative user hook'
     Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
         'Windsurf contract uses the scoped Legacy Cascade Doctor label'
     Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `
@@ -1644,6 +1684,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Doctor tamper validation pauses isolated self-heal and restores the gateway afterward'
     Assert-True ($doctorContract -match "(?s)Write-Result 'doctor:windows-hook-recovery'.*?try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?defenseclaw-gateway' @\('start'\).*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT.*?\}.*?Wait-Gateway") `
         'unversioned fixture override is scoped to the post-Doctor gateway restart'
+    $openCodeDoctorContract = [regex]::Match($harnessText, '(?s)function Assert-OpenCodePluginContract\b.*?\n\}').Value
+    Assert-True ($openCodeDoctorContract -match "recoveredChecks\[0\]\.status -ne 'warn'" -and
+        $openCodeDoctorContract -match 'managed plugin digest current' -and
+        $openCodeDoctorContract -match 'runtime load unverified: sidecar /health is unavailable') `
+        'OpenCode recovery distinguishes a restored digest from runtime readiness while the isolated gateway is stopped'
     Assert-True ($harnessText -match 'obsolete shell-hook guidance for native Windows') 'Doctor connector contract rejects obsolete shell guidance'
     $gatewayWait = [regex]::Match($harnessText, '(?s)function Wait-Gateway\b.*?\n\}').Value
     $gatewayHookReadiness = [regex]::Match(
@@ -1751,9 +1796,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractHome ''\.cursor''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
+        $nativeHarnessText -match '\$officialWindsurfConfig = Join-Path \$realProfile ''\.codeium\\windsurf\\hooks\.json''' -and
         $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome, \$openCodeHome\s*\)' -and
         $contractInstall -ge 0) `
-        'connector contract uses Cursor official profile custody and disjoint real-override homes'
+        'connector contract uses official Cursor and Windsurf profile custody with disjoint real-override homes'
     foreach ($homeAssignment in @(
         '$env:CODEX_HOME = $codexHome',
         '$env:CLAUDE_CONFIG_DIR = $claudeHome',

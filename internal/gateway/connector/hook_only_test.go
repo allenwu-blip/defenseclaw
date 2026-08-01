@@ -877,6 +877,35 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	}
 }
 
+func TestHermesVerifyCleanDistinguishesFreshStateFromMissingTombstone(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Hermes direct-native tombstone is Windows-only")
+	}
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+
+	opts := SetupOpts{DataDir: filepath.Join(root, "dc")}
+	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conn := NewHermesConnector()
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("fresh VerifyClean: %v", err)
+	}
+
+	lockPath := filepath.Join(opts.DataDir, ".hermes-lifecycle.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := conn.VerifyClean(opts)
+	if err == nil || !strings.Contains(err.Error(), "disabled direct-native tombstone is unavailable") {
+		t.Fatalf("VerifyClean after lifecycle marker = %v, want missing-tombstone refusal", err)
+	}
+}
+
 // TestHermesSetup_PreservesExplicitAutoAcceptAndHealsUserConfig proves the
 // global consent choice is never used as connector-owned state.
 func TestHermesSetup_PreservesExplicitAutoAcceptAndHealsUserConfig(t *testing.T) {
