@@ -593,13 +593,15 @@ func TestPartialOutcomeAccountsExactTerminalSplitWithoutRetry(t *testing.T) {
 	}
 	waitFor(t, func() bool {
 		counters := dispatcher.Counters()
-		return counters.Delivered == 1 && counters.Rejected == 1
+		return counters.Delivered == 1 && counters.Rejected == 1 &&
+			dispatcher.Health() == delivery.HealthDegraded
 	})
 	if got := dispatcher.Counters(); got.Accepted != 2 || got.Delivered != 1 || got.Rejected != 1 || got.Retried != 0 {
 		t.Fatalf("partial counters = %+v", got)
 	}
-	if got := dispatcher.Health(); got != delivery.HealthDegraded {
-		t.Fatalf("partial health = %q", got)
+	if got := dispatcher.DeliveryHealthSnapshot(); got.State != delivery.HealthDegraded ||
+		got.Reason != string(delivery.HealthReasonPartial) {
+		t.Fatalf("partial health = %+v", got)
 	}
 	closeDispatcher(t, dispatcher)
 }
@@ -913,7 +915,7 @@ func TestCloseCancellationReleasesInflightAndPendingCharges(t *testing.T) {
 func TestHealthTransitionsRecoveryAndCoalescing(t *testing.T) {
 	var mu sync.Mutex
 	var transitions []delivery.HealthTransition
-	healthyObserved := make(chan struct{})
+	healthyObserved := make(chan struct{}, 1)
 	observer := delivery.ObserverFunc(func(transition delivery.HealthTransition) {
 		mu.Lock()
 		transitions = append(transitions, transition)
@@ -939,10 +941,11 @@ func TestHealthTransitionsRecoveryAndCoalescing(t *testing.T) {
 	dispatcher.Activate()
 	<-healthyObserved
 	dispatcher.Enqueue(payload(t, "record", "value"))
-	waitFor(t, func() bool { return dispatcher.Counters().Delivered == 1 })
-	if dispatcher.Health() != delivery.HealthHealthy {
-		t.Fatalf("recovered health=%s", dispatcher.Health())
-	}
+	waitFor(t, func() bool {
+		snapshot := dispatcher.DeliveryHealthSnapshot()
+		return snapshot.Counters.Delivered == 1 && snapshot.State == delivery.HealthHealthy &&
+			snapshot.Reason == string(delivery.HealthReasonRecovered)
+	})
 	waitFor(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
