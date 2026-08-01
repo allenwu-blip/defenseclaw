@@ -99,10 +99,11 @@ def _preflight(
 
 
 def _marker_payload(repo: Path, gateway: Path) -> dict[str, object]:
+    source_release = source_release_identity.validate_source_tree(repo)["source_release"]
     return {
         "schema_version": 2,
         "checkout_root": str(repo.resolve()),
-        "source_release": "0.8.6",
+        "source_release": source_release,
         "source_install_compatibility_epoch": 2,
         "runtime_config_version": 8,
         "gateway_sha256": hashlib.sha256(gateway.read_bytes()).hexdigest(),

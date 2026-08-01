@@ -359,12 +359,13 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertNotIn("claw.mode=", result.output)
                 self.assertNotIn("claw.mode:", result.output)
                 self.assertIn(f"{connector} mode=observe", result.output)
-                self.assertIn(f"defenseclaw setup {connector} --mode action", result.output)
                 self.assertNotIn("Active connector set", result.output)
                 self.assertNotIn("guardrail.mode=observe", result.output)
                 self.assertNotIn("guardrail.mode:", result.output)
                 self.assertNotIn("set guardrail.mode=action", result.output)
                 if connector == "cursor":
+                    self.assertNotIn("defenseclaw setup cursor --mode action", result.output)
+                    self.assertIn("hard action mode is unsupported", result.output)
                     self.assertIn(
                         "cursor hook failures=open (failClosed=false; user hook is not authoritative)",
                         result.output,
@@ -373,6 +374,8 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                         "DefenseClaw owns only the advisory user hook",
                         result.output,
                     )
+                else:
+                    self.assertIn(f"defenseclaw setup {connector} --mode action", result.output)
                 restart_mock.assert_not_called()
 
                 hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
