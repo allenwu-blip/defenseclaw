@@ -19,6 +19,7 @@ if (
 
 await copyFile(pluginPath, scratchPath);
 const probeID = basename(scratchPath, ".mjs");
+const moduleURL = `${pathToFileURL(scratchPath).href}?v=${Date.now()}`;
 const nativeFetch = globalThis.fetch;
 let observedAfterPayload;
 globalThis.fetch = async (url, init) => {
@@ -36,7 +37,7 @@ globalThis.fetch = async (url, init) => {
   return nativeFetch(url, init);
 };
 try {
-  const module = await import(`${pathToFileURL(scratchPath).href}?v=${Date.now()}`);
+  const module = await import(moduleURL);
   if (typeof module.DefenseClaw !== "function") {
     throw new Error("installed OpenCode plugin does not export DefenseClaw");
   }
@@ -45,12 +46,23 @@ try {
     worktree: process.cwd(),
   });
   if (
+    typeof hooks.config !== "function" ||
     typeof hooks["tool.execute.before"] !== "function" ||
     typeof hooks["tool.execute.after"] !== "function" ||
     typeof hooks.event !== "function"
   ) {
     throw new Error("installed OpenCode plugin is missing required hook functions");
   }
+
+  // OpenCode invokes every plugin's config hook after resolving the complete
+  // plugin list. The synthetic contract must model that official loader step
+  // so the managed plugin can prove it is last and therefore authoritative
+  // over the final tool arguments. Omitting this call correctly forces action
+  // mode to refuse the operation.
+  await hooks.config({
+    plugin_origins: [{ spec: moduleURL }],
+    mcp: {},
+  });
 
   if (expected === "lifecycle") {
     await hooks.event({

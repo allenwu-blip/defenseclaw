@@ -2385,7 +2385,7 @@ public static class ClaudeVersionFixture {
 using System;
 public static class CursorAgentVersionFixture {
     public static int Main(string[] arguments) {
-        Console.WriteLine("cursor-agent 3.13.0");
+        Console.WriteLine("cursor-agent 2026.07.23-e383d2b");
         return 0;
     }
 }
@@ -2415,7 +2415,7 @@ public static class CursorAgentVersionFixture {
             throw "Claude fixture returned an unexpected version: $($claudeVersion.StdOut)"
         }
         $cursorVersion = Invoke-WindowsNativeProcess $cursorPath @('--version') -TimeoutSeconds 30
-        if ($cursorVersion.StdOut.Trim() -ne 'cursor-agent 3.13.0') {
+        if ($cursorVersion.StdOut.Trim() -ne 'cursor-agent 2026.07.23-e383d2b') {
             throw "Cursor Agent fixture returned an unexpected version: $($cursorVersion.StdOut)"
         }
         Assert-WizardCodexPolicyFixture $codexPath
@@ -2574,14 +2574,8 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
         windsurf = @{
             HookScript = 'windsurf-hook.ps1'
             ConfigPath = Join-Path $UserProfile '.codeium\windsurf\hooks.json'
-            DoctorLabel = 'Windsurf hooks'
+            DoctorLabel = 'Legacy Cascade hooks'
             DoctorRuntimePattern = 'healthy Windows-native PowerShell registration'
-        }
-        antigravity = @{
-            HookScript = 'antigravity-hook.sh'
-            ConfigPath = Join-Path $UserProfile '.gemini\config\hooks.json'
-            DoctorLabel = 'Antigravity hooks'
-            DoctorRuntimePattern = 'healthy Windows-native executable registration'
         }
     }
     if (-not $definitions.Contains($ConnectorName)) {
@@ -3769,7 +3763,7 @@ function Invoke-SetupAcceptance {
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = "$fixtureSearchPath;$processPathBefore"
 
-            foreach ($wizardConnector in @('copilot', 'cursor', 'windsurf', 'antigravity')) {
+            foreach ($wizardConnector in @('copilot', 'cursor', 'windsurf')) {
                 Invoke-WizardConnectorAcceptance `
                     $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                     $fixtureSearchPath $userPathBefore $wizardConnector 'observe'

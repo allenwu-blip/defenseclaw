@@ -1139,7 +1139,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($wizardHarnessText -match "Get-WizardControl \`$window 1 'primary action'" -and
         $wizardHarnessText -match "Send-WizardCommand \`$window 2 'Cancel'") `
         'wizard automation uses standard Win32 IDOK and IDCANCEL semantics'
-    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.3\)' -and
+    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.8\)' -and
         $wizardHarnessText -match 'foreach \(\$index in 0\.\.1\)' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$false' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$true') `
@@ -1150,19 +1150,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         'wizard automation activates Install and verifies the completion page before Finish'
     Assert-True ($nativeHarnessText -match "Invoke-WizardConfigureLaterAcceptance" -and
         $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'" -and
-        $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor', 'windsurf', 'antigravity'\)\)") `
+        $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor', 'windsurf'\)\)") `
         'setup acceptance performs Configure Later, reference mode installs, and the established additive connector wizard lifecycle samples'
     foreach ($wizardChoice in @(
         'none = 0',
-        'antigravity = 1',
-        'codex = 2',
-        'claudecode = 3',
-        'copilot = 4',
-        'cursor = 5',
-        'hermes = 6',
-        'windsurf = 7',
-        'omnigent = 8',
-        'opencode = 9'
+        'codex = 1',
+        'claudecode = 2',
+        'copilot = 3',
+        'cursor = 4',
+        'hermes = 5',
+        'windsurf = 6',
+        'omnigent = 7',
+        'opencode = 8'
     )) {
         Assert-True ($wizardHarnessText.Contains($wizardChoice)) `
             "wizard driver preserves the integrated selection contract: $wizardChoice"
@@ -1584,12 +1583,13 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'Get-TreeFingerprint' -and $harnessText -match 'AllowedExitCodes @\(1\)') 'enterprise hooks elevation rejection is bounded, exit 1, and checks an unchanged tree'
     Assert-True ($harnessText -match 'Assert-DoctorWindowsHookRegistration' -and $harnessText -match 'healthy Windows-native executable registration') 'connector contract runs Doctor against the registered Windows hook executable'
     $contractRun = [regex]::Match($harnessText, '(?s)function Invoke-ContractRun\b.*?\n\}').Value
-    Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?\$initArgs \+= ''--native-setup-antigravity''') `
-        'packaged Antigravity contract uses the narrow native Setup bootstrap without changing public certification'
+    Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-setup:not-certified' -and
+        $contractRun -match "connector 'antigravity' is not_certified on windows" -and
+        $contractRun -notmatch 'native-setup-antigravity') `
+        'packaged Antigravity contract proves the public not_certified gate without a removed bootstrap flag'
     $connectorSetup = [regex]::Match($harnessText, '(?s)function Invoke-Setup\b.*?\n\}').Value
-    Assert-True ($connectorSetup -match '(?s)\$Connector -eq ''antigravity''.*?--native-setup-antigravity' -and
-        $connectorSetup -match '(?s)''reconcile''.*?''--connector'', ''antigravity''.*?''--config-home'', \$antigravityHome') `
-        'packaged Antigravity mode changes remain inside the installer-only bootstrap and exact official-home reconcile'
+    Assert-True ($connectorSetup -notmatch 'native-setup-antigravity') `
+        'generic connector setup cannot bypass Antigravity public certification'
     Assert-True ($contractRun -match "(?s)try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?Invoke-Setup action.*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT") `
         'unversioned fixture override is removed before Doctor tamper validation'
     $liveRun = [regex]::Match($harnessText, '(?s)function Invoke-LiveRun\b.*?\n\}').Value
@@ -1611,6 +1611,16 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Codex certification never bypasses hook trust'
     $doctorContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorWindowsHookRegistration\b.*?\n\}').Value
     $doctorSetupContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorHookRegistration\b.*?\n\}').Value
+    Assert-True ($doctorSetupContract -match "expectedStatus = if \(\`$Connector -eq 'hermes'\) \{ 'pending-reload' \}" -and
+        $doctorSetupContract -match 'hook_entries=23' -and
+        $doctorSetupContract -match 'allowlist_entries=23' -and
+        $doctorSetupContract -match 'must be reloaded or restarted' -and
+        $doctorSetupContract -match 'live=false') `
+        'Hermes setup Doctor contract preserves truthful direct-native pending-reload evidence'
+    Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
+        'Windsurf contract uses the scoped Legacy Cascade Doctor label'
+    Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `
+        'OpenCode contract runs the official config hook before tool hooks'
     $synchronousCodexHookContract = [regex]::Match(
         $harnessText,
         '(?s)function Assert-CodexSynchronousWindowsHookCommand\b.*?\n\}'

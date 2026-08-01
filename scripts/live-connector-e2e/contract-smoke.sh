@@ -111,9 +111,15 @@ drive_event() {
 
   case "${expect}" in
     block)
-      # Verdict shaping: the entrypoint must signal block — either a
-      # non-zero (exit 2) deny or a decision JSON carrying block/deny.
-      if [ "${code}" = "2" ] || printf '%s' "${out}" | grep -Eqi '"(decision|action|permissionDecision)"\s*:\s*"(block|deny)"|\bdeny\b|\bblock\b'; then
+      # Cursor's user-level hook is intentionally advisory because higher
+      # priority Enterprise/Team/Project hooks may override or mutate it.
+      # The gateway must still record the raw block verdict, but the local
+      # adapter must not claim authoritative enforcement.
+      if [ "${DC_E2E_CONNECTOR}" = "cursor" ] && [ "${code}" = "0" ]; then
+        dc_record_result "${label}:verdict-shape" pass "exit=0 advisory-preview"
+      # Other connectors in this matrix expose an authoritative block shape:
+      # exit 2 or decision JSON carrying block/deny.
+      elif [ "${code}" = "2" ] || printf '%s' "${out}" | grep -Eqi '"(decision|action|permissionDecision)"\s*:\s*"(block|deny)"|\bdeny\b|\bblock\b'; then
         dc_record_result "${label}:verdict-shape" pass "exit=${code}"
       else
         dc_record_result "${label}:verdict-shape" fail "expected block shaping, exit=${code}"

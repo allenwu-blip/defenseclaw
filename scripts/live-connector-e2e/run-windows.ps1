@@ -26,7 +26,6 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
 $script:CopilotConfiguredMode = ''
-$script:AntigravityConfiguredMode = ''
 
 function Get-SecretValues {
     $names = @(
@@ -1126,26 +1125,6 @@ function Invoke-Setup([string]$Mode) {
         Wait-Gateway
         return
     }
-    if ($Connector -eq 'antigravity') {
-        if ($script:AntigravityConfiguredMode -cne $Mode) {
-            Invoke-Tool 'defenseclaw' @(
-                'init', '--skip-install', '--non-interactive', '--yes',
-                '--connector', 'antigravity', '--profile', $Mode,
-                '--no-start-gateway', '--no-verify', '--native-setup-antigravity'
-            ) | Out-Null
-            Set-IsolatedGatewayPort
-            $script:AntigravityConfiguredMode = $Mode
-        }
-        $antigravityHome = Resolve-EffectiveConnectorHome 'antigravity'
-        Invoke-Tool 'defenseclaw-gateway' @(
-            'connector', 'reconcile', '--connector', 'antigravity',
-            '--data-dir', $env:DEFENSECLAW_HOME,
-            '--config-home', $antigravityHome, '--json'
-        ) | Out-Null
-        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
-        Wait-Gateway
-        return
-    }
     $subcommand = switch ($Connector) {
         'codex' { 'codex' }
         'claudecode' { 'claude-code' }
@@ -1166,7 +1145,7 @@ function Get-ConnectorHookLabel {
         'copilot' { 'Copilot hooks' }
         'cursor' { 'Cursor hooks' }
         'hermes' { 'Hermes hooks (preview; fail-open)' }
-        'windsurf' { 'Windsurf hooks' }
+        'windsurf' { 'Legacy Cascade hooks' }
         'antigravity' { 'Antigravity hooks' }
         'opencode' { 'OpenCode hooks' }
     }
@@ -1560,7 +1539,17 @@ function Assert-DoctorHookRegistration {
     $label = Get-ConnectorHookLabel
     $rows = @($report.checks | Where-Object { $_.label -like "$label*" })
     if ($rows.Count -ne 1) { throw "doctor returned $($rows.Count) $label rows after setup" }
-    if ($rows[0].status -ne 'pass') { throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)" }
+    $expectedStatus = if ($Connector -eq 'hermes') { 'pending-reload' } else { 'pass' }
+    if ($rows[0].status -ne $expectedStatus) {
+        throw "doctor rejected setup-created $Connector hooks: $($rows[0].detail)"
+    }
+    if ($Connector -eq 'hermes' -and
+        ($rows[0].detail -notmatch 'hook_entries=23' -or
+         $rows[0].detail -notmatch 'allowlist_entries=23' -or
+         $rows[0].detail -notmatch 'must be reloaded or restarted' -or
+         $rows[0].detail -notmatch 'live=false')) {
+        throw "doctor did not preserve truthful Hermes pending-reload evidence: $($rows[0].detail)"
+    }
     if ($Connector -eq 'opencode') {
         if ($rows[0].detail -notmatch 'managed plugin digest current' -or
             $rows[0].detail -notmatch 'not tamper-proof') {
@@ -1908,7 +1897,8 @@ function Assert-OpenCodePluginContract {
     foreach ($marker in @(
         '"tool.execute.before": async',
         'const verdict = await defenseclawPost(',
-        'if (verdict) throw new Error(verdict.reason);',
+        'if (verdict && verdict.reason) throw new Error(verdict.reason);',
+        'verdict.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE',
         '"tool.execute.after": async'
     )) {
         if ($plugin.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
@@ -2025,11 +2015,12 @@ function Assert-DoctorWindowsHookRegistration {
     $expectedHealthyDetail = switch ($Connector) {
         'copilot' { 'healthy Windows-native Copilot PowerShell registration' }
         'cursor' { 'configured runtime=' }
-        'hermes' { 'healthy Windows-native executable registration' }
+        'hermes' { 'on-disk Windows-native executable registration is valid' }
         'windsurf' { 'healthy Windows-native PowerShell registration' }
         default { 'healthy Windows-native executable registration' }
     }
-    if ($check.status -ne 'pass' -or
+    $expectedDoctorStatus = if ($Connector -eq 'hermes') { 'pending-reload' } else { 'pass' }
+    if ($check.status -ne $expectedDoctorStatus -or
         $check.detail -notmatch [regex]::Escape($expectedHealthyDetail)) {
         throw "Doctor did not validate the registered $Connector Windows hook: $($check.status) $($check.detail)"
     }
@@ -2048,7 +2039,11 @@ function Assert-DoctorWindowsHookRegistration {
         throw "Doctor did not expose Cursor action-mode fail-closed posture: $($check.detail)"
     }
     if ($Connector -eq 'hermes' -and
-        ($check.detail -notmatch 'entries=23' -or $label -notmatch 'fail-open')) {
+        ($check.detail -notmatch 'hook_entries=23' -or
+         $check.detail -notmatch 'allowlist_entries=23' -or
+         $check.detail -notmatch 'must be reloaded or restarted' -or
+         $check.detail -notmatch 'live=false' -or
+         $label -notmatch 'fail-open')) {
         throw "Doctor did not expose Hermes's exact event inventory and forced fail-open posture: $($check.detail)"
     }
     if ($check.detail -match '(?i)\x2esh\b|\bbash\b|\bwsl\b|\bchmod\b|\bunset\b|hook script') {
@@ -2148,7 +2143,7 @@ function Assert-DoctorWindowsHookRegistration {
     $recovered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
     try { $recoveredReport = $recovered.StdOut | ConvertFrom-Json } catch { throw "Recovered Doctor run did not return JSON: $($_.Exception.Message)" }
     $recoveredChecks = @($recoveredReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
-    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne 'pass' -or
+    if ($recoveredChecks.Count -ne 1 -or $recoveredChecks[0].status -ne $expectedDoctorStatus -or
         $recoveredChecks[0].detail -notmatch [regex]::Escape($expectedHealthyDetail)) {
         throw "Doctor did not recover after restoring the $Connector hook command"
     }
@@ -2761,6 +2756,36 @@ function Invoke-ContractRun {
     Assert-TimeoutHandling
     Assert-NativeEnterpriseHooksRequireElevation
     Initialize-DefenseClawEnv
+    if ($Connector -eq 'antigravity') {
+        $configPath = Get-EffectiveConnectorConfigPath 'antigravity'
+        if (Test-Path -LiteralPath $configPath) {
+            throw "Antigravity public-gate contract began with unexpected hook state: $configPath"
+        }
+        $backupRoot = Join-Path $env:DEFENSECLAW_HOME 'connector_backups\antigravity'
+        $backupBefore = Get-TreeFingerprint $backupRoot
+        $configBefore = (Get-FileHash -LiteralPath $env:DEFENSECLAW_CONFIG -Algorithm SHA256).Hash
+        $publicInvocations = @(
+            @('init', '--skip-install', '--non-interactive', '--yes', '--connector', 'antigravity',
+                '--profile', 'observe', '--no-start-gateway', '--no-verify'),
+            @('setup', 'antigravity', '--yes', '--no-restart')
+        )
+        foreach ($arguments in $publicInvocations) {
+            $result = Invoke-Tool 'defenseclaw' $arguments @(1)
+            $diagnostic = $result.StdOut + "`n" + $result.StdErr
+            if ($diagnostic -notmatch "connector 'antigravity' is not_certified on windows") {
+                throw "Antigravity public setup did not return the not_certified gate: $diagnostic"
+            }
+        }
+        if (Test-Path -LiteralPath $configPath) {
+            throw "Antigravity public setup wrote hook state despite not_certified: $configPath"
+        }
+        if ((Get-TreeFingerprint $backupRoot) -cne $backupBefore -or
+            (Get-FileHash -LiteralPath $env:DEFENSECLAW_CONFIG -Algorithm SHA256).Hash -cne $configBefore) {
+            throw 'Antigravity public setup changed connector custody or DefenseClaw configuration while not_certified'
+        }
+        Write-Result 'public-setup:not-certified' pass 'init/setup exit=1; hook/config/custody state unchanged; live=false'
+        return
+    }
     $initArgs = @(
         'init', '--skip-install', '--non-interactive', '--yes', '--connector', $Connector,
         '--profile', 'observe', '--no-start-gateway', '--no-verify'
@@ -2768,11 +2793,6 @@ function Invoke-ContractRun {
     if ($Connector -eq 'copilot') {
         $initArgs += '--native-setup-copilot'
         $script:CopilotConfiguredMode = 'observe'
-    } elseif ($Connector -eq 'antigravity') {
-        # Keep Antigravity publicly not_certified while allowing this
-        # installer-shaped packaged contract to seed canonical state.
-        $initArgs += '--native-setup-antigravity'
-        $script:AntigravityConfiguredMode = 'observe'
     }
     Invoke-Tool 'defenseclaw' $initArgs | Out-Null
     Set-IsolatedGatewayPort
@@ -3087,7 +3107,12 @@ if (-not $NoRun) {
         Write-Result harness fail $_.Exception.Message
         throw
     } finally {
-        try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+        # The Antigravity contract proves that its public not_certified paths
+        # do not install anything. Do not invoke an internal connector
+        # teardown afterward and accidentally manufacture lifecycle state.
+        if ($Layer -ne 'contract' -or $Connector -ne 'antigravity') {
+            try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+        }
         try { Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
         Stage-Diagnostics
         Stop-IsolatedProcessTree
