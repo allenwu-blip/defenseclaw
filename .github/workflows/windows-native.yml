@@ -349,10 +349,23 @@ jobs:
     name: Windows packaged artifact build
     runs-on: windows-latest
     timeout-minutes: 35
+    env:
+      DC_EXPECTED_SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact package source checkout
+        run: |
+          $expected = [string]$env:DC_EXPECTED_SOURCE_COMMIT
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Expected package source commit is invalid: $expected"
+          }
+          $actual = (& git rev-parse --verify HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $expected) {
+            throw "Package checkout does not match the expected source commit: $actual != $expected"
+          }
       - name: Initialize isolated paths
         run: ./scripts/initialize-windows-native-ci-paths.ps1 -Leaf pkg -DiagnosticsLeaf windows-native-diagnostics-package -ArtifactLeaf windows-native-dist
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
@@ -368,6 +381,72 @@ jobs:
         run: ./scripts/windows-native-ci.ps1 -Operation build-artifacts -StateRoot $env:DC_STATE_ROOT -ArtifactRoot $env:DC_ARTIFACT_ROOT
       - name: Build unsigned native Windows setup executable
         run: ./scripts/windows-native-ci.ps1 -Operation build-installer -StateRoot $env:DC_STATE_ROOT -ArtifactRoot $env:DC_ARTIFACT_ROOT
+      - name: Verify exact package source identity
+        run: |
+          . ./scripts/windows-native-ci.ps1 -NoRun
+          $expected = [string]$env:DC_EXPECTED_SOURCE_COMMIT
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Expected package source commit is invalid: $expected"
+          }
+          $actual = (& git rev-parse --verify HEAD).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne $expected) {
+            throw "Package checkout changed during the build: $actual != $expected"
+          }
+
+          $provenancePath = Join-Path $env:DC_ARTIFACT_ROOT 'DefenseClawSetup-x64.exe.provenance.json'
+          $sbomPath = Join-Path $env:DC_ARTIFACT_ROOT 'DefenseClawSetup-x64.exe.sbom.json'
+          foreach ($metadataPath in @($provenancePath, $sbomPath)) {
+            if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+              throw "Package source-identity metadata is missing: $metadataPath"
+            }
+          }
+          $provenance = Get-Content -LiteralPath $provenancePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json
+          if ([string]$provenance.source_commit -cne $expected) {
+            throw "Package provenance source commit does not match the expected head: $($provenance.source_commit) != $expected"
+          }
+          $sbom = Get-Content -LiteralPath $sbomPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$sbom.comment -cne "DefenseClaw source commit: $expected") {
+            throw 'Package SBOM source commit does not match the expected head'
+          }
+
+          $wheelName = [string]$provenance.inputs.wheel
+          $archiveName = [string]$provenance.inputs.gateway_archive
+          foreach ($inputName in @($wheelName, $archiveName)) {
+            if ([IO.Path]::GetFileName($inputName) -cne $inputName) {
+              throw "Package provenance contains a non-canonical input name: $inputName"
+            }
+          }
+          $wheelPath = Join-Path $env:DC_ARTIFACT_ROOT $wheelName
+          $archivePath = Join-Path $env:DC_ARTIFACT_ROOT $archiveName
+          $wheelHash = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($wheelHash -cne [string]$provenance.inputs.wheel_sha256) {
+            throw 'Packaged CLI wheel digest does not match exact-head provenance'
+          }
+          $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($archiveHash -cne [string]$provenance.inputs.gateway_archive_sha256) {
+            throw 'Packaged gateway archive digest does not match exact-head provenance'
+          }
+
+          $verificationRoot = Join-Path $env:DC_STATE_ROOT (
+            'package-source-identity-' + [guid]::NewGuid().ToString('N')
+          )
+          [IO.Directory]::CreateDirectory($verificationRoot) | Out-Null
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $verificationRoot
+          foreach ($binary in @(
+            @{ File = 'defenseclaw.exe'; Name = 'defenseclaw-gateway' },
+            @{ File = 'defenseclaw-hook.exe'; Name = 'defenseclaw-hook' }
+          )) {
+            $path = Join-Path $verificationRoot $binary.File
+            $result = Invoke-WindowsNativeProcess $path @('--version-json') -TimeoutSeconds 30
+            $report = [string]$result.StdOut | ConvertFrom-Json
+            if ([int]$report.schema_version -ne 1 -or
+                [string]$report.name -cne [string]$binary.Name -or
+                [string]$report.version -cne [string]$provenance.version -or
+                [string]$report.commit -cne $expected) {
+              throw "Packaged $($binary.Name) identity does not match exact-head provenance"
+            }
+          }
       - name: Verify native setup wizard responsiveness
         run: >-
           ./scripts/invoke-windows-setup-standard-user-ci.ps1
