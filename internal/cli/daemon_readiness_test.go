@@ -375,7 +375,7 @@ func TestGatewaySnapshotReadyReportsBoundedTelemetryFailureBranches(t *testing.T
 				},
 				map[string]interface{}{
 					"name": "healthy", "kind": "console", "enabled": true,
-					"generation": float64(7), "state": "healthy", "reason": "activated",
+					"generation": float64(7), "state": "healthy", "reason": "activated", "failure": "projection_failed",
 					"endpoint": "provided by secret store", "counters": map[string]interface{}{"accepted": 99},
 				},
 				map[string]interface{}{
@@ -387,6 +387,7 @@ func TestGatewaySnapshotReadyReportsBoundedTelemetryFailureBranches(t *testing.T
 		got := telemetryReadinessFatalError(t, details)
 		want := "gateway telemetry failed during startup: error (generation=7; destinations=" +
 			"alpha[otlp,degraded,retryable_delivery,generation=7]," +
+			"healthy[console,healthy,activated,failure=projection_failed,generation=7]," +
 			"zeta[sqlite,failing,delivery_failed,generation=7])"
 		if got != want {
 			t.Fatalf("telemetry destination diagnostic = %q, want %q", got, want)
@@ -430,6 +431,9 @@ func TestGatewaySnapshotReadyCollapsesUnsafeTelemetryFailureDetails(t *testing.T
 	for index := range oversizedRows {
 		oversizedRows[index] = row(fmt.Sprintf("destination-%02d", index), "retryable_delivery")
 	}
+	unsafeFailureRow := row("collector", "activated")
+	unsafeFailureRow["state"] = "healthy"
+	unsafeFailureRow["failure"] = "provided by secret store"
 
 	for _, tc := range []struct {
 		name    string
@@ -438,6 +442,7 @@ func TestGatewaySnapshotReadyCollapsesUnsafeTelemetryFailureDetails(t *testing.T
 		{name: "malformed generation", details: map[string]interface{}{"generation": 1.5, "retention_state": "degraded"}},
 		{name: "malformed row", details: map[string]interface{}{"generation": float64(1), "destinations": []interface{}{"not-a-row"}}},
 		{name: "secret-like arbitrary reason", details: map[string]interface{}{"generation": float64(1), "destinations": []interface{}{row("collector", "provided by secret store")}}},
+		{name: "secret-like arbitrary failure", details: map[string]interface{}{"generation": float64(1), "destinations": []interface{}{unsafeFailureRow}}},
 		{name: "oversized name", details: map[string]interface{}{"generation": float64(1), "destinations": []interface{}{row(strings.Repeat("x", 65), "retryable_delivery")}}},
 		{name: "oversized row set", details: map[string]interface{}{"generation": float64(1), "destinations": oversizedRows}},
 		{name: "arbitrary retention failure", details: map[string]interface{}{"generation": float64(1), "retention_state": "degraded", "retention_failure": "C:/private/data"}},
@@ -1003,7 +1008,13 @@ func TestWaitForStartedDaemonStopsExactPIDOnFirstFatalTelemetrySnapshot(t *testi
 		snap.Telemetry = gateway.SubsystemHealth{
 			State: gateway.StateError,
 			Details: map[string]interface{}{
-				"generation": float64(11), "retention_state": "degraded", "retention_failure": "scheduler_failed",
+				"generation": float64(11),
+				"destinations": []interface{}{
+					map[string]interface{}{
+						"name": "gateway-console", "kind": "console", "enabled": true,
+						"generation": float64(11), "state": "healthy", "reason": "activated", "failure": "projection_failed",
+					},
+				},
 			},
 		}
 		_ = json.NewEncoder(w).Encode(snap)
@@ -1020,7 +1031,7 @@ func TestWaitForStartedDaemonStopsExactPIDOnFirstFatalTelemetrySnapshot(t *testi
 		5*time.Millisecond,
 		daemonReadinessRequirements{guardrailEnabled: true, telemetryEnabled: true},
 	)
-	if err == nil || ready || !strings.Contains(err.Error(), "retention=degraded/scheduler_failed") {
+	if err == nil || ready || !strings.Contains(err.Error(), "failure=projection_failed") {
 		t.Fatalf("fatal telemetry readiness = %v, error = %v, want bounded immediate failure", ready, err)
 	}
 	if got := probes.Load(); got != 1 {

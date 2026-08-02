@@ -1776,6 +1776,9 @@ func telemetryReadinessFailureDetail(details map[string]interface{}) string {
 	reasons := allowed("", "activated", "queue_full", "retryable_delivery", "partial_delivery", "delivery_failed",
 		"delivery_recovered", "intake_stopped", "closed", "origin_loop", "listener_bound", "listener_failed",
 		"scrape_failed", "scrape_recovered", "server_failed", "drain_started")
+	failureCodes := allowed("", "queue_full", "retryable_delivery", "partial_delivery", "delivery_failed",
+		"origin_loop", "generation_mismatch", "pipeline_failed", "projection_failed", "route_identity_mismatch",
+		"unsupported_shape", "payload_failed", "queue_rejected", "panic_isolated", "compatibility_projection_failed")
 	retentionStates := allowed("", "waiting_for_readiness", "healthy", "degraded", "disabled", "stopped")
 	retentionFailures := allowed("", "run_failed", "scheduler_failed")
 	historyFailures := allowed("", "projection_rejected", "integrity_unsigned", "integrity_signing_failed", "sqlite_write_failed")
@@ -1803,7 +1806,7 @@ func telemetryReadinessFailureDetail(details map[string]interface{}) string {
 		(retentionFailure != "" && retentionState != "degraded") {
 		return ""
 	}
-	type destinationFailure struct{ name, kind, state, reason string }
+	type destinationFailure struct{ name, kind, state, reason, failure string }
 	failures := make([]destinationFailure, 0, telemetryReadinessFailureRowsMax)
 	if raw, exists := details["destinations"]; exists {
 		rows, ok := raw.([]interface{})
@@ -1818,12 +1821,13 @@ func telemetryReadinessFailureDetail(details map[string]interface{}) string {
 			rowGeneration, generationOK := generation(row["generation"])
 			state, stateOK := closed(row, "state", states)
 			reason, reasonOK := closed(row, "reason", reasons)
+			failure, failureOK := closed(row, "failure", failureCodes)
 			if !ok || !nameOK || len(name) > 64 || !observability.IsStableToken(name) || !kindOK || !kinds[kind] ||
-				!enabledOK || !generationOK || rowGeneration != activeGeneration || !stateOK || !reasonOK {
+				!enabledOK || !generationOK || rowGeneration != activeGeneration || !stateOK || !reasonOK || !failureOK {
 				return ""
 			}
-			if enabled && fatalStates[state] {
-				failures = append(failures, destinationFailure{name, kind, state, reason})
+			if enabled && (fatalStates[state] || failure != "") {
+				failures = append(failures, destinationFailure{name, kind, state, reason, failure})
 			}
 		}
 	}
@@ -1839,6 +1843,9 @@ func telemetryReadinessFailureDetail(details map[string]interface{}) string {
 			fields := []string{failure.kind, failure.state}
 			if failure.reason != "" {
 				fields = append(fields, failure.reason)
+			}
+			if failure.failure != "" {
+				fields = append(fields, "failure="+failure.failure)
 			}
 			fields = append(fields, fmt.Sprintf("generation=%d", activeGeneration))
 			rows = append(rows, fmt.Sprintf("%s[%s]", failure.name, strings.Join(fields, ",")))
