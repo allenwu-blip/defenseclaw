@@ -732,6 +732,8 @@ def test_setup_acceptance_validates_packaged_resources_before_first_run() -> Non
 def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
     start = _function("Start-SetupAcceptanceHealthSampler")
     stop = _function("Stop-SetupAcceptanceHealthSampler")
+    contract = _function("Test-SetupAcceptanceHealthSamplerContract")
+    self_test = _function("Invoke-SelfTest")
     acceptance = _function("Invoke-SetupAcceptance")
 
     assert "host PowerShell outside the installed tree" in start
@@ -743,14 +745,31 @@ def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
     assert "event_config_generation" in start
     assert "health_telemetry_generation" in start
     assert "health_config_generation" not in start
+    assert "$health.provenance.generation" not in start
+    assert "provenance_generation" not in start
     assert "[int]$candidate.provenance.config_generation -ne $healthConfigGeneration" in start
     assert "$candidate.PSObject.Properties['observed_at']" in start
     assert "$candidate.PSObject.Properties['timestamp']" in start
     assert "AddMilliseconds(-250)" in start
     assert "telemetry_last_error_digest" in start
     assert "$stream.Length + $bytes.Length -le 65536" in start
+    assert "kind = 'sample_error'" in start
+    assert "stage = $stage" in start
+    assert "category = $category" in start
+    assert "event_correlation" in start
+    assert "$_.Exception" not in start
     assert "runtime\\python" not in start
     assert "$process.Kill($true)" in stop
+    assert "started_at = $startedAt" in contract
+    assert "uptime_ms = 1" in contract
+    assert "application_protection = $running" in contract
+    assert "telemetry = [ordered]@{" in contract
+    assert "generation = 7" in contract
+    assert "provenance_generation" in contract
+    assert "$null -ne $sample.PSObject.Properties['provenance_generation']" in contract
+    assert "Setup health sampler did not emit its bounded stage diagnostic" in contract
+    assert "Setup health sampler did not emit a correlated health sample" in contract
+    assert "Test-SetupAcceptanceHealthSamplerContract $root" in self_test
     assert "(Join-Path $PSHOME 'pwsh.exe')" in acceptance
     assert acceptance.index("Start-SetupAcceptanceHealthSampler") < acceptance.index(
         "Invoke-WindowsSetupStandardUserProcess $setup @(",

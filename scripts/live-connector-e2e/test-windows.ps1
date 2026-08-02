@@ -1648,6 +1648,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Stop-SetupAcceptanceOtlpCollector\b.*?\n\}'
     ).Value
+    $setupHealthSampler = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Start-SetupAcceptanceHealthSampler\b.*?(?=\nfunction Stop-SetupAcceptanceHealthSampler\b)'
+    ).Value
+    $setupHealthSamplerContract = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Test-SetupAcceptanceHealthSamplerContract\b.*?(?=\nfunction Write-SetupAcceptanceConvergenceDiagnostics\b)'
+    ).Value
     $setupAcceptance = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-SetupAcceptance\b.*?\n\}'
@@ -1686,6 +1694,22 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupOtlpCleanup -match 'WaitForExit\(5000\)' -and
         $setupOtlpCleanup -match 'Remove-Item -LiteralPath \$ready') `
         'Setup OTLP fixture cleanup terminates only its captured process tree and removes readiness state'
+    Assert-True ($setupHealthSampler -match '\$healthConfigGeneration = \[int\]\$health\.telemetry\.details\.generation' -and
+        $setupHealthSampler -notmatch '\$health\.provenance\.generation|provenance_generation' -and
+        $setupHealthSampler -match "kind = 'sample_error'" -and
+        $setupHealthSampler -match "'event_correlation', 'projection', 'record'" -and
+        $setupHealthSampler -notmatch '\$_\.Exception') `
+        'Setup health sampler uses the real health generation and bounded nonsecret failure categories'
+    Assert-True ($setupHealthSamplerContract -match '\$listener = \[Net\.Sockets\.TcpListener\]::new\(\[Net\.IPAddress\]::Loopback, 0\)' -and
+        $setupHealthSamplerContract -match 'started_at = \$startedAt' -and
+        $setupHealthSamplerContract -match 'uptime_ms = 1' -and
+        $setupHealthSamplerContract -match 'application_protection = \$running' -and
+        $setupHealthSamplerContract -match 'telemetry = \[ordered\]@\{' -and
+        $setupHealthSamplerContract -match 'generation = 7' -and
+        $setupHealthSamplerContract -match '\$null -ne \$sample\.PSObject\.Properties\[''provenance_generation''\]' -and
+        $setupHealthSamplerContract -match 'did not emit its bounded stage diagnostic' -and
+        $setupHealthSamplerContract -match 'did not emit a correlated health sample') `
+        'hosted-equivalent Setup health sampler fixture covers schema drift diagnostics and exact correlation'
     Assert-True ($harnessText -match 'CLAUDE_CODE_USE_POWERSHELL_TOOL = ''1''' -and
         $harnessText -match 'https://claude\.ai/install\.ps1' -and
         $harnessText -match '\.local\\bin\\claude\.exe' -and

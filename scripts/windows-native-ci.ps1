@@ -2467,15 +2467,21 @@ try {
     $stream.Flush($true)
     $last = ''
     while ($true) {
+        $stage = 'pid_file'
+        $category = 'unavailable_or_invalid'
         try {
             if ((Get-Item -LiteralPath $pidPath -ErrorAction Stop).Length -gt 16384) { throw 'pid bound' }
             $identity = [IO.File]::ReadAllText($pidPath, $utf8) | ConvertFrom-Json -ErrorAction Stop
+            $stage = 'identity'
+            $category = 'invalid_or_mismatch'
             $gatewayPID = [int]$identity.pid
             $startIdentity = [string]$identity.start_identity
             if ($gatewayPID -le 0 -or $startIdentity -cnotmatch '^[0-9]+$' -or
                 ($gatewayPID -eq $PriorPID -and $startIdentity -ceq $PriorIdentity) -or
                 -not ([IO.Path]::GetFullPath([string]$identity.executable)).Equals(
                     $ExpectedGateway, [StringComparison]::OrdinalIgnoreCase)) { throw 'identity mismatch' }
+            $stage = 'process'
+            $category = 'unavailable_or_mismatch'
             $process = Get-Process -Id $gatewayPID -ErrorAction Stop
             if (-not ([IO.Path]::GetFullPath($process.Path)).Equals(
                 $ExpectedGateway, [StringComparison]::OrdinalIgnoreCase)) { throw 'image mismatch' }
@@ -2486,11 +2492,15 @@ try {
                 [Globalization.CultureInfo]::InvariantCulture
             )
             if ($liveStartIdentity -cne $startIdentity) { throw 'reused pid' }
+            $stage = 'listener'
+            $category = 'unavailable_or_mismatch'
             $listeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' `
                 -LocalPort $ApiPort -ErrorAction Stop)
             if ($listeners.Count -ne 1 -or [int]$listeners[0].OwningProcess -ne $gatewayPID) {
                 throw 'listener mismatch'
             }
+            $stage = 'health'
+            $category = 'unavailable_or_invalid'
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/health" `
                 -TimeoutSec 1 -MaximumRedirection 0
             $startedAt = [datetime]::Parse(
@@ -2502,6 +2512,8 @@ try {
                 throw 'generation mismatch'
             }
             $healthConfigGeneration = [int]$health.telemetry.details.generation
+            $stage = 'event_correlation'
+            $category = 'unavailable_or_mismatch'
             $event = $null
             foreach ($line in @(Get-Content -LiteralPath $jsonlPath -Tail 8 -Encoding UTF8)) {
                 if ($utf8.GetByteCount($line) -gt 65536) { continue }
@@ -2527,6 +2539,8 @@ try {
                 $event = $candidate
             }
             if ($null -eq $event) { throw 'run correlation unavailable' }
+            $stage = 'projection'
+            $category = 'schema_mismatch'
             $destinations = @($health.telemetry.details.destinations | ForEach-Object {
                 $reasonProperty = $_.PSObject.Properties['reason']
                 $labels = @(
@@ -2563,18 +2577,18 @@ try {
                 sidecar_instance_id = [string]$event.correlation.sidecar_instance_id
                 event_config_generation = [int]$event.provenance.config_generation
                 health_telemetry_generation = $healthConfigGeneration
-                provenance_generation = [int]$health.provenance.generation
                 telemetry_state = $telemetryState
                 telemetry_last_error_digest = $lastErrorDigest
                 retention_state = $retentionState
                 destinations = $destinations
             }
+            $stage = 'record'
+            $category = 'serialization_failed'
             $row = $record | ConvertTo-Json -Compress -Depth 8
             $fingerprint = @(
                 $record.gateway_pid, $record.gateway_start_identity, $record.run_id,
                 $record.event_config_generation, $record.health_telemetry_generation,
-                $record.provenance_generation, $record.telemetry_state,
-                $record.telemetry_last_error_digest, $record.retention_state,
+                $record.telemetry_state, $record.telemetry_last_error_digest, $record.retention_state,
                 ($destinations | ConvertTo-Json -Compress -Depth 4)
             ) -join '|'
             $bytes = $utf8.GetBytes($row + "`n")
@@ -2584,7 +2598,32 @@ try {
                 $last = $fingerprint
             }
         } catch {
-            # Sampling is diagnostic-only; incomplete or stale generations are dropped.
+            # Sampling is diagnostic-only. Retain only a fixed stage/category
+            # transition so schema drift cannot silently collapse the ledger to
+            # its header; never copy exception text, paths, or sampled values.
+            if ($stage -cnotin @(
+                'pid_file', 'identity', 'process', 'listener', 'health',
+                'event_correlation', 'projection', 'record'
+            )) { $stage = 'internal' }
+            if ($category -cnotin @(
+                'unavailable_or_invalid', 'invalid_or_mismatch',
+                'unavailable_or_mismatch', 'schema_mismatch',
+                'serialization_failed'
+            )) { $category = 'internal_error' }
+            $diagnostic = [ordered]@{
+                observed_at = [DateTime]::UtcNow.ToString('o')
+                kind = 'sample_error'
+                stage = $stage
+                category = $category
+            }
+            $row = $diagnostic | ConvertTo-Json -Compress
+            $fingerprint = "sample_error|$stage|$category"
+            $bytes = $utf8.GetBytes($row + "`n")
+            if ($fingerprint -cne $last -and $stream.Length + $bytes.Length -le 65536) {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+                $last = $fingerprint
+            }
         }
         Start-Sleep -Milliseconds 100
     }
@@ -2636,6 +2675,200 @@ function Stop-SetupAcceptanceHealthSampler([AllowNull()][object]$Sampler) {
         }
     } finally {
         $process.Dispose()
+    }
+}
+
+function Test-SetupAcceptanceHealthSamplerContract([string]$Root) {
+    $fixtureRoot = Join-Path $Root 'setup-health-sampler-contract'
+    if (Test-Path -LiteralPath $fixtureRoot) {
+        Remove-SafeDisposableTree -Path $fixtureRoot -Root $Root
+    }
+    $dataRoot = Join-Path $fixtureRoot 'data'
+    $installRoot = Join-Path $fixtureRoot 'installed'
+    $readyPath = Join-Path $fixtureRoot 'health-server.ready'
+    $outcomePath = Join-Path $fixtureRoot 'setup-seeded-health.jsonl'
+    [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
+    [IO.Directory]::CreateDirectory($installRoot) | Out-Null
+
+    # Exercise the sampler against an external process and the exact public
+    # HealthSnapshot shape. In particular, this fixture intentionally has no
+    # top-level provenance object; runtime generation belongs to telemetry.
+    $serverCode = @'
+param($ReadyPath)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$utf8 = [Text.UTF8Encoding]::new($false)
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+try {
+    $listener.Start()
+    $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    [IO.File]::WriteAllText($ReadyPath, [string]$port, $utf8)
+    $startedAt = [Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().ToString('o')
+    while ($true) {
+        $client = $listener.AcceptTcpClient()
+        try {
+            $network = $client.GetStream()
+            $reader = [IO.StreamReader]::new($network, [Text.Encoding]::ASCII, $false, 1024, $true)
+            try {
+                while (($line = $reader.ReadLine()) -ne $null -and $line.Length -ne 0) { }
+            } finally {
+                $reader.Dispose()
+            }
+            $running = [ordered]@{ state = 'running'; since = $startedAt }
+            $health = [ordered]@{
+                started_at = $startedAt
+                uptime_ms = 1
+                gateway = $running
+                watcher = $running
+                config = $running
+                api = $running
+                guardrail = $running
+                telemetry = [ordered]@{
+                    state = 'error'
+                    since = $startedAt
+                    details = [ordered]@{
+                        generation = 7
+                        retention_state = 'healthy'
+                        destinations = @([ordered]@{
+                            name = 'fixture'
+                            kind = 'otlp_http'
+                            state = 'error'
+                            reason = 'unavailable'
+                            generation = 7
+                        })
+                    }
+                }
+                ai_discovery = $running
+                application_protection = $running
+                connectors = @()
+            }
+            $body = $health | ConvertTo-Json -Compress -Depth 8
+            $bodyBytes = $utf8.GetBytes($body)
+            $header = "HTTP/1.1 200 OK`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+            $headerBytes = [Text.Encoding]::ASCII.GetBytes($header)
+            $network.Write($headerBytes, 0, $headerBytes.Length)
+            $network.Write($bodyBytes, 0, $bodyBytes.Length)
+            $network.Flush()
+        } finally {
+            $client.Dispose()
+        }
+    }
+} finally {
+    $listener.Stop()
+}
+'@
+    $pwsh = [IO.Path]::GetFullPath((Get-Process -Id $PID).Path)
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $pwsh
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in @(
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', $serverCode, $readyPath
+    )) { $startInfo.ArgumentList.Add($argument) }
+    $server = [Diagnostics.Process]::new()
+    $server.StartInfo = $startInfo
+    $serverStarted = $false
+    $sampler = $null
+    try {
+        $serverStarted = $server.Start()
+        if (-not $serverStarted) { throw 'synthetic Setup health server did not start' }
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $readyPath -PathType Leaf)) {
+            $server.Refresh()
+            if ($server.HasExited) { throw "synthetic Setup health server exited with $($server.ExitCode)" }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'synthetic Setup health server readiness timed out' }
+            Start-Sleep -Milliseconds 50
+        }
+        $apiPort = [int][IO.File]::ReadAllText($readyPath)
+        if ($apiPort -lt 1 -or $apiPort -gt 65535) { throw 'synthetic Setup health server returned an invalid port' }
+        $server.Refresh()
+        $unixTicks = [long](
+            $server.StartTime.ToUniversalTime().Ticks - [DateTime]::UnixEpoch.Ticks
+        )
+        $startIdentity = ([long]($unixTicks * 100)).ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $event = [ordered]@{
+            observed_at = [DateTime]::UtcNow.ToString('o')
+            correlation = [ordered]@{
+                run_id = '11111111-1111-4111-8111-111111111111'
+                sidecar_instance_id = '22222222-2222-4222-8222-222222222222'
+            }
+            provenance = [ordered]@{ config_generation = 7 }
+        }
+        [IO.File]::WriteAllText(
+            (Join-Path $dataRoot 'gateway.jsonl'),
+            (($event | ConvertTo-Json -Compress -Depth 5) + "`n"),
+            [Text.UTF8Encoding]::new($false)
+        )
+
+        # Start before publishing gateway.pid to prove a bounded, enumerated
+        # failure record is emitted instead of a schema-only ledger.
+        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $outcomePath $dataRoot $apiPort `
+            ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
+        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        $diagnostic = $null
+        while ($null -eq $diagnostic) {
+            foreach ($line in @(Get-Content -LiteralPath $outcomePath -Encoding UTF8)) {
+                if ($line -eq 'schema=1') { continue }
+                try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                if ([string]$candidate.kind -ceq 'sample_error') { $diagnostic = $candidate; break }
+            }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Setup health sampler did not emit its bounded stage diagnostic' }
+            Start-Sleep -Milliseconds 50
+        }
+        if ([string]$diagnostic.stage -cne 'pid_file' -or
+            [string]$diagnostic.category -cne 'unavailable_or_invalid') {
+            throw 'Setup health sampler emitted an unexpected initial diagnostic category'
+        }
+
+        $identity = [ordered]@{
+            pid = $server.Id
+            start_identity = $startIdentity
+            executable = $pwsh
+        }
+        $pidTemporary = Join-Path $dataRoot 'gateway.pid.new'
+        [IO.File]::WriteAllText(
+            $pidTemporary,
+            ($identity | ConvertTo-Json -Compress),
+            [Text.UTF8Encoding]::new($false)
+        )
+        Move-Item -LiteralPath $pidTemporary -Destination (Join-Path $dataRoot 'gateway.pid')
+
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        $sample = $null
+        while ($null -eq $sample) {
+            foreach ($line in @(Get-Content -LiteralPath $outcomePath -Encoding UTF8)) {
+                if ($line -eq 'schema=1') { continue }
+                try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                if ($null -eq $candidate.PSObject.Properties['kind']) { $sample = $candidate }
+            }
+            if ([DateTime]::UtcNow -ge $deadline) { throw 'Setup health sampler did not emit a correlated health sample' }
+            Start-Sleep -Milliseconds 50
+        }
+        if ([int]$sample.gateway_pid -ne $server.Id -or
+            [string]$sample.gateway_start_identity -cne $startIdentity -or
+            [int]$sample.listener_pid -ne $server.Id -or
+            [int]$sample.event_config_generation -ne 7 -or
+            [int]$sample.health_telemetry_generation -ne 7 -or
+            $null -ne $sample.PSObject.Properties['provenance_generation'] -or
+            [string]$sample.run_id -cne '11111111-1111-4111-8111-111111111111' -or
+            [string]$sample.sidecar_instance_id -cne '22222222-2222-4222-8222-222222222222') {
+            throw 'Setup health sampler lost exact identity, listener, generation, or run correlation'
+        }
+    } finally {
+        Stop-SetupAcceptanceHealthSampler $sampler
+        if ($serverStarted) {
+            $server.Refresh()
+            if (-not $server.HasExited) {
+                $server.Kill($true)
+                if (-not $server.WaitForExit(5000)) { throw 'synthetic Setup health server cleanup timed out' }
+            }
+        }
+        $server.Dispose()
+        if (Test-Path -LiteralPath $fixtureRoot) {
+            Remove-SafeDisposableTree -Path $fixtureRoot -Root $Root
+        }
     }
 }
 
@@ -7078,6 +7311,7 @@ function Invoke-SelfTest {
         $unrelated.Dispose()
     }
 
+    Test-SetupAcceptanceHealthSamplerContract $root
     Test-WindowsSetupStandardUserLauncher $root
 
     $junctionTarget = Join-Path $root 'junction-target'
