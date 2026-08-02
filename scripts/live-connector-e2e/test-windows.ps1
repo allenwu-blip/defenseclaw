@@ -1819,8 +1819,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($packagePaths -match "5E6C858F-0E22-4760-9AFE-EA3317B67173" -and
         $packagePaths -match "F1B32785-6FBA-4FCF-9D55-7B8E7F157091" -and
         $packagePaths -match "5CD7AEE2-2219-4A67-B85D-6C9CE15660CB" -and
-        $packagePaths -match "Join-Path \$profile '\.gemini\\config'" -and
-        $packagePaths -match "Join-Path \$profile '\.defenseclaw'") `
+        $packagePaths -match 'Join-Path \$profile ''\.gemini\\config''' -and
+        $packagePaths -match 'Join-Path \$profile ''\.defenseclaw''') `
         'authenticated Antigravity package lane binds data and config to exact Windows Known Folders'
     Assert-True ($packageIdentity -match 'artifact_sha256' -and
         $packageIdentity -match 'source_commit' -and
