@@ -759,6 +759,16 @@ def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
     assert "Stop-SetupAcceptanceHealthSampler $setupHealthSampler" in acceptance
 
 
+def test_setup_transition_health_diagnostic_is_exactly_captured() -> None:
+    capture = _function("Get-WindowsNativeCaptureFiles")
+    self_test = _function("Invoke-SelfTest")
+
+    assert "$_.Name -ceq 'setup-seeded-health.jsonl'" in capture
+    assert "if ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }" in capture
+    assert "setup-seeded-health-extra.jsonl" in self_test
+    assert "exact Setup transition health diagnostic capture contract failed" in self_test
+
+
 def test_setup_uninstall_acceptance_retains_connector_cleanup_authority() -> None:
     acceptance = _function("Invoke-SetupAcceptance")
     authority = _function("Assert-NativeConnectorCleanupAuthorityPresent")

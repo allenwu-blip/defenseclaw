@@ -6710,12 +6710,14 @@ function Get-WindowsNativeCaptureFiles([string]$Root) {
     return @(
         Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
-                $_.Name -match '^(gateway|watchdog|results|doctor|.*\.log)' -and
+                ($_.Name -match '^(gateway|watchdog|results|doctor|.*\.log)' -or
+                    $_.Name -ceq 'setup-seeded-health.jsonl') -and
                     $_.Length -le 1048576
             } |
             Sort-Object @{
                 Expression = {
-                    if ($_.Name -eq 'wizard-driver.log') { 0 }
+                    if ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }
+                    elseif ($_.Name -eq 'wizard-driver.log') { 0 }
                     elseif ($_.Name -in @('go-test-failure-summary.log', 'go-test.log')) { 1 }
                     else { 2 }
                 }
@@ -6973,6 +6975,10 @@ function Invoke-SelfTest {
         }
         $goTestSummaryPath = Join-Path $captureFixture 'go-test-failure-summary.log'
         Write-BoundedText $goTestSummaryPath $goTestSummary 262144
+        $setupHealthPath = Join-Path $captureFixture 'setup-seeded-health.jsonl'
+        $setupHealthNearMatch = Join-Path $captureFixture 'setup-seeded-health-extra.jsonl'
+        Write-BoundedText $setupHealthPath '{"schema":1,"telemetry_state":"error"}' 65536
+        Write-BoundedText $setupHealthNearMatch 'must-not-capture' 65536
         foreach ($index in 0..30) {
             Write-BoundedText (Join-Path $captureFixture ("00-before-go-test-{0:D2}.log" -f $index)) 'decoy'
         }
@@ -6995,6 +7001,13 @@ function Invoke-SelfTest {
             $_.FullName.Equals($goTestSummaryPath, [StringComparison]::OrdinalIgnoreCase)
         })) {
             throw 'bounded Go failure summary was not prioritized into native capture'
+        }
+        if (-not ($captureFiles | Where-Object {
+            $_.FullName.Equals($setupHealthPath, [StringComparison]::OrdinalIgnoreCase)
+        }) -or ($captureFiles | Where-Object {
+            $_.FullName.Equals($setupHealthNearMatch, [StringComparison]::OrdinalIgnoreCase)
+        })) {
+            throw 'exact Setup transition health diagnostic capture contract failed'
         }
         if ($captureFiles | Where-Object {
             $_.FullName.Equals($oversizedPath, [StringComparison]::OrdinalIgnoreCase)
