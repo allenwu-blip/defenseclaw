@@ -43,6 +43,9 @@ type connectorReconciliationRecorder struct {
 	failures []connectorReconciliationFailure
 }
 
+type connectorReconciliationReader func() (*connectorReconciliationState, error)
+type connectorReconciliationWriter func([]connectorReconciliationAttempt, []connectorReconciliationFailure) error
+
 func (recorder *connectorReconciliationRecorder) run(
 	transactionID, connectorName, configHome, operation string,
 	operationFn func() error,
@@ -162,6 +165,90 @@ func retryPendingConnectorReconciliation(
 		attemptedIdentities[identity] = true
 	}
 	return nil
+}
+
+// retryPendingConvergedUninstallConnectorReconciliation gives an explicit
+// uninstall retry one bounded opportunity to finish connector cleanup recorded
+// by the exact converged uninstall transaction. Ordinary install/repair
+// recovery does not call this path. The manifest-verified gateway embedded in
+// the executing Setup binary is the only process authorized to revisit the
+// transaction-bound configuration homes.
+func retryPendingConvergedUninstallConnectorReconciliation(transaction setupTransaction) error {
+	if err := retryPendingConvergedUninstallConnectorReconciliationWith(
+		transaction,
+		prepareConnectorMaintenanceGateway,
+		readConnectorReconciliation,
+		updateConnectorReconciliation,
+		runConnectorLifecycleWithEnv,
+	); err != nil {
+		return err
+	}
+	return connectorReconciliationPendingError("uninstall")
+}
+
+func retryPendingConvergedUninstallConnectorReconciliationWith(
+	transaction setupTransaction,
+	prepare connectorMaintenanceGatewayProvider,
+	read connectorReconciliationReader,
+	write connectorReconciliationWriter,
+	run connectorLifecycleRunner,
+) error {
+	if transaction.Action != "uninstall" {
+		return errors.New("pending uninstall connector reconciliation requires an uninstall transaction")
+	}
+	readBoundState := func() (*connectorReconciliationState, error) {
+		state, err := read()
+		if err != nil || state == nil {
+			return state, err
+		}
+		for _, failure := range state.Failures {
+			if failure.TransactionID != transaction.ID {
+				return nil, errors.New("pending connector reconciliation belongs to a different transaction")
+			}
+			bound := false
+			for _, home := range connectorCleanupHomes(transaction, failure.Connector) {
+				if samePath(home, failure.ConfigHome) {
+					bound = true
+					break
+				}
+			}
+			if !bound {
+				return nil, fmt.Errorf(
+					"pending %s connector reconciliation names a configuration home outside the uninstall transaction",
+					failure.Connector,
+				)
+			}
+		}
+		return state, nil
+	}
+
+	state, err := readBoundState()
+	if err != nil || state == nil || len(state.Failures) == 0 {
+		return err
+	}
+	maintenance, err := prepare()
+	if err != nil {
+		return fmt.Errorf("prepare connector maintenance gateway: %w", err)
+	}
+	if maintenance.cleanup == nil {
+		maintenance.cleanup = func() {}
+	}
+	defer maintenance.cleanup()
+
+	reconciliation := connectorReconciliationRecorder{}
+	if err := retryPendingConnectorReconciliation(
+		transaction,
+		maintenance.path,
+		&reconciliation,
+		readBoundState,
+		run,
+	); err != nil {
+		return err
+	}
+	if len(reconciliation.attempts) == 0 {
+		return errors.New("pending uninstall connector reconciliation made no bounded attempts")
+	}
+	return write(reconciliation.attempts, reconciliation.failures)
 }
 
 func reconcileRemovedConnectors(

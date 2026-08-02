@@ -177,6 +177,7 @@ type uninstallRecoveryOps struct {
 	prepareCommittedInstall func(setupTransaction) error
 	buildHandoff            func(setupTransaction) (setupTransaction, error)
 	resumeUninstall         func(setupTransaction) error
+	retryConvergedUninstall func(setupTransaction) error
 	recoverUninstall        func(setupJournal) error
 	replaceWithHandoff      func(setupJournal, setupTransaction) error
 	afterHandoff            func() error
@@ -2017,6 +2018,9 @@ func preparePendingSetupTransactionForUninstall(opts options, installRoot, dataR
 			return newUninstallHandoffTransaction(source, state, opts)
 		},
 		resumeUninstall: resumeUninstallIntentWithoutActivation,
+		retryConvergedUninstall: func(transaction setupTransaction) error {
+			return retryPendingConvergedUninstallConnectorReconciliation(transaction)
+		},
 		recoverUninstall: func(journal setupJournal) error {
 			return recoverSetupJournalPhase(journal, setupRecoveryOps{
 				Abort:    abortPreparedSetupTransaction,
@@ -2071,6 +2075,11 @@ func preparePendingSetupTransactionForUninstallAt(
 			}
 			transaction := journal.Transaction
 			return &transaction, nil
+		}
+		if journal.Phase == setupPhaseConverged && ops.retryConvergedUninstall != nil {
+			if err := ops.retryConvergedUninstall(journal.Transaction); err != nil {
+				return nil, fmt.Errorf("retry converged uninstall connector reconciliation: %w", err)
+			}
 		}
 		if err := ops.recoverUninstall(*journal); err != nil {
 			return nil, err

@@ -4073,6 +4073,70 @@ func TestInstallToUninstallHandoffBypassesFailingForwardConvergence(t *testing.T
 	}
 }
 
+func TestExplicitUninstallRetriesOnlyConvergedUninstallBeforeCleanupRecovery(t *testing.T) {
+	t.Parallel()
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	transaction := testSetupTransactionForRoots("uninstall", installRoot, dataRoot, maintenancePath, nil)
+	transaction.PreviousStableHookStatus = stableHookSnapshotInactive
+	path := filepath.Join(t.TempDir(), "private", "setup-transaction.json")
+	journal := setupJournal{SchemaVersion: setupJournalSchemaVersion, Phase: setupPhaseConverged, Transaction: transaction}
+	if err := writeDurableJournal(path, journal, false); err != nil {
+		t.Fatal(err)
+	}
+	expected := setupTransactionExpectations{InstallRoot: installRoot, DataRoot: dataRoot, MaintenancePath: maintenancePath}
+	var calls []string
+	prepared, err := preparePendingSetupTransactionForUninstallAt(path, expected, uninstallRecoveryOps{
+		retryConvergedUninstall: func(got setupTransaction) error {
+			if got.ID != transaction.ID {
+				t.Fatalf("retried transaction = %s", got.ID)
+			}
+			calls = append(calls, "retry-reconciliation")
+			return nil
+		},
+		recoverUninstall: func(got setupJournal) error {
+			if got.Phase != setupPhaseConverged || got.Transaction.ID != transaction.ID {
+				t.Fatalf("recovered journal = %+v", got)
+			}
+			calls = append(calls, "cleanup")
+			return nil
+		},
+	})
+	if err != nil || prepared != nil {
+		t.Fatalf("prepare result=%+v error=%v", prepared, err)
+	}
+	if got := strings.Join(calls, ","); got != "retry-reconciliation,cleanup" {
+		t.Fatalf("recovery calls = %q", got)
+	}
+}
+
+func TestExplicitUninstallRetainsConvergedJournalWhenReconciliationRetryFails(t *testing.T) {
+	t.Parallel()
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	transaction := testSetupTransactionForRoots("uninstall", installRoot, dataRoot, maintenancePath, nil)
+	transaction.PreviousStableHookStatus = stableHookSnapshotInactive
+	path := filepath.Join(t.TempDir(), "private", "setup-transaction.json")
+	journal := setupJournal{SchemaVersion: setupJournalSchemaVersion, Phase: setupPhaseConverged, Transaction: transaction}
+	if err := writeDurableJournal(path, journal, false); err != nil {
+		t.Fatal(err)
+	}
+	expected := setupTransactionExpectations{InstallRoot: installRoot, DataRoot: dataRoot, MaintenancePath: maintenancePath}
+	want := errors.New("connector custody remains pending")
+	_, err := preparePendingSetupTransactionForUninstallAt(path, expected, uninstallRecoveryOps{
+		retryConvergedUninstall: func(setupTransaction) error { return want },
+		recoverUninstall: func(setupJournal) error {
+			t.Fatal("cleanup recovery ran after connector retry failed")
+			return nil
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("retry error = %v, want %v", err, want)
+	}
+	retained, readErr := readSetupJournal(path)
+	if readErr != nil || retained == nil || retained.Phase != setupPhaseConverged || retained.Transaction.ID != transaction.ID {
+		t.Fatalf("retained journal=%+v error=%v", retained, readErr)
+	}
+}
+
 func TestUninstallHandoffAcceptsOnlySourceBoundPartialPathOwnership(t *testing.T) {
 	t.Parallel()
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)

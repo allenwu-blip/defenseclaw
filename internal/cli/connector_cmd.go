@@ -261,6 +261,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		return func() {}, nil
 	case "opencode":
 		variable = "OPENCODE_CONFIG_DIR"
+	case "omnigent":
+		variable = "OMNIGENT_CONFIG_HOME"
 	case "hermes":
 		variable = "HERMES_HOME"
 	default:
