@@ -24,6 +24,9 @@ $releaseWorkflow = Join-Path $root '.github\workflows\release.yaml'
 $liveWorkflow = Join-Path $root '.github\workflows\connector-live-e2e.yml'
 $ciWorkflow = Join-Path $root '.github\workflows\ci.yml'
 $installer = Join-Path $root 'scripts\install.ps1'
+$setupMainSource = Join-Path $root 'cmd\defenseclaw-setup\main.go'
+$setupMainTests = Join-Path $root 'cmd\defenseclaw-setup\main_test.go'
+$setupWizardSource = Join-Path $root 'cmd\defenseclaw-setup\wizard_windows.go'
 $mock = Join-Path $PSScriptRoot 'testdata\windows-mock.ps1'
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("dc-windows-harness-test-" + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temp) | Out-Null
@@ -1020,6 +1023,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     $nativePathHelpersText = [IO.File]::ReadAllText($nativePathHelpers)
     $nativePathInitializerText = [IO.File]::ReadAllText($nativePathInitializer)
     $installerText = [IO.File]::ReadAllText($installer)
+    $setupMainSourceText = [IO.File]::ReadAllText($setupMainSource)
+    $setupMainTestsText = [IO.File]::ReadAllText($setupMainTests)
+    $setupWizardSourceText = [IO.File]::ReadAllText($setupWizardSource)
     $nativeProcessFunction = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WindowsNativeProcess\b.*?(?=\r?\nfunction )'
@@ -1562,6 +1568,46 @@ private-secret-name = "DefenseClaw must remain redacted"
 
     Assert-True ($liveWorkflowText -match '(?s)windows-live:.*?connector: \[codex, claudecode, cursor, opencode\].*?report:') 'manual Windows live matrix contains Codex, Claude, Cursor, and OpenCode'
     Assert-True ($liveWorkflowText -match '(?s)windows-antigravity-live:.*?runs-on: \[self-hosted, Windows, X64, antigravity-authenticated\].*?AuthenticatedAntigravityRunner') 'manual Antigravity live job requires a dedicated authenticated native Windows runner'
+    $antigravityLiveJob = [regex]::Match(
+        $liveWorkflowText,
+        '(?ms)^  windows-antigravity-live:.*?(?=^  # -+\r?$\n  # Report)'
+    ).Value
+    Assert-True ($antigravityLiveJob -match 'permissions:\s*\r?\n\s+actions: read\s*\r?\n\s+contents: read' -and
+        $antigravityLiveJob -match 'actions/download-artifact@' -and
+        $antigravityLiveJob -match 'name: windows-native-package' -and
+        $antigravityLiveJob -match 'run-id: \$\{\{ inputs\.windows_package_run_id \}\}' -and
+        $antigravityLiveJob -match '-PackagedSetupPath' -and
+        $antigravityLiveJob -match "-ExpectedPackageSourceCommit '\$\{\{ github\.sha \}\}'") `
+        'authenticated Antigravity lane consumes an explicit exact-head Windows package artifact'
+    Assert-True ($antigravityLiveJob -match 'GH_TOKEN: \$\{\{ github\.token \}\}' -and
+        $antigravityLiveJob -match 'actions/workflows/windows-native\.yml' -and
+        $antigravityLiveJob -match '\$run\.workflow_id.*?\$workflow\.id' -and
+        $antigravityLiveJob -match '\$run\.path.*?\.github/workflows/windows-native\.yml' -and
+        $antigravityLiveJob -match '\$run\.repository\.full_name.*?GITHUB_REPOSITORY' -and
+        $antigravityLiveJob -match '\$run\.conclusion.*?success' -and
+        $antigravityLiveJob -match '\$run\.head_sha.*?EXPECTED_HEAD_SHA' -and
+        $antigravityLiveJob -match 'actions/runs/\$env:PACKAGE_RUN_ID/artifacts\?per_page=100' -and
+        $antigravityLiveJob -match '\$packageArtifacts\.Count -ne 1' -and
+        $antigravityLiveJob -match '\$packageArtifacts\[0\]\.expired' -and
+        $antigravityLiveJob -match '\$packageArtifacts\[0\]\.size_in_bytes') `
+        'package authorization binds run, canonical workflow, repository, exact head, success, and unexpired artifact before download'
+    $antigravitySafetyNet = [regex]::Match(
+        $antigravityLiveJob,
+        '(?s)- name: Antigravity teardown safety net.*?-StateRoot \$env:DC_WINDOWS_STATE'
+    ).Value
+    Assert-True ($antigravitySafetyNet -match '-Operation cleanup' -and
+        $antigravitySafetyNet -match '-AuthenticatedAntigravityRunner' -and
+        $antigravitySafetyNet -match '-PackagedSetupPath' -and
+        $antigravitySafetyNet -match "-ExpectedPackageSourceCommit '\$\{\{ github\.sha \}\}'") `
+        'Antigravity safety net receives the same exact package identity as the live run'
+    Assert-True ($antigravityLiveJob -notmatch 'go build|uv sync|CONNECTOR=antigravity|native-setup-antigravity') `
+        'authenticated Antigravity lane cannot substitute raw builds or a public Setup bootstrap'
+    Assert-True ($antigravityLiveJob -match 'Protect exact package destination' -and
+        $antigravityLiveJob -match 'SetAccessRuleProtection\(\$true, \$false\)' -and
+        $antigravityLiveJob -match "S-1-5-18" -and
+        $antigravityLiveJob -match "S-1-5-32-544" -and
+        $antigravityLiveJob -match 'FullControl') `
+        'workflow protects the exact package destination before artifact download'
     $windowsLiveJob = [regex]::Match($liveWorkflowText, '(?s)  windows-live:.*?(?=\r?\n  # -+\r?\n  # Report)').Value
     Assert-True ($windowsLiveJob -notmatch 'continue-on-error') 'Windows live jobs are not advisory'
     Assert-True ($windowsLiveJob -notmatch 'shell:\s*bash') 'Windows live jobs never select Bash'
@@ -1730,6 +1776,157 @@ private-secret-name = "DefenseClaw must remain redacted"
     $connectorSetup = [regex]::Match($harnessText, '(?s)function Invoke-Setup\b.*?\n\}').Value
     Assert-True ($connectorSetup -notmatch 'native-setup-antigravity') `
         'generic connector setup cannot bypass Antigravity public certification'
+    $packagePaths = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-AuthenticatedAntigravityPackagePaths\b.*?(?=\nfunction Assert-ExactPath\b)'
+    ).Value
+    $packageIdentity = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-ExactPackagedSetup\b.*?(?=\nfunction Invoke-AuthenticatedAntigravitySetup\b)'
+    ).Value
+    $packageBootstrap = [regex]::Match(
+        $harnessText,
+        '(?s)function Initialize-AuthenticatedAntigravityPackage\b.*?(?=\nfunction Repair-AuthenticatedAntigravityPackage\b)'
+    ).Value
+    $packageRepair = [regex]::Match(
+        $harnessText,
+        '(?s)function Repair-AuthenticatedAntigravityPackage\b.*?(?=\nfunction Get-AntigravityHookConfigFingerprint\b)'
+    ).Value
+    $hookFingerprint = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-AntigravityHookConfigFingerprint\b.*?(?=\nfunction Save-AntigravityOriginalConfig\b)'
+    ).Value
+    $packageManifest = [regex]::Match(
+        $harnessText,
+        '(?s)function Write-AuthenticatedAntigravityCleanupManifest\b.*?(?=\nfunction Read-AuthenticatedAntigravityCleanupManifest\b)'
+    ).Value
+    $packageManifestValidation = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-AuthenticatedAntigravityCleanupManifest\b.*?(?=\nfunction Invoke-AuthenticatedAntigravityCleanup\b)'
+    ).Value
+    $packageRecovery = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-AuthenticatedAntigravityCleanup\b.*?(?=\nfunction Assert-AuthenticatedAntigravityFreshRunPreflight\b)'
+    ).Value
+    $packageFreshPreflight = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-AuthenticatedAntigravityFreshRunPreflight\b.*?(?=\nfunction Uninstall-AuthenticatedAntigravityPackage\b)'
+    ).Value
+    $packageCleanup = [regex]::Match(
+        $harnessText,
+        '(?s)function Uninstall-AuthenticatedAntigravityPackage\b.*?(?=\nfunction Get-ProcessTreeSnapshot\b)'
+    ).Value
+    Assert-True ($packagePaths -match "5E6C858F-0E22-4760-9AFE-EA3317B67173" -and
+        $packagePaths -match "F1B32785-6FBA-4FCF-9D55-7B8E7F157091" -and
+        $packagePaths -match "5CD7AEE2-2219-4A67-B85D-6C9CE15660CB" -and
+        $packagePaths -match "Join-Path \$profile '\.gemini\\config'" -and
+        $packagePaths -match "Join-Path \$profile '\.defenseclaw'") `
+        'authenticated Antigravity package lane binds data and config to exact Windows Known Folders'
+    Assert-True ($packageIdentity -match 'artifact_sha256' -and
+        $packageIdentity -match 'source_commit' -and
+        $packageIdentity -match 'Get-FileHash.*?SHA256' -and
+        $harnessText -match 'Assert-ProtectedPackageArtifactRoot' -and
+        $harnessText -match 'AreAccessRulesProtected' -and
+        $packageIdentity -match 'Assert-DisposableNoReparseAncestors' -and
+        $packageIdentity -match 'ReparsePoint') `
+        'authenticated Antigravity package lane pins provenance, bytes, protected DACL, and non-reparse custody'
+    Assert-True ($packageBootstrap -match "'CONNECTOR=none'" -and
+        $packageBootstrap -match "'MODE=action'" -and
+        $packageBootstrap -match "'STARTGATEWAY=1'" -and
+        $packageBootstrap -match "(?s)'CONNECTOR=antigravity'.*?\) @\(2\) 'public-antigravity-rejection'" -and
+        ([regex]::Matches($packageBootstrap, "'CONNECTOR=antigravity'")).Count -eq 1 -and
+        $packageBootstrap -match 'Assert-AuthenticatedAntigravityInstallState' -and
+        $harnessText -match "\[string\]\`$State\.connector -cne 'none'") `
+        'fresh exact Setup remains connector=none after the one explicit fail-closed public rejection probe'
+    Assert-True (([regex]::Matches($packageBootstrap, "Write-Result 'package-setup:identity' pass")).Count -eq 1 -and
+        $packageBootstrap -match 'Get-FileHash -LiteralPath \$script:PackagedSetupExecutable' -and
+        $packageBootstrap -match '\.Hash\.ToLowerInvariant\(\)' -and
+        $packageBootstrap -match 'source_commit=\$ExpectedPackageSourceCommit installer_sha256=\$packagedSetupHash') `
+        'authenticated results bind the exact package source commit and recomputed lowercase installer SHA-256 once'
+    Assert-True ($packageBootstrap -match '(?s)Save-AntigravityOriginalConfig\s+Write-AuthenticatedAntigravityCleanupManifest \$paths.*?public-antigravity-rejection.*?Assert-AntigravityOriginalConfigRestored.*?fresh-none-install.*?Assert-AuthenticatedAntigravityInstallState.*?Assert-AntigravityOriginalConfigRestored' -and
+        $hookFingerprint -match 'Assert-DisposableNoReparseAncestors' -and
+        $hookFingerprint -match '-AllowedRoot \$Paths\.Profile' -and
+        $hookFingerprint -match '(?s)Assert-DisposableNoReparseAncestors.*?\$exists = Test-Path' -and
+        $hookFingerprint -match 'non-directory ancestor' -and
+        $hookFingerprint -match 'path exists but is not a file' -and
+        $hookFingerprint -match 'ReparsePoint' -and
+        $hookFingerprint -match 'GetOwner\(\[Security\.Principal\.SecurityIdentifier\]\)' -and
+        $hookFingerprint -match 'GetGroup\(\[Security\.Principal\.SecurityIdentifier\]\)' -and
+        $hookFingerprint -match 'GetSecurityDescriptorSddlForm' -and
+        $hookFingerprint -match 'SecuritySHA256') `
+        'real Antigravity hook bytes and owner/group/DACL custody are captured before Setup and rechecked after rejection and connector=none install'
+    Assert-True ($packageBootstrap -notmatch 'preflight-uninstall' -and
+        $packageBootstrap -match 'Invoke-AuthenticatedAntigravityCleanup -PreserveRunInputs' -and
+        $packageBootstrap -match 'refuses preexisting install/data without its matching protected cleanup manifest' -and
+        $packageFreshPreflight -match 'Assert-ExactPackagedSetup' -and
+        $packageFreshPreflight -match 'Read-AuthenticatedAntigravityCleanupManifest' -and
+        $packageFreshPreflight -match 'Assert-AuthenticatedAntigravityCleanupManifest' -and
+        $packageFreshPreflight -match 'refuses install/data before protected cleanup-manifest authentication' -and
+        $harnessText -match '(?s)Assert-AuthenticatedAntigravityFreshRunPreflight.*?\$script:ResultsPath') `
+        'fresh-run preflight leaves residual state untouched unless a matching protected manifest authenticates recovery first'
+    Assert-True ($connectorSetup -match "\`$Connector -eq 'antigravity' -and \`$AuthenticatedAntigravityRunner" -and
+        $connectorSetup -match "'connector', 'reconcile', '--connector', 'antigravity'" -and
+        $connectorSetup -match "'--data-dir', \`$env:DEFENSECLAW_HOME" -and
+        $connectorSetup -match "'--config-home', \`$configHome" -and
+        $connectorSetup -match 'Repair-AuthenticatedAntigravityPackage' -and
+        $packageRepair -match "@\('/repair', '/quiet', '/norestart'\)" -and
+        $packageRepair -match "@\('/upgrade', '/quiet', '/norestart'\)" -and
+        $packageRepair -match 'upgraded package state' -and
+        $packageRepair -notmatch "'CONNECTOR=") `
+        'dedicated lane alone performs installer-shaped reconcile followed by no-override Setup repair and upgrade'
+    Assert-True ($packageCleanup -match "@\('/uninstall', '/quiet', '/norestart', 'DELETEUSERDATA=1'\)" -and
+        $harnessText -match 'Assert-AntigravityOriginalConfigRestored' -and
+        $harnessText -match 'SHA-256 restored exactly; credentials untouched') `
+        'authenticated teardown proves exact Antigravity hook restoration before package uninstall'
+    Assert-True ($packageManifest -match 'Assert-ProtectedPackageArtifactRoot \$StateRoot' -and
+        $packageManifest -match 'antigravity-package-cleanup\..*?\.tmp' -and
+        $packageManifest -match '\[IO\.File\]::Move\(\$temporaryPath, \$manifestPath\)' -and
+        $packageManifest -match 'setup_path' -and
+        $packageManifest -match 'source_commit' -and
+        $packageManifest -match 'install_root' -and
+        $packageManifest -match 'config_home' -and
+        $packageManifest -match 'original_hook_sha256' -and
+        $packageManifest -match 'original_hook_owner_sid' -and
+        $packageManifest -match 'original_hook_group_sid' -and
+        $packageManifest -match 'original_hook_security_sha256' -and
+        $packageManifest -notmatch 'original_hook_(?:content|bytes|base64)') `
+        'protected durable cleanup manifest contains only exact non-secret identities and hook custody fingerprints'
+    Assert-True ($packageManifestValidation -match 'expectedProperties' -and
+        $packageManifestValidation -match 'Assert-ExactPath' -and
+        $packageManifestValidation -match 'ExpectedPackageSourceCommit' -and
+        $packageManifestValidation -match 'original_hook_reparse' -and
+        $packageManifestValidation -match 'original_hook_security_sha256' -and
+        $packageRecovery -match 'Assert-ExactPackagedSetup' -and
+        $packageRecovery -match 'Read-AuthenticatedAntigravityInstallState' -and
+        $packageRecovery -match 'Assert-AuthenticatedAntigravityInstallState' -and
+        $packageRecovery -match 'Set-AuthenticatedAntigravityInstalledPath' -and
+        $packageRecovery -match 'Invoke-Teardown' -and
+        $packageRecovery -match 'Assert-AntigravityOriginalConfigRestored' -and
+        $packageRecovery -match 'Uninstall-AuthenticatedAntigravityPackage' -and
+        $packageRecovery -match 'Stop-IsolatedProcessTree' -and
+        ([regex]::Matches($packageRecovery, 'Remove-DisposableTreeSafely')).Count -ge 4 -and
+        $packageRecovery -match '\[IO\.File\]::Delete\(\$manifestPath\)' -and
+        $packageRecovery -match '\$PreserveRunInputs' -and
+        $packageRecovery -match 'refuses install/data state without its protected manifest' -and
+        $harnessText -match '(?s)if \(\$Operation -eq ''cleanup''\).*?AuthenticatedAntigravityRunner.*?Invoke-AuthenticatedAntigravityCleanup' -and
+        $harnessText -match '(?s)try \{ Stop-IsolatedProcessTree \} finally \{\s*Invoke-AuthenticatedAntigravityCleanup') `
+        'fresh cleanup authenticates custody and exact package state, independently drains teardown/uninstall/process phases, and removes only exact roots'
+    Assert-True ($harnessText -match 'public-init:not-certified' -and
+        $harnessText -match 'ordinary CLI exit=1; install/config/hook/custody state unchanged; live=false' -and
+        $harnessText -match 'not_certified/live=false; does not prove Setup internal Antigravity bootstrap or ordinary public Setup support; certification requires promotion, rebuild, and public Setup retest') `
+        'authenticated preview reports public rejection and explicitly disclaims certification evidence'
+    $wizardConnectorChoices = [regex]::Match(
+        $setupWizardSourceText,
+        '(?s)wizardConnectorChoices = \[\]wizardChoice\{.*?\n\s*\}'
+    ).Value
+    Assert-True ($wizardConnectorChoices -notmatch 'antigravity' -and
+        $setupMainSourceText -match 'CONNECTOR=codex\|claudecode\|copilot\|cursor\|hermes\|omnigent\|opencode\|windsurf\|none' -and
+        $setupMainSourceText -match 'Antigravity is not_certified and cannot be selected by public Setup' -and
+        $setupMainTestsText -match 'TestParseArgsRejectsPublicAntigravitySetupSelection' -and
+        $setupMainTestsText -match 'TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride' -and
+        $setupMainTestsText -match 'TestPrintUsageDoesNotAdvertisePublicAntigravitySelection' -and
+        $harnessText -match 'wizard absence is a static/unit contract; it is not exercised by this protected live lane') `
+        'exact-head source/unit linkage keeps Antigravity absent from the public wizard and Setup usage'
     Assert-True ($contractRun -match "(?s)try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?Invoke-Setup action.*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT") `
         'unversioned fixture override is removed before Doctor tamper validation'
     $liveRun = [regex]::Match($harnessText, '(?s)function Invoke-LiveRun\b.*?\n\}').Value

@@ -18,6 +18,8 @@ param(
     [switch]$AllowNativeDataRoot,
     [switch]$ReleaseCertification,
     [switch]$AuthenticatedAntigravityRunner,
+    [string]$PackagedSetupPath = '',
+    [string]$ExpectedPackageSourceCommit = '',
     [switch]$NoRun
 )
 
@@ -26,6 +28,10 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
 $script:CopilotConfiguredMode = ''
+$script:AuthenticatedAntigravityPackageInstalled = $false
+$script:PackagedSetupExecutable = ''
+$script:ExpectedPackagedSourceCommit = ''
+$script:AntigravityOriginalConfig = $null
 
 function Get-SecretValues {
     $names = @(
@@ -225,6 +231,776 @@ function Protect-TestDirectory([string]$Path) {
         [void]$security.AddAccessRule($rule)
     }
     [IO.FileSystemAclExtensions]::SetAccessControl($directory, $security)
+}
+
+function Get-CurrentUserKnownFolderPath([Guid]$FolderID, [uint32]$Flags = 0) {
+    if ($null -eq ('DefenseClaw.LiveConnectorKnownFolders' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace DefenseClaw {
+    public static class LiveConnectorKnownFolders {
+        [DllImport("shell32.dll")]
+        private static extern int SHGetKnownFolderPath(
+            [In] ref Guid rfid,
+            uint flags,
+            IntPtr token,
+            out IntPtr path
+        );
+
+        public static string GetPath(Guid folderID, uint flags) {
+            IntPtr value;
+            int result = SHGetKnownFolderPath(ref folderID, flags, IntPtr.Zero, out value);
+            if (result != 0) {
+                Marshal.ThrowExceptionForHR(result);
+            }
+            try {
+                return Marshal.PtrToStringUni(value);
+            } finally {
+                Marshal.FreeCoTaskMem(value);
+            }
+        }
+    }
+}
+'@
+    }
+    $value = [DefenseClaw.LiveConnectorKnownFolders]::GetPath($FolderID, $Flags)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Known Folder $FolderID resolved to an empty path"
+    }
+    return [IO.Path]::GetFullPath($value).TrimEnd('\')
+}
+
+function Get-AuthenticatedAntigravityPackagePaths {
+    # FOLDERID_Profile and FOLDERID_LocalAppData. Neither binding consults an
+    # ambient profile/local-app-data environment variable.
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    $localAppData = Get-CurrentUserKnownFolderPath `
+        ([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091')
+    try {
+        # FOLDERID_UserProgramFiles. DONT_VERIFY matches native Setup: a fresh
+        # user may not have materialized the optional directory yet.
+        $userPrograms = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5CD7AEE2-2219-4A67-B85D-6C9CE15660CB') 0x4000
+    } catch {
+        # Windows documents LocalAppData\Programs as UserProgramFiles' default.
+        # This is the same independently resolved fallback used by native Setup.
+        $userPrograms = Join-Path $localAppData 'Programs'
+    }
+    $installRoot = [IO.Path]::GetFullPath((Join-Path $userPrograms 'DefenseClaw')).TrimEnd('\')
+    $dataRoot = [IO.Path]::GetFullPath((Join-Path $profile '.defenseclaw')).TrimEnd('\')
+    $configHome = [IO.Path]::GetFullPath((Join-Path $profile '.gemini\config')).TrimEnd('\')
+    $maintenancePath = [IO.Path]::GetFullPath(
+        (Join-Path $localAppData 'DefenseClaw\InstallerCache\DefenseClawSetup-x64.exe')
+    )
+    return [pscustomobject]@{
+        Profile = $profile
+        LocalAppData = $localAppData
+        InstallRoot = $installRoot
+        StatePath = Join-Path $installRoot 'installer\install-state.json'
+        DataRoot = $dataRoot
+        ConfigHome = $configHome
+        HookConfig = Join-Path $configHome 'hooks.json'
+        MaintenancePath = $maintenancePath
+        CommandDir = Join-Path $installRoot 'bin'
+        Runtime = Join-Path $installRoot 'runtime\python'
+    }
+}
+
+function Assert-ExactPath([string]$Actual, [string]$Expected, [string]$Label) {
+    if ([string]::IsNullOrWhiteSpace($Actual) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($Actual).TrimEnd('\'),
+            [IO.Path]::GetFullPath($Expected).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "$Label is not the exact expected Known-Folder path: '$Actual' != '$Expected'"
+    }
+}
+
+function Assert-ProtectedPackageArtifactRoot([string]$Root) {
+    $directory = Get-Item -LiteralPath $Root -Force -ErrorAction Stop
+    if (-not $directory.PSIsContainer -or
+        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'authenticated package artifact root is not a plain directory'
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User) { throw 'runner identity has no user SID' }
+    $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($sid in @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+        [void]$expected.Add($sid)
+    }
+    $sections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl($directory, $sections)
+    $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or $owner.Value -cne $identity.User.Value -or
+        -not $security.AreAccessRulesProtected) {
+        throw 'authenticated package artifact root lacks exact owner/protected-DACL custody'
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($rule in @($security.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    ))) {
+        $sid = $rule.IdentityReference.Value
+        $fullControl = ($rule.FileSystemRights -band
+            [Security.AccessControl.FileSystemRights]::FullControl) -eq
+            [Security.AccessControl.FileSystemRights]::FullControl
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            -not $expected.Contains($sid) -or -not $fullControl) {
+            throw "authenticated package artifact root has an unauthorized ACL entry: $sid"
+        }
+        [void]$seen.Add($sid)
+    }
+    if ($seen.Count -ne $expected.Count) {
+        throw 'authenticated package artifact root is missing a required full-control principal'
+    }
+}
+
+function Read-AuthenticatedAntigravityInstallState([pscustomobject]$Paths) {
+    if (-not (Test-Path -LiteralPath $Paths.StatePath -PathType Leaf)) {
+        throw "authenticated Antigravity package state is missing: $($Paths.StatePath)"
+    }
+    try {
+        return Get-Content -LiteralPath $Paths.StatePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "authenticated Antigravity package state is invalid JSON: $($_.Exception.Message)"
+    }
+}
+
+function Assert-AuthenticatedAntigravityInstallState(
+    [pscustomobject]$State,
+    [pscustomobject]$Paths,
+    [string]$ExpectedSourceCommit,
+    [string]$Context
+) {
+    if ([int]$State.schema_version -lt 1 -or
+        [string]$State.install_kind -cne 'native-windows-exe' -or
+        [string]$State.install_scope -cne 'user' -or
+        [string]$State.distribution_flavor -cne 'oss') {
+        throw "$Context is not an OSS per-user native Windows installation"
+    }
+    if ([string]$State.source_commit -cne $ExpectedSourceCommit) {
+        throw "$Context source commit does not match the exact package head"
+    }
+    # This lane deliberately keeps the public Setup selection at none. The
+    # authenticated harness roster is preserved by no-override repair; it must
+    # never manufacture public Antigravity Setup support in install-state.
+    if ([string]$State.connector -cne 'none' -or [string]$State.mode -cne 'action') {
+        throw "$Context changed the public Setup connector=none/action contract"
+    }
+    Assert-ExactPath ([string]$State.install_root) $Paths.InstallRoot "$Context install root"
+    Assert-ExactPath ([string]$State.command_dir) $Paths.CommandDir "$Context command directory"
+    Assert-ExactPath ([string]$State.data_root) $Paths.DataRoot "$Context data root"
+    Assert-ExactPath ([string]$State.runtime) $Paths.Runtime "$Context runtime"
+    Assert-ExactPath ([string]$State.maintenance_path) $Paths.MaintenancePath "$Context maintenance path"
+    Assert-ExactPath ([string]$State.antigravity_config_dir) $Paths.ConfigHome `
+        "$Context Antigravity FOLDERID_Profile configuration home"
+}
+
+function Assert-ExactPackagedSetup(
+    [string]$SetupPath,
+    [string]$ExpectedSourceCommit
+) {
+    if ($ExpectedSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'authenticated Antigravity package lane requires an exact lowercase source commit'
+    }
+    $setup = [IO.Path]::GetFullPath($SetupPath)
+    if (-not (Test-Path -LiteralPath $setup -PathType Leaf) -or
+        [IO.Path]::GetFileName($setup) -cne 'DefenseClawSetup-x64.exe') {
+        throw 'authenticated Antigravity package lane requires exact DefenseClawSetup-x64.exe bytes'
+    }
+    $artifactRoot = Split-Path -Parent $setup
+    Assert-ProtectedPackageArtifactRoot $artifactRoot
+    $null = Assert-DisposableNoReparseAncestors -Path $setup -AllowedRoot $artifactRoot -RequireExists
+    $setupItem = Get-Item -LiteralPath $setup -Force
+    if ($setupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'authenticated Antigravity packaged Setup must not be a reparse point'
+    }
+    $provenancePath = "$setup.provenance.json"
+    $null = Assert-DisposableNoReparseAncestors -Path $provenancePath `
+        -AllowedRoot $artifactRoot -RequireExists
+    if ((Get-Item -LiteralPath $provenancePath -Force).Attributes -band
+        [IO.FileAttributes]::ReparsePoint) {
+        throw 'authenticated Antigravity packaged Setup provenance must not be a reparse point'
+    }
+    try {
+        $provenance = Get-Content -LiteralPath $provenancePath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "packaged Setup provenance is invalid JSON: $($_.Exception.Message)"
+    }
+    $setupHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]$provenance.artifact_sha256 -cne $setupHash -or
+        [string]$provenance.source_commit -cne $ExpectedSourceCommit) {
+        throw 'packaged Setup bytes/provenance do not match the exact workflow head'
+    }
+    return $setup
+}
+
+function Invoke-AuthenticatedAntigravitySetup(
+    [string[]]$Arguments,
+    [int[]]$AllowedExitCodes,
+    [string]$Label
+) {
+    return Invoke-NativeProcess -FilePath $script:PackagedSetupExecutable `
+        -ArgumentList $Arguments -TimeoutSeconds 900 -AllowedExitCodes $AllowedExitCodes `
+        -LogPath (Join-Path $script:LogRoot "packaged-setup-$Label.log")
+}
+
+function Set-AuthenticatedAntigravityInstalledPath(
+    [pscustomobject]$Paths
+) {
+    $env:Path = "$($Paths.CommandDir);$env:Path"
+    $env:DEFENSECLAW_INSTALL_ROOT = $Paths.InstallRoot
+    $env:DEFENSECLAW_GATEWAY_BIN = Join-Path $Paths.CommandDir 'defenseclaw-gateway.exe'
+    foreach ($name in @('defenseclaw.exe', 'defenseclaw-gateway.exe')) {
+        $expected = Join-Path $Paths.CommandDir $name
+        if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) {
+            throw "exact packaged command is missing: $expected"
+        }
+        $resolved = @(Get-Command $name -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1)
+        if ($resolved.Count -ne 1) {
+            throw "exact packaged command did not resolve once: $name"
+        }
+        Assert-ExactPath ([string]$resolved[0].Source) $expected "resolved $name"
+    }
+}
+
+function Assert-AuthenticatedAntigravityPublicCLIGate([pscustomobject]$Paths) {
+    Save-AntigravityOriginalConfig
+    $stateBefore = (Get-FileHash -LiteralPath $Paths.StatePath -Algorithm SHA256).Hash
+    $configPath = Join-Path $Paths.DataRoot 'config.yaml'
+    $configBefore = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+    $backupRoot = Join-Path $Paths.DataRoot 'connector_backups\antigravity'
+    $backupBefore = if (Test-Path -LiteralPath $backupRoot) {
+        Get-TreeFingerprint $backupRoot
+    } else { '<absent>' }
+    $result = Invoke-Tool 'defenseclaw' @(
+        'init', '--skip-install', '--non-interactive', '--yes',
+        '--connector', 'antigravity', '--profile', 'action',
+        '--no-start-gateway', '--no-verify'
+    ) @(1)
+    if (($result.StdOut + "`n" + $result.StdErr) -notmatch
+        "connector 'antigravity' is not_certified on windows") {
+        throw 'ordinary Antigravity init did not preserve the public not_certified diagnostic'
+    }
+    $backupAfter = if (Test-Path -LiteralPath $backupRoot) {
+        Get-TreeFingerprint $backupRoot
+    } else { '<absent>' }
+    if ((Get-FileHash -LiteralPath $Paths.StatePath -Algorithm SHA256).Hash -cne $stateBefore -or
+        (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -cne $configBefore -or
+        $backupAfter -cne $backupBefore) {
+        throw 'ordinary Antigravity init changed package state, config, or connector custody'
+    }
+    Assert-AntigravityOriginalConfigRestored
+    Write-Result 'public-init:not-certified' pass `
+        'ordinary CLI exit=1; install/config/hook/custody state unchanged; live=false'
+}
+
+function Initialize-AuthenticatedAntigravityPackage {
+    $script:PackagedSetupExecutable = Assert-ExactPackagedSetup `
+        $PackagedSetupPath $ExpectedPackageSourceCommit
+    $script:ExpectedPackagedSourceCommit = $ExpectedPackageSourceCommit
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.DataRoot 'authenticated harness data root'
+    Assert-ExactPath (Resolve-EffectiveConnectorHome 'antigravity') $paths.ConfigHome `
+        'authenticated harness Antigravity configuration home'
+    $packagedSetupHash = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    Write-Result 'package-setup:identity' pass `
+        "source_commit=$ExpectedPackageSourceCommit installer_sha256=$packagedSetupHash"
+
+    $cleanupManifest = Get-AuthenticatedAntigravityCleanupManifestPath
+    if (Test-Path -LiteralPath $cleanupManifest -PathType Leaf) {
+        # The read-only startup preflight already authenticated this manifest.
+        # Revalidate it here, converge only its exact package state, then retain
+        # the current artifact/StateRoot long enough to arm a fresh baseline.
+        Invoke-AuthenticatedAntigravityCleanup -PreserveRunInputs
+        $script:AntigravityOriginalConfig = $null
+    } elseif ((Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot)) {
+        throw 'fresh authenticated Antigravity run refuses preexisting install/data without its matching protected cleanup manifest'
+    }
+
+    if (Test-Path -LiteralPath $paths.MaintenancePath -PathType Leaf) {
+        $cachedHash = (Get-FileHash -LiteralPath $paths.MaintenancePath -Algorithm SHA256).Hash
+        $packageHash = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable -Algorithm SHA256).Hash
+        if ($cachedHash -cne $packageHash) {
+            throw 'authenticated Antigravity lane refuses stale or foreign installer-cache state'
+        }
+    }
+
+    # Persist only the pre-mutation hook fingerprint and exact package/known-folder
+    # identities. A separately launched cleanup process can then authenticate and
+    # converge this run without receiving hook contents or trusting ambient PATH.
+    Save-AntigravityOriginalConfig
+    Write-AuthenticatedAntigravityCleanupManifest $paths
+
+    $publicSetup = Invoke-AuthenticatedAntigravitySetup @(
+        '/quiet', '/norestart', 'INSTALLSCOPE=user',
+        'CONNECTOR=antigravity', 'MODE=action', 'STARTGATEWAY=1'
+    ) @(2) 'public-antigravity-rejection'
+    if (($publicSetup.StdOut + "`n" + $publicSetup.StdErr) -notmatch '(?i)not_certified' -or
+        (Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot)) {
+        throw 'ordinary packaged Setup Antigravity selection did not fail closed without mutation'
+    }
+    Assert-AntigravityOriginalConfigRestored
+    Write-Result 'public-setup:not-certified' pass `
+        'explicit Setup selection exit=2; no install/data mutation; wizard absence is a static/unit contract; it is not exercised by this protected live lane'
+
+    Invoke-AuthenticatedAntigravitySetup @(
+        '/quiet', '/norestart', 'INSTALLSCOPE=user',
+        'CONNECTOR=none', 'MODE=action', 'STARTGATEWAY=1'
+    ) @(0) 'fresh-none-install' | Out-Null
+    $state = Read-AuthenticatedAntigravityInstallState $paths
+    Assert-AuthenticatedAntigravityInstallState `
+        $state $paths $ExpectedPackageSourceCommit 'fresh package state'
+    Assert-AntigravityOriginalConfigRestored
+    Set-AuthenticatedAntigravityInstalledPath $paths
+    $script:AuthenticatedAntigravityPackageInstalled = $true
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    Assert-AuthenticatedAntigravityPublicCLIGate $paths
+    Write-Result 'package-setup:fresh-none' pass `
+        'exact-head Setup installed connector=none/action; public Antigravity support remains closed'
+}
+
+function Repair-AuthenticatedAntigravityPackage {
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    Invoke-AuthenticatedAntigravitySetup @('/repair', '/quiet', '/norestart') @(0) `
+        'preserve-antigravity-roster' | Out-Null
+    $state = Read-AuthenticatedAntigravityInstallState $paths
+    Assert-AuthenticatedAntigravityInstallState `
+        $state $paths $script:ExpectedPackagedSourceCommit 'repaired package state'
+    Set-AuthenticatedAntigravityInstalledPath $paths
+    Write-Result 'package-setup:repair-roster' pass `
+        'no-override repair preserved the hidden authenticated roster with install-state.connector=none'
+    Invoke-AuthenticatedAntigravitySetup @('/upgrade', '/quiet', '/norestart') @(0) `
+        'upgrade-antigravity-roster' | Out-Null
+    $state = Read-AuthenticatedAntigravityInstallState $paths
+    Assert-AuthenticatedAntigravityInstallState `
+        $state $paths $script:ExpectedPackagedSourceCommit 'upgraded package state'
+    Set-AuthenticatedAntigravityInstalledPath $paths
+    Write-Result 'package-setup:upgrade-roster' pass `
+        'same-package no-override upgrade preserved the authenticated roster with install-state.connector=none'
+}
+
+function Get-AntigravityHookConfigFingerprint([pscustomobject]$Paths) {
+    # Authenticate existing .gemini/config ancestors even when hooks.json does
+    # not exist; an absent leaf must never bless a redirected configuration home.
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
+        -AllowedRoot $Paths.Profile
+    foreach ($directoryPath in @(
+        (Join-Path $Paths.Profile '.gemini'),
+        $Paths.ConfigHome
+    )) {
+        $directory = Get-Item -LiteralPath $directoryPath -Force -ErrorAction SilentlyContinue
+        if ($null -ne $directory -and -not $directory.PSIsContainer) {
+            throw "authenticated Antigravity hook baseline has a non-directory ancestor: $directoryPath"
+        }
+    }
+    if ((Test-Path -LiteralPath $Paths.HookConfig) -and
+        -not (Test-Path -LiteralPath $Paths.HookConfig -PathType Leaf)) {
+        throw 'authenticated Antigravity hook baseline path exists but is not a file'
+    }
+    $exists = Test-Path -LiteralPath $Paths.HookConfig -PathType Leaf
+    if (-not $exists) {
+        return [pscustomobject]@{
+            Path = $Paths.HookConfig
+            Exists = $false
+            Length = 0
+            SHA256 = ''
+            ReparsePoint = $false
+            OwnerSID = ''
+            GroupSID = ''
+            SecuritySHA256 = ''
+        }
+    }
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
+        -AllowedRoot $Paths.Profile -RequireExists
+    $item = Get-Item -LiteralPath $Paths.HookConfig -Force
+    $isReparse = [bool]($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+    if ($isReparse) {
+        throw 'authenticated Antigravity hook baseline refuses a reparse point'
+    }
+    $sections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+    $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    $group = $security.GetGroup([Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or $null -eq $group) {
+        throw 'authenticated Antigravity hook baseline lacks exact owner/group custody'
+    }
+    $sddlBytes = [Text.Encoding]::UTF8.GetBytes(
+        $security.GetSecurityDescriptorSddlForm($sections)
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $securityHash = ([BitConverter]::ToString($sha.ComputeHash($sddlBytes))).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+    return [pscustomobject]@{
+        Path = $Paths.HookConfig
+        Exists = $true
+        Length = [long]$item.Length
+        SHA256 = (Get-FileHash -LiteralPath $Paths.HookConfig -Algorithm SHA256).Hash
+        ReparsePoint = $isReparse
+        OwnerSID = $owner.Value
+        GroupSID = $group.Value
+        SecuritySHA256 = $securityHash
+    }
+}
+
+function Save-AntigravityOriginalConfig {
+    if ($null -ne $script:AntigravityOriginalConfig) { return }
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    $script:AntigravityOriginalConfig = Get-AntigravityHookConfigFingerprint $paths
+}
+
+function Assert-AntigravityOriginalConfigRestored([switch]$RecordResult) {
+    if ($null -eq $script:AntigravityOriginalConfig) { return }
+    $snapshot = $script:AntigravityOriginalConfig
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    $current = Get-AntigravityHookConfigFingerprint $paths
+    if ($current.Exists -ne [bool]$snapshot.Exists) {
+        throw 'Antigravity teardown did not restore the original hooks.json existence state'
+    }
+    if ($current.Exists -and (
+        $current.Length -ne [long]$snapshot.Length -or
+        $current.SHA256 -cne [string]$snapshot.SHA256 -or
+        $current.ReparsePoint -ne [bool]$snapshot.ReparsePoint -or
+        $current.OwnerSID -cne [string]$snapshot.OwnerSID -or
+        $current.GroupSID -cne [string]$snapshot.GroupSID -or
+        $current.SecuritySHA256 -cne [string]$snapshot.SecuritySHA256
+    )) {
+        throw 'Antigravity teardown did not byte-exactly restore hook content and security custody'
+    }
+    if ($RecordResult) {
+        Write-Result 'antigravity:exact-restoration' pass `
+            'hook configuration existence, length, and SHA-256 restored exactly; credentials untouched'
+    }
+}
+
+function Get-AuthenticatedAntigravityCleanupManifestPath {
+    return Join-Path $StateRoot 'antigravity-package-cleanup.json'
+}
+
+function Assert-AuthenticatedAntigravityCleanupManifestCustody([string]$ManifestPath) {
+    Assert-ProtectedPackageArtifactRoot $StateRoot
+    $null = Assert-DisposableNoReparseAncestors -Path $ManifestPath `
+        -AllowedRoot $StateRoot -RequireExists
+    $item = Get-Item -LiteralPath $ManifestPath -Force
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'authenticated Antigravity cleanup manifest is not a plain file'
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User) { throw 'runner identity has no user SID' }
+    $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($sid in @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+        [void]$expected.Add($sid)
+    }
+    $sections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+    $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or $owner.Value -cne $identity.User.Value) {
+        throw 'authenticated Antigravity cleanup manifest has a foreign owner'
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($rule in @($security.GetAccessRules(
+        $true,
+        $true,
+        [Security.Principal.SecurityIdentifier]
+    ))) {
+        $sid = $rule.IdentityReference.Value
+        $fullControl = ($rule.FileSystemRights -band
+            [Security.AccessControl.FileSystemRights]::FullControl) -eq
+            [Security.AccessControl.FileSystemRights]::FullControl
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            -not $expected.Contains($sid) -or -not $fullControl) {
+            throw "authenticated Antigravity cleanup manifest has an unauthorized ACL entry: $sid"
+        }
+        [void]$seen.Add($sid)
+    }
+    if ($seen.Count -ne $expected.Count) {
+        throw 'authenticated Antigravity cleanup manifest is missing a required full-control principal'
+    }
+}
+
+function Write-AuthenticatedAntigravityCleanupManifest([pscustomobject]$Paths) {
+    if ($null -eq $script:AntigravityOriginalConfig) {
+        throw 'authenticated Antigravity cleanup manifest requires the original hook fingerprint'
+    }
+    Assert-ProtectedPackageArtifactRoot $StateRoot
+    $manifestPath = Get-AuthenticatedAntigravityCleanupManifestPath
+    if (Test-Path -LiteralPath $manifestPath) {
+        throw 'authenticated Antigravity cleanup manifest already exists'
+    }
+    $packageRoot = Split-Path -Parent $script:PackagedSetupExecutable
+    $snapshot = $script:AntigravityOriginalConfig
+    $document = [ordered]@{
+        schema_version = 1
+        setup_path = $script:PackagedSetupExecutable
+        source_commit = $script:ExpectedPackagedSourceCommit
+        package_root = $packageRoot
+        state_root = $StateRoot
+        install_root = $Paths.InstallRoot
+        state_path = $Paths.StatePath
+        data_root = $Paths.DataRoot
+        config_home = $Paths.ConfigHome
+        hook_config = $Paths.HookConfig
+        original_hook_exists = [bool]$snapshot.Exists
+        original_hook_length = [long]$snapshot.Length
+        original_hook_sha256 = [string]$snapshot.SHA256
+        original_hook_reparse = [bool]$snapshot.ReparsePoint
+        original_hook_owner_sid = [string]$snapshot.OwnerSID
+        original_hook_group_sid = [string]$snapshot.GroupSID
+        original_hook_security_sha256 = [string]$snapshot.SecuritySHA256
+    }
+    $temporaryPath = Join-Path $StateRoot (
+        'antigravity-package-cleanup.{0}.tmp' -f [Guid]::NewGuid().ToString('N')
+    )
+    try {
+        [IO.File]::WriteAllText(
+            $temporaryPath,
+            ($document | ConvertTo-Json -Depth 3),
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.File]::Move($temporaryPath, $manifestPath)
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            [IO.File]::Delete($temporaryPath)
+        }
+    }
+    Assert-AuthenticatedAntigravityCleanupManifestCustody $manifestPath
+}
+
+function Read-AuthenticatedAntigravityCleanupManifest {
+    $manifestPath = Get-AuthenticatedAntigravityCleanupManifestPath
+    Assert-AuthenticatedAntigravityCleanupManifestCustody $manifestPath
+    $item = Get-Item -LiteralPath $manifestPath -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint -or $item.Length -gt 16384) {
+        throw 'authenticated Antigravity cleanup manifest is not a bounded plain file'
+    }
+    try {
+        return Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "authenticated Antigravity cleanup manifest is invalid JSON: $($_.Exception.Message)"
+    }
+}
+
+function Assert-AuthenticatedAntigravityCleanupManifest(
+    [pscustomobject]$Manifest,
+    [pscustomobject]$Paths,
+    [string]$ExactSetupPath
+) {
+    $expectedProperties = @(
+        'schema_version', 'setup_path', 'source_commit', 'package_root', 'state_root',
+        'install_root', 'state_path', 'data_root', 'config_home', 'hook_config',
+        'original_hook_exists', 'original_hook_length', 'original_hook_sha256',
+        'original_hook_reparse', 'original_hook_owner_sid', 'original_hook_group_sid',
+        'original_hook_security_sha256'
+    ) | Sort-Object
+    $actualProperties = @($Manifest.PSObject.Properties.Name | Sort-Object)
+    if (($actualProperties -join "`n") -cne ($expectedProperties -join "`n") -or
+        [int]$Manifest.schema_version -ne 1) {
+        throw 'authenticated Antigravity cleanup manifest schema is not exact'
+    }
+    Assert-ExactPath ([string]$Manifest.setup_path) $ExactSetupPath 'cleanup manifest Setup path'
+    Assert-ExactPath ([string]$Manifest.package_root) (Split-Path -Parent $ExactSetupPath) `
+        'cleanup manifest package root'
+    Assert-ExactPath ([string]$Manifest.state_root) $StateRoot 'cleanup manifest state root'
+    Assert-ExactPath ([string]$Manifest.install_root) $Paths.InstallRoot 'cleanup manifest install root'
+    Assert-ExactPath ([string]$Manifest.state_path) $Paths.StatePath 'cleanup manifest install-state path'
+    Assert-ExactPath ([string]$Manifest.data_root) $Paths.DataRoot 'cleanup manifest data root'
+    Assert-ExactPath ([string]$Manifest.config_home) $Paths.ConfigHome 'cleanup manifest config home'
+    Assert-ExactPath ([string]$Manifest.hook_config) $Paths.HookConfig 'cleanup manifest hook path'
+    if ([string]$Manifest.source_commit -cne $ExpectedPackageSourceCommit -or
+        $Manifest.original_hook_exists -isnot [bool] -or
+        $Manifest.original_hook_reparse -isnot [bool] -or
+        [string]$Manifest.original_hook_length -cnotmatch '^[0-9]+$') {
+        throw 'authenticated Antigravity cleanup manifest identity is invalid'
+    }
+    $hookExists = [bool]$Manifest.original_hook_exists
+    $hookLength = [long]$Manifest.original_hook_length
+    $hookHash = [string]$Manifest.original_hook_sha256
+    $hookReparse = [bool]$Manifest.original_hook_reparse
+    $hookOwner = [string]$Manifest.original_hook_owner_sid
+    $hookGroup = [string]$Manifest.original_hook_group_sid
+    $hookSecurityHash = [string]$Manifest.original_hook_security_sha256
+    if (($hookExists -and (
+            $hookHash -cnotmatch '^[0-9A-F]{64}$' -or $hookReparse -or
+            $hookOwner -cnotmatch '^S-1-' -or $hookGroup -cnotmatch '^S-1-' -or
+            $hookSecurityHash -cnotmatch '^[0-9A-F]{64}$'
+        )) -or (-not $hookExists -and (
+            $hookLength -ne 0 -or $hookHash -cne '' -or $hookReparse -or
+            $hookOwner -cne '' -or $hookGroup -cne '' -or $hookSecurityHash -cne ''
+        ))) {
+        throw 'authenticated Antigravity cleanup manifest hook fingerprint is invalid'
+    }
+    $script:AntigravityOriginalConfig = [pscustomobject]@{
+        Path = $Paths.HookConfig
+        Exists = $hookExists
+        Length = $hookLength
+        SHA256 = $hookHash
+        ReparsePoint = $hookReparse
+        OwnerSID = $hookOwner
+        GroupSID = $hookGroup
+        SecuritySHA256 = $hookSecurityHash
+    }
+}
+
+function Invoke-AuthenticatedAntigravityCleanup([switch]$PreserveRunInputs) {
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.DataRoot 'authenticated cleanup data root'
+    Assert-ExactPath (Resolve-EffectiveConnectorHome 'antigravity') $paths.ConfigHome `
+        'authenticated cleanup Antigravity configuration home'
+    $manifestPath = Get-AuthenticatedAntigravityCleanupManifestPath
+    $packageRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PackagedSetupPath)).TrimEnd('\')
+
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        # Manifest publication precedes the first fresh Setup mutation. Without a
+        # manifest, only an entirely absent install/data pair is safe to converge.
+        if ((Test-Path -LiteralPath $paths.InstallRoot) -or
+            (Test-Path -LiteralPath $paths.DataRoot)) {
+            throw 'authenticated cleanup refuses install/data state without its protected manifest'
+        }
+        if (Test-Path -LiteralPath $PackagedSetupPath -PathType Leaf) {
+            $null = Assert-ExactPackagedSetup $PackagedSetupPath $ExpectedPackageSourceCommit
+        } elseif (Test-Path -LiteralPath $packageRoot) {
+            throw 'authenticated cleanup refuses a package root whose exact Setup identity is missing'
+        }
+        if (Test-Path -LiteralPath $StateRoot) {
+            Assert-ProtectedPackageArtifactRoot $StateRoot
+            Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+        }
+        if (Test-Path -LiteralPath $packageRoot) {
+            Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+        }
+        return
+    }
+
+    $script:PackagedSetupExecutable = Assert-ExactPackagedSetup `
+        $PackagedSetupPath $ExpectedPackageSourceCommit
+    $script:ExpectedPackagedSourceCommit = $ExpectedPackageSourceCommit
+    $manifest = Read-AuthenticatedAntigravityCleanupManifest
+    Assert-AuthenticatedAntigravityCleanupManifest $manifest $paths `
+        $script:PackagedSetupExecutable
+
+    $cleanupFailure = $null
+    if (Test-Path -LiteralPath $paths.InstallRoot) {
+        $state = Read-AuthenticatedAntigravityInstallState $paths
+        Assert-AuthenticatedAntigravityInstallState `
+            $state $paths $ExpectedPackageSourceCommit 'cleanup package state'
+        Set-AuthenticatedAntigravityInstalledPath $paths
+        $script:AuthenticatedAntigravityPackageInstalled = $true
+        try {
+            try {
+                Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+            } catch {
+                $cleanupFailure = $_.Exception
+            }
+            try {
+                Invoke-Teardown
+            } catch {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+                else { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+            try {
+                Assert-AntigravityOriginalConfigRestored
+            } catch {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+                else { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+        } finally {
+            # Once exact install-state identity is proven, teardown/restoration
+            # failures must not strand the exact package or its owned children.
+            try {
+                Uninstall-AuthenticatedAntigravityPackage
+            } catch {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+                else { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+            try {
+                Stop-IsolatedProcessTree
+            } catch {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+                else { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+        }
+    } elseif (Test-Path -LiteralPath $paths.DataRoot) {
+        throw 'authenticated cleanup refuses data state without its exact package install-state'
+    } else {
+        try {
+            Assert-AntigravityOriginalConfigRestored
+        } catch {
+            $cleanupFailure = $_.Exception
+        } finally {
+            try {
+                Stop-IsolatedProcessTree
+            } catch {
+                if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+                else { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+        }
+    }
+    if ($null -ne $cleanupFailure) {
+        throw $cleanupFailure
+    }
+    if ((Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot)) {
+        throw 'authenticated cleanup did not converge exact managed package roots'
+    }
+    if ($PreserveRunInputs) {
+        [IO.File]::Delete($manifestPath)
+        return
+    }
+    Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+    Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+}
+
+function Assert-AuthenticatedAntigravityFreshRunPreflight {
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    $manifestPath = Get-AuthenticatedAntigravityCleanupManifestPath
+    $hasInstallOrData = (Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot)
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        if ($hasInstallOrData) {
+            throw 'fresh authenticated Antigravity run refuses install/data before protected cleanup-manifest authentication'
+        }
+        return
+    }
+    $exactSetup = Assert-ExactPackagedSetup `
+        $PackagedSetupPath $ExpectedPackageSourceCommit
+    $manifest = Read-AuthenticatedAntigravityCleanupManifest
+    Assert-AuthenticatedAntigravityCleanupManifest $manifest $paths $exactSetup
+}
+
+function Uninstall-AuthenticatedAntigravityPackage {
+    if (-not $script:AuthenticatedAntigravityPackageInstalled) { return }
+    $paths = Get-AuthenticatedAntigravityPackagePaths
+    Invoke-AuthenticatedAntigravitySetup `
+        @('/uninstall', '/quiet', '/norestart', 'DELETEUSERDATA=1') @(3010) `
+        'final-uninstall' | Out-Null
+    if ((Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot)) {
+        throw 'authenticated Antigravity package uninstall left managed install or data state'
+    }
+    $script:AuthenticatedAntigravityPackageInstalled = $false
+    Write-Result 'package-setup:uninstall' pass `
+        'exact Setup removed only DefenseClaw install/data state after connector restoration'
 }
 
 function Get-ProcessTreeSnapshot {
@@ -1116,6 +1892,26 @@ function Set-IsolatedGatewayPort {
 }
 
 function Invoke-Setup([string]$Mode) {
+    if ($Connector -eq 'antigravity' -and $AuthenticatedAntigravityRunner) {
+        if ($Mode -cne 'action') {
+            throw 'authenticated Antigravity package lane is restricted to the action live profile'
+        }
+        Save-AntigravityOriginalConfig
+        $configHome = Resolve-EffectiveConnectorHome 'antigravity'
+        Invoke-Tool 'defenseclaw-gateway' @(
+            'connector', 'reconcile', '--connector', 'antigravity',
+            '--data-dir', $env:DEFENSECLAW_HOME,
+            '--config-home', $configHome, '--json'
+        ) | Out-Null
+        # Exact Setup services the newly recorded active roster without any
+        # connector override. install-state.connector deliberately stays none.
+        Repair-AuthenticatedAntigravityPackage
+        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+        Wait-Gateway
+        Write-Result 'antigravity:preview-scope' pass `
+            'not_certified/live=false; does not prove Setup internal Antigravity bootstrap or ordinary public Setup support; certification requires promotion, rebuild, and public Setup retest'
+        return
+    }
     if ($Connector -eq 'copilot') {
         if ($script:CopilotConfiguredMode -cne $Mode) {
             Invoke-Tool 'defenseclaw' @(
@@ -2911,7 +3707,8 @@ function Invoke-ContractRun {
 function Invoke-LiveRun {
     Install-Agent
     Initialize-DefenseClawEnv
-    if (-not $ReleaseCertification -and $Connector -ne 'copilot') {
+    if (-not $ReleaseCertification -and $Connector -ne 'copilot' -and
+        -not ($Connector -eq 'antigravity' -and $AuthenticatedAntigravityRunner)) {
         Invoke-Tool 'defenseclaw' @('init') | Out-Null
     }
     Invoke-Setup action
@@ -3107,8 +3904,17 @@ if (-not $NoRun) {
             $env:DC_ANTIGRAVITY_DEDICATED_RUNNER -ne '1') {
             throw 'AuthenticatedAntigravityRunner is restricted to a dedicated Antigravity live runner'
         }
-        $HomeRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        if ($Operation -in @('run', 'cleanup') -and
+            ([string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
+             [string]::IsNullOrWhiteSpace($ExpectedPackageSourceCommit))) {
+            throw 'authenticated Antigravity run/cleanup requires exact packaged Setup path and source commit'
+        }
+        $HomeRoot = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
         $useHomeDataRoot = $true
+    } elseif (-not [string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
+        -not [string]::IsNullOrWhiteSpace($ExpectedPackageSourceCommit)) {
+        throw 'packaged Antigravity Setup inputs require AuthenticatedAntigravityRunner'
     }
     if ($ReleaseCertification) {
         if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
@@ -3129,7 +3935,18 @@ if (-not $NoRun) {
             throw 'HomeRoot must be contained by StateRoot'
         }
     }
-    Protect-TestDirectory $StateRoot
+    if ($AuthenticatedAntigravityRunner -and (Test-Path -LiteralPath $StateRoot)) {
+        # A recovery process must authenticate existing custody, never repair a
+        # foreign ACL before trusting its durable cleanup manifest.
+        Assert-ProtectedPackageArtifactRoot $StateRoot
+    } else {
+        Protect-TestDirectory $StateRoot
+    }
+    if ($AuthenticatedAntigravityRunner -and $Operation -eq 'run') {
+        # Authenticate residual package/custody state before creating logs or
+        # any other file beneath StateRoot. Mismatch leaves state/profile intact.
+        Assert-AuthenticatedAntigravityFreshRunPreflight
+    }
     $script:ResultsPath = if ($ResultsPath) { [IO.Path]::GetFullPath($ResultsPath) } else { Join-Path $StateRoot 'results.jsonl' }
     $script:ArtifactPath = if ($ArtifactPath) { [IO.Path]::GetFullPath($ArtifactPath) } else { Join-Path $StateRoot 'artifacts' }
     [IO.Directory]::CreateDirectory((Split-Path -Parent $script:ResultsPath)) | Out-Null
@@ -3178,17 +3995,28 @@ if (-not $NoRun) {
         # Never let an ambient compatibility-shell override turn this into a workaround.
         Remove-Item Env:OPENCODE_GIT_BASH_PATH -ErrorAction SilentlyContinue
     }
-    if (-not $ReleaseCertification) { Protect-TestDirectory $env:USERPROFILE }
+    # Never rewrite the DACL on the real dedicated-runner profile. Exact Setup
+    # owns its managed roots; the Antigravity profile content remains external.
+    if (-not $ReleaseCertification -and -not $AuthenticatedAntigravityRunner) {
+        Protect-TestDirectory $env:USERPROFILE
+    }
     $script:GatewayJsonl = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
     $script:AuditDb = Join-Path $env:DEFENSECLAW_HOME 'audit.db'
     if ($Operation -eq 'capture') { Stage-Diagnostics; return }
     if ($Operation -eq 'cleanup') {
+        if ($AuthenticatedAntigravityRunner) {
+            Invoke-AuthenticatedAntigravityCleanup
+            return
+        }
         try { Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
         Stop-IsolatedProcessTree
         Remove-Item -LiteralPath $StateRoot -Recurse -Force -ErrorAction SilentlyContinue
         return
     }
     try {
+        if ($AuthenticatedAntigravityRunner) {
+            Initialize-AuthenticatedAntigravityPackage
+        }
         if ($Layer -eq 'contract') { Invoke-ContractRun } else { Invoke-LiveRun }
     } catch {
         Write-Result harness fail $_.Exception.Message
@@ -3197,11 +4025,42 @@ if (-not $NoRun) {
         # The Antigravity contract proves that its public not_certified paths
         # do not install anything. Do not invoke an internal connector
         # teardown afterward and accidentally manufacture lifecycle state.
-        if ($Layer -ne 'contract' -or $Connector -ne 'antigravity') {
-            try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+        $diagnosticsStaged = $false
+        if ($AuthenticatedAntigravityRunner) {
+            try {
+                if ($script:AuthenticatedAntigravityPackageInstalled) {
+                    Invoke-Teardown
+                    Assert-AntigravityOriginalConfigRestored -RecordResult
+                    try {
+                        Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null
+                    } catch {
+                        Write-Warning (Protect-LogText $_.Exception.Message)
+                    }
+                    Stage-Diagnostics
+                    $diagnosticsStaged = $true
+                    Uninstall-AuthenticatedAntigravityPackage
+                } else {
+                    Stage-Diagnostics
+                    $diagnosticsStaged = $true
+                }
+                try {
+                    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null
+                } catch {
+                    Write-Warning (Protect-LogText $_.Exception.Message)
+                }
+                if (-not $diagnosticsStaged) { Stage-Diagnostics }
+            } finally {
+                try { Stop-IsolatedProcessTree } finally {
+                    Invoke-AuthenticatedAntigravityCleanup
+                }
+            }
+        } else {
+            if ($Layer -ne 'contract' -or $Connector -ne 'antigravity') {
+                try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+            }
+            try { Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+            Stage-Diagnostics
+            Stop-IsolatedProcessTree
         }
-        try { Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 15 | Out-Null } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
-        Stage-Diagnostics
-        Stop-IsolatedProcessTree
     }
 }
