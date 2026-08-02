@@ -2088,7 +2088,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'prepare reaches held only after exact package/client, five events, readiness, Doctor/status, custody, and both manifests validate'
     Assert-True ($interactiveHold -match 'Assert-DoctorWindowsHookRegistration' -and
         $interactiveHold -match "defenseclaw-gateway' @\('status'\)" -and
-        $interactiveHold -match "Assert-AuthenticatedAntigravityConfiguredPosture\s+.*?'interactive-hold' -RequireGatewayRunning" -and
+        $interactiveHold -match "(?s)Assert-AuthenticatedAntigravityConfiguredPosture\s+.*?'interactive-hold' -RequireGatewayRunning" -and
         $interactiveHold -match 'Start-Process -FilePath \$context\.Paths\.AntigravityExecutable' -and
         $interactiveHold -match '-NoNewWindow -PassThru' -and
         $interactiveHold -notmatch 'dangerously-skip-permissions|--print|-ArgumentList' -and
@@ -2100,7 +2100,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $interactiveHold -match 'ASK/DECLINE' -and
         $interactiveHold -match 'Do not use /logout' -and
         $interactiveResume -match "defenseclaw-gateway' @\('status'\)" -and
-        $interactiveResume -match "Assert-AuthenticatedAntigravityConfiguredPosture\s+.*?'interactive-resume' -RequireGatewayRunning" -and
+        $interactiveResume -match "(?s)Assert-AuthenticatedAntigravityConfiguredPosture\s+.*?'interactive-resume' -RequireGatewayRunning" -and
         $interactiveResume -match 'Get-AuthenticatedAntigravityHeldStateActiveHook') `
         'hold/resume revalidate exact ready posture and HILT immediately around a no-argument native TUI whose PID/start/image identity is durable'
     foreach ($eventName in @('PreInvocation', 'PreToolUse', 'PostToolUse', 'PostInvocation', 'Stop')) {
