@@ -98,6 +98,31 @@ on:
         description: "Windows Native CI run ID whose exact-head package artifact feeds the authenticated Antigravity lane"
         type: string
         default: ""
+      windows_package_source_commit:
+        description: "Exact source commit recorded by the selected immutable Windows package (required for protected Antigravity phases)"
+        type: string
+        default: ""
+      antigravity_phase:
+        description: "Antigravity lane phase: automated preview or protected interactive prepare/resume/cleanup"
+        type: choice
+        default: automated
+        options:
+          - automated
+          - prepare
+          - resume
+          - cleanup
+      antigravity_prepare_run_id:
+        description: "Successful protected prepare workflow run ID (required for resume)"
+        type: string
+        default: ""
+      antigravity_prepare_run_attempt:
+        description: "Successful protected prepare workflow run attempt (required for resume)"
+        type: string
+        default: ""
+      antigravity_hold_id:
+        description: "Protected prepare hold ID (required for resume)"
+        type: string
+        default: ""
       use_azure:
         description: "Route Codex + OpenHands through Azure OpenAI"
         type: boolean
@@ -108,8 +133,8 @@ on:
         default: false
 
 concurrency:
-  group: connector-live-e2e-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.connector == 'antigravity' && inputs.antigravity_phase != 'automated' && format('connector-live-e2e-antigravity-held-state-{0}', github.repository_id) || format('connector-live-e2e-{0}', github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.connector == 'antigravity' && inputs.antigravity_phase != 'automated') }}
 
 # Least privilege at the workflow level; the report job widens to
 # issues: write only where it is actually needed.
@@ -627,7 +652,8 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
           (inputs.os == 'all' || inputs.os == 'windows') &&
-          (inputs.connector == 'all' || inputs.connector == 'antigravity') }}
+          (inputs.connector == 'all' || inputs.connector == 'antigravity') &&
+          inputs.antigravity_phase == 'automated' }}
     runs-on: [self-hosted, Windows, X64, antigravity-authenticated]
     timeout-minutes: 40
     permissions:
@@ -642,6 +668,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Require exact Windows package run
+        id: package
         shell: pwsh
         env:
           PACKAGE_RUN_ID: ${{ inputs.windows_package_run_id }}
@@ -663,9 +690,9 @@ jobs:
           }
           $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
           $workflow = Invoke-RestMethod -Headers $headers `
-            -Uri "$api/actions/workflows/windows-native.yml"
+            -Uri "$api/actions/workflows/windows-native.yml" -TimeoutSec 30
           $run = Invoke-RestMethod -Headers $headers `
-            -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID"
+            -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID" -TimeoutSec 30
           if ([string]$workflow.path -cne '.github/workflows/windows-native.yml' -or
               [long]$run.workflow_id -ne [long]$workflow.id -or
               [string]$run.path -cne '.github/workflows/windows-native.yml' -or
@@ -676,7 +703,7 @@ jobs:
             throw 'Selected package run is not the successful exact-head canonical Windows Native CI run'
           }
           $artifacts = Invoke-RestMethod -Headers $headers `
-            -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID/artifacts?per_page=100"
+            -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID/artifacts?per_page=100" -TimeoutSec 30
           $packageArtifacts = @($artifacts.artifacts | Where-Object {
             [string]$_.name -ceq 'windows-native-package'
           })
@@ -685,6 +712,8 @@ jobs:
               [long]$packageArtifacts[0].size_in_bytes -le 0) {
             throw 'Selected exact Windows Native CI run lacks one unexpired non-empty windows-native-package artifact'
           }
+          "artifact_id=$([long]$packageArtifacts[0].id)" >> $env:GITHUB_OUTPUT
+          "artifact_digest=$([string]$packageArtifacts[0].digest)" >> $env:GITHUB_OUTPUT
       - name: Protect exact package destination
         shell: pwsh
         run: |
@@ -739,6 +768,11 @@ jobs:
             -AuthenticatedAntigravityRunner `
             -PackagedSetupPath (Join-Path $env:RUNNER_TEMP 'defenseclaw-antigravity-package-${{ github.run_id }}-${{ github.run_attempt }}\DefenseClawSetup-x64.exe') `
             -ExpectedPackageSourceCommit '${{ github.sha }}' `
+            -ExpectedHarnessSourceCommit '${{ github.sha }}' `
+            -ExpectedPackageRunID '${{ inputs.windows_package_run_id }}' `
+            -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}' `
+            -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}' `
+            -ExpectedWorkflowRepository '${{ github.repository }}' `
             -StateRoot $env:DC_WINDOWS_STATE `
             -ResultsPath $env:DC_E2E_RESULTS `
             -ArtifactPath (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
@@ -770,15 +804,615 @@ jobs:
             -AuthenticatedAntigravityRunner `
             -PackagedSetupPath (Join-Path $env:RUNNER_TEMP 'defenseclaw-antigravity-package-${{ github.run_id }}-${{ github.run_attempt }}\DefenseClawSetup-x64.exe') `
             -ExpectedPackageSourceCommit '${{ github.sha }}' `
+            -ExpectedHarnessSourceCommit '${{ github.sha }}' `
+            -ExpectedPackageRunID '${{ inputs.windows_package_run_id }}' `
+            -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}' `
+            -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}' `
+            -ExpectedWorkflowRepository '${{ github.repository }}' `
             -StateRoot $env:DC_WINDOWS_STATE
+
+  # Protected preview-only lifecycle for authentic interactive Antigravity
+  # evidence. Prepare and resume are separate workflow dispatches. The native
+  # TUI itself is launched locally between them because Actions does not
+  # provide an interactive terminal. Durable authenticated state lives only on
+  # the dedicated runner's fixed task-specific D: root.
+  windows-antigravity-held-state:
+    name: Windows x64 live / antigravity (protected held state)
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' &&
+          (inputs.os == 'all' || inputs.os == 'windows') &&
+          inputs.connector == 'antigravity' &&
+          inputs.antigravity_phase != 'automated' }}
+    runs-on: [self-hosted, Windows, X64, antigravity-authenticated]
+    concurrency:
+      group: connector-live-e2e-antigravity-held-state-${{ github.repository_id }}
+      cancel-in-progress: false
+    timeout-minutes: 40
+    permissions:
+      actions: read
+      contents: read
+    env:
+      DC_ANTIGRAVITY_DURABLE_ROOT: D:\DefenseClaw-PR655-Antigravity-Held-State
+      DC_WINDOWS_STATE: D:\DefenseClaw-PR655-Antigravity-Held-State\state
+      DC_WINDOWS_PACKAGE: D:\DefenseClaw-PR655-Antigravity-Held-State\package\DefenseClawSetup-x64.exe
+      DC_ANTIGRAVITY_INSTALLER: D:\DefenseClaw-PR655-Antigravity-Held-State\official-installer\install.ps1
+      DC_ANTIGRAVITY_SOURCE: D:\DefenseClaw-PR655-Antigravity-Held-State\source-checkout
+      DC_E2E_RESULTS: D:\DefenseClaw-PR655-Antigravity-Held-State\handoff-${{ github.run_id }}-${{ github.run_attempt }}\results.jsonl
+      DC_E2E_ARTIFACTS: D:\DefenseClaw-PR655-Antigravity-Held-State\handoff-${{ github.run_id }}-${{ github.run_attempt }}\diagnostics
+      DC_ANTIGRAVITY_DEDICATED_RUNNER: "1"
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - name: Read durable protected recovery identity
+        id: recovery
+        if: ${{ inputs.antigravity_phase != 'prepare' }}
+        shell: pwsh
+        env:
+          PHASE: ${{ inputs.antigravity_phase }}
+        run: |
+          $root = 'D:\DefenseClaw-PR655-Antigravity-Held-State'
+          $manifestPath = "$root\state\antigravity-package-cleanup.json"
+          $heldPath = "$root\state\antigravity-held-state.json"
+          $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          if ($null -eq $identity.User) { throw 'Protected recovery identity has no user SID' }
+          $sections = [Security.AccessControl.AccessControlSections]::Owner -bor `
+            [Security.AccessControl.AccessControlSections]::Access
+          $security = [IO.FileSystemAclExtensions]::GetAccessControl($rootItem, $sections)
+          $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+          $expected = @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object
+          $rules = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+          $actual = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+          if (-not $security.AreAccessRulesProtected -or $owner.Value -cne $identity.User.Value -or
+              ($actual -join "`n") -cne ($expected -join "`n") -or
+              $rules.Count -ne $expected.Count -or
+              @($rules | Where-Object {
+                $_.IsInherited -or
+                $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                  [Security.AccessControl.FileSystemRights]::FullControl
+              }).Count -ne 0) {
+            throw 'Protected durable recovery root DACL is not exact'
+          }
+          foreach ($path in @($root, "$root\state", $manifestPath, $env:DC_ANTIGRAVITY_SOURCE)) {
+            if (-not (Test-Path -LiteralPath $path)) { throw "Protected recovery identity is missing: $path" }
+            $item = Get-Item -LiteralPath $path -Force
+            if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw "Protected recovery identity crosses a reparse point: $path"
+            }
+          }
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          $held = if (Test-Path -LiteralPath $heldPath -PathType Leaf) {
+            $heldItem = Get-Item -LiteralPath $heldPath -Force
+            if ($heldItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw 'Protected held-state identity is a reparse point'
+            }
+            Get-Content -LiteralPath $heldPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          } else { $null }
+          if ([int]$manifest.schema_version -ne 2 -or
+              [string]$manifest.kind -cne 'antigravity-authenticated-cleanup' -or
+              [string]$manifest.source_checkout -cne $env:DC_ANTIGRAVITY_SOURCE -or
+              -not [bool]$manifest.interactive_campaign) {
+            throw 'Protected durable cleanup identity is invalid'
+          }
+          if ($null -eq $held) {
+            if ($env:PHASE -ne 'cleanup' -or [bool]$manifest.vendor_mutation_started) {
+              throw 'Only pre-mutation cleanup may recover without a held-state companion'
+            }
+            foreach ($path in @(
+              $manifest.install_root, $manifest.data_root, $manifest.vendor_root,
+              $manifest.vendor_staging_root
+            )) {
+              if (Test-Path -LiteralPath ([string]$path)) {
+                throw "Pre-held recovery detected forbidden product/vendor mutation: $path"
+              }
+            }
+          } elseif ([string]$held.kind -cne 'antigravity-interactive-held-state' -or
+              [string]$manifest.package_source_commit -cne [string]$held.package_source_commit -or
+              [string]$manifest.harness_source_commit -cne [string]$held.harness_source_commit -or
+              [string]$manifest.package_run_id -cne [string]$held.package_run_id -or
+              [string]$manifest.package_artifact_id -cne [string]$held.package_artifact_id -or
+              [string]$manifest.package_artifact_digest -cne [string]$held.package_artifact_digest -or
+              [string]$held.source_checkout -cne $env:DC_ANTIGRAVITY_SOURCE) {
+            throw 'Protected durable cleanup/held identities disagree'
+          }
+          $harnessPath = Join-Path $env:DC_ANTIGRAVITY_SOURCE 'scripts\live-connector-e2e\run-windows.ps1'
+          $workflowPath = Join-Path $env:DC_ANTIGRAVITY_SOURCE '.github\workflows\connector-live-e2e.yml'
+          foreach ($path in @($harnessPath, $workflowPath)) {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "Protected durable source identity is not a plain file: $path"
+            }
+          }
+          $head = (& git.exe -C $env:DC_ANTIGRAVITY_SOURCE rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Protected durable source HEAD is unreadable' }
+          $dirty = & git.exe -C $env:DC_ANTIGRAVITY_SOURCE status --porcelain=v1 --untracked-files=no
+          if ($LASTEXITCODE -ne 0 -or $head -cne [string]$manifest.harness_source_commit -or
+              -not [string]::IsNullOrWhiteSpace(($dirty -join "`n")) -or
+              (Get-FileHash -LiteralPath $harnessPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                [string]$manifest.harness_sha256 -or
+              (Get-FileHash -LiteralPath $workflowPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                [string]$manifest.workflow_sha256 -or
+              ($null -ne $held -and (
+                [string]$held.harness_sha256 -cne [string]$manifest.harness_sha256 -or
+                [string]$held.workflow_sha256 -cne [string]$manifest.workflow_sha256
+              ))) {
+            throw 'Protected durable source checkout identity drifted'
+          }
+          "package_source_commit=$([string]$manifest.package_source_commit)" >> $env:GITHUB_OUTPUT
+          "harness_source_commit=$([string]$manifest.harness_source_commit)" >> $env:GITHUB_OUTPUT
+          "package_run_id=$([string]$manifest.package_run_id)" >> $env:GITHUB_OUTPUT
+          "artifact_id=$([string]$manifest.package_artifact_id)" >> $env:GITHUB_OUTPUT
+          "artifact_digest=$([string]$manifest.package_artifact_digest)" >> $env:GITHUB_OUTPUT
+      - name: Authorize exact durable package identity
+        id: package
+        shell: pwsh
+        env:
+          PACKAGE_RUN_ID: ${{ inputs.windows_package_run_id }}
+          RECOVERY_PACKAGE_RUN_ID: ${{ steps.recovery.outputs.package_run_id }}
+          INPUT_PACKAGE_SOURCE_COMMIT: ${{ inputs.windows_package_source_commit }}
+          RECOVERY_PACKAGE_SOURCE_COMMIT: ${{ steps.recovery.outputs.package_source_commit }}
+          RECOVERY_HARNESS_SOURCE_COMMIT: ${{ steps.recovery.outputs.harness_source_commit }}
+          PHASE: ${{ inputs.antigravity_phase }}
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HARNESS_SHA: ${{ github.sha }}
+        run: |
+          if ($env:PHASE -ne 'prepare') { $env:PACKAGE_RUN_ID = $env:RECOVERY_PACKAGE_RUN_ID }
+          if ($env:PACKAGE_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or
+              $env:GITHUB_REPOSITORY -cnotmatch '^[^/]+/[^/]+$' -or
+              $env:EXPECTED_HARNESS_SHA -cnotmatch '^[0-9a-f]{40}$' -or
+              [string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw 'Protected Antigravity package authorization inputs are invalid'
+          }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $api = "https://api.github.com/repos/$env:GITHUB_REPOSITORY"
+          $workflow = Invoke-RestMethod -Headers $headers -Uri "$api/actions/workflows/windows-native.yml" -TimeoutSec 30
+          $run = Invoke-RestMethod -Headers $headers -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID" -TimeoutSec 30
+          $requiredPackageSource = if ($env:PHASE -eq 'prepare') {
+            $env:INPUT_PACKAGE_SOURCE_COMMIT
+          } else { $env:RECOVERY_PACKAGE_SOURCE_COMMIT }
+          if ($requiredPackageSource -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Protected lifecycle requires the immutable package source commit'
+          }
+          if ($env:PHASE -in @('resume', 'cleanup') -and
+              $env:RECOVERY_HARNESS_SOURCE_COMMIT -cne $env:EXPECTED_HARNESS_SHA) {
+            throw 'Protected continuation must run from the exact harness/workflow commit used by prepare'
+          }
+          if ([string]$workflow.path -cne '.github/workflows/windows-native.yml' -or
+              [long]$run.workflow_id -ne [long]$workflow.id -or
+              [string]$run.path -cne '.github/workflows/windows-native.yml' -or
+              [string]$run.repository.full_name -cne $env:GITHUB_REPOSITORY -or
+              [string]$run.status -cne 'completed' -or
+              [string]$run.conclusion -cne 'success' -or
+              [string]$run.head_sha -cne $requiredPackageSource) {
+            throw 'Selected package run is not the successful immutable-source canonical Windows Native CI run'
+          }
+          if ($env:PHASE -eq 'cleanup') {
+            "artifact_id=${{ steps.recovery.outputs.artifact_id }}" >> $env:GITHUB_OUTPUT
+            "artifact_digest=${{ steps.recovery.outputs.artifact_digest }}" >> $env:GITHUB_OUTPUT
+            "package_run_id=$env:PACKAGE_RUN_ID" >> $env:GITHUB_OUTPUT
+            "package_source_commit=$requiredPackageSource" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $artifacts = Invoke-RestMethod -Headers $headers `
+            -Uri "$api/actions/runs/$env:PACKAGE_RUN_ID/artifacts?per_page=100" -TimeoutSec 30
+          $packages = @($artifacts.artifacts | Where-Object {
+            [string]$_.name -ceq 'windows-native-package'
+          })
+          if ($packages.Count -ne 1 -or [bool]$packages[0].expired -or
+              [long]$packages[0].size_in_bytes -le 0 -or
+              [string]$packages[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'Exact package run lacks one authenticated durable package artifact'
+          }
+          "artifact_id=$([long]$packages[0].id)" >> $env:GITHUB_OUTPUT
+          "artifact_digest=$([string]$packages[0].digest)" >> $env:GITHUB_OUTPUT
+          "package_run_id=$env:PACKAGE_RUN_ID" >> $env:GITHUB_OUTPUT
+          "package_source_commit=$requiredPackageSource" >> $env:GITHUB_OUTPUT
+      - name: Validate protected lifecycle inputs
+        shell: pwsh
+        env:
+          PHASE: ${{ inputs.antigravity_phase }}
+          PREPARE_RUN_ID: ${{ inputs.antigravity_prepare_run_id }}
+          PREPARE_RUN_ATTEMPT: ${{ inputs.antigravity_prepare_run_attempt }}
+          HOLD_ID: ${{ inputs.antigravity_hold_id }}
+        run: |
+          if ($env:PHASE -notin @('prepare', 'resume', 'cleanup')) {
+            throw 'Invalid protected Antigravity lifecycle phase'
+          }
+          if ($env:PHASE -eq 'resume' -and
+              ($env:PREPARE_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or
+               $env:PREPARE_RUN_ATTEMPT -cnotmatch '^[1-9][0-9]*$' -or
+               $env:HOLD_ID -cnotmatch '^[0-9a-f]{64}$')) {
+            throw 'Resume requires the exact successful prepare run, attempt, and hold ID'
+          }
+          if ((Get-PSDrive -Name C).Free -lt 536870912) {
+            throw 'C: has less than 512 MiB free; protected lifecycle stopped before mutation'
+          }
+          if (-not (Test-Path -LiteralPath 'D:\' -PathType Container)) {
+            throw 'Protected Antigravity lifecycle requires the task-specific D: drive'
+          }
+      - name: Create protected durable campaign roots
+        if: ${{ inputs.antigravity_phase == 'prepare' }}
+        shell: pwsh
+        run: |
+          $root = 'D:\DefenseClaw-PR655-Antigravity-Held-State'
+          if (Test-Path -LiteralPath $root) {
+            throw 'Protected Antigravity prepare requires an absent fixed durable campaign root'
+          }
+          foreach ($path in @(
+            "$root\state", "$root\package", "$root\official-installer",
+            "$root\handoff-${{ github.run_id }}-${{ github.run_attempt }}"
+          )) {
+            if (Test-Path -LiteralPath $path) { throw "Protected Antigravity prepare refuses preexisting campaign path: $path" }
+          }
+          $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+          if ($null -eq $owner) { throw 'Runner identity has no user SID' }
+          try {
+            foreach ($path in @(
+            $root, "$root\state", "$root\package", "$root\official-installer",
+            "$root\handoff-${{ github.run_id }}-${{ github.run_attempt }}"
+            )) {
+              $directory = [IO.Directory]::CreateDirectory($path)
+              if ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Protected Antigravity campaign path is a reparse point: $path"
+              }
+              $security = [Security.AccessControl.DirectorySecurity]::new()
+              $security.SetOwner($owner)
+              $security.SetAccessRuleProtection($true, $false)
+              $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor `
+                [Security.AccessControl.InheritanceFlags]::ObjectInherit
+              foreach ($sid in @(
+                $owner,
+                [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+              )) {
+                $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                  $sid,
+                  [Security.AccessControl.FileSystemRights]::FullControl,
+                  $inherit,
+                  [Security.AccessControl.PropagationFlags]::None,
+                  [Security.AccessControl.AccessControlType]::Allow
+                )) | Out-Null
+              }
+              [IO.FileSystemAclExtensions]::SetAccessControl($directory, $security)
+            }
+            $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+            $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+            $productInstall = Join-Path $local 'Programs\DefenseClaw'
+            $productData = Join-Path $profile '.defenseclaw'
+            $vendorRoot = Join-Path $local 'agy'
+            $vendorStaging = Join-Path $local 'antigravity\staging'
+            foreach ($path in @($productInstall, $productData, $vendorRoot, $vendorStaging)) {
+              if (Test-Path -LiteralPath $path) {
+                throw "Protected prepare requires an absent product/vendor baseline: $path"
+              }
+            }
+            $premanifest = [ordered]@{
+              schema_version = 1
+              kind = 'antigravity-protected-pre-manifest'
+              mutation_started = $false
+              workflow_repository = '${{ github.repository }}'
+              package_source_commit = '${{ steps.package.outputs.package_source_commit }}'
+              harness_source_commit = '${{ github.sha }}'
+              prepare_run_id = '${{ github.run_id }}'
+              prepare_run_attempt = '${{ github.run_attempt }}'
+              durable_root = $root
+              product_install = $productInstall
+              product_data = $productData
+              vendor_root = $vendorRoot
+              vendor_staging_root = $vendorStaging
+            }
+            [IO.File]::WriteAllText(
+              "$root\pre-manifest-state.json",
+              ($premanifest | ConvertTo-Json -Depth 3),
+              [Text.UTF8Encoding]::new($false)
+            )
+          } catch {
+            if (Test-Path -LiteralPath $root -PathType Container) {
+              $entries = @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction SilentlyContinue)
+              if (@($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -eq 0) {
+                Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+              }
+            }
+            throw
+          }
+      - name: Preserve exact clean source checkout
+        if: ${{ inputs.antigravity_phase == 'prepare' }}
+        shell: pwsh
+        run: |
+          $source = $env:DC_ANTIGRAVITY_SOURCE
+          if (Test-Path -LiteralPath $source) { throw 'Protected source checkout path already exists' }
+          & git clone --no-local --no-hardlinks --no-tags $env:GITHUB_WORKSPACE $source
+          if ($LASTEXITCODE -ne 0) { throw "Local exact-source clone failed: $LASTEXITCODE" }
+          & git -C $source checkout --detach '${{ github.sha }}'
+          if ($LASTEXITCODE -ne 0) { throw "Exact-source checkout failed: $LASTEXITCODE" }
+          $head = (& git -C $source rev-parse HEAD).Trim()
+          $dirty = & git -C $source status --porcelain=v1 --untracked-files=no
+          if ($head -cne '${{ github.sha }}' -or -not [string]::IsNullOrWhiteSpace(($dirty -join "`n"))) {
+            throw 'Preserved source checkout is not clean at the exact harness/workflow commit'
+          }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        if: ${{ inputs.antigravity_phase == 'prepare' }}
+        with:
+          name: windows-native-package
+          path: D:\DefenseClaw-PR655-Antigravity-Held-State\package
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.windows_package_run_id }}
+      - name: Download reviewed official Antigravity installer
+        if: ${{ inputs.antigravity_phase == 'prepare' }}
+        shell: pwsh
+        run: |
+          $uri = [Uri]'https://antigravity.google/cli/install.ps1'
+          $destination = 'D:\DefenseClaw-PR655-Antigravity-Held-State\official-installer\install.ps1'
+          $response = Invoke-WebRequest -UseBasicParsing -MaximumRedirection 0 `
+            -Uri $uri -OutFile $destination -PassThru -TimeoutSec 30
+          if ([string]$response.BaseResponse.RequestMessage.RequestUri.AbsoluteUri -cne $uri.AbsoluteUri) {
+            throw 'Official Antigravity installer URL redirected or changed'
+          }
+          $hash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne '51c2cb4fada22ce0228da71b9506370383d6544bfebcec85fe7616a52b805344') {
+            throw 'Official Antigravity install.ps1 changed from the reviewed option contract'
+          }
+      - name: Run protected Antigravity lifecycle phase
+        shell: pwsh
+        env:
+          PHASE: ${{ inputs.antigravity_phase }}
+        run: |
+          $arguments = @{
+            Layer = 'live'
+            Connector = 'antigravity'
+            AuthenticatedAntigravityRunner = $true
+            Operation = $env:PHASE
+            WorkspaceRoot = $env:DC_ANTIGRAVITY_SOURCE
+            PackagedSetupPath = $env:DC_WINDOWS_PACKAGE
+            ExpectedPackageSourceCommit = '${{ steps.package.outputs.package_source_commit }}'
+            ExpectedHarnessSourceCommit = '${{ inputs.antigravity_phase == 'prepare' && github.sha || steps.recovery.outputs.harness_source_commit }}'
+            ExpectedPackageRunID = '${{ steps.package.outputs.package_run_id }}'
+            ExpectedPackageArtifactID = '${{ steps.package.outputs.artifact_id }}'
+            ExpectedPackageArtifactDigest = '${{ steps.package.outputs.artifact_digest }}'
+            ExpectedWorkflowRepository = '${{ github.repository }}'
+            AntigravityInstallerPath = $env:DC_ANTIGRAVITY_INSTALLER
+            AntigravityPrepareRunID = '${{ inputs.antigravity_prepare_run_id }}'
+            AntigravityPrepareRunAttempt = '${{ inputs.antigravity_prepare_run_attempt }}'
+            AntigravityHoldID = '${{ inputs.antigravity_hold_id }}'
+            StateRoot = $env:DC_WINDOWS_STATE
+            ResultsPath = $env:DC_E2E_RESULTS
+            ArtifactPath = $env:DC_E2E_ARTIFACTS
+          }
+          & (Join-Path $env:DC_ANTIGRAVITY_SOURCE 'scripts\live-connector-e2e\run-windows.ps1') @arguments
+      - name: Publish exact local no-bypass TUI command
+        if: ${{ success() && inputs.antigravity_phase == 'prepare' }}
+        shell: pwsh
+        run: |
+          $state = Get-Content -LiteralPath `
+            'D:\DefenseClaw-PR655-Antigravity-Held-State\state\antigravity-held-state.json' `
+            -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([string]$state.phase -cne 'held' -or [string]$state.hold_id -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'Protected prepare did not publish an exact held-state identity'
+          }
+          $source = ([string]$state.source_checkout).Replace("'", "''")
+          @"
+          ### Antigravity protected interactive hold
+
+          Run locally in an interactive PowerShell terminal on this dedicated runner, from this exact checkout. GitHub Actions cannot supply the native TUI:
+
+              Set-Location -LiteralPath '$source'; `$env:DC_ANTIGRAVITY_DEDICATED_RUNNER='1'; ./scripts/live-connector-e2e/run-windows.ps1 -Operation hold -Layer live -Connector antigravity -AuthenticatedAntigravityRunner -WorkspaceRoot '$source' -PackagedSetupPath '$env:DC_WINDOWS_PACKAGE' -ExpectedPackageSourceCommit '$($state.package_source_commit)' -ExpectedHarnessSourceCommit '$($state.harness_source_commit)' -ExpectedPackageRunID '${{ steps.package.outputs.package_run_id }}' -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}' -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}' -ExpectedWorkflowRepository '${{ github.repository }}' -AntigravityInstallerPath '$env:DC_ANTIGRAVITY_INSTALLER' -AntigravityPrepareRunID '$($state.prepare_run_id)' -AntigravityPrepareRunAttempt '$($state.prepare_run_attempt)' -AntigravityHoldID '$($state.hold_id)' -StateRoot '$env:DC_WINDOWS_STATE' -ResultsPath '$env:DC_E2E_RESULTS' -ArtifactPath '$env:DC_E2E_ARTIFACTS'
+
+          The repository harness launches only canonical agy.exe with no arguments. After Ctrl+D, dispatch phase=resume with prepare_run_id=$($state.prepare_run_id), prepare_run_attempt=$($state.prepare_run_attempt), and hold_id=$($state.hold_id). If interrupted, dispatch phase=cleanup; the durable manifests make recovery fail closed, but hard cancellation cannot guarantee an Actions safety step executes.
+
+          Exact local recovery command (works from the preserved source/package after artifact expiry):
+
+              Set-Location -LiteralPath '$source'; `$env:DC_ANTIGRAVITY_DEDICATED_RUNNER='1'; ./scripts/live-connector-e2e/run-windows.ps1 -Operation cleanup -Layer live -Connector antigravity -AuthenticatedAntigravityRunner -WorkspaceRoot '$source' -PackagedSetupPath '$env:DC_WINDOWS_PACKAGE' -ExpectedPackageSourceCommit '$($state.package_source_commit)' -ExpectedHarnessSourceCommit '$($state.harness_source_commit)' -ExpectedPackageRunID '${{ steps.package.outputs.package_run_id }}' -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}' -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}' -ExpectedWorkflowRepository '${{ github.repository }}' -AntigravityInstallerPath '$env:DC_ANTIGRAVITY_INSTALLER' -StateRoot '$env:DC_WINDOWS_STATE' -ResultsPath '$env:DC_E2E_RESULTS' -ArtifactPath '$env:DC_E2E_ARTIFACTS'
+          "@ >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload protected Antigravity lifecycle output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: connector-live-e2e-antigravity-held-${{ inputs.antigravity_phase }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            D:\DefenseClaw-PR655-Antigravity-Held-State\state\antigravity-interactive-instructions.json
+            D:\DefenseClaw-PR655-Antigravity-Held-State\handoff-${{ github.run_id }}-${{ github.run_attempt }}\**
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: true
+      - name: Protected Antigravity failure cleanup safety net
+        if: ${{ always() && (failure() || cancelled()) }}
+        shell: pwsh
+        run: |
+          $root = 'D:\DefenseClaw-PR655-Antigravity-Held-State'
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
+          $cleanupManifest = Join-Path $env:DC_WINDOWS_STATE 'antigravity-package-cleanup.json'
+          if (Test-Path -LiteralPath $cleanupManifest -PathType Leaf) {
+            $protected = Get-Content -LiteralPath $cleanupManifest -Raw -Encoding UTF8 |
+              ConvertFrom-Json -ErrorAction Stop
+            if ([string]$protected.source_checkout -cne $env:DC_ANTIGRAVITY_SOURCE -or
+                [string]$protected.workflow_repository -cne '${{ github.repository }}') {
+              throw 'Protected cleanup safety net found a mismatched durable source/repository identity'
+            }
+            $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            if ($null -eq $identity.User) { throw 'Protected cleanup safety net identity has no user SID' }
+            $sections = [Security.AccessControl.AccessControlSections]::Owner -bor `
+              [Security.AccessControl.AccessControlSections]::Access
+            $security = [IO.FileSystemAclExtensions]::GetAccessControl($rootItem, $sections)
+            $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+            $expected = @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object
+            $rules = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+            $actual = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            $harnessPath = Join-Path $env:DC_ANTIGRAVITY_SOURCE 'scripts\live-connector-e2e\run-windows.ps1'
+            $workflowPath = Join-Path $env:DC_ANTIGRAVITY_SOURCE '.github\workflows\connector-live-e2e.yml'
+            $harnessItem = Get-Item -LiteralPath $harnessPath -Force -ErrorAction Stop
+            $workflowItem = Get-Item -LiteralPath $workflowPath -Force -ErrorAction Stop
+            if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $harnessItem.PSIsContainer -or $workflowItem.PSIsContainer -or
+                ($harnessItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                ($workflowItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                -not $security.AreAccessRulesProtected -or $owner.Value -cne $identity.User.Value -or
+                ($actual -join "`n") -cne ($expected -join "`n") -or
+                $rules.Count -ne $expected.Count -or
+                @($rules | Where-Object {
+                  $_.IsInherited -or
+                  $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                  ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                    [Security.AccessControl.FileSystemRights]::FullControl
+                }).Count -ne 0 -or
+                (Get-FileHash -LiteralPath $harnessPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                  [string]$protected.harness_sha256 -or
+                (Get-FileHash -LiteralPath $workflowPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+                  [string]$protected.workflow_sha256 -or
+                (& git.exe -C $env:DC_ANTIGRAVITY_SOURCE rev-parse HEAD).Trim() -cne
+                  [string]$protected.harness_source_commit -or
+                -not [string]::IsNullOrWhiteSpace((
+                  (& git.exe -C $env:DC_ANTIGRAVITY_SOURCE status --porcelain=v1 --untracked-files=no) -join "`n"
+                ))) {
+              throw 'Protected cleanup safety net source/custody identity is invalid'
+            }
+            & $harnessPath `
+              -Operation cleanup -Layer live -Connector antigravity `
+              -AuthenticatedAntigravityRunner -WorkspaceRoot $env:DC_ANTIGRAVITY_SOURCE `
+              -PackagedSetupPath $env:DC_WINDOWS_PACKAGE `
+              -ExpectedPackageSourceCommit ([string]$protected.package_source_commit) `
+              -ExpectedHarnessSourceCommit ([string]$protected.harness_source_commit) `
+              -ExpectedPackageRunID ([string]$protected.package_run_id) `
+              -ExpectedPackageArtifactID ([string]$protected.package_artifact_id) `
+              -ExpectedPackageArtifactDigest ([string]$protected.package_artifact_digest) `
+              -ExpectedWorkflowRepository '${{ github.repository }}' `
+              -AntigravityInstallerPath $env:DC_ANTIGRAVITY_INSTALLER `
+              -StateRoot $env:DC_WINDOWS_STATE `
+              -ResultsPath $env:DC_E2E_RESULTS `
+              -ArtifactPath $env:DC_E2E_ARTIFACTS
+            exit $LASTEXITCODE
+          }
+          $prePath = Join-Path $root 'pre-manifest-state.json'
+          if (-not (Test-Path -LiteralPath $prePath -PathType Leaf)) {
+            throw 'Protected failure left no authenticated cleanup or pre-manifest authority'
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $rootItem = Get-Item -LiteralPath $root -Force
+          if ($rootItem.FullName -cne $root -or
+              ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Protected pre-manifest rollback root identity is invalid'
+          }
+          $sections = [Security.AccessControl.AccessControlSections]::Owner -bor `
+            [Security.AccessControl.AccessControlSections]::Access
+          $security = [IO.FileSystemAclExtensions]::GetAccessControl($rootItem, $sections)
+          $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+          $expected = @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object
+          $rules = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+          $actual = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+          if (-not $security.AreAccessRulesProtected -or $owner.Value -cne $identity.User.Value -or
+              ($actual -join "`n") -cne ($expected -join "`n") -or
+              $rules.Count -ne $expected.Count -or
+              @($rules | Where-Object {
+                $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                  [Security.AccessControl.FileSystemRights]::FullControl
+              }).Count -ne 0) {
+            throw 'Protected pre-manifest rollback root DACL is not exact'
+          }
+          foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force -Recurse)) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw "Protected pre-manifest rollback crosses a reparse point: $($entry.FullName)"
+            }
+          }
+          $pre = Get-Content -LiteralPath $prePath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([int]$pre.schema_version -ne 1 -or
+              [string]$pre.kind -cne 'antigravity-protected-pre-manifest' -or
+              [bool]$pre.mutation_started -or
+              [string]$pre.workflow_repository -cne '${{ github.repository }}' -or
+              [string]$pre.package_source_commit -cne '${{ steps.package.outputs.package_source_commit }}' -or
+              [string]$pre.harness_source_commit -cne '${{ github.sha }}' -or
+              [string]$pre.durable_root -cne $root) {
+            throw 'Protected pre-manifest rollback identity is invalid'
+          }
+          foreach ($path in @($pre.product_install, $pre.product_data, $pre.vendor_root, $pre.vendor_staging_root)) {
+            if (Test-Path -LiteralPath ([string]$path)) {
+              throw "Protected pre-manifest rollback detected product/vendor mutation: $path"
+            }
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force
+      - name: Remove terminal durable campaign root
+        if: ${{ success() && inputs.antigravity_phase != 'prepare' }}
+        shell: pwsh
+        run: |
+          $root = 'D:\DefenseClaw-PR655-Antigravity-Held-State'
+          if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
+          $item = Get-Item -LiteralPath $root -Force
+          if ($item.FullName -cne $root -or
+              ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'Refusing terminal cleanup of an unexpected durable root'
+          }
+          $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $sections = [Security.AccessControl.AccessControlSections]::Owner -bor `
+            [Security.AccessControl.AccessControlSections]::Access
+          $security = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+          $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+          $expected = @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544') | Sort-Object
+          $rules = @($security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+          $actual = @($rules | ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+          if (-not $security.AreAccessRulesProtected -or $owner.Value -cne $identity.User.Value -or
+              ($actual -join "`n") -cne ($expected -join "`n") -or
+              $rules.Count -ne $expected.Count -or
+              @($rules | Where-Object {
+                $_.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                  [Security.AccessControl.FileSystemRights]::FullControl
+              }).Count -ne 0) {
+            throw 'Refusing terminal cleanup of a durable root with non-exact custody'
+          }
+          foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force -Recurse)) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+              throw "Refusing terminal cleanup across a reparse point: $($entry.FullName)"
+            }
+          }
+          $markerPath = Join-Path $root 'terminal-cleanup.json'
+          if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+            throw 'Refusing terminal cleanup without the harness-authenticated terminal marker'
+          }
+          $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ([int]$marker.schema_version -ne 1 -or
+              [string]$marker.kind -cne 'antigravity-authenticated-terminal-cleanup' -or
+              -not [bool]$marker.complete -or
+              [string]$marker.workflow_repository -cne '${{ github.repository }}' -or
+              [string]$marker.package_source_commit -cne '${{ steps.recovery.outputs.package_source_commit }}' -or
+              [string]$marker.harness_source_commit -cne '${{ steps.recovery.outputs.harness_source_commit }}' -or
+              [string]$marker.package_run_id -cne '${{ steps.package.outputs.package_run_id }}' -or
+              [string]$marker.package_artifact_id -cne '${{ steps.package.outputs.artifact_id }}' -or
+              [string]$marker.package_artifact_digest -cne '${{ steps.package.outputs.artifact_digest }}' -or
+              [string]$marker.durable_root -cne $root -or
+              [string]$marker.state_root -cne $env:DC_WINDOWS_STATE -or
+              [string]$marker.source_checkout -cne $env:DC_ANTIGRAVITY_SOURCE) {
+            throw 'Refusing terminal cleanup with a mismatched authenticated terminal marker'
+          }
+          foreach ($path in @(
+            $marker.state_root, $marker.package_root, $marker.official_installer_root,
+            $marker.install_root, $marker.data_root, $marker.vendor_root,
+            $marker.vendor_staging_root
+          )) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$path) -and
+                (Test-Path -LiteralPath ([string]$path))) {
+              throw "Refusing terminal cleanup while authenticated campaign state remains: $path"
+            }
+          }
+          Remove-Item -LiteralPath $root -Recurse -Force
 
   # ---------------------------------------------------------------------------
   # Report — aggregate every cell, render the matrix, and alert on regressions.
   # ---------------------------------------------------------------------------
   report:
     name: Report + regression radar
-    needs: [contract-matrix, live-matrix, windows-live, windows-antigravity-live]
-    if: ${{ always() }}
+    needs: [contract-matrix, live-matrix, windows-live, windows-antigravity-live, windows-antigravity-held-state]
+    if: >-
+      ${{ always() &&
+          !(github.event_name == 'workflow_dispatch' &&
+            inputs.connector == 'antigravity' &&
+            inputs.antigravity_phase != 'automated') }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
