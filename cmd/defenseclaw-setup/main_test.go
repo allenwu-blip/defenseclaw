@@ -420,10 +420,11 @@ func TestAntigravityInitializationEnvironmentBindsVerifiedSetupParent(t *testing
 
 func TestDeferredUninstallConnectorVerifyArgsBindExactCleanupAuthority(t *testing.T) {
 	transactionID := "0123456789abcdef0123456789abcdef"
-	setupPath := filepath.Join(`C:\Users\tester\AppData\Local\DefenseClaw\InstallerCache`, setupArtifactName)
-	dataRoot := `C:\Users\tester\.defenseclaw`
-	configHome := `C:\Users\tester\.claude`
-	recordPath := `C:\Users\tester\AppData\Local\DefenseClaw\InstallerState\uninstall-cleanup.json`
+	root := t.TempDir()
+	setupPath := filepath.Join(root, "DefenseClaw", "InstallerCache", setupArtifactName)
+	dataRoot := filepath.Join(root, "profile", ".defenseclaw")
+	configHome := filepath.Join(root, "profile", ".claude")
+	recordPath := filepath.Join(root, "DefenseClaw", "InstallerState", "uninstall-cleanup.json")
 	transaction := setupTransaction{
 		ID:              transactionID,
 		Action:          "uninstall",
