@@ -393,7 +393,7 @@ func WriteHookScriptsWithToken(hookDir, apiAddr, token string) error {
 	// Never bake the real token into template output — scripts read
 	// the .token file or the env var at runtime. This legacy all-script
 	// writer uses the product-wide default; connector-aware setup uses
-	// resolveHookFailMode so Cursor can retain its vendor fail-open default.
+	// resolveHookFailMode so Cursor can apply its action/observe boundary.
 	data := templateData{APIAddr: apiAddr, APIToken: "", FailMode: defaultHookFailMode, TokenFile: ".token"}
 
 	for _, name := range hookScripts {
@@ -919,12 +919,14 @@ func WriteHookScriptsForConnectorObjectWithOpts(hookDir string, opts SetupOpts, 
 // codex / claudecode (avarice F-0681).
 func resolveHookFailMode(opts SetupOpts, c Connector) string {
 	if c != nil && c.Name() == "cursor" {
-		// DefenseClaw owns only Cursor's user hook. All matching hooks run and
-		// higher-priority Enterprise, Team, and Project hooks can override or
-		// mutate the result, so this preview connector cannot truthfully claim
-		// fail-closed authority in either observe or requested action mode.
-		// Keep the rendered adapter, hooks.json, and contract lock fail-open even
-		// when a global hook_fail_mode=closed is inherited from another connector.
+		// Cursor mode owns its availability posture: action registrations are
+		// fail-closed and observe registrations are fail-open. This prevents a
+		// global setting inherited from another connector from making observe
+		// blocking or action silently nonblocking.
+		if strings.EqualFold(strings.TrimSpace(opts.GuardrailMode), "action") ||
+			strings.EqualFold(strings.TrimSpace(opts.GuardrailMode), "enforce") {
+			return "closed"
+		}
 		return "open"
 	}
 	if strings.TrimSpace(opts.HookFailMode) != "" {

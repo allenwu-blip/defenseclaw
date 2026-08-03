@@ -26,7 +26,7 @@ const DC_FAIL_MODE = "{{.FailMode}}"; // "open" or "closed"
 const DC_TIMEOUT_MS = 10000;
 const DC_PLUGIN_URL = import.meta.url;
 
-// OpenCode v1.18.10 passes the effective config (including its derived
+// OpenCode v1.18.10-v1.18.11 passes the effective config (including its derived
 // plugin_origins list) to every plugin's config hook after external plugins
 // have loaded. Hooks then run sequentially in that same order. DefenseClaw's
 // global plugin is authoritative over final args only when no external plugin
@@ -51,7 +51,7 @@ function defenseclawNormalizedPluginURL(spec) {
   }
 }
 
-// This is OpenCode v1.18.10's published MCP tool-name sanitizer, mirrored
+// This is OpenCode v1.18.10-v1.18.11's published MCP tool-name sanitizer, mirrored
 // exactly from packages/opencode/src/mcp/catalog.ts.
 function defenseclawSanitizeMCPName(value) {
   return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_");

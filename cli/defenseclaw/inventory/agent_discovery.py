@@ -684,18 +684,21 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 # to this token-bound product directory and verifies its
                 # updater-manifest SHA-512 before publication.
                 os.path.join(codex_local_app_data, "agy", "bin"),
-            )
-        )
-    if local_app_data:
-        candidates.extend(
-            (
+                # Hermes' official Windows updater owns this exact venv. Bind
+                # discovery to the current token's Known Folder instead of an
+                # inherited LOCALAPPDATA value or a coexisting legacy home.
                 os.path.join(
-                    local_app_data,
+                    codex_local_app_data,
                     "hermes",
                     "hermes-agent",
                     "venv",
                     "Scripts",
                 ),
+            )
+        )
+    if local_app_data:
+        candidates.extend(
+            (
                 # Hermes/uv installs the native uvx.exe launcher here. Keep
                 # the prefix product-specific; never trust all LOCALAPPDATA.
                 os.path.join(local_app_data, "hermes", "bin"),
@@ -891,8 +894,16 @@ def discover_agents(
     use_cache: bool = True,
     refresh: bool = False,
     data_dir: str | os.PathLike[str] | None = None,
+    persist_cache: bool = True,
 ) -> AgentDiscovery:
-    """Return cached or freshly scanned local agent install signals."""
+    """Return cached or freshly scanned local agent install signals.
+
+    ``persist_cache=False`` is for a caller that needs a fresh, read-only
+    admission decision for one connector.  The returned scan still covers the
+    complete connector catalog, but it cannot replace unrelated version
+    evidence that a subsequent gateway restart uses to refresh existing hook
+    contract locks.
+    """
     if use_cache and not refresh:
         cached = _read_cache(data_dir=data_dir)
         if cached is not None:
@@ -921,7 +932,8 @@ def discover_agents(
     # Cache persistence is deliberately best-effort: the freshly computed
     # discovery result is authoritative and must still be returned when the
     # optional acceleration cache cannot be protected or written.
-    _write_cache(discovery, data_dir=data_dir)
+    if persist_cache:
+        _write_cache(discovery, data_dir=data_dir)
     return discovery
 
 
@@ -1911,6 +1923,12 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
 
     if not spec.binary_name:
         return ()
+    if name == "hermes" and _is_windows_host():
+        root = _windows_current_user_known_folder(_WINDOWS_LOCAL_APP_DATA_FOLDER_ID)
+        if not root:
+            return ()
+        candidate = os.path.join(root, "hermes", "hermes-agent", "venv", "Scripts", "hermes.exe")
+        return (candidate,) if os.path.isfile(candidate) else ()
     if name == "antigravity" and _is_windows_host():
         return tuple(
             candidate
@@ -2036,17 +2054,11 @@ def _windows_binary_candidates(connector: str, binary_name: str) -> tuple[str, .
             os.path.join(root, "Programs", "OpenAI", "Codex", "bin")
             for root in _windows_current_user_local_app_data_roots()
         ]
-    elif connector == "hermes" and local_app_data:
-        prefixes.insert(
-            0,
-            os.path.join(
-                local_app_data,
-                "hermes",
-                "hermes-agent",
-                "venv",
-                "Scripts",
-            ),
-        )
+    elif connector == "hermes":
+        prefixes[0:0] = [
+            os.path.join(root, "hermes", "hermes-agent", "venv", "Scripts")
+            for root in _windows_current_user_local_app_data_roots()
+        ]
     elif connector == "cursor":
         prefixes[0:0] = [
             os.path.join(root, "cursor-agent")

@@ -18,6 +18,7 @@ package connector
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,12 +40,13 @@ const hookContractLockFile = "hook_contract_lock.json"
 const agentSelectionFile = "agent_selection.json"
 
 const (
-	agentSelectionSchemaVersion = 1
-	agentSelectionMaxBytes      = 64 << 10
-	hookContractLockMaxBytes    = 2 << 20
-	hookRuntimeEvidenceMaxBytes = 64 << 10
-	agentSelectionMaxLifetime   = 15 * time.Minute
-	agentSelectionClockSkew     = 5 * time.Minute
+	agentSelectionSchemaVersion  = 1
+	agentSelectionMaxBytes       = 64 << 10
+	activeConnectorStateMaxBytes = 64 << 10
+	hookContractLockMaxBytes     = 2 << 20
+	hookRuntimeEvidenceMaxBytes  = 64 << 10
+	agentSelectionMaxLifetime    = 15 * time.Minute
+	agentSelectionClockSkew      = 5 * time.Minute
 )
 
 type agentSelectionReceipt struct {
@@ -94,6 +96,134 @@ type connectorState struct {
 	Name          string   `json:"name,omitempty"`
 }
 
+// ActiveConnectorStateSnapshot is an opaque, byte-exact rollback point for
+// active_connector.json. Multi-connector boot captures it before installing
+// any connector so an active-roster publication error cannot strand a newer
+// roster after a late durability failure.
+type ActiveConnectorStateSnapshot struct {
+	state exactConnectorStateFileSnapshot
+}
+
+// HookContractLockSnapshot is an opaque, byte-exact rollback point for the
+// complete hook_contract_lock.json document. Restoring the whole document
+// preserves unrelated connector entries and shared digests exactly.
+type HookContractLockSnapshot struct {
+	state exactConnectorStateFileSnapshot
+}
+
+type exactConnectorStateFileSnapshot struct {
+	dataDir  string
+	filename string
+	maxBytes int64
+	existed  bool
+	body     []byte
+}
+
+// CaptureActiveConnectorStateSnapshot records the exact active/inactive roster
+// bytes without creating or modifying the persistent advisory lock file.
+func CaptureActiveConnectorStateSnapshot(dataDir string) (*ActiveConnectorStateSnapshot, error) {
+	state, err := captureExactConnectorStateFile(dataDir, activeConnectorFile, activeConnectorStateMaxBytes)
+	if err != nil {
+		return nil, fmt.Errorf("capture active connector state: %w", err)
+	}
+	return &ActiveConnectorStateSnapshot{state: state}, nil
+}
+
+// Restore restores the exact active/inactive roster captured before setup.
+func (s *ActiveConnectorStateSnapshot) Restore() error {
+	if s == nil {
+		return nil
+	}
+	path := filepath.Join(s.state.dataDir, s.state.filename)
+	return restoreExactConnectorStateFile(s.state, func(fn func() error) error {
+		return withActiveConnectorStateLock(path, fn)
+	})
+}
+
+// CaptureHookContractLockSnapshot records the complete lock document before a
+// multi-connector setup transaction publishes any per-connector evidence.
+func CaptureHookContractLockSnapshot(dataDir string) (*HookContractLockSnapshot, error) {
+	state, err := captureExactConnectorStateFile(dataDir, hookContractLockFile, hookContractLockMaxBytes)
+	if err != nil {
+		return nil, fmt.Errorf("capture hook contract lock: %w", err)
+	}
+	return &HookContractLockSnapshot{state: state}, nil
+}
+
+// Restore restores the exact pre-transaction lock bytes (or exact absence).
+func (s *HookContractLockSnapshot) Restore() error {
+	if s == nil {
+		return nil
+	}
+	path := filepath.Join(s.state.dataDir, s.state.filename)
+	return restoreExactConnectorStateFile(s.state, func(fn func() error) error {
+		return withFileLock(path, fn)
+	})
+}
+
+// RawEntry returns one unfiltered entry from the captured lock bytes. Unlike
+// LoadHookContractLockEntry, it deliberately does not honor a newer protected
+// Codex setup receipt: a rollback must retain the old entry as authority while
+// the repair transaction is in flight. Normal runtime/setup reads keep using
+// LoadHookContractLockEntry and its intentional superseding-receipt behavior.
+func (s *HookContractLockSnapshot) RawEntry(connectorName string) HookContractLockEntry {
+	if s == nil || !s.state.existed || len(s.state.body) == 0 {
+		return HookContractLockEntry{}
+	}
+	var lock hookContractLock
+	if err := json.Unmarshal(s.state.body, &lock); err != nil ||
+		lock.Version < 1 || lock.Version > hookContractLockVersion ||
+		lock.Connectors == nil {
+		return HookContractLockEntry{}
+	}
+	return lock.Connectors[normalizeConnectorName(connectorName)]
+}
+
+func captureExactConnectorStateFile(dataDir, filename string, maxBytes int64) (exactConnectorStateFileSnapshot, error) {
+	if strings.TrimSpace(dataDir) == "" || !filepath.IsAbs(dataDir) {
+		return exactConnectorStateFileSnapshot{}, errors.New("connector state snapshot requires an absolute data directory")
+	}
+	body, existed, err := readRequiredStablePrivateStateFile(dataDir, filename, maxBytes)
+	if err != nil {
+		return exactConnectorStateFileSnapshot{}, err
+	}
+	return exactConnectorStateFileSnapshot{
+		dataDir:  dataDir,
+		filename: filename,
+		maxBytes: maxBytes,
+		existed:  existed,
+		body:     append([]byte(nil), body...),
+	}, nil
+}
+
+func restoreExactConnectorStateFile(
+	snapshot exactConnectorStateFileSnapshot,
+	withLock func(func() error) error,
+) error {
+	current, exists, currentErr := readRequiredStablePrivateStateFile(
+		snapshot.dataDir,
+		snapshot.filename,
+		snapshot.maxBytes,
+	)
+	if currentErr == nil && exists == snapshot.existed && (!exists || bytes.Equal(current, snapshot.body)) {
+		// A failed atomic publication normally leaves the old file untouched.
+		// Avoid acquiring a now-unsafe advisory lock when the canonical state is
+		// already byte-identical to the rollback point.
+		return nil
+	}
+
+	path := filepath.Join(snapshot.dataDir, snapshot.filename)
+	return withLock(func() error {
+		if !snapshot.existed {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+			return nil
+		}
+		return atomicWriteFile(path, snapshot.body, 0o600)
+	})
+}
+
 type hookContractLock struct {
 	Version                 int                              `json:"version"`
 	UpdatedAt               string                           `json:"updated_at"`
@@ -107,21 +237,39 @@ type hookContractLock struct {
 // doctor/setup can detect "the agent binary changed underneath us" instead of
 // silently applying stale capabilities to a new upstream hook protocol.
 type HookContractLockEntry struct {
-	Connector              string             `json:"connector"`
-	RawAgentVersion        string             `json:"raw_agent_version,omitempty"`
-	NormalizedAgentVersion string             `json:"normalized_agent_version,omitempty"`
-	AgentExecutable        string             `json:"agent_executable,omitempty"`
-	AgentExecutableSource  string             `json:"agent_executable_source,omitempty"`
-	AgentExecutableSHA256  string             `json:"agent_executable_sha256,omitempty"`
-	ContractID             string             `json:"contract_id,omitempty"`
-	CompatibilityStatus    string             `json:"compatibility_status,omitempty"`
-	CompatibilityReason    string             `json:"compatibility_reason,omitempty"`
-	HookScriptVersion      string             `json:"hook_script_version,omitempty"`
-	HookScriptDigests      map[string]string  `json:"hook_script_digests,omitempty"`
-	Locations              ConnectorLocations `json:"locations,omitempty"`
-	DefenseClawVersion     string             `json:"defenseclaw_version,omitempty"`
-	HookFailMode           string             `json:"hook_fail_mode,omitempty"`
-	UpdatedAt              string             `json:"updated_at"`
+	Connector              string                   `json:"connector"`
+	RawAgentVersion        string                   `json:"raw_agent_version,omitempty"`
+	NormalizedAgentVersion string                   `json:"normalized_agent_version,omitempty"`
+	AgentExecutable        string                   `json:"agent_executable,omitempty"`
+	AgentExecutableSource  string                   `json:"agent_executable_source,omitempty"`
+	AgentExecutableSHA256  string                   `json:"agent_executable_sha256,omitempty"`
+	ContractID             string                   `json:"contract_id,omitempty"`
+	CompatibilityStatus    string                   `json:"compatibility_status,omitempty"`
+	CompatibilityReason    string                   `json:"compatibility_reason,omitempty"`
+	HookScriptVersion      string                   `json:"hook_script_version,omitempty"`
+	HookScriptDigests      map[string]string        `json:"hook_script_digests,omitempty"`
+	Locations              ConnectorLocations       `json:"locations,omitempty"`
+	DefenseClawVersion     string                   `json:"defenseclaw_version,omitempty"`
+	HookFailMode           string                   `json:"hook_fail_mode,omitempty"`
+	RegistrationPosture    *HookRegistrationPosture `json:"registration_posture,omitempty"`
+	UpdatedAt              string                   `json:"updated_at"`
+}
+
+// HookRegistrationPosture is the non-secret subset of SetupOpts that can
+// change where or how a connector registers its hooks. Persisting it beside
+// the hook contract gives multi-connector publication rollback an exact prior
+// semantic input without retaining runtime bearer tokens or stale endpoints.
+type HookRegistrationPosture struct {
+	CodexOtelEnvironment  string `json:"codex_otel_environment,omitempty"`
+	ConfigHome            string `json:"config_home,omitempty"`
+	ManagedEnterprise     bool   `json:"managed_enterprise,omitempty"`
+	WorkspaceDir          string `json:"workspace_dir,omitempty"`
+	GuardrailMode         string `json:"guardrail_mode"`
+	HILTEnabled           bool   `json:"hilt_enabled"`
+	InstallCodeGuard      bool   `json:"install_code_guard,omitempty"`
+	HookExecutable        string `json:"hook_executable,omitempty"`
+	CodexEnforcement      bool   `json:"codex_enforcement,omitempty"`
+	ClaudeCodeEnforcement bool   `json:"claudecode_enforcement,omitempty"`
 }
 
 // LoadActiveConnector reads the previously active connector name from
@@ -438,8 +586,8 @@ func LoadHookContractLockEntry(dataDir, connectorName string) HookContractLockEn
 	}
 	connectorName = normalizeConnectorName(connectorName)
 	entry := lock.Connectors[connectorName]
-	if runtime.GOOS == "windows" && connectorName == "codex" {
-		if _, ok := supersedingCodexSetupSelection(dataDir, entry); ok {
+	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes") {
+		if _, ok := supersedingProtectedSetupSelection(dataDir, connectorName, entry); ok {
 			// An explicit setup action selected and protected newer executable
 			// evidence. Treat the previous lock as absent for this one repair so
 			// the normal compatibility-drift gate does not block the operation
@@ -504,12 +652,17 @@ func OpenCodeHookContractLockEntryCurrent(dataDir string, expected HookContractL
 }
 
 func saveHookContractLockEntry(dataDir string, entry HookContractLockEntry, forceRefresh bool) error {
-	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(entry.Connector) == "" {
+	entry.Connector = normalizeConnectorName(entry.Connector)
+	if runtime.GOOS == "windows" && entry.Connector == "hermes" {
+		if err := validateHermesWindowsLockPublication(context.Background(), dataDir, entry); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(dataDir) == "" || entry.Connector == "" {
 		return nil
 	}
 	path := filepath.Join(dataDir, hookContractLockFile)
 	return withFileLock(path, func() error {
-		entry.Connector = normalizeConnectorName(entry.Connector)
 		entry.HookScriptDigests = cloneHookScriptDigests(entry.HookScriptDigests)
 		lock, err := loadHookContractLockForUpdate(dataDir)
 		if err != nil {
@@ -671,9 +824,21 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		Locations:              ResolvedConnectorLocations(opts, conn),
 		DefenseClawVersion:     defenseClawVersion,
 		HookFailMode:           resolveHookFailMode(opts, conn),
-		UpdatedAt:              time.Now().UTC().Format(time.RFC3339),
+		RegistrationPosture: &HookRegistrationPosture{
+			CodexOtelEnvironment:  opts.CodexOtelEnvironment,
+			ConfigHome:            opts.ConfigHome,
+			ManagedEnterprise:     opts.ManagedEnterprise,
+			WorkspaceDir:          opts.WorkspaceDir,
+			GuardrailMode:         effectiveHookGuardrailMode(opts.GuardrailMode),
+			HILTEnabled:           opts.HILTEnabled,
+			InstallCodeGuard:      opts.InstallCodeGuard,
+			HookExecutable:        opts.HookExecutable,
+			CodexEnforcement:      opts.CodexEnforcement,
+			ClaudeCodeEnforcement: opts.ClaudeCodeEnforcement,
+		},
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "omnigent") {
+	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "hermes" || entry.Connector == "omnigent") {
 		executable, digest, ok := setupSelectedAgentExecutableEvidence(opts.AgentExecutable)
 		if ok {
 			entry.AgentExecutable = executable
@@ -685,6 +850,13 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		entry.ContractID = opts.HookContractID
 	}
 	return entry
+}
+
+func effectiveHookGuardrailMode(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "action") {
+		return "action"
+	}
+	return "observe"
 }
 
 // HookRuntimeRegistrationCurrent verifies the complete Windows Codex
@@ -1046,7 +1218,7 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && normalizedName == "omnigent" {
+	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent") {
 		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
 			return selection.RawVersion
 		}
@@ -1086,7 +1258,7 @@ func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && normalizedName == "omnigent" {
+	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent") {
 		// A fresh explicit setup/repair selection supersedes the sealed lock.
 		// After the short receipt expires, reconciliation keeps using the
 		// executable identity persisted in the protected contract lock.
@@ -1155,11 +1327,23 @@ func supersedingCodexSetupSelection(
 	dataDir string,
 	entry HookContractLockEntry,
 ) (agentSelectionEvidence, bool) {
-	selection, ok := loadSetupAgentSelection(dataDir, "codex")
+	return supersedingProtectedSetupSelection(dataDir, "codex", entry)
+}
+
+// supersedingProtectedSetupSelection lets an explicit, short-lived Windows
+// setup action refresh protected executable evidence without allowing passive
+// discovery to displace the last sealed lock.
+func supersedingProtectedSetupSelection(
+	dataDir string,
+	connectorName string,
+	entry HookContractLockEntry,
+) (agentSelectionEvidence, bool) {
+	connectorName = normalizeConnectorName(connectorName)
+	selection, ok := loadSetupAgentSelection(dataDir, connectorName)
 	if !ok {
 		return agentSelectionEvidence{}, false
 	}
-	if !validCodexAgentExecutableEvidence(entry) {
+	if !validSetupSelectedAgentExecutableEvidence(entry, connectorName) {
 		return selection, true
 	}
 
@@ -1171,13 +1355,17 @@ func supersedingCodexSetupSelection(
 	if lockedErr != nil || selectedAt.After(lockedAt) {
 		return selection, true
 	}
-	if selectedAt.Equal(lockedAt) && !codexSelectionMatchesLock(selection, entry) {
+	if selectedAt.Equal(lockedAt) && !protectedSelectionMatchesLock(selection, entry) {
 		return selection, true
 	}
 	return agentSelectionEvidence{}, false
 }
 
 func codexSelectionMatchesLock(selection agentSelectionEvidence, entry HookContractLockEntry) bool {
+	return protectedSelectionMatchesLock(selection, entry)
+}
+
+func protectedSelectionMatchesLock(selection agentSelectionEvidence, entry HookContractLockEntry) bool {
 	return strings.TrimSpace(selection.RawVersion) == strings.TrimSpace(entry.RawAgentVersion) &&
 		strings.TrimSpace(selection.NormalizedVersion) == strings.TrimSpace(entry.NormalizedAgentVersion) &&
 		sameCodexExecutablePath(selection.Executable, entry.AgentExecutable) &&

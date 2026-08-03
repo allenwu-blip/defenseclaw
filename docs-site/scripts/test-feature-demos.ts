@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import matrix from '../data/capability-matrix.json' with { type: 'json' };
 import { featureDemos } from '../data/feature-demos';
@@ -10,6 +11,10 @@ import { scenarioConnectorMappings } from '../components/feature-demo/types';
 import type { ScenarioStep } from '../components/feature-demo/types';
 
 const connectorIds = new Set(matrix.connectors.map((connector) => connector.id));
+const cursorStory = readFileSync(
+  new URL('../content/docs/stories/cursor-secret-exfil.mdx', import.meta.url),
+  'utf8',
+);
 const approvedFixtureHosts = new Set([
   'collector.example.invalid',
   'provider.example.invalid',
@@ -68,14 +73,18 @@ describe('feature demo catalog', () => {
     const cursor = matrix.connectors.find((connector) => connector.id === 'cursor');
     const claude = matrix.connectors.find((connector) => connector.id === 'claudecode');
     const codex = matrix.connectors.find((connector) => connector.id === 'codex');
-    assert.equal(cursor?.hooks.canBlock, false);
+    assert.equal(cursor?.hooks.canBlock, true);
+    assert.equal(cursor?.hooks.supportsFailClosed, true);
     assert.equal(claude?.hooks.canBlock, true);
     assert.equal(claude?.hooks.canAskNative, true);
     assert.equal(codex?.hooks.canAskNative, false);
 
     const cursorScenario = featureDemos.find((scenario) => scenario.id === 'runtime-secret-exfiltration');
-    assert.equal(cursorScenario?.outcomes.at(-1)?.kind, 'review');
-    assert.match(JSON.stringify(cursorScenario), /would_block/);
+    assert.equal(cursorScenario?.outcomes.at(-1)?.kind, 'block');
+    assert.match(JSON.stringify(cursorScenario), /native deny/i);
+    assert.equal(cursorScenario?.syntheticDataNotice, 'Guided example · Synthetic event data');
+    assert.match(cursorScenario?.boundaries.didNot.join(' ') ?? '', /conflict detection|human approval/i);
+    assert.doesNotMatch(JSON.stringify(cursorScenario), /certif|official.client|live.evidence/i);
 
     for (const scenario of featureDemos) {
       const evidence = new Map(scenario.evidence.map((item) => [item.id, item]));
@@ -132,6 +141,15 @@ describe('feature demo catalog', () => {
         }
       }
     }
+  });
+
+  it('labels the Cursor walkthrough as synthetic preview material, not live evidence', () => {
+    assert.match(cursorStory, /Synthetic preview walkthrough/);
+    assert.match(cursorStory, /not an executable fixture, official-client test/);
+    assert.match(cursorStory, /preview\/not certified/);
+    assert.match(cursorStory, /permission: \"deny\"/);
+    assert.match(cursorStory, /conflict-detection\s+API/);
+    assert.doesNotMatch(cursorStory, /Keep the user hook advisory|would-block|allow \+ advisory evidence/);
   });
 });
 

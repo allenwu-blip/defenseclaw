@@ -68,6 +68,8 @@ from defenseclaw.commands.cmd_doctor import (
     _DoctorResult,
     _fix_plugin_registry_required,
     _omnigent_live_config_evidence,
+    _omnigent_managed_artifact_drift,
+    _omnigent_setup_repair_command,
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
     _windows_native_hook_check,
@@ -540,8 +542,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertIn(runtime, r.checks[-1]["detail"])
         self.assertIn("mode=observe", r.checks[-1]["detail"])
         self.assertIn("failClosed=false", r.checks[-1]["detail"])
-        self.assertIn("authority=user-hook advisory", r.checks[-1]["detail"])
-        self.assertIn("hard-action=unsupported", r.checks[-1]["detail"])
+        self.assertIn("enforcement=observe-only", r.checks[-1]["detail"])
+        self.assertIn("higher-priority conflict detection=unavailable (none inferred)", r.checks[-1]["detail"])
         self.assertNotIn("inspect-tool.sh", r.checks[-1]["detail"])
 
     def test_cursor_doctor_ignores_high_cardinality_foreign_same_basename_entries(self) -> None:
@@ -660,7 +662,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertEqual(r.checks[-1]["status"], "fail")
         self.assertIn("failClosed=false", r.checks[-1]["detail"])
 
-    def test_cursor_doctor_rejects_fail_closed_action_hook(self) -> None:
+    def test_cursor_doctor_accepts_fail_closed_action_hook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg, hooks_path, _runtime = self._cursor_runtime_case(
                 tmp,
@@ -677,9 +679,11 @@ class TestCheckConnectorHooks(unittest.TestCase):
                 probe_runtime=False,
             )
 
-        self.assertEqual(r.checks[-1]["status"], "fail")
+        self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertIn("mode=action", r.checks[-1]["detail"])
-        self.assertIn("unsupported Cursor posture", r.checks[-1]["detail"])
+        self.assertIn("failClosed=true", r.checks[-1]["detail"])
+        self.assertIn("enforcement=preview user-hook native deny", r.checks[-1]["detail"])
+        self.assertIn("human-approval=unsupported", r.checks[-1]["detail"])
 
     def test_cursor_doctor_rejects_millisecond_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -834,6 +838,21 @@ class TestCheckHookContractLock(unittest.TestCase):
         self.assertEqual(check["status"], "fail")
         self.assertIn("no hook_contract_lock.json", check["detail"])
         self.assertIn("setup windsurf", check["detail"])
+
+    def test_active_opencode_without_lock_fails_with_setup_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = _DoctorResult()
+            _check_hook_contract_lock(
+                self._cfg(tmp),
+                "opencode",
+                r,
+                platform_name="nt",
+            )
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("no hook_contract_lock.json", check["detail"])
+        self.assertIn("setup opencode", check["detail"])
 
     def test_known_contract_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1422,6 +1441,71 @@ class TestCheckHookHealth(unittest.TestCase):
                 _check_omnigent_policy_health(cfg, r)
         self.assertEqual(r.checks[-1]["status"], "pass")
 
+    def test_omnigent_repair_command_preserves_action_closed_hilt_posture(self) -> None:
+        cfg = MagicMock()
+        cfg.guardrail.effective_mode.return_value = "action"
+        cfg.guardrail.effective_hook_fail_mode.return_value = "closed"
+        cfg.guardrail.effective_hilt.return_value = MagicMock(enabled=True, min_severity="LOW")
+
+        command = _omnigent_setup_repair_command(cfg)
+
+        self.assertEqual(
+            command,
+            "defenseclaw setup omnigent --mode action --fail-mode closed "
+            "--human-approval --hilt-min-severity LOW --yes --restart",
+        )
+
+    def test_omnigent_repair_command_preserves_observe_open_without_hilt(self) -> None:
+        cfg = MagicMock()
+        cfg.guardrail.effective_mode.return_value = "observe"
+        cfg.guardrail.effective_hook_fail_mode.return_value = "open"
+        cfg.guardrail.effective_hilt.return_value = MagicMock(enabled=False, min_severity="HIGH")
+
+        command = _omnigent_setup_repair_command(cfg)
+
+        self.assertEqual(
+            command,
+            "defenseclaw setup omnigent --mode observe --fail-mode open "
+            "--no-human-approval --yes --restart",
+        )
+
+    def test_omnigent_repair_command_does_not_weaken_unresolved_posture(self) -> None:
+        cfg = MagicMock()
+        cfg.guardrail.effective_mode.return_value = "malformed"
+        cfg.guardrail.effective_hook_fail_mode.side_effect = ValueError("invalid fail mode")
+        cfg.guardrail.effective_hilt.side_effect = ValueError("invalid HILT")
+
+        command = _omnigent_setup_repair_command(cfg)
+
+        self.assertEqual(
+            command,
+            "defenseclaw setup omnigent --mode action --fail-mode closed --yes --restart",
+        )
+
+    def test_omnigent_drift_remediation_uses_posture_preserving_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = os.path.join(tmp, "config.yaml")
+            with open(artifact, "w", encoding="utf-8") as fh:
+                fh.write("original\n")
+            self._write_omnigent_backup(tmp, "config", artifact)
+            with open(artifact, "w", encoding="utf-8") as fh:
+                fh.write("drifted\n")
+
+            cfg = MagicMock()
+            cfg.data_dir = tmp
+            cfg.guardrail.effective_mode.return_value = "action"
+            cfg.guardrail.effective_hook_fail_mode.return_value = "closed"
+            cfg.guardrail.effective_hilt.return_value = MagicMock(enabled=True, min_severity="HIGH")
+
+            detail = _omnigent_managed_artifact_drift(cfg, "config", artifact)
+
+        self.assertIn(
+            "`defenseclaw setup omnigent --mode action --fail-mode closed "
+            "--human-approval --hilt-min-severity HIGH --yes --restart`",
+            detail,
+        )
+        self.assertIn("without changing enforcement posture", detail)
+
     def test_omnigent_missing_import_shim_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             config = os.path.join(tmp, "config.yaml")
@@ -1605,6 +1689,24 @@ class TestCheckHookHealth(unittest.TestCase):
 
         self.assertEqual(status, "warn")
         self.assertIn("empty/default configuration", detail)
+
+    def test_omnigent_live_config_evidence_warns_when_command_line_is_unreadable(self) -> None:
+        managed = os.path.abspath("managed-omnigent-config.yaml")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                return_value=(4242, "recorded live OmniGent server"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_process_argv",
+                return_value=None,
+            ),
+        ):
+            status, detail = _omnigent_live_config_evidence(managed)
+
+        self.assertEqual(status, "warn")
+        self.assertIn("command line is unreadable", detail)
+        self.assertIn("effective policy config is unverified", detail)
 
     def test_omnigent_live_config_evidence_accepts_process_environment(self) -> None:
         managed = os.path.abspath("managed-omnigent-config.yaml")

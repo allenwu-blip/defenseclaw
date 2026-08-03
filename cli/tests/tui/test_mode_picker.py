@@ -19,7 +19,6 @@ from defenseclaw.tui.screens.mode_picker import (
     choice_for_hotkey,
     choice_for_wire,
     preview_for_switch,
-    visible_mode_picker_choices,
 )
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -64,6 +63,9 @@ def test_mode_picker_choices_cover_go_connectors() -> None:
     assert "refresh hooks" in preview_for_switch("codex", "codex")
     assert "ALLOW/ASK/DENY" in preview_for_switch("openclaw", "omnigent")
     assert "Python policy runtime" in preview_for_switch("omnigent", "omnigent")
+    cursor = choice_for_wire("cursor")
+    assert "event-scoped deny" in cursor.tagline
+    assert "no native human approval" in cursor.tagline
 
 
 @pytest.mark.asyncio

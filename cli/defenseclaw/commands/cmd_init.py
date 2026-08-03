@@ -732,19 +732,20 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
     extras = connector_settings[1:]
     # The short-lived executable receipt authorizes only Windows flows that
     # later refuse ambient executable discovery: Codex's app-server policy
-    # probe and OmniGent's selected uv-tool process. It is not part of the
-    # macOS/Linux lifecycle, and Claude Code never consumes this authority.
+    # probe, Hermes' updater-managed venv, and OmniGent's selected uv-tool
+    # process. It is not part of the macOS/Linux lifecycle, and Claude Code
+    # never consumes this authority.
     selected_agent_connectors = [
         item["connector"]
         for item in connector_settings
         if platform_support.host_os() == "windows"
-        and connector_paths.normalize(item["connector"]) in {"codex", "omnigent"}
+        and connector_paths.normalize(item["connector"]) in {"codex", "hermes", "omnigent"}
     ]
     if selected_agent_connectors:
         from defenseclaw.agent_selection import record_setup_agent_selections
 
         try:
-            _selections, selection_errors = record_setup_agent_selections(
+            selections, selection_errors = record_setup_agent_selections(
                 data_dir,
                 selected_agent_connectors,
             )
@@ -752,6 +753,9 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
             raise click.ClickException(
                 f"could not protect explicit agent executable selection: {exc}"
             ) from exc
+        for connector in selected_agent_connectors:
+            if connector not in selections and connector not in selection_errors:
+                selection_errors[connector] = "selection was not recorded"
         if selection_errors:
             details = "; ".join(
                 f"{name}: {detail}" for name, detail in sorted(selection_errors.items())

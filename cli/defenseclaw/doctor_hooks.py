@@ -2803,6 +2803,22 @@ def _validate_hermes_allowlist(config_path: str, command: str) -> int:
         event = raw.get("event")
         approved_command = raw.get("command")
         if isinstance(event, str) and isinstance(approved_command, str):
+            if approved_command == command and event not in _HERMES_REQUIRED_HOOKS:
+                raise _InspectionError(
+                    "stale",
+                    f"unexpected Hermes event {event} contains a DefenseClaw approval",
+                )
+            if event in _HERMES_REQUIRED_HOOKS and approved_command != command:
+                target, args, kind = _command_target(approved_command, "hermes")
+                if (
+                    kind == "direct"
+                    and ntpath.basename(target).casefold() == "defenseclaw-hook.exe"
+                    and args == ["hook", "--connector", "hermes"]
+                ):
+                    raise _InspectionError(
+                        "stale",
+                        f"Hermes event {event} has an inconsistent DefenseClaw approval",
+                    )
             pairs.add((event, approved_command))
     missing = [event for event in _HERMES_REQUIRED_HOOKS if (event, command) not in pairs]
     if missing:

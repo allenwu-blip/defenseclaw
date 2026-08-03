@@ -363,7 +363,7 @@
           "contract_id": "hermes-hooks-v1",
           "agent_version": {
             "min_inclusive": "0.19.0",
-            "max_exclusive": ""
+            "max_exclusive": "0.21.0"
           },
           "default_for_unversioned": true,
           "hook_script_version": "v6",
@@ -419,7 +419,7 @@
             "scope": "user"
           },
           "notes": [
-            "Covers all 23 Hermes v0.19 VALID_HOOKS events. Hermes nests inspectable event content under the per-event extra envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
+            "Covers the identical exact 23-event VALID_HOOKS set verified from official Hermes Agent tags v2026.7.20 (0.19.0), v2026.7.30 (0.19.1), and v2026.8.3 (0.20.0). The reviewed range is bounded to >=0.19.0,<0.21.0; later versions require new source evidence. Hermes nests inspectable event content under the per-event extra envelope; the generic decoder lifts declared fields into the canonical lifecycle. Events whose official schema is not documented remain partial, attributed audit rather than inferred enforcement.",
             "pre_tool_call is the only blockable event; pre_llm_call injects context; pre_verify can continue the bounded verification loop. Transform hooks require Python string returns, pre_gateway_dispatch requires plugin skip/rewrite/allow results, and approval/API/Kanban/lifecycle return values are ignored or undocumented by the shell lane, so DefenseClaw audits them without claiming mutation. Confirm verdicts are recorded and alerted without hook output; Hermes never blocks on exit code or hook timeout so there is no fail-closed surface.",
             "Setup preserves the operator's hooks_auto_accept value and owns only the exact DefenseClaw (event, command) approvals in shell-hooks-allowlist.json. Running Hermes processes cache callbacks, so registration and revocation remain live=false/pending-reload until every affected CLI, gateway, desktop, or service host is reloaded or restarted; Windows teardown leaves an exact direct-native disabled tombstone for stale callbacks.",
             "The v1 connector covers only the resolved default HERMES_HOME profile. Named-profile homes and multiplex gateways are unsupported. Default-profile inventory includes skills.external_dirs, SOUL.md, built-in memory plus memory.provider provenance, and bundled/Nix, user, and pip plugins; named-profile and project-conditional sources remain explicitly unverified."
@@ -477,18 +477,26 @@
           "supports_traceparent": true,
           "native_otlp": false,
           "capabilities": {
-            "can_block": false,
+            "can_block": true,
             "can_ask_native": false,
             "ask_events": [],
-            "block_events": [],
-            "supports_fail_closed": false,
+            "block_events": [
+              "preToolUse",
+              "subagentStart",
+              "beforeShellExecution",
+              "beforeMCPExecution",
+              "beforeReadFile",
+              "beforeTabFileRead",
+              "beforeSubmitPrompt"
+            ],
+            "supports_fail_closed": true,
             "scope": "user"
           },
           "notes": [
             "Cursor 1.7 introduced beta hooks for the agent loop, but Cursor does not publish per-event introduction versions for the current 21-event reference. This preview contract remains pinned only to Cursor Agent build 2026.07.23-e383d2b; the event payload cursor_version field is the Cursor application/Desktop version and is not accepted as Agent CLI version evidence.",
             "Cursor Agent uses agent as its primary CLI command; cursor-agent remains a compatibility alias.",
-            "Cursor runs all matching hooks and merges conflicting responses in Enterprise > Team > Project > User priority. DefenseClaw owns only the user hook and cannot prove higher-priority mutation or override absent, so this connector maps block to would-block, maps confirm to alert, and refuses authoritative action/fail-closed claims.",
-            "The native event schemas still describe allow/deny gates and ask on beforeShellExecution/beforeMCPExecution, but DefenseClaw emits no hard or native-ask decision from its non-authoritative user source. Setup writes failClosed=false.",
+            "Cursor runs all matching hooks and merges conflicting responses in Enterprise > Team > Project > User priority. DefenseClaw owns the ordinary user hook and Cursor exposes no safe API for detecting an actual higher-priority conflict, so setup does not infer one. Doctor and status report that detection limitation rather than claiming enterprise authority.",
+            "Action mode emits the documented native deny response on supported pre-action events and registers failClosed=true; observe maps policy blocks to would-block and registers failClosed=false. DefenseClaw does not emit Cursor's native ask response or claim human-approval support.",
             "sessionStart and sessionEnd are fire-and-forget policy-wise; sessionStart documents only env/additional_context output and sessionEnd has no output. stop and subagentStop accept only followup_message; none is a block or ask gate.",
             "The decoder preserves beforeMCPExecution tool_input and URL/command, derives a stable digest identity without inventing a server vendor, and boundedly lifts tool_output, error_message, output, result_json, edits, text, and summary from the documented post/result events.",
             "Every command-hook invocation returns a JSON object. The event roster includes subagentStart; event-native response shapes remain registered for direct adapter compatibility while unsupported output events return {}."
@@ -858,7 +866,7 @@
           "contract_id": "opencode-hooks-v1",
           "agent_version": {
             "min_inclusive": "1.18.10",
-            "max_exclusive": "1.18.11"
+            "max_exclusive": "1.18.12"
           },
           "default_for_unversioned": false,
           "hook_script_version": "v7",
@@ -897,8 +905,8 @@
           },
           "notes": [
             "opencode auto-loads JS/TS plugins from ~/.config/opencode/plugins/ — no command-hook config file to patch. DefenseClaw writes a dependency-free bridge plugin (defenseclaw.js) whose tool.execute.before POSTs to /api/v1/opencode/hook and throws on a block decision, aborting the tool.",
-            "DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10 exposes permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
-            "Source-reviewed range is >=1.18.10,<1.18.11 with current pin 1.18.10. The bridge uses v1.18.10 plugin_origins ordering and MCP catalog sanitization, refuses ambiguous MCP identity, and refuses action-mode allow claims when a later plugin can mutate args."
+            "DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10 and v1.18.11 expose permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
+            "Source-reviewed range is >=1.18.10,<1.18.12 with current pin 1.18.11. The v1.18.11 plugin types, plugin loader/config origins, MCP catalog sanitizer, and tool execution call sites are byte-identical to v1.18.10. The bridge refuses ambiguous MCP identity and action-mode allow claims when a later plugin can mutate args."
           ]
         }
       ]

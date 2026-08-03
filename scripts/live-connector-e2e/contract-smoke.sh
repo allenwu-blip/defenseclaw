@@ -111,15 +111,9 @@ drive_event() {
 
   case "${expect}" in
     block)
-      # Cursor's user-level hook is intentionally advisory because higher
-      # priority Enterprise/Team/Project hooks may override or mutate it.
-      # The gateway must still record the raw block verdict, but the local
-      # adapter must not claim authoritative enforcement.
-      if [ "${DC_E2E_CONNECTOR}" = "cursor" ] && [ "${code}" = "0" ]; then
-        dc_record_result "${label}:verdict-shape" pass "exit=0 advisory-preview"
-      # Other connectors in this matrix expose an authoritative block shape:
+      # Block-capable connectors return their documented native block shape:
       # exit 2 or decision JSON carrying block/deny.
-      elif [ "${code}" = "2" ] || printf '%s' "${out}" | grep -Eqi '"(decision|action|permissionDecision)"\s*:\s*"(block|deny)"|\bdeny\b|\bblock\b'; then
+      if [ "${code}" = "2" ] || printf '%s' "${out}" | grep -Eqi '"(decision|action|permission|permissionDecision)"\s*:\s*"(block|deny)"|\bdeny\b|\bblock\b'; then
         dc_record_result "${label}:verdict-shape" pass "exit=${code}"
       else
         dc_record_result "${label}:verdict-shape" fail "expected block shaping, exit=${code}"

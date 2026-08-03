@@ -288,6 +288,12 @@ def _compare_version(a: str, b: str) -> int:
     return 0
 
 
+def compare_agent_versions(a: str, b: str) -> int:
+    """Compare two normalized semver-like agent versions."""
+
+    return _compare_version(a, b)
+
+
 def _version_tuple(value: str) -> tuple[int, int, int]:
     normalized = normalize_agent_version(value)
     if not normalized:

@@ -741,6 +741,33 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertFalse(stale.healthy)
         self.assertIn("missing exact DefenseClaw approvals", stale.detail)
 
+    def test_hermes_rejects_unexpected_and_inconsistent_owned_allowlist_pairs(self) -> None:
+        runtime = self._runtime()
+        command = f'"{runtime}" hook --connector hermes'
+        config = self._config("hermes", command)
+        allowlist = config.parent / "shell-hooks-allowlist.json"
+        document = json.loads(allowlist.read_text(encoding="utf-8"))
+        document["approvals"].append({"event": "future_event", "command": command})
+        allowlist.write_text(json.dumps(document), encoding="utf-8")
+
+        unexpected = self._validate("hermes", config)
+        self.assertFalse(unexpected.healthy)
+        self.assertIn("unexpected Hermes event future_event", unexpected.detail)
+
+        config = self._config("hermes", command)
+        document = json.loads(allowlist.read_text(encoding="utf-8"))
+        document["approvals"].append(
+            {
+                "event": next(iter(doctor_hooks._HERMES_REQUIRED_HOOKS)),
+                "command": '"C:\\Other\\defenseclaw-hook.exe" hook --connector hermes',
+            }
+        )
+        allowlist.write_text(json.dumps(document), encoding="utf-8")
+
+        inconsistent = self._validate("hermes", config)
+        self.assertFalse(inconsistent.healthy)
+        self.assertIn("inconsistent DefenseClaw approval", inconsistent.detail)
+
     def _validate(
         self,
         connector: str,
@@ -2507,6 +2534,42 @@ class WindowsHookDoctorTests(unittest.TestCase):
         )
 
         self.assertEqual(result.checks[-1]["status"], "pass", result.checks[-1])
+        self.assertNotIn("99.0.0", result.checks[-1]["detail"])
+
+    def test_windows_hermes_contract_uses_protected_executable_not_stale_discovery(self) -> None:
+        runtime = self._runtime()
+        config = self._config("hermes", f'"{runtime}" hook --connector hermes')
+        lock_path = self.data / "hook_contract_lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        executable = self.install / "hermes.exe"
+        lock["connectors"]["hermes"].update(
+            {
+                "agent_executable": str(executable),
+                "agent_executable_source": "setup-selected",
+                "agent_executable_sha256": "a" * 64,
+            }
+        )
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        (self.data / "agent_discovery.json").write_text(
+            json.dumps({"agents": {"hermes": {"version": "Hermes Agent v99.0.0"}}}),
+            encoding="utf-8",
+        )
+        result = _DoctorResult()
+
+        _check_hook_contract_lock(
+            self.cfg,
+            "hermes",
+            result,
+            platform_name="nt",
+            config_path=str(config),
+            install_root=str(self.install),
+            search_path=str(self.install),
+            pathext=".EXE;.CMD",
+        )
+
+        self.assertEqual(result.checks[-1]["status"], "fail", result.checks[-1])
+        self.assertIn("pending-reload", result.checks[-1]["detail"])
+        self.assertIn(f"agent_executable={executable}", result.checks[-1]["detail"])
         self.assertNotIn("99.0.0", result.checks[-1]["detail"])
 
     def test_windows_contract_preserves_access_denied_classification(self) -> None:

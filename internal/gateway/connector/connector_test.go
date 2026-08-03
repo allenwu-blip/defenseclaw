@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -2743,18 +2744,26 @@ func TestEveryHookOwner_TeardownLeavesTombstone(t *testing.T) {
 	hookOnlySetup := func(ext string, ctor func() *hookOnlyConnector, override *string) func(*testing.T) (Connector, SetupOpts) {
 		return func(t *testing.T) (Connector, SetupOpts) {
 			t.Helper()
+			conn := ctor()
 			dir := t.TempDir()
+			if conn.Name() == "hermes" {
+				dir = testenv.PrivateTempDir(t)
+			}
 			cfgDir := t.TempDir()
 			cfgPath := filepath.Join(cfgDir, "config"+ext)
 			prev := *override
 			*override = cfgPath
 			t.Cleanup(func() { *override = prev })
-			return ctor(), SetupOpts{
+			opts := SetupOpts{
 				DataDir:      dir,
 				APIAddr:      "127.0.0.1:18970",
 				APIToken:     "tok-test",
 				WorkspaceDir: t.TempDir(),
 			}
+			if conn.Name() == "hermes" {
+				opts = prepareHermesSetupAdmissionFixture(t, opts)
+			}
+			return conn, opts
 		}
 	}
 
@@ -9402,11 +9411,11 @@ func TestSetupOpts_HookFailMode_RespectsOperatorChoice(t *testing.T) {
 			wantFailMode: "open",
 		},
 		{
-			name:         "cursor_action_closed_remains_non_authoritative",
+			name:         "cursor_action_forces_mode_matched_closed",
 			opts:         SetupOpts{APIAddr: "127.0.0.1:1", GuardrailMode: "action", HookFailMode: "closed"},
 			connector:    NewCursorConnector(),
 			hookFile:     "cursor-hook.sh",
-			wantFailMode: "open",
+			wantFailMode: "closed",
 		},
 		{
 			// The safer default is "closed": empty

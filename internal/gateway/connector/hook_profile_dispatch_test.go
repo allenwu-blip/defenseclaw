@@ -1067,7 +1067,7 @@ func TestCursorProfileRespond_EventSpecificFields(t *testing.T) {
 	}
 }
 
-func TestCursorProfileMapVerdict_UserHookIsAdvisory(t *testing.T) {
+func TestCursorProfileMapVerdict_ActionBlocksObserveAuditsAndConfirmAlerts(t *testing.T) {
 	caps := KnownHookContracts("cursor")[0].Capabilities
 	tests := []struct {
 		name           string
@@ -1077,10 +1077,13 @@ func TestCursorProfileMapVerdict_UserHookIsAdvisory(t *testing.T) {
 		wantAction     string
 		wantWouldBlock bool
 	}{
-		{"action_block_subagent", "subagentStart", "action", "block", "allow", true},
+		{"action_block_subagent", "subagentStart", "action", "block", "block", false},
+		{"action_block_shell", "beforeShellExecution", "action", "block", "block", false},
+		{"action_block_submit", "beforeSubmitPrompt", "action", "block", "block", false},
+		{"action_block_unsupported_event", "postToolUse", "action", "block", "allow", true},
 		{"observe_block_subagent", "subagentStart", "observe", "block", "allow", true},
 		{"confirm_subagent_downgrades", "subagentStart", "action", "confirm", "alert", false},
-		{"confirm_shell_is_advisory", "beforeShellExecution", "action", "confirm", "alert", false},
+		{"confirm_shell_has_no_native_ask", "beforeShellExecution", "action", "confirm", "alert", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -42,6 +42,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import click
 import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -51,6 +52,7 @@ from click.testing import CliRunner
 pytestmark = pytest.mark.supported_connector_host
 from defenseclaw import platform_support
 from defenseclaw.commands.cmd_setup import setup as setup_group
+from defenseclaw.file_permissions import atomic_write_private_bytes
 
 from tests.helpers import cleanup_app, make_app_context
 
@@ -200,9 +202,10 @@ class TestSetupCodexAlias(unittest.TestCase):
 
     def test_windows_setup_refreshes_expired_agent_selection_before_save(self):
         selection_path = os.path.join(self.app.cfg.data_dir, "agent_selection.json")
-        os.makedirs(self.app.cfg.data_dir, exist_ok=True)
-        with open(selection_path, "w", encoding="utf-8") as handle:
-            json.dump({"selections": {"codex": {"expires_at": "2000-01-01T00:00:00Z"}}}, handle)
+        atomic_write_private_bytes(
+            selection_path,
+            json.dumps({"selections": {"codex": {"expires_at": "2000-01-01T00:00:00Z"}}}).encode(),
+        )
 
         def _refresh(data_dir, connectors):
             self.assertEqual(os.fspath(data_dir), self.app.cfg.data_dir)
@@ -226,12 +229,64 @@ class TestSetupCodexAlias(unittest.TestCase):
             self.assertEqual(json.load(handle)["selections"]["codex"]["expires_at"], "fresh")
         self.assertTrue(os.path.isfile(self.cfg_path))
 
+    def test_config_save_failure_removes_fresh_agent_selection_receipt(self):
+        selection_path = os.path.join(self.app.cfg.data_dir, "agent_selection.json")
+        save_calls = 0
+
+        def _save_fails_once():
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 1:
+                raise OSError("injected config publication failure")
+            with open(self.cfg_path, "w", encoding="utf-8") as handle:
+                handle.write("restored: true\n")
+
+        def _record(data_dir, connectors):
+            self.assertEqual(tuple(connectors), ("codex",))
+            atomic_write_private_bytes(
+                os.path.join(os.fspath(data_dir), "agent_selection.json"),
+                b'{"selections":{"codex":{"expires_at":"fresh"}}}\n',
+            )
+            return {"codex": object()}, {}
+
+        self.app.cfg.save = _save_fails_once  # type: ignore[assignment]
+        with (
+            patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
+            patch("defenseclaw.agent_selection.record_setup_agent_selections", side_effect=_record),
+            patch("defenseclaw.commands.cmd_setup._restart_services", return_value=None),
+            patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None),
+            patch("defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup", return_value=True),
+        ):
+            result = _invoke(["codex", "--yes", "--no-restart"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("Failed to save config", result.output)
+        self.assertFalse(os.path.lexists(selection_path), "fresh setup authority survived config rollback")
+        self.assertEqual(self.app.cfg.claw.mode, "openclaw")
+        self.assertEqual(self.app.cfg.guardrail.connector, "openclaw")
+
     def test_windows_selection_failure_precedes_config_save_and_restart(self):
+        selection_path = os.path.join(self.app.cfg.data_dir, "agent_selection.json")
+        prior_selection = (
+            b'{"schema_version":1,"selections":{'
+            b'"codex":{"executable":"prior-codex"},'
+            b'"hermes":{"executable":"prior-hermes"}}}\n'
+        )
+        atomic_write_private_bytes(selection_path, prior_selection)
+
+        def _partially_record_then_fail(data_dir, connectors):
+            self.assertEqual(tuple(connectors), ("codex",))
+            atomic_write_private_bytes(
+                os.path.join(os.fspath(data_dir), "agent_selection.json"),
+                b'{"schema_version":1,"selections":{"codex":{"executable":"fresh-codex"}}}\n',
+            )
+            return {}, {"codex": "selection receipt is invalid or expired"}
+
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
-                return_value=({}, {"codex": "selection receipt is invalid or expired"}),
+                side_effect=_partially_record_then_fail,
             ),
             patch("defenseclaw.commands.cmd_setup._restart_services", return_value=None) as restart_mock,
             patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None),
@@ -244,6 +299,8 @@ class TestSetupCodexAlias(unittest.TestCase):
         self.assertFalse(os.path.exists(self.cfg_path))
         self.assertEqual(self.app.cfg.claw.mode, "openclaw")
         self.assertEqual(self.app.cfg.guardrail.connector, "openclaw")
+        with open(selection_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_selection)
         restart_mock.assert_not_called()
 
 
@@ -306,12 +363,35 @@ class TestSetupClaudeCodeAlias(unittest.TestCase):
         self.assertEqual(gc.scanner_mode, "local")
         self.assertFalse(gc.judge.enabled)
 
+    def test_remediation_commands_use_public_claude_code_slug(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        self.app.cfg.guardrail.connector = "codex"
+        self.app.cfg.claw.mode = "codex"
+        self.app.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(mode="observe"),
+        }
+        result = self._run("--mode", "action")
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("defenseclaw setup claude-code --mode observe", result.output)
+        self.assertIn(
+            "defenseclaw setup claude-code --mode observe|action",
+            result.output,
+        )
+        self.assertIn("defenseclaw setup remove claude-code", result.output)
+        self.assertNotIn("defenseclaw setup claudecode", result.output)
+
 
 class TestSetupNewConnectorAliases(unittest.TestCase):
     """The hook-first connectors expose the same observability alias contract."""
 
     def setUp(self):
         self.app, self.tmp_dir, self.db_path = make_app_context()
+        self.selection_patcher = patch(
+            "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"
+        )
+        self.selection_patcher.start()
+        self.addCleanup(self.selection_patcher.stop)
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
@@ -355,7 +435,8 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertEqual(self.app.cfg.guardrail.mode, "observe")
                 self.assertEqual(self.app.cfg.guardrail.scanner_mode, "local")
                 self.assertFalse(self.app.cfg.guardrail.judge.enabled)
-                self.assertIn(f"Connector {connector!r} configured", result.output)
+                self.assertIn(f"Desired connector {connector!r} staged", result.output)
+                self.assertIn("it is not active until the gateway", result.output)
                 self.assertNotIn("claw.mode=", result.output)
                 self.assertNotIn("claw.mode:", result.output)
                 self.assertIn(f"{connector} mode=observe", result.output)
@@ -364,14 +445,13 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertNotIn("guardrail.mode:", result.output)
                 self.assertNotIn("set guardrail.mode=action", result.output)
                 if connector == "cursor":
-                    self.assertNotIn("defenseclaw setup cursor --mode action", result.output)
-                    self.assertIn("hard action mode is unsupported", result.output)
+                    self.assertIn("defenseclaw setup cursor --mode action", result.output)
                     self.assertIn(
-                        "cursor hook failures=open (failClosed=false; user hook is not authoritative)",
+                        "cursor hook failures=open (failClosed=false)",
                         result.output,
                     )
                     self.assertIn(
-                        "DefenseClaw owns only the advisory user hook",
+                        "cannot safely detect an actual higher-priority conflict, so none is inferred",
                         result.output,
                     )
                 else:
@@ -409,24 +489,20 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                 self.assertEqual(self.app.cfg.claw.mode, connector)
                 self.assertEqual(self.app.cfg.claw.workspace_dir, "")
                 self.assertTrue(self.app.cfg.guardrail.enabled)
-                expected_mode = "observe" if connector == "cursor" else "action"
+                expected_mode = "action"
                 self.assertEqual(self.app.cfg.guardrail.mode, expected_mode)
                 self.assertIn(f"{connector} mode={expected_mode}", result.output)
                 self.assertNotIn("guardrail.mode=action", result.output)
                 self.assertNotIn("guardrail.mode:", result.output)
-                if connector == "cursor":
-                    self.assertIn("Cursor remains advisory", result.output)
-                else:
-                    self.assertIn(f"defenseclaw setup {connector} --mode observe", result.output)
+                self.assertIn(f"defenseclaw setup {connector} --mode observe", result.output)
                 self.assertNotIn("set guardrail.mode=observe", result.output)
                 if connector == "cursor":
-                    self.assertIn("hard action mode is unsupported", result.output)
                     self.assertIn(
-                        "cursor hook failures=open (failClosed=false; user hook is not authoritative)",
+                        "cursor hook failures=closed (failClosed=true)",
                         result.output,
                     )
                     self.assertIn(
-                        "Enterprise > Team > Project > User",
+                        "cannot safely detect an actual higher-priority conflict, so none is inferred",
                         result.output,
                     )
                 version_mock.assert_called_with(
@@ -436,6 +512,47 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                     _allow_prompt=False,
                 )
                 restart_mock.assert_not_called()
+
+    def test_hermes_selection_failure_preserves_prior_connector_roster_before_save(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        self.app.cfg.claw.mode = "claudecode"
+        self.app.cfg.guardrail.connector = "claudecode"
+        self.app.cfg.guardrail.mode = "action"
+        self.app.cfg.guardrail.connectors = {
+            "claudecode": PerConnectorGuardrailConfig(mode="action"),
+            "cursor": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+        }
+        before = {
+            name: (entry.mode, entry.hook_fail_mode)
+            for name, entry in self.app.cfg.guardrail.connectors.items()
+        }
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
+                side_effect=click.ClickException(
+                    "cannot configure native hooks without a freshly verified selected agent executable (hermes: unavailable)"
+                ),
+            ),
+            patch("defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup", return_value=True),
+            patch("defenseclaw.commands.cmd_setup._restart_services", return_value=None) as restart_mock,
+        ):
+            result = _invoke(["hermes", "--yes", "--mode", "action"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertFalse(os.path.exists(self.cfg_path))
+        self.assertEqual(self.app.cfg.claw.mode, "claudecode")
+        self.assertEqual(self.app.cfg.guardrail.connector, "claudecode")
+        self.assertEqual(self.app.cfg.guardrail.mode, "action")
+        self.assertEqual(
+            {
+                name: (entry.mode, entry.hook_fail_mode)
+                for name, entry in self.app.cfg.guardrail.connectors.items()
+            },
+            before,
+        )
+        restart_mock.assert_not_called()
 
     def test_cursor_observe_reports_fail_open_despite_explicit_closed_preference(self):
         from defenseclaw.config import PerConnectorGuardrailConfig
@@ -465,7 +582,7 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("cursor mode=observe", result.output)
         self.assertIn(
-            "cursor hook failures=open (failClosed=false; user hook is not authoritative)",
+            "cursor hook failures=open (failClosed=false)",
             result.output,
         )
         self.assertNotIn("failClosed=true", result.output)
@@ -494,6 +611,88 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         kwargs = restart_mock.call_args.kwargs
         self.assertEqual(set(kwargs["connectors"]), {"cursor", "hermes"})
         self.assertTrue(kwargs["wait_for_connector_ready"])
+
+    def test_readiness_failure_restores_exact_prior_roster_and_hint(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        self.app.cfg.guardrail.connector = "codex"
+        self.app.cfg.claw.mode = "codex"
+        self.app.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(mode="action", hook_fail_mode="closed"),
+            "cursor": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+        }
+        prior_roster = tuple(self.app.cfg.active_connectors())
+        hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
+        os.makedirs(self.app.cfg.data_dir, exist_ok=True)
+        with open(hint_path, "wb") as fh:
+            fh.write(b"codex\n")
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_services",
+                side_effect=[RuntimeError("connector runtime readiness failed"), None],
+            ) as restart_mock,
+            patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+        ):
+            result = _invoke(["opencode", "--yes", "--mode", "action"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("restored the prior connector configuration and runtime", result.output)
+        self.assertNotIn("OpenCode connector setup complete", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior_roster)
+        self.assertNotIn("opencode", self.app.cfg.active_connectors())
+        self.assertEqual(self.app.cfg.guardrail.connector, "codex")
+        self.assertEqual(self.app.cfg.claw.mode, "codex")
+        with open(hint_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"codex\n")
+        self.assertEqual(restart_mock.call_count, 2)
+        restored_call = restart_mock.call_args_list[1]
+        self.assertEqual(set(restored_call.kwargs["connectors"]), set(prior_roster))
+        self.assertTrue(restored_call.kwargs["wait_for_connector_ready"])
+        self.assertTrue(restored_call.kwargs["start_if_stopped"])
+
+    def test_post_save_side_effect_failure_restores_prior_desired_state(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        self.app.cfg.guardrail.connector = "codex"
+        self.app.cfg.claw.mode = "codex"
+        self.app.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(mode="action", hook_fail_mode="closed"),
+            "cursor": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+        }
+        prior_roster = tuple(self.app.cfg.active_connectors())
+        hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
+        os.makedirs(self.app.cfg.data_dir, exist_ok=True)
+        with open(hint_path, "wb") as fh:
+            fh.write(b"codex\n")
+
+        with (
+            patch("defenseclaw.commands.cmd_setup._restart_services") as restart_mock,
+            patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._write_picked_connector_hint",
+                side_effect=OSError("injected hint publication failure"),
+            ),
+        ):
+            result = _invoke(["opencode", "--yes", "--mode", "action"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("restored the prior desired connector state", result.output)
+        self.assertNotIn("OpenCode connector setup complete", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior_roster)
+        self.assertEqual(self.app.cfg.guardrail.connector, "codex")
+        self.assertEqual(self.app.cfg.claw.mode, "codex")
+        with open(hint_path, "rb") as fh:
+            self.assertEqual(fh.read(), b"codex\n")
+        restart_mock.assert_not_called()
 
     def test_yes_no_restart_setup_does_not_reference_missing_interactive_flag(self):
         for connector in ["hermes", "codex", "opencode"]:

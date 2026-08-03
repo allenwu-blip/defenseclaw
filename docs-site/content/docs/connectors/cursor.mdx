@@ -1,6 +1,6 @@
 ---
 title: Cursor
-description: Cursor connector wires a preview user hook for bounded local inspection without claiming authoritative enforcement.
+description: Cursor connector wires preview user hooks for observe-only inspection or event-native action denial.
 keywords:
   - DefenseClaw Cursor connector
   - Cursor hooks
@@ -14,10 +14,13 @@ tool, shell, MCP, file, and lifecycle events can be evaluated.
 
 Cursor runs every matching hook and merges conflicts in **Enterprise > Team >
 Project > User** priority. DefenseClaw owns only the user hook. It cannot prove
-that an Enterprise, Team, or Project response did not mutate or override the
-same event, so this preview is advisory: block findings become `would_block`,
-confirm findings become alerts, and setup refuses `failClosed: true`. No
-Enterprise or Team hook system is implemented by this connector.
+that an Enterprise, Team, or Project source is absent, and Cursor exposes no
+safe API for detecting an actual higher-priority conflict. DefenseClaw reports
+that limitation and does not infer a conflict. Ordinary user-hook action mode
+returns the documented native deny response on supported pre-action events and
+writes `failClosed: true`; observe remains allow/`would_block` with
+`failClosed: false`. Native ask/HITL is not enabled. No Enterprise or Team hook
+system is implemented by this connector.
 
 <Callout type="warning" title="Native Windows is preview">
 Cursor Agent and the managed PowerShell hook adapter run directly on Windows,
@@ -32,10 +35,10 @@ this preview.
 defenseclaw setup cursor
 ```
 
-This runs the observability-only template. Cursor talks directly to its native
-upstream; DefenseClaw inspects via hooks. **There is no proxy-enforcement
-path** for Cursor, and the DefenseClaw-owned user hook is not an authoritative
-hard-action or approval source.
+This defaults to the observe template. Cursor talks directly to its native
+upstream; DefenseClaw inspects and, in action mode, denies through hooks.
+**There is no proxy-enforcement path** for Cursor. DefenseClaw does not claim
+enterprise-wide authority or native human approval.
 
 #### What `setup cursor` actually does
 
@@ -56,17 +59,19 @@ and judge-provider configuration.
 setup backend, defaults to observe mode, and can join an existing
 hook-connector roster when you choose **Add**.
 
-Requests for `--mode action`, `--fail-mode closed`, or human approval are
-truthfully downgraded to observe, fail-open, and approval-disabled before the
-configuration is saved. Setup/repair reports readiness only after the current
-21-event `type: command`, 30-second, `failClosed: false` registration, managed
-runtime adapter, contract lock, and complete active-connector roster agree.
+`--mode action` pins the managed registration to `failClosed: true`;
+`--mode observe` pins it to `failClosed: false`. A conflicting `--fail-mode`
+value is ignored with a warning so observe cannot become blocking and action
+cannot silently become fail-open. Human approval remains disabled.
+Setup/repair reports readiness only after the current 21-event `type: command`,
+30-second, mode-matched registration, managed runtime adapter, contract lock,
+and complete active-connector roster agree.
 Adding or repairing another connector waits for that full roster, so it cannot
 report success after displacing an already configured Cursor registration.
 
 #### Common variations — pick the recipe that fits your phase
 
-<Tabs items={['Standard', 'Local stack', 'Add scanning rigor', 'Unsupported action request']}>
+<Tabs items={['Standard', 'Action enforcement', 'Local stack', 'Add scanning rigor']}>
 
 <Tab value="Standard">
 
@@ -74,7 +79,21 @@ report success after displacing an already configured Cursor registration.
 defenseclaw setup cursor
 ```
 
-Confirms once, wires the hooks against `~/.cursor/hooks.json`, and restarts the gateway. Findings flow to mandatory SQLite event history and the TUI; configured v8 destinations receive only the buckets/signals their routes select. No traffic is intercepted and no requests are blocked. Pass `--yes` to skip the confirmation in CI.
+Confirms once, wires observe-mode hooks against `~/.cursor/hooks.json`, and restarts the gateway. Findings flow to mandatory SQLite event history and the TUI; configured v8 destinations receive only the buckets/signals their routes select. No traffic is intercepted and observe mode does not block. Pass `--yes` to skip the confirmation in CI.
+
+</Tab>
+
+<Tab value="Action enforcement">
+
+```bash
+defenseclaw setup cursor --mode action --no-human-approval --yes
+```
+
+Registers all 21 managed command hooks with `failClosed: true`. Policy blocks
+on supported pre-action events return Cursor's event-native deny shape. Confirm
+verdicts remain attributed alerts because DefenseClaw does not enable native
+ask/HITL. Status and Doctor report action plus user-hook enforcement while also
+reporting that higher-priority conflict detection is unavailable.
 
 </Tab>
 
@@ -109,34 +128,12 @@ The alias selects Cursor; the follow-up `setup guardrail --connector cursor` swa
 
 </Tab>
 
-<Tab value="Unsupported action request">
-
-An older preview or automation may still request action/HITL/fail-closed:
-
-```bash
-defenseclaw setup cursor --mode action --human-approval --fail-mode closed
-```
-
-Setup does not accept those flags as authority. It records a warning and
-persists observe, fail-open, approval-disabled posture. The current event
-schemas include native allow/deny gates and `ask` fields, but a DefenseClaw
-response comes from the lowest-priority user source. The connector returns
-allow while preserving `raw_action`, `would_block`, and findings for audit/TUI
-review. It does not pause or resume the Cursor call.
-
-Setup always writes `failClosed: false`, including when a broader configuration
-requests closed failure handling. `sessionStart` and `sessionEnd` are
-fire-and-forget. `stop` accepts a follow-up message only and is not a blocking
-gate.
-
-</Tab>
-
 </Tabs>
 
 #### Decision aids — should I turn this on?
 
 <Cards>
-  <Card href="/docs/hitl" title="Human-in-the-loop (HITL)" description="Cursor's user hook cannot provide an authoritative resumable approval because higher-priority hook sources merge above it." />
+  <Card href="/docs/hitl" title="Human-in-the-loop (HITL)" description="DefenseClaw does not enable Cursor native ask/HITL; confirm verdicts remain attributed alerts." />
   <Card href="/docs/setup/guardrail#every-flag" title="Full setup guardrail flag reference" description="The complete flag surface for `setup guardrail --connector cursor`." />
   <Card href="/docs/defaults" title="Defaults & rule packs" description="What permissive / default / strict actually ship, and which one matches your risk tolerance." />
   <Card href="/docs/setup/guardrail#watch-the-interactive-flow" title="Interactive wizard" description="Animated terminal demo of the prompt-by-prompt setup flow — the safest path the first time." />
@@ -194,6 +191,14 @@ event-specific schemas. `beforeMCPExecution` preserves its exact `tool_input`
 and URL/command and derives a stable digest identity without inventing a vendor
 name.
 </Callout>
+
+Action blocking is limited to `preToolUse`, `subagentStart`,
+`beforeShellExecution`, `beforeMCPExecution`, `beforeReadFile`,
+`beforeTabFileRead`, and `beforeSubmitPrompt`. `beforeSubmitPrompt` blocks with
+`continue: false`; the permission-gated events use `permission: "deny"`.
+Observe maps the same policy findings to allow plus `would_block` audit state.
+`sessionStart` and `sessionEnd` are not gates. `stop` and `subagentStop` accept
+only a follow-up message and are not blocking surfaces.
 
 The hook payload's `cursor_version` is the Cursor application/Desktop version.
 It is not Agent CLI evidence. This preview keeps `agent --version` contract

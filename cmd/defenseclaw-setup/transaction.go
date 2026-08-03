@@ -514,12 +514,6 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 func setupTransactionTarget(action string, opts options) (string, string) {
 	targetConnector := opts.Connector
 	targetMode := opts.Mode
-	if action == "install" && targetConnector == "cursor" && targetMode == "action" {
-		// Cursor's user hook is below Enterprise, Team, and Project hooks. The
-		// native installer must not persist or display hard-action authority that
-		// the connector cannot prove, including during repair of an older preview.
-		targetMode = "observe"
-	}
 	if action == "uninstall" {
 		targetConnector = "none"
 	}
@@ -1365,11 +1359,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		if transaction.Action != "install" || !transaction.HadInstall || transaction.PreviousState == nil {
 			return errors.New("connector-preserving transaction has no previous installation")
 		}
-		cursorAdvisoryMigration := transaction.TargetConnector == "cursor" &&
-			transaction.PreviousState.Connector == "cursor" &&
-			transaction.PreviousState.Mode == "action" && transaction.TargetMode == "observe"
 		if transaction.TargetConnector != transaction.PreviousState.Connector ||
-			(transaction.TargetMode != transaction.PreviousState.Mode && !cursorAdvisoryMigration) {
+			transaction.TargetMode != transaction.PreviousState.Mode {
 			return errors.New("connector-preserving transaction changed the installer selection")
 		}
 		if !samePath(transaction.PreviousCodexHome, transaction.CodexHome) ||
@@ -3112,14 +3103,6 @@ func convergeCommittedSetupTransaction(transaction setupTransaction) error {
 	}
 	reconciliation := connectorReconciliationRecorder{}
 	if transaction.PreserveConnectorConfiguration {
-		if stringSliceContains(transaction.PreviousConnectors, "cursor") {
-			if err := runCursorAdvisoryConfigurationWithEnv(
-				transaction.InstallRoot,
-				childEnv,
-			); err != nil {
-				return fmt.Errorf("reconcile preserved Cursor advisory configuration: %w", err)
-			}
-		}
 		reconciliation = reconcilePreservedConnectors(
 			transaction,
 			gatewayPath,

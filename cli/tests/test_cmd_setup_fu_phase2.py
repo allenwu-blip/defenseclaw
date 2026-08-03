@@ -363,6 +363,7 @@ class TestPerConnectorWriteSurface(_BaseSetup):
             use_cache=False,
             refresh=True,
             data_dir=self.app.cfg.data_dir,
+            persist_cache=True,
         )
         self.assertEqual(res.output.count("detected-but-unsupported-version"), 1)
         self.assertIn("installed version Hermes Agent v0.17.0", res.output)
@@ -371,6 +372,40 @@ class TestPerConnectorWriteSurface(_BaseSetup):
         self.assertNotIn("connector was not detected locally", res.output)
         self.assertEqual(self.app.cfg.guardrail.connector, "hermes")
         self.assertEqual(self.app.cfg.guardrail.mode, "observe")
+
+    def test_windows_omnigent_admission_scan_does_not_publish_unrelated_discovery(self):
+        signal = SimpleNamespace(
+            version="omnigent 0.7.0",
+            installed=True,
+            error="",
+            binary_path=r"C:\Users\tester\.local\bin\omnigent.exe",
+        )
+        disc = SimpleNamespace(agents={"omnigent": signal})
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+                return_value=disc,
+            ) as discover,
+            patch(
+                "defenseclaw.commands.cmd_setup.platform_support.host_os",
+                return_value="windows",
+            ),
+        ):
+            accepted = cmd_setup._check_connector_version_supported_for_setup(
+                "omnigent",
+                mode="action",
+                emit=False,
+                data_dir=self.app.cfg.data_dir,
+            )
+
+        self.assertTrue(accepted)
+        discover.assert_called_once_with(
+            use_cache=False,
+            refresh=True,
+            data_dir=self.app.cfg.data_dir,
+            persist_cache=False,
+        )
 
     def test_guardrail_action_fallback_prunes_only_refused_connector_from_judge(self):
         self._seed_map("codex", "hermes")

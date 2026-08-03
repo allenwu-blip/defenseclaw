@@ -16,6 +16,7 @@
 
 """Tests for the guardrail integration — config, utilities, and CLI command."""
 
+import hashlib
 import json
 import os
 import re
@@ -2074,6 +2075,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                     tmpdir, ["codex"], state_marker - 1, lock_marker, timeout=0.01
                 )
             )
+
             self.assertTrue(
                 _wait_for_connector_runtime(
                     tmpdir, ["codex"], state_marker - 1, lock_marker - 1, timeout=0.01
@@ -2115,6 +2117,118 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                     lock_marker - 1,
                     timeout=0.01,
                 )
+            )
+
+    def test_wait_for_connector_runtime_accepts_only_v3_tombstoned_lock_extras(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "active_connector.json")
+            lock_path = os.path.join(tmpdir, "hook_contract_lock.json")
+            lock = {
+                "version": 2,
+                "connectors": {
+                    "claudecode": {"connector": "claudecode"},
+                    "codex": {"connector": "codex"},
+                },
+            }
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(lock, lock_file)
+
+            state = {
+                "version": 3,
+                "name": "claudecode",
+                "names": ["claudecode"],
+                "inactive_names": ["codex"],
+            }
+            with open(state_path, "w", encoding="utf-8") as state_file:
+                json.dump(state, state_file)
+            self.assertTrue(
+                _wait_for_connector_runtime(tmpdir, ["claudecode"], None, None, timeout=0.02)
+            )
+
+            state.pop("inactive_names")
+            with open(state_path, "w", encoding="utf-8") as state_file:
+                json.dump(state, state_file)
+            self.assertFalse(
+                _wait_for_connector_runtime(tmpdir, ["claudecode"], None, None, timeout=0.02)
+            )
+
+    def test_wait_for_connector_runtime_rejects_malformed_v3_tombstones(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "active_connector.json")
+            lock_path = os.path.join(tmpdir, "hook_contract_lock.json")
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(
+                    {
+                        "version": 2,
+                        "connectors": {
+                            "claudecode": {"connector": "claudecode"},
+                            "codex": {"connector": "codex"},
+                        },
+                    },
+                    lock_file,
+                )
+
+            for inactive_names in ("codex", ["codex", "codex"], ["claudecode"]):
+                with self.subTest(inactive_names=inactive_names):
+                    with open(state_path, "w", encoding="utf-8") as state_file:
+                        json.dump(
+                            {
+                                "version": 3,
+                                "name": "claudecode",
+                                "names": ["claudecode"],
+                                "inactive_names": inactive_names,
+                            },
+                            state_file,
+                        )
+                    self.assertFalse(
+                        _wait_for_connector_runtime(
+                            tmpdir,
+                            ["claudecode"],
+                            None,
+                            None,
+                            timeout=0.02,
+                        )
+                    )
+
+    def test_wait_for_connector_runtime_keeps_v2_and_legacy_exact_lock_behavior(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = os.path.join(tmpdir, "active_connector.json")
+            lock_path = os.path.join(tmpdir, "hook_contract_lock.json")
+            lock = {
+                "version": 2,
+                "connectors": {"claudecode": {"connector": "claudecode"}},
+            }
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(lock, lock_file)
+
+            for state in (
+                {"version": 2, "name": "claudecode", "names": ["claudecode"]},
+                {"name": "claudecode"},
+            ):
+                with self.subTest(state=state):
+                    with open(state_path, "w", encoding="utf-8") as state_file:
+                        json.dump(state, state_file)
+                    self.assertTrue(
+                        _wait_for_connector_runtime(
+                            tmpdir,
+                            ["claudecode"],
+                            None,
+                            None,
+                            timeout=0.02,
+                        )
+                    )
+
+            lock["connectors"]["codex"] = {"connector": "codex"}
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(lock, lock_file)
+            self.assertFalse(
+                _wait_for_connector_runtime(tmpdir, ["claudecode"], None, None, timeout=0.02)
             )
 
     def test_wait_for_cursor_runtime_requires_exact_persisted_registration(self):
@@ -2176,6 +2290,55 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             with open(hooks_path, "w", encoding="utf-8") as hooks_file:
                 json.dump({"version": 1, "hooks": hooks}, hooks_file)
             self.assertFalse(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=0.02))
+
+    @patch("defenseclaw.commands.cmd_setup.connector_paths.connector_config_files")
+    def test_wait_for_opencode_runtime_requires_plugin_and_matching_lock(self, config_files):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plugin_path = os.path.join(tmpdir, "defenseclaw.js")
+            plugin_body = (
+                b"// defenseclaw-managed-plugin v7\n"
+                b'const route = "/api/v1/opencode/hook";\n'
+            )
+            with open(plugin_path, "wb") as plugin_file:
+                plugin_file.write(plugin_body)
+            config_files.return_value = [plugin_path]
+            with open(os.path.join(tmpdir, "active_connector.json"), "w", encoding="utf-8") as state_file:
+                json.dump({"version": 2, "name": "opencode", "names": ["opencode"]}, state_file)
+            lock = {
+                "version": 2,
+                "connectors": {
+                    "opencode": {
+                        "connector": "opencode",
+                        "contract_id": "opencode-hooks-v1",
+                        "compatibility_status": "known",
+                        "hook_script_version": "v7",
+                        "locations": {"hook_config_paths": [plugin_path]},
+                        "hook_script_digests": {
+                            "defenseclaw.js": "sha256:" + hashlib.sha256(plugin_body).hexdigest()
+                        },
+                    }
+                },
+            }
+            lock_path = os.path.join(tmpdir, "hook_contract_lock.json")
+            with open(lock_path, "w", encoding="utf-8") as lock_file:
+                json.dump(lock, lock_file)
+
+            self.assertTrue(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+
+            config_files.return_value = [os.path.join(tmpdir, "other", "defenseclaw.js")]
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+            config_files.return_value = [plugin_path]
+
+            os.remove(plugin_path)
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+            with open(plugin_path, "wb") as plugin_file:
+                plugin_file.write(plugin_body + b"// tampered\n")
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+
+            os.remove(lock_path)
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
 
 
 class TestCheckOpenclawGateway(unittest.TestCase):

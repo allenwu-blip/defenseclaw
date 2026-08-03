@@ -18,6 +18,7 @@ param(
     [switch]$AllowNativeDataRoot,
     [switch]$ReleaseCertification,
     [switch]$AuthenticatedAntigravityRunner,
+    [switch]$ProtectedCopilotRunner,
     [string]$PackagedSetupPath = '',
     [string]$ExpectedPackageSourceCommit = '',
     [string]$ExpectedHarnessSourceCommit = '',
@@ -29,6 +30,10 @@ param(
     [string]$AntigravityPrepareRunID = '',
     [string]$AntigravityPrepareRunAttempt = '',
     [string]$AntigravityHoldID = '',
+    [ValidateSet('full-hilt', 'enforcement-only')]
+    [string]$AntigravityCertificationScope = 'full-hilt',
+    [ValidateSet('fresh', 'existing')]
+    [string]$AntigravityProfileCustodyMode = 'fresh',
     [switch]$HeldStateFixture,
     [switch]$NoRun
 )
@@ -38,11 +43,36 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
 $script:CopilotConfiguredMode = ''
+$script:ProtectedCopilotPackageInstalled = $false
+$script:ProtectedCopilotPackageMaintained = $false
+$script:CopilotOriginalHook = $null
+$script:CopilotOriginalHookParent = $null
+$script:CopilotPackageRunID = ''
+$script:CopilotPackageArtifactID = ''
+$script:CopilotPackageArtifactDigest = ''
+$script:CopilotSourceCheckout = ''
+$script:CopilotHarnessSourceCommit = ''
+$script:CopilotHarnessSHA256 = ''
+$script:CopilotWorkflowSHA256 = ''
+$script:CopilotClientSHA256 = ''
+$script:CopilotLoaderSHA256 = ''
+$script:CopilotClientSignerThumbprint = ''
+$script:CopilotOfficialVersion = '1.0.77'
+$script:CopilotOfficialPackageIntegrity = 'sha512-nkTtDPKvsClAByPPqnD/57vK7YIBK1dgiv7aVc9uO3rxKCyqiqYaBqwi8pMzesvGP3yl+//+iMzaBXNWEcZVWQ=='
+$script:CopilotOfficialPlatformIntegrity = 'sha512-8Mo9y3/8CVU2w35WqwSiRMTGH1kKHR3URPSJYF4J4OG8L7NOEy2fafXR9Tuq3H21Srg3OzFkl/A+Taunqz9KcA=='
+$script:CopilotOfficialBinarySHA256 = 'e28d03ca2b41b099c1d7d657f039d5d244a4e39c4977033ba003de6a7a52713a'
+$script:CopilotOfficialSignerSubject = 'CN="GitHub, Inc.", O="GitHub, Inc.", L=San Francisco, S=California, C=US'
+$script:CopilotOfficialSignerThumbprint = '5349CF57C0E589690F2AC31CE41371816E273E7C'
+$script:CopilotWorkflowPath = '.github\workflows\connector-live-e2e.yml'
 $script:AuthenticatedAntigravityPackageInstalled = $false
 $script:PackagedSetupExecutable = ''
 $script:ExpectedPackagedSourceCommit = ''
 $script:AntigravityOriginalConfig = $null
 $script:AntigravityOriginalConfigParents = $null
+$script:AntigravityOriginalHookSDDL = ''
+$script:AntigravityOriginalHookAttributes = 0
+$script:AntigravityVendorFingerprint = $null
+$script:AntigravityExistingPackageFingerprint = $null
 $script:AntigravityPackageRunID = ''
 $script:AntigravityPackageArtifactID = ''
 $script:AntigravityPackageArtifactDigest = ''
@@ -243,9 +273,16 @@ function Protect-TestDirectory([string]$Path) {
     $directory = [IO.Directory]::CreateDirectory([IO.Path]::GetFullPath($Path))
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     if ($null -eq $identity.User) { throw 'current Windows identity has no user SID' }
+    $ownerSection = [Security.AccessControl.AccessControlSections]::Owner
+    $currentSecurity = [IO.FileSystemAclExtensions]::GetAccessControl(
+        $directory, $ownerSection
+    )
+    $currentOwner = $currentSecurity.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($null -eq $currentOwner -or $currentOwner.Value -cne $identity.User.Value) {
+        throw 'refusing to protect a test directory not owned by the current Windows identity'
+    }
 
     $security = [Security.AccessControl.DirectorySecurity]::new()
-    $security.SetOwner($identity.User)
     $security.SetAccessRuleProtection($true, $false)
     $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
     $propagation = [Security.AccessControl.PropagationFlags]::None
@@ -327,12 +364,18 @@ function Get-AuthenticatedAntigravityPackagePaths {
     $maintenancePath = [IO.Path]::GetFullPath(
         (Join-Path $localAppData 'DefenseClaw\InstallerCache\DefenseClawSetup-x64.exe')
     )
+    $laneDataRoot = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        [IO.Path]::GetFullPath((Join-Path $StateRoot 'defenseclaw-data')).TrimEnd('\')
+    } else {
+        $dataRoot
+    }
     return [pscustomobject]@{
         Profile = $profile
         LocalAppData = $localAppData
         InstallRoot = $installRoot
         StatePath = Join-Path $installRoot 'installer\install-state.json'
         DataRoot = $dataRoot
+        LaneDataRoot = $laneDataRoot
         ConfigHome = $configHome
         HookConfig = Join-Path $configHome 'hooks.json'
         MaintenancePath = $maintenancePath
@@ -445,31 +488,103 @@ function Assert-AuthenticatedAntigravityInstallState(
         "$Context Antigravity FOLDERID_Profile configuration home"
 }
 
+function Assert-AuthenticatedAntigravityExistingInstallState(
+    [pscustomobject]$State,
+    [pscustomobject]$Paths,
+    [string]$ExpectedSourceCommit,
+    [string]$Context
+) {
+    if ([int]$State.schema_version -lt 1 -or
+        [string]$State.install_kind -cne 'native-windows-exe' -or
+        [string]$State.install_scope -cne 'user' -or
+        [string]$State.distribution_flavor -cne 'oss' -or
+        [string]$State.source_commit -cne $ExpectedSourceCommit) {
+        throw "$Context is not the exact-head OSS per-user native Windows installation"
+    }
+    if ([string]$State.connector -cnotin @(
+            'none', 'codex', 'claudecode', 'copilot', 'cursor', 'hermes',
+            'windsurf', 'opencode', 'omnigent'
+        ) -or [string]$State.mode -cnotin @('observe', 'action')) {
+        throw "$Context has an invalid preexisting connector/mode identity"
+    }
+    Assert-ExactPath ([string]$State.install_root) $Paths.InstallRoot "$Context install root"
+    Assert-ExactPath ([string]$State.command_dir) $Paths.CommandDir "$Context command directory"
+    Assert-ExactPath ([string]$State.data_root) $Paths.DataRoot "$Context package data root"
+    Assert-ExactPath ([string]$State.runtime) $Paths.Runtime "$Context runtime"
+    Assert-ExactPath ([string]$State.maintenance_path) $Paths.MaintenancePath "$Context maintenance path"
+    Assert-ExactPath ([string]$State.antigravity_config_dir) $Paths.ConfigHome `
+        "$Context Antigravity FOLDERID_Profile configuration home"
+}
+
+function Get-AuthenticatedAntigravityExistingPackageFingerprint(
+    [pscustomobject]$Paths
+) {
+    $files = [ordered]@{
+        install_state = $Paths.StatePath
+        maintenance_setup = $Paths.MaintenancePath
+        defenseclaw = Join-Path $Paths.CommandDir 'defenseclaw.exe'
+        gateway = Join-Path $Paths.CommandDir 'defenseclaw-gateway.exe'
+    }
+    $rows = [ordered]@{}
+    foreach ($name in $files.Keys) {
+        $path = [IO.Path]::GetFullPath([string]$files[$name])
+        $null = Assert-DisposableNoReparseAncestors -Path $path `
+            -AllowedRoot $(if ($name -ceq 'maintenance_setup') {
+                Split-Path -Parent (Split-Path -Parent $Paths.MaintenancePath)
+            } else { $Paths.InstallRoot }) -RequireExists
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "existing-profile package identity is not a plain file: $name"
+        }
+        $rows[$name] = [pscustomobject]@{
+            Path = $path
+            Length = [long]$item.Length
+            SHA256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+    return [pscustomobject]$rows
+}
+
+function Assert-AuthenticatedAntigravityExistingPackageFingerprint(
+    [pscustomobject]$Expected,
+    [pscustomobject]$Paths,
+    [string]$Context
+) {
+    $actual = Get-AuthenticatedAntigravityExistingPackageFingerprint $Paths
+    foreach ($name in @('install_state', 'maintenance_setup', 'defenseclaw', 'gateway')) {
+        foreach ($property in @('Path', 'Length', 'SHA256')) {
+            if ([string]$actual.$name.$property -cne [string]$Expected.$name.$property) {
+                throw "$Context changed preexisting exact-package custody: $name.$property"
+            }
+        }
+    }
+}
+
 function Assert-ExactPackagedSetup(
     [string]$SetupPath,
     [string]$ExpectedSourceCommit
 ) {
     if ($ExpectedSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
-        throw 'authenticated Antigravity package lane requires an exact lowercase source commit'
+        throw 'protected package lane requires an exact lowercase source commit'
     }
     $setup = [IO.Path]::GetFullPath($SetupPath)
     if (-not (Test-Path -LiteralPath $setup -PathType Leaf) -or
         [IO.Path]::GetFileName($setup) -cne 'DefenseClawSetup-x64.exe') {
-        throw 'authenticated Antigravity package lane requires exact DefenseClawSetup-x64.exe bytes'
+        throw 'protected package lane requires exact DefenseClawSetup-x64.exe bytes'
     }
     $artifactRoot = Split-Path -Parent $setup
     Assert-ProtectedPackageArtifactRoot $artifactRoot
     $null = Assert-DisposableNoReparseAncestors -Path $setup -AllowedRoot $artifactRoot -RequireExists
     $setupItem = Get-Item -LiteralPath $setup -Force
     if ($setupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-        throw 'authenticated Antigravity packaged Setup must not be a reparse point'
+        throw 'protected packaged Setup must not be a reparse point'
     }
     $provenancePath = "$setup.provenance.json"
     $null = Assert-DisposableNoReparseAncestors -Path $provenancePath `
         -AllowedRoot $artifactRoot -RequireExists
     if ((Get-Item -LiteralPath $provenancePath -Force).Attributes -band
         [IO.FileAttributes]::ReparsePoint) {
-        throw 'authenticated Antigravity packaged Setup provenance must not be a reparse point'
+        throw 'protected packaged Setup provenance must not be a reparse point'
     }
     try {
         $provenance = Get-Content -LiteralPath $provenancePath -Raw -Encoding UTF8 |
@@ -743,6 +858,60 @@ function Assert-AuthenticatedAntigravityPublicCLIGate([pscustomobject]$Paths) {
         'ordinary CLI exit=1; install/config/hook/custody state unchanged; live=false'
 }
 
+function Assert-NoPreexistingDefenseClawRuntime([pscustomobject]$Paths) {
+    $prefix = [IO.Path]::GetFullPath($Paths.InstallRoot).TrimEnd('\') + '\'
+    $live = @(Get-CimInstance Win32_Process -OperationTimeoutSec 2 -ErrorAction Stop |
+        Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+            [IO.Path]::GetFullPath([string]$_.ExecutablePath).StartsWith(
+                $prefix, [StringComparison]::OrdinalIgnoreCase
+            )
+        })
+    if ($live.Count -ne 0) {
+        throw 'existing-profile custody requires all preexisting DefenseClaw processes to be stopped before any hook mutation'
+    }
+}
+
+function Initialize-AuthenticatedAntigravityExistingProfilePackage(
+    [pscustomobject]$Paths
+) {
+    if ((Test-Path -LiteralPath (Get-AuthenticatedAntigravityCleanupManifestPath)) -or
+        (Test-Path -LiteralPath (Get-AuthenticatedAntigravityHeldStatePath)) -or
+        (Test-Path -LiteralPath $Paths.LaneDataRoot)) {
+        throw 'existing-profile Antigravity prepare requires a fresh protected lane-data/custody baseline'
+    }
+    if (-not (Test-Path -LiteralPath $Paths.InstallRoot -PathType Container) -or
+        -not (Test-Path -LiteralPath $Paths.DataRoot -PathType Container)) {
+        throw 'existing-profile Antigravity prepare requires an existing exact package and current-user data root'
+    }
+    Assert-NoPreexistingDefenseClawRuntime $Paths
+    $state = Read-AuthenticatedAntigravityInstallState $Paths
+    Assert-AuthenticatedAntigravityExistingInstallState `
+        $state $Paths $ExpectedPackageSourceCommit 'existing-profile package state'
+    Set-AuthenticatedAntigravityInstalledPath $Paths
+    $script:AntigravityExistingPackageFingerprint = `
+        Get-AuthenticatedAntigravityExistingPackageFingerprint $Paths
+    $exactSetupHash = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ([string]$script:AntigravityExistingPackageFingerprint.maintenance_setup.SHA256 -cne
+        $exactSetupHash) {
+        throw 'existing-profile maintenance Setup is not byte-identical to the selected exact-head package'
+    }
+    $script:AntigravityVendorFingerprint = Get-AuthenticatedAntigravityVendorFingerprint $Paths
+    Assert-OfficialAntigravityClient $Paths
+    Assert-AuthenticatedAntigravityVendorFingerprint `
+        $script:AntigravityVendorFingerprint $Paths 'official client identity check'
+    Save-AntigravityOriginalConfig
+    Write-AuthenticatedAntigravityExistingHookBackup $Paths
+    Write-AuthenticatedAntigravityCleanupManifest $Paths -InteractiveCampaign
+    $heldState = New-AuthenticatedAntigravityHeldState $Paths
+    Write-Result 'package-setup:existing-profile-adopted' pass `
+        "exact package/client adopted read-only; package connector=$($state.connector)/$($state.mode); lane data is task-specific; public Setup and local package repair not run"
+    Write-Result 'package-setup:repair-scope' unclaimed `
+        'local Setup repair is Known-Folder-bound and is not run against unrelated current data; exact-package CI/prior repair evidence remains a separate promotion-review requirement'
+    return $heldState
+}
+
 function Initialize-AuthenticatedAntigravityPackage([switch]$InteractivePrepare) {
     Initialize-AuthenticatedAntigravityRunIdentity
     Assert-AuthenticatedAntigravitySourceCheckout
@@ -750,13 +919,22 @@ function Initialize-AuthenticatedAntigravityPackage([switch]$InteractivePrepare)
         $PackagedSetupPath $ExpectedPackageSourceCommit
     $script:ExpectedPackagedSourceCommit = $ExpectedPackageSourceCommit
     $paths = Get-AuthenticatedAntigravityPackagePaths
-    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.DataRoot 'authenticated harness data root'
+    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.LaneDataRoot 'authenticated harness data root'
     Assert-ExactPath (Resolve-EffectiveConnectorHome 'antigravity') $paths.ConfigHome `
         'authenticated harness Antigravity configuration home'
     $packagedSetupHash = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
         -Algorithm SHA256).Hash.ToLowerInvariant()
     Write-Result 'package-setup:identity' pass `
         "package_source_commit=$ExpectedPackageSourceCommit harness_source_commit=$ExpectedHarnessSourceCommit installer_sha256=$packagedSetupHash"
+
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        if (-not $InteractivePrepare) {
+            throw 'existing-profile custody is restricted to the protected prepare/hold/resume/cleanup lifecycle'
+        }
+        $null = Assert-OfficialAntigravityInstaller $paths
+        $null = Read-OfficialAntigravityReleaseManifest
+        return Initialize-AuthenticatedAntigravityExistingProfilePackage $paths
+    }
 
     $cleanupManifest = Get-AuthenticatedAntigravityCleanupManifestPath
     if ($InteractivePrepare) {
@@ -880,8 +1058,17 @@ function Assert-AuthenticatedAntigravityConfiguredPosture(
         throw "$Context effective Antigravity HILT is not enabled at exact HIGH"
     }
     $installState = Read-AuthenticatedAntigravityInstallState $Paths
-    Assert-AuthenticatedAntigravityInstallState `
-        $installState $Paths $ExpectedPackageSourceCommit "$Context install-state"
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        Assert-AuthenticatedAntigravityExistingInstallState `
+            $installState $Paths $ExpectedPackageSourceCommit "$Context install-state"
+        Assert-AuthenticatedAntigravityExistingPackageFingerprint `
+            $script:AntigravityExistingPackageFingerprint $Paths $Context
+        Assert-AuthenticatedAntigravityVendorFingerprint `
+            $script:AntigravityVendorFingerprint $Paths $Context
+    } else {
+        Assert-AuthenticatedAntigravityInstallState `
+            $installState $Paths $ExpectedPackageSourceCommit "$Context install-state"
+    }
     if ($null -ne $ExpectedHookFingerprint) {
         $current = Get-AntigravityHookConfigFingerprint $Paths
         foreach ($property in @(
@@ -893,8 +1080,9 @@ function Assert-AuthenticatedAntigravityConfiguredPosture(
             }
         }
     }
+    $stateConnector = [string]$installState.connector
     Write-Result "antigravity:posture:$Context" pass `
-        "sidecar_running=$([bool]$RequireGatewayRunning) roster=antigravity/manual/action/enabled hilt=true/HIGH install_state_connector=none"
+        "sidecar_running=$([bool]$RequireGatewayRunning) roster=antigravity/manual/action/enabled hilt=true/HIGH install_state_connector=$stateConnector"
 }
 
 function Repair-AuthenticatedAntigravityPackage(
@@ -952,6 +1140,8 @@ function Get-AntigravityHookConfigFingerprint([pscustomobject]$Paths) {
             OwnerSID = ''
             GroupSID = ''
             SecuritySHA256 = ''
+            SecuritySDDL = ''
+            Attributes = 0
         }
     }
     $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
@@ -970,9 +1160,8 @@ function Get-AntigravityHookConfigFingerprint([pscustomobject]$Paths) {
     if ($null -eq $owner -or $null -eq $group) {
         throw 'authenticated Antigravity hook baseline lacks exact owner/group custody'
     }
-    $sddlBytes = [Text.Encoding]::UTF8.GetBytes(
-        $security.GetSecurityDescriptorSddlForm($sections)
-    )
+    $securitySDDL = $security.GetSecurityDescriptorSddlForm($sections)
+    $sddlBytes = [Text.Encoding]::UTF8.GetBytes($securitySDDL)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $securityHash = ([BitConverter]::ToString($sha.ComputeHash($sddlBytes))).Replace('-', '')
@@ -988,6 +1177,102 @@ function Get-AntigravityHookConfigFingerprint([pscustomobject]$Paths) {
         OwnerSID = $owner.Value
         GroupSID = $group.Value
         SecuritySHA256 = $securityHash
+        SecuritySDDL = $securitySDDL
+        Attributes = [int]$item.Attributes
+    }
+}
+
+function Get-AuthenticatedAntigravityCustodyTreeFingerprint(
+    [string]$Root,
+    [string]$AllowedParent,
+    [string]$Context
+) {
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $parentPath = [IO.Path]::GetFullPath($AllowedParent).TrimEnd('\')
+    $null = Assert-DisposableNoReparseAncestors -Path $rootPath -AllowedRoot $parentPath
+    if (-not (Test-Path -LiteralPath $rootPath)) {
+        return [pscustomobject]@{
+            Path = $rootPath; Exists = $false; EntryCount = 0; ByteCount = 0
+            TreeSHA256 = ([Security.Cryptography.SHA256]::HashData([byte[]]::new(0)) |
+                ForEach-Object ToString x2) -join ''
+        }
+    }
+    $rootItem = Get-Item -LiteralPath $rootPath -Force
+    if (-not $rootItem.PSIsContainer -or
+        ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "$Context root is not a plain directory"
+    }
+    $items = @($rootItem) + @(Get-ChildItem -LiteralPath $rootPath -Force -Recurse)
+    if ($items.Count -gt 64) { throw "$Context exceeds the bounded 64-entry custody inventory" }
+    $rows = [Collections.Generic.List[string]]::new()
+    $bytes = 0L
+    foreach ($item in @($items | Sort-Object FullName)) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "$Context contains a reparse point: $($item.FullName)"
+        }
+        $relative = if ([string]::Equals(
+                [IO.Path]::GetFullPath($item.FullName).TrimEnd('\'),
+                $rootPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) { '.' } else { [IO.Path]::GetRelativePath($rootPath, $item.FullName) }
+        $sections = [Security.AccessControl.AccessControlSections]::Owner -bor
+            [Security.AccessControl.AccessControlSections]::Group -bor
+            [Security.AccessControl.AccessControlSections]::Access
+        $security = [IO.FileSystemAclExtensions]::GetAccessControl($item, $sections)
+        $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+        $group = $security.GetGroup([Security.Principal.SecurityIdentifier])
+        if ($null -eq $owner -or $null -eq $group) {
+            throw "$Context entry lacks owner/group custody: $relative"
+        }
+        $sddl = $security.GetSecurityDescriptorSddlForm($sections)
+        $contentHash = ''
+        $length = 0L
+        $kind = if ($item.PSIsContainer) { 'directory' } else { 'file' }
+        if (-not $item.PSIsContainer) {
+            $length = [long]$item.Length
+            $bytes += $length
+            if ($bytes -gt 536870912L) {
+                throw "$Context exceeds the bounded 512 MiB custody inventory"
+            }
+            $contentHash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $rows.Add((@(
+            $relative, $kind, [string][int]$item.Attributes, [string]$length,
+            $contentHash, $owner.Value, $group.Value, $sddl
+        ) -join "`t"))
+    }
+    $canonical = [Text.Encoding]::UTF8.GetBytes(($rows -join "`n"))
+    $sha = [Security.Cryptography.SHA256]::HashData($canonical)
+    return [pscustomobject]@{
+        Path = $rootPath
+        Exists = $true
+        EntryCount = $items.Count
+        ByteCount = $bytes
+        TreeSHA256 = (($sha | ForEach-Object ToString x2) -join '')
+    }
+}
+
+function Get-AuthenticatedAntigravityVendorFingerprint([pscustomobject]$Paths) {
+    return [pscustomobject]@{
+        Vendor = Get-AuthenticatedAntigravityCustodyTreeFingerprint `
+            $Paths.AntigravityVendorRoot $Paths.LocalAppData 'official agy vendor custody'
+        Staging = Get-AuthenticatedAntigravityCustodyTreeFingerprint `
+            $Paths.AntigravityStagingRoot $Paths.LocalAppData 'official Antigravity staging custody'
+    }
+}
+
+function Assert-AuthenticatedAntigravityVendorFingerprint(
+    [pscustomobject]$Expected,
+    [pscustomobject]$Paths,
+    [string]$Context
+) {
+    $actual = Get-AuthenticatedAntigravityVendorFingerprint $Paths
+    foreach ($name in @('Vendor', 'Staging')) {
+        foreach ($property in @('Path', 'Exists', 'EntryCount', 'ByteCount', 'TreeSHA256')) {
+            if ([string]$actual.$name.$property -cne [string]$Expected.$name.$property) {
+                throw "$Context changed preexisting vendor custody: $name.$property"
+            }
+        }
     }
 }
 
@@ -1028,10 +1313,132 @@ function Save-AntigravityOriginalConfig {
     if ($null -ne $script:AntigravityOriginalConfig) { return }
     $paths = Get-AuthenticatedAntigravityPackagePaths
     $script:AntigravityOriginalConfig = Get-AntigravityHookConfigFingerprint $paths
+    $script:AntigravityOriginalHookSDDL = [string]$script:AntigravityOriginalConfig.SecuritySDDL
+    $script:AntigravityOriginalHookAttributes = [int]$script:AntigravityOriginalConfig.Attributes
     $script:AntigravityOriginalConfigParents = @(
         Get-AntigravityConfigParentFingerprint $paths.AntigravityProfileRoot $paths.Profile
         Get-AntigravityConfigParentFingerprint $paths.ConfigHome $paths.Profile
     )
+}
+
+function Get-AuthenticatedAntigravityHookBackupPath {
+    return Join-Path $StateRoot 'custody\original-hooks.json'
+}
+
+function Write-AuthenticatedAntigravityExistingHookBackup([pscustomobject]$Paths) {
+    if ($AntigravityProfileCustodyMode -cne 'existing') { return }
+    if ($null -eq $script:AntigravityOriginalConfig) {
+        throw 'existing-profile custody requires the original hook fingerprint first'
+    }
+    if ([bool]$script:AntigravityOriginalConfig.Exists -and
+        [long]$script:AntigravityOriginalConfig.Length -gt 1048576L) {
+        throw 'existing-profile hooks.json exceeds the bounded 1 MiB custody snapshot'
+    }
+    $backupPath = Get-AuthenticatedAntigravityHookBackupPath
+    if (Test-Path -LiteralPath $backupPath) {
+        throw 'existing-profile hook custody backup already exists'
+    }
+    $backupRoot = Split-Path -Parent $backupPath
+    [IO.Directory]::CreateDirectory($backupRoot) | Out-Null
+    if ([bool]$script:AntigravityOriginalConfig.Exists) {
+        [IO.File]::Copy($Paths.HookConfig, $backupPath, $false)
+    } else {
+        [IO.File]::WriteAllBytes($backupPath, [byte[]]::new(0))
+    }
+    Assert-AuthenticatedAntigravityCleanupManifestCustody $backupPath
+    $expectedHash = if ([bool]$script:AntigravityOriginalConfig.Exists) {
+        [string]$script:AntigravityOriginalConfig.SHA256
+    } else {
+        ([Security.Cryptography.SHA256]::HashData([byte[]]::new(0)) |
+            ForEach-Object ToString x2) -join ''
+    }
+    if ((Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+        $expectedHash.ToLowerInvariant()) {
+        throw 'existing-profile hook custody backup is not byte-exact'
+    }
+}
+
+function Restore-AuthenticatedAntigravityHookFromCustody(
+    [pscustomobject]$Manifest,
+    [pscustomobject]$Paths
+) {
+    if ([string]$Manifest.profile_custody_mode -cne 'existing') { return }
+    $backupPath = [string]$Manifest.original_hook_backup_path
+    Assert-ExactPath $backupPath (Get-AuthenticatedAntigravityHookBackupPath) `
+        'existing-profile hook backup'
+    Assert-AuthenticatedAntigravityCleanupManifestCustody $backupPath
+    $backupHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+    $expectedBackupHash = if ([bool]$Manifest.original_hook_exists) {
+        [string]$Manifest.original_hook_sha256
+    } else {
+        ([Security.Cryptography.SHA256]::HashData([byte[]]::new(0)) |
+            ForEach-Object ToString x2) -join ''
+    }
+    if ($backupHash.ToLowerInvariant() -cne $expectedBackupHash.ToLowerInvariant()) {
+        throw 'existing-profile hook custody backup changed before restoration'
+    }
+    Restore-AuthenticatedAntigravityHookBytesAndSecurity `
+        $Manifest $Paths $backupPath
+}
+
+function Restore-AuthenticatedAntigravityHookBytesAndSecurity(
+    [pscustomobject]$Manifest,
+    [pscustomobject]$Paths,
+    [string]$BackupPath
+) {
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
+        -AllowedRoot $Paths.Profile
+    if ([bool]$Manifest.original_hook_exists) {
+        $current = Get-AntigravityHookConfigFingerprint $Paths
+        if (-not $current.Exists) {
+            throw 'existing-profile hook file disappeared before byte-exact restoration'
+        }
+        foreach ($property in @(
+            [pscustomobject]@{ Current = 'ReparsePoint'; Manifest = 'original_hook_reparse' },
+            [pscustomobject]@{ Current = 'OwnerSID'; Manifest = 'original_hook_owner_sid' },
+            [pscustomobject]@{ Current = 'GroupSID'; Manifest = 'original_hook_group_sid' }
+        )) {
+            if ([string]$current.($property.Current) -cne
+                [string]$Manifest.($property.Manifest)) {
+                throw "existing-profile hook security changed before restoration: $($property.Current)"
+            }
+        }
+        $source = $null
+        $destination = $null
+        try {
+            # Overwrite the existing file in place. This preserves its already
+            # authenticated owner/group/DACL and avoids any elevated ACL operation.
+            $source = [IO.File]::Open(
+                $BackupPath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+                [IO.FileShare]::Read
+            )
+            $destination = [IO.File]::Open(
+                $Paths.HookConfig, [IO.FileMode]::Open, [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            $destination.SetLength(0)
+            $source.CopyTo($destination)
+            $destination.Flush($true)
+        } finally {
+            if ($null -ne $destination) { $destination.Dispose() }
+            if ($null -ne $source) { $source.Dispose() }
+        }
+        $security = [Security.AccessControl.FileSecurity]::new()
+        $accessSection = [Security.AccessControl.AccessControlSections]::Access
+        $security.SetSecurityDescriptorSddlForm(
+            [string]$Manifest.original_hook_sddl, $accessSection
+        )
+        [IO.FileSystemAclExtensions]::SetAccessControl(
+            (Get-Item -LiteralPath $Paths.HookConfig -Force), $security
+        )
+        [IO.File]::SetAttributes(
+            $Paths.HookConfig,
+            [IO.FileAttributes][int]$Manifest.original_hook_attributes
+        )
+    } elseif (Test-Path -LiteralPath $Paths.HookConfig -PathType Leaf) {
+        [IO.File]::Delete($Paths.HookConfig)
+    }
+    Assert-AntigravityOriginalConfigRestored -Paths $Paths
 }
 
 function Restore-AntigravityConfigParents(
@@ -1061,25 +1468,31 @@ function Restore-AntigravityConfigParents(
     }
 }
 
-function Assert-AntigravityOriginalConfigRestored([switch]$RecordResult) {
+function Assert-AntigravityOriginalConfigRestored(
+    [switch]$RecordResult,
+    [pscustomobject]$Paths = (Get-AuthenticatedAntigravityPackagePaths)
+) {
     if ($null -eq $script:AntigravityOriginalConfig) { return }
     $snapshot = $script:AntigravityOriginalConfig
-    $paths = Get-AuthenticatedAntigravityPackagePaths
     $current = Get-AntigravityHookConfigFingerprint $paths
     if ($current.Exists -ne [bool]$snapshot.Exists) {
         throw 'Antigravity teardown did not restore the original hooks.json existence state'
     }
-    if ($current.Exists -and (
-        $current.Length -ne [long]$snapshot.Length -or
-        $current.SHA256 -cne [string]$snapshot.SHA256 -or
-        $current.ReparsePoint -ne [bool]$snapshot.ReparsePoint -or
-        $current.OwnerSID -cne [string]$snapshot.OwnerSID -or
-        $current.GroupSID -cne [string]$snapshot.GroupSID -or
-        $current.SecuritySHA256 -cne [string]$snapshot.SecuritySHA256
-    )) {
-        throw 'Antigravity teardown did not byte-exactly restore hook content and security custody'
+    if ($current.Exists) {
+        $drift = [Collections.Generic.List[string]]::new()
+        foreach ($property in @(
+            'Length', 'SHA256', 'ReparsePoint', 'OwnerSID', 'GroupSID',
+            'SecuritySHA256', 'Attributes'
+        )) {
+            if ([string]$current.$property -cne [string]$snapshot.$property) {
+                $drift.Add($property)
+            }
+        }
+        if ($drift.Count -ne 0) {
+            throw "Antigravity teardown did not restore exact hook custody: $($drift -join ', ')"
+        }
     }
-    Restore-AntigravityConfigParents
+    Restore-AntigravityConfigParents $Paths
     if ($RecordResult) {
         Write-Result 'antigravity:exact-restoration' pass `
             'hook configuration existence, length, and SHA-256 restored exactly; credentials untouched'
@@ -1172,9 +1585,11 @@ function New-AuthenticatedAntigravityCleanupManifestDocument(
         throw 'authenticated Antigravity cleanup manifest requires both configuration-parent fingerprints'
     }
     return [pscustomobject][ordered]@{
-        schema_version = 2
+        schema_version = 3
         kind = 'antigravity-authenticated-cleanup'
         interactive_campaign = [bool]$InteractiveCampaign
+        certification_scope = $AntigravityCertificationScope
+        profile_custody_mode = $AntigravityProfileCustodyMode
         vendor_mutation_started = $false
         workflow_repository = $ExpectedWorkflowRepository
         package_run_id = $script:AntigravityPackageRunID
@@ -1193,6 +1608,7 @@ function New-AuthenticatedAntigravityCleanupManifestDocument(
         install_root = $Paths.InstallRoot
         state_path = $Paths.StatePath
         data_root = $Paths.DataRoot
+        lane_data_root = $Paths.LaneDataRoot
         config_home = $Paths.ConfigHome
         hook_config = $Paths.HookConfig
         vendor_root = $Paths.AntigravityVendorRoot
@@ -1214,6 +1630,48 @@ function New-AuthenticatedAntigravityCleanupManifestDocument(
         original_hook_owner_sid = [string]$snapshot.OwnerSID
         original_hook_group_sid = [string]$snapshot.GroupSID
         original_hook_security_sha256 = [string]$snapshot.SecuritySHA256
+        original_hook_sddl = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityOriginalHookSDDL
+        } else { '' }
+        original_hook_attributes = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [int]$script:AntigravityOriginalHookAttributes
+        } else { 0 }
+        original_hook_backup_path = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            Get-AuthenticatedAntigravityHookBackupPath
+        } else { '' }
+        existing_vendor_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityVendorFingerprint.Vendor.TreeSHA256
+        } else { '' }
+        existing_vendor_entries = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [int]$script:AntigravityVendorFingerprint.Vendor.EntryCount
+        } else { 0 }
+        existing_vendor_bytes = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [long]$script:AntigravityVendorFingerprint.Vendor.ByteCount
+        } else { 0 }
+        existing_staging_exists = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [bool]$script:AntigravityVendorFingerprint.Staging.Exists
+        } else { $false }
+        existing_staging_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityVendorFingerprint.Staging.TreeSHA256
+        } else { '' }
+        existing_staging_entries = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [int]$script:AntigravityVendorFingerprint.Staging.EntryCount
+        } else { 0 }
+        existing_staging_bytes = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [long]$script:AntigravityVendorFingerprint.Staging.ByteCount
+        } else { 0 }
+        existing_install_state_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityExistingPackageFingerprint.install_state.SHA256
+        } else { '' }
+        existing_maintenance_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityExistingPackageFingerprint.maintenance_setup.SHA256
+        } else { '' }
+        existing_cli_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityExistingPackageFingerprint.defenseclaw.SHA256
+        } else { '' }
+        existing_gateway_sha256 = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            [string]$script:AntigravityExistingPackageFingerprint.gateway.SHA256
+        } else { '' }
         original_config_parents = @($parents | ForEach-Object {
             [ordered]@{
                 path = [string]$_.Path
@@ -1302,13 +1760,14 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
     [string]$ExactSetupPath
 ) {
     $expectedProperties = @(
-        'schema_version', 'kind', 'interactive_campaign', 'vendor_mutation_started',
+        'schema_version', 'kind', 'interactive_campaign', 'certification_scope',
+        'profile_custody_mode', 'vendor_mutation_started',
         'workflow_repository', 'package_run_id', 'package_artifact_id',
         'package_artifact_digest', 'setup_path', 'setup_sha256',
         'setup_provenance_sha256', 'package_source_commit',
         'harness_source_commit', 'source_checkout',
         'harness_sha256', 'workflow_sha256', 'package_root', 'state_root',
-        'install_root', 'state_path', 'data_root', 'config_home', 'hook_config',
+        'install_root', 'state_path', 'data_root', 'lane_data_root', 'config_home', 'hook_config',
         'vendor_root', 'vendor_staging_root', 'canonical_agy_path',
         'official_installer_url', 'official_installer_path',
         'official_installer_sha256', 'official_manifest_url', 'official_version',
@@ -1316,13 +1775,21 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
         'official_signer_subject', 'official_signer_thumbprint',
         'original_hook_exists', 'original_hook_length', 'original_hook_sha256',
         'original_hook_reparse', 'original_hook_owner_sid', 'original_hook_group_sid',
-        'original_hook_security_sha256', 'original_config_parents'
+        'original_hook_security_sha256', 'original_hook_sddl',
+        'original_hook_attributes', 'original_hook_backup_path',
+        'existing_vendor_sha256', 'existing_vendor_entries', 'existing_vendor_bytes',
+        'existing_staging_exists', 'existing_staging_sha256',
+        'existing_staging_entries', 'existing_staging_bytes',
+        'existing_install_state_sha256', 'existing_maintenance_sha256',
+        'existing_cli_sha256', 'existing_gateway_sha256', 'original_config_parents'
     ) | Sort-Object
     $actualProperties = @($Manifest.PSObject.Properties.Name | Sort-Object)
     if (($actualProperties -join "`n") -cne ($expectedProperties -join "`n") -or
-        [int]$Manifest.schema_version -ne 2 -or
+        [int]$Manifest.schema_version -ne 3 -or
         [string]$Manifest.kind -cne 'antigravity-authenticated-cleanup' -or
         $Manifest.interactive_campaign -isnot [bool] -or
+        [string]$Manifest.certification_scope -cne $AntigravityCertificationScope -or
+        [string]$Manifest.profile_custody_mode -cne $AntigravityProfileCustodyMode -or
         $Manifest.vendor_mutation_started -isnot [bool] -or
         ([bool]$Manifest.vendor_mutation_started -and -not [bool]$Manifest.interactive_campaign)) {
         throw 'authenticated Antigravity cleanup manifest schema is not exact'
@@ -1334,6 +1801,7 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
     Assert-ExactPath ([string]$Manifest.install_root) $Paths.InstallRoot 'cleanup manifest install root'
     Assert-ExactPath ([string]$Manifest.state_path) $Paths.StatePath 'cleanup manifest install-state path'
     Assert-ExactPath ([string]$Manifest.data_root) $Paths.DataRoot 'cleanup manifest data root'
+    Assert-ExactPath ([string]$Manifest.lane_data_root) $Paths.LaneDataRoot 'cleanup manifest lane data root'
     Assert-ExactPath ([string]$Manifest.config_home) $Paths.ConfigHome 'cleanup manifest config home'
     Assert-ExactPath ([string]$Manifest.hook_config) $Paths.HookConfig 'cleanup manifest hook path'
     Assert-ExactPath ([string]$Manifest.vendor_root) $Paths.AntigravityVendorRoot 'cleanup manifest vendor root'
@@ -1379,6 +1847,7 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
     $hookGroup = [string]$Manifest.original_hook_group_sid
     $hookSecurityHash = [string]$Manifest.original_hook_security_sha256
     if (($hookExists -and (
+            $hookLength -gt 1048576L -or
             $hookHash -cnotmatch '^[0-9A-F]{64}$' -or $hookReparse -or
             $hookOwner -cnotmatch '^S-1-' -or $hookGroup -cnotmatch '^S-1-' -or
             $hookSecurityHash -cnotmatch '^[0-9A-F]{64}$'
@@ -1387,6 +1856,79 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
             $hookOwner -cne '' -or $hookGroup -cne '' -or $hookSecurityHash -cne ''
         ))) {
         throw 'authenticated Antigravity cleanup manifest hook fingerprint is invalid'
+    }
+    if ([string]$Manifest.profile_custody_mode -ceq 'existing') {
+        if ([bool]$Manifest.vendor_mutation_started -or
+            [string]$Manifest.existing_vendor_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [int]$Manifest.existing_vendor_entries -lt 1 -or
+            [long]$Manifest.existing_vendor_bytes -lt 1 -or
+            $Manifest.existing_staging_exists -isnot [bool] -or
+            [string]$Manifest.existing_staging_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [int]$Manifest.existing_staging_entries -lt 0 -or
+            [long]$Manifest.existing_staging_bytes -lt 0 -or
+            [string]$Manifest.existing_install_state_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$Manifest.existing_maintenance_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$Manifest.existing_cli_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            [string]$Manifest.existing_gateway_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'existing-profile cleanup manifest custody fingerprint is invalid'
+        }
+        Assert-ExactPath ([string]$Manifest.original_hook_backup_path) `
+            (Get-AuthenticatedAntigravityHookBackupPath) 'existing-profile hook backup'
+        Assert-AuthenticatedAntigravityCleanupManifestCustody `
+            ([string]$Manifest.original_hook_backup_path)
+        if ($hookExists) {
+            if ([string]::IsNullOrWhiteSpace([string]$Manifest.original_hook_sddl) -or
+                [int]$Manifest.original_hook_attributes -lt 0) {
+                throw 'existing-profile cleanup manifest lacks restorable hook security state'
+            }
+            $sddlBytes = [Text.Encoding]::UTF8.GetBytes([string]$Manifest.original_hook_sddl)
+            $sddlHash = (([Security.Cryptography.SHA256]::HashData($sddlBytes) |
+                ForEach-Object ToString x2) -join '').ToUpperInvariant()
+            if ($sddlHash -cne $hookSecurityHash) {
+                throw 'existing-profile hook SDDL does not match its authenticated fingerprint'
+            }
+        } elseif ([string]$Manifest.original_hook_sddl -cne '' -or
+            [int]$Manifest.original_hook_attributes -ne 0) {
+            throw 'absent existing-profile hook unexpectedly contains restorable security state'
+        }
+        $vendor = Get-AuthenticatedAntigravityVendorFingerprint $Paths
+        if ([string]$vendor.Vendor.TreeSHA256 -cne [string]$Manifest.existing_vendor_sha256 -or
+            [int]$vendor.Vendor.EntryCount -ne [int]$Manifest.existing_vendor_entries -or
+            [long]$vendor.Vendor.ByteCount -ne [long]$Manifest.existing_vendor_bytes -or
+            [bool]$vendor.Staging.Exists -ne [bool]$Manifest.existing_staging_exists -or
+            [string]$vendor.Staging.TreeSHA256 -cne [string]$Manifest.existing_staging_sha256 -or
+            [int]$vendor.Staging.EntryCount -ne [int]$Manifest.existing_staging_entries -or
+            [long]$vendor.Staging.ByteCount -ne [long]$Manifest.existing_staging_bytes) {
+            throw 'existing-profile vendor custody drifted from the protected manifest'
+        }
+        $package = Get-AuthenticatedAntigravityExistingPackageFingerprint $Paths
+        if ([string]$package.install_state.SHA256 -cne [string]$Manifest.existing_install_state_sha256 -or
+            [string]$package.maintenance_setup.SHA256 -cne [string]$Manifest.existing_maintenance_sha256 -or
+            [string]$package.defenseclaw.SHA256 -cne [string]$Manifest.existing_cli_sha256 -or
+            [string]$package.gateway.SHA256 -cne [string]$Manifest.existing_gateway_sha256 -or
+            [string]$package.maintenance_setup.SHA256 -cne $setupHash) {
+            throw 'existing-profile exact-package custody drifted from the protected manifest'
+        }
+        $script:AntigravityVendorFingerprint = $vendor
+        $script:AntigravityExistingPackageFingerprint = $package
+        $script:AntigravityOriginalHookSDDL = [string]$Manifest.original_hook_sddl
+        $script:AntigravityOriginalHookAttributes = [int]$Manifest.original_hook_attributes
+    } elseif (
+        [string]$Manifest.original_hook_sddl -cne '' -or
+        [int]$Manifest.original_hook_attributes -ne 0 -or
+        [string]$Manifest.original_hook_backup_path -cne '' -or
+        [string]$Manifest.existing_vendor_sha256 -cne '' -or
+        [int]$Manifest.existing_vendor_entries -ne 0 -or
+        [long]$Manifest.existing_vendor_bytes -ne 0 -or
+        [bool]$Manifest.existing_staging_exists -or
+        [string]$Manifest.existing_staging_sha256 -cne '' -or
+        [int]$Manifest.existing_staging_entries -ne 0 -or
+        [long]$Manifest.existing_staging_bytes -ne 0 -or
+        [string]$Manifest.existing_install_state_sha256 -cne '' -or
+        [string]$Manifest.existing_maintenance_sha256 -cne '' -or
+        [string]$Manifest.existing_cli_sha256 -cne '' -or
+        [string]$Manifest.existing_gateway_sha256 -cne '') {
+        throw 'fresh-profile cleanup manifest unexpectedly contains existing-profile custody'
     }
     $script:AntigravityOriginalConfig = [pscustomobject]@{
         Path = $Paths.HookConfig
@@ -1397,6 +1939,8 @@ function Assert-AuthenticatedAntigravityCleanupManifest(
         OwnerSID = $hookOwner
         GroupSID = $hookGroup
         SecuritySHA256 = $hookSecurityHash
+        SecuritySDDL = [string]$Manifest.original_hook_sddl
+        Attributes = [int]$Manifest.original_hook_attributes
     }
     $parentRows = @($Manifest.original_config_parents)
     if ($parentRows.Count -ne 2) {
@@ -1492,12 +2036,13 @@ function Assert-AuthenticatedAntigravityHeldState(
 ) {
     $expectedProperties = @(
         'schema_version', 'kind', 'phase', 'hold_id', 'workflow_repository',
+        'certification_scope', 'profile_custody_mode', 'hitl_status',
         'prepare_run_id', 'prepare_run_attempt', 'package_run_id',
         'package_artifact_id', 'package_artifact_digest',
         'package_source_commit', 'harness_source_commit', 'source_checkout',
         'harness_sha256', 'workflow_sha256',
         'state_root', 'setup_path', 'setup_sha256', 'setup_provenance_sha256',
-        'profile', 'local_app_data', 'install_root', 'data_root', 'config_home',
+        'profile', 'local_app_data', 'install_root', 'data_root', 'lane_data_root', 'config_home',
         'hook_config', 'vendor_root', 'vendor_staging_root',
         'vendor_root_preexisting', 'vendor_staging_preexisting',
         'connector_mode', 'hilt_enabled', 'hilt_min_severity',
@@ -1514,7 +2059,7 @@ function Assert-AuthenticatedAntigravityHeldState(
     ) | Sort-Object
     $actualProperties = @($Document.PSObject.Properties.Name | Sort-Object)
     if (($actualProperties -join "`n") -cne ($expectedProperties -join "`n") -or
-        [int]$Document.schema_version -ne 1 -or
+        [int]$Document.schema_version -ne 2 -or
         [string]$Document.kind -cne 'antigravity-interactive-held-state') {
         throw 'authenticated Antigravity held-state schema is not exact'
     }
@@ -1527,6 +2072,8 @@ function Assert-AuthenticatedAntigravityHeldState(
     }
     foreach ($identity in @(
         [pscustomobject]@{ Actual = [string]$Document.workflow_repository; Expected = $ExpectedWorkflowRepository },
+        [pscustomobject]@{ Actual = [string]$Document.certification_scope; Expected = $AntigravityCertificationScope },
+        [pscustomobject]@{ Actual = [string]$Document.profile_custody_mode; Expected = $AntigravityProfileCustodyMode },
         [pscustomobject]@{ Actual = [string]$Document.package_run_id; Expected = $script:AntigravityPackageRunID },
         [pscustomobject]@{ Actual = [string]$Document.package_artifact_id; Expected = $script:AntigravityPackageArtifactID },
         [pscustomobject]@{ Actual = [string]$Document.package_artifact_digest; Expected = $script:AntigravityPackageArtifactDigest },
@@ -1556,8 +2103,16 @@ function Assert-AuthenticatedAntigravityHeldState(
         [string]$Document.setup_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$Document.setup_provenance_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
         [string]$Document.official_binary_sha512 -cnotmatch '^[0-9a-f]{128}$' -or
-        $Document.vendor_root_preexisting -isnot [bool] -or [bool]$Document.vendor_root_preexisting -or
-        $Document.vendor_staging_preexisting -isnot [bool] -or [bool]$Document.vendor_staging_preexisting -or
+        $Document.vendor_root_preexisting -isnot [bool] -or
+        [bool]$Document.vendor_root_preexisting -ne ($AntigravityProfileCustodyMode -ceq 'existing') -or
+        $Document.vendor_staging_preexisting -isnot [bool] -or
+        [bool]$Document.vendor_staging_preexisting -ne (
+            $AntigravityProfileCustodyMode -ceq 'existing' -and
+            [bool]$script:AntigravityVendorFingerprint.Staging.Exists
+        ) -or
+        [string]$Document.hitl_status -cne $(if ($AntigravityCertificationScope -ceq 'full-hilt') {
+            'verified-required'
+        } else { 'unverified-unclaimed' }) -or
         [string]$Document.connector_mode -cne 'action' -or
         $Document.hilt_enabled -isnot [bool] -or -not [bool]$Document.hilt_enabled -or
         [string]$Document.hilt_min_severity -cne 'HIGH' -or
@@ -1608,6 +2163,7 @@ function Assert-AuthenticatedAntigravityHeldState(
     Assert-ExactPath ([string]$Document.local_app_data) $Paths.LocalAppData 'held-state FOLDERID_LocalAppData'
     Assert-ExactPath ([string]$Document.install_root) $Paths.InstallRoot 'held-state install root'
     Assert-ExactPath ([string]$Document.data_root) $Paths.DataRoot 'held-state data root'
+    Assert-ExactPath ([string]$Document.lane_data_root) $Paths.LaneDataRoot 'held-state lane data root'
     Assert-ExactPath ([string]$Document.config_home) $Paths.ConfigHome 'held-state config home'
     Assert-ExactPath ([string]$Document.hook_config) $Paths.HookConfig 'held-state hook config'
     Assert-ExactPath ([string]$Document.vendor_root) $Paths.AntigravityVendorRoot 'held-state vendor root'
@@ -1636,11 +2192,16 @@ function New-AuthenticatedAntigravityHeldStateDocument(
     [string]$HoldID
 ) {
     return [pscustomobject][ordered]@{
-        schema_version = 1
+        schema_version = 2
         kind = 'antigravity-interactive-held-state'
         phase = 'armed'
         hold_id = $HoldID
         workflow_repository = $ExpectedWorkflowRepository
+        certification_scope = $AntigravityCertificationScope
+        profile_custody_mode = $AntigravityProfileCustodyMode
+        hitl_status = if ($AntigravityCertificationScope -ceq 'full-hilt') {
+            'verified-required'
+        } else { 'unverified-unclaimed' }
         prepare_run_id = $PrepareRunID
         prepare_run_attempt = $PrepareRunAttempt
         package_run_id = $script:AntigravityPackageRunID
@@ -1659,12 +2220,16 @@ function New-AuthenticatedAntigravityHeldStateDocument(
         local_app_data = $Paths.LocalAppData
         install_root = $Paths.InstallRoot
         data_root = $Paths.DataRoot
+        lane_data_root = $Paths.LaneDataRoot
         config_home = $Paths.ConfigHome
         hook_config = $Paths.HookConfig
         vendor_root = $Paths.AntigravityVendorRoot
         vendor_staging_root = $Paths.AntigravityStagingRoot
-        vendor_root_preexisting = $false
-        vendor_staging_preexisting = $false
+        vendor_root_preexisting = ($AntigravityProfileCustodyMode -ceq 'existing')
+        vendor_staging_preexisting = (
+            $AntigravityProfileCustodyMode -ceq 'existing' -and
+            [bool]$script:AntigravityVendorFingerprint.Staging.Exists
+        )
         connector_mode = 'action'
         hilt_enabled = $true
         hilt_min_severity = 'HIGH'
@@ -1874,9 +2439,17 @@ function New-AuthenticatedAntigravityTerminalMarkerDocument(
 ) {
     $durableRoot = [IO.Path]::GetFullPath((Split-Path -Parent $StateRoot)).TrimEnd('\')
     return [pscustomobject][ordered]@{
-        schema_version = 1
+        schema_version = 2
         kind = 'antigravity-authenticated-terminal-cleanup'
         complete = $true
+        certification_scope = [string]$Manifest.certification_scope
+        profile_custody_mode = [string]$Manifest.profile_custody_mode
+        hitl_status = if ([string]$Manifest.certification_scope -ceq 'full-hilt') {
+            'verified-required'
+        } else { 'unverified-unclaimed' }
+        local_repair_status = if ([string]$Manifest.profile_custody_mode -ceq 'existing') {
+            'unverified-unclaimed'
+        } else { 'verified' }
         workflow_repository = [string]$Manifest.workflow_repository
         package_run_id = [string]$Manifest.package_run_id
         package_artifact_id = [string]$Manifest.package_artifact_id
@@ -1895,6 +2468,7 @@ function New-AuthenticatedAntigravityTerminalMarkerDocument(
         } else { Split-Path -Parent ([string]$Manifest.official_installer_path) }
         install_root = $Paths.InstallRoot
         data_root = $Paths.DataRoot
+        lane_data_root = $Paths.LaneDataRoot
         vendor_root = $Paths.AntigravityVendorRoot
         vendor_staging_root = $Paths.AntigravityStagingRoot
         config_home = $Paths.ConfigHome
@@ -1935,10 +2509,14 @@ function Write-AuthenticatedAntigravityTerminalMarker(
 ) {
     $durableRoot = [IO.Path]::GetFullPath((Split-Path -Parent $StateRoot)).TrimEnd('\')
     Assert-ProtectedPackageArtifactRoot $durableRoot
-    $residualPaths = @(
-        $Paths.InstallRoot, $Paths.DataRoot, $Paths.AntigravityVendorRoot,
-        $Paths.AntigravityStagingRoot
-    )
+    $residualPaths = if ([string]$Manifest.profile_custody_mode -ceq 'existing') {
+        @($Paths.LaneDataRoot)
+    } else {
+        @(
+            $Paths.InstallRoot, $Paths.DataRoot, $Paths.AntigravityVendorRoot,
+            $Paths.AntigravityStagingRoot
+        )
+    }
     if (-not [string]::IsNullOrWhiteSpace([string]$Manifest.official_installer_path)) {
         $residualPaths += Split-Path -Parent ([string]$Manifest.official_installer_path)
     }
@@ -1971,17 +2549,95 @@ function Write-AuthenticatedAntigravityTerminalMarker(
     Assert-AuthenticatedAntigravityCleanupManifestCustody $markerPath $durableRoot
 }
 
+function Invoke-AuthenticatedAntigravityExistingProfileCleanup(
+    [pscustomobject]$Manifest,
+    [AllowNull()][pscustomobject]$HeldState,
+    [pscustomobject]$Paths
+) {
+    $cleanupFailure = $null
+    try {
+        Stop-AuthenticatedAntigravityHeldTUIProcess $HeldState $Paths
+        Set-AuthenticatedAntigravityInstalledPath $Paths
+        try {
+            Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+        } catch {
+            $cleanupFailure = $_.Exception
+        }
+        try {
+            Invoke-Teardown
+        } catch {
+            if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+            else { Write-Warning (Protect-LogText $_.Exception.Message) }
+        }
+    } catch {
+        if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+        else { Write-Warning (Protect-LogText $_.Exception.Message) }
+    } finally {
+        try {
+            Restore-AuthenticatedAntigravityHookFromCustody $Manifest $Paths
+        } catch {
+            if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+            else { Write-Warning (Protect-LogText $_.Exception.Message) }
+        }
+        try {
+            Stop-IsolatedProcessTree
+        } catch {
+            if ($null -eq $cleanupFailure) { $cleanupFailure = $_.Exception }
+            else { Write-Warning (Protect-LogText $_.Exception.Message) }
+        }
+    }
+    Assert-OfficialAntigravityClient $Paths
+    Assert-AuthenticatedAntigravityVendorFingerprint `
+        $script:AntigravityVendorFingerprint $Paths 'existing-profile cleanup'
+    Assert-AuthenticatedAntigravityExistingPackageFingerprint `
+        $script:AntigravityExistingPackageFingerprint $Paths 'existing-profile cleanup'
+    Assert-AntigravityOriginalConfigRestored -RecordResult
+    if (Test-Path -LiteralPath $Paths.LaneDataRoot) {
+        Remove-DisposableTreeSafely -Path $Paths.LaneDataRoot -AllowedRoot $StateRoot
+    }
+    if (Test-Path -LiteralPath $Paths.LaneDataRoot) {
+        throw 'existing-profile cleanup left task-specific DefenseClaw data'
+    }
+    Write-Result 'antigravity:existing-profile-custody' pass `
+        'preexisting package, official agy tree, staging tree, and hooks bytes/security restored exactly; credentials untouched'
+    if ($null -ne $cleanupFailure) { throw $cleanupFailure }
+}
+
 function Invoke-AuthenticatedAntigravityCleanup([switch]$PreserveRunInputs) {
     Initialize-AuthenticatedAntigravityRunIdentity
     Assert-AuthenticatedAntigravitySourceCheckout
     $paths = Get-AuthenticatedAntigravityPackagePaths
-    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.DataRoot 'authenticated cleanup data root'
+    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.LaneDataRoot 'authenticated cleanup data root'
     Assert-ExactPath (Resolve-EffectiveConnectorHome 'antigravity') $paths.ConfigHome `
         'authenticated cleanup Antigravity configuration home'
     $manifestPath = Get-AuthenticatedAntigravityCleanupManifestPath
     $packageRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PackagedSetupPath)).TrimEnd('\')
 
     if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            if ((Test-Path -LiteralPath $paths.LaneDataRoot) -or
+                (Test-Path -LiteralPath (Get-AuthenticatedAntigravityHeldStatePath))) {
+                throw 'existing-profile cleanup refuses lane mutation without its protected manifest'
+            }
+            $script:PackagedSetupExecutable = Assert-ExactPackagedSetup `
+                $PackagedSetupPath $ExpectedPackageSourceCommit
+            $state = Read-AuthenticatedAntigravityInstallState $paths
+            Assert-AuthenticatedAntigravityExistingInstallState `
+                $state $paths $ExpectedPackageSourceCommit 'pre-manifest existing-profile cleanup'
+            $package = Get-AuthenticatedAntigravityExistingPackageFingerprint $paths
+            $setupHash = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
+                -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ([string]$package.maintenance_setup.SHA256 -cne $setupHash) {
+                throw 'pre-manifest existing-profile cleanup found a foreign maintenance Setup'
+            }
+            if (Test-Path -LiteralPath $StateRoot) {
+                Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+            }
+            if (Test-Path -LiteralPath $packageRoot) {
+                Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+            }
+            return
+        }
         # Manifest publication precedes the first fresh Setup mutation. Without a
         # manifest, only an entirely absent install/data pair is safe to converge.
         if ((Test-Path -LiteralPath $paths.InstallRoot) -or
@@ -2021,6 +2677,25 @@ function Invoke-AuthenticatedAntigravityCleanup([switch]$PreserveRunInputs) {
             @('armed', 'held', 'interactive', 'awaiting_resume')
     }
     Assert-AuthenticatedAntigravityRecoveryCompanion $manifest ($null -ne $heldState)
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        Invoke-AuthenticatedAntigravityExistingProfileCleanup $manifest $heldState $paths
+        if ($PreserveRunInputs) {
+            throw 'existing-profile custody never reuses protected run inputs'
+        }
+        if ([bool]$manifest.interactive_campaign) {
+            $installerRoot = Split-Path -Parent ([string]$manifest.official_installer_path)
+            if (Test-Path -LiteralPath $installerRoot) {
+                $durableRoot = [IO.Path]::GetFullPath((Split-Path -Parent $StateRoot)).TrimEnd('\')
+                $null = Assert-DisposableNoReparseAncestors -Path $installerRoot `
+                    -AllowedRoot $durableRoot -RequireExists
+                Remove-DisposableTreeSafely -Path $installerRoot -AllowedRoot $installerRoot
+            }
+            Write-AuthenticatedAntigravityTerminalMarker $manifest $heldState $paths
+        }
+        Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+        Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+        return
+    }
     $cleanupFailure = $null
     $cleanupIncomplete = $false
     try {
@@ -3088,6 +3763,17 @@ function Set-IsolatedGatewayPort {
 }
 
 function Invoke-Setup([string]$Mode) {
+    $script:LastSetupMode = $Mode
+    if ($Connector -eq 'copilot' -and $ProtectedCopilotRunner) {
+        if ($Mode -cne 'action') {
+            throw 'protected Copilot package lane is restricted to the action live profile'
+        }
+        if (-not $script:ProtectedCopilotPackageMaintained) {
+            Repair-ProtectedCopilotPackage
+            $script:ProtectedCopilotPackageMaintained = $true
+        }
+        return
+    }
     if ($Connector -eq 'antigravity' -and $AuthenticatedAntigravityRunner) {
         if ($Mode -cne 'action') {
             throw 'authenticated Antigravity package lane is restricted to the action live profile'
@@ -3107,9 +3793,18 @@ function Invoke-Setup([string]$Mode) {
         Assert-AntigravityWindowsHookCommands ([IO.File]::ReadAllText($paths.HookConfig))
         Assert-AuthenticatedAntigravityConfiguredPosture `
             $paths 'reconcile' -ExpectedHookFingerprint $hookFingerprint
-        # Exact Setup services the newly recorded active roster without any
-        # connector override. install-state.connector deliberately stays none.
-        Repair-AuthenticatedAntigravityPackage $hookFingerprint
+        if ($AntigravityProfileCustodyMode -ceq 'fresh') {
+            # Exact Setup services the newly recorded active roster without any
+            # connector override. install-state.connector deliberately stays none.
+            Repair-AuthenticatedAntigravityPackage $hookFingerprint
+        } else {
+            # Native Setup repair is intentionally Known-Folder-bound. Running it
+            # here would service Kevin's unrelated current data rather than this
+            # task-specific lane data. Keep the local repair claim explicitly
+            # unverified and leave exact-package CI/prior evidence to promotion review.
+            Write-Result 'package-setup:repair-persistence' unclaimed `
+                'not run locally in existing-profile custody mode; no isolated Setup data-root primitive exists'
+        }
         Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
         Wait-Gateway
         Assert-AuthenticatedAntigravityConfiguredPosture `
@@ -3623,7 +4318,7 @@ function Assert-DoctorHookRegistration {
     } elseif ($Connector -eq 'copilot') {
         Assert-CopilotSynchronousWindowsHookConfig $registration 'setup-created Copilot registration'
     } elseif ($Connector -eq 'cursor') {
-        $adapter = Assert-CursorSynchronousWindowsHookCommand $registration $false 'setup-created Cursor registration'
+        $adapter = Assert-CursorSynchronousWindowsHookCommand $registration ($script:LastSetupMode -eq 'action') 'setup-created Cursor registration'
         if (-not [string]::Equals($adapter, $expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase)) {
             throw "setup-created Cursor registration uses unexpected adapter: $adapter"
         }
@@ -3668,11 +4363,13 @@ function Initialize-DefenseClawEnv {
     foreach ($directory in $privateDirectories) { Protect-TestDirectory $directory }
     $envPath = Join-Path $env:DEFENSECLAW_HOME '.env'
     $lines = [Collections.Generic.List[string]]::new()
-    foreach ($name in @(
-        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LLM_API_KEY', 'CURSOR_API_KEY'
-    )) {
-        $value = [Environment]::GetEnvironmentVariable($name)
-        if (-not [string]::IsNullOrWhiteSpace($value)) { $lines.Add("$name=$value") }
+    if (-not ($Connector -ceq 'antigravity' -and $AuthenticatedAntigravityRunner)) {
+        foreach ($name in @(
+            'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LLM_API_KEY', 'CURSOR_API_KEY'
+        )) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if (-not [string]::IsNullOrWhiteSpace($value)) { $lines.Add("$name=$value") }
+        }
     }
     [IO.File]::WriteAllLines($envPath, $lines)
 }
@@ -3847,11 +4544,7 @@ function Invoke-DangerousHook(
     if ($null -eq $decision) { throw "$Name did not emit a connector hook_decision" }
     if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$Name has no underlying gateway block verdict" }
     if ([string]$decision.raw_action -ne 'block') { throw "$Name raw_action=$($decision.raw_action), expected block" }
-    $telemetryMode = if ($Connector -eq 'cursor') {
-        # Cursor's user hook is advisory because higher-priority settings can
-        # override it, so even an action-profile run must remain fail-open.
-        'observe'
-    } elseif ($Mode -eq 'action') {
+    $telemetryMode = if ($Mode -eq 'action') {
         'enforce'
     } else {
         'observe'
@@ -3859,7 +4552,7 @@ function Invoke-DangerousHook(
     if ([string]$decision.mode -ne $telemetryMode) { throw "$Name mode=$($decision.mode), expected $telemetryMode" }
     if (@($decision.rule_ids) -notcontains $RuleID) { throw "$Name hook_decision is missing rule $RuleID" }
 
-    $effectiveObserve = $Mode -eq 'observe' -or $Connector -eq 'cursor'
+    $effectiveObserve = $Mode -eq 'observe'
     if ($effectiveObserve) {
         if ([string]$decision.action -ne 'allow' -or -not [bool]$decision.would_block -or [bool]$decision.enforced) {
             throw "$Name advisory decision action=$($decision.action) raw=$($decision.raw_action) would_block=$($decision.would_block) enforced=$($decision.enforced)"
@@ -4073,7 +4766,7 @@ function Assert-DoctorWindowsHookRegistration {
         }
         if (-not $nativeHookFound) { throw 'claudecode setup did not register the Windows native exec-form hook command' }
     } elseif ($Connector -eq 'cursor') {
-        $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config $false 'Cursor setup'
+        $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config ($script:LastSetupMode -eq 'action') 'Cursor setup'
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $config
     } elseif ($Connector -eq 'hermes') {
@@ -4116,13 +4809,17 @@ function Assert-DoctorWindowsHookRegistration {
     if ($check.detail.IndexOf($hookTarget, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "Doctor validated an unexpected hook target: $($check.detail)"
     }
-    if ($Connector -eq 'cursor' -and
-        ($check.detail -notmatch 'mode=observe' -or
-         $check.detail -notmatch 'failClosed=false' -or
-         $check.detail -notmatch 'failure=fail-open' -or
-         $check.detail -notmatch 'authority=user-hook advisory' -or
-         $check.detail -notmatch 'hard-action=unsupported')) {
-        throw "Doctor did not expose Cursor's advisory fail-open posture: $($check.detail)"
+    if ($Connector -eq 'cursor') {
+        $expectedMode = if ($script:LastSetupMode -eq 'action') { 'action' } else { 'observe' }
+        $expectedFailClosed = if ($expectedMode -eq 'action') { 'true' } else { 'false' }
+        $expectedFailure = if ($expectedMode -eq 'action') { 'fail-closed' } else { 'fail-open' }
+        if ($check.detail -notmatch "mode=$expectedMode" -or
+            $check.detail -notmatch "failClosed=$expectedFailClosed" -or
+            $check.detail -notmatch "failure=$expectedFailure" -or
+            $check.detail -notmatch 'higher-priority conflict detection=unavailable \(none inferred\)' -or
+            $check.detail -notmatch 'human-approval=unsupported') {
+            throw "Doctor did not expose Cursor's mode-matched preview posture: $($check.detail)"
+        }
     }
     if ($Connector -eq 'hermes' -and
         ($check.detail -notmatch 'hook_entries=23' -or
@@ -4262,6 +4959,861 @@ function Assert-NativeEnterpriseHooksRequireElevation {
     Write-Result 'enterprise-hooks:install:elevation-required' pass 'exit=1 bounded=true target-tree=unchanged'
 }
 
+function Get-ProtectedCopilotPackagePaths {
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    $localAppData = Get-CurrentUserKnownFolderPath `
+        ([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091')
+    try {
+        $userPrograms = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5CD7AEE2-2219-4A67-B85D-6C9CE15660CB') 0x4000
+    } catch {
+        $userPrograms = Join-Path $localAppData 'Programs'
+    }
+    $copilotHome = [IO.Path]::GetFullPath((Join-Path $profile '.copilot')).TrimEnd('\')
+    $configuredHome = [Environment]::GetEnvironmentVariable('COPILOT_HOME')
+    if (-not [string]::IsNullOrWhiteSpace($configuredHome) -and
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($configuredHome).TrimEnd('\'),
+            $copilotHome,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'protected Copilot lane requires the authenticated current-user default COPILOT_HOME'
+    }
+    $installRoot = [IO.Path]::GetFullPath((Join-Path $userPrograms 'DefenseClaw')).TrimEnd('\')
+    $dataRoot = [IO.Path]::GetFullPath((Join-Path $profile '.defenseclaw')).TrimEnd('\')
+    return [pscustomobject]@{
+        Profile = $profile
+        LocalAppData = $localAppData
+        InstallRoot = $installRoot
+        StatePath = Join-Path $installRoot 'installer\install-state.json'
+        DataRoot = $dataRoot
+        ConfigHome = $copilotHome
+        HookParent = Join-Path $copilotHome 'hooks'
+        HookConfig = Join-Path $copilotHome 'hooks\defenseclaw.json'
+        MaintenancePath = Join-Path $localAppData `
+            'DefenseClaw\InstallerCache\DefenseClawSetup-x64.exe'
+        CommandDir = Join-Path $installRoot 'bin'
+        Runtime = Join-Path $installRoot 'runtime\python'
+    }
+}
+
+function Get-ProtectedCopilotSecuritySHA256([IO.FileSystemInfo]$Item) {
+    $sections = [Security.AccessControl.AccessControlSections]::Owner -bor
+        [Security.AccessControl.AccessControlSections]::Group -bor
+        [Security.AccessControl.AccessControlSections]::Access
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl($Item, $sections)
+    $owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    $group = $security.GetGroup([Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or $null -eq $group) {
+        throw "protected Copilot custody lacks an owner or group: $($Item.FullName)"
+    }
+    $bytes = [Text.Encoding]::UTF8.GetBytes(
+        $security.GetSecurityDescriptorSddlForm($sections)
+    )
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+    return [pscustomobject]@{
+        OwnerSID = $owner.Value
+        GroupSID = $group.Value
+        SecuritySHA256 = $digest
+    }
+}
+
+function Get-ProtectedCopilotHookFingerprint([pscustomobject]$Paths) {
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
+        -AllowedRoot $Paths.Profile
+    if ((Test-Path -LiteralPath $Paths.HookConfig) -and
+        -not (Test-Path -LiteralPath $Paths.HookConfig -PathType Leaf)) {
+        throw 'protected Copilot hook baseline path exists but is not a file'
+    }
+    if (-not (Test-Path -LiteralPath $Paths.HookConfig -PathType Leaf)) {
+        return [pscustomobject]@{
+            Path = $Paths.HookConfig; Exists = $false; Length = 0
+            SHA256 = ''; Attributes = 0; OwnerSID = ''; GroupSID = ''
+            SecuritySHA256 = ''
+        }
+    }
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookConfig `
+        -AllowedRoot $Paths.Profile -RequireExists
+    $item = Get-Item -LiteralPath $Paths.HookConfig -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'protected Copilot hook baseline refuses a reparse point'
+    }
+    $security = Get-ProtectedCopilotSecuritySHA256 $item
+    return [pscustomobject]@{
+        Path = $Paths.HookConfig
+        Exists = $true
+        Length = [long]$item.Length
+        SHA256 = (Get-FileHash -LiteralPath $Paths.HookConfig -Algorithm SHA256).Hash
+        Attributes = [int]$item.Attributes
+        OwnerSID = $security.OwnerSID
+        GroupSID = $security.GroupSID
+        SecuritySHA256 = $security.SecuritySHA256
+    }
+}
+
+function Get-ProtectedCopilotHookParentFingerprint([pscustomobject]$Paths) {
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookParent `
+        -AllowedRoot $Paths.Profile
+    if (-not (Test-Path -LiteralPath $Paths.HookParent)) {
+        return [pscustomobject]@{
+            Path = $Paths.HookParent; Exists = $false; Attributes = 0
+            OwnerSID = ''; GroupSID = ''; SecuritySHA256 = ''
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Paths.HookParent -PathType Container)) {
+        throw 'protected Copilot hooks parent is not a directory'
+    }
+    $null = Assert-DisposableNoReparseAncestors -Path $Paths.HookParent `
+        -AllowedRoot $Paths.Profile -RequireExists
+    $item = Get-Item -LiteralPath $Paths.HookParent -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'protected Copilot hooks parent is a reparse point'
+    }
+    $security = Get-ProtectedCopilotSecuritySHA256 $item
+    return [pscustomobject]@{
+        Path = $Paths.HookParent
+        Exists = $true
+        Attributes = [int]$item.Attributes
+        OwnerSID = $security.OwnerSID
+        GroupSID = $security.GroupSID
+        SecuritySHA256 = $security.SecuritySHA256
+    }
+}
+
+function Assert-ProtectedCopilotFingerprintEqual(
+    [pscustomobject]$Actual,
+    [pscustomobject]$Expected,
+    [string]$Context,
+    [string[]]$Properties
+) {
+    foreach ($property in $Properties) {
+        if ([string]$Actual.$property -cne [string]$Expected.$property) {
+            throw "$Context changed protected Copilot custody field $property"
+        }
+    }
+}
+
+function Save-ProtectedCopilotOriginalHook([pscustomobject]$Paths) {
+    if ($null -ne $script:CopilotOriginalHook) { return }
+    $script:CopilotOriginalHook = Get-ProtectedCopilotHookFingerprint $Paths
+    $script:CopilotOriginalHookParent = Get-ProtectedCopilotHookParentFingerprint $Paths
+    if ($script:CopilotOriginalHook.Exists) {
+        $content = [IO.File]::ReadAllText($Paths.HookConfig)
+        if ($content -match '(?i)defenseclaw') {
+            throw 'protected Copilot lane refuses a preexisting DefenseClaw-owned hook baseline'
+        }
+    }
+}
+
+function Assert-ProtectedCopilotOriginalHookRestored(
+    [pscustomobject]$Paths,
+    [switch]$RecordResult
+) {
+    if ($null -eq $script:CopilotOriginalHook -or
+        $null -eq $script:CopilotOriginalHookParent) {
+        throw 'protected Copilot cleanup lacks an authenticated hook baseline'
+    }
+    $currentHook = Get-ProtectedCopilotHookFingerprint $Paths
+    Assert-ProtectedCopilotFingerprintEqual $currentHook $script:CopilotOriginalHook `
+        'protected Copilot hook restoration' @(
+            'Path', 'Exists', 'Length', 'SHA256', 'Attributes',
+            'OwnerSID', 'GroupSID', 'SecuritySHA256'
+        )
+    $currentParent = Get-ProtectedCopilotHookParentFingerprint $Paths
+    if (-not [bool]$script:CopilotOriginalHookParent.Exists -and
+        [bool]$currentParent.Exists) {
+        $children = @(Get-ChildItem -LiteralPath $Paths.HookParent -Force)
+        if ($children.Count -eq 0) {
+            [IO.Directory]::Delete($Paths.HookParent, $false)
+            $currentParent = Get-ProtectedCopilotHookParentFingerprint $Paths
+        }
+    }
+    Assert-ProtectedCopilotFingerprintEqual $currentParent `
+        $script:CopilotOriginalHookParent 'protected Copilot hooks-parent restoration' @(
+            'Path', 'Exists', 'Attributes', 'OwnerSID', 'GroupSID', 'SecuritySHA256'
+        )
+    if ($RecordResult) {
+        Write-Result 'copilot:exact-restoration' pass `
+            'hook existence, bytes, attributes, and security custody restored exactly; credentials and other Copilot profile files were not inspected'
+    }
+}
+
+function Initialize-ProtectedCopilotRunIdentity {
+    foreach ($identity in @(
+        [pscustomobject]@{ Name = 'package run ID'; Value = $ExpectedPackageRunID },
+        [pscustomobject]@{ Name = 'package artifact ID'; Value = $ExpectedPackageArtifactID }
+    )) {
+        if ([string]$identity.Value -cnotmatch '^[1-9][0-9]*$') {
+            throw "protected Copilot $($identity.Name) is invalid"
+        }
+    }
+    if ($ExpectedPackageArtifactDigest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'protected Copilot package artifact digest is invalid'
+    }
+    if ($ExpectedPackageSourceCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        $ExpectedHarnessSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'protected Copilot package/harness source commits are invalid'
+    }
+    if ($ExpectedWorkflowRepository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') {
+        throw 'protected Copilot workflow repository identity is invalid'
+    }
+    if ($Operation -in @('run', 'cleanup') -and
+        [string]$env:GITHUB_REPOSITORY -cne $ExpectedWorkflowRepository) {
+        throw 'protected Copilot workflow repository does not match the running Actions context'
+    }
+    $script:CopilotPackageRunID = $ExpectedPackageRunID
+    $script:CopilotPackageArtifactID = $ExpectedPackageArtifactID
+    $script:CopilotPackageArtifactDigest = $ExpectedPackageArtifactDigest
+}
+
+function Assert-ProtectedCopilotSourceCheckout {
+    $checkout = [IO.Path]::GetFullPath($WorkspaceRoot).TrimEnd('\')
+    $harnessPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $workflowPath = [IO.Path]::GetFullPath((Join-Path $checkout $script:CopilotWorkflowPath))
+    if (-not (Test-PathWithin $harnessPath $checkout) -or
+        -not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
+        throw 'protected Copilot source checkout lacks the reviewed harness/workflow files'
+    }
+    $git = (Get-Command 'git.exe' -CommandType Application -ErrorAction Stop).Source
+    $head = Invoke-NativeProcess -FilePath $git -ArgumentList @(
+        '-C', $checkout, 'rev-parse', 'HEAD'
+    ) -TimeoutSeconds 30
+    if ($head.ExitCode -ne 0 -or $head.StdOut.Trim() -cne $ExpectedHarnessSourceCommit) {
+        throw 'protected Copilot source checkout is not the exact harness/workflow commit'
+    }
+    $dirty = Invoke-NativeProcess -FilePath $git -ArgumentList @(
+        '-C', $checkout, 'status', '--porcelain=v1', '--untracked-files=no'
+    ) -TimeoutSeconds 30
+    if ($dirty.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($dirty.StdOut)) {
+        throw 'protected Copilot source checkout is not clean'
+    }
+    $script:CopilotSourceCheckout = $checkout
+    $script:CopilotHarnessSourceCommit = $ExpectedHarnessSourceCommit
+    $script:CopilotHarnessSHA256 = (Get-FileHash -LiteralPath $harnessPath `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $script:CopilotWorkflowSHA256 = (Get-FileHash -LiteralPath $workflowPath `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Assert-ProtectedCopilotClient {
+    if ($ExpectedAgentVersion -cne $script:CopilotOfficialVersion) {
+        throw "protected Copilot lane requires exact official client $($script:CopilotOfficialVersion)"
+    }
+    $toolRoot = [IO.Path]::GetFullPath((Join-Path $StateRoot 'tools')).TrimEnd('\')
+    $expectedShim = Join-Path $toolRoot 'node_modules\.bin\copilot.cmd'
+    $resolvedShim = (Resolve-Path -LiteralPath $AgentPath -ErrorAction Stop).Path
+    Assert-ExactPath $resolvedShim $expectedShim 'protected Copilot npm shim'
+    $null = Assert-DisposableNoReparseAncestors -Path $resolvedShim `
+        -AllowedRoot $StateRoot -RequireExists
+    $packageRoot = Join-Path $toolRoot 'node_modules\@github\copilot'
+    $platformRoot = Join-Path $toolRoot 'node_modules\@github\copilot-win32-x64'
+    $packagePath = Join-Path $packageRoot 'package.json'
+    $platformPath = Join-Path $platformRoot 'package.json'
+    $loaderPath = Join-Path $packageRoot 'npm-loader.js'
+    $binaryPath = Join-Path $platformRoot 'copilot.exe'
+    $lockPath = Join-Path $toolRoot 'package-lock.json'
+    foreach ($path in @($packagePath, $platformPath, $loaderPath, $binaryPath, $lockPath)) {
+        $null = Assert-DisposableNoReparseAncestors -Path $path `
+            -AllowedRoot $StateRoot -RequireExists
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "protected Copilot client file is missing: $path"
+        }
+    }
+    try {
+        $package = [IO.File]::ReadAllText($packagePath) | ConvertFrom-Json -ErrorAction Stop
+        $platform = [IO.File]::ReadAllText($platformPath) | ConvertFrom-Json -ErrorAction Stop
+        $lock = [IO.File]::ReadAllText($lockPath) |
+            ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    } catch {
+        throw "protected Copilot npm metadata is invalid JSON: $($_.Exception.Message)"
+    }
+    $packageRepository = if ($package.repository -is [string]) {
+        [string]$package.repository
+    } else { [string]$package.repository.url }
+    $platformRepository = if ($platform.repository -is [string]) {
+        [string]$platform.repository
+    } else { [string]$platform.repository.url }
+    if ([string]$package.name -cne '@github/copilot' -or
+        [string]$package.version -cne $script:CopilotOfficialVersion -or
+        [string]$package.bin.copilot -cne 'npm-loader.js' -or
+        $packageRepository -cne 'git+https://github.com/github/copilot-cli.git' -or
+        [string]$platform.name -cne '@github/copilot-win32-x64' -or
+        [string]$platform.version -cne $script:CopilotOfficialVersion -or
+        $platformRepository -cne 'git+https://github.com/github/copilot-cli.git') {
+        throw 'protected Copilot npm package identity is not the exact official Windows x64 release'
+    }
+    if ([string]$lock.packages['node_modules/@github/copilot'].integrity -cne
+            $script:CopilotOfficialPackageIntegrity -or
+        [string]$lock.packages['node_modules/@github/copilot-win32-x64'].integrity -cne
+            $script:CopilotOfficialPlatformIntegrity -or
+        [string]$lock.packages['node_modules/@github/copilot'].resolved -cne
+            'https://registry.npmjs.org/@github/copilot/-/copilot-1.0.77.tgz' -or
+        [string]$lock.packages['node_modules/@github/copilot-win32-x64'].resolved -cne
+            'https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.77.tgz') {
+        throw 'protected Copilot package-lock does not prove both exact npm registry integrities'
+    }
+    $expectedShimText = @'
+@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\..\@github\copilot\npm-loader.js" %*
+'@
+    $actualShimText = ([IO.File]::ReadAllText($resolvedShim) -replace "`r`n", "`n").TrimEnd("`n")
+    if ($actualShimText -cne $expectedShimText.TrimEnd("`n")) {
+        throw 'protected Copilot npm shim is not the exact generated loader binding'
+    }
+    $binaryHash = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $signature = Get-AuthenticodeSignature -LiteralPath $binaryPath
+    if ($binaryHash -cne $script:CopilotOfficialBinarySHA256 -or
+        $signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
+        $null -eq $signature.SignerCertificate -or
+        [string]$signature.SignerCertificate.Subject -cne $script:CopilotOfficialSignerSubject -or
+        [string]$signature.SignerCertificate.Thumbprint -cne $script:CopilotOfficialSignerThumbprint) {
+        throw 'protected Copilot native binary does not match the exact GitHub-signed release'
+    }
+    $script:AgentPath = $resolvedShim
+    $script:CopilotClientSHA256 = $binaryHash
+    $script:CopilotLoaderSHA256 = (Get-FileHash -LiteralPath $loaderPath `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $script:CopilotClientSignerThumbprint = $signature.SignerCertificate.Thumbprint
+}
+
+function Get-ProtectedCopilotCleanupManifestPath {
+    return Join-Path $StateRoot 'copilot-cleanup-manifest.json'
+}
+
+function ConvertTo-ProtectedCopilotManifestFingerprint([pscustomobject]$Fingerprint) {
+    return [ordered]@{
+        path = [string]$Fingerprint.Path
+        exists = [bool]$Fingerprint.Exists
+        length = if ($null -eq $Fingerprint.PSObject.Properties['Length']) {
+            0
+        } else { [long]$Fingerprint.Length }
+        sha256 = if ($null -eq $Fingerprint.PSObject.Properties['SHA256']) {
+            ''
+        } else { [string]$Fingerprint.SHA256 }
+        attributes = [int]$Fingerprint.Attributes
+        owner_sid = [string]$Fingerprint.OwnerSID
+        group_sid = [string]$Fingerprint.GroupSID
+        security_sha256 = [string]$Fingerprint.SecuritySHA256
+    }
+}
+
+function ConvertFrom-ProtectedCopilotManifestFingerprint([object]$Fingerprint) {
+    return [pscustomobject]@{
+        Path = [string]$Fingerprint.path
+        Exists = [bool]$Fingerprint.exists
+        Length = [long]$Fingerprint.length
+        SHA256 = [string]$Fingerprint.sha256
+        Attributes = [int]$Fingerprint.attributes
+        OwnerSID = [string]$Fingerprint.owner_sid
+        GroupSID = [string]$Fingerprint.group_sid
+        SecuritySHA256 = [string]$Fingerprint.security_sha256
+    }
+}
+
+function New-ProtectedCopilotCleanupManifestDocument([pscustomobject]$Paths) {
+    return [ordered]@{
+        schema_version = 1
+        connector = 'copilot'
+        phase = 'armed'
+        hitl_claimed = $false
+        workflow_repository = $ExpectedWorkflowRepository
+        package_run_id = $script:CopilotPackageRunID
+        package_artifact_id = $script:CopilotPackageArtifactID
+        package_artifact_digest = $script:CopilotPackageArtifactDigest
+        package_source_commit = $ExpectedPackageSourceCommit
+        setup_path = $script:PackagedSetupExecutable
+        setup_sha256 = (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        source_checkout = $script:CopilotSourceCheckout
+        harness_source_commit = $script:CopilotHarnessSourceCommit
+        harness_sha256 = $script:CopilotHarnessSHA256
+        workflow_sha256 = $script:CopilotWorkflowSHA256
+        client_path = $script:AgentPath
+        client_version = $script:CopilotOfficialVersion
+        client_package_integrity = $script:CopilotOfficialPackageIntegrity
+        client_platform_integrity = $script:CopilotOfficialPlatformIntegrity
+        client_loader_sha256 = $script:CopilotLoaderSHA256
+        client_binary_sha256 = $script:CopilotClientSHA256
+        client_signer_subject = $script:CopilotOfficialSignerSubject
+        client_signer_thumbprint = $script:CopilotClientSignerThumbprint
+        profile = $Paths.Profile
+        install_root = $Paths.InstallRoot
+        data_root = $Paths.DataRoot
+        maintenance_path = $Paths.MaintenancePath
+        copilot_home = $Paths.ConfigHome
+        hook_path = $Paths.HookConfig
+        baseline_hook = ConvertTo-ProtectedCopilotManifestFingerprint `
+            $script:CopilotOriginalHook
+        baseline_hook_parent = ConvertTo-ProtectedCopilotManifestFingerprint `
+            $script:CopilotOriginalHookParent
+    }
+}
+
+function Assert-ProtectedCopilotCleanupManifestCustody([string]$ManifestPath) {
+    Assert-ProtectedPackageArtifactRoot $StateRoot
+    $null = Assert-DisposableNoReparseAncestors -Path $ManifestPath `
+        -AllowedRoot $StateRoot -RequireExists
+    $item = Get-Item -LiteralPath $ManifestPath -Force
+    if (-not ($item -is [IO.FileInfo]) -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'protected Copilot cleanup manifest is not a plain file'
+    }
+}
+
+function Write-ProtectedCopilotCleanupManifest([object]$Document) {
+    Assert-ProtectedPackageArtifactRoot $StateRoot
+    $manifestPath = Get-ProtectedCopilotCleanupManifestPath
+    $temporaryPath = "$manifestPath.$PID.tmp"
+    if (Test-Path -LiteralPath $temporaryPath) {
+        throw 'protected Copilot cleanup manifest temporary path already exists'
+    }
+    $json = $Document | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($temporaryPath, $json, [Text.UTF8Encoding]::new($false))
+    try {
+        $null = Assert-DisposableNoReparseAncestors -Path $temporaryPath `
+            -AllowedRoot $StateRoot -RequireExists
+        if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+            [IO.File]::Replace($temporaryPath, $manifestPath, $null, $true)
+        } else {
+            [IO.File]::Move($temporaryPath, $manifestPath)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            [IO.File]::Delete($temporaryPath)
+        }
+    }
+    Assert-ProtectedCopilotCleanupManifestCustody $manifestPath
+}
+
+function Read-ProtectedCopilotCleanupManifest {
+    $manifestPath = Get-ProtectedCopilotCleanupManifestPath
+    Assert-ProtectedCopilotCleanupManifestCustody $manifestPath
+    try {
+        return [IO.File]::ReadAllText($manifestPath) |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "protected Copilot cleanup manifest is invalid JSON: $($_.Exception.Message)"
+    }
+}
+
+function Assert-ProtectedCopilotCleanupManifest(
+    [object]$Manifest,
+    [pscustomobject]$Paths,
+    [string]$ExactSetup
+) {
+    $required = @(
+        'schema_version', 'connector', 'phase', 'hitl_claimed',
+        'workflow_repository', 'package_run_id', 'package_artifact_id',
+        'package_artifact_digest', 'package_source_commit', 'setup_path',
+        'setup_sha256', 'source_checkout', 'harness_source_commit',
+        'harness_sha256', 'workflow_sha256', 'client_path', 'client_version',
+        'client_package_integrity', 'client_platform_integrity',
+        'client_loader_sha256', 'client_binary_sha256',
+        'client_signer_subject', 'client_signer_thumbprint', 'profile',
+        'install_root', 'data_root', 'maintenance_path', 'copilot_home',
+        'hook_path', 'baseline_hook', 'baseline_hook_parent'
+    )
+    foreach ($field in $required) {
+        if ($null -eq $Manifest.PSObject.Properties[$field]) {
+            throw "protected Copilot cleanup manifest is missing $field"
+        }
+    }
+    if ([int]$Manifest.schema_version -ne 1 -or
+        [string]$Manifest.connector -cne 'copilot' -or
+        [bool]$Manifest.hitl_claimed -or
+        [string]$Manifest.phase -notin @('armed', 'installed-none', 'configured', 'restored')) {
+        throw 'protected Copilot cleanup manifest has an invalid schema, connector, phase, or HITL claim'
+    }
+    $actualSetupHash = (Get-FileHash -LiteralPath $ExactSetup `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    foreach ($identity in @(
+        [pscustomobject]@{ Actual = [string]$Manifest.workflow_repository; Expected = $ExpectedWorkflowRepository },
+        [pscustomobject]@{ Actual = [string]$Manifest.package_run_id; Expected = $script:CopilotPackageRunID },
+        [pscustomobject]@{ Actual = [string]$Manifest.package_artifact_id; Expected = $script:CopilotPackageArtifactID },
+        [pscustomobject]@{ Actual = [string]$Manifest.package_artifact_digest; Expected = $script:CopilotPackageArtifactDigest },
+        [pscustomobject]@{ Actual = [string]$Manifest.package_source_commit; Expected = $ExpectedPackageSourceCommit },
+        [pscustomobject]@{ Actual = [string]$Manifest.setup_path; Expected = $ExactSetup },
+        [pscustomobject]@{ Actual = [string]$Manifest.setup_sha256; Expected = $actualSetupHash },
+        [pscustomobject]@{ Actual = [string]$Manifest.source_checkout; Expected = $script:CopilotSourceCheckout },
+        [pscustomobject]@{ Actual = [string]$Manifest.harness_source_commit; Expected = $script:CopilotHarnessSourceCommit },
+        [pscustomobject]@{ Actual = [string]$Manifest.harness_sha256; Expected = $script:CopilotHarnessSHA256 },
+        [pscustomobject]@{ Actual = [string]$Manifest.workflow_sha256; Expected = $script:CopilotWorkflowSHA256 },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_path; Expected = $script:AgentPath },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_version; Expected = $script:CopilotOfficialVersion },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_package_integrity; Expected = $script:CopilotOfficialPackageIntegrity },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_platform_integrity; Expected = $script:CopilotOfficialPlatformIntegrity },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_loader_sha256; Expected = $script:CopilotLoaderSHA256 },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_binary_sha256; Expected = $script:CopilotClientSHA256 },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_signer_subject; Expected = $script:CopilotOfficialSignerSubject },
+        [pscustomobject]@{ Actual = [string]$Manifest.client_signer_thumbprint; Expected = $script:CopilotClientSignerThumbprint },
+        [pscustomobject]@{ Actual = [string]$Manifest.profile; Expected = $Paths.Profile },
+        [pscustomobject]@{ Actual = [string]$Manifest.install_root; Expected = $Paths.InstallRoot },
+        [pscustomobject]@{ Actual = [string]$Manifest.data_root; Expected = $Paths.DataRoot },
+        [pscustomobject]@{ Actual = [string]$Manifest.maintenance_path; Expected = $Paths.MaintenancePath },
+        [pscustomobject]@{ Actual = [string]$Manifest.copilot_home; Expected = $Paths.ConfigHome },
+        [pscustomobject]@{ Actual = [string]$Manifest.hook_path; Expected = $Paths.HookConfig }
+    )) {
+        if ($identity.Actual -cne $identity.Expected) {
+            throw 'protected Copilot cleanup manifest provenance or path identity mismatch'
+        }
+    }
+    $script:CopilotOriginalHook = ConvertFrom-ProtectedCopilotManifestFingerprint `
+        $Manifest.baseline_hook
+    $script:CopilotOriginalHookParent = ConvertFrom-ProtectedCopilotManifestFingerprint `
+        $Manifest.baseline_hook_parent
+    Assert-ExactPath $script:CopilotOriginalHook.Path $Paths.HookConfig `
+        'protected Copilot baseline hook path'
+    Assert-ExactPath $script:CopilotOriginalHookParent.Path $Paths.HookParent `
+        'protected Copilot baseline hook-parent path'
+}
+
+function Set-ProtectedCopilotCleanupPhase([string]$Phase) {
+    if ($Phase -notin @('installed-none', 'configured', 'restored')) {
+        throw 'invalid protected Copilot cleanup phase'
+    }
+    $manifest = Read-ProtectedCopilotCleanupManifest
+    $paths = Get-ProtectedCopilotPackagePaths
+    Assert-ProtectedCopilotCleanupManifest $manifest $paths $script:PackagedSetupExecutable
+    $manifest.phase = $Phase
+    Write-ProtectedCopilotCleanupManifest $manifest
+}
+
+function Invoke-ProtectedCopilotSetup(
+    [string[]]$Arguments,
+    [int[]]$AllowedExitCodes,
+    [string]$Label
+) {
+    return Invoke-NativeProcess -FilePath $script:PackagedSetupExecutable `
+        -ArgumentList $Arguments -TimeoutSeconds 900 -AllowedExitCodes $AllowedExitCodes `
+        -LogPath (Join-Path $script:LogRoot "packaged-setup-copilot-$Label.log")
+}
+
+function Read-ProtectedCopilotInstallState([pscustomobject]$Paths) {
+    if (-not (Test-Path -LiteralPath $Paths.StatePath -PathType Leaf)) {
+        throw "protected Copilot package state is missing: $($Paths.StatePath)"
+    }
+    try {
+        return [IO.File]::ReadAllText($Paths.StatePath) |
+            ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "protected Copilot package state is invalid JSON: $($_.Exception.Message)"
+    }
+}
+
+function Assert-ProtectedCopilotInstallState(
+    [object]$State,
+    [pscustomobject]$Paths,
+    [string]$ExpectedConnector,
+    [string]$Context
+) {
+    if ([int]$State.schema_version -lt 1 -or
+        [string]$State.install_kind -cne 'native-windows-exe' -or
+        [string]$State.install_scope -cne 'user' -or
+        [string]$State.distribution_flavor -cne 'oss' -or
+        [string]$State.source_commit -cne $ExpectedPackageSourceCommit -or
+        [string]$State.connector -cne $ExpectedConnector -or
+        [string]$State.mode -cne 'action') {
+        throw "$Context is not the exact OSS per-user package/source/connector state"
+    }
+    Assert-ExactPath ([string]$State.install_root) $Paths.InstallRoot "$Context install root"
+    Assert-ExactPath ([string]$State.command_dir) $Paths.CommandDir "$Context command directory"
+    Assert-ExactPath ([string]$State.data_root) $Paths.DataRoot "$Context data root"
+    Assert-ExactPath ([string]$State.runtime) $Paths.Runtime "$Context runtime"
+    Assert-ExactPath ([string]$State.maintenance_path) $Paths.MaintenancePath `
+        "$Context maintenance path"
+    Assert-ExactPath ([string]$State.copilot_home) $Paths.ConfigHome `
+        "$Context Copilot home"
+}
+
+function Set-ProtectedCopilotInstalledPath([pscustomobject]$Paths) {
+    $env:Path = "$($Paths.CommandDir);$env:Path"
+    $env:DEFENSECLAW_INSTALL_ROOT = $Paths.InstallRoot
+    $env:DEFENSECLAW_GATEWAY_BIN = Join-Path $Paths.CommandDir 'defenseclaw-gateway.exe'
+    foreach ($name in @('defenseclaw.exe', 'defenseclaw-gateway.exe')) {
+        $expected = Join-Path $Paths.CommandDir $name
+        if (-not (Test-Path -LiteralPath $expected -PathType Leaf)) {
+            throw "exact packaged command is missing: $expected"
+        }
+        $resolved = @(Get-Command $name -CommandType Application -ErrorAction Stop |
+            Select-Object -First 1)
+        if ($resolved.Count -ne 1) {
+            throw "exact packaged command did not resolve once: $name"
+        }
+        Assert-ExactPath ([string]$resolved[0].Source) $expected "resolved $name"
+    }
+}
+
+function Assert-ProtectedCopilotPublicGate([pscustomobject]$Paths) {
+    $stateBefore = (Get-FileHash -LiteralPath $Paths.StatePath -Algorithm SHA256).Hash
+    $configPath = Join-Path $Paths.DataRoot 'config.yaml'
+    $configBefore = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+    $backupRoot = Join-Path $Paths.DataRoot 'connector_backups\copilot'
+    $backupBefore = if (Test-Path -LiteralPath $backupRoot) {
+        Get-TreeFingerprint $backupRoot
+    } else { '<absent>' }
+    $hookBefore = Get-ProtectedCopilotHookFingerprint $Paths
+    $commands = @(
+        [pscustomobject]@{
+            Label = 'init'
+            Arguments = @(
+                'init', '--skip-install', '--non-interactive', '--yes',
+                '--connector', 'copilot', '--profile', 'action',
+                '--no-start-gateway', '--no-verify'
+            )
+        },
+        [pscustomobject]@{
+            Label = 'setup'
+            Arguments = @('setup', 'copilot', '--yes', '--mode', 'action')
+        }
+    )
+    foreach ($command in $commands) {
+        $result = Invoke-Tool 'defenseclaw' $command.Arguments @(1) -Timeout 120
+        if (($result.StdOut + "`n" + $result.StdErr) -notmatch
+            "connector 'copilot' is not_certified on windows") {
+            throw "ordinary Copilot $($command.Label) did not preserve the public not_certified diagnostic"
+        }
+    }
+    $backupAfter = if (Test-Path -LiteralPath $backupRoot) {
+        Get-TreeFingerprint $backupRoot
+    } else { '<absent>' }
+    $hookAfter = Get-ProtectedCopilotHookFingerprint $Paths
+    if ((Get-FileHash -LiteralPath $Paths.StatePath -Algorithm SHA256).Hash -cne $stateBefore -or
+        (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -cne $configBefore -or
+        $backupAfter -cne $backupBefore) {
+        throw 'ordinary Copilot init/setup changed package state, config, or connector custody'
+    }
+    Assert-ProtectedCopilotFingerprintEqual $hookAfter $hookBefore `
+        'ordinary Copilot public gate' @(
+            'Path', 'Exists', 'Length', 'SHA256', 'Attributes',
+            'OwnerSID', 'GroupSID', 'SecuritySHA256'
+        )
+    Write-Result 'public-copilot:not-certified' pass `
+        'ordinary CLI init and setup exit=1; install/config/hook/custody unchanged; public live=false'
+}
+
+function Initialize-ProtectedCopilotPackage {
+    Initialize-ProtectedCopilotRunIdentity
+    Assert-ProtectedCopilotSourceCheckout
+    $script:PackagedSetupExecutable = Assert-ExactPackagedSetup `
+        $PackagedSetupPath $ExpectedPackageSourceCommit
+    $script:ExpectedPackagedSourceCommit = $ExpectedPackageSourceCommit
+    Assert-ProtectedCopilotClient
+    $paths = Get-ProtectedCopilotPackagePaths
+    $env:COPILOT_HOME = $paths.ConfigHome
+    Assert-ExactPath $env:DEFENSECLAW_HOME $paths.DataRoot `
+        'protected Copilot harness data root'
+    $active = @(Get-Process -Name 'defenseclaw-gateway', 'defenseclaw-watchdog' `
+        -ErrorAction SilentlyContinue)
+    if ($active.Count -ne 0) {
+        throw 'protected Copilot lane requires no running DefenseClaw gateway or watchdog processes'
+    }
+    foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.MaintenancePath)) {
+        if (Test-Path -LiteralPath $path) {
+            throw "protected Copilot lane requires an absent DefenseClaw product baseline: $path"
+        }
+    }
+    if (Test-Path -LiteralPath (Get-ProtectedCopilotCleanupManifestPath)) {
+        throw 'protected Copilot run requires cleanup of the previous authenticated manifest'
+    }
+    Save-ProtectedCopilotOriginalHook $paths
+    Write-ProtectedCopilotCleanupManifest `
+        (New-ProtectedCopilotCleanupManifestDocument $paths)
+    Write-Result 'copilot:provenance' pass `
+        "package_source_commit=$ExpectedPackageSourceCommit harness_source_commit=$ExpectedHarnessSourceCommit package_run_id=$ExpectedPackageRunID artifact_id=$ExpectedPackageArtifactID artifact_digest=$ExpectedPackageArtifactDigest client=$($script:CopilotOfficialVersion) client_sha256=$($script:CopilotClientSHA256) hitl=unclaimed"
+
+    Invoke-ProtectedCopilotSetup @(
+        '/quiet', '/norestart', 'INSTALLSCOPE=user',
+        'CONNECTOR=none', 'MODE=action', 'STARTGATEWAY=0'
+    ) @(0) 'fresh-none-install' | Out-Null
+    $script:ProtectedCopilotPackageInstalled = $true
+    $state = Read-ProtectedCopilotInstallState $paths
+    Assert-ProtectedCopilotInstallState $state $paths 'none' 'fresh protected Copilot package state'
+    Set-ProtectedCopilotInstalledPath $paths
+    Assert-ProtectedCopilotOriginalHookRestored $paths
+    Set-ProtectedCopilotCleanupPhase 'installed-none'
+    Assert-ProtectedCopilotPublicGate $paths
+
+    Invoke-ProtectedCopilotSetup @(
+        '/upgrade', '/quiet', '/norestart',
+        'CONNECTOR=copilot', 'MODE=action', 'STARTGATEWAY=0'
+    ) @(0) 'restricted-copilot-upgrade' | Out-Null
+    $state = Read-ProtectedCopilotInstallState $paths
+    Assert-ProtectedCopilotInstallState $state $paths 'copilot' `
+        'restricted Copilot package state'
+    Set-ProtectedCopilotInstalledPath $paths
+    $registration = [IO.File]::ReadAllText($paths.HookConfig)
+    Assert-CopilotSynchronousWindowsHookConfig $registration `
+        'restricted package-created Copilot registration'
+    Set-ProtectedCopilotCleanupPhase 'configured'
+    Write-Result 'package-setup:copilot' pass `
+        'exact package upgraded connector=none to the restricted Copilot action setup; complete 14-event hook contract installed'
+    Write-Result 'copilot:hitl' skip `
+        'HITL is excluded from this delta acceptance and remains unverified/unclaimed'
+}
+
+function Assert-ProtectedCopilotConfiguredPosture(
+    [pscustomobject]$Paths,
+    [string]$Context,
+    [switch]$RequireGatewayRunning,
+    [AllowNull()][pscustomobject]$ExpectedHookFingerprint = $null
+) {
+    $statusResult = Invoke-Tool 'defenseclaw' @('status', '--json') @(0) -Timeout 45
+    try { $status = $statusResult.StdOut | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw "$Context Copilot status --json is invalid: $($_.Exception.Message)" }
+    if ([bool]$status.sidecar.running -ne [bool]$RequireGatewayRunning) {
+        throw "$Context Copilot status sidecar.running is not $([bool]$RequireGatewayRunning)"
+    }
+    $rows = @($status.connectors)
+    $copilot = @($rows | Where-Object { [string]$_.name -ceq 'copilot' })
+    if ($rows.Count -ne 1 -or $copilot.Count -ne 1 -or
+        [string]$copilot[0].source -cne 'manual' -or
+        [string]$copilot[0].mode -cne 'action' -or
+        -not [bool]$copilot[0].enabled) {
+        throw "$Context status does not expose the exact manual Copilot action/enabled roster"
+    }
+    $state = Read-ProtectedCopilotInstallState $Paths
+    Assert-ProtectedCopilotInstallState $state $Paths 'copilot' "$Context install-state"
+    $registration = [IO.File]::ReadAllText($Paths.HookConfig)
+    Assert-CopilotSynchronousWindowsHookConfig $registration "$Context Copilot registration"
+    if ($null -ne $ExpectedHookFingerprint) {
+        $current = Get-ProtectedCopilotHookFingerprint $Paths
+        Assert-ProtectedCopilotFingerprintEqual $current $ExpectedHookFingerprint `
+            "$Context Copilot registration" @(
+                'Path', 'Exists', 'Length', 'SHA256', 'Attributes',
+                'OwnerSID', 'GroupSID', 'SecuritySHA256'
+            )
+    }
+    Write-Result "copilot:posture:$Context" pass `
+        "sidecar_running=$([bool]$RequireGatewayRunning) roster=copilot/manual/action/enabled hooks=14"
+}
+
+function Repair-ProtectedCopilotPackage {
+    $paths = Get-ProtectedCopilotPackagePaths
+    $fingerprint = Get-ProtectedCopilotHookFingerprint $paths
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    Invoke-ProtectedCopilotSetup @('/repair', '/quiet', '/norestart') @(0) `
+        'repair-copilot-roster' | Out-Null
+    Set-ProtectedCopilotInstalledPath $paths
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    Assert-ProtectedCopilotConfiguredPosture $paths 'repair' `
+        -ExpectedHookFingerprint $fingerprint
+    Write-Result 'package-setup:repair-copilot' pass `
+        'no-override repair preserved exact source, Copilot home, action roster, and 14-event hook bytes'
+
+    Invoke-ProtectedCopilotSetup @('/upgrade', '/quiet', '/norestart') @(0) `
+        'upgrade-copilot-roster' | Out-Null
+    Set-ProtectedCopilotInstalledPath $paths
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    Assert-ProtectedCopilotConfiguredPosture $paths 'upgrade' `
+        -ExpectedHookFingerprint $fingerprint
+    Write-Result 'package-setup:upgrade-copilot' pass `
+        'same-package no-override upgrade preserved exact source, Copilot home, action roster, and hook bytes'
+
+    Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+    Wait-Gateway
+    Assert-ProtectedCopilotConfiguredPosture $paths 'ready' -RequireGatewayRunning `
+        -ExpectedHookFingerprint $fingerprint
+    Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+    Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+    Wait-Gateway
+    Assert-ProtectedCopilotConfiguredPosture $paths 'restart' -RequireGatewayRunning `
+        -ExpectedHookFingerprint $fingerprint
+    Write-Result 'copilot:restart-persistence' pass `
+        'gateway stop/start preserved exact status roster, source, Copilot home, and 14-event hook custody'
+}
+
+function Invoke-ProtectedCopilotCleanup([switch]$PreserveRunInputs) {
+    Initialize-ProtectedCopilotRunIdentity
+    Assert-ProtectedCopilotSourceCheckout
+    $paths = Get-ProtectedCopilotPackagePaths
+    $env:COPILOT_HOME = $paths.ConfigHome
+    $manifestPath = Get-ProtectedCopilotCleanupManifestPath
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.MaintenancePath)) {
+            if (Test-Path -LiteralPath $path) {
+                throw 'protected Copilot cleanup found product state without its authenticated manifest'
+            }
+        }
+        if (-not $PreserveRunInputs) {
+            $setup = [IO.Path]::GetFullPath($PackagedSetupPath)
+            if ([IO.Path]::GetFileName($setup) -cne 'DefenseClawSetup-x64.exe') {
+                throw 'protected Copilot pre-mutation cleanup received an invalid package path'
+            }
+            $packageRoot = Split-Path -Parent $setup
+            if (Test-Path -LiteralPath $StateRoot) {
+                Assert-ProtectedPackageArtifactRoot $StateRoot
+            }
+            if (Test-Path -LiteralPath $packageRoot) {
+                Assert-ProtectedPackageArtifactRoot $packageRoot
+            }
+            Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+            Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+        }
+        return
+    }
+    $script:PackagedSetupExecutable = Assert-ExactPackagedSetup `
+        $PackagedSetupPath $ExpectedPackageSourceCommit
+    $script:ExpectedPackagedSourceCommit = $ExpectedPackageSourceCommit
+    Assert-ProtectedCopilotClient
+    $manifest = Read-ProtectedCopilotCleanupManifest
+    Assert-ProtectedCopilotCleanupManifest $manifest $paths $script:PackagedSetupExecutable
+    if (Test-Path -LiteralPath $paths.InstallRoot) {
+        Set-ProtectedCopilotInstalledPath $paths
+        try {
+            Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+        } catch {
+            Write-Warning (Protect-LogText $_.Exception.Message)
+        }
+        Invoke-Tool 'defenseclaw-gateway' @(
+            'connector', 'teardown', '--connector', 'copilot'
+        ) @(0, 1) -Timeout 120 | Out-Null
+        Invoke-Tool 'defenseclaw-gateway' @(
+            'connector', 'verify', '--connector', 'copilot'
+        ) @(0) -Timeout 120 | Out-Null
+        Assert-ProtectedCopilotOriginalHookRestored $paths
+        Invoke-ProtectedCopilotSetup @(
+            '/uninstall', '/quiet', '/norestart', 'DELETEUSERDATA=1'
+        ) @(0, 3010) 'final-uninstall' | Out-Null
+    } elseif (Test-Path -LiteralPath $paths.DataRoot) {
+        throw 'protected Copilot cleanup found data without the exact installed package'
+    }
+    foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.MaintenancePath)) {
+        if (Test-Path -LiteralPath $path) {
+            throw "protected Copilot cleanup left managed package state: $path"
+        }
+    }
+    Assert-ProtectedCopilotOriginalHookRestored $paths -RecordResult
+    if ([string]$manifest.phase -cne 'restored') {
+        Set-ProtectedCopilotCleanupPhase 'restored'
+    }
+    $script:ProtectedCopilotPackageInstalled = $false
+    if ($PreserveRunInputs) { return }
+    $packageRoot = Split-Path -Parent $script:PackagedSetupExecutable
+    Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+    Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+}
+
 function Install-Agent {
     if ($Connector -in @('hermes', 'windsurf')) {
         throw (
@@ -4269,18 +5821,21 @@ function Install-Agent {
             'client runner; this deterministic harness does not substitute a shell or compatibility workaround.'
         )
     }
-    if ($ReleaseCertification) {
+    if ($ProtectedCopilotRunner) {
+        Assert-ProtectedCopilotClient
+    }
+    if ($ReleaseCertification -or $ProtectedCopilotRunner) {
         if ([string]::IsNullOrWhiteSpace($AgentPath) -or
             [string]::IsNullOrWhiteSpace($ExpectedAgentVersion)) {
-            throw 'release certification requires an explicit preinstalled agent path and exact version'
+            throw 'protected/release certification requires an explicit preinstalled agent path and exact version'
         }
         if ($ExpectedAgentVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-            throw "release certification requires an exact numeric client version, got: $ExpectedAgentVersion"
+            throw "protected/release certification requires an exact numeric client version, got: $ExpectedAgentVersion"
         }
         $script:AgentPath = (Resolve-Path -LiteralPath $AgentPath -ErrorAction Stop).Path
         $statePrefix = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\') + '\'
         if (-not $script:AgentPath.StartsWith($statePrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "release client must be installed below the disposable certification state root: $script:AgentPath"
+            throw "protected/release client must be installed below the disposable certification state root: $script:AgentPath"
         }
         $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
         $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs `
@@ -4901,8 +6456,8 @@ function Invoke-ContractRun {
     if (Test-Path -LiteralPath $session) { Invoke-Hook 'SessionStart' $session allow }
     Invoke-Hook 'PreTool-allow' (Join-Path $golden 'pre_tool_allow.json') allow
     Invoke-DangerousCommandCorpus action
-    $actionBlockExpectation = if ($Connector -eq 'cursor') { 'allow' } else { 'block' }
-    $requireAdvisoryBlock = $Connector -eq 'cursor'
+    $actionBlockExpectation = 'block'
+    $requireAdvisoryBlock = $false
     Invoke-Hook 'PreTool-block' (Join-Path $golden 'pre_tool_block.json') `
         $actionBlockExpectation $requireAdvisoryBlock
     Assert-Evidence
@@ -4936,6 +6491,10 @@ function Invoke-LiveRun {
     Start-Sleep -Seconds 1
     if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $start)) { throw 'lifecycle hooks did not fire' }
     Write-Result lifecycle:fires pass
+    if ($Connector -eq 'copilot' -and $ProtectedCopilotRunner) {
+        Write-Result 'copilot:authenticated-session' pass `
+            'exact official client completed a harmless prompt through the existing user session; no login, token, or credential material was requested or inspected'
+    }
     $sentinelRoot = Join-Path $StateRoot 'sentinels'; [IO.Directory]::CreateDirectory($sentinelRoot) | Out-Null
     $allow = Join-Path $sentinelRoot 'allow.marker'
     $allowPrompt = "Run exactly this PowerShell command and nothing else: Start-Sleep -Milliseconds 750; Set-Content -LiteralPath '$allow' -Value 'dc-allow'"
@@ -4976,8 +6535,13 @@ function Invoke-AuthenticatedAntigravityInteractivePrepare {
     Invoke-Tool 'defenseclaw-gateway' @('status') @(0) -Timeout 30 | Out-Null
     $paths = Get-AuthenticatedAntigravityPackagePaths
     $state = Read-AuthenticatedAntigravityInstallState $paths
-    Assert-AuthenticatedAntigravityInstallState `
-        $state $paths $ExpectedPackageSourceCommit 'interactive hold package state'
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        Assert-AuthenticatedAntigravityExistingInstallState `
+            $state $paths $ExpectedPackageSourceCommit 'interactive hold package state'
+    } else {
+        Assert-AuthenticatedAntigravityInstallState `
+            $state $paths $ExpectedPackageSourceCommit 'interactive hold package state'
+    }
     Assert-OfficialAntigravityClient $paths
     Assert-AntigravityWindowsHookCommands ([IO.File]::ReadAllText($paths.HookConfig))
     $cleanupState = Read-AuthenticatedAntigravityCleanupManifest
@@ -4986,6 +6550,18 @@ function Invoke-AuthenticatedAntigravityInteractivePrepare {
     $heldState = Read-AuthenticatedAntigravityHeldState
     Assert-AuthenticatedAntigravityHeldState $heldState $paths @('armed')
     $activeHook = Get-AntigravityHookConfigFingerprint $paths
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        Invoke-Tool 'defenseclaw-gateway' @('stop') @(0, 1) -Timeout 60 | Out-Null
+        Assert-AuthenticatedAntigravityConfiguredPosture `
+            $paths 'restart-stopped' -ExpectedHookFingerprint $activeHook
+        Invoke-Tool 'defenseclaw-gateway' @('start') @(0) -Timeout 90 | Out-Null
+        Wait-Gateway
+        Assert-AuthenticatedAntigravityConfiguredPosture `
+            $paths 'restart-restored' -RequireGatewayRunning `
+            -ExpectedHookFingerprint $activeHook
+        Write-Result 'antigravity:restart-persistence' pass `
+            'task-specific gateway stop/start preserved exact hook and action posture'
+    }
     Set-AuthenticatedAntigravityHeldStateActiveHook $heldState $activeHook
     $evidenceStart = @(Get-EventLines $script:GatewayJsonl).Count
     Set-AuthenticatedAntigravityHeldStatePhase $heldState held $evidenceStart
@@ -5000,6 +6576,9 @@ function Invoke-AuthenticatedAntigravityInteractivePrepare {
         package_artifact_digest = $script:AntigravityPackageArtifactDigest
         hold_id = [string]$heldState.hold_id
         canonical_agy_path = $paths.AntigravityExecutable
+        certification_scope = $AntigravityCertificationScope
+        profile_custody_mode = $AntigravityProfileCustodyMode
+        hitl_status = [string]$heldState.hitl_status
         operation = 'hold'
         constraints = @(
             'launch only through run-windows.ps1 -Operation hold with the exact identities above',
@@ -5035,10 +6614,16 @@ function Initialize-AuthenticatedAntigravityHeldOperation(
     Assert-AuthenticatedAntigravityHeldState `
         $heldState $paths $AllowedPhases -RequireHoldID
     $state = Read-AuthenticatedAntigravityInstallState $paths
-    Assert-AuthenticatedAntigravityInstallState `
-        $state $paths $ExpectedPackageSourceCommit 'interactive lifecycle package state'
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        Assert-AuthenticatedAntigravityExistingInstallState `
+            $state $paths $ExpectedPackageSourceCommit 'interactive lifecycle package state'
+    } else {
+        Assert-AuthenticatedAntigravityInstallState `
+            $state $paths $ExpectedPackageSourceCommit 'interactive lifecycle package state'
+    }
     Set-AuthenticatedAntigravityInstalledPath $paths
-    $script:AuthenticatedAntigravityPackageInstalled = $true
+    $script:AuthenticatedAntigravityPackageInstalled = `
+        ($AntigravityProfileCustodyMode -ceq 'fresh')
     Assert-OfficialAntigravityClient $paths
     Assert-AntigravityWindowsHookCommands ([IO.File]::ReadAllText($paths.HookConfig))
     return [pscustomobject]@{ Paths = $paths; State = $heldState }
@@ -5077,12 +6662,17 @@ function Invoke-AuthenticatedAntigravityInteractiveHold {
     }
     Set-AuthenticatedAntigravityHeldStatePhase $context.State interactive
     Write-Host ''
-    Write-Host 'Antigravity protected interactive segment. Complete these prompts in this exact order.'
+    Write-Host 'Antigravity protected interactive segment. Complete these commands in this exact order.'
     Write-Host "1. ALLOW: Run exactly this PowerShell command: Set-Content -LiteralPath '$($sentinels.Allow)' -Value '$($context.State.hold_id)'"
     Write-Host "2. DENY: Run exactly this PowerShell command: Write-Output 'socat EXEC:'; Set-Content -LiteralPath '$($sentinels.Deny)' -Value '$($context.State.hold_id)'"
-    Write-Host "3. ASK/APPROVE: Run exactly this PowerShell command, then approve the DefenseClaw prompt: Write-Output env; Set-Content -LiteralPath '$($sentinels.AskApprove)' -Value '$($context.State.hold_id)'"
-    Write-Host "4. ASK/DECLINE: Run exactly this PowerShell command, then decline the DefenseClaw prompt: Write-Output env; Set-Content -LiteralPath '$($sentinels.AskDecline)' -Value '$($context.State.hold_id)'"
-    Write-Host 'Exit the native TUI with Ctrl+D when all four prompts finish. Do not use /logout.'
+    if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        Write-Host "3. ASK/APPROVE: Run exactly this PowerShell command, then approve the DefenseClaw prompt: Write-Output env; Set-Content -LiteralPath '$($sentinels.AskApprove)' -Value '$($context.State.hold_id)'"
+        Write-Host "4. ASK/DECLINE: Run exactly this PowerShell command, then decline the DefenseClaw prompt: Write-Output env; Set-Content -LiteralPath '$($sentinels.AskDecline)' -Value '$($context.State.hold_id)'"
+        Write-Host 'Exit the native TUI with Ctrl+D when all four commands finish. Do not use /logout.'
+    } else {
+        Write-Host 'HITL is excluded from this internal delta scope. Do not run or claim ask/approve/decline.'
+        Write-Host 'Exit the native TUI with Ctrl+D when the allow and deny commands finish. Do not use /logout.'
+    }
     Write-Host ''
     $workspace = Join-Path $StateRoot 'interactive-workspace'
     [IO.Directory]::CreateDirectory($workspace) | Out-Null
@@ -5188,25 +6778,28 @@ function Assert-AuthenticatedAntigravityInteractiveRecordSet([object[]]$Records)
     $deny = @($preTool | Where-Object { $_.action -ceq 'block' -and $_.raw_action -ceq 'block' })
     $asks = @($preTool | Where-Object { $_.action -ceq 'confirm' -and $_.raw_action -ceq 'confirm' } |
         Sort-Object line)
-    if ($allow.Count -ne 1 -or $deny.Count -ne 1 -or $asks.Count -ne 2) {
-        throw 'interactive Antigravity evidence lacks exact allow/deny/two-ask decisions'
+    $expectedAskCount = if ($AntigravityCertificationScope -ceq 'full-hilt') { 2 } else { 0 }
+    if ($allow.Count -ne 1 -or $deny.Count -ne 1 -or $asks.Count -ne $expectedAskCount) {
+        throw "interactive Antigravity evidence lacks exact allow/deny/$expectedAskCount-ask decisions"
     }
-    foreach ($record in @($allow[0], $deny[0], $asks[0], $asks[1])) {
+    $decisionRecords = @($allow[0], $deny[0]) + @($asks)
+    foreach ($record in $decisionRecords) {
         if ([string]::IsNullOrWhiteSpace($record.tool_id) -or
             [string]::IsNullOrWhiteSpace($record.request_id) -or
             [string]::IsNullOrWhiteSpace($record.record_id)) {
             throw 'interactive Antigravity PreToolUse evidence lacks canonical record/request/tool identities'
         }
     }
-    $toolIDs = @($allow[0].tool_id, $deny[0].tool_id, $asks[0].tool_id, $asks[1].tool_id)
-    if (@($toolIDs | Sort-Object -Unique).Count -ne 4) {
+    $toolIDs = @($decisionRecords | ForEach-Object { $_.tool_id })
+    if (@($toolIDs | Sort-Object -Unique).Count -ne $decisionRecords.Count) {
         throw 'interactive Antigravity PreToolUse evidence reused a tool-invocation identity'
     }
     if ([string]$deny[0].severity -cne 'CRITICAL' -or
         @($deny[0].rule_ids) -notcontains 'CMD-SOCAT-EXEC' -or
-        @($asks | Where-Object {
-            [string]$_.severity -cne 'HIGH' -or @($_.rule_ids) -notcontains 'CMD-ENV-DUMP'
-        }).Count -ne 0) {
+        ($AntigravityCertificationScope -ceq 'full-hilt' -and
+            @($asks | Where-Object {
+                [string]$_.severity -cne 'HIGH' -or @($_.rule_ids) -notcontains 'CMD-ENV-DUMP'
+            }).Count -ne 0)) {
         throw 'interactive Antigravity policy evidence drifted from CRITICAL deny and HIGH confirm rules'
     }
     $postTool = @($sessionRecords | Where-Object { $_.event -ceq 'PostToolUse' })
@@ -5216,14 +6809,15 @@ function Assert-AuthenticatedAntigravityInteractiveRecordSet([object[]]$Records)
     $denyPost = @($postTool | Where-Object {
         $_.tool_id -ceq $deny[0].tool_id
     })
-    $approvedPost = @($postTool | Where-Object {
-        $_.tool_id -ceq $asks[0].tool_id
+    $approvedPost = @(if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        $postTool | Where-Object { $_.tool_id -ceq $asks[0].tool_id }
     })
-    $declinedPost = @($postTool | Where-Object {
-        $_.tool_id -ceq $asks[1].tool_id
+    $declinedPost = @(if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        $postTool | Where-Object { $_.tool_id -ceq $asks[1].tool_id }
     })
     if ($allowPost.Count -lt 1 -or $denyPost.Count -ne 0 -or
-        $approvedPost.Count -lt 1 -or $declinedPost.Count -ne 0) {
+        ($AntigravityCertificationScope -ceq 'full-hilt' -and
+            ($approvedPost.Count -lt 1 -or $declinedPost.Count -ne 0))) {
         throw 'interactive Antigravity evidence does not distinguish executed allow/approved commands from denied/declined non-execution'
     }
     return [pscustomobject]@{
@@ -5251,20 +6845,50 @@ function Assert-AuthenticatedAntigravityInteractiveEvidence(
     $allowPost = @($validated.AllowPost)
     $approvedPost = @($validated.ApprovedPost)
     $sentinels = Get-AuthenticatedAntigravityInteractiveSentinels $HeldState
-    foreach ($path in @($sentinels.Allow, $sentinels.AskApprove)) {
+    $requiredPresentSentinels = @($sentinels.Allow)
+    if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        $requiredPresentSentinels += $sentinels.AskApprove
+    }
+    foreach ($path in $requiredPresentSentinels) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
             [IO.File]::ReadAllText($path).Trim() -cne [string]$HeldState.hold_id) {
             throw "interactive Antigravity approved sentinel is missing or invalid: $path"
         }
     }
-    foreach ($path in @($sentinels.Deny, $sentinels.AskDecline)) {
+    $requiredAbsentSentinels = @($sentinels.Deny, $sentinels.AskDecline)
+    if ($AntigravityCertificationScope -ceq 'enforcement-only') {
+        $requiredAbsentSentinels += $sentinels.AskApprove
+    }
+    foreach ($path in $requiredAbsentSentinels) {
         if (Test-Path -LiteralPath $path) {
             throw "interactive Antigravity denied/declined command produced a forbidden sentinel: $path"
         }
     }
+    $outcomes = [Collections.Generic.List[object]]::new()
+    $outcomes.Add([ordered]@{ name = 'allow'; action = 'allow'; native_decision = 'allow'; sentinel = 'present'; decision_line = $allow[0].line; record_id = $allow[0].record_id; request_id = $allow[0].request_id; tool_invocation_id = $allow[0].tool_id; post_tool_record_ids = @($allowPost.record_id) })
+    $outcomes.Add([ordered]@{ name = 'deny'; action = 'block'; native_decision = 'deny'; severity = $deny[0].severity; rule_ids = @($deny[0].rule_ids); sentinel = 'absent'; decision_line = $deny[0].line; record_id = $deny[0].record_id; request_id = $deny[0].request_id; tool_invocation_id = $deny[0].tool_id; post_tool_record_ids = @() })
+    if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        $outcomes.Add([ordered]@{ name = 'ask_approve'; action = 'confirm'; native_decision = 'ask'; native_interaction = 'approved'; severity = $asks[0].severity; rule_ids = @($asks[0].rule_ids); sentinel = 'present'; post_tool = 'present'; decision_line = $asks[0].line; record_id = $asks[0].record_id; request_id = $asks[0].request_id; tool_invocation_id = $asks[0].tool_id; post_tool_record_ids = @($approvedPost.record_id) })
+        $outcomes.Add([ordered]@{ name = 'ask_decline'; action = 'confirm'; native_decision = 'ask'; native_interaction = 'declined'; severity = $asks[1].severity; rule_ids = @($asks[1].rule_ids); sentinel = 'absent'; post_tool = 'absent'; decision_line = $asks[1].line; record_id = $asks[1].record_id; request_id = $asks[1].request_id; tool_invocation_id = $asks[1].tool_id; post_tool_record_ids = @() })
+    }
+    $limitations = [Collections.Generic.List[string]]::new()
+    $limitations.Add('raw protected-lane test output; not certification or validated_versions evidence')
+    $limitations.Add('does not prove public Setup Antigravity support or its internal child-auth/bootstrap path')
+    if ($AntigravityCertificationScope -ceq 'enforcement-only') {
+        $limitations.Add('HITL ask/approve/decline is excluded, unverified, unclaimed, and must not be inferred from this evidence')
+    }
+    if ($AntigravityProfileCustodyMode -ceq 'existing') {
+        $limitations.Add('local package repair is unverified/unclaimed; exact-package CI or prior authentic repair evidence requires separate promotion review')
+    }
     $evidence = [ordered]@{
-        schema_version = 1
+        schema_version = 2
         kind = 'antigravity-interactive-raw-evidence'
+        certification_scope = $AntigravityCertificationScope
+        profile_custody_mode = $AntigravityProfileCustodyMode
+        hitl_status = [string]$HeldState.hitl_status
+        local_repair_status = if ($AntigravityProfileCustodyMode -ceq 'existing') {
+            'unverified-unclaimed'
+        } else { 'verified' }
         package_source_commit = $ExpectedPackageSourceCommit
         harness_source_commit = $ExpectedHarnessSourceCommit
         package_run_id = $script:AntigravityPackageRunID
@@ -5291,16 +6915,8 @@ function Assert-AuthenticatedAntigravityInteractiveEvidence(
                 })
             }
         })
-        outcomes = @(
-            [ordered]@{ name = 'allow'; action = 'allow'; native_decision = 'allow'; sentinel = 'present'; decision_line = $allow[0].line; record_id = $allow[0].record_id; request_id = $allow[0].request_id; tool_invocation_id = $allow[0].tool_id; post_tool_record_ids = @($allowPost.record_id) },
-            [ordered]@{ name = 'deny'; action = 'block'; native_decision = 'deny'; severity = $deny[0].severity; rule_ids = @($deny[0].rule_ids); sentinel = 'absent'; decision_line = $deny[0].line; record_id = $deny[0].record_id; request_id = $deny[0].request_id; tool_invocation_id = $deny[0].tool_id; post_tool_record_ids = @() },
-            [ordered]@{ name = 'ask_approve'; action = 'confirm'; native_decision = 'ask'; native_interaction = 'approved'; severity = $asks[0].severity; rule_ids = @($asks[0].rule_ids); sentinel = 'present'; post_tool = 'present'; decision_line = $asks[0].line; record_id = $asks[0].record_id; request_id = $asks[0].request_id; tool_invocation_id = $asks[0].tool_id; post_tool_record_ids = @($approvedPost.record_id) },
-            [ordered]@{ name = 'ask_decline'; action = 'confirm'; native_decision = 'ask'; native_interaction = 'declined'; severity = $asks[1].severity; rule_ids = @($asks[1].rule_ids); sentinel = 'absent'; post_tool = 'absent'; decision_line = $asks[1].line; record_id = $asks[1].record_id; request_id = $asks[1].request_id; tool_invocation_id = $asks[1].tool_id; post_tool_record_ids = @() }
-        )
-        limitations = @(
-            'raw protected-lane test output; not certification or validated_versions evidence',
-            'does not prove public Setup Antigravity support or its internal child-auth/bootstrap path'
-        )
+        outcomes = $outcomes.ToArray()
+        limitations = $limitations.ToArray()
     }
     $evidencePath = Join-Path $StateRoot 'antigravity-interactive-evidence.json'
     [IO.File]::WriteAllText(
@@ -5309,8 +6925,11 @@ function Assert-AuthenticatedAntigravityInteractiveEvidence(
         [Text.UTF8Encoding]::new($false)
     )
     Assert-AuthenticatedAntigravityCleanupManifestCustody $evidencePath
+    $decisionDetail = if ($AntigravityCertificationScope -ceq 'full-hilt') {
+        'allow/deny/ask approve/ask decline'
+    } else { 'allow/deny; HITL unverified/unclaimed' }
     Write-Result 'antigravity:interactive-evidence' pass `
-        'one native no-bypass session captured five lifecycle events plus allow/deny/ask approve/ask decline; raw protected-lane output only'
+        "one native no-bypass session captured five lifecycle events plus $decisionDetail; raw protected-lane output only"
 }
 
 function Invoke-AuthenticatedAntigravityInteractiveResume {
@@ -5451,6 +7070,7 @@ function Stage-Diagnostics {
         $script:GatewayJsonl,
         (Join-Path $env:DEFENSECLAW_HOME 'gateway.log'),
         (Join-Path $env:DEFENSECLAW_HOME 'watchdog.log'),
+        (Get-ProtectedCopilotCleanupManifestPath),
         (Get-AuthenticatedAntigravityCleanupManifestPath),
         (Get-AuthenticatedAntigravityHeldStatePath),
         (Join-Path $StateRoot 'antigravity-interactive-instructions.json'),
@@ -5491,7 +7111,14 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
     if (Test-Path -LiteralPath $fixtureRoot) {
         throw 'authenticated Antigravity held-state fixture root already exists'
     }
+    $custodyFixtureRoot = Join-Path ([IO.Path]::GetTempPath()) (
+        'dc-antigravity-custody-fixture-' + [Guid]::NewGuid().ToString('N')
+    )
+    if (Test-Path -LiteralPath $custodyFixtureRoot) {
+        throw 'authenticated Antigravity custody fixture root already exists'
+    }
     [IO.Directory]::CreateDirectory($fixtureRoot) | Out-Null
+    [IO.Directory]::CreateDirectory($custodyFixtureRoot) | Out-Null
     try {
         $StateRoot = Join-Path $fixtureRoot 'state'
         [IO.Directory]::CreateDirectory($StateRoot) | Out-Null
@@ -5534,13 +7161,16 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
             InstallRoot = $installRoot
             StatePath = Join-Path $installRoot 'install-state.json'
             DataRoot = $dataRoot
+            LaneDataRoot = $dataRoot
+            CommandDir = Join-Path $installRoot 'bin'
+            MaintenancePath = Join-Path $localAppData 'DefenseClaw\InstallerCache\DefenseClawSetup-x64.exe'
             AntigravityProfileRoot = $profileRoot
             ConfigHome = $configHome
             HookConfig = Join-Path $configHome 'hooks.json'
             AntigravityVendorRoot = $vendorRoot
             AntigravityBinRoot = Join-Path $vendorRoot 'bin'
             AntigravityExecutable = Join-Path $vendorRoot 'bin\agy.exe'
-            AntigravityStagingRoot = Join-Path $fixtureRoot 'official-client-staging'
+            AntigravityStagingRoot = Join-Path $localAppData 'antigravity\staging'
         }
 
         [IO.Directory]::CreateDirectory($paths.AntigravityProfileRoot) | Out-Null
@@ -5667,6 +7297,22 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
             Assert-AuthenticatedAntigravityInteractiveRecordSet $policyDrift
         } 'deny policy severity drift'
 
+        $fullScope = $AntigravityCertificationScope
+        try {
+            $AntigravityCertificationScope = 'enforcement-only'
+            $enforcementRecords = @($records | Where-Object {
+                $_.tool_id -notin @('tool-approve', 'tool-decline')
+            })
+            $validatedEnforcement = `
+                Assert-AuthenticatedAntigravityInteractiveRecordSet $enforcementRecords
+            if (@($validatedEnforcement.SessionRecords).Count -ne 6 -or
+                @($validatedEnforcement.Asks).Count -ne 0) {
+                throw 'authenticated Antigravity enforcement-only evidence silently claimed HITL'
+            }
+        } finally {
+            $AntigravityCertificationScope = $fullScope
+        }
+
         $cleanup = New-AuthenticatedAntigravityCleanupManifestDocument $paths -InteractiveCampaign
         Assert-AuthenticatedAntigravityCleanupManifest `
             $cleanup $paths $script:PackagedSetupExecutable
@@ -5735,6 +7381,163 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
                 ([IO.FileAttributes]::ReparsePoint) 'held-state fixture reparse'
         } 'reparse point'
 
+        $stateSecurity = [Security.AccessControl.DirectorySecurity]::new()
+        $stateSecurity.SetAccessRuleProtection($true, $false)
+        foreach ($sid in @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+            $stateRule = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid),
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+                    [Security.AccessControl.InheritanceFlags]::ObjectInherit,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+            [void]$stateSecurity.AddAccessRule($stateRule)
+        }
+        [IO.FileSystemAclExtensions]::SetAccessControl(
+            (Get-Item -LiteralPath $StateRoot -Force), $stateSecurity
+        )
+        Assert-ProtectedPackageArtifactRoot $StateRoot
+
+        $savedScope = $AntigravityCertificationScope
+        $savedCustodyMode = $AntigravityProfileCustodyMode
+        $savedOriginalConfig = $script:AntigravityOriginalConfig
+        $savedOriginalParents = $script:AntigravityOriginalConfigParents
+        $savedOriginalHookSDDL = $script:AntigravityOriginalHookSDDL
+        $savedOriginalHookAttributes = $script:AntigravityOriginalHookAttributes
+        $savedVendorFingerprint = $script:AntigravityVendorFingerprint
+        $savedPackageFingerprint = $script:AntigravityExistingPackageFingerprint
+        try {
+            $AntigravityCertificationScope = 'enforcement-only'
+            $AntigravityProfileCustodyMode = 'existing'
+
+            $custodyPaths = Copy-AuthenticatedAntigravityFixtureDocument $paths
+            $custodyPaths.Profile = $custodyFixtureRoot
+            $custodyPaths.AntigravityProfileRoot = `
+                Join-Path $custodyFixtureRoot '.gemini'
+            $custodyPaths.ConfigHome = `
+                Join-Path $custodyPaths.AntigravityProfileRoot 'config'
+            $custodyPaths.HookConfig = Join-Path $custodyPaths.ConfigHome 'hooks.json'
+            [IO.Directory]::CreateDirectory($custodyPaths.ConfigHome) | Out-Null
+            $originalHookBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+                '{"fixture":"existing-profile-original"}'
+            )
+            [IO.File]::WriteAllBytes($custodyPaths.HookConfig, $originalHookBytes)
+            $script:AntigravityOriginalConfig = `
+                Get-AntigravityHookConfigFingerprint $custodyPaths
+            $script:AntigravityOriginalHookSDDL = `
+                [string]$script:AntigravityOriginalConfig.SecuritySDDL
+            $script:AntigravityOriginalHookAttributes = `
+                [int]$script:AntigravityOriginalConfig.Attributes
+            $script:AntigravityOriginalConfigParents = @(
+                Get-AntigravityConfigParentFingerprint `
+                    $custodyPaths.AntigravityProfileRoot $custodyPaths.Profile
+                Get-AntigravityConfigParentFingerprint `
+                    $custodyPaths.ConfigHome $custodyPaths.Profile
+            )
+            $fixtureBackup = Get-AuthenticatedAntigravityHookBackupPath
+            [IO.Directory]::CreateDirectory((Split-Path -Parent $fixtureBackup)) | Out-Null
+            [IO.File]::Copy($custodyPaths.HookConfig, $fixtureBackup, $false)
+            [IO.File]::WriteAllText($custodyPaths.HookConfig, '{"fixture":"mutated"}')
+            $privateHookSecurity = [Security.AccessControl.FileSecurity]::new()
+            $privateHookSecurity.SetOwner($identity.User)
+            $privateHookSecurity.SetAccessRuleProtection($true, $false)
+            foreach ($sid in @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
+                $privateRule = [Security.AccessControl.FileSystemAccessRule]::new(
+                    [Security.Principal.SecurityIdentifier]::new($sid),
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [Security.AccessControl.AccessControlType]::Allow
+                )
+                [void]$privateHookSecurity.AddAccessRule($privateRule)
+            }
+            [IO.FileSystemAclExtensions]::SetAccessControl(
+                (Get-Item -LiteralPath $custodyPaths.HookConfig -Force),
+                $privateHookSecurity
+            )
+            $restoreManifest = [pscustomobject]@{
+                profile_custody_mode = 'existing'
+                original_hook_backup_path = $fixtureBackup
+                original_hook_exists = $true
+                original_hook_sha256 = [string]$script:AntigravityOriginalConfig.SHA256
+                original_hook_reparse = [bool]$script:AntigravityOriginalConfig.ReparsePoint
+                original_hook_owner_sid = [string]$script:AntigravityOriginalConfig.OwnerSID
+                original_hook_group_sid = [string]$script:AntigravityOriginalConfig.GroupSID
+                original_hook_security_sha256 = `
+                    [string]$script:AntigravityOriginalConfig.SecuritySHA256
+                original_hook_sddl = [string]$script:AntigravityOriginalHookSDDL
+                original_hook_attributes = [int]$script:AntigravityOriginalHookAttributes
+            }
+            Restore-AuthenticatedAntigravityHookBytesAndSecurity `
+                $restoreManifest $custodyPaths $fixtureBackup
+            if (-not [Linq.Enumerable]::SequenceEqual(
+                    [byte[]][IO.File]::ReadAllBytes($custodyPaths.HookConfig),
+                    [byte[]]$originalHookBytes
+                )) {
+                throw 'existing-profile hook custody fixture did not restore exact bytes'
+            }
+
+            [IO.Directory]::CreateDirectory($paths.AntigravityBinRoot) | Out-Null
+            [IO.Directory]::CreateDirectory($paths.AntigravityStagingRoot) | Out-Null
+            $fixtureAgy = $paths.AntigravityExecutable
+            $fixtureStaging = Join-Path $paths.AntigravityStagingRoot 'fixture.bin'
+            [IO.File]::WriteAllText($fixtureAgy, 'fixture official client bytes')
+            [IO.File]::WriteAllText($fixtureStaging, 'fixture staging bytes')
+            $script:AntigravityVendorFingerprint = `
+                Get-AuthenticatedAntigravityVendorFingerprint $paths
+            [IO.File]::WriteAllText($fixtureAgy, 'mutated official client bytes')
+            Assert-AuthenticatedAntigravityFixtureRejects {
+                Assert-AuthenticatedAntigravityVendorFingerprint `
+                    $script:AntigravityVendorFingerprint $paths 'fixture vendor mutation'
+            } 'existing-profile vendor custody mutation'
+            [IO.File]::WriteAllText($fixtureAgy, 'fixture official client bytes')
+            Assert-AuthenticatedAntigravityVendorFingerprint `
+                $script:AntigravityVendorFingerprint $paths 'fixture vendor restoration'
+
+            foreach ($directory in @(
+                (Split-Path -Parent $paths.StatePath), $paths.CommandDir,
+                (Split-Path -Parent $paths.MaintenancePath)
+            )) {
+                [IO.Directory]::CreateDirectory($directory) | Out-Null
+            }
+            [IO.File]::WriteAllText($paths.StatePath, '{"fixture":true}')
+            [IO.File]::WriteAllText($paths.MaintenancePath, 'fixture setup bytes')
+            [IO.File]::WriteAllText(
+                (Join-Path $paths.CommandDir 'defenseclaw.exe'), 'fixture CLI bytes'
+            )
+            $fixtureGateway = Join-Path $paths.CommandDir 'defenseclaw-gateway.exe'
+            [IO.File]::WriteAllText($fixtureGateway, 'fixture gateway bytes')
+            $script:AntigravityExistingPackageFingerprint = `
+                Get-AuthenticatedAntigravityExistingPackageFingerprint $paths
+            [IO.File]::WriteAllText($fixtureGateway, 'mutated gateway bytes')
+            Assert-AuthenticatedAntigravityFixtureRejects {
+                Assert-AuthenticatedAntigravityExistingPackageFingerprint `
+                    $script:AntigravityExistingPackageFingerprint $paths `
+                    'fixture package mutation'
+            } 'existing-profile exact-package custody mutation'
+            [IO.File]::WriteAllText($fixtureGateway, 'fixture gateway bytes')
+            Assert-AuthenticatedAntigravityExistingPackageFingerprint `
+                $script:AntigravityExistingPackageFingerprint $paths `
+                'fixture package restoration'
+        } finally {
+            foreach ($path in @(
+                (Join-Path $StateRoot 'custody'), $custodyFixtureRoot,
+                $paths.AntigravityVendorRoot, $paths.AntigravityStagingRoot,
+                $paths.InstallRoot, (Join-Path $paths.LocalAppData 'DefenseClaw')
+            )) {
+                if (Test-Path -LiteralPath $path) {
+                    Remove-Item -LiteralPath $path -Recurse -Force
+                }
+            }
+            $AntigravityCertificationScope = $savedScope
+            $AntigravityProfileCustodyMode = $savedCustodyMode
+            $script:AntigravityOriginalConfig = $savedOriginalConfig
+            $script:AntigravityOriginalConfigParents = $savedOriginalParents
+            $script:AntigravityOriginalHookSDDL = $savedOriginalHookSDDL
+            $script:AntigravityOriginalHookAttributes = $savedOriginalHookAttributes
+            $script:AntigravityVendorFingerprint = $savedVendorFingerprint
+            $script:AntigravityExistingPackageFingerprint = $savedPackageFingerprint
+        }
+
         $reparseTarget = Join-Path $fixtureRoot 'reparse-target'
         $reparseLink = Join-Path $fixtureRoot 'reparse-link'
         [IO.Directory]::CreateDirectory($reparseTarget) | Out-Null
@@ -5799,6 +7602,9 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
         if (Test-Path -LiteralPath $fixtureRoot) {
             Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
         }
+        if (Test-Path -LiteralPath $custodyFixtureRoot) {
+            Remove-Item -LiteralPath $custodyFixtureRoot -Recurse -Force
+        }
     }
 }
 
@@ -5811,13 +7617,46 @@ if ($HeldStateFixture) {
 if (-not $NoRun) {
     if (-not $IsWindows) { throw 'run-windows.ps1 requires native Windows PowerShell' }
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne [Runtime.InteropServices.Architecture]::X64) { throw 'only native Windows x64 is certifying' }
+    if ($ProtectedCopilotRunner -and $AuthenticatedAntigravityRunner) {
+        throw 'protected Copilot and authenticated Antigravity runner modes are mutually exclusive'
+    }
     $StateRoot = [IO.Path]::GetFullPath($StateRoot)
     if ($StateRoot -eq [IO.Path]::GetFullPath($env:USERPROFILE)) { throw 'StateRoot must not be the real user profile' }
     $useHomeDataRoot = -not [string]::IsNullOrWhiteSpace($HomeRoot)
-    if ($AuthenticatedAntigravityRunner) {
+    if ($ProtectedCopilotRunner) {
+        if ($Layer -ne 'live' -or $Connector -ne 'copilot' -or
+            $env:DC_COPILOT_DEDICATED_RUNNER -ne '1') {
+            throw 'ProtectedCopilotRunner is restricted to the dedicated authenticated Copilot live runner'
+        }
+        if ($Operation -notin @('run', 'cleanup')) {
+            throw 'protected Copilot lane permits only run or authenticated cleanup operations'
+        }
+        if ([IO.Path]::GetPathRoot($StateRoot) -cne 'D:\') {
+            throw 'protected Copilot StateRoot must be on the dedicated D: custody volume'
+        }
+        if ([string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageSourceCommit) -or
+            [string]::IsNullOrWhiteSpace($ExpectedHarnessSourceCommit) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageRunID) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageArtifactID) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageArtifactDigest) -or
+            [string]::IsNullOrWhiteSpace($ExpectedWorkflowRepository) -or
+            [string]::IsNullOrWhiteSpace($AgentPath) -or
+            [string]::IsNullOrWhiteSpace($ExpectedAgentVersion)) {
+            throw 'protected Copilot lifecycle requires exact package/run/artifact/source/workflow/client identities'
+        }
+        $HomeRoot = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+        $useHomeDataRoot = $true
+    } elseif ($AuthenticatedAntigravityRunner) {
         if ($Layer -ne 'live' -or $Connector -ne 'antigravity' -or
             $env:DC_ANTIGRAVITY_DEDICATED_RUNNER -ne '1') {
             throw 'AuthenticatedAntigravityRunner is restricted to a dedicated Antigravity live runner'
+        }
+        if ($AntigravityProfileCustodyMode -ceq 'existing' -and
+            ($AntigravityCertificationScope -cne 'enforcement-only' -or
+             $Operation -notin @('prepare', 'hold', 'resume', 'cleanup'))) {
+            throw 'existing-profile custody is restricted to explicit enforcement-only protected phases'
         }
         if ($Operation -in @('run', 'prepare', 'hold', 'resume', 'cleanup') -and
             ([string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
@@ -5849,8 +7688,13 @@ if (-not $NoRun) {
         $useHomeDataRoot = $true
     } elseif (-not [string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
         -not [string]::IsNullOrWhiteSpace($ExpectedPackageSourceCommit) -or
-        -not [string]::IsNullOrWhiteSpace($ExpectedHarnessSourceCommit)) {
-        throw 'packaged Antigravity Setup inputs require AuthenticatedAntigravityRunner'
+        -not [string]::IsNullOrWhiteSpace($ExpectedHarnessSourceCommit) -or
+        $AntigravityCertificationScope -cne 'full-hilt' -or
+        $AntigravityProfileCustodyMode -cne 'fresh') {
+        throw 'packaged Setup or protected Antigravity custody inputs require a protected Copilot or authenticated Antigravity runner'
+    }
+    if ($ReleaseCertification -and $ProtectedCopilotRunner) {
+        throw 'protected Copilot package custody and hosted release certification are mutually exclusive'
     }
     if ($ReleaseCertification) {
         if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
@@ -5865,13 +7709,14 @@ if (-not $NoRun) {
         }
         $HomeRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
         $useHomeDataRoot = $true
-    } elseif (-not $AuthenticatedAntigravityRunner) {
+    } elseif (-not $AuthenticatedAntigravityRunner -and -not $ProtectedCopilotRunner) {
         $HomeRoot = if ($HomeRoot) { [IO.Path]::GetFullPath($HomeRoot) } else { Join-Path $StateRoot 'home' }
         if (-not $HomeRoot.StartsWith($StateRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw 'HomeRoot must be contained by StateRoot'
         }
     }
-    if ($AuthenticatedAntigravityRunner -and (Test-Path -LiteralPath $StateRoot)) {
+    if (($AuthenticatedAntigravityRunner -or $ProtectedCopilotRunner) -and
+        (Test-Path -LiteralPath $StateRoot)) {
         # A recovery process must authenticate existing custody, never repair a
         # foreign ACL before trusting its durable cleanup manifest.
         Assert-ProtectedPackageArtifactRoot $StateRoot
@@ -5902,6 +7747,9 @@ if (-not $NoRun) {
             throw 'NativeDataRoot must be the current Windows user Known-Folder data root'
         }
         $nativeDataRoot
+    } elseif ($AuthenticatedAntigravityRunner -and
+        $AntigravityProfileCustodyMode -ceq 'existing') {
+        Join-Path $StateRoot 'defenseclaw-data'
     } elseif ($useHomeDataRoot) {
         Join-Path $HomeRoot '.defenseclaw'
     } else {
@@ -5933,13 +7781,18 @@ if (-not $NoRun) {
     }
     # Never rewrite the DACL on the real dedicated-runner profile. Exact Setup
     # owns its managed roots; the Antigravity profile content remains external.
-    if (-not $ReleaseCertification -and -not $AuthenticatedAntigravityRunner) {
+    if (-not $ReleaseCertification -and -not $AuthenticatedAntigravityRunner -and
+        -not $ProtectedCopilotRunner) {
         Protect-TestDirectory $env:USERPROFILE
     }
     $script:GatewayJsonl = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
     $script:AuditDb = Join-Path $env:DEFENSECLAW_HOME 'audit.db'
     if ($Operation -eq 'capture') { Stage-Diagnostics; return }
     if ($Operation -eq 'cleanup') {
+        if ($ProtectedCopilotRunner) {
+            Invoke-ProtectedCopilotCleanup
+            return
+        }
         if ($AuthenticatedAntigravityRunner) {
             Invoke-AuthenticatedAntigravityCleanup
             return
@@ -5996,7 +7849,9 @@ if (-not $NoRun) {
         return
     }
     try {
-        if ($AuthenticatedAntigravityRunner) {
+        if ($ProtectedCopilotRunner) {
+            Initialize-ProtectedCopilotPackage
+        } elseif ($AuthenticatedAntigravityRunner) {
             Initialize-AuthenticatedAntigravityPackage
         }
         if ($Layer -eq 'contract') { Invoke-ContractRun } else { Invoke-LiveRun }
@@ -6008,7 +7863,15 @@ if (-not $NoRun) {
         # do not install anything. Do not invoke an internal connector
         # teardown afterward and accidentally manufacture lifecycle state.
         $diagnosticsStaged = $false
-        if ($AuthenticatedAntigravityRunner) {
+        if ($ProtectedCopilotRunner) {
+            try {
+                Stage-Diagnostics
+            } finally {
+                try { Stop-IsolatedProcessTree } finally {
+                    Invoke-ProtectedCopilotCleanup -PreserveRunInputs
+                }
+            }
+        } elseif ($AuthenticatedAntigravityRunner) {
             try {
                 if ($script:AuthenticatedAntigravityPackageInstalled) {
                     Invoke-Teardown

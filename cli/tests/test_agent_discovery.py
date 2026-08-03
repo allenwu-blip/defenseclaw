@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import os
@@ -258,6 +259,32 @@ def test_cache_write_failure_is_truthful_and_preserves_existing(monkeypatch, tmp
 
     assert ad._write_cache(_discovery("codex"), data_dir=tmp_path) is False
     assert cache.read_text(encoding="utf-8") == "ORIGINAL\n"
+
+
+def test_read_only_refresh_returns_fresh_scan_without_replacing_cache(monkeypatch, tmp_path):
+    cached = _discovery("cursor")
+    assert ad._write_cache(cached, data_dir=tmp_path) is True
+    cache = tmp_path / ad.CACHE_FILENAME
+    original = cache.read_bytes()
+
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: False)
+    monkeypatch.setattr(
+        ad,
+        "_scan_agent",
+        lambda name, **_kwargs: _signal(name, installed=name == "omnigent"),
+    )
+
+    refreshed = ad.discover_agents(
+        use_cache=False,
+        refresh=True,
+        data_dir=tmp_path,
+        persist_cache=False,
+    )
+
+    assert refreshed.cache_hit is False
+    assert refreshed.agents["omnigent"].installed is True
+    assert refreshed.agents["cursor"].installed is False
+    assert cache.read_bytes() == original
 
 
 def test_cache_refuses_symlinked_parent_without_escape(tmp_path):
@@ -624,11 +651,19 @@ def test_hermes_legacy_windows_config_is_not_current_configuration_evidence(
     _pin_home(monkeypatch, tmp_path)
     legacy = tmp_path / ".hermes" / "config.yaml"
     legacy.parent.mkdir(parents=True)
-    legacy.write_text("hooks: {}\n", encoding="utf-8")
+    legacy.write_text("synthetic credential fixture\n", encoding="utf-8")
     effective = tmp_path / "local-app-data" / "hermes" / "config.yaml"
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
     monkeypatch.setattr(ad, "hermes_config_path", lambda: str(effective))
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+    real_open = builtins.open
+
+    def deny_legacy_read(path, *args, **kwargs):
+        if ad._path_key(os.fspath(path)) == ad._path_key(str(legacy)):
+            raise AssertionError("legacy Hermes configuration must not be read")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", deny_legacy_read)
 
     signal = ad._scan_agent("hermes")
 
@@ -650,26 +685,40 @@ def test_hermes_native_windows_venv_is_discovered_without_path(
     binary.write_bytes(b"test executable")
     config.write_text("hooks: {}\n", encoding="utf-8")
     _pin_home(monkeypatch, home)
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    poisoned_local_app_data = tmp_path / "poisoned-local-app-data"
+    poisoned_binary = poisoned_local_app_data / "hermes" / "hermes-agent" / "venv" / "Scripts" / "hermes.exe"
+    poisoned_binary.parent.mkdir(parents=True)
+    poisoned_binary.write_bytes(b"path decoy")
+    monkeypatch.setenv("LOCALAPPDATA", str(poisoned_local_app_data))
     monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(
+        ad,
+        "_windows_current_user_known_folder",
+        lambda identifier: str(local_app_data)
+        if identifier == ad._WINDOWS_LOCAL_APP_DATA_FOLDER_ID
+        else "",
+    )
     monkeypatch.setattr(ad, "hermes_config_path", lambda: str(config))
     monkeypatch.setattr(
         ad,
         "_version_for_agent_binary",
         lambda name, path, _args, **_kwargs: (
-            ("Hermes Agent v0.17.0", "")
+            ("Hermes Agent v0.20.0 (2026.8.3)", "")
             if name == "hermes" and ad._path_key(path) == ad._path_key(str(binary))
             else ("", "bad")
         ),
     )
 
     signal = ad._scan_agent("hermes")
+    repeated = ad._scan_agent("hermes")
 
     assert signal.installed is True
     assert signal.configured is True
     assert ad._path_key(signal.binary_path) == ad._path_key(str(binary))
     assert ad._path_key(signal.config_path) == ad._path_key(str(config))
-    assert signal.version == "Hermes Agent v0.17.0"
+    assert signal.version == "Hermes Agent v0.20.0 (2026.8.3)"
+    assert repeated.binary_path == signal.binary_path
+    assert repeated.version == signal.version
 
 
 def test_antigravity_windows_cli_fallback_is_detected(
@@ -1350,6 +1399,14 @@ def test_windows_discovery_finds_known_binary_outside_path(
     _pin_home(monkeypatch, home)
     monkeypatch.setenv("LOCALAPPDATA", str(local))
     monkeypatch.setenv("APPDATA", str(roaming))
+    if connector == "hermes":
+        monkeypatch.setattr(
+            ad,
+            "_windows_current_user_known_folder",
+            lambda identifier: str(local)
+            if identifier == ad._WINDOWS_LOCAL_APP_DATA_FOLDER_ID
+            else "",
+        )
 
     resolved = ad._binary_path_for_agent(connector, ad._SPECS[connector])
 
@@ -1542,19 +1599,23 @@ OpenHands CLI 1.16.0
 def test_hermes_version_probe_gets_longer_timeout(monkeypatch, tmp_path):
     _pin_home(monkeypatch, tmp_path)
     calls = []
-    monkeypatch.setattr(ad.shutil, "which", lambda name: "/opt/bin/hermes")
-    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda path: True)
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda path, **_kwargs: True)
 
     def fake_run(args, **kwargs):
         calls.append((args, kwargs))
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="Hermes Agent v0.13.0\n", stderr="")
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="Hermes Agent v0.20.0 (2026.8.3)\n",
+            stderr="",
+        )
 
     monkeypatch.setattr(ad.subprocess, "run", fake_run)
 
-    signal = ad._scan_agent("hermes")
+    version, error = ad._version_for_agent_binary("hermes", "/opt/bin/hermes", ("--version",))
 
-    assert signal.installed is True
-    assert signal.version == "Hermes Agent v0.13.0"
+    assert error == ""
+    assert version == "Hermes Agent v0.20.0 (2026.8.3)"
     _, kwargs = calls[0]
     assert kwargs["timeout"] == 8.0
 

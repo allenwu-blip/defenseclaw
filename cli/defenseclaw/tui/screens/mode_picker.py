@@ -51,7 +51,13 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
         False,
         "shell hooks; synchronous JSON pre-tool block; no ask or fail-closed",
     ),
-    ModeChoice("cursor", "Cursor", "u", False, "command hooks + event-scoped ask/block"),
+    ModeChoice(
+        "cursor",
+        "Cursor",
+        "u",
+        False,
+        "preview command hooks + event-scoped deny; no native human approval",
+    ),
     ModeChoice(
         "windsurf",
         "Devin Desktop — legacy Cascade",

@@ -1729,7 +1729,11 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			root := filepath.Join(t.TempDir(), "Defense Claw Matrix")
+			fixtureRoot := t.TempDir()
+			if tt.conn.Name() == "hermes" {
+				fixtureRoot = testenv.PrivateTempDir(t)
+			}
+			root := filepath.Join(fixtureRoot, "Defense Claw Matrix")
 			configPath := filepath.Join(root, tt.name+tt.ext)
 			previous := *tt.override
 			*tt.override = configPath
@@ -1742,6 +1746,9 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 				APIToken:     "matrix-token",
 				HookFailMode: "closed",
 				WorkspaceDir: filepath.Join(root, "Workspace"),
+			}
+			if tt.conn.Name() == "hermes" {
+				opts = prepareHermesSetupAdmissionFixture(t, opts)
 			}
 			if err := tt.conn.Setup(context.Background(), opts); err != nil {
 				t.Fatalf("Setup: %v", err)

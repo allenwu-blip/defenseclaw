@@ -341,12 +341,12 @@ func TestCanonicalInitializationUsesExplicitNoConnectorAuthority(t *testing.T) {
 	}
 }
 
-func TestCursorInitializationDowngradesUnsupportedAction(t *testing.T) {
+func TestCursorInitializationPreservesAction(t *testing.T) {
 	args := initialConfigurationArgs(options{Connector: "cursor", Mode: "action"})
 	want := []string{
 		"init", "--skip-install", "--non-interactive", "--yes",
 		"--connector", "cursor",
-		"--profile", "observe",
+		"--profile", "action",
 		"--no-start-gateway", "--no-verify",
 	}
 	if !slices.Equal(args, want) {
@@ -377,9 +377,9 @@ func TestCursorActionTransactionStagesNormalizedOwnership(t *testing.T) {
 	state := installState{Connector: requested.Connector, Mode: requested.Mode}
 	bindStagedInstallStateOwnership(&state, transaction)
 
-	if transaction.TargetConnector != "cursor" || transaction.TargetMode != "observe" {
+	if transaction.TargetConnector != "cursor" || transaction.TargetMode != "action" {
 		t.Fatalf(
-			"Cursor action transaction target = %s/%s, want cursor/observe",
+			"Cursor action transaction target = %s/%s, want cursor/action",
 			transaction.TargetConnector,
 			transaction.TargetMode,
 		)
@@ -396,20 +396,6 @@ func TestCursorActionTransactionStagesNormalizedOwnership(t *testing.T) {
 			transaction.TargetConnector,
 			transaction.TargetMode,
 		)
-	}
-}
-
-func TestCursorRepairUsesAdditiveAdvisorySetup(t *testing.T) {
-	args := cursorAdvisoryConfigurationArgs()
-	want := []string{
-		"setup", "cursor", "--yes", "--mode", "observe", "--fail-mode", "open",
-		"--no-human-approval", "--no-restart",
-	}
-	if !slices.Equal(args, want) {
-		t.Fatalf("Cursor repair args = %v, want %v", args, want)
-	}
-	if slices.Contains(args, "--replace") {
-		t.Fatalf("Cursor repair args may not displace the active connector roster: %v", args)
 	}
 }
 

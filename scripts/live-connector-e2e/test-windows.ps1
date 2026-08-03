@@ -1785,12 +1785,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Invoke-DangerousHook\b.*?(?=\nfunction Invoke-DangerousCommandCorpus\b)'
     ).Value
-    Assert-True ($dangerousHookContract -match "(?s)\`$telemetryMode = if \(\`$Connector -eq 'cursor'\) \{\s*#.*?\s*'observe'" -and
-        $dangerousHookContract -match "\`$effectiveObserve = \`$Mode -eq 'observe' -or \`$Connector -eq 'cursor'" -and
+    Assert-True ($dangerousHookContract -match "\`$telemetryMode = if \(\`$Mode -eq 'action'\)" -and
+        $dangerousHookContract -match "\`$effectiveObserve = \`$Mode -eq 'observe'" -and
         $dangerousHookContract -match "\`$decision\.raw_action -ne 'block'" -and
         $dangerousHookContract -match 'Test-BlockVerdict' -and
         $dangerousHookContract -match '\$decision\.rule_ids') `
-        'Cursor dangerous-command action checks preserve advisory observe/fail-open telemetry and exact block evidence'
+        'dangerous-command checks require mode-matched action enforcement or observe telemetry with exact block evidence'
     $hookContract = [regex]::Match($harnessText, '(?s)function Invoke-Hook\b.*?(?=\nfunction New-DangerousCommandPayload\b)').Value
     Assert-True ($hookContract -match '\$RequireGatewayBlock' -and
         $hookContract -match '\$decision\.raw_action -ne ''block''' -and
@@ -1805,10 +1805,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'Get-TreeFingerprint' -and $harnessText -match 'AllowedExitCodes @\(1\)') 'enterprise hooks elevation rejection is bounded, exit 1, and checks an unchanged tree'
     Assert-True ($harnessText -match 'Assert-DoctorWindowsHookRegistration' -and $harnessText -match 'healthy Windows-native executable registration') 'connector contract runs Doctor against the registered Windows hook executable'
     $contractRun = [regex]::Match($harnessText, '(?s)function Invoke-ContractRun\b.*?\n\}').Value
-    Assert-True ($contractRun -match "\`$actionBlockExpectation = if \(\`$Connector -eq 'cursor'\) \{ 'allow' \} else \{ 'block' \}" -and
-        $contractRun -match "\`$requireAdvisoryBlock = \`$Connector -eq 'cursor'" -and
+    Assert-True ($contractRun -match "\`$actionBlockExpectation = 'block'" -and
+        $contractRun -match "\`$requireAdvisoryBlock = \`$false" -and
         $contractRun -match "(?s)Invoke-DangerousCommandCorpus action.*?Invoke-Hook 'PreTool-block'.*?\`$actionBlockExpectation \`$requireAdvisoryBlock") `
-        'Cursor final action-profile block probe remains advisory while every other connector requires enforcement'
+        'all final action-profile probes, including Cursor, require enforced blocking'
     Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-setup:not-certified' -and
         $contractRun -match "connector 'antigravity' is not_certified on windows" -and
         $contractRun -notmatch 'native-setup-antigravity') `
@@ -1836,6 +1836,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Get-AntigravityHookConfigFingerprint\b.*?(?=\nfunction Save-AntigravityOriginalConfig\b)'
     ).Value
+    $existingVendorCustody = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-AuthenticatedAntigravityCustodyTreeFingerprint\b.*?(?=\nfunction Save-AntigravityOriginalConfig\b)'
+    ).Value
+    $existingHookCustody = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-AuthenticatedAntigravityHookBackupPath\b.*?(?=\nfunction Restore-AntigravityConfigParents\b)'
+    ).Value
+    $existingProfileBootstrap = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-NoPreexistingDefenseClawRuntime\b.*?(?=\nfunction Initialize-AuthenticatedAntigravityPackage\b)'
+    ).Value
     $packageManifest = [regex]::Match(
         $harnessText,
         '(?s)function New-AuthenticatedAntigravityCleanupManifestDocument\b.*?(?=\nfunction Read-AuthenticatedAntigravityCleanupManifest\b)'
@@ -1847,6 +1859,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     $packageRecovery = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-AuthenticatedAntigravityCleanup\b.*?(?=\nfunction Assert-AuthenticatedAntigravityFreshRunPreflight\b)'
+    ).Value
+    $existingProfileCleanup = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-AuthenticatedAntigravityExistingProfileCleanup\b.*?(?=\nfunction Invoke-AuthenticatedAntigravityCleanup\b)'
     ).Value
     $packageFreshPreflight = [regex]::Match(
         $harnessText,
@@ -1953,6 +1969,40 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText -match '(?s)if \(\$Operation -eq ''cleanup''\).*?AuthenticatedAntigravityRunner.*?Invoke-AuthenticatedAntigravityCleanup' -and
         $harnessText -match '(?s)try \{ Stop-IsolatedProcessTree \} finally \{\s*Invoke-AuthenticatedAntigravityCleanup') `
         'fresh cleanup authenticates custody and exact package state, independently drains teardown/uninstall/process phases, and removes only exact roots'
+    Assert-True ($harnessText -match "ValidateSet\('full-hilt', 'enforcement-only'\)" -and
+        $harnessText -match "ValidateSet\('fresh', 'existing'\)" -and
+        $existingProfileBootstrap -match 'Assert-NoPreexistingDefenseClawRuntime' -and
+        $existingProfileBootstrap -match 'maintenance Setup is not byte-identical' -and
+        $existingProfileBootstrap -match 'Write-AuthenticatedAntigravityExistingHookBackup' -and
+        $existingProfileBootstrap -match 'package-setup:repair-scope.*?unclaimed' -and
+        $connectorSetup -match 'package-setup:repair-persistence.*?unclaimed' -and
+        $connectorSetup -match 'no isolated Setup data-root primitive exists') `
+        'existing-profile mode is an explicit protected input and never misrepresents Known-Folder-bound local repair as isolated evidence'
+    Assert-True ($packagePaths -match 'LaneDataRoot' -and
+        $existingVendorCustody -match 'bounded 64-entry custody inventory' -and
+        $existingVendorCustody -match 'GetSecurityDescriptorSddlForm' -and
+        $existingVendorCustody -match 'Get-FileHash.*?SHA256' -and
+        $existingVendorCustody -match 'Assert-AuthenticatedAntigravityVendorFingerprint' -and
+        $existingHookCustody -match 'original-hooks\.json' -and
+        $existingHookCustody -match 'hook security changed before restoration' -and
+        $existingHookCustody -match '\[IO\.FileMode\]::Open' -and
+        $existingHookCustody -match '\$destination\.Flush\(\$true\)' -and
+        $existingHookCustody -match 'FileSystemAclExtensions.*?SetAccessControl' -and
+        $existingHookCustody -match 'SetAttributes' -and
+        $existingHookCustody -match 'Assert-AntigravityOriginalConfigRestored' -and
+        $existingProfileCleanup -match 'Restore-AuthenticatedAntigravityHookFromCustody' -and
+        $existingProfileCleanup -match 'Assert-AuthenticatedAntigravityExistingPackageFingerprint' -and
+        $existingProfileCleanup -match 'credentials untouched') `
+        'existing-profile custody snapshots and restores hook bytes/security while authenticating unchanged package and vendor trees without touching credentials'
+    Assert-True ($packageManifest -match 'certification_scope' -and
+        $packageManifest -match 'profile_custody_mode' -and
+        $packageManifest -match 'lane_data_root' -and
+        $packageManifest -match 'original_hook_backup_path' -and
+        $packageManifest -match 'existing_vendor_sha256' -and
+        $packageManifest -match 'existing_install_state_sha256' -and
+        $packageManifestValidation -match 'existing-profile hook SDDL does not match' -and
+        $packageManifestValidation -match 'existing-profile exact-package custody drifted') `
+        'protected continuation binds scope, task-specific data, hook recovery, official vendor custody, and exact installed package identity'
     $clientCleanupDiagnostic = [regex]::Match(
         $packageRecovery,
         '(?s)if \(\[bool\]\$manifest\.vendor_mutation_started\).*?(?=\n\s*if \(Test-Path -LiteralPath \$paths\.InstallRoot\))'
@@ -2077,7 +2127,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $configuredPosture -match "source -cne 'manual'" -and
         $configuredPosture -match "mode -cne 'action'" -and
         $configuredPosture -match 'guardrail\\\.hilt\\\.min_severity' -and
-        $configuredPosture -match 'install_state_connector=none' -and
+        $configuredPosture -match 'install_state_connector=\$stateConnector' -and
+        $configuredPosture -match 'Assert-AuthenticatedAntigravityExistingInstallState' -and
         $interactivePrepare -match 'Assert-AuthenticatedAntigravityInstallState' -and
         $interactivePrepare -match 'Assert-OfficialAntigravityClient' -and
         $interactivePrepare -match 'Assert-AntigravityWindowsHookCommands' -and
@@ -2109,7 +2160,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
     Assert-True ($interactiveEvidence -match "\`$allow\.Count -ne 1" -and
         $interactiveEvidence -match "\`$deny\.Count -ne 1" -and
-        $interactiveEvidence -match "\`$asks\.Count -ne 2" -and
+        $interactiveEvidence -match '\$expectedAskCount = if \(\$AntigravityCertificationScope' -and
+        $interactiveEvidence -match "'enforcement-only'" -and
         $harnessText -match "Get-JsonPropertyValue \`$correlation 'tool_invocation_id'" -and
         $interactiveEvidence -match 'lacks canonical record/request/tool identities' -and
         $interactiveEvidence -match 'reused a tool-invocation identity' -and
@@ -2126,8 +2178,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         $interactiveEvidence -match '\$declinedPost.Count -ne 0' -and
         $interactiveEvidence -match 'ask_approve' -and
         $interactiveEvidence -match 'ask_decline' -and
+        $interactiveEvidence -match 'HITL ask/approve/decline is excluded, unverified, unclaimed' -and
         $interactiveEvidence -match 'raw protected-lane test output; not certification') `
-        'correlation-bound evidence requires executed allow/approved sentinels and PostToolUse, non-executed deny/decline, and truthful raw-only scope'
+        'correlation-bound evidence keeps the full-HITL lane and explicitly unclaims HITL for enforcement-only scope'
     $heldStateFixtureContract = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-AuthenticatedAntigravityHeldStateFixture\b.*?(?=\nif \(\$HeldStateFixture\))'
@@ -2157,6 +2210,15 @@ private-secret-name = "DefenseClaw must remain redacted"
         '(?ms)^  windows-antigravity-held-state:.*?(?=^  # -+\r?$\n  # Report)'
     ).Value
     Assert-True ($heldWorkflowJob -match 'D:\\DefenseClaw-PR655-Antigravity-Held-State' -and
+        $liveWorkflowText -match 'antigravity_certification_scope:' -and
+        $liveWorkflowText -match 'antigravity_profile_custody:' -and
+        $heldWorkflowJob -match 'DC_ANTIGRAVITY_CERTIFICATION_SCOPE' -and
+        $heldWorkflowJob -match 'DC_ANTIGRAVITY_PROFILE_CUSTODY' -and
+        $heldWorkflowJob -match 'Existing-profile Antigravity custody is restricted to explicit enforcement-only scope' -and
+        $heldWorkflowJob -match 'campaign path has a foreign owner' -and
+        $heldWorkflowJob -notmatch '\$security\.SetOwner' -and
+        $heldWorkflowJob -match 'AntigravityCertificationScope = \$env:DC_ANTIGRAVITY_CERTIFICATION_SCOPE' -and
+        $heldWorkflowJob -match 'AntigravityProfileCustodyMode = \$env:DC_ANTIGRAVITY_PROFILE_CUSTODY' -and
         $liveWorkflowText -match "format\('connector-live-e2e-antigravity-held-state-\{0\}', github\.repository_id\)" -and
         $liveWorkflowText -match "cancel-in-progress:.*?antigravity_phase != 'automated'" -and
         $heldWorkflowJob -notmatch '\$\{\{ github\.workspace \}\}.*?DC_WINDOWS_STATE|RUNNER_TEMP.*?DC_WINDOWS_STATE' -and
@@ -2231,13 +2293,13 @@ private-secret-name = "DefenseClaw must remain redacted"
         $hermesSetupContract -match 'allowlist_entries' -and
         $hermesSetupContract -notmatch 'hooks_auto_accept is not true') `
         'Hermes packaged contract preserves operator consent and requires exactly 23 scoped owned approvals'
-    Assert-True ($doctorContract.Contains("Assert-CursorSynchronousWindowsHookCommand `$config `$false 'Cursor setup'") -and
-        $doctorContract.Contains("`$check.detail -notmatch 'mode=observe'") -and
-        $doctorContract.Contains("`$check.detail -notmatch 'failClosed=false'") -and
-        $doctorContract.Contains("`$check.detail -notmatch 'failure=fail-open'") -and
-        $doctorContract.Contains("`$check.detail -notmatch 'authority=user-hook advisory'") -and
-        $doctorContract.Contains("`$check.detail -notmatch 'hard-action=unsupported'")) `
-        'Cursor contract preserves advisory observe/fail-open posture for its non-authoritative user hook'
+    Assert-True ($doctorContract.Contains("Assert-CursorSynchronousWindowsHookCommand `$config (`$script:LastSetupMode -eq 'action') 'Cursor setup'") -and
+        $doctorContract.Contains("`$expectedMode = if (`$script:LastSetupMode -eq 'action') { 'action' } else { 'observe' }") -and
+        $doctorContract.Contains("`$expectedFailClosed = if (`$expectedMode -eq 'action') { 'true' } else { 'false' }") -and
+        $doctorContract.Contains("`$expectedFailure = if (`$expectedMode -eq 'action') { 'fail-closed' } else { 'fail-open' }") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'higher-priority conflict detection=unavailable \(none inferred\)'") -and
+        $doctorContract.Contains("`$check.detail -notmatch 'human-approval=unsupported'")) `
+        'Cursor contract requires mode-matched action/fail-closed or observe/fail-open preview posture without unsupported claims'
     Assert-True ($doctorContract -match "'cursor' \{ 'configured file has no DefenseClaw Cursor command entries' \}") `
         'Cursor tamper contract expects exact zero-managed-entry rejection after lock-bound ownership filtering'
     Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
@@ -2430,6 +2492,82 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeHarnessText -match '\.codex\\managed_config\.toml' -and
         $nativeHarnessText -match 'unrelated Codex managed config byte-for-byte') `
         'release certification inventories and exactly preserves unrelated Codex managed config'
+    $protectedCopilotClient = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-ProtectedCopilotClient\b.*?(?=\nfunction Get-ProtectedCopilotCleanupManifestPath\b)'
+    ).Value
+    Assert-True ($protectedCopilotClient -match "CopilotOfficialVersion = '1\.0\.77'" -or
+        ($harnessText -match "CopilotOfficialVersion = '1\.0\.77'" -and
+         $protectedCopilotClient -match 'CopilotOfficialPackageIntegrity' -and
+         $protectedCopilotClient -match 'CopilotOfficialPlatformIntegrity')) `
+        'protected Copilot client is pinned to exact official npm package and Windows platform integrities'
+    Assert-True ($protectedCopilotClient -match 'package-lock\.json' -and
+        $protectedCopilotClient -match 'npm-loader\.js' -and
+        $protectedCopilotClient -match 'copilot-win32-x64' -and
+        $protectedCopilotClient -match 'Get-AuthenticodeSignature' -and
+        $protectedCopilotClient -match 'CopilotOfficialSignerSubject' -and
+        $protectedCopilotClient -match 'CopilotOfficialSignerThumbprint') `
+        'protected Copilot client proves canonical shim/loader/package-lock and GitHub-signed native binary custody'
+    $protectedCopilotBootstrap = [regex]::Match(
+        $harnessText,
+        '(?s)function Initialize-ProtectedCopilotPackage\b.*?(?=\nfunction Assert-ProtectedCopilotConfiguredPosture\b)'
+    ).Value
+    Assert-True ($protectedCopilotBootstrap -match "CONNECTOR=none" -and
+        $protectedCopilotBootstrap -match 'Assert-ProtectedCopilotPublicGate' -and
+        $protectedCopilotBootstrap -match "CONNECTOR=copilot" -and
+        $protectedCopilotBootstrap -match 'Assert-CopilotSynchronousWindowsHookConfig' -and
+        $protectedCopilotBootstrap -match "Write-Result 'copilot:hitl' skip") `
+        'protected Copilot package lane proves the public gate before the restricted 14-event Setup path and leaves HITL unclaimed'
+    Assert-True ($protectedCopilotBootstrap -match "Get-Process -Name 'defenseclaw-gateway', 'defenseclaw-watchdog'" -and
+        $protectedCopilotBootstrap -match 'requires an absent DefenseClaw product baseline' -and
+        $protectedCopilotBootstrap -match 'Save-ProtectedCopilotOriginalHook' -and
+        $protectedCopilotBootstrap -match 'Write-ProtectedCopilotCleanupManifest') `
+        'protected Copilot mutation is preceded by clean product/process and durable authenticated hook-custody gates'
+    $protectedCopilotMaintenance = [regex]::Match(
+        $harnessText,
+        '(?s)function Repair-ProtectedCopilotPackage\b.*?(?=\nfunction Invoke-ProtectedCopilotCleanup\b)'
+    ).Value
+    Assert-True ($protectedCopilotMaintenance -match "@\('/repair', '/quiet', '/norestart'\)" -and
+        $protectedCopilotMaintenance -match "@\('/upgrade', '/quiet', '/norestart'\)" -and
+        [regex]::Matches($protectedCopilotMaintenance, 'Assert-ProtectedCopilotConfiguredPosture').Count -eq 4 -and
+        $protectedCopilotMaintenance -match 'copilot:restart-persistence') `
+        'protected Copilot lane proves repair, upgrade, status, restart, and exact hook persistence'
+    $protectedCopilotCleanup = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-ProtectedCopilotCleanup\b.*?(?=\nfunction Install-Agent\b)'
+    ).Value
+    Assert-True ($protectedCopilotCleanup -match 'Assert-ProtectedCopilotCleanupManifest' -and
+        $protectedCopilotCleanup -match "'connector', 'teardown', '--connector', 'copilot'" -and
+        $protectedCopilotCleanup -match "'connector', 'verify', '--connector', 'copilot'" -and
+        $protectedCopilotCleanup -match 'Assert-ProtectedCopilotOriginalHookRestored' -and
+        $protectedCopilotCleanup -match 'Remove-DisposableTreeSafely') `
+        'protected Copilot cleanup authenticates provenance, tears down and verifies the connector, restores the hook, and removes only exact task roots'
+    $copilotLiveJob = [regex]::Match(
+        $liveWorkflowText,
+        '(?s)  windows-copilot-live:.*?(?=\n  windows-antigravity-live:)'
+    ).Value
+    Assert-True ($copilotLiveJob -match 'runs-on: \[self-hosted, Windows, X64, copilot-authenticated\]' -and
+        $copilotLiveJob -match 'DC_WINDOWS_STATE: D:\\DefenseClaw-PR655-Copilot-Delta-State' -and
+        $copilotLiveJob -match 'DC_COPILOT_PACKAGE_ROOT: D:\\DefenseClaw-PR655-Copilot-Delta-Package' -and
+        $copilotLiveJob -match 'run\.head_sha -cne \$env:EXPECTED_HEAD_SHA' -and
+        $copilotLiveJob -match "name -ceq 'windows-native-package'" -and
+        $copilotLiveJob -match 'digest -cnotmatch') `
+        'Copilot workflow job is dedicated, D:-custodied, and accepts only the successful exact-head canonical package artifact'
+    Assert-True ($copilotLiveJob -match '"@github/copilot@\$env:DC_COPILOT_VERSION"' -and
+        $copilotLiveJob -match 'DC_COPILOT_VERSION: "1\.0\.77"' -and
+        $copilotLiveJob -match '--ignore-scripts' -and
+        $copilotLiveJob -match '--registry https://registry\.npmjs\.org/' -and
+        $copilotLiveJob -match '-ProtectedCopilotRunner' -and
+        $copilotLiveJob -match '-ExpectedPackageSourceCommit' -and
+        $copilotLiveJob -match '-ExpectedHarnessSourceCommit' -and
+        $copilotLiveJob -match '-ExpectedPackageArtifactDigest' -and
+        $copilotLiveJob -match '-ExpectedWorkflowRepository' -and
+        $copilotLiveJob -match '-ExpectedAgentVersion' -and
+        [regex]::Matches($copilotLiveJob, '-Operation cleanup').Count -eq 1) `
+        'Copilot workflow installs the exact task-local client and binds run/package/source/artifact/workflow/client identities into one cleanup-protected invocation'
+    Assert-True ($liveWorkflowText -match 'connector: \[codex, claudecode, cursor, opencode\]' -and
+        $liveWorkflowText -match 'needs: \[contract-matrix, live-matrix, windows-live, windows-copilot-live,') `
+        'Copilot is excluded from the generic Windows matrix and included only through the protected report dependency'
     $workflowText = $nativeWorkflowText + "`n" + $liveWorkflowText
     Assert-True ([regex]::Matches($workflowText, 'failure\(\) \|\| cancelled\(\)').Count -ge 2) 'failure and cancellation diagnostics are uploaded'
     $checkoutCount = [regex]::Matches($workflowText, 'uses:\s*actions/checkout@').Count

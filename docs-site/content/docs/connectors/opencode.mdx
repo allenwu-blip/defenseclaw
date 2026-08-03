@@ -23,7 +23,7 @@ The OpenCode connector wires DefenseClaw into [OpenCode](https://opencode.ai). O
 The direct native Windows implementation is preview pending the integrated
 packaged-Setup and pinned official-client release gates. The implementation
 being present in Setup and CI does not itself promote a certified release
-claim. OpenCode 1.18.10 publishes CLI and Desktop assets for Windows x64 and
+claim. OpenCode 1.18.11 publishes CLI and Desktop assets for Windows x64 and
 ARM64, but DefenseClaw's current passive identity gate covers only the pinned
 CLI/npm x64 identity. It cannot yet distinguish a Desktop sidecar from the CLI
 or certify ARM64, so both surfaces remain explicitly unverified.
@@ -81,10 +81,16 @@ and judge configuration.
 #### Version contract
 
 The current contract is `opencode-hooks-v1` / bridge `v7`, source-reviewed for
-`>=1.18.10,<1.18.11` with current pin `1.18.10`. Unversioned or other OpenCode
-builds are not treated as proven action-mode matches. The review pins the official
-[`v1.18.10` release](https://github.com/anomalyco/opencode/releases/tag/v1.18.10),
-published July 30, 2026, and its plugin/config/MCP source. This is source
+`>=1.18.10,<1.18.12` with current pin `1.18.11`. The 1.18.11 plugin types,
+loader/config origins, MCP sanitizer, and tool execution call sites are
+byte-identical to 1.18.10. A detected OpenCode version outside that bounded
+range is refused before connector config, plugin, lock, or active-roster
+publication in both observe and action mode unless the explicit exploratory
+drift override is set. Unversioned builds retain the general observe-warning /
+action-fail-closed policy and are not promoted to source-reviewed compatibility.
+The review pins the official
+[`v1.18.11` release](https://github.com/anomalyco/opencode/releases/tag/v1.18.11),
+published August 1, 2026, and its plugin/config/MCP source. This is source
 compatibility evidence only: packaged Setup and authentic official-client
 Windows validation remain unrecorded, `live` remains `false`, and the connector
 remains preview/not certified.
@@ -96,7 +102,7 @@ remains preview/not certified.
 | `tool.execute.before` | Right before a tool (`bash`, `read`, `edit`, …) executes | Inspect tool args; intercept risky commands | `block` → gateway returns `{decision: "deny", reason}`; the bridge `throw`s `new Error(reason)`, aborting the tool |
 | `tool.execute.after` | Immediately after a tool returns | Capture the official `title`, `output`, and `metadata` result fields for diagnostics. **Cannot block** — tool already ran. | Best-effort observe/telemetry; the bridge does not await delivery |
 
-OpenCode 1.18.10 does expose `permission.ask`, `chat.params`, `chat.headers`,
+OpenCode 1.18.10 and 1.18.11 expose `permission.ask`, `chat.params`, `chat.headers`,
 and experimental chat message/system transformation hooks. DefenseClaw
 intentionally does not implement or claim those ask/context surfaces in this
 focused bridge; `confirm` therefore has no native resumable approval path.
@@ -107,7 +113,7 @@ blocking or reliable delivery for lifecycle events.
 OpenCode runs external plugin hooks sequentially. Its global plugin directory
 is loaded before project plugin directories, so a project plugin can mutate the
 shared `output.args` object after DefenseClaw's global pre-tool hook. Bridge v7
-uses the official v1.18.10 `plugin_origins` order to detect this condition. It
+uses the official v1.18.10-v1.18.11 `plugin_origins` order to detect this condition. It
 still observes the pre-mutation arguments, but in action mode it refuses to
 return an authoritative allow when any later plugin exists. This is a bounded
 correction, not a plugin-order redesign.
@@ -154,7 +160,7 @@ reported as runtime health.
   </Folder>
 </Files>
 
-DefenseClaw resolves the non-enterprise v1.18.10 config layers in effective
+DefenseClaw resolves the non-enterprise v1.18.10-v1.18.11 config layers in effective
 order: authenticated remote `.well-known` provenance (typed unverified; never
 fetched offline), global `config.json`/`opencode.json`/`opencode.jsonc`,
 `OPENCODE_CONFIG`, an explicitly pinned project's JSON/JSONC files and

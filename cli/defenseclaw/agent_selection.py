@@ -49,7 +49,7 @@ _CODEX_WINDOWS_PLATFORM_VARIANTS = (
     ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
 )
 _MAX_AGENT_EXECUTABLE_BYTES = 512 * 1024 * 1024
-_SUPPORTED_CONNECTORS = frozenset({"codex", "claudecode", "omnigent"})
+_SUPPORTED_CONNECTORS = frozenset({"codex", "claudecode", "hermes", "omnigent"})
 
 
 @dataclass(frozen=True)
@@ -61,6 +61,23 @@ class SetupAgentSelection:
     raw_version: str
     normalized_version: str
     sha256: str
+
+
+def setup_agent_selection_connectors(connectors: Iterable[str]) -> tuple[str, ...]:
+    """Return the ordered protected-selection subset for one setup transaction.
+
+    Connector-specific admission remains owned by this module's supported set.
+    Batch callers use this boundary so newly admitted protected connectors are
+    selected together without duplicating their rules in setup orchestration.
+    """
+
+    return tuple(
+        dict.fromkeys(
+            name
+            for raw in connectors
+            if (name := agent_discovery._normalize_connector(str(raw))) in _SUPPORTED_CONNECTORS
+        )
+    )
 
 
 def record_setup_agent_selections(
@@ -76,13 +93,7 @@ def record_setup_agent_selections(
     """
 
     target_dir = os.path.abspath(os.fspath(data_dir))
-    requested = tuple(
-        dict.fromkeys(
-            name
-            for raw in connectors
-            if (name := agent_discovery._normalize_connector(str(raw))) in _SUPPORTED_CONNECTORS
-        )
-    )
+    requested = setup_agent_selection_connectors(connectors)
     selections: dict[str, SetupAgentSelection] = {}
     errors: dict[str, str] = {}
     for connector in requested:
@@ -90,9 +101,17 @@ def record_setup_agent_selections(
             selections[connector] = _select_agent_executable(target_dir, connector)
         except OSError as exc:
             errors[connector] = str(exc)
+    if errors:
+        # Selection is a preflight authority receipt. A partial/failed probe
+        # must not erase or replace the last valid receipt before setup has
+        # touched connector roster, mode, locks, or desired/applied state.
+        return selections, errors
 
     now = datetime.now(timezone.utc)
     expires = now + SELECTION_LIFETIME
+    # This receipt authorizes only the current transaction's full protected
+    # set. Replacing it deliberately removes stale/unrequested entries; batch
+    # callers must therefore pass every protected connector in one call.
     payload = {
         "schema_version": SELECTION_SCHEMA_VERSION,
         "updated_at": _format_rfc3339(now),
@@ -202,6 +221,13 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
     discovered = list(agent_discovery._binary_candidates_for_agent(connector, spec))
     _require, configured = agent_discovery._ai_discovery_trust_config(data_dir)
     roots = agent_discovery._expand_bin_prefixes((*_builtin_setup_trusted_prefixes(), *configured))
+    if connector == "hermes" and os.name == "nt":
+        roots = list(_windows_managed_hermes_prefixes())
+        discovered = [
+            candidate
+            for candidate in discovered
+            if any(agent_discovery._path_is_within(candidate, root) for root in roots)
+        ]
     candidates: list[str] = []
     paired_codex_root = ""
     if connector == "codex" and discovered:
@@ -230,6 +256,7 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
     names = {
         "codex": ("codex.exe", "codex.cmd", "codex.bat", "codex.com"),
         "claudecode": ("claude.exe", "claude.cmd", "claude.bat", "claude.com"),
+        "hermes": ("hermes.exe",),
         "omnigent": ("omnigent.exe", "omni.exe"),
     }[connector]
     for root in roots:
@@ -468,6 +495,7 @@ def _builtin_setup_trusted_prefixes() -> tuple[str, ...]:
                 os.path.join(local, "Programs", "OpenAI", "Codex", "bin"),
                 os.path.join(local, "OpenAI", "Codex", "bin"),
                 os.path.join(local, "OpenAI", "Codex", "runtimes"),
+                os.path.join(local, "hermes", "hermes-agent", "venv", "Scripts"),
                 os.path.join(local, "Microsoft", "WinGet", "Links"),
                 os.path.join(local, "pnpm"),
             )
@@ -488,6 +516,15 @@ def _builtin_setup_trusted_prefixes() -> tuple[str, ...]:
     # package-manager environment variables here.
     roots.extend(agent_discovery._windows_configured_package_manager_bin_prefixes())
     return tuple(dict.fromkeys(os.path.abspath(root) for root in roots if root))
+
+
+def _windows_managed_hermes_prefixes() -> tuple[str, ...]:
+    """Return only the official updater-managed Hermes executable directory."""
+
+    local = _windows_known_folder("F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
+    if not local:
+        return ()
+    return (os.path.abspath(os.path.join(local, "hermes", "hermes-agent", "venv", "Scripts")),)
 
 
 def _windows_known_folder(identifier: str) -> str:

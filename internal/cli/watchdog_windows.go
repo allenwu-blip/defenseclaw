@@ -21,15 +21,19 @@ package cli
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/defenseclaw/defenseclaw/internal/pathidentity"
 	"github.com/defenseclaw/defenseclaw/internal/safefile"
 	"github.com/defenseclaw/defenseclaw/internal/winpath"
 	"golang.org/x/sys/windows"
@@ -117,7 +121,26 @@ func watchdogProcessStartIdentity(pid int) string {
 }
 
 func watchdogHasStrongProcessIdentity(info watchdogPIDInfo) bool {
-	return info.StartIdentity != ""
+	return info.StartIdentity != "" && info.Executable != ""
+}
+
+func watchdogRequiresStrongProcessIdentity() bool { return true }
+
+func watchdogProcessExecutableMatches(info watchdogPIDInfo) bool {
+	if info.Executable == "" {
+		return true
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(info.PID))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h) //nolint:errcheck -- read-only identity handle.
+	buffer := make([]uint16, 32768)
+	size := uint32(len(buffer))
+	if err := windows.QueryFullProcessImageName(h, 0, &buffer[0], &size); err != nil || size == 0 {
+		return false
+	}
+	return pathidentity.Same(windows.UTF16ToString(buffer[:size]), info.Executable)
 }
 
 const watchdogControlPrefix = `Local\DefenseClaw-Watchdog-`
@@ -232,21 +255,42 @@ func watchdogWaitForExit(proc *os.Process, _ watchdogPIDInfo, timeout time.Durat
 	return waitErr == nil && result == windows.WAIT_OBJECT_0
 }
 
-// watchdogLockOffsetHigh places the advisory lock on a single sentinel byte
-// far beyond any PID-file content, so writeWatchdogPIDInfo's truncate-then-
-// write of the JSON payload (which lives at offset 0) never overlaps — and
-// therefore never conflicts with — the locked region.
+// watchdogLockOffsetHigh places the advisory ownership lock on a single
+// sentinel byte far beyond the small lock-file marker.
 const watchdogLockOffsetHigh = 0x4000_0000
 
-// acquireWatchdogPIDFile opens (creating if missing) the PID file, takes an
-// exclusive non-blocking lock on a sentinel byte via LockFileEx, and writes
-// the JSON fingerprint. The returned file MUST stay open for the watchdog's
-// whole lifetime; closing it releases the lock. Returns an error when
-// another process already holds the lock (DeepSec S3.HIGH_BUG).
+const watchdogOwnershipMarker = "DefenseClaw watchdog ownership v1\n"
+
+type windowsWatchdogPIDState struct {
+	exists  bool
+	locked  bool
+	info    watchdogPIDInfo
+	readErr error
+}
+
+// acquireWatchdogPIDFile holds a protected stable ownership object for the
+// watchdog lifetime, then atomically publishes the complete canonical PID
+// record with safefile.WritePrivate. The canonical file is never truncated or
+// created in place, so interruption can leave at most the prior valid record
+// (or no record), never a zero-byte watchdog.pid.
 func acquireWatchdogPIDFile(path string, info watchdogPIDInfo) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if !watchdogHasStrongProcessIdentity(info) {
+		return nil, errors.New("watchdog: complete executable and process start identity are required before ownership")
+	}
+	ownershipPath := filepath.Join(filepath.Dir(path), watchdogOwnershipFile)
+	if err := ensureWatchdogOwnershipFile(ownershipPath); err != nil {
+		return nil, err
+	}
+	f, exists, err := openPrivateWatchdogFile(
+		ownershipPath,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
 	if err != nil {
 		return nil, err
+	}
+	if !exists || f == nil {
+		return nil, errors.New("watchdog: ownership file disappeared before locking")
 	}
 	ol := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
 	if err := windows.LockFileEx(windows.Handle(f.Fd()),
@@ -255,32 +299,130 @@ func acquireWatchdogPIDFile(path string, info watchdogPIDInfo) (*os.File, error)
 		_ = f.Close()
 		return nil, err
 	}
-	// Apply the owner-only DACL before persisting the random control-event
-	// capability. A newly created file may inherit a broader parent DACL, so
-	// writing first would create a small disclosure window.
-	if err := safefile.ProtectFile(path); err != nil {
+	fail := func(err error) (*os.File, error) {
 		_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
 		_ = f.Close()
 		return nil, err
 	}
-	if err := writeWatchdogPIDInfo(f, info); err != nil {
-		_ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol)
-		_ = f.Close()
-		return nil, err
+
+	// Refuse a legacy watchdog that still owns the canonical sentinel lock, and
+	// refuse an unlocked record that strongly identifies a live process. An
+	// unlocked invalid/stale private record is safe to replace atomically.
+	state, err := inspectWatchdogCanonical(path)
+	if err != nil {
+		return fail(err)
+	}
+	if state.locked {
+		return fail(errors.New("watchdog: canonical PID ownership lock is already held"))
+	}
+	if state.readErr == nil && watchdogUnlockedLiveProcessInfo(state.info) {
+		return fail(fmt.Errorf("watchdog: PID %d is alive without the lifecycle ownership lock", state.info.PID))
+	}
+	payload, err := json.Marshal(info)
+	if err != nil {
+		return fail(err)
+	}
+	payload = append(payload, '\n')
+	if watchdogPIDPublicationBeforePublish != nil {
+		if err := watchdogPIDPublicationBeforePublish(path); err != nil {
+			return fail(err)
+		}
+	}
+	if err := safefile.WritePrivate(path, payload); err != nil {
+		return fail(err)
+	}
+	published, err := inspectWatchdogCanonical(path)
+	if err != nil {
+		return fail(err)
+	}
+	if published.readErr != nil {
+		return fail(published.readErr)
+	}
+	if published.info.PID != info.PID || published.info.StartIdentity != info.StartIdentity ||
+		published.info.ControlName != info.ControlName {
+		return fail(errors.New("watchdog: canonical PID publication was replaced before verification"))
 	}
 	return f, nil
 }
 
-// watchdogIsLocked reports whether the PID-file lock is currently held by
-// another process (the live watchdog). It releases any lock it acquires
-// before returning so the real watchdog child can take it.
-func watchdogIsLocked(path string) (bool, watchdogPIDInfo, error) {
-	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
+// watchdogPIDPublicationBeforePublish is a Windows-only interruption seam.
+// Production never installs it.
+var watchdogPIDPublicationBeforePublish func(string) error
+
+func ensureWatchdogOwnershipFile(path string) error {
+	if err := safefile.ProtectDirectory(filepath.Dir(path)); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	f, err := safefile.CreateExclusive(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, watchdogPIDInfo{}, nil
+		if errors.Is(err, os.ErrExist) {
+			return nil
 		}
-		return false, watchdogPIDInfo{}, err
+		return err
+	}
+	if _, err := f.WriteString(watchdogOwnershipMarker); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func openPrivateWatchdogFile(path string, access, share uint32) (*os.File, bool, error) {
+	pathPtr, err := winpath.UTF16Ptr(path)
+	if err != nil {
+		return nil, false, err
+	}
+	handle, err := windows.CreateFile(
+		pathPtr,
+		access,
+		share,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		return nil, true, errors.Join(err, windows.CloseHandle(handle))
+	}
+	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
+		err := fmt.Errorf("watchdog: refusing non-regular or reparse-point lifecycle file: %s", path)
+		return nil, true, errors.Join(err, windows.CloseHandle(handle))
+	}
+	if err := safefile.ValidatePrivateHandle(handle); err != nil {
+		return nil, true, errors.Join(err, windows.CloseHandle(handle))
+	}
+	file := os.NewFile(uintptr(handle), path)
+	if file == nil {
+		err := fmt.Errorf("watchdog: wrap lifecycle file handle: %s", path)
+		return nil, true, errors.Join(err, windows.CloseHandle(handle))
+	}
+	return file, true, nil
+}
+
+func inspectWatchdogCanonical(path string) (windowsWatchdogPIDState, error) {
+	f, exists, err := openPrivateWatchdogFile(
+		path,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+	)
+	if err != nil || !exists {
+		return windowsWatchdogPIDState{exists: exists}, err
 	}
 	defer f.Close()
 	ol := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
@@ -288,18 +430,63 @@ func watchdogIsLocked(path string) (bool, watchdogPIDInfo, error) {
 		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
 		0, 1, 0, ol); err != nil {
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			return false, watchdogPIDInfo{}, err
+			return windowsWatchdogPIDState{exists: true}, err
 		}
 		info, readErr := readWatchdogPIDInfoFile(f)
-		if readErr != nil {
-			return false, watchdogPIDInfo{}, readErr
+		return windowsWatchdogPIDState{exists: true, locked: true, info: info, readErr: readErr}, nil
+	}
+	defer func() { _ = windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol) }()
+	info, readErr := readWatchdogPIDInfoFile(f)
+	return windowsWatchdogPIDState{exists: true, info: info, readErr: readErr}, nil
+}
+
+func watchdogOwnershipLocked(path string) (bool, bool, error) {
+	f, exists, err := openPrivateWatchdogFile(
+		path,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+	)
+	if err != nil || !exists {
+		return exists, false, err
+	}
+	defer f.Close()
+	ol := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
+	if err := windows.LockFileEx(windows.Handle(f.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0, 1, 0, ol); err != nil {
+		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return true, true, nil
 		}
-		return true, info, nil
+		return true, false, err
 	}
 	if err := windows.UnlockFileEx(windows.Handle(f.Fd()), 0, 1, 0, ol); err != nil {
-		return false, watchdogPIDInfo{}, err
+		return true, false, err
 	}
-	return false, watchdogPIDInfo{}, nil
+	return true, false, nil
+}
+
+var watchdogOwnershipLockInspector = watchdogOwnershipLocked
+
+// inspectWatchdogPIDOwnership checks the atomic publisher's stable ownership
+// object and keeps its trust failure distinct from canonical publication
+// errors. It falls back to the canonical sentinel lock for compatibility with
+// watchdogs started by an older release and never creates, repairs, or deletes.
+func inspectWatchdogPIDOwnership(path string) watchdogPIDOwnershipInspection {
+	_, ownershipLocked, err := watchdogOwnershipLockInspector(
+		filepath.Join(filepath.Dir(path), watchdogOwnershipFile),
+	)
+	if err != nil {
+		return watchdogPIDOwnershipInspection{ownershipErr: err}
+	}
+	state, err := inspectWatchdogCanonical(path)
+	if err != nil {
+		return watchdogPIDOwnershipInspection{locked: ownershipLocked, publicationErr: err}
+	}
+	return watchdogPIDOwnershipInspection{
+		locked:         ownershipLocked || state.locked,
+		info:           state.info,
+		publicationErr: state.readErr,
+	}
 }
 
 // watchdogPIDRemovalBeforeDelete is a Windows-only test seam invoked while
@@ -312,13 +499,13 @@ var watchdogPIDRemovalBeforeDelete func(string) error
 // FILE_SHARE_READ excludes pathname writers/replacers, and handle disposition
 // removes the object that was actually verified rather than a later occupant
 // of the pathname.
-func removeWatchdogPIDFileIf(path string, matches func(watchdogPIDInfo) bool) error {
+func removeWatchdogPIDFileIf(path string, matches func([]byte) bool) (bool, error) {
 	if matches == nil {
-		return errors.New("watchdog: nil PID file matcher")
+		return false, errors.New("watchdog: nil PID file matcher")
 	}
 	pathPtr, err := winpath.UTF16Ptr(path)
 	if err != nil {
-		return err
+		return false, err
 	}
 	handle, err := windows.CreateFile(
 		pathPtr,
@@ -332,23 +519,26 @@ func removeWatchdogPIDFileIf(path string, matches func(watchdogPIDInfo) bool) er
 	if err != nil {
 		if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) || errors.Is(err, windows.ERROR_PATH_NOT_FOUND) ||
 			errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	file := os.NewFile(uintptr(handle), path)
 	if file == nil {
 		_ = windows.CloseHandle(handle)
-		return fmt.Errorf("watchdog: wrap PID file handle: %s", path)
+		return false, fmt.Errorf("watchdog: wrap PID file handle: %s", path)
 	}
 	defer file.Close()
 
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
-		return err
+		return false, err
 	}
 	if info.FileAttributes&(windows.FILE_ATTRIBUTE_REPARSE_POINT|windows.FILE_ATTRIBUTE_DIRECTORY) != 0 {
-		return fmt.Errorf("watchdog: PID file is a reparse point or directory: %s", path)
+		return false, fmt.Errorf("watchdog: PID file is a reparse point or directory: %s", path)
+	}
+	if err := safefile.ValidatePrivateHandle(handle); err != nil {
+		return false, err
 	}
 	overlapped := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
 	if err := windows.LockFileEx(
@@ -356,26 +546,36 @@ func removeWatchdogPIDFileIf(path string, matches func(watchdogPIDInfo) bool) er
 		0, 1, 0, overlapped,
 	); err != nil {
 		if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			return nil
+			return false, nil
 		}
-		return err
+		return false, err
 	}
 	defer func() { _ = windows.UnlockFileEx(handle, 0, 1, 0, overlapped) }()
 
-	current, err := readWatchdogPIDInfoFile(file)
-	if err != nil || !matches(current) {
-		return err
+	if _, err := file.Seek(0, 0); err != nil {
+		return false, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxWatchdogPIDBytes+1))
+	if err != nil {
+		return false, err
+	}
+	if len(data) > maxWatchdogPIDBytes {
+		return false, fmt.Errorf("watchdog: PID file exceeds %d bytes", maxWatchdogPIDBytes)
+	}
+	if !matches(data) {
+		return false, nil
 	}
 	if watchdogPIDRemovalBeforeDelete != nil {
 		if err := watchdogPIDRemovalBeforeDelete(path); err != nil {
-			return err
+			return false, err
 		}
 	}
 	deleteFile := uint32(1)
-	return windows.SetFileInformationByHandle(
+	err = windows.SetFileInformationByHandle(
 		handle,
 		windows.FileDispositionInfo,
 		(*byte)(unsafe.Pointer(&deleteFile)),
 		uint32(unsafe.Sizeof(deleteFile)),
 	)
+	return err == nil, err
 }

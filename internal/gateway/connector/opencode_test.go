@@ -251,7 +251,7 @@ func TestOpenCodeBridgePinsPluginOrderMCPIdentityAndHeartbeat(t *testing.T) {
 		`load_heartbeat: true`,
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("OpenCode bridge is missing audited v1.18.10 behavior %q", want)
+			t.Errorf("OpenCode bridge is missing audited v1.18.10-v1.18.11 behavior %q", want)
 		}
 	}
 	if strings.Contains(text, "mcp__") || strings.Contains(text, "mcp:") {

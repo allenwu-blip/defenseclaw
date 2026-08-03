@@ -1901,32 +1901,8 @@ func runInitialConfigurationWithEnv(root, dataRoot string, opts options, env []s
 	return nil
 }
 
-func runCursorAdvisoryConfigurationWithEnv(root string, env []string) error {
-	args := cursorAdvisoryConfigurationArgs()
-	output, err := runCapturedSetupCommand(
-		setupConfigurationTimeout,
-		env,
-		filepath.Join(root, "bin", "defenseclaw.exe"),
-		args...,
-	)
-	if err != nil {
-		return fmt.Errorf("Cursor advisory configuration failed: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-func cursorAdvisoryConfigurationArgs() []string {
-	return []string{
-		"setup", "cursor", "--yes", "--mode", "observe", "--fail-mode", "open",
-		"--no-human-approval", "--no-restart",
-	}
-}
-
 func initialConfigurationArgs(opts options) []string {
 	profile := opts.Mode
-	if opts.Connector == "cursor" && profile == "action" {
-		profile = "observe"
-	}
 	args := []string{
 		"init", "--skip-install", "--non-interactive", "--yes",
 		"--connector", opts.Connector,

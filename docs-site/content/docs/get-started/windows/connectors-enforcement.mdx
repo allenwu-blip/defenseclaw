@@ -61,8 +61,8 @@ time:
 ```powershell
 defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
-# Cursor remains advisory; action/fail-closed/HITL requests are downgraded.
-defenseclaw setup cursor --mode observe --fail-mode open --no-human-approval
+# Cursor action uses event-native deny and failClosed=true; native HITL stays disabled.
+defenseclaw setup cursor --mode action --no-human-approval
 defenseclaw setup windsurf --mode action
 defenseclaw setup hermes --mode action
 defenseclaw setup opencode --mode action
@@ -162,17 +162,19 @@ The preview registers the current 21-event roster, including `subagentStart`.
 Cursor's event schemas expose native deny gates and ask on
 `beforeShellExecution` and `beforeMCPExecution`, but Cursor runs every matching
 hook and merges conflicts **Enterprise > Team > Project > User**. DefenseClaw
-owns only the user hook and does not implement Enterprise or Team hooks. It
-therefore cannot prove a hard decision or approval authoritative and maps
-blocks to `would_block` and confirms to alerts.
+owns only the user hook and does not implement Enterprise or Team hooks. Cursor
+exposes no safe API for detecting an actual higher-priority conflict, so
+DefenseClaw reports that limitation and does not infer a conflict. Action maps
+blocks to the documented event-native deny response; confirm remains an alert
+because native ask/HITL is not enabled.
 `sessionStart` and `sessionEnd` are fire-and-forget. `stop` accepts only a
 follow-up message. None of those three lifecycle surfaces is a synchronous
 enforcement gate.
 
-Cursor setup downgrades action, fail-closed, and human-approval requests to
-observe, `failClosed: false`, and approval-disabled before saving. Setup and
-repair report readiness only when the exact 21-event schema, current managed
-adapter, fail-open contract lock, and full active connector roster agree.
+Cursor action writes `failClosed: true`; observe writes `failClosed: false` and
+remains nonblocking. Human approval stays disabled. Setup and repair report
+readiness only when the exact 21-event schema, current managed adapter,
+mode-matched contract lock, and full active connector roster agree.
 Fresh setup ignores ambient
 `DEFENSECLAW_CURSOR_CONFIG_HOME` and uses `%USERPROFILE%\.cursor`; only an
 authenticated persisted custody record may restore a historical path.
@@ -261,13 +263,13 @@ execution:
 | Generic lifecycle `event` dispatch | Best-effort observation only because OpenCode dispatches it without awaiting the plugin Promise. |
 
 OpenCode loads global plugins before project plugins and runs hooks in order.
-Bridge v7 checks the official v1.18.10 `plugin_origins` list; if a later plugin
+Bridge v7 checks the official v1.18.10-v1.18.11 `plugin_origins` list; if a later plugin
 could mutate the shared args, action mode refuses an authoritative allow.
 Doctor also requires the bridge's config-hook load heartbeat, so a current file
 without runtime proof warns about stopped or `--pure`/external-plugin-disabled
 operation.
 
-OpenCode 1.18.10 exposes permission and chat/context plugin hooks, but the
+OpenCode 1.18.10 and 1.18.11 expose permission and chat/context plugin hooks, but the
 focused DefenseClaw bridge intentionally does not implement a native ask or
 context-injection response.
 `confirm` therefore falls back to allow with audit/alerting. Its plugin

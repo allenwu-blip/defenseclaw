@@ -30,11 +30,21 @@ func TestCursorContractSeparatesAgentAndDesktopEvidence(t *testing.T) {
 	if !stringInSlice(contract.Events, "subagentStart") {
 		t.Fatalf("Cursor event roster omitted subagentStart: %v", contract.Events)
 	}
-	if contract.Capabilities.CanBlock || contract.Capabilities.CanAskNative || contract.Capabilities.SupportsFailClosed {
-		t.Fatalf("Cursor user-hook contract claimed higher-priority authority: %+v", contract.Capabilities)
+	if !contract.Capabilities.CanBlock || contract.Capabilities.CanAskNative || !contract.Capabilities.SupportsFailClosed {
+		t.Fatalf("Cursor user-hook action contract is inconsistent: %+v", contract.Capabilities)
+	}
+	wantBlockEvents := []string{
+		"preToolUse", "subagentStart", "beforeShellExecution", "beforeMCPExecution",
+		"beforeReadFile", "beforeTabFileRead", "beforeSubmitPrompt",
+	}
+	if !reflect.DeepEqual(contract.Capabilities.BlockEvents, wantBlockEvents) {
+		t.Fatalf("Cursor block events = %v, want %v", contract.Capabilities.BlockEvents, wantBlockEvents)
 	}
 	joined := strings.Join(contract.Notes, " ")
-	for _, want := range []string{"cursor_version", "application/Desktop", "Agent CLI", "Enterprise > Team > Project > User"} {
+	for _, want := range []string{
+		"cursor_version", "application/Desktop", "Agent CLI", "Enterprise > Team > Project > User",
+		"no safe API", "failClosed=true", "does not emit Cursor's native ask",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("Cursor evidence notes missing %q: %s", want, joined)
 		}
@@ -95,7 +105,8 @@ func TestHookContractResolution(t *testing.T) {
 		{"omnigent_after_reviewed_range", "omnigent", "omnigent 0.8.0", HookCompatibilityUnknown, "", "0.8.0"},
 		{"omnigent_unversioned_requires_override", "omnigent", "", HookCompatibilityUnversioned, "omnigent-custom-policy-v1", ""},
 		{"opencode_reviewed_pin", "opencode", "opencode 1.18.10", HookCompatibilityKnown, "opencode-hooks-v1", "1.18.10"},
-		{"opencode_next_patch_unknown", "opencode", "opencode 1.18.11", HookCompatibilityUnknown, "", "1.18.11"},
+		{"opencode_current_pin", "opencode", "opencode 1.18.11", HookCompatibilityKnown, "opencode-hooks-v1", "1.18.11"},
+		{"opencode_next_patch_unknown", "opencode", "opencode 1.18.12", HookCompatibilityUnknown, "", "1.18.12"},
 		{"opencode_unversioned_requires_override", "opencode", "", HookCompatibilityUnversioned, "opencode-hooks-v1", ""},
 		{"unversioned_uses_default", "cursor", "", HookCompatibilityUnversioned, "cursor-hooks-v1", ""},
 		{"openclaw_proxy_not_gated", "openclaw", "", HookCompatibilityNotGated, "", ""},
@@ -257,7 +268,7 @@ func TestHookContractsCoverHookEndpoints(t *testing.T) {
 	}
 }
 
-func TestHermesHookContractV019ClassifiesAllValidEventsWithoutInventingBlockSurfaces(t *testing.T) {
+func TestHermesHookContractV019V020ClassifiesAllValidEventsWithoutInventingBlockSurfaces(t *testing.T) {
 	if got := ResolveHookContract("hermes", "0.18.99").Status; got != HookCompatibilityUnknown {
 		t.Fatalf("Hermes 0.18 compatibility = %q, want unknown for the v0.19 event contract", got)
 	}
@@ -266,6 +277,12 @@ func TestHermesHookContractV019ClassifiesAllValidEventsWithoutInventingBlockSurf
 		t.Fatalf("Hermes 0.19 compatibility = %q, want known", resolution.Status)
 	}
 	contract := resolution.Contract
+	if got := ResolveHookContract("hermes", "Hermes Agent v0.20.0 (2026.8.3)").Status; got != HookCompatibilityKnown {
+		t.Fatalf("Hermes 0.20 compatibility = %q, want known", got)
+	}
+	if got := ResolveHookContract("hermes", "0.21.0").Status; got != HookCompatibilityUnknown {
+		t.Fatalf("Hermes 0.21 compatibility = %q, want unknown beyond source-reviewed ceiling", got)
+	}
 	if len(contract.Events) != 23 {
 		t.Fatalf("Hermes event count = %d, want 23: %v", len(contract.Events), contract.Events)
 	}
@@ -582,9 +599,10 @@ func TestApplyHookContractUsesPinnedContractForUnknownVersion(t *testing.T) {
 }
 
 func TestHookContractLockSaveLoadAndDrift(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: dir, APIAddr: "127.0.0.1:18970"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := WriteHookScriptsForConnectorObjectWithOpts(filepath.Join(dir, "hooks"), opts, conn); err != nil {
 		t.Fatalf("write hooks: %v", err)
 	}
@@ -606,6 +624,30 @@ func TestHookContractLockSaveLoadAndDrift(t *testing.T) {
 	changed.ContractID = "hermes-hooks-v0-other"
 	if !HookContractLockDrifted(loaded, changed) {
 		t.Fatalf("contract change should be drift")
+	}
+}
+
+func TestWindowsHermesLockSealsManagedExecutableVersionEvidence(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Hermes executable evidence is native-Windows-only")
+	}
+	dir := testenv.PrivateTempDir(t)
+	opts := prepareHermesSetupAdmissionFixture(t, SetupOpts{DataDir: dir})
+	executable := opts.AgentExecutable
+	entry := NewHookContractLockEntry(opts, NewHermesConnector(), "test-build")
+	if !validSetupSelectedAgentExecutableEvidence(entry, "hermes") ||
+		entry.AgentExecutableSource != "setup-selected" ||
+		entry.NormalizedAgentVersion != "0.20.0" {
+		t.Fatalf("Hermes protected lock evidence = %+v", entry)
+	}
+	if err := SaveFreshHookContractLockEntry(dir, entry); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadCachedAgentVersion(dir, "hermes"); got != opts.AgentVersion {
+		t.Fatalf("locked Hermes version = %q, want %q", got, opts.AgentVersion)
+	}
+	if got := LoadCachedAgentExecutable(dir, "hermes"); !strings.EqualFold(got, executable) {
+		t.Fatalf("locked Hermes executable = %q, want %q", got, executable)
 	}
 }
 
@@ -1167,6 +1209,53 @@ func TestCodexSetupSelectionReceiptIsBoundAndSealed(t *testing.T) {
 		!sameCodexExecutablePath(entry.AgentExecutable, executable) ||
 		entry.AgentExecutableSHA256 != digest {
 		t.Fatalf("sealed executable evidence = %+v", entry)
+	}
+}
+
+func TestSetupSelectionReceiptCarriesCodexAndHermesForGatewayConsumption(t *testing.T) {
+	dir := testenv.PrivateTempDir(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := agentSelectionReceipt{
+		SchemaVersion: agentSelectionSchemaVersion,
+		UpdatedAt:     now.Format(time.RFC3339),
+		Selections: map[string]agentSelectionEvidence{
+			"codex": {
+				Connector:         "codex",
+				Source:            "setup-selected",
+				Executable:        filepath.Join(dir, "codex.exe"),
+				RawVersion:        "codex 0.144.3",
+				NormalizedVersion: "0.144.3",
+				SHA256:            strings.Repeat("a", 64),
+				SelectedAt:        now.Format(time.RFC3339),
+				ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+			},
+			"hermes": {
+				Connector:         "hermes",
+				Source:            "setup-selected",
+				Executable:        filepath.Join(dir, "hermes.exe"),
+				RawVersion:        "Hermes Agent v0.20.0",
+				NormalizedVersion: "0.20.0",
+				SHA256:            strings.Repeat("b", 64),
+				SelectedAt:        now.Format(time.RFC3339),
+				ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+			},
+		},
+	}
+	body, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(dir, agentSelectionFile), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	codexSelection, ok := loadSetupAgentSelection(dir, "codex")
+	if !ok || codexSelection.Executable != filepath.Join(dir, "codex.exe") {
+		t.Fatalf("Codex selection = %+v, %t", codexSelection, ok)
+	}
+	hermesSelection, ok := loadSetupAgentSelection(dir, "hermes")
+	if !ok || hermesSelection.Executable != filepath.Join(dir, "hermes.exe") {
+		t.Fatalf("Hermes selection = %+v, %t", hermesSelection, ok)
 	}
 }
 

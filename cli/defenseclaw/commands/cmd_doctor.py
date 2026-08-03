@@ -56,7 +56,6 @@ from defenseclaw.connector_paths import (
     copilot_home,
     copilot_settings_resolution,
     hermes_config_path,
-    hermes_legacy_config_path,
     hermes_profile_unsupported_reason,
     omnigent_config_path,
     windsurf_hook_config_path,
@@ -608,8 +607,8 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "warn",
             "Human approval",
-            "Cursor human approval is unsupported here: DefenseClaw owns only the "
-            "non-authoritative user hook, below Enterprise, Team, and Project hooks",
+            "Cursor native human approval is not implemented; confirm verdicts remain "
+            "attributed alerts",
             r=r,
         )
     elif connector == "codex":
@@ -630,7 +629,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "warn",
             "Human approval",
-            "OpenCode v1.18.10 publishes permission.ask, but the DefenseClaw preview bridge "
+            "OpenCode v1.18.10-v1.18.11 publishes permission.ask, but the DefenseClaw preview bridge "
             "intentionally does not implement or claim that surface",
             r=r,
         )
@@ -1156,6 +1155,172 @@ def _check_windows_gateway_diagnostics(
         _emit("fail", "Gateway home", "running gateway uses a different canonical data home", r=r)
     else:
         _emit("pass", "Gateway home", "running gateway uses this canonical data home", r=r)
+    return True
+
+
+def _watchdog_enabled(cfg) -> bool:
+    watchdog = getattr(getattr(cfg, "gateway", None), "watchdog", None)
+    return bool(getattr(watchdog, "enabled", True))
+
+
+def _inspect_windows_watchdog_runtime(cfg, evidence: GatewayEvidence) -> tuple[str, str, object | None]:
+    """Return a read-only lifecycle posture and optional last-known state.
+
+    The result deliberately distinguishes repairable stopped/invalid records
+    from unsafe or live-foreign identity evidence. Only the former may be
+    handed to the gateway's own lifecycle repair path.
+    """
+    pid_path = os.path.join(cfg.data_dir, "watchdog.pid")
+    ownership_path = os.path.join(cfg.data_dir, ".watchdog.lock")
+    record = evidence.watchdog_pid_record(pid_path)
+    if record.status == "malformed":
+        reason = record.reason or "canonical PID file is invalid"
+        lowered = reason.lower()
+        unsafe_markers = (
+            "reparse",
+            "symbolic link",
+            "not a regular file",
+            "exceeds",
+            "owner",
+            "dacl",
+            "broad",
+            "custody",
+        )
+        if any(marker in lowered for marker in unsafe_markers):
+            return ("unsafe", reason, None)
+    if record.status in {"denied", "unavailable"}:
+        return ("uninspectable", record.reason or "canonical PID file could not be inspected", None)
+
+    ownership = evidence.watchdog_ownership(ownership_path, pid_path)
+    ownership_label = "stable .watchdog.lock" if ownership.source == "stable" else "legacy canonical PID"
+    if ownership.status == "unsafe":
+        return ("unsafe", f"{ownership_label} ownership is unsafe: {ownership.reason}", None)
+    if ownership.status in {"denied", "unavailable"}:
+        return (
+            "uninspectable",
+            f"{ownership_label} ownership could not be verified: {ownership.reason}",
+            None,
+        )
+    ownership_held = ownership.status == "held"
+
+    if record.status == "missing":
+        if ownership_held:
+            return (
+                "uninspectable",
+                f"{ownership_label} ownership is held but the canonical PID publication is missing",
+                None,
+            )
+        return ("stopped", "canonical PID file is missing and no ownership lock is held", None)
+    if record.status == "malformed":
+        reason = record.reason or "canonical PID file is invalid"
+        if ownership_held:
+            return (
+                "uninspectable",
+                f"{ownership_label} ownership is held but the canonical PID publication is invalid: {reason}",
+                None,
+            )
+        return ("invalid", f"{reason}; no ownership lock is held", None)
+
+    process = evidence.process(record.pid)
+    if process.status == "missing":
+        if ownership_held:
+            return (
+                "uninspectable",
+                f"{ownership_label} ownership is held but the recorded watchdog process does not exist",
+                None,
+            )
+        return ("stale", "recorded watchdog process does not exist", None)
+    if process.status in {"denied", "unavailable"}:
+        return ("uninspectable", process.reason or "watchdog process could not be inspected", None)
+    if gateway_executable_name(process.executable) not in GATEWAY_PROCESS_NAMES:
+        return ("foreign", "recorded PID belongs to an unexpected executable", None)
+    if not record.executable or not record.start_identity:
+        if ownership_held:
+            return (
+                "uninspectable",
+                f"{ownership_label} ownership is held but the PID record lacks the strong Windows identity",
+                None,
+            )
+        return ("invalid", "PID record lacks the strong executable/start identity required on Windows", None)
+    if canonical_path(record.executable) != canonical_path(process.executable):
+        return ("foreign", "recorded PID executable identity does not match the live process", None)
+    if record.start_identity != process.start_identity:
+        return ("foreign", "recorded PID start identity does not match the live process", None)
+
+    if not ownership_held:
+        return (
+            "unowned",
+            f"matching live PID {record.pid} has no held stable or legacy watchdog ownership lock",
+            None,
+        )
+
+    state_path = os.path.join(cfg.data_dir, "watchdog.state")
+    return (
+        "running",
+        f"PID {record.pid} executable/start identity match and {ownership_label} ownership is held",
+        evidence.watchdog_state(state_path),
+    )
+
+
+def _check_windows_watchdog_diagnostics(
+    cfg,
+    r: _DoctorResult,
+    *,
+    evidence: GatewayEvidence | None = None,
+    platform_name: str | None = None,
+) -> bool:
+    """Surface watchdog lifecycle and downstream protection health on Windows."""
+    platform_name = platform_name or sys.platform
+    if platform_name != "win32":
+        return False
+    evidence = evidence or GatewayEvidence(platform_name=platform_name)
+    enabled = _watchdog_enabled(cfg)
+    posture, detail, state = _inspect_windows_watchdog_runtime(cfg, evidence)
+
+    if not enabled:
+        if posture == "stopped":
+            _emit("skip", "Watchdog runtime", "disabled by configuration and not running", r=r)
+        else:
+            _emit("warn", "Watchdog runtime", f"disabled by configuration, but lifecycle posture is {posture}", r=r)
+        _emit("skip", "Watchdog last-known state", "watchdog enforcement is disabled", r=r)
+        return True
+
+    if posture == "running":
+        _emit("pass", "Watchdog runtime", detail, r=r)
+    elif posture in {"stopped", "invalid", "stale"}:
+        _emit("fail", "Watchdog runtime", f"enabled but not running: {detail}", r=r)
+        _emit("skip", "Watchdog last-known state", "watchdog is not running", r=r)
+        return True
+    elif posture in {"unsafe", "foreign", "unowned"}:
+        _emit("fail", "Watchdog runtime", f"enabled but lifecycle ownership is {posture}: {detail}", r=r)
+        _emit("skip", "Watchdog last-known state", "watchdog process identity is not trusted", r=r)
+        return True
+    else:
+        _emit("warn", "Watchdog runtime", f"enabled but lifecycle posture cannot be verified: {detail}", r=r)
+        _emit("skip", "Watchdog last-known state", "watchdog process identity could not be verified", r=r)
+        return True
+
+    if state is None or state.status == "missing":
+        _emit("warn", "Watchdog last-known state", "running, but no last-known protection state is available", r=r)
+    elif state.status != "ok":
+        _emit("warn", "Watchdog last-known state", state.reason or "last-known state could not be verified", r=r)
+    elif state.state == "healthy":
+        _emit("pass", "Watchdog last-known state", "healthy", r=r)
+    elif state.state == "degraded":
+        _emit(
+            "warn",
+            "Watchdog last-known state",
+            "degraded: a required downstream connector or protection subsystem did not converge; "
+            "repair that subsystem (restarting the watchdog is not a repair)",
+            r=r,
+        )
+    else:
+        _emit(
+            "fail",
+            "Watchdog last-known state",
+            "down: gateway health is unavailable and protection status cannot be verified",
+            r=r,
+        )
     return True
 
 
@@ -1894,7 +2059,7 @@ def _opencode_load_heartbeat_status(cfg) -> tuple[str, str]:
 
     A current file digest cannot distinguish a normal OpenCode process from
     ``--pure`` or another external-plugin-disabled launch. The bridge emits a
-    scoped, secret-free heartbeat from its v1.18.10 config hook; absence stays
+    scoped, secret-free heartbeat from its v1.18.10-v1.18.11 config hook; absence stays
     a warning because Doctor cannot prove that OpenCode is currently running.
     """
     gateway = getattr(cfg, "gateway", None)
@@ -2063,13 +2228,16 @@ def _check_cursor_configured_runtime(
     platform_name: str | None = None,
     probe_runtime: bool = False,
 ) -> None:
-    """Validate Cursor's persisted advisory contract and optional live round trip."""
+    """Validate Cursor's persisted mode contract and optional live round trip."""
     repair = "run `defenseclaw setup cursor --yes --restart` to reconcile the managed registration"
     guardrail = getattr(cfg, "guardrail", None)
     mode_resolver = getattr(guardrail, "effective_mode", None)
     fail_resolver = getattr(guardrail, "effective_hook_fail_mode", None)
     mode = str(mode_resolver("cursor") if callable(mode_resolver) else "observe").strip().lower()
     fail_mode = str(fail_resolver("cursor") if callable(fail_resolver) else "open").strip().lower()
+    mode = "action" if mode == "action" else "observe"
+    expected_fail_mode = "closed" if mode == "action" else "open"
+    expected_fail_closed = mode == "action"
     hilt = None
     hilt_resolver = getattr(guardrail, "effective_hilt", None)
     if callable(hilt_resolver):
@@ -2078,11 +2246,11 @@ def _check_cursor_configured_runtime(
         except Exception:  # noqa: BLE001 - report the persisted registration independently.
             hilt = None
     hilt_enabled = getattr(hilt, "enabled", False) is True
-    if mode == "action" or fail_mode != "open" or hilt_enabled:
+    if fail_mode != expected_fail_mode or hilt_enabled:
         _emit(
             "fail",
             label,
-            f"unsupported Cursor posture is persisted (mode={mode or 'observe'}, fail_mode={fail_mode or 'open'}, "
+            f"inconsistent Cursor posture is persisted (mode={mode}, fail_mode={fail_mode or 'open'}, "
             f"human_approval={str(hilt_enabled).lower()}); {repair}",
             r=r,
         )
@@ -2092,6 +2260,7 @@ def _check_cursor_configured_runtime(
         path,
         expected_runtime_paths=_hook_runtime_paths_from_lock(cfg, "cursor"),
         platform_name=platform_name,
+        expected_fail_closed=expected_fail_closed,
     )
     if not result.ok:
         _emit("fail", label, f"{result.detail}; {repair}", r=r)
@@ -2108,9 +2277,12 @@ def _check_cursor_configured_runtime(
         "pass",
         label,
         f"configured runtime={result.runtime_path}; entries={result.entry_count}; "
-        "mode=observe; failClosed=false; failure=fail-open; "
-        "authority=user-hook advisory (Enterprise > Team > Project > User); "
-        "hard-action=unsupported; human-approval=unsupported"
+        f"mode={mode}; failClosed={str(expected_fail_closed).lower()}; "
+        f"failure=fail-{expected_fail_mode}; enforcement="
+        f"{'preview user-hook native deny' if mode == 'action' else 'observe-only'}; "
+        "priority=Enterprise > Team > Project > User; "
+        "higher-priority conflict detection=unavailable (none inferred); "
+        "human-approval=unsupported"
         + (f"; {runtime_detail}" if runtime_detail else ""),
         r=r,
     )
@@ -2186,6 +2358,66 @@ def _omnigent_runtime_paths_from_backups(cfg) -> list[str]:
     return paths
 
 
+def _omnigent_setup_repair_command(cfg) -> str:
+    """Render a posture-preserving public repair command for OmniGent.
+
+    The public setup alias intentionally defaults a new invocation to observe
+    mode.  Doctor is repairing an existing managed policy, however, so omitting
+    the connector's effective mode would silently weaken an action install.
+    Render every enforcement input that can change the native policy response
+    explicitly; ordinary setup still preserves all other connector settings.
+    """
+
+    guardrail = getattr(cfg, "guardrail", None)
+    mode = "action"
+    fail_mode = "closed"
+    hilt = getattr(guardrail, "hilt", None)
+
+    if guardrail is not None:
+        mode_resolver = getattr(guardrail, "effective_mode", None)
+        try:
+            raw_mode = mode_resolver("omnigent") if callable(mode_resolver) else getattr(guardrail, "mode", "")
+        except Exception:  # noqa: BLE001 - malformed config must not weaken the repair command.
+            raw_mode = "action"
+        mode_text = str(raw_mode or "").strip().lower()
+        mode = mode_text if mode_text in {"observe", "action"} else "action"
+
+        fail_resolver = getattr(guardrail, "effective_hook_fail_mode", None)
+        try:
+            raw_fail_mode = (
+                fail_resolver("omnigent")
+                if callable(fail_resolver)
+                else getattr(guardrail, "hook_fail_mode", "closed")
+            )
+        except Exception:  # noqa: BLE001 - fail closed when effective policy cannot be resolved.
+            raw_fail_mode = "closed"
+        fail_mode = "open" if str(raw_fail_mode or "").strip().lower() == "open" else "closed"
+
+        hilt_resolver = getattr(guardrail, "effective_hilt", None)
+        if callable(hilt_resolver):
+            try:
+                hilt = hilt_resolver("omnigent")
+            except Exception:  # noqa: BLE001 - omission preserves the existing HILT block.
+                hilt = None
+
+    args = [
+        "defenseclaw setup omnigent",
+        f"--mode {mode}",
+        f"--fail-mode {fail_mode}",
+    ]
+    if hilt is not None:
+        if bool(getattr(hilt, "enabled", False)):
+            args.append("--human-approval")
+            severity = str(getattr(hilt, "min_severity", "") or "HIGH").strip().upper()
+            if severity not in {"CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"}:
+                severity = "HIGH"
+            args.append(f"--hilt-min-severity {severity}")
+        else:
+            args.append("--no-human-approval")
+    args.extend(("--yes", "--restart"))
+    return " ".join(args)
+
+
 def _omnigent_managed_artifact_drift(cfg, logical: str, path: str) -> str:
     """Return an integrity/custody failure for one OmniGent-managed artifact."""
     data_dir = str(getattr(cfg, "data_dir", "") or "")
@@ -2226,9 +2458,10 @@ def _omnigent_managed_artifact_drift(cfg, logical: str, path: str) -> str:
     if len(body) > 2 * 1024 * 1024:
         return f"managed {logical} artifact exceeds the 2 MiB integrity limit: {path}"
     if hashlib.sha256(body).hexdigest() != expected:
+        repair = _omnigent_setup_repair_command(cfg)
         return (
             f"managed OmniGent {logical} drift detected; run "
-            "`defenseclaw setup omnigent --yes --restart` to reconcile"
+            f"`{repair}` to reconcile without changing enforcement posture"
         )
     return ""
 
@@ -2529,34 +2762,6 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
     )
 
 
-def _check_hermes_legacy_config(r: _DoctorResult, *, platform_name: str | None = None) -> None:
-    """Warn about the pre-native-Windows Hermes config without migrating it.
-
-    Native Hermes uses ``HERMES_HOME`` or ``%LOCALAPPDATA%\\hermes``. Older
-    DefenseClaw builds wrote ``~/.hermes/config.yaml`` on every platform. That
-    file can contain credentials, so doctor only reports it and leaves any
-    review, merge, archival, or deletion to the operator.
-    """
-    if (platform_name or os.name) != "nt":
-        return
-
-    current = os.path.abspath(hermes_config_path())
-    legacy = os.path.abspath(hermes_legacy_config_path())
-    if os.path.normcase(current) == os.path.normcase(legacy) or not os.path.isfile(legacy):
-        return
-
-    current_state = "already exists" if os.path.isfile(current) else "does not exist yet"
-    _emit(
-        "warn",
-        "Hermes config migration",
-        f"legacy Hermes config found at {legacy}. Native Hermes now uses {current}, "
-        f"which {current_state}. Review and merge any needed settings manually, then "
-        "re-run `defenseclaw setup hermes`. DefenseClaw will not copy or delete the "
-        "legacy file because it may contain credentials.",
-        r=r,
-    )
-
-
 def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     """Run the Services hook/health check matching *connector*.
 
@@ -2574,7 +2779,6 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         _check_windsurf_hooks(cfg, r)
     elif connector == "hermes":
         _check_hermes_hooks(cfg, r)
-        _check_hermes_legacy_config(r)
     elif connector == "zeptoclaw":
         _check_zeptoclaw_config(cfg, r)
     elif connector == "copilot":
@@ -2896,11 +3100,6 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
     label = connectors[0] if len(connectors) == 1 else ", ".join(sorted(connectors))
     if len(connectors) == 1:
         mode = modes.get(connectors[0], "observe")
-        if connectors[0] == "cursor":
-            return (
-                f"hook-driven for cursor (configured mode={mode}; user-hook advisory only, "
-                "hard action unsupported) — proxy port intentionally closed"
-            )
         if connectors[0] == "omnigent":
             if mode == "action":
                 return (
@@ -2914,14 +3113,18 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
         if mode == "action":
             return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
-    if "omnigent" not in modes and "cursor" not in modes and all(mode == "action" for mode in modes.values()):
+    if "omnigent" not in modes and all(mode == "action" for mode in modes.values()):
         return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
-    if "omnigent" not in modes and "cursor" not in modes and all(mode != "action" for mode in modes.values()):
+    if "omnigent" not in modes and all(mode != "action" for mode in modes.values()):
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
     parts = []
     for connector, mode in modes.items():
         if connector == "cursor":
-            parts.append(f"cursor (configured mode={mode}; user-hook advisory only)")
+            parts.append(
+                "cursor (mode=action via preview user-hook native deny)"
+                if mode == "action"
+                else "cursor (mode=observe)"
+            )
         elif connector == "omnigent" and mode == "action":
             parts.append("omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)")
         elif connector == "omnigent":
@@ -4120,9 +4323,9 @@ def _check_security_overrides(cfg, r: _DoctorResult) -> None:
     "do_fix",
     is_flag=True,
     help=(
-        "Auto-repair safe issues (stale PID files, token-env drift, dotenv "
-        "perms). NOTE: the token-drift fixer may RESTART the gateway sidecar "
-        "to reconcile a stale token — preview the full set with --dry-run."
+        "Auto-repair safe issues (stale PID files, enabled stopped watchdog, "
+        "token-env drift, dotenv perms). NOTE: a fixer may START the watchdog "
+        "or RESTART the gateway sidecar — preview the full set with --dry-run."
     ),
 )
 @click.option("--yes", "assume_yes", is_flag=True, help="When used with --fix, apply fixes without prompting")
@@ -4154,11 +4357,12 @@ def doctor(
     generated trace and requires an acknowledgement from that exact runtime
     route; additional enabled routes receive a bounded coverage warning.
 
-    Use ``--fix`` to auto-repair safe issues (stale sidecar PID files,
-    gateway token-env drift, dotenv permissions, pristine config backups).
-    One fixer — gateway token *drift* — may **restart the gateway sidecar**
-    to reconcile a stale in-memory token, which briefly interrupts in-flight
-    requests; preview the full set first with ``--fix --dry-run``. Doctor no
+    Use ``--fix`` to auto-repair safe issues (stale sidecar PID files, an
+    enabled stopped watchdog, gateway token-env drift, dotenv permissions,
+    pristine config backups). A fixer may **start the watchdog** or **restart
+    the gateway sidecar** to reconcile a stale in-memory token, which briefly
+    interrupts in-flight requests; preview the full set first with ``--fix
+    --dry-run``. Doctor no
     longer tears connectors down as part of ``--fix`` (it only *reports*
     inactive-connector residue); run ``defenseclaw-gateway connector teardown
     --connector <name>`` to remove a specific connector. Other destructive or
@@ -4252,6 +4456,7 @@ def doctor(
         # /proc, and ps are not reliable evidence there.
         _check_gateway_token_drift(cfg, r)
         _check_gateway_home_mismatch(cfg, r)
+    _check_windows_watchdog_diagnostics(cfg, r)
     # Run the per-connector hook/health check for EVERY active connector,
     # not just the primary. ``_doctor_active_connectors`` returns the single
     # active connector on single-connector installs (no label suffix applied,
@@ -4412,14 +4617,15 @@ def _check_registry_credentials(cfg, r: _DoctorResult) -> None:
 
 _AUTO_FIX_DRY_RUN_HINT = (
     "dry-run: previewing fixers; nothing on disk changes. A real --fix --yes "
-    "may restart the gateway sidecar for token drift; doctor never runs "
-    "connector teardown."
+    "may start an enabled stopped watchdog and may restart the gateway sidecar "
+    "for token drift; doctor never runs connector teardown."
 )
 
 _AUTO_FIX_REAL_HINT = (
-    "blast radius: the token-drift fixer may RESTART the gateway sidecar "
-    "(interrupts in-flight requests); teardown is never run. Re-run with "
-    "--dry-run to preview without mutating."
+    "blast radius: the watchdog fixer may START an enabled stopped watchdog, "
+    "and the token-drift fixer may RESTART the gateway sidecar (interrupts "
+    "in-flight requests); teardown is never run. Re-run with --dry-run to "
+    "preview without mutating."
 )
 
 
@@ -4437,8 +4643,8 @@ def _run_fixers(
 ) -> None:
     """Run each fixer in sequence, narrating what changed.
 
-    Fixers are intentionally *small* and independent. All but one are
-    non-disruptive; the lone exception is ``gateway token drift``, which may
+    Fixers are intentionally *small* and independent. The watchdog fixer may
+    **start an enabled stopped watchdog**, and ``gateway token drift`` may
     **restart the gateway sidecar** to reconcile a stale in-memory token (it
     prompts first unless ``--yes``, and briefly interrupts in-flight
     requests). That blast radius is surfaced to the operator by the banner at
@@ -4462,18 +4668,19 @@ def _run_fixers(
     # operators run ``defenseclaw-gateway connector teardown --connector
     # <name>`` explicitly.
     fixers = [
-        ("stale gateway PID file", _fix_stale_pid),
-        ("gateway token", _fix_gateway_token),
-        ("gateway token_env", _fix_gateway_token_env),
-        ("gateway token drift", _fix_gateway_token_drift),
-        ("defenseclaw dotenv perms", _fix_dotenv_perms),
-        ("pristine config backup", _fix_pristine_backup),
-        ("plugin registry dead-end", _fix_plugin_registry_required),
+        ("stale gateway PID file", _fix_stale_pid, None),
+        ("gateway token", _fix_gateway_token, None),
+        ("gateway token_env", _fix_gateway_token_env, None),
+        ("gateway token drift", _fix_gateway_token_drift, None),
+        ("watchdog runtime", _fix_watchdog_runtime, _preview_watchdog_runtime_fix),
+        ("defenseclaw dotenv perms", _fix_dotenv_perms, None),
+        ("pristine config backup", _fix_pristine_backup, None),
+        ("plugin registry dead-end", _fix_plugin_registry_required, None),
     ]
 
-    for title, fn in fixers:
+    for title, fn, preview in fixers:
         if dry_run:
-            outcome = ("skip", "would run (dry-run; no changes made)")
+            outcome = preview(cfg) if preview is not None else ("skip", "would run (dry-run; no changes made)")
         else:
             try:
                 outcome = fn(cfg, assume_yes=assume_yes)
@@ -4808,13 +5015,23 @@ def _check_hook_contract_lock(
         with open(lock_path, encoding="utf-8") as fh:
             lock = json.load(fh)
     except FileNotFoundError:
-        if connector == "windsurf":
+        if connector in {"windsurf", "opencode"}:
+            owner = "legacy Cascade" if connector == "windsurf" else "OpenCode"
+            command = (
+                "defenseclaw setup windsurf --yes --restart"
+                if connector == "windsurf"
+                else "defenseclaw setup opencode --yes"
+            )
+            evidence = (
+                "connector-owned 12-event registration"
+                if connector == "windsurf"
+                else "managed plugin and hook contract lock"
+            )
             _emit(
                 "fail",
                 "Hook contract",
-                "active legacy Cascade connector has no hook_contract_lock.json; "
-                "rerun `defenseclaw setup windsurf --yes --restart` to publish and "
-                "verify the connector-owned 12-event registration",
+                f"active {owner} connector has no hook_contract_lock.json; "
+                f"rerun `{command}` to publish and verify the {evidence}",
                 r=r,
             )
         else:
@@ -4826,12 +5043,17 @@ def _check_hook_contract_lock(
 
     entry = (lock.get("connectors") or {}).get(connector) or {}
     if not entry:
-        if connector == "windsurf":
+        if connector in {"windsurf", "opencode"}:
+            owner = "legacy Cascade" if connector == "windsurf" else "OpenCode"
+            command = (
+                "defenseclaw setup windsurf --yes --restart"
+                if connector == "windsurf"
+                else "defenseclaw setup opencode --yes"
+            )
             _emit(
                 "fail",
                 "Hook contract",
-                "active legacy Cascade connector has no Windsurf lock entry; rerun "
-                "`defenseclaw setup windsurf --yes --restart`",
+                f"active {owner} connector has no {connector} lock entry; rerun `{command}`",
                 r=r,
             )
         else:
@@ -4895,18 +5117,20 @@ def _check_hook_contract_lock(
     if native_runtime is not None:
         detail += f" {native_runtime.runtime_description}"
 
-    # Native Codex setup records the exact executable, version, and digest used
+    # Native setup records the exact executable, version, and digest used
     # to select the hook contract.  Automatic discovery can legitimately find a
     # different installation (for example an npm .CMD wrapper ahead of the
     # desktop app on PATH); it must not override that protected setup evidence.
-    protected_codex_agent = connector == "codex" and all(
+    protected_setup_agent = connector in {"codex", "hermes"} and all(
         (
             str(entry.get("agent_executable") or "").strip(),
             str(entry.get("agent_executable_sha256") or "").strip(),
             str(entry.get("agent_executable_source") or "").strip() == "setup-selected",
         )
     )
-    current_version = "" if protected_codex_agent else _discovered_agent_version(data_dir, connector)
+    current_version = "" if protected_setup_agent else _discovered_agent_version(data_dir, connector)
+    if protected_setup_agent:
+        detail += f" agent_executable={entry['agent_executable']}"
     if connector == "cursor":
         discovered_path = _discovered_agent_path(data_dir, connector)
         discovered_binary = os.path.basename(discovered_path).lower()
@@ -4923,9 +5147,15 @@ def _check_hook_contract_lock(
             r=r,
         )
         return
-    if connector == "cursor" and str(entry.get("hook_fail_mode") or "") != "open":
-        _emit("fail", "Hook contract", detail + " expected_hook_fail_mode=open", r=r)
-    elif native_runtime is not None and not native_runtime.healthy:
+    if connector == "cursor":
+        expected_cursor_fail_mode = (
+            "closed" if _doctor_effective_guardrail_mode(cfg.guardrail, "cursor") == "action" else "open"
+        )
+        detail += " priority_conflict_detection=unavailable none_inferred=true"
+        if str(entry.get("hook_fail_mode") or "") != expected_cursor_fail_mode:
+            _emit("fail", "Hook contract", detail + f" expected_hook_fail_mode={expected_cursor_fail_mode}", r=r)
+            return
+    if native_runtime is not None and not native_runtime.healthy:
         _emit("fail", "Hook contract", detail, r=r)
     elif status == "unknown":
         _emit("fail", "Hook contract", detail, r=r)
@@ -5319,6 +5549,86 @@ def _fix_gateway_token_env(cfg, *, assume_yes: bool) -> tuple[str, str]:
         return ("fail", f"could not save config: {type(exc).__name__}: {exc}")
 
     return ("pass", f"token_env repointed to {canonical}")
+
+
+def _watchdog_repair_posture(
+    cfg,
+    *,
+    evidence: GatewayEvidence | None = None,
+    platform_name: str | None = None,
+) -> tuple[bool, str]:
+    """Return whether the gateway lifecycle may safely attempt a start."""
+    platform_name = platform_name or sys.platform
+    if platform_name != "win32":
+        return (False, "native Windows watchdog lifecycle repair is not applicable")
+    if not _watchdog_enabled(cfg):
+        return (False, "watchdog is disabled by configuration")
+    evidence = evidence or GatewayEvidence(platform_name=platform_name)
+    posture, detail, state = _inspect_windows_watchdog_runtime(cfg, evidence)
+    if posture in {"stopped", "invalid", "stale"}:
+        return (True, f"enabled but not running: {detail}")
+    if posture == "running":
+        if state is not None and state.status == "ok" and state.state in {"degraded", "down"}:
+            return (
+                False,
+                f"watchdog is running with last-known state {state.state}; repair the downstream subsystem instead",
+            )
+        return (False, "watchdog is already running")
+    if posture in {"unsafe", "foreign", "unowned"}:
+        return (False, f"refusing automatic repair of {posture} lifecycle ownership: {detail}")
+    return (False, f"watchdog lifecycle cannot be inspected safely: {detail}")
+
+
+def _preview_watchdog_runtime_fix(cfg) -> tuple[str, str]:
+    repair, detail = _watchdog_repair_posture(cfg)
+    if not repair:
+        tag = "warn" if detail.startswith(("refusing", "watchdog lifecycle cannot")) else "skip"
+        return (tag, f"{detail} (dry-run; no changes made)")
+    gw_binary = shutil.which("defenseclaw-gateway")
+    if not gw_binary:
+        return (
+            "warn",
+            f"{detail}; defenseclaw-gateway is not on PATH, so no supported repair is available "
+            "(dry-run; no changes made)",
+        )
+    return (
+        "skip",
+        f"would run 'defenseclaw-gateway watchdog start' for {detail}; the gateway lifecycle will "
+        "revalidate ownership and refuse unsafe PID/reparse/process identity evidence "
+        "(dry-run; no changes made)",
+    )
+
+
+def _fix_watchdog_runtime(cfg, *, assume_yes: bool) -> tuple[str, str]:
+    """Start an enabled stopped watchdog through its guarded lifecycle path."""
+    repair, detail = _watchdog_repair_posture(cfg)
+    if not repair:
+        tag = "warn" if detail.startswith(("refusing", "watchdog lifecycle cannot")) else "skip"
+        return (tag, detail)
+    gw_binary = shutil.which("defenseclaw-gateway")
+    if not gw_binary:
+        return ("warn", f"{detail}; defenseclaw-gateway is not on PATH")
+    if not assume_yes and not click.confirm(
+        "    Start the enabled stopped watchdog through the guarded gateway lifecycle?",
+        default=True,
+    ):
+        return ("skip", "declined by user")
+    try:
+        result = subprocess.run(
+            [gw_binary, "watchdog", "start"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return ("fail", "watchdog start command timed out after 30s")
+    except OSError as exc:
+        return ("fail", f"could not invoke watchdog start: {exc}")
+    if result.returncode != 0:
+        lines = (result.stderr or result.stdout or "watchdog start failed").strip().splitlines()
+        return ("fail", lines[0] if lines else "watchdog start failed")
+    return ("pass", "watchdog started through the guarded gateway lifecycle")
 
 
 def _fix_gateway_token_drift(cfg, *, assume_yes: bool) -> tuple[str, str]:

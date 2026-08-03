@@ -31,7 +31,9 @@ from __future__ import annotations
 import contextlib
 import copy
 import io
+import json
 import os
+import shlex
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
@@ -44,7 +46,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from click.testing import CliRunner
 
 pytestmark = pytest.mark.supported_connector_host
+from defenseclaw.agent_selection import SetupAgentSelection
 from defenseclaw.commands import cmd_setup
+from defenseclaw.commands.cmd_doctor import _omnigent_setup_repair_command
 from defenseclaw.commands.cmd_setup import (
     _configured_connector_set,
     _print_observability_summary,
@@ -54,6 +58,7 @@ from defenseclaw.commands.cmd_setup import (
     setup as setup_group,
 )
 from defenseclaw.config import HILTConfig, PerConnectorGuardrailConfig, load
+from defenseclaw.file_permissions import atomic_write_private_bytes
 from defenseclaw.logger import CanonicalObservabilityError, CanonicalObservabilityUnavailableError
 
 from tests.helpers import cleanup_app, make_app_context
@@ -117,6 +122,32 @@ class TestAdditiveSetupCommand(unittest.TestCase):
         self.assertEqual(self.app.cfg.claw.mode, "codex")
         self.assertEqual(self.app.cfg.active_connectors(), ["codex", "cursor"])
 
+    def test_cursor_action_preserves_peer_connector_modes(self):
+        self.app.cfg.guardrail.connectors = {
+            "claudecode": PerConnectorGuardrailConfig(mode="action", hook_fail_mode="closed"),
+            "codex": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+        }
+        self.app.cfg.guardrail.connector = "claudecode"
+        self.app.cfg.claw.mode = "claudecode"
+
+        with _setup_patches():
+            result = _invoke(
+                ["cursor", "--yes", "--mode", "action", "--no-human-approval", "--no-restart"],
+                self.app,
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        gc = self.app.cfg.guardrail
+        self.assertEqual(set(gc.connectors), {"claudecode", "codex", "cursor"})
+        self.assertEqual(gc.connectors["claudecode"].mode, "action")
+        self.assertEqual(gc.connectors["claudecode"].hook_fail_mode, "closed")
+        self.assertEqual(gc.connectors["codex"].mode, "observe")
+        self.assertEqual(gc.connectors["codex"].hook_fail_mode, "open")
+        self.assertEqual(gc.connectors["cursor"].mode, "action")
+        self.assertEqual(gc.connectors["cursor"].hook_fail_mode, "closed")
+        self.assertFalse(gc.connectors["cursor"].hilt.enabled)
+        self.assertIn("cursor hook failures=closed (failClosed=true)", result.output)
+
     def test_later_setup_revalidates_every_active_connector_before_success(self):
         self._seed_single("codex")
         with _setup_patches() as restart:
@@ -159,6 +190,157 @@ class TestAdditiveSetupCommand(unittest.TestCase):
             result = _invoke(["-c", "codex", "-c", "cursor", "--yes"], self.app)
         self.assertNotEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("connector runtime readiness failed", result.output)
+
+    def test_bare_batch_readiness_failure_restores_prior_single_active_roster(self):
+        self._seed_single("claudecode")
+        prior = tuple(self.app.cfg.active_connectors())
+        with (
+            _setup_patches() as restart,
+            patch("defenseclaw.commands.cmd_setup._is_pid_alive", return_value=False),
+        ):
+            restart.side_effect = [click.ClickException("connector runtime readiness failed"), None]
+            result = _invoke(["-c", "codex", "-c", "opencode", "--yes"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("restored the prior connector configuration and runtime", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior)
+        self.assertEqual(self.app.cfg.guardrail.connector, "claudecode")
+        self.assertEqual(self.app.cfg.claw.mode, "claudecode")
+        self.assertEqual(restart.call_count, 2)
+        self.assertEqual(restart.call_args_list[1].kwargs["connectors"], ["claudecode"])
+
+    def test_later_opencode_failure_restores_exact_merged_selection_and_prior_runtime(self):
+        self._seed_single("codex")
+        data_dir = self.app.cfg.data_dir
+        selection_path = os.path.join(data_dir, "agent_selection.json")
+        lock_path = os.path.join(data_dir, "hook_contract_lock.json")
+        runtime_path = os.path.join(data_dir, "hooks", "prior-posture.json")
+        prior_selection = (
+            b'{"schema_version":1,"selections":{'
+            b'"codex":{"executable":"prior-codex"},'
+            b'"hermes":{"executable":"prior-hermes"}}}\n'
+        )
+        prior_lock = b'{"version":2,"connectors":{"codex":{"hook_fail_mode":"open"}}}\n'
+        prior_runtime = b'{"connector":"codex","hook_fail_mode":"open"}\n'
+        atomic_write_private_bytes(selection_path, prior_selection)
+        atomic_write_private_bytes(lock_path, prior_lock)
+        atomic_write_private_bytes(runtime_path, prior_runtime)
+
+        def _record(data_dir_arg, connectors):
+            self.assertEqual(tuple(connectors), ("codex",))
+            atomic_write_private_bytes(
+                os.path.join(os.fspath(data_dir_arg), "agent_selection.json"),
+                b'{"schema_version":1,"selections":{"codex":{"executable":"fresh-codex"}}}\n',
+            )
+            return {"codex": object()}, {}
+
+        restart_attempt = 0
+
+        def _restart(*_args, **kwargs):
+            nonlocal restart_attempt
+            restart_attempt += 1
+            if restart_attempt == 1:
+                self.assertIn("opencode", kwargs["connectors"])
+                atomic_write_private_bytes(
+                    lock_path,
+                    b'{"version":2,"connectors":{"codex":{"hook_fail_mode":"closed"},"opencode":{}}}\n',
+                )
+                atomic_write_private_bytes(
+                    runtime_path,
+                    b'{"connector":"codex","hook_fail_mode":"closed","opencode":"applied"}\n',
+                )
+                raise click.ClickException("OpenCode active roster publication failed")
+            self.assertEqual(kwargs["connectors"], ["codex"])
+            atomic_write_private_bytes(lock_path, prior_lock)
+            atomic_write_private_bytes(runtime_path, prior_runtime)
+
+        with (
+            _setup_patches() as restart,
+            patch("defenseclaw.commands.cmd_setup._is_pid_alive", return_value=False),
+            patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
+            patch("defenseclaw.agent_selection.record_setup_agent_selections", side_effect=_record),
+        ):
+            restart.side_effect = _restart
+            result = _invoke(["-c", "codex", "-c", "opencode", "--yes"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("restored the prior connector configuration and runtime", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), ("codex",))
+        with open(selection_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_selection)
+        with open(lock_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_lock)
+        with open(runtime_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_runtime)
+        self.assertEqual(restart.call_count, 2)
+
+    def test_successful_batch_records_complete_codex_and_hermes_selection_receipt(self):
+        self._seed_single("codex")
+        selection_path = os.path.join(self.app.cfg.data_dir, "agent_selection.json")
+        atomic_write_private_bytes(
+            selection_path,
+            b'{"schema_version":1,"selections":{"omnigent":{"executable":"stale"}}}\n',
+        )
+        selected = {
+            "codex": SetupAgentSelection(
+                connector="codex",
+                executable=os.path.abspath(os.path.join(self.tmp_dir, "codex.exe")),
+                raw_version="codex 0.144.3",
+                normalized_version="0.144.3",
+                sha256="a" * 64,
+            ),
+            "hermes": SetupAgentSelection(
+                connector="hermes",
+                executable=os.path.abspath(os.path.join(self.tmp_dir, "hermes.exe")),
+                raw_version="Hermes Agent v0.20.0",
+                normalized_version="0.20.0",
+                sha256="b" * 64,
+            ),
+        }
+
+        with (
+            _setup_patches(),
+            patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
+            patch(
+                "defenseclaw.agent_selection._SUPPORTED_CONNECTORS",
+                frozenset({"codex", "claudecode", "hermes", "omnigent"}),
+            ),
+            patch(
+                "defenseclaw.agent_selection._select_agent_executable",
+                side_effect=lambda _data_dir, connector: selected[connector],
+            ) as select,
+        ):
+            result = _invoke(
+                ["-c", "codex", "-c", "hermes", "--yes", "--no-restart"],
+                self.app,
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual([call.args[1] for call in select.call_args_list], ["codex", "hermes"])
+        with open(selection_path, encoding="utf-8") as handle:
+            receipt = json.load(handle)
+        self.assertEqual(set(receipt["selections"]), {"codex", "hermes"})
+        self.assertEqual(receipt["selections"]["codex"]["executable"], selected["codex"].executable)
+        self.assertEqual(receipt["selections"]["hermes"]["executable"], selected["hermes"].executable)
+        self.assertNotIn("omnigent", receipt["selections"])
+
+    def test_bare_batch_unsupported_target_never_reconciles_prior_roster(self):
+        self._seed_map("codex", "cursor")
+        prior = tuple(self.app.cfg.active_connectors())
+        with (
+            _setup_patches() as restart,
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                side_effect=lambda connector, **_kwargs: connector != "opencode",
+            ),
+        ):
+            result = _invoke(["-c", "codex", "-c", "opencode", "--yes"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("prior roster was not changed", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior)
+        self.assertNotIn("opencode", self.app.cfg.active_connectors())
+        restart.assert_not_called()
 
     def test_bare_batch_no_restart_remains_offline_staging(self):
         self._seed_map("codex", "cursor")
@@ -707,6 +889,55 @@ class TestPerConnectorModeAndPreserve(unittest.TestCase):
                 self.assertEqual(gc.connectors[connector].hook_fail_mode, "closed")
                 self.assertEqual(gc.effective_mode(connector), "action")
                 self.assertEqual(gc.effective_hook_fail_mode(connector), "closed")
+
+    def test_omnigent_doctor_repair_command_preserves_roster_peers_lock_and_posture(self):
+        gc = self.app.cfg.guardrail
+        gc.mode = "observe"
+        gc.hook_fail_mode = "closed"
+        gc.connector = "claudecode"
+        self.app.cfg.claw.mode = "claudecode"
+        gc.connectors = {
+            "claudecode": PerConnectorGuardrailConfig(mode="action", hook_fail_mode="closed"),
+            "codex": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+            "cursor": PerConnectorGuardrailConfig(mode="observe", hook_fail_mode="open"),
+            "omnigent": PerConnectorGuardrailConfig(
+                mode="action",
+                hook_fail_mode="closed",
+                hilt=HILTConfig(enabled=True, min_severity="LOW"),
+            ),
+        }
+        peer_posture = copy.deepcopy({name: gc.connectors[name] for name in ("claudecode", "codex", "cursor")})
+        lock_path = os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json")
+        lock_body = (
+            b'{"version":2,"connectors":{"claudecode":{"compatibility_status":"known"},'
+            b'"codex":{"compatibility_status":"known"},'
+            b'"cursor":{"compatibility_status":"known"},'
+            b'"omnigent":{"compatibility_status":"known"}}}\n'
+        )
+        with open(lock_path, "wb") as lock_file:
+            lock_file.write(lock_body)
+
+        command = _omnigent_setup_repair_command(self.app.cfg)
+        argv = shlex.split(command, posix=True)
+        self.assertEqual(argv[:3], ["defenseclaw", "setup", "omnigent"])
+        with _setup_patches(), patch(
+            "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
+            return_value=None,
+        ):
+            result = _invoke(argv[2:], self.app)
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(set(gc.connectors), {"claudecode", "codex", "cursor", "omnigent"})
+        self.assertEqual(
+            {name: gc.connectors[name] for name in ("claudecode", "codex", "cursor")},
+            peer_posture,
+        )
+        self.assertEqual(gc.effective_mode("omnigent"), "action")
+        self.assertEqual(gc.effective_hook_fail_mode("omnigent"), "closed")
+        self.assertTrue(gc.effective_hilt("omnigent").enabled)
+        self.assertEqual(gc.effective_hilt("omnigent").min_severity, "LOW")
+        with open(lock_path, "rb") as lock_file:
+            self.assertEqual(lock_file.read(), lock_body)
 
     def test_toggling_one_connector_mode_lands_per_connector(self):
         # Configure two hook connectors (codex seeded into the map), then flip

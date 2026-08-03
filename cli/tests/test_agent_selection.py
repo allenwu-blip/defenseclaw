@@ -130,6 +130,45 @@ def test_omnigent_candidate_aliases_do_not_raise_or_accept_unlisted_names(
     assert set(candidates) == expected
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows updater-managed Hermes authority")
+def test_hermes_setup_candidates_only_use_managed_venv_on_first_and_repeat(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    managed = tmp_path / "token-local" / "hermes" / "hermes-agent" / "venv" / "Scripts"
+    executable = managed / "hermes.exe"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"managed Hermes")
+    decoy = tmp_path / "path" / "hermes.exe"
+    decoy.parent.mkdir()
+    decoy.write_bytes(b"PATH decoy")
+    monkeypatch.setattr(agent_selection, "_windows_managed_hermes_prefixes", lambda: (str(managed),))
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_binary_candidates_for_agent",
+        lambda *_args: (str(decoy), str(executable)),
+    )
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_ai_discovery_trust_config",
+        lambda _data_dir: (True, (str(decoy.parent),)),
+    )
+
+    first = agent_selection._setup_agent_candidates(
+        "hermes",
+        agent_selection.agent_discovery._SPECS["hermes"],
+        str(tmp_path / "state"),
+    )
+    repeated = agent_selection._setup_agent_candidates(
+        "hermes",
+        agent_selection.agent_discovery._SPECS["hermes"],
+        str(tmp_path / "state"),
+    )
+
+    assert first == (str(executable),)
+    assert repeated == first
+
+
 def test_explicit_selection_probes_candidates_instead_of_discovery_cache(
     tmp_path: Path,
     monkeypatch,
@@ -216,19 +255,23 @@ def test_setup_trust_rejects_non_native_windows_launchers(
     assert not agent_selection.is_setup_trusted_binary(str(executable), str(tmp_path / "state"))
 
 
-def test_selection_errors_are_persisted_as_no_executable_authority(tmp_path: Path, monkeypatch) -> None:
+def test_selection_errors_preserve_last_valid_receipt_byte_for_byte(tmp_path: Path, monkeypatch) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    receipt_path = state / agent_selection.SELECTION_FILENAME
+    prior = b'{"prior":"exact-last-valid-receipt"}\r\n'
+    receipt_path.write_bytes(prior)
     monkeypatch.setattr(
         agent_selection,
         "_select_agent_executable",
         lambda _data_dir, connector: (_ for _ in ()).throw(OSError(f"{connector} unavailable")),
     )
 
-    selections, errors = agent_selection.record_setup_agent_selections(tmp_path / "state", ["codex"])
+    selections, errors = agent_selection.record_setup_agent_selections(state, ["hermes"])
 
     assert selections == {}
-    assert errors == {"codex": "codex unavailable"}
-    receipt = json.loads((tmp_path / "state" / agent_selection.SELECTION_FILENAME).read_text())
-    assert receipt["selections"] == {}
+    assert errors == {"hermes": "hermes unavailable"}
+    assert receipt_path.read_bytes() == prior
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows known-folder API contract")

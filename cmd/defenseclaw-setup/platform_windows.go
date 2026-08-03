@@ -271,10 +271,11 @@ func managedPIDRecordPublicationInFlight(readErr, closeErr error) bool {
 // separate Lstat/GetFileAttributes/ReadFile lookups can observe three
 // different pathname states and leak a transient not-found error into Setup
 // convergence. Delete sharing lets the publisher proceed while this handle
-// keeps the verified object stable for the reader. watchdog.pid predates the
-// atomic publisher and is rewritten in place while retaining its lifetime
-// ownership lock, so its caller enables bounded JSON-syntax retries. Gateway
-// reads and every persistently malformed identity remain fail-closed.
+// keeps the verified object stable for the reader. watchdog.pid callers retain
+// bounded JSON-syntax retries for upgrade compatibility with older watchdogs
+// that rewrote their lifetime-locked record in place. Current publishers use
+// atomic replacement. Gateway reads and every persistently malformed identity
+// remain fail-closed.
 func openManagedPIDRecord(pidPath string) (*os.File, bool, error) {
 	pathPtr, err := winpath.UTF16Ptr(pidPath)
 	if err != nil {

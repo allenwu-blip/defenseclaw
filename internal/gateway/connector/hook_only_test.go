@@ -47,7 +47,7 @@ func TestHookOnlyConnector_CapabilityMatrix(t *testing.T) {
 		configBase string
 	}{
 		{NewHermesConnector(), true, false, false, "user", "config.yaml"},
-		{NewCursorConnector(), false, false, false, "user", "hooks.json"},
+		{NewCursorConnector(), true, false, true, "user", "hooks.json"},
 		{NewWindsurfConnector(), true, false, true, "user", "hooks.json"},
 		{NewGeminiCLIConnector(), true, false, true, "user", "settings.json"},
 		{NewCopilotConnector(), true, true, false, "user,workspace", "defenseclaw.json"},
@@ -252,16 +252,291 @@ func TestHermesConfigPathUsesWindowsLocalAppData(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows Hermes path")
 	}
-	localAppData := filepath.Join(t.TempDir(), "Local AppData")
 	t.Setenv("HERMES_HOME", "")
-	t.Setenv("LOCALAPPDATA", localAppData)
 
 	previous := HermesConfigPathOverride
 	HermesConfigPathOverride = ""
 	t.Cleanup(func() { HermesConfigPathOverride = previous })
 
-	if got, want := hermesConfigPath(SetupOpts{}), filepath.Join(localAppData, "hermes", "config.yaml"); got != want {
-		t.Fatalf("hermesConfigPath() = %q, want %q", got, want)
+	want := hermesConfigPath(SetupOpts{})
+	if want == "" {
+		t.Fatal("current-token LocalAppData was not resolved")
+	}
+	t.Setenv("LOCALAPPDATA", filepath.Join(t.TempDir(), "poisoned Local AppData"))
+	if got := hermesConfigPath(SetupOpts{}); got != want {
+		t.Fatalf("hermesConfigPath() changed with inherited LOCALAPPDATA: got %q, want %q", got, want)
+	}
+}
+
+func TestHermesSetupRejectsUnavailableOrRelativeWindowsConfigBeforeInspectionOrMutation(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows fail-before-mutation path guard")
+	}
+	for _, test := range []struct {
+		name        string
+		configPath  string
+		wantError   string
+		useResolver bool
+	}{
+		{name: "unavailable current-token LocalAppData", wantError: "config path is unavailable", useResolver: true},
+		{name: "relative returned config path", configPath: filepath.Join("relative-hermes", "config.yaml"), wantError: "absolute normalized Windows path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := testenv.PrivateTempDir(t)
+			cwd := filepath.Join(root, "cwd")
+			if err := os.MkdirAll(cwd, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// If profile validation reached cwd (the historical filepath.Dir("")
+			// behavior), this sentinel would produce the named-profile error.
+			activeProfile := filepath.Join(cwd, "active_profile")
+			activeProfileBody := []byte("must-not-be-inspected\n")
+			if err := os.WriteFile(activeProfile, activeProfileBody, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			allowlist := filepath.Join(cwd, hermesAllowlistFileName)
+			allowlistBody := []byte("{\"approvals\":[],\"operator\":\"unchanged\"}\n")
+			if err := os.WriteFile(allowlist, allowlistBody, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			expectedFiles := map[string][]byte{
+				activeProfile: activeProfileBody,
+				allowlist:     allowlistBody,
+			}
+			if test.configPath != "" {
+				relativeHome := filepath.Join(cwd, filepath.Dir(test.configPath))
+				if err := os.MkdirAll(relativeHome, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				relativeConfig := filepath.Join(cwd, test.configPath)
+				relativeConfigBody := []byte("operator_literal: KEEP-CONFIG-BYTES\n")
+				if err := os.WriteFile(relativeConfig, relativeConfigBody, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				relativeAllowlist := filepath.Join(relativeHome, hermesAllowlistFileName)
+				relativeAllowlistBody := []byte("{\"approvals\":[],\"operator\":\"KEEP-ALLOWLIST-BYTES\"}\n")
+				if err := os.WriteFile(relativeAllowlist, relativeAllowlistBody, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				expectedFiles[relativeConfig] = relativeConfigBody
+				expectedFiles[relativeAllowlist] = relativeAllowlistBody
+			}
+			t.Chdir(cwd)
+
+			previousOverride := HermesConfigPathOverride
+			previousResolver := hermesConfigPathResolver
+			resolverCalls := 0
+			HermesConfigPathOverride = test.configPath
+			if test.useResolver {
+				HermesConfigPathOverride = ""
+				hermesConfigPathResolver = func() string {
+					resolverCalls++
+					return ""
+				}
+			}
+			t.Cleanup(func() {
+				HermesConfigPathOverride = previousOverride
+				hermesConfigPathResolver = previousResolver
+			})
+
+			dataDir := filepath.Join(root, "defenseclaw-data")
+			err := NewHermesConnector().Setup(context.Background(), SetupOpts{DataDir: dataDir})
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Setup error = %v, want %q", err, test.wantError)
+			}
+			if test.useResolver && resolverCalls != 1 {
+				t.Fatalf("Setup resolved Hermes config %d times, want exactly once", resolverCalls)
+			}
+			if strings.Contains(err.Error(), "named profile") {
+				t.Fatalf("Setup inspected cwd profile before path rejection: %v", err)
+			}
+			if _, statErr := os.Stat(dataDir); !os.IsNotExist(statErr) {
+				t.Fatalf("Setup mutated hook/backup/data state before path rejection: %v", statErr)
+			}
+			for path, want := range expectedFiles {
+				got, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("%s mutated before path rejection: got %q want %q", path, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestHermesTeardownAndAgentPathsRejectUnavailableOrRelativeWindowsConfigBeforeMutation(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows teardown fail-before-mutation path guard")
+	}
+	for _, test := range []struct {
+		name        string
+		configPath  string
+		wantError   string
+		useResolver bool
+	}{
+		{name: "unavailable current-token LocalAppData", wantError: "config path is unavailable", useResolver: true},
+		{name: "relative returned config path", configPath: filepath.Join("relative-hermes", "config.yaml"), wantError: "absolute normalized Windows path"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := testenv.PrivateTempDir(t)
+			cwd := filepath.Join(root, "cwd")
+			dataDir := filepath.Join(root, "defenseclaw-data")
+			if err := os.MkdirAll(cwd, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(dataDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			dataSentinel := filepath.Join(dataDir, "operator-state.bin")
+			dataSentinelBody := []byte("KEEP-DATA-BYTES\x00\x01\n")
+			if err := os.WriteFile(dataSentinel, dataSentinelBody, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cwdConfig := filepath.Join(cwd, "config.yaml")
+			cwdConfigBody := []byte("operator_literal: KEEP-CWD-CONFIG-BYTES\n")
+			cwdAllowlist := filepath.Join(cwd, hermesAllowlistFileName)
+			cwdAllowlistBody := []byte("{\"approvals\":[],\"operator\":\"KEEP-CWD-ALLOWLIST-BYTES\"}\n")
+			for path, body := range map[string][]byte{
+				cwdConfig:    cwdConfigBody,
+				cwdAllowlist: cwdAllowlistBody,
+			} {
+				if err := os.WriteFile(path, body, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			expectedFiles := map[string][]byte{
+				dataSentinel: dataSentinelBody,
+				cwdConfig:    cwdConfigBody,
+				cwdAllowlist: cwdAllowlistBody,
+			}
+			if test.configPath != "" {
+				relativeHome := filepath.Join(cwd, filepath.Dir(test.configPath))
+				if err := os.MkdirAll(relativeHome, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				relativeConfig := filepath.Join(cwd, test.configPath)
+				relativeConfigBody := []byte("operator_literal: KEEP-RELATIVE-CONFIG-BYTES\n")
+				relativeAllowlist := filepath.Join(relativeHome, hermesAllowlistFileName)
+				relativeAllowlistBody := []byte("{\"approvals\":[],\"operator\":\"KEEP-RELATIVE-ALLOWLIST-BYTES\"}\n")
+				for path, body := range map[string][]byte{
+					relativeConfig:    relativeConfigBody,
+					relativeAllowlist: relativeAllowlistBody,
+				} {
+					if err := os.WriteFile(path, body, 0o600); err != nil {
+						t.Fatal(err)
+					}
+					expectedFiles[path] = body
+				}
+			}
+			t.Chdir(cwd)
+
+			previousOverride := HermesConfigPathOverride
+			previousResolver := hermesConfigPathResolver
+			resolverCalls := 0
+			HermesConfigPathOverride = test.configPath
+			if test.useResolver {
+				HermesConfigPathOverride = ""
+				hermesConfigPathResolver = func() string {
+					resolverCalls++
+					return ""
+				}
+			}
+			t.Cleanup(func() {
+				HermesConfigPathOverride = previousOverride
+				hermesConfigPathResolver = previousResolver
+			})
+
+			conn := NewHermesConnector()
+			opts := SetupOpts{DataDir: dataDir}
+			if paths := conn.AgentPaths(opts); len(paths.PatchedFiles) != 0 ||
+				len(paths.BackupFiles) != 0 || len(paths.HookScripts) != 0 {
+				t.Fatalf("AgentPaths returned relative/unavailable Hermes paths: %+v", paths)
+			}
+			if test.useResolver && resolverCalls != 1 {
+				t.Fatalf("AgentPaths resolved Hermes config %d times, want exactly once", resolverCalls)
+			}
+			beforeTeardownResolve := resolverCalls
+			err := conn.Teardown(context.Background(), opts)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Teardown error = %v, want %q", err, test.wantError)
+			}
+			if test.useResolver && resolverCalls != beforeTeardownResolve+1 {
+				t.Fatalf("Teardown resolved Hermes config %d times, want exactly once", resolverCalls-beforeTeardownResolve)
+			}
+			for path, want := range expectedFiles {
+				got, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if !bytes.Equal(got, want) {
+					t.Fatalf("%s mutated before path rejection: got %q want %q", path, got, want)
+				}
+			}
+			for _, path := range []string{
+				filepath.Join(dataDir, ".hermes-lifecycle.lock"),
+				filepath.Join(dataDir, "hooks", hermesDirectNativeStateFileName),
+				filepath.Join(dataDir, "hooks", "hermes-hook.sh"),
+				managedFileBackupPath(dataDir, "hermes", "config"),
+				managedFileBackupPath(dataDir, "hermes", "config.yaml"),
+				managedFileBackupPath(dataDir, "hermes", hermesAllowlistLogicalName),
+			} {
+				if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+					t.Fatalf("Teardown created lifecycle artifact before path rejection at %s: %v", path, statErr)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupHermesFilesRejectsInvalidWindowsPathBeforeAllowlistDerivation(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows fail-before-mutation path guard")
+	}
+	root := testenv.PrivateTempDir(t)
+	t.Chdir(root)
+	cwdAllowlist := filepath.Join(root, hermesAllowlistFileName)
+	cwdAllowlistBody := []byte("{\"approvals\":[],\"operator\":\"unchanged\"}\n")
+	if err := os.WriteFile(cwdAllowlist, cwdAllowlistBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relativeHome := filepath.Join(root, "relative-hermes")
+	if err := os.MkdirAll(relativeHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	relativeConfig := filepath.Join(relativeHome, "config.yaml")
+	relativeConfigBody := []byte("operator_literal: KEEP-CONFIG-BYTES\n")
+	if err := os.WriteFile(relativeConfig, relativeConfigBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	relativeAllowlist := filepath.Join(relativeHome, hermesAllowlistFileName)
+	relativeAllowlistBody := []byte("{\"approvals\":[],\"operator\":\"KEEP-ALLOWLIST-BYTES\"}\n")
+	if err := os.WriteFile(relativeAllowlist, relativeAllowlistBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, configPath := range []string{"", filepath.Join("relative-hermes", "config.yaml")} {
+		dataDir := filepath.Join(root, "data-"+strings.ReplaceAll(configPath, string(filepath.Separator), "-"))
+		err := setupHermesFiles(SetupOpts{DataDir: dataDir}, configPath, "hook-command")
+		if err == nil || (!strings.Contains(err.Error(), "unavailable") && !strings.Contains(err.Error(), "absolute normalized")) {
+			t.Fatalf("setupHermesFiles(%q) error = %v, want path rejection", configPath, err)
+		}
+		if _, statErr := os.Stat(dataDir); !os.IsNotExist(statErr) {
+			t.Fatalf("setupHermesFiles(%q) mutated data state: %v", configPath, statErr)
+		}
+	}
+	for path, want := range map[string][]byte{
+		cwdAllowlist:      cwdAllowlistBody,
+		relativeConfig:    relativeConfigBody,
+		relativeAllowlist: relativeAllowlistBody,
+	} {
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s changed after invalid path rejection: got %q want %q", path, got, want)
+		}
 	}
 }
 
@@ -714,7 +989,14 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 			*ptr = cfgPath
 			t.Cleanup(func() { *ptr = prev })
 
-			opts := SetupOpts{DataDir: filepath.Join(dir, conn.Name()), APIAddr: "127.0.0.1:18970", APIToken: "tok-test", WorkspaceDir: t.TempDir()}
+			dataDir := filepath.Join(dir, conn.Name())
+			if conn.Name() == "hermes" {
+				dataDir = testenv.PrivateTempDir(t)
+			}
+			opts := SetupOpts{DataDir: dataDir, APIAddr: "127.0.0.1:18970", APIToken: "tok-test", WorkspaceDir: t.TempDir()}
+			if conn.Name() == "hermes" {
+				opts = prepareHermesSetupAdmissionFixture(t, opts)
+			}
 			if err := conn.Setup(context.Background(), opts); err != nil {
 				t.Fatalf("Setup: %v", err)
 			}
@@ -783,12 +1065,22 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
-	prev := HermesConfigPathOverride
-	HermesConfigPathOverride = cfgPath
-	t.Cleanup(func() { HermesConfigPathOverride = prev })
+	previousOverride := HermesConfigPathOverride
+	previousResolver := hermesConfigPathResolver
+	resolveCalls := 0
+	HermesConfigPathOverride = ""
+	hermesConfigPathResolver = func() string {
+		resolveCalls++
+		return cfgPath
+	}
+	t.Cleanup(func() {
+		HermesConfigPathOverride = previousOverride
+		hermesConfigPathResolver = previousResolver
+	})
 
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -856,8 +1148,12 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 		}
 	}
 
+	resolveCalls = 0
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
+	}
+	if resolveCalls != 1 {
+		t.Fatalf("successful Teardown resolved Hermes config %d times, want exactly once", resolveCalls)
 	}
 	if _, err := os.Stat(cfgPath); err == nil {
 		t.Fatalf("config still exists after teardown of previously-missing config")
@@ -875,6 +1171,138 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	}
 	if err := conn.VerifyClean(opts); err != nil {
 		t.Fatalf("VerifyClean: %v", err)
+	}
+}
+
+func TestHermesHookRepairReconcilesExactOwnedStateAndIsByteIdempotent(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	path := filepath.Join(root, "config.yaml")
+	hookScript := filepath.Join(root, "hooks", "hermes-hook.sh")
+	command := hermesConfiguredHookCommand(hookScript, "")
+	hookFixture := map[string]interface{}{
+		"hooks": map[string]interface{}{
+			"pre_tool_call": []interface{}{
+				map[string]interface{}{"command": "operator-hook", "timeout": 7},
+				map[string]interface{}{"command": command, "timeout": 1, "matcher": "stale"},
+				map[string]interface{}{"command": command, "timeout": 2, "matcher": "duplicate"},
+			},
+			"future_event": []interface{}{map[string]interface{}{"command": command, "timeout": 30}},
+		},
+	}
+	hookBody, err := yaml.Marshal(hookFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := []byte("# operator comment stays exact\noperator_literal: 'KEEP  UNRELATED  BYTES' # spacing stays\n")
+	suffix := []byte("\n# operator tail stays exact\noperator_tail: {quoted: 'YES'}\n")
+	body := append(append(append([]byte(nil), prefix...), hookBody...), suffix...)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := patchHermesHooks(path, hookScript, ""); err != nil {
+		t.Fatalf("repair exact-owned Hermes hooks: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(first, prefix) || !bytes.HasSuffix(first, suffix) {
+		t.Fatalf("unrelated operator bytes were not preserved exactly: %q", first)
+	}
+	if err := patchHermesHooks(path, hookScript, ""); err != nil {
+		t.Fatalf("repeat Hermes repair: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("repeat Hermes repair changed config bytes")
+	}
+	config, err := readYAMLObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := config["hooks"].(map[string]interface{})
+	if _, exists := hooks["future_event"]; exists {
+		t.Fatal("stale exact-owned unexpected Hermes event was not removed")
+	}
+	entries := hooks["pre_tool_call"].([]interface{})
+	if len(entries) != 2 || entries[0].(map[string]interface{})["command"] != "operator-hook" {
+		t.Fatalf("foreign hook was not preserved around one repaired owned hook: %#v", entries)
+	}
+	repaired := entries[1].(map[string]interface{})
+	if repaired["command"] != command || repaired["timeout"] != 30 || repaired["matcher"] != ".*" {
+		t.Fatalf("owned hook was not reconciled exactly: %#v", repaired)
+	}
+}
+
+func TestHermesSetupTamperedOwnedAllowlistRollsBackEveryFileExactly(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configBody := []byte("operator_literal: KEEP-CONFIG-BYTES\n")
+	if err := os.WriteFile(configPath, configBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	allowlistPath := filepath.Join(filepath.Dir(configPath), hermesAllowlistFileName)
+	allowlistBody := []byte("{\n  \"approvals\": [{\"event\": \"pre_tool_call\", \"command\": \"tampered --connector hermes\", \"defenseclaw_managed\": true}],\n  \"operator_literal\": \"KEEP-ALLOWLIST-BYTES\"\n}\n")
+	if err := os.WriteFile(allowlistPath, allowlistBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previous })
+	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
+	err := NewHermesConnector().Setup(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "tampered DefenseClaw command") {
+		t.Fatalf("Setup error = %v, want exact-owned tamper refusal", err)
+	}
+	for path, want := range map[string][]byte{configPath: configBody, allowlistPath: allowlistBody} {
+		got, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s changed after refused Setup\n got %q\nwant %q", path, got, want)
+		}
+	}
+}
+
+func TestHermesAllowlistRepairIsByteIdempotent(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	path := filepath.Join(root, hermesAllowlistFileName)
+	if err := os.WriteFile(path, []byte("{\n  \"approvals\": [],\n  \"operator_literal\": \"KEEP\"\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	command := hermesConfiguredHookCommand(filepath.Join(root, "hooks", "hermes-hook.sh"), "")
+	if err := patchHermesAllowlist(path, command, filepath.Join(root, "hooks", "hermes-hook.sh")); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := patchHermesAllowlist(path, command, filepath.Join(root, "hooks", "hermes-hook.sh")); err != nil {
+		t.Fatal(err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("repeat Hermes allowlist repair changed bytes or approval timestamps")
+	}
+	document, err := readHermesAllowlist(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvals := document["approvals"].([]interface{})
+	if len(approvals) != len(hermesRequiredHooks) || document["operator_literal"] != "KEEP" {
+		t.Fatalf("Hermes allowlist repair did not preserve unrelated data or exact event count: %#v", document)
 	}
 }
 
@@ -925,6 +1353,7 @@ func TestHermesSetup_PreservesExplicitAutoAcceptAndHealsUserConfig(t *testing.T)
 
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -1048,6 +1477,7 @@ func TestHermesTeardownSurgicalCleanupPreservesOperatorAutoAccept(t *testing.T) 
 				APIAddr:  "127.0.0.1:18970",
 				APIToken: "tok-test",
 			}
+			opts = prepareHermesSetupAdmissionFixture(t, opts)
 			if err := conn.Setup(context.Background(), opts); err != nil {
 				t.Fatalf("Setup: %v", err)
 			}
@@ -1132,6 +1562,7 @@ func TestHermesAllowlistSurgicalCleanupPreservesForeignEntries(t *testing.T) {
 	t.Cleanup(func() { HermesConfigPathOverride = previous })
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -1179,6 +1610,7 @@ func TestHermesAllowlistTamperedOwnershipRefusesAmbiguousCleanup(t *testing.T) {
 	t.Cleanup(func() { HermesConfigPathOverride = previous })
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -1208,6 +1640,7 @@ func TestHermesAllowlistTamperedOwnedCommandRefusesNonExactCleanup(t *testing.T)
 	t.Cleanup(func() { HermesConfigPathOverride = previous })
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(root, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -1305,6 +1738,7 @@ func TestHermesTeardownRejectsTamperedPristineCustodyBeforeSurgicalCleanup(t *te
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "tok-test",
 	}
+	opts = prepareHermesSetupAdmissionFixture(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -2373,7 +2807,7 @@ func TestCopilotHookContractReconciliationIsEventBoundAndVersionExact(t *testing
 	}
 }
 
-func TestCursorHooks_RefuseFailClosedForNonAuthoritativeUserSource(t *testing.T) {
+func TestCursorHooks_ActionIsFailClosedAndObserveRefreshIsFailOpen(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "hooks.json")
 	prev := CursorHooksPathOverride
@@ -2395,8 +2829,8 @@ func TestCursorHooks_RefuseFailClosedForNonAuthoritativeUserSource(t *testing.T)
 	if err != nil {
 		t.Fatalf("read cursor hooks: %v", err)
 	}
-	if strings.Contains(string(data), `"failClosed": true`) || !strings.Contains(string(data), `"failClosed": false`) {
-		t.Fatalf("cursor hooks claimed fail-closed authority for a user hook:\n%s", string(data))
+	if !strings.Contains(string(data), `"failClosed": true`) || strings.Contains(string(data), `"failClosed": false`) {
+		t.Fatalf("Cursor action hooks must all be fail-closed:\n%s", string(data))
 	}
 
 	// Refreshing the same connector in observe mode must replace the
@@ -2715,8 +3149,8 @@ func TestCursorHooksHighCardinalityForeignRegistrationsStayWithinLifecycleBudget
 		verifyMatcher := newCursorHookCommandMatcher(verifyCommands)
 		// Exercise the exact post-write scan twice. Setup performs the first check;
 		// the published-hook presence gate performs the same high-cardinality scan.
-		if !cursorHookContractPresent(hooks, currentCommand, verifyMatcher) ||
-			!cursorHookContractPresent(hooks, currentCommand, verifyMatcher) {
+		if !cursorHookContractPresent(hooks, currentCommand, verifyMatcher, false) ||
+			!cursorHookContractPresent(hooks, currentCommand, verifyMatcher, false) {
 			t.Fatal("high-cardinality Cursor contract did not retain one exact managed entry per event")
 		}
 	}
@@ -2756,7 +3190,7 @@ func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 		guardrailMode string
 		wantFailMode  string
 	}{
-		{name: "cursor_action_refuses_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "open"},
+		{name: "cursor_action_forces_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "closed"},
 		{name: "cursor_observe_forces_fail_open", connector: NewCursorConnector(), guardrailMode: "observe", wantFailMode: "open"},
 		{name: "geminicli_supports_fail_closed", connector: NewGeminiCLIConnector(), wantFailMode: "closed"},
 		{name: "openhands_supports_fail_closed", connector: NewOpenHandsConnector(), wantFailMode: "closed"},

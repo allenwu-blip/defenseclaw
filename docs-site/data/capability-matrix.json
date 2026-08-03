@@ -60,20 +60,20 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "summary": "Preview user hooks with bounded inspection and advisory decisions.",
+      "summary": "Preview user hooks with bounded inspection and event-native deny decisions.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
       "hooks": {
-        "canBlock": false,
+        "canBlock": true,
         "canAskNative": false,
         "askEvents": [],
-        "blockEvents": [],
-        "supportsFailClosed": false,
+        "blockEvents": ["preToolUse", "subagentStart", "beforeShellExecution", "beforeMCPExecution", "beforeReadFile", "beforeTabFileRead", "beforeSubmitPrompt"],
+        "supportsFailClosed": true,
         "scope": "user"
       },
-      "hilt": "Cursor has native ask schemas on beforeShellExecution and beforeMCPExecution, but DefenseClaw owns only the lowest-priority user hook. Because Enterprise, Team, and Project responses merge above it, confirm is advisory and cannot be presented as a trustworthy pause.",
-      "notes": "Preview/not certified. The connector writes only ~/.cursor/hooks.json. Cursor runs every matching hook and merges conflicts Enterprise > Team > Project > User, so DefenseClaw refuses authoritative block, ask, and fail-closed claims and writes failClosed=false. The direct native adapter and all documented event schemas remain active for bounded inspection, including subagentStart and post/result fields. Agent CLI version evidence is separate from the event payload's Cursor application/Desktop cursor_version. Local inventory covers documented MCP, recursive skill and compatibility roots, .cursor/rules/**/*.mdc, root/nested AGENTS.md, local plugins, and project/user compatibility subagents; multi-root, cloud, marketplace/team/private, dynamic, and effective same-name sources remain unverified."
+      "hilt": "DefenseClaw does not enable Cursor native human approval. Confirm verdicts remain attributed alerts and cannot resume the original hook call.",
+      "notes": "Preview/not certified. The connector writes only ~/.cursor/hooks.json. Action mode returns Cursor's documented native deny response on supported pre-action events and writes failClosed=true; observe returns allow/would-block and writes failClosed=false. Cursor merges conflicts Enterprise > Team > Project > User, but exposes no safe API for detecting an actual higher-priority conflict, so DefenseClaw reports that limitation and does not infer a conflict. The direct native adapter and all documented event schemas remain active for bounded inspection, including subagentStart and post/result fields. Agent CLI version evidence is separate from the event payload's Cursor application/Desktop cursor_version. Local inventory covers documented MCP, recursive skill and compatibility roots, .cursor/rules/**/*.mdc, root/nested AGENTS.md, local plugins, and project/user compatibility subagents; multi-root, cloud, marketplace/team/private, dynamic, and effective same-name sources remain unverified."
     },
     {
       "id": "hermes",

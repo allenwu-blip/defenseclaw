@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from defenseclaw.commands.cmd_setup import (
     _apply_hook_connector_setup,
     _check_connector_version_supported_for_setup,
+    _connector_contract_upgrade_guidance,
     _print_connector_observability_banner,
 )
 from defenseclaw.connector_contracts import (
@@ -337,6 +338,16 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertTrue(latest_rechecked.supported)
         self.assertEqual(latest_rechecked.contract.contract_id, "hermes-hooks-v1")
 
+        v020 = resolve_connector_contract("hermes", "Hermes Agent v0.20.0 (2026.8.3)")
+        self.assertEqual(v020.normalized_version, "0.20.0")
+        self.assertEqual(v020.status, STATUS_KNOWN)
+        self.assertTrue(v020.supported)
+        self.assertEqual(v020.contract.contract_id, "hermes-hooks-v1")
+
+        unreviewed = resolve_connector_contract("hermes", "Hermes Agent v0.21.0")
+        self.assertEqual(unreviewed.status, STATUS_UNKNOWN)
+        self.assertFalse(unreviewed.supported)
+
     def test_manifest_loader_preserves_unversioned_default_marker(self) -> None:
         _, contracts = _load_contracts_from_manifest(
             {
@@ -420,7 +431,7 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         self.assertEqual(self.app.cfg.claw.mode, "openclaw")
         self.assertEqual(self.app.cfg.guardrail.connector, "openclaw")
 
-    def test_observe_mode_warns_but_allows_unsupported_installed_version(self) -> None:
+    def test_peer_observe_mode_warns_and_stages_unsupported_installed_version(self) -> None:
         with patch(
             "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
             return_value=_discovery("codex", installed=True, version="codex 0.123.0"),
@@ -435,7 +446,53 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(self.save_calls, 1)
         self.assertEqual(self.app.cfg.claw.mode, "codex")
-        self.assertEqual(self.app.cfg.guardrail.mode, "observe")
+        self.assertEqual(self.app.cfg.guardrail.connector, "codex")
+
+    def test_opencode_11811_is_exactly_supported(self) -> None:
+        resolved = resolve_connector_contract("opencode", "opencode 1.18.11")
+        self.assertEqual(resolved.status, STATUS_KNOWN)
+        self.assertEqual(resolved.contract.contract_id, "opencode-hooks-v1")
+
+        with patch(
+            "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+            return_value=_discovery("opencode", installed=True, version="opencode 1.18.11"),
+        ), patch("defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"):
+            ok = _apply_hook_connector_setup(
+                self.app,
+                connector="opencode",
+                mode="action",
+                restart=False,
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(self.save_calls, 1)
+        self.assertEqual(self.app.cfg.guardrail.connector, "opencode")
+
+    def test_opencode_version_guidance_distinguishes_old_from_new(self) -> None:
+        old = _connector_contract_upgrade_guidance("opencode", "OpenCode", "1.18.9")
+        current = _connector_contract_upgrade_guidance("opencode", "OpenCode", "1.18.12")
+
+        self.assertIn("Upgrade OpenCode", old)
+        self.assertIn("older than the validated minimum", old)
+        self.assertNotIn("Upgrade OpenCode", current)
+        self.assertIn("newer than DefenseClaw's validated range", current)
+
+    def test_opencode_11812_is_refused_before_save_and_roster_mutation(self) -> None:
+        with patch(
+            "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+            return_value=_discovery("opencode", installed=True, version="opencode 1.18.12"),
+        ), patch.dict(os.environ, {"DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "0"}):
+            ok = _apply_hook_connector_setup(
+                self.app,
+                connector="opencode",
+                mode="observe",
+                restart=False,
+            )
+
+        self.assertFalse(ok)
+        self.assertEqual(self.save_calls, 0)
+        self.assertEqual(self.app.cfg.claw.mode, "openclaw")
+        self.assertEqual(self.app.cfg.guardrail.connector, "openclaw")
 
     def test_alias_connector_writes_canonical_key(self) -> None:
         """Passing an alias (e.g. "claude-code") must persist the canonical

@@ -47,7 +47,7 @@ const runtimeTabs = [
     language: 'yaml' as const,
     source: `guardrail:
   mode: action
-  human_approval: true
+  human_approval: false
   block_severity_min: high
 rules:
   - id: secret.file-read
@@ -67,13 +67,14 @@ actions:
   "trace_id": "trace-demo-017",
   "session_id": "demo-session-017",
   "connector": "cursor",
-  "decision": "would_block",
+  "decision": "block",
+  "native_response": "deny",
   "severity": "critical",
   "rules": [
     "secret.file-read",
     "shell.data-egress-pipe"
   ],
-  "authoritative": false
+  "scope": "user-hook"
 }`,
   },
 ];
@@ -83,7 +84,7 @@ const runtimeEvidence = [
     id: 'runtime-hook',
     label: 'Interception point',
     value: 'beforeShellExecution',
-    detail: 'Cursor exposes a pre-execution hook for bounded inspection, but its user-level response is advisory.',
+    detail: 'Cursor exposes a pre-execution hook that can return its documented native deny response.',
     tone: 'info' as const,
   },
   {
@@ -103,8 +104,8 @@ const runtimeEvidence = [
   {
     id: 'critical-map',
     label: 'Policy mapping',
-    value: 'critical → would_block',
-    detail: 'The configured CRITICAL block is recorded as advisory because Cursor merges higher-priority hooks above the user hook.',
+    value: 'critical → deny',
+    detail: 'Action mode maps the CRITICAL finding to Cursor\'s event-native deny response.',
     tone: 'danger' as const,
   },
   {
@@ -120,7 +121,7 @@ const scenarios: ScenarioDefinition[] = [
   {
     id: 'runtime-secret-exfiltration',
     title: 'Cursor surfaces a sensitive outbound action',
-    summary: 'DefenseClaw inspects a pending shell action, correlates two findings, and records an advisory would-block decision.',
+    summary: 'DefenseClaw inspects a pending shell action, correlates two findings, and returns Cursor\'s native deny response.',
     syntheticDataNotice: 'Guided example · Synthetic event data',
     connectorIds: ['cursor'],
     tabs: runtimeTabs,
@@ -128,10 +129,10 @@ const scenarios: ScenarioDefinition[] = [
     outcomes: [
       {
         id: 'runtime-review',
-        kind: 'review',
-        label: 'Advisory would-block',
+        kind: 'block',
+        label: 'Native deny',
         reason: 'shell.data-egress-pipe reached CRITICAL severity',
-        action: 'Write a correlated advisory event',
+        action: 'Deny and write a correlated enforcement event',
       },
     ],
     steps: [
@@ -140,12 +141,12 @@ const scenarios: ScenarioDefinition[] = [
       step('inspect-destination', 'Inspect destination', 'The same action targets an external synthetic destination.', 'cursor-event', ['secret-read', 'egress-pipe'], [{ tabId: 'cursor-event', start: 7, end: 9, tone: 'danger' }]),
       step('correlate', 'Correlate', 'Two rules combine into a CRITICAL exfiltration finding.', 'default-policy', ['secret-read', 'egress-pipe'], [{ tabId: 'default-policy', start: 5, end: 9, tone: 'danger' }]),
       step('resolve', 'Resolve policy', 'The active action mapping blocks CRITICAL findings without approval.', 'default-policy', ['egress-pipe', 'critical-map'], [{ tabId: 'default-policy', start: 10, end: 12, tone: 'danger' }]),
-      step('enforce', 'Advise', 'DefenseClaw maps the configured block to would_block because Cursor user-hook authority is not exclusive.', 'cursor-event', ['runtime-hook', 'critical-map'], [{ tabId: 'cursor-event', start: 10, end: 10, tone: 'danger' }]),
-      step('record', 'Record evidence', 'The advisory decision and findings share one traceable audit record.', 'audit-event', ['critical-map', 'audit-write'], [{ tabId: 'audit-event', start: 5, end: 13, tone: 'success' }], 'runtime-review', 1350),
+      step('enforce', 'Deny', 'DefenseClaw returns Cursor\'s documented event-native deny response.', 'cursor-event', ['runtime-hook', 'critical-map'], [{ tabId: 'cursor-event', start: 10, end: 10, tone: 'danger' }]),
+      step('record', 'Record evidence', 'The deny decision and findings share one traceable audit record.', 'audit-event', ['critical-map', 'audit-write'], [{ tabId: 'audit-event', start: 5, end: 14, tone: 'success' }], 'runtime-review', 1350),
     ],
     boundaries: {
-      did: ['Inspected the event before execution', 'Correlated rule evidence and applied the active severity mapping', 'Recorded a synthetic advisory event'],
-      didNot: ['Execute the displayed command', 'Send data to an external service', 'Claim an authoritative Cursor block or execution prevention'],
+      did: ['Inspected the event before execution', 'Correlated rule evidence and applied the active severity mapping', 'Returned a synthetic native deny response'],
+      didNot: ['Execute the displayed command', 'Send data to an external service', 'Claim higher-priority conflict detection or native human approval'],
     },
   },
   {

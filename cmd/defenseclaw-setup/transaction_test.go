@@ -735,8 +735,8 @@ func TestValidateSetupTransactionBindsPreservedConnectorState(t *testing.T) {
 	cursorMigration.PreviousState = &cursorPrevious
 	cursorMigration.TargetConnector = "cursor"
 	cursorMigration.TargetMode = "observe"
-	if err := validateSetupTransaction(cursorMigration, expected); err != nil {
-		t.Fatalf("Cursor action-to-advisory repair migration rejected: %v", err)
+	if err := validateSetupTransaction(cursorMigration, expected); err == nil {
+		t.Fatal("connector-preserving repair changed Cursor action to observe")
 	}
 
 	changedHome := transaction

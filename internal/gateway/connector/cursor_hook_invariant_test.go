@@ -206,7 +206,7 @@ func TestCursorHooks_ObserveModeWritesFailClosedFalse(t *testing.T) {
 	}
 }
 
-func TestCursorHooks_ActionAndClosedPreferenceRemainAdvisory(t *testing.T) {
+func TestCursorHooks_ActionWritesFailClosedTrueAndContractLockClosed(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "hooks.json")
 	previous := CursorHooksPathOverride
@@ -228,11 +228,11 @@ func TestCursorHooks_ActionAndClosedPreferenceRemainAdvisory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Cursor hooks: %v", err)
 	}
-	if strings.Contains(string(body), `"failClosed": true`) {
-		t.Fatalf("Cursor user hook claimed fail-closed authority:\n%s", body)
+	if !strings.Contains(string(body), `"failClosed": true`) || strings.Contains(string(body), `"failClosed": false`) {
+		t.Fatalf("Cursor action hook did not write an exact fail-closed contract:\n%s", body)
 	}
 	entry := NewHookContractLockEntry(opts, conn, "test")
-	if entry.HookFailMode != "open" {
-		t.Fatalf("Cursor lock hook_fail_mode = %q, want open", entry.HookFailMode)
+	if entry.HookFailMode != "closed" {
+		t.Fatalf("Cursor lock hook_fail_mode = %q, want closed", entry.HookFailMode)
 	}
 }

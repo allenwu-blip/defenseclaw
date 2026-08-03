@@ -42,6 +42,7 @@ from defenseclaw.config import (
     Config,
     GatewayConfig,
     GatewayConfigReloadConfig,
+    GatewayWatchdogConfig,
     GatewayWatcherPluginConfig,
     GuardrailConfig,
     InspectLLMConfig,
@@ -59,6 +60,7 @@ from defenseclaw.config import (
     _dedup,
     _expand,
     _merge_cisco_ai_defense,
+    _merge_gateway_watchdog,
     _merge_gateway_watcher,
     _merge_guardrail,
     _merge_inspect_llm,
@@ -632,6 +634,13 @@ class TestMergeFunctions(unittest.TestCase):
         gw_no_plugin = _merge_gateway_watcher({"enabled": True})
         self.assertEqual(gw_no_plugin.plugin, GatewayWatcherPluginConfig())
 
+    def test_merge_gateway_watchdog_defaults_and_explicit_disable(self):
+        self.assertEqual(_merge_gateway_watchdog(None).enabled, True)
+        watchdog = _merge_gateway_watchdog({"enabled": False, "interval": 17, "debounce": 4})
+        self.assertFalse(watchdog.enabled)
+        self.assertEqual(watchdog.interval, 17)
+        self.assertEqual(watchdog.debounce, 4)
+
 
 class TestDefaultConfig(unittest.TestCase):
     def test_default_config_structure(self):
@@ -648,6 +657,9 @@ class TestDefaultConfig(unittest.TestCase):
         self.assertTrue(cfg.gateway.watcher.enabled)
         self.assertTrue(cfg.gateway.watcher.skill.enabled)
         self.assertFalse(cfg.gateway.watcher.skill.take_action)
+        self.assertTrue(cfg.gateway.watchdog.enabled)
+        self.assertEqual(cfg.gateway.watchdog.interval, 30)
+        self.assertEqual(cfg.gateway.watchdog.debounce, 2)
 
     def test_default_skill_scanner_config(self):
         cfg = default_config()
@@ -758,6 +770,25 @@ class TestConfigLoadSave(unittest.TestCase):
             with patch("defenseclaw.config.default_data_path", return_value=Path(tmpdir)):
                 reloaded = load()
             self.assertEqual(reloaded.gateway.config_reload.mode, "restart")
+
+    def test_gateway_watchdog_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(
+                data_dir=tmpdir,
+                audit_db=os.path.join(tmpdir, "audit.db"),
+                quarantine_dir=os.path.join(tmpdir, "quarantine"),
+                plugin_dir=os.path.join(tmpdir, "plugins"),
+                policy_dir=os.path.join(tmpdir, "policies"),
+                gateway=GatewayConfig(
+                    watchdog=GatewayWatchdogConfig(enabled=False, interval=17, debounce=4),
+                ),
+            )
+            cfg.save()
+            with patch("defenseclaw.config.default_data_path", return_value=Path(tmpdir)):
+                reloaded = load()
+            self.assertFalse(reloaded.gateway.watchdog.enabled)
+            self.assertEqual(reloaded.gateway.watchdog.interval, 17)
+            self.assertEqual(reloaded.gateway.watchdog.debounce, 4)
 
     def test_gateway_config_reload_mode_is_normalized(self):
         with tempfile.TemporaryDirectory() as tmpdir:

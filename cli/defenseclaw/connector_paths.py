@@ -171,7 +171,7 @@ class MCPServerEntry:
 
 @dataclass(frozen=True)
 class OpenCodeConfigLayer:
-    """One locally representable OpenCode v1.18.10 config layer."""
+    """One locally representable OpenCode v1.18.10-v1.18.11 config layer."""
 
     source: str
     source_scope: str
@@ -904,20 +904,98 @@ def _resolve_hermes_home(
 
     Hermes gives ``HERMES_HOME`` highest precedence. Native Windows installs
     otherwise use ``%LOCALAPPDATA%\\hermes``; macOS, Linux, and WSL retain the
-    historical ``~/.hermes`` default. A Windows process missing
-    ``LOCALAPPDATA`` safely falls back to the user-scoped historical path
-    instead of constructing a relative path from the current directory.
+    historical ``~/.hermes`` default. Windows never falls back to the legacy
+    profile home because it can contain an unrelated credential-bearing
+    configuration.
     """
     configured = (override or "").strip()
     if configured:
+        if platform_name == "nt" and (
+            override != configured
+            or "\x00" in configured
+            or "\r" in configured
+            or "\n" in configured
+            or not ntpath.isabs(configured)
+            or ntpath.normpath(configured) != configured
+        ):
+            raise ValueError("HERMES_HOME is not an absolute normalized Windows path")
+        if platform_name == "nt":
+            return ntpath.normpath(configured)
         return os.path.abspath(os.path.expanduser(configured))
 
-    home = os.path.abspath(os.path.expanduser((user_home or "").strip()))
     if platform_name == "nt":
         windows_root = (local_app_data or "").strip()
         if windows_root:
-            return os.path.abspath(os.path.join(os.path.expanduser(windows_root), "hermes"))
+            if (
+                local_app_data != windows_root
+                or "\x00" in windows_root
+                or "\r" in windows_root
+                or "\n" in windows_root
+                or not ntpath.isabs(windows_root)
+                or ntpath.normpath(windows_root) != windows_root
+            ):
+                raise ValueError(
+                    "current-user LocalAppData is not an absolute normalized path for Hermes"
+                )
+            return ntpath.join(windows_root, "hermes")
+        raise ValueError("current-user LocalAppData is unavailable for Hermes")
+    home = os.path.abspath(os.path.expanduser((user_home or "").strip()))
     return os.path.join(home, ".hermes")
+
+
+def _windows_current_user_local_app_data() -> str:
+    """Resolve LocalAppData for the current Windows token, not the environment."""
+
+    if os.name != "nt":
+        return ""
+    import ctypes
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", ctypes.c_ubyte * 8),
+        ]
+
+    value = uuid.UUID("F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
+    guid = GUID.from_buffer_copy(value.bytes_le)
+    path = ctypes.c_wchar_p()
+    token = wintypes.HANDLE()
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(GUID),
+        wintypes.DWORD,
+        wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_wchar_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008 | 0x0004, ctypes.byref(token)):
+        return ""
+    try:
+        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, token, ctypes.byref(path)) != 0 or not path.value:
+            return ""
+        return os.path.abspath(path.value)
+    finally:
+        if path:
+            ole32.CoTaskMemFree(ctypes.cast(path, ctypes.c_void_p))
+        kernel32.CloseHandle(token)
 
 
 def hermes_home() -> str:
@@ -925,7 +1003,11 @@ def hermes_home() -> str:
     return _resolve_hermes_home(
         platform_name=os.name,
         user_home=str(Path.home()),
-        local_app_data=os.environ.get("LOCALAPPDATA", ""),
+        local_app_data=(
+            _windows_current_user_local_app_data()
+            if os.name == "nt"
+            else os.environ.get("LOCALAPPDATA", "")
+        ),
         override=os.environ.get("HERMES_HOME", ""),
     )
 
@@ -933,16 +1015,6 @@ def hermes_home() -> str:
 def hermes_config_path() -> str:
     """Return Hermes' effective user-level ``config.yaml`` path."""
     return os.path.join(hermes_home(), "config.yaml")
-
-
-def hermes_legacy_config_path() -> str:
-    """Return the pre-native-Windows Hermes config path for migration checks.
-
-    This helper is intentionally not used as current configuration evidence.
-    Callers may surface a read-only migration warning, but must not silently
-    copy, merge, or delete the potentially secret-bearing legacy file.
-    """
-    return os.path.join(os.path.abspath(str(Path.home())), ".hermes", "config.yaml")
 
 
 _HERMES_CONFIG_INSPECTION_LIMIT = 1 << 20
@@ -2714,7 +2786,7 @@ def _opencode_layer(path: str, scope: str) -> OpenCodeConfigLayer:
 
 
 def _resolve_opencode_config(workspace_dir: str | None = None) -> OpenCodeConfigResolution:
-    """Resolve non-enterprise OpenCode v1.18.10 config precedence.
+    """Resolve non-enterprise OpenCode v1.18.10-v1.18.11 config precedence.
 
     Remote authenticated ``.well-known`` config and Windows ProgramData
     managed config cannot be established safely by an offline connector read;

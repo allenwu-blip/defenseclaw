@@ -62,18 +62,18 @@ Pick a row with **proxy family**, **block: yes**, **native ask: yes**, **fail-cl
 
 ### "I want enforcement on Claude Code without the proxy"
 
-Hook-only enforcement is supported on [Claude Code](/docs/connectors/claudecode), [Codex](/docs/connectors/codex), [Gemini CLI](/docs/connectors/geminicli), [Hermes](/docs/connectors/hermes), [Devin Desktop legacy Cascade](/docs/connectors/windsurf), [Copilot CLI](/docs/connectors/copilot), [OpenHands](/docs/connectors/openhands), [Antigravity](/docs/connectors/antigravity), [OpenCode](/docs/connectors/opencode), and [OmniGent](/docs/connectors/omnigent). [Cursor](/docs/connectors/cursor) is advisory: Enterprise, Team, and Project hook responses merge above DefenseClaw's user hook. The `windsurf` alias covers legacy Cascade only, not Devin Local, cloud, or ACP. The broader constraint is that hook-only enforcement cannot block a request the agent has not yet asked the hook about.
+Hook-only enforcement is supported on [Claude Code](/docs/connectors/claudecode), [Codex](/docs/connectors/codex), [Cursor](/docs/connectors/cursor), [Gemini CLI](/docs/connectors/geminicli), [Hermes](/docs/connectors/hermes), [Devin Desktop legacy Cascade](/docs/connectors/windsurf), [Copilot CLI](/docs/connectors/copilot), [OpenHands](/docs/connectors/openhands), [Antigravity](/docs/connectors/antigravity), [OpenCode](/docs/connectors/opencode), and [OmniGent](/docs/connectors/omnigent). Cursor action uses documented event-native deny from the user hook. Cursor exposes no safe API for detecting an actual higher-priority Enterprise, Team, or Project conflict, so DefenseClaw reports that limitation and does not infer a conflict. The `windsurf` alias covers legacy Cascade only, not Devin Local, cloud, or ACP. The broader constraint is that hook-only enforcement cannot block a request the agent has not yet asked the hook about.
 
 ### "I want HITL approvals to surface inside the agent UI"
 
 Pick a row with **native ask: yes**: OpenClaw, Claude Code (PreToolUse), GitHub Copilot CLI (preToolUse),
 Antigravity (`PreToolUse` only), or OmniGent (`request`, `tool_call`,
 `llm_request`).
-Cursor's ask-capable schemas are not counted because the DefenseClaw-owned user
-hook cannot prove that higher-priority merged responses are absent.
+Cursor is not counted because DefenseClaw does not enable its native ask response;
+confirm verdicts remain attributed alerts and cannot resume the original call.
 Confirm verdicts on every other connector/event take an immediate
 connector-specific fallback; there is no TUI approval queue.
 
 ### "I want fail-closed on transport failures"
 
-Pick a row with **fail-closed: yes**: OpenClaw, ZeptoClaw, Claude Code, Codex, Gemini CLI, OpenCode, OpenHands, and OmniGent. Cursor, GitHub Copilot CLI, Hermes, legacy Cascade, and Antigravity do not expose a generic DefenseClaw-controlled authoritative fail-closed transport response. Legacy Cascade can use vendor exit `2` only on its five documented blocking pre-hooks.
+Pick a row with **fail-closed: yes**: OpenClaw, ZeptoClaw, Claude Code, Codex, Cursor, Gemini CLI, OpenCode, OpenHands, and OmniGent. GitHub Copilot CLI, Hermes, legacy Cascade, and Antigravity do not expose a generic DefenseClaw-controlled fail-closed transport response. Cursor's support is mode-matched: action writes `failClosed: true`, while observe writes `failClosed: false`. Legacy Cascade can use vendor exit `2` only on its five documented blocking pre-hooks.

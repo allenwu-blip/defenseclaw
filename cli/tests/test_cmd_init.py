@@ -210,7 +210,7 @@ class TestInitFirstRunBackend(unittest.TestCase):
         self.runner = CliRunner()
         self.selection_patcher = patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
-            return_value=({}, {}),
+            return_value=({"codex": object(), "hermes": object(), "omnigent": object()}, {}),
         )
         self.selection_mock = self.selection_patcher.start()
         self.addCleanup(self.selection_patcher.stop)
@@ -2294,7 +2294,7 @@ class TestInitFailModeFlag(unittest.TestCase):
         self.runner = CliRunner()
         self.selection_patcher = patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
-            return_value=({}, {}),
+            return_value=({"codex": object(), "hermes": object(), "omnigent": object()}, {}),
         )
         self.selection_patcher.start()
         self.addCleanup(self.selection_patcher.stop)
@@ -2426,7 +2426,7 @@ class TestInitHITLFlags(unittest.TestCase):
         self.runner = CliRunner()
         self.selection_patcher = patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
-            return_value=({}, {}),
+            return_value=({"codex": object(), "hermes": object(), "omnigent": object()}, {}),
         )
         self.selection_patcher.start()
         self.addCleanup(self.selection_patcher.stop)
@@ -3063,7 +3063,7 @@ class TestInitObserveAllActionConnectors(unittest.TestCase):
         self.runner = CliRunner()
         self.selection_patcher = patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
-            return_value=({}, {}),
+            return_value=({"codex": object(), "hermes": object(), "omnigent": object()}, {}),
         )
         self.selection_patcher.start()
         self.addCleanup(self.selection_patcher.stop)

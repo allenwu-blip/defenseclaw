@@ -146,7 +146,7 @@ func TestOwnedHooksPresent_TrueAfterSetup_FalseAfterRemoval(t *testing.T) {
 	}
 }
 
-func TestOwnedHooksPresent_CursorRequiresExactAdvisoryContract(t *testing.T) {
+func TestOwnedHooksPresent_CursorRequiresExactObserveContract(t *testing.T) {
 	mutations := map[string]func(map[string]interface{}){
 		"missing event": func(hooks map[string]interface{}) { delete(hooks, "subagentStart") },
 		"wrong type": func(hooks map[string]interface{}) {
@@ -189,6 +189,39 @@ func TestOwnedHooksPresent_CursorRequiresExactAdvisoryContract(t *testing.T) {
 				t.Fatal("OwnedHooksPresent=true for malformed Cursor registration")
 			}
 		})
+	}
+}
+
+func TestOwnedHooksPresent_CursorAcceptsExactActionContract(t *testing.T) {
+	conn, opts, cfgPath := cursorTestSetup(t)
+	opts.GuardrailMode = "action"
+	// The connector derives Cursor failure behavior from the selected mode;
+	// an inherited fail-open value must not weaken action registration.
+	opts.HookFailMode = "open"
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+
+	cfg, err := readJSONObject(cfgPath)
+	if err != nil {
+		t.Fatalf("read hooks: %v", err)
+	}
+	hooks := cfg["hooks"].(map[string]interface{})
+	for event, rawEntries := range hooks {
+		entries := rawEntries.([]interface{})
+		if len(entries) != 1 {
+			t.Fatalf("event %s entries=%d, want exactly one", event, len(entries))
+		}
+		if failClosed, ok := entries[0].(map[string]interface{})["failClosed"].(bool); !ok || !failClosed {
+			t.Fatalf("event %s failClosed=%v, want true", event, entries[0].(map[string]interface{})["failClosed"])
+		}
+	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil {
+		t.Fatalf("OwnedHooksPresent: %v", err)
+	}
+	if !present {
+		t.Fatal("OwnedHooksPresent=false for exact Cursor action registration")
 	}
 }
 

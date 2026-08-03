@@ -29,6 +29,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -49,6 +50,7 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/observability"
 	observabilityruntime "github.com/defenseclaw/defenseclaw/internal/observability/runtime"
 	"github.com/defenseclaw/defenseclaw/internal/policy"
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 func testStoreAndLogger(t *testing.T) (*audit.Store, *audit.Logger) {
@@ -890,9 +892,12 @@ func (h *fakeHookOwner) Setup(_ context.Context, _ connector.SetupOpts) error {
 	return nil
 }
 
-func TestRecordAndRollbackFailedConnectorSetup_PersistsPartialState(t *testing.T) {
-	dir := t.TempDir()
-	conn := &rollbackConnector{stubConnector: stubConnector{name: "codex"}}
+func TestRecordAndRollbackFailedConnectorSetup_DoesNotPublishFailedConnector(t *testing.T) {
+	dir := testenv.PrivateTempDir(t)
+	if err := connector.SaveActiveConnectors(dir, []string{"codex", "cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	conn := &rollbackConnector{stubConnector: stubConnector{name: "opencode"}}
 
 	recordAndRollbackFailedConnectorSetup(conn, connector.SetupOpts{DataDir: dir}, context.Background())
 
@@ -902,8 +907,8 @@ func TestRecordAndRollbackFailedConnectorSetup_PersistsPartialState(t *testing.T
 	if !conn.verifyCalled {
 		t.Fatal("rollback did not call connector VerifyClean")
 	}
-	if got := connector.LoadActiveConnector(dir); got != "codex" {
-		t.Fatalf("active connector = %q, want codex so future mode switches can retry teardown", got)
+	if got := connector.LoadActiveConnectors(dir); !reflect.DeepEqual(got, []string{"codex", "cursor"}) {
+		t.Fatalf("active connectors = %v, want exact prior roster [codex cursor]", got)
 	}
 }
 
@@ -911,9 +916,8 @@ func TestRecordAndRollbackFailedConnectorSetup_PersistsPartialState(t *testing.T
 // sidecar fail-loud contract: both the conn.Setup() error branch and
 // the verifyHookScriptsOrRetry error branch in runGuardrail funnel
 // through failGuardrailWithRollback, which MUST (a) run Teardown +
-// VerifyClean via recordAndRollbackFailedConnectorSetup, (b) persist
-// the partially-installed connector name so the next boot can finish
-// cleaning up, (c) flip Guardrail health to StateError with the
+// VerifyClean via recordAndRollbackFailedConnectorSetup, (b) never publish
+// the partially-installed connector as active, (c) flip Guardrail health to StateError with the
 // wrapped error message visible to operators, and (d) return the
 // wrapped error so the sidecar errCh propagates it. A future refactor
 // that drops any of these steps fails this test loudly.
@@ -933,8 +937,8 @@ func TestFailGuardrailWithRollback_ChainsHealthAndTeardown(t *testing.T) {
 	if !conn.verifyCalled {
 		t.Fatal("failGuardrailWithRollback did not chain into connector VerifyClean")
 	}
-	if got := connector.LoadActiveConnector(dir); got != "codex" {
-		t.Fatalf("active connector state = %q, want codex (operator must see what failed on next boot)", got)
+	if got := connector.LoadActiveConnector(dir); got != "" {
+		t.Fatalf("active connector state = %q, want no failed connector publication", got)
 	}
 	snap := s.health.Snapshot()
 	if snap.Guardrail.State != StateError {
@@ -962,8 +966,8 @@ func TestSaveSingleConnectorReadyState_LockFailureRollsBack(t *testing.T) {
 	if !conn.teardownCalled || !conn.verifyCalled {
 		t.Fatal("lock-save failure did not roll the connector back")
 	}
-	if got := connector.LoadActiveConnector(dir); got != "codex" {
-		t.Fatalf("active connector = %q, want rollback marker codex", got)
+	if got := connector.LoadActiveConnector(dir); got != "" {
+		t.Fatalf("active connector = %q, want lock failure never published active", got)
 	}
 	if got := s.health.Snapshot().Guardrail.State; got != StateError {
 		t.Fatalf("guardrail state = %q, want %q", got, StateError)

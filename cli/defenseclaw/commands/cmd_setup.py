@@ -21,6 +21,8 @@ Mirrors internal/cli/setup.go.
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import http.client
 import json as _json
 import os
@@ -77,13 +79,20 @@ from defenseclaw.connector_contracts import (
     HOOK_CONTRACTS,
     STATUS_KNOWN,
     STATUS_NOT_GATED,
+    STATUS_UNKNOWN,
     STATUS_UNVERSIONED,
+    compare_agent_versions,
     normalize_connector,
     resolve_connector_contract,
 )
 from defenseclaw.context import AppContext, pass_ctx
 from defenseclaw.cursor_contract import validate_cursor_registration
-from defenseclaw.file_permissions import atomic_write_private_bytes, delete_file_durable
+from defenseclaw.file_permissions import (
+    atomic_write_private_bytes,
+    delete_file_durable,
+    open_regular_file_no_follow,
+    windows_acl_write_error,
+)
 from defenseclaw.inventory import agent_discovery
 from defenseclaw.logger import CanonicalObservabilityUnavailableError
 from defenseclaw.notification_capabilities import desktop_notification_capability
@@ -116,6 +125,7 @@ _SETUP_RESTART_HANDLED_KEY = "defenseclaw._setup_restart_handled"
 # default restart a synchronous readiness gate, without changing restart
 # policy for unrelated setup subcommands that merely share the same config.
 _SETUP_BATCH_READINESS_KEY = "defenseclaw._setup_batch_readiness_connectors"
+_SETUP_BATCH_ROLLBACK_KEY = "defenseclaw._setup_batch_rollback_snapshot"
 _CONNECTOR_RUNTIME_READY_TIMEOUT_SECONDS = 60.0
 _GATEWAY_API_READY_TIMEOUT_SECONDS = 45.0
 _DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS = 60
@@ -3182,7 +3192,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "cursor": {
         "label": "Cursor",
-        "description": "preview advisory user hooks + bounded local inventory",
+        "description": "preview user hooks with event-scoped deny + bounded local inventory",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -3531,12 +3541,16 @@ def _connector_not_detected_message(label: str) -> str:
     return f"{label}: connector was not detected locally; setup will write DefenseClaw config anyway."
 
 
-def _connector_contract_upgrade_guidance(connector: str, label: str) -> str:
-    """Describe the registered hook-contract range without guessing upstream support."""
+def _connector_contract_upgrade_guidance(
+    connector: str,
+    label: str,
+    normalized_version: str = "",
+) -> str:
+    """Give range-aware remediation without calling every mismatch an upgrade."""
 
     contracts = HOOK_CONTRACTS.get(normalize_connector(connector), ())
     if len(contracts) != 1:
-        return f"Upgrade {label} to a version covered by a DefenseClaw hook contract, then rerun setup."
+        return f"Use a {label} version covered by a DefenseClaw hook contract, then rerun setup."
 
     contract = contracts[0]
     if contract.exact_agent_versions:
@@ -3549,7 +3563,28 @@ def _connector_contract_upgrade_guidance(connector: str, label: str) -> str:
         requirement = f"<{contract.max_agent_version}"
     else:
         requirement = "an explicitly supported version"
-    return f"Upgrade {label}; {contract.contract_id} requires {requirement}. Then rerun setup."
+    if normalized_version and not contract.exact_agent_versions:
+        if contract.min_agent_version and compare_agent_versions(
+            normalized_version,
+            contract.min_agent_version,
+        ) < 0:
+            return (
+                f"Upgrade {label}; installed version {normalized_version} is older than the validated "
+                f"minimum. {contract.contract_id} requires {requirement}. Then rerun setup."
+            )
+        if contract.max_agent_version and compare_agent_versions(
+            normalized_version,
+            contract.max_agent_version,
+        ) >= 0:
+            return (
+                f"{label} {normalized_version} is newer than DefenseClaw's validated range "
+                f"({requirement}). Use a validated version, or update DefenseClaw when a matching "
+                "hook contract is available; then rerun setup."
+            )
+    return (
+        f"{label} {normalized_version or 'version'} is outside the validated hook contract; "
+        f"{contract.contract_id} requires {requirement}. Use a covered version, then rerun setup."
+    )
 
 
 def _check_connector_version_supported_for_setup(
@@ -3584,6 +3619,16 @@ def _check_connector_version_supported_for_setup(
             use_cache=False,
             refresh=True,
             data_dir=data_dir,
+            # Native Windows OmniGent setup immediately records a protected,
+            # connector-scoped executable selection below.  Its admission scan
+            # therefore does not need to republish the process-wide discovery
+            # cache.  Leaving that cache untouched prevents an unrelated
+            # connector whose CLI is temporarily undiscoverable (Cursor in the
+            # observed repair sequence) from losing already-sealed version and
+            # contract status when the gateway restarts every active connector.
+            persist_cache=not (
+                connector == "omnigent" and platform_support.host_os() == "windows"
+            ),
         )
         signal = disc.agents.get(connector)
     except Exception as exc:
@@ -3725,15 +3770,30 @@ def _check_connector_version_supported_for_setup(
     )
     if probe_error:
         detail += f" Probe detail: {probe_error}."
-    upgrade_guidance = _connector_contract_upgrade_guidance(connector, label)
-    if action_mode and not allow_drift:
+    upgrade_guidance = _connector_contract_upgrade_guidance(
+        connector,
+        label,
+        compatibility.normalized_version,
+    )
+    strict_unknown = connector == "opencode"
+    if compatibility.status == STATUS_UNKNOWN and not allow_drift and (action_mode or strict_unknown):
         if emit:
             ux.err(detail)
             ux.subhead(upgrade_guidance)
+            if strict_unknown:
+                ux.subhead(
+                    "OpenCode requires a bounded validated plugin contract in both observe and action mode; "
+                    "refusing setup before activation."
+                )
+            else:
+                ux.subhead("Refusing action-mode connector setup before activation.")
             ux.subhead("Set DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT=1 only for exploratory testing.")
         return False
     if emit:
-        ux.warn(detail + " Continuing because setup is not in action mode or drift override is set.")
+        if allow_drift:
+            ux.warn(detail + " Continuing because the explicit drift override is set.")
+        else:
+            ux.warn(detail + " Continuing in observe mode under the connector's established warning policy.")
         ux.subhead(upgrade_guidance)
     return True
 
@@ -3746,17 +3806,14 @@ def _record_windows_setup_agent_selections(
 
     if platform_support.host_os() != "windows":
         return
-    selected = tuple(
-        dict.fromkeys(
-            connector
-            for raw in connectors
-            if (connector := normalize_connector(raw)) in {"codex", "omnigent"}
-        )
+    from defenseclaw.agent_selection import (
+        record_setup_agent_selections,
+        setup_agent_selection_connectors,
     )
+
+    selected = setup_agent_selection_connectors(connectors)
     if not selected:
         return
-
-    from defenseclaw.agent_selection import record_setup_agent_selections
 
     target_dir = data_dir or os.path.expanduser("~/.defenseclaw")
     try:
@@ -3877,8 +3934,8 @@ def _hilt_support_note(connector: str) -> str:
         return "Copilot CLI supports native ask on documented preToolUse hooks."
     if connector == "cursor":
         return (
-            "Cursor's ask-capable schemas are advisory here: Enterprise, Team, "
-            "and Project hook responses merge above DefenseClaw's user hook."
+            "Cursor setup does not enable native human approval; confirm verdicts "
+            "remain attributed alerts."
         )
     if connector == "antigravity":
         return "Antigravity documents native ask only for PreToolUse."
@@ -4886,6 +4943,8 @@ def setup_guardrail(
 # scripts/install.sh — keeping these in sync means re-running the
 # alias commands here updates the hint just like the installer would.
 _PICKED_CONNECTOR_FILENAME = "picked_connector"
+_AGENT_SELECTION_FILENAME = "agent_selection.json"
+_AGENT_SELECTION_MAX_BYTES = 64 << 10
 
 
 def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
@@ -4919,6 +4978,193 @@ def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
             f"  ⚠ Failed to update picked_connector hint: {exc}",
             err=True,
         )
+
+
+@dataclass(frozen=True)
+class _SetupConfigSnapshot:
+    """Exact rollback point for desired config and setup authority receipts."""
+
+    config: Any
+    picked_connector_existed: bool
+    picked_connector_bytes: bytes
+    agent_selection_existed: bool
+    agent_selection_bytes: bytes
+
+
+def _capture_protected_setup_file(path: str, maximum: int, label: str) -> tuple[bool, bytes]:
+    """Read one bounded private regular file without following path redirects."""
+
+    try:
+        fd = open_regular_file_no_follow(path)
+    except FileNotFoundError:
+        return False, b""
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"{label} rollback source is not a regular file: {path}")
+        if info.st_size > maximum:
+            raise OSError(f"{label} rollback source is unexpectedly large: {path}")
+        if os.name == "nt":
+            acl_error = windows_acl_write_error(path)
+            if acl_error is not None:
+                raise OSError(f"{label} rollback source is not protected: {acl_error}")
+        else:
+            if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
+                raise OSError(f"{label} rollback source is not owned by the current user: {path}")
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                raise OSError(f"{label} rollback source is not private: {path}")
+        body = bytearray()
+        while len(body) <= maximum:
+            chunk = os.read(fd, min(64 << 10, maximum + 1 - len(body)))
+            if not chunk:
+                break
+            body.extend(chunk)
+        if len(body) > maximum:
+            raise OSError(f"{label} rollback source grew while reading: {path}")
+        after = os.fstat(fd)
+        if after.st_size != len(body) or not os.path.samestat(info, after):
+            raise OSError(f"{label} rollback source changed while reading: {path}")
+        path_after = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(path_after.st_mode) or not os.path.samestat(info, path_after):
+            raise OSError(f"{label} rollback source path changed while reading: {path}")
+        return True, bytes(body)
+    finally:
+        os.close(fd)
+
+
+def _capture_setup_config_snapshot(cfg) -> _SetupConfigSnapshot:
+    data_dir = getattr(cfg, "data_dir", None)
+    existed = False
+    body = b""
+    if data_dir:
+        path = os.path.join(data_dir, _PICKED_CONNECTOR_FILENAME)
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError(f"picked_connector rollback source is not a regular file: {path}")
+            if info.st_size > 4096:
+                raise OSError(f"picked_connector rollback source is unexpectedly large: {path}")
+            with open(path, "rb") as fh:
+                body = fh.read(4097)
+            if len(body) > 4096:
+                raise OSError(f"picked_connector rollback source grew while reading: {path}")
+            existed = True
+    selection_existed = False
+    selection_body = b""
+    if data_dir:
+        selection_existed, selection_body = _capture_protected_setup_file(
+            os.path.join(os.path.abspath(os.fspath(data_dir)), _AGENT_SELECTION_FILENAME),
+            _AGENT_SELECTION_MAX_BYTES,
+            "agent_selection.json",
+        )
+    return _SetupConfigSnapshot(
+        config=copy.deepcopy(cfg),
+        picked_connector_existed=existed,
+        picked_connector_bytes=body,
+        agent_selection_existed=selection_existed,
+        agent_selection_bytes=selection_body,
+    )
+
+
+def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapshot) -> None:
+    """Atomically republish prior desired config, hint, and authority receipt."""
+
+    cfg = _restore_setup_config_in_memory(app, snapshot)
+    restore_errors: list[str] = []
+    try:
+        cfg.save()
+    except Exception as exc:  # noqa: BLE001 — still restore independent protected receipts.
+        restore_errors.append(f"config: {exc}")
+    try:
+        _sync_guardrail_hilt_to_opa(cfg.policy_dir, cfg.guardrail)
+    except Exception as exc:  # noqa: BLE001 — receipt restoration must still run.
+        restore_errors.append(f"HILT policy: {exc}")
+
+    if cfg.data_dir:
+        hint_path = os.path.join(cfg.data_dir, _PICKED_CONNECTOR_FILENAME)
+        try:
+            if snapshot.picked_connector_existed:
+                atomic_write_private_bytes(hint_path, snapshot.picked_connector_bytes)
+            elif os.path.lexists(hint_path):
+                delete_file_durable(hint_path)
+        except Exception as exc:  # noqa: BLE001 — continue to the authority receipt.
+            restore_errors.append(f"picked_connector: {exc}")
+        try:
+            _restore_setup_agent_selection_snapshot(cfg, snapshot)
+        except Exception as exc:  # noqa: BLE001 — report exact protected-receipt failure.
+            restore_errors.append(f"agent_selection.json: {exc}")
+    if restore_errors:
+        raise OSError("setup rollback was incomplete: " + "; ".join(restore_errors))
+
+
+def _restore_setup_agent_selection_snapshot(cfg, snapshot: _SetupConfigSnapshot) -> None:
+    """Restore exact pre-setup executable authority without rewriting config."""
+
+    if not cfg.data_dir:
+        return
+    selection_path = os.path.join(
+        os.path.abspath(os.fspath(cfg.data_dir)),
+        _AGENT_SELECTION_FILENAME,
+    )
+    if snapshot.agent_selection_existed:
+        atomic_write_private_bytes(selection_path, snapshot.agent_selection_bytes)
+    elif os.path.lexists(selection_path):
+        delete_file_durable(selection_path)
+
+
+def _restore_setup_config_in_memory(app: AppContext, snapshot: _SetupConfigSnapshot):
+    cfg = app.cfg
+    cfg.__dict__.clear()
+    cfg.__dict__.update(copy.deepcopy(snapshot.config.__dict__))
+    return cfg
+
+
+def _restart_restored_connector_runtime(app: AppContext) -> None:
+    cfg = app.cfg
+    restored = list(cfg.active_connectors()) if hasattr(cfg, "active_connectors") else []
+    primary = normalize_connector(cfg.active_connector()) if hasattr(cfg, "active_connector") else "openclaw"
+    _restart_services(
+        cfg.data_dir,
+        cfg.gateway.host,
+        cfg.gateway.port,
+        connector=primary or "openclaw",
+        connectors=restored,
+        wait_for_connector_ready=bool(
+            {normalize_connector(name) for name in restored} & _HOOK_ENFORCED_CONNECTORS
+        ),
+        start_if_stopped=True,
+    )
+
+
+def _rollback_failed_connector_application(
+    app: AppContext,
+    snapshot: _SetupConfigSnapshot,
+    cause: BaseException,
+) -> None:
+    """Restore desired and applied connector state, then raise a truthful error."""
+
+    rollback_errors: list[str] = []
+    try:
+        _restore_setup_config_snapshot(app, snapshot)
+    except Exception as exc:  # noqa: BLE001 — preserve the original readiness failure too.
+        rollback_errors.append(f"restore prior desired config: {exc}")
+    else:
+        try:
+            _restart_restored_connector_runtime(app)
+        except Exception as exc:  # noqa: BLE001 — report both transaction failures.
+            rollback_errors.append(f"re-apply prior connector runtime: {exc}")
+
+    if rollback_errors:
+        raise click.ClickException(
+            f"connector setup did not converge ({cause}); rollback was incomplete: "
+            + "; ".join(rollback_errors)
+        ) from cause
+    raise click.ClickException(
+        f"connector setup did not converge ({cause}); restored the prior connector configuration and runtime"
+    ) from cause
 
 
 def _resolve_connector_workspace(workspace_dir: str | None) -> str:
@@ -5157,6 +5403,7 @@ def _apply_hook_connector_setup(
     allow_trusted_path_prompt: bool = True,
     trusted_prompt_cache: dict[str, bool] | None = None,
     _downgrade_refused_action: bool = False,
+    _selection_preflighted: bool = False,
 ) -> bool:
     """Pin DefenseClaw to *connector* in hook-driven mode.
 
@@ -5206,13 +5453,6 @@ def _apply_hook_connector_setup(
     desired_mode = (mode or "").strip().lower()
     if desired_mode not in ("observe", "action"):
         desired_mode = "observe"
-    if connector == "cursor" and desired_mode == "action":
-        click.echo(
-            "  ⚠ Cursor hard action mode is unsupported: Enterprise, Team, and Project "
-            "hooks outrank DefenseClaw's user hook. Configuring advisory observe mode instead."
-        )
-        desired_mode = "observe"
-
     version_check_kwargs = {
         "mode": desired_mode,
         "data_dir": getattr(app.cfg, "data_dir", None),
@@ -5223,8 +5463,11 @@ def _apply_hook_connector_setup(
     if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
         if desired_mode == "action" and _downgrade_refused_action:
             label = _CONNECTOR_META.get(connector, {}).get("label", connector)
-            ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
+            ux.warn(f"{label}: requested action mode was refused; checking observe-mode eligibility.")
             desired_mode = "observe"
+            version_check_kwargs["mode"] = desired_mode
+            if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
+                return False
         else:
             return False
 
@@ -5235,7 +5478,23 @@ def _apply_hook_connector_setup(
     # (--rule-pack + --rule-pack-dir are mutually exclusive) fails fast via a
     # UsageError BEFORE _write_connector_identity mutates any in-memory state.
     pack_dir = _resolve_rule_pack_dir(app, rule_pack=rule_pack, rule_pack_dir=rule_pack_dir)
-    _record_windows_setup_agent_selections(getattr(app.cfg, "data_dir", None), (connector,))
+    try:
+        setup_snapshot = _capture_setup_config_snapshot(app.cfg)
+    except OSError as exc:
+        click.echo(f"  ✗ Cannot establish connector setup rollback point: {exc}", err=True)
+        return False
+    if not _selection_preflighted:
+        try:
+            _record_windows_setup_agent_selections(getattr(app.cfg, "data_dir", None), (connector,))
+        except Exception as exc:
+            try:
+                _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
+                raise click.ClickException(
+                    f"connector {connector!r} executable selection failed ({exc}); "
+                    f"agent_selection.json rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
 
     workspace = _configure_connector_workspace(cfg, workspace_dir)
     # WU7: honor the resolved write mode — "replace" pins this as the sole
@@ -5305,16 +5564,20 @@ def _apply_hook_connector_setup(
     if fail_mode is not None or connector == "cursor":
         normalized_fail = "closed" if str(fail_mode).strip().lower() == "closed" else "open"
         if connector == "cursor":
-            if normalized_fail == "closed":
-                click.echo("  ⚠ Cursor fail-closed is unsupported; configuring fail-open advisory delivery.")
-            normalized_fail = "open"
+            mode_fail = "closed" if desired_mode == "action" else "open"
+            if fail_mode is not None and normalized_fail != mode_fail:
+                click.echo(
+                    f"  ⚠ Cursor {desired_mode} mode pins hook failures={mode_fail}; "
+                    f"ignoring --fail-mode {normalized_fail}."
+                )
+            normalized_fail = mode_fail
         if per_connector:
             gc.connectors[connector].hook_fail_mode = normalized_fail
         else:
             gc.hook_fail_mode = normalized_fail
     if connector == "cursor":
         if hilt:
-            click.echo("  ⚠ Cursor user-hook human approval is non-authoritative; disabling it for this connector.")
+            click.echo("  ⚠ Cursor native human approval is not implemented; disabling it for this connector.")
         hilt = False
     _apply_hilt_setup(
         gc,
@@ -5367,16 +5630,40 @@ def _apply_hook_connector_setup(
         cfg.save()
         click.echo("  ✓ Config saved to ~/.defenseclaw/config.yaml")
     except OSError as exc:
+        try:
+            _restore_setup_config_snapshot(app, setup_snapshot)
+        except Exception as rollback_exc:  # noqa: BLE001 — no authority receipt may be stranded.
+            raise click.ClickException(
+                f"connector {connector!r} config save failed ({exc}); rollback was incomplete: {rollback_exc}"
+            ) from exc
         click.echo(f"  ✗ Failed to save config: {exc}", err=True)
         return False
 
-    _sync_guardrail_hilt_to_opa(cfg.policy_dir, gc)
-    _write_picked_connector_hint(getattr(cfg, "data_dir", None), connector)
+    try:
+        _sync_guardrail_hilt_to_opa(cfg.policy_dir, gc)
+        _write_picked_connector_hint(getattr(cfg, "data_dir", None), connector)
+    except Exception as exc:  # noqa: BLE001 — no post-save side effect may strand desired state.
+        try:
+            _restore_setup_config_snapshot(app, setup_snapshot)
+        except Exception as rollback_exc:  # noqa: BLE001 — preserve both transaction failures.
+            raise click.ClickException(
+                f"connector {connector!r} setup failed after saving desired config ({exc}); "
+                f"prior desired state restoration failed: {rollback_exc}"
+            ) from exc
+        click.echo(
+            f"  ✗ Connector setup failed after saving desired config: {exc}; "
+            "restored the prior desired connector state",
+            err=True,
+        )
+        return False
     _actives = list(cfg.active_connectors()) if hasattr(cfg, "active_connectors") else [connector]
     if len(_actives) > 1:
-        click.echo(f"  ✓ Connector {connector!r} configured — {len(_actives)} connectors active: {', '.join(_actives)}")
+        click.echo(
+            f"  ✓ Desired roster staged for {connector!r} — "
+            f"{len(_actives)} connectors selected: {', '.join(_actives)}"
+        )
     else:
-        click.echo(f"  ✓ Connector {connector!r} configured")
+        click.echo(f"  ✓ Desired connector {connector!r} staged")
     if workspace:
         click.echo(f"  ✓ Workspace root pinned to {workspace}")
     else:
@@ -5387,27 +5674,30 @@ def _apply_hook_connector_setup(
     # edits on multi-connector installs.
     click.echo(f"  ✓ {connector} mode={desired_mode}")
     if connector == "cursor":
-        effective_fail_mode = "open"
+        effective_fail_mode = "closed" if desired_mode == "action" else "open"
         click.echo(
             f"  ✓ cursor hook failures={effective_fail_mode} "
-            "(failClosed=false; user hook is not authoritative)"
+            f"(failClosed={'true' if desired_mode == 'action' else 'false'})"
         )
         click.echo(
             "  ℹ Cursor runs all matching hooks and merges Enterprise > Team > Project > User; "
-            "DefenseClaw owns only the advisory user hook"
+            "DefenseClaw cannot safely detect an actual higher-priority conflict, so none is inferred"
         )
 
     if restart:
         click.echo()
         click.echo("  Restarting gateway to wire connector runtime and telemetry...")
-        _restart_services(
-            cfg.data_dir,
-            cfg.gateway.host,
-            cfg.gateway.port,
-            connector=connector,
-            connectors=_actives,
-            wait_for_connector_ready=True,
-        )
+        try:
+            _restart_services(
+                cfg.data_dir,
+                cfg.gateway.host,
+                cfg.gateway.port,
+                connector=connector,
+                connectors=_actives,
+                wait_for_connector_ready=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — readiness failure triggers transaction rollback.
+            _rollback_failed_connector_application(app, setup_snapshot, exc)
         if connector == "hermes":
             click.echo("  ✓ Hermes on-disk hook registration staged")
             ux.warn(
@@ -5416,6 +5706,11 @@ def _apply_hook_connector_setup(
             )
         else:
             click.echo(f"  ✓ {_CONNECTOR_META[connector]['label']} connector setup complete")
+    else:
+        click.echo(
+            "  ℹ Connector desired state is staged offline; it is not active until the gateway "
+            "publishes matching registration and lock evidence."
+        )
 
     _log_setup_action(
         app,
@@ -5447,6 +5742,7 @@ def _apply_connector_observability_only(
 
 
 def _print_connector_observability_banner(connector: str, *, mode: str = "observe") -> None:
+    setup_slug = "claude-code" if connector == "claudecode" else connector
     label = _CONNECTOR_META[connector]["label"]
     click.echo()
     click.echo(f"  DefenseClaw — {label} {mode} setup")
@@ -5471,6 +5767,9 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
             click.echo("  path; only synchronous PreToolUse JSON can ask or deny.")
             click.echo("  Other lifecycle outputs are non-blocking, and nonzero")
             click.echo("  hook exit status is not an enforcement interface.")
+        elif connector == "cursor" and mode == "action":
+            click.echo("  path; supported pre-action events return Cursor's native deny")
+            click.echo("  response with failClosed=true. Native human approval is not enabled.")
         elif mode == "action":
             click.echo("  path; supported actions flagged by policy are blocked")
             click.echo("  by the connector's native lifecycle verdict.")
@@ -5502,14 +5801,12 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     if connector == "codex":
         click.echo("    • Notify     — agent-turn-complete events → /api/v1/codex/notify")
     click.echo()
-    if connector == "cursor":
-        click.echo("  Cursor remains advisory; hard action mode is unsupported for a user-owned hook.")
-    elif mode == "observe":
+    if mode == "observe":
         click.echo("  To later turn enforcement on:")
-        click.echo(f"    defenseclaw setup {connector} --mode action")
+        click.echo(f"    defenseclaw setup {setup_slug} --mode action")
     else:
         click.echo("  To revert to observe-only:")
-        click.echo(f"    defenseclaw setup {connector} --mode observe")
+        click.echo(f"    defenseclaw setup {setup_slug} --mode observe")
     click.echo()
     _print_connector_mutation_notice(connector)
     click.echo()
@@ -5556,6 +5853,7 @@ def _print_observability_summary(
 ) -> None:
     """One-screen summary surfaced after a successful alias run."""
     label = _CONNECTOR_META[connector]["label"]
+    setup_slug = "claude-code" if connector == "claudecode" else connector
     if connector == "omnigent":
         enforcement_label = "enabled (custom policy API)" if mode == "action" else "disabled (observe-only)"
     elif connector == "hermes":
@@ -5563,6 +5861,12 @@ def _print_observability_summary(
             "preview (pre_tool deny; pre_verify continue; failures open; no ask)"
             if mode == "action"
             else "disabled (observe-only)"
+        )
+    elif connector == "cursor":
+        enforcement_label = (
+            "enabled (preview user-hook native deny; failClosed=true; no native ask)"
+            if mode == "action"
+            else "disabled (observe-only; failClosed=false)"
         )
     else:
         enforcement_label = "enabled (hook-driven)" if mode == "action" else "disabled (observe-only)"
@@ -5617,6 +5921,14 @@ def _print_observability_summary(
                 ("certification", "preview; not_certified; live=false"),
             ]
         )
+    elif connector == "cursor":
+        rows.extend(
+            [
+                ("native human approval", "unsupported"),
+                ("priority conflict check", "unavailable; none inferred"),
+                ("certification", "preview; not certified"),
+            ]
+        )
     for k, v in rows:
         click.echo(f"    {k + ':':<22s} {v}")
     click.echo()
@@ -5624,12 +5936,12 @@ def _print_observability_summary(
     click.echo()
     _print_connector_next_steps(connector, os_name=os_name)
     if multi:
-        click.echo(f"    • Change this connector's mode: defenseclaw setup {connector} --mode observe|action")
+        click.echo(f"    • Change this connector's mode: defenseclaw setup {setup_slug} --mode observe|action")
     click.echo()
     if multi:
         click.echo(f"  This install now has {len(actives)} connectors: {', '.join(actives)}.")
         click.echo("  To revert just this connector (the others keep running):")
-        click.echo(f"    defenseclaw setup remove {connector}")
+        click.echo(f"    defenseclaw setup remove {setup_slug}")
         click.echo("  Or keep it configured but stop enforcing it:")
         click.echo(f"    defenseclaw guardrail disable --connector {connector}")
     else:
@@ -5840,13 +6152,6 @@ def _setup_observability_alias(
     # multi-connector installs.
     if interactive:
         normalized_mode = _prompt_connector_mode(connector, default_mode=normalized_mode)
-
-    if connector == "cursor" and normalized_mode == "action":
-        ux.warn(
-            "Cursor hard action mode is unsupported because higher-priority Enterprise, "
-            "Team, and Project hooks outrank DefenseClaw's user hook. Configuring advisory observe mode."
-        )
-        normalized_mode = "observe"
 
     _print_connector_observability_banner(connector, mode=normalized_mode)
     if connector == "hermes" and (fail_mode or "").strip().lower() == "closed":
@@ -6377,6 +6682,7 @@ def _apply_setup_batch(
     connector_modes: dict[str, str] | None = None,
     allow_trusted_path_prompt: bool = True,
     trusted_prompt_cache: dict[str, bool] | None = None,
+    _prior_snapshot: _SetupConfigSnapshot | None = None,
 ) -> None:
     """Configure each connector in *connectors* as a multi-connector batch (SU-11).
 
@@ -6386,8 +6692,51 @@ def _apply_setup_batch(
     group's auto-restart result callback (suppressed for ``--no-restart``)
     rather than per connector.
     """
-    gc = app.cfg.guardrail
     default_mode = "action" if (mode or "").strip().lower() == "action" else "observe"
+    setup_snapshot = _prior_snapshot or _capture_setup_config_snapshot(app.cfg)
+
+    # Resolve every contract before replacing the desired roster. A selected
+    # connector that cannot be set up must leave the exact prior roster intact,
+    # rather than becoming desired state that the gateway can never apply.
+    for connector_name in connectors:
+        connector_mode = (connector_modes or {}).get(connector_name, default_mode)
+        preflight_kwargs = {
+            "mode": connector_mode,
+            "emit": False,
+            "data_dir": getattr(app.cfg, "data_dir", None),
+            "_allow_prompt": False,
+        }
+        if trusted_prompt_cache is not None:
+            preflight_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
+        if not _check_connector_version_supported_for_setup(connector_name, **preflight_kwargs):
+            preflight_kwargs["emit"] = True
+            _check_connector_version_supported_for_setup(connector_name, **preflight_kwargs)
+            _restore_setup_config_in_memory(app, setup_snapshot)
+            raise click.ClickException(
+                f"connector {connector_name!r} did not pass setup preflight; prior roster was not changed"
+            )
+
+    # Select every executable-authority connector in one protected write.
+    # record_setup_agent_selections intentionally replaces stale/unrequested
+    # entries, so invoking it once per connector would let the final connector
+    # erase an earlier peer before the gateway consumes the batch receipt.
+    try:
+        _record_windows_setup_agent_selections(
+            getattr(app.cfg, "data_dir", None),
+            tuple(connectors),
+        )
+    except Exception as exc:
+        try:
+            _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
+        except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
+            raise click.ClickException(
+                f"batch executable selection failed ({exc}); "
+                f"agent_selection.json rollback was incomplete: {rollback_exc}"
+            ) from exc
+        raise
+
+    _reconcile_batch_active_connectors(app.cfg, connectors)
+    gc = app.cfg.guardrail
     click.echo()
     click.echo(f"  Configuring {len(connectors)} connector(s): {', '.join(connectors)}")
 
@@ -6403,33 +6752,54 @@ def _apply_setup_batch(
             connector_mode = _prompt_connector_mode(c, default_mode=connector_mode)
             if _prompt_enable_judge(c, gc):
                 enable_judge = True
-        ok = _apply_hook_connector_setup(
-            app,
-            connector=c,
-            mode=connector_mode,
-            restart=False,
-            allow_offline_audit=not restart,
-            write_mode="add",
-            enable_judge=enable_judge,
-            judge_hook_connectors=None,
-            allow_trusted_path_prompt=allow_trusted_path_prompt,
-            trusted_prompt_cache=trusted_prompt_cache,
-            _downgrade_refused_action=True,
-        )
+        try:
+            ok = _apply_hook_connector_setup(
+                app,
+                connector=c,
+                mode=connector_mode,
+                restart=False,
+                allow_offline_audit=not restart,
+                write_mode="add",
+                enable_judge=enable_judge,
+                judge_hook_connectors=None,
+                allow_trusted_path_prompt=allow_trusted_path_prompt,
+                trusted_prompt_cache=trusted_prompt_cache,
+                _downgrade_refused_action=True,
+                _selection_preflighted=True,
+            )
+        except Exception as exc:
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both transaction failures.
+                raise click.ClickException(
+                    f"connector {c!r} setup failed ({exc}); batch rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
         if ok:
             applied.append(c)
+        else:
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as exc:  # noqa: BLE001 — surface rollback failure with setup refusal.
+                raise click.ClickException(
+                    f"connector {c!r} setup failed and prior desired roster restoration failed: {exc}"
+                ) from exc
+            raise click.ClickException(
+                f"connector {c!r} setup failed; restored the prior desired connector roster"
+            )
 
     if not applied:
         raise click.ClickException("no connectors were configured — see errors above")
 
     click.echo()
-    click.echo(f"  ✓ Configured {len(applied)} connector(s): {', '.join(applied)}")
+    click.echo(f"  ✓ Staged desired config for {len(applied)} connector(s): {', '.join(applied)}")
 
     # Restart handling: the bare batch owns one narrow result-callback marker.
     # Its default restart must start or restart the gateway and verify every
     # selected target, even when the gateway was stopped or the config bytes
     # were already current. Unrelated setup subcommands never set this marker.
     if restart:
+        ctx.meta[_SETUP_BATCH_ROLLBACK_KEY] = setup_snapshot
         ctx.meta[_SETUP_BATCH_READINESS_KEY] = tuple(
             sorted({normalize_connector(name) for name in connectors if name})
         )
@@ -6501,6 +6871,8 @@ def _dispatch_bare_setup(
             click.echo("  Aborted — no connectors selected.")
             return
 
+    setup_snapshot = _capture_setup_config_snapshot(app.cfg)
+
     prompt_batch = (not yes) and _is_interactive()
     connector_modes: dict[str, str] | None = None
     judge_connectors: set[str] | None = None
@@ -6523,7 +6895,6 @@ def _dispatch_bare_setup(
             if configure_model:
                 _prompt_judge_model_config(app, gc)
 
-    _reconcile_batch_active_connectors(app.cfg, targets)
     _apply_setup_batch(
         ctx,
         app,
@@ -6534,6 +6905,7 @@ def _dispatch_bare_setup(
         connector_modes=connector_modes,
         allow_trusted_path_prompt=prompt_batch,
         trusted_prompt_cache=trusted_prompt_cache,
+        _prior_snapshot=setup_snapshot,
     )
     if prompt_batch:
         _prune_judge_gate_to_action_scope(app.cfg.guardrail, targets)
@@ -7134,8 +7506,9 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         if connector == "geminicli"
         else (
             "\n\nCursor scope: DefenseClaw owns only the user hook. Enterprise, Team, "
-            "and Project hooks have higher precedence, so --mode action is downgraded "
-            "to advisory observe and human approval/fail-closed are unsupported."
+            "and Project hooks have higher precedence. DefenseClaw cannot safely detect "
+            "an actual higher-priority conflict, so none is inferred. Action uses the "
+            "documented event-native deny response; native human approval is unsupported."
             if connector == "cursor"
             else ""
         )
@@ -7154,8 +7527,7 @@ def _make_observability_setup_command(connector: str) -> click.Command:
             f"Configure DefenseClaw for {label} via its {surface_name}.\n\n"
             "Configures this connector in the hook connector set so CLI/TUI "
             "scanners read that agent's documented local surfaces. Default "
-            "mode is observe. Cursor downgrades action requests to advisory observe; "
-            "other connectors may enable agent-native blocking/approval verdicts with "
+            "mode is observe. Action may enable agent-native blocking/approval verdicts with "
             "--mode action on supported events. No proxy is involved in either mode."
             f"{product_note}"
             f"{platform_note}"
@@ -7201,8 +7573,8 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         show_default=True,
         help=(
             "Lifecycle policy mode. observe records only; action requests the connector's "
-            "native blocking or approval verdict on supported events. Cursor downgrades "
-            "that request to advisory observe."
+            "native blocking or approval verdict on supported events. Cursor action uses "
+            "event-native deny and does not enable human approval."
         ),
     )
     @click.option(
@@ -7287,8 +7659,8 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         f"Configure DefenseClaw for {label} via its {surface_name}.\n\n"
         "Configures this connector in the hook connector set so CLI/TUI "
         "scanners read that agent's documented local surfaces. Default "
-        "mode is observe. Cursor downgrades --mode action to advisory observe; other "
-        "connectors use action for agent-native lifecycle verdicts on policy hits."
+        "mode is observe. Action uses agent-native lifecycle verdicts on policy hits; "
+        "Cursor does not enable native human approval."
         f"{product_note}"
     )
     return _cmd
@@ -7324,9 +7696,8 @@ for _observability_connector in (
 #     PreToolUse hook. ``mode=action`` IS supported on this surface —
 #     it's hook-driven blocking, not proxy-driven.
 #
-# Action mode is supported on both surfaces except Cursor's non-authoritative
-# user hook, which is downgraded to advisory observe. The difference is otherwise
-# the data-path topology and the proxy listener binding decision. The
+# Action mode is supported on both surfaces. The difference is the data-path
+# topology and the proxy listener binding decision. The
 # observability-only label is reserved for installs where the operator
 # explicitly picks mode=observe.
 _PROXY_BACKED_CONNECTORS = frozenset({"openclaw", "zeptoclaw"})
@@ -8836,9 +9207,8 @@ def _fail_if_restart_failed(failed: list[str]) -> None:
     raise click.ClickException(
         "gateway restart/readiness failed for: "
         + ", ".join(failed)
-        + ". Config was saved, but services are NOT running the new "
-        "configuration. Fix the error above and re-run, or start the "
-        "gateway manually before relying on enforcement."
+        + ". The requested configuration was not verified as applied. Fix the error above "
+        "before relying on enforcement."
     )
 
 
@@ -8884,20 +9254,36 @@ def _read_stable_regular_json(path: str) -> tuple[Any, int]:
             os.close(fd)
 
 
-def _hook_contract_lock_covers(lock: Any, expected: set[str]) -> bool:
+def _hook_contract_lock_covers(
+    lock: Any,
+    expected: set[str],
+    inactive: set[str] | None = None,
+) -> bool:
     if not isinstance(lock, dict):
         return False
     version = lock.get("version")
     entries = lock.get("connectors")
     if type(version) is not int or version < 1 or version > 2 or not isinstance(entries, dict):
         return False
-    actual = {
-        normalize_connector(name)
-        for name in entries
-        if isinstance(name, str) and name.strip()
-    }
-    if actual != expected:
-        return False
+    if inactive is None:
+        actual = {
+            normalize_connector(name)
+            for name in entries
+            if isinstance(name, str) and name.strip()
+        }
+        if actual != expected:
+            return False
+    else:
+        actual: set[str] = set()
+        for raw_name in entries:
+            if not isinstance(raw_name, str) or not raw_name.strip():
+                return False
+            name = normalize_connector(raw_name)
+            if not name or name in actual:
+                return False
+            actual.add(name)
+        if not expected.issubset(actual) or not (actual - expected).issubset(inactive):
+            return False
     for name in expected:
         entry = entries.get(name)
         if not isinstance(entry, dict):
@@ -8910,7 +9296,7 @@ def _hook_contract_lock_covers(lock: Any, expected: set[str]) -> bool:
                 return False
             if entry.get("compatibility_status") not in {"known", "unversioned"}:
                 return False
-            if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") != "open":
+            if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") not in {"open", "closed"}:
                 return False
             locations = entry.get("locations")
             if not isinstance(locations, dict):
@@ -8921,7 +9307,70 @@ def _hook_contract_lock_covers(lock: Any, expected: set[str]) -> bool:
                 return False
             if not isinstance(runtime_paths, list) or not runtime_paths:
                 return False
+        if name == "opencode":
+            if entry.get("contract_id") != "opencode-hooks-v1":
+                return False
+            if entry.get("compatibility_status") != "known":
+                return False
+            if entry.get("hook_script_version") != "v7":
+                return False
+            locations = entry.get("locations")
+            if not isinstance(locations, dict):
+                return False
+            hook_paths = locations.get("hook_config_paths")
+            if not isinstance(hook_paths, list) or len(hook_paths) != 1:
+                return False
     return True
+
+
+def _connector_runtime_state_sets(state: Any) -> tuple[set[str], set[str] | None] | None:
+    """Return active and explicitly inactive connectors for readiness.
+
+    Version 3 is the first runtime-state schema with connector-scoped inactive
+    tombstones.  Validate that shape strictly before allowing a preserved lock
+    entry to remain alongside the active set.  Earlier state schemas retain the
+    historical active-only interpretation.
+    """
+
+    if not isinstance(state, dict):
+        return None
+    version = state.get("version")
+    if version == 3:
+        if type(version) is not int:
+            return None
+        raw_names = state.get("names")
+        raw_inactive = state.get("inactive_names", [])
+        if not isinstance(raw_names, list) or not isinstance(raw_inactive, list):
+            return None
+
+        def _validated_names(raw: list[Any]) -> set[str] | None:
+            names: set[str] = set()
+            for value in raw:
+                if not isinstance(value, str) or not value.strip():
+                    return None
+                name = normalize_connector(value)
+                if not name or name in names:
+                    return None
+                names.add(name)
+            return names
+
+        active = _validated_names(raw_names)
+        inactive = _validated_names(raw_inactive)
+        if active is None or inactive is None or active & inactive:
+            return None
+        return active, inactive
+
+    raw_names = state.get("names")
+    if isinstance(raw_names, list):
+        active = {
+            normalize_connector(name)
+            for name in raw_names
+            if isinstance(name, str) and name.strip()
+        }
+    else:
+        name = state.get("name")
+        active = {normalize_connector(name)} if isinstance(name, str) and name.strip() else set()
+    return active, None
 
 
 def _cursor_registration_from_lock(lock: Any) -> bool:
@@ -8939,8 +9388,55 @@ def _cursor_registration_from_lock(lock: Any) -> bool:
     result = validate_cursor_registration(
         str(config_paths[0]),
         expected_runtime_paths=(str(path) for path in runtime_paths if path),
+        expected_fail_closed=entry.get("hook_fail_mode") == "closed",
     )
     return result.ok
+
+
+def _opencode_registration_from_lock(lock: Any) -> bool:
+    if not isinstance(lock, dict):
+        return False
+    entries = lock.get("connectors")
+    entry = entries.get("opencode") if isinstance(entries, dict) else None
+    locations = entry.get("locations") if isinstance(entry, dict) else None
+    if not isinstance(locations, dict):
+        return False
+    paths = locations.get("hook_config_paths")
+    digests = entry.get("hook_script_digests") if isinstance(entry, dict) else None
+    if not isinstance(paths, list) or len(paths) != 1 or not isinstance(digests, dict):
+        return False
+    plugin_path = str(paths[0])
+    expected_paths = connector_paths.connector_config_files("opencode")
+    if len(expected_paths) != 1 or os.path.normcase(os.path.abspath(plugin_path)) != os.path.normcase(
+        os.path.abspath(expected_paths[0])
+    ):
+        return False
+    try:
+        info = os.lstat(plugin_path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
+            return False
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(plugin_path, flags)
+        try:
+            opened = os.fstat(fd)
+            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
+                return False
+            with os.fdopen(fd, "rb") as fh:
+                fd = -1
+                body = fh.read(2 * 1024 * 1024 + 1)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    except OSError:
+        return False
+    if len(body) > 2 * 1024 * 1024:
+        return False
+    if b"// defenseclaw-managed-plugin v7" not in body or b"/api/v1/opencode/hook" not in body:
+        return False
+    expected = digests.get(os.path.basename(plugin_path))
+    actual = "sha256:" + hashlib.sha256(body).hexdigest()
+    return isinstance(expected, str) and expected == actual
 
 
 def _wait_for_connector_runtime(
@@ -8963,24 +9459,20 @@ def _wait_for_connector_runtime(
         except (OSError, ValueError):
             time.sleep(0.2)
             continue
-        raw_names = state.get("names") if isinstance(state, dict) else None
-        if isinstance(raw_names, list):
-            active = {
-                normalize_connector(name)
-                for name in raw_names
-                if isinstance(name, str) and name.strip()
-            }
-        else:
-            name = state.get("name") if isinstance(state, dict) else None
-            active = {normalize_connector(name)} if isinstance(name, str) and name.strip() else set()
+        runtime_sets = _connector_runtime_state_sets(state)
+        if runtime_sets is None:
+            time.sleep(0.2)
+            continue
+        active, inactive = runtime_sets
         state_fresh = previous_state_marker is None or state_marker != previous_state_marker
         lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
         if (
             active == expected
             and state_fresh
             and lock_fresh
-            and _hook_contract_lock_covers(lock, expected)
+            and _hook_contract_lock_covers(lock, expected, inactive)
             and ("cursor" not in expected or _cursor_registration_from_lock(lock))
+            and ("opencode" not in expected or _opencode_registration_from_lock(lock))
         ):
             return True
         time.sleep(0.2)
@@ -9431,14 +9923,24 @@ def _auto_restart_sidecar_after_setup(ctx: click.Context, *_args, **_kwargs) -> 
             and normalize_connector(app.cfg.active_connector()) in batch_targets
             else batch_targets[0]
         )
-        _restart_services(
-            data_dir,
-            app.cfg.gateway.host,
-            app.cfg.gateway.port,
-            connector=primary,
-            connectors=batch_targets,
-            wait_for_connector_ready=True,
-            start_if_stopped=True,
+        try:
+            _restart_services(
+                data_dir,
+                app.cfg.gateway.host,
+                app.cfg.gateway.port,
+                connector=primary,
+                connectors=batch_targets,
+                wait_for_connector_ready=True,
+                start_if_stopped=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — readiness failure rolls the whole batch back.
+            snapshot = ctx.meta.get(_SETUP_BATCH_ROLLBACK_KEY)
+            if isinstance(snapshot, _SetupConfigSnapshot):
+                _rollback_failed_connector_application(app, snapshot, exc)
+            raise
+        click.echo(
+            f"  ✓ Configured {len(batch_targets)} connector(s); runtime roster and "
+            "hook-contract evidence are ready"
         )
         return
 

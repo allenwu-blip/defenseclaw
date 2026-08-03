@@ -266,7 +266,7 @@ def test_agent_detail_rolls_up_connectors_in_multi_connector() -> None:
         OverviewConfig(
             claw_mode="codex",
             guardrail_connector="codex",
-            connector_modes=(("codex", "enforce"), ("cursor", "observe")),
+            connector_modes=(("codex", "observe"), ("cursor", "action")),
         ),
         version="test",
     )
@@ -709,14 +709,14 @@ def test_multi_connector_rows_lists_each_connector_with_mode() -> None:
         OverviewConfig(
             claw_mode="codex",
             guardrail_connector="codex",
-            connector_modes=(("codex", "enforce"), ("cursor", "observe")),
+            connector_modes=(("codex", "observe"), ("cursor", "action")),
         ),
         version="test",
     )
     rows = model.multi_connector_rows()
     assert [value for _, value in rows] == [
-        "Codex (codex) — mode=enforce",
-        "Cursor (cursor) — mode=observe",
+        "Codex (codex) — mode=observe",
+        "Cursor (cursor) — mode=action",
     ]
     # Indented sub-lines: blank label so the key:<16 formatting nests
     # them under the single "Agent" line.

@@ -1,10 +1,11 @@
 """Exact, bounded validation for DefenseClaw's Cursor user-hook contract.
 
 Cursor runs every matching hook and merges results in Enterprise > Team >
-Project > User order. DefenseClaw owns only the user registration, so the
-supported preview posture is advisory and fail-open. Setup readiness and
-Doctor share this connector-specific validator to avoid accepting a mere
-command substring as proof that the complete persisted contract is current.
+Project > User order. DefenseClaw owns the ordinary user registration and
+validates its mode-matched action/fail-closed or observe/fail-open posture.
+Setup readiness and Doctor share this connector-specific validator to avoid
+accepting a mere command substring as proof that the complete persisted
+contract is current.
 """
 
 from __future__ import annotations
@@ -137,8 +138,9 @@ def validate_cursor_registration(
     expected_runtime_paths: Iterable[str] = (),
     platform_name: str | None = None,
     require_runtime_markers: bool = True,
+    expected_fail_closed: bool = False,
 ) -> CursorRegistrationValidation:
-    """Validate Cursor schema, event coverage, runtime binding, and advisory mode."""
+    """Validate Cursor schema, event coverage, runtime binding, and fail mode."""
     expected_paths = {
         _normalized(str(value)) for value in expected_runtime_paths if str(value).strip()
     }
@@ -214,13 +216,14 @@ def validate_cursor_registration(
             entry.get("type") != "command"
             or isinstance(timeout, bool)
             or timeout != 30
-            or entry.get("failClosed") is not False
+            or entry.get("failClosed") is not expected_fail_closed
         ):
             invalid.append(event)
     if invalid:
         return CursorRegistrationValidation(
             False,
-            "configured Cursor entries must use type=command, timeout=30 seconds, and failClosed=false: "
+            "configured Cursor entries must use type=command, timeout=30 seconds, and "
+            f"failClosed={str(expected_fail_closed).lower()}: "
             + ", ".join(sorted(set(invalid))),
         )
 
@@ -266,7 +269,7 @@ def validate_cursor_registration(
                     "ProcessStartInfo",
                     "RedirectStandardOutput",
                     "WaitForExit",
-                    "$failClosed = $false",
+                    f"$failClosed = ${str(expected_fail_closed).lower()}",
                 ]
             )
         try:
@@ -283,7 +286,9 @@ def validate_cursor_registration(
 
     return CursorRegistrationValidation(
         True,
-        "complete advisory user-hook registration",
+        "complete action user-hook registration"
+        if expected_fail_closed
+        else "complete observe user-hook registration",
         command,
         runtime_path,
         len(managed),

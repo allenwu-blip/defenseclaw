@@ -540,14 +540,21 @@ func runStop(cmd *cobra.Command, _ []string) error {
 func rotationWatchdogRunning(dataDir string) (bool, error) {
 	pidPath := filepath.Join(dataDir, watchdogPIDFile)
 	locked, info, err := watchdogIsLocked(pidPath)
+	if locked && (err != nil || !verifyWatchdogProcess(info)) {
+		info, err = watchdogOwnedRecordWait(pidPath, watchdogStartTimeout, watchdogStartInterval)
+		if err != nil {
+			return false, fmt.Errorf("rotation watchdog PID publication: %w", err)
+		}
+		return true, nil
+	}
 	if err != nil {
 		return false, fmt.Errorf("rotation watchdog ownership: %w", err)
 	}
 	if !locked {
-		if live, liveInfo := watchdogUnlockedLiveProcess(pidPath); live {
+		if watchdogUnlockedLiveProcessInfo(info) {
 			return false, fmt.Errorf(
 				"rotation watchdog PID %d is alive without the ownership lock",
-				liveInfo.PID,
+				info.PID,
 			)
 		}
 		return false, nil

@@ -25,6 +25,7 @@ documented paths.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 from pathlib import Path
 
@@ -1944,16 +1945,50 @@ class TestHermesPathResolution:
 
     def test_windows_defaults_to_local_app_data(self, tmp_path):
         home = tmp_path / "home"
-        local_app_data = tmp_path / "local-app-data"
+        local_app_data = r"C:\Users\kevin\AppData\Local"
 
         resolved = connector_paths._resolve_hermes_home(
             platform_name="nt",
             user_home=str(home),
-            local_app_data=str(local_app_data),
+            local_app_data=local_app_data,
             override="",
         )
 
-        assert resolved == str(local_app_data / "hermes")
+        assert resolved == ntpath.join(local_app_data, "hermes")
+
+    def test_windows_explicit_absolute_hermes_home_remains_supported(self, tmp_path):
+        configured = r"C:\Users\kevin\Hermes Current"
+
+        resolved = connector_paths._resolve_hermes_home(
+            platform_name="nt",
+            user_home=str(tmp_path / "legacy-home"),
+            local_app_data=r"C:\Users\kevin\AppData\Local",
+            override=configured,
+        )
+
+        assert resolved == configured
+
+    @pytest.mark.parametrize(
+        "override,local_app_data,error",
+        [
+            ("relative-hermes", r"C:\Users\kevin\AppData\Local", "HERMES_HOME"),
+            ("", "relative-local-app-data", "LocalAppData"),
+        ],
+    )
+    def test_windows_rejects_relative_hermes_roots(
+        self,
+        tmp_path,
+        override,
+        local_app_data,
+        error,
+    ):
+        with pytest.raises(ValueError, match=error):
+            connector_paths._resolve_hermes_home(
+                platform_name="nt",
+                user_home=str(tmp_path / "legacy-home"),
+                local_app_data=local_app_data,
+                override=override,
+            )
 
     def test_non_windows_preserves_dot_hermes_default(self, tmp_path):
         home = tmp_path / "home"
@@ -1967,24 +2002,25 @@ class TestHermesPathResolution:
 
         assert resolved == str(home / ".hermes")
 
-    def test_windows_without_local_app_data_falls_back_to_user_home(self, tmp_path):
+    def test_windows_without_token_local_app_data_never_falls_back_to_legacy_home(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
         home = tmp_path / "home"
-
-        resolved = connector_paths._resolve_hermes_home(
-            platform_name="nt",
-            user_home=str(home),
-            local_app_data="",
-            override="",
+        monkeypatch.setattr(
+            connector_paths.os.path,
+            "abspath",
+            lambda _path: pytest.fail("Windows resolver consulted a cwd-derived path"),
         )
 
-        assert resolved == str(home / ".hermes")
-
-    def test_legacy_config_path_is_read_only_migration_candidate(self, monkeypatch, tmp_path):
-        home = tmp_path / "home"
-        monkeypatch.setattr("defenseclaw.connector_paths.Path.home", lambda: home)
-
-        assert connector_paths.hermes_legacy_config_path() == str(home / ".hermes" / "config.yaml")
-
+        with pytest.raises(ValueError, match="LocalAppData"):
+            connector_paths._resolve_hermes_home(
+                platform_name="nt",
+                user_home=str(home),
+                local_app_data="",
+                override="",
+            )
 
 # ---------------------------------------------------------------------------
 # Round-trip via Config.skill_dirs / plugin_dirs / mcp_servers

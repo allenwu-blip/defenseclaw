@@ -38,7 +38,6 @@ from defenseclaw.commands.cmd_doctor import (
     _check_copilot_hooks,
     _check_custom_provider_overlay,
     _check_guardrail_proxy,
-    _check_hermes_legacy_config,
     _check_hilt_support,
     _check_hook_health,
     _check_llm_api_key,
@@ -124,7 +123,7 @@ class DoctorMultiConnectorInventoryTests(unittest.TestCase):
         self.assertEqual(seen["mcp"], ["codex"])
 
 
-class DoctorHermesMigrationTests(unittest.TestCase):
+class DoctorHermesPathTests(unittest.TestCase):
     def test_hook_health_uses_resolved_hermes_config_without_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_path = os.path.join(tmp, "LocalAppData", "hermes", "config.yaml")
@@ -144,55 +143,6 @@ class DoctorHermesMigrationTests(unittest.TestCase):
             self.assertEqual(result.failed, 1, result.checks)
             self.assertIn(config_path, result.checks[0]["detail"])
             self.assertIn("live=false", result.checks[0]["detail"])
-
-    def test_warns_without_mutating_legacy_windows_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            current = os.path.join(tmp, "LocalAppData", "hermes", "config.yaml")
-            legacy = os.path.join(tmp, "home", ".hermes", "config.yaml")
-            os.makedirs(os.path.dirname(current), exist_ok=True)
-            os.makedirs(os.path.dirname(legacy), exist_ok=True)
-            with open(current, "w", encoding="utf-8") as fh:
-                fh.write("hooks: {}\n")
-            legacy_body = "api_key: keep-secret\n"
-            with open(legacy, "w", encoding="utf-8") as fh:
-                fh.write(legacy_body)
-
-            result = _DoctorResult()
-            with patch(
-                "defenseclaw.commands.cmd_doctor.hermes_config_path",
-                return_value=current,
-            ), patch(
-                "defenseclaw.commands.cmd_doctor.hermes_legacy_config_path",
-                return_value=legacy,
-            ):
-                _check_hermes_legacy_config(result, platform_name="nt")
-
-            self.assertEqual(result.warned, 1, result.checks)
-            self.assertIn(legacy, result.checks[0]["detail"])
-            self.assertIn(current, result.checks[0]["detail"])
-            self.assertIn("will not copy or delete", result.checks[0]["detail"])
-            with open(legacy, encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), legacy_body)
-
-    def test_skips_non_windows_and_same_effective_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = os.path.join(tmp, ".hermes", "config.yaml")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write("{}\n")
-
-            for platform_name in ("posix", "nt"):
-                result = _DoctorResult()
-                with patch(
-                    "defenseclaw.commands.cmd_doctor.hermes_config_path",
-                    return_value=path,
-                ), patch(
-                    "defenseclaw.commands.cmd_doctor.hermes_legacy_config_path",
-                    return_value=path,
-                ):
-                    _check_hermes_legacy_config(result, platform_name=platform_name)
-                self.assertEqual(result.warned, 0, result.checks)
-
 
 class DoctorGuardrailTests(unittest.TestCase):
     @patch("defenseclaw.commands.cmd_doctor._http_probe", return_value=(200, "ok"))
@@ -606,7 +556,7 @@ class DoctorGuardrailTests(unittest.TestCase):
         _check_hilt_support(cfg, "cursor", result)
         self.assertEqual(result.warned, 1)
         self.assertIn(
-            "non-authoritative user hook",
+            "native human approval is not implemented",
             result.checks[0]["detail"],
         )
 
@@ -1765,6 +1715,12 @@ class DoctorFixDryRunTests(unittest.TestCase):
             patch.object(cmd_doctor, "_fix_gateway_token") as fix_token,
             patch.object(cmd_doctor, "_fix_gateway_token_env") as fix_token_env,
             patch.object(cmd_doctor, "_fix_gateway_token_drift") as fix_drift,
+            patch.object(cmd_doctor, "_fix_watchdog_runtime") as fix_watchdog,
+            patch.object(
+                cmd_doctor,
+                "_preview_watchdog_runtime_fix",
+                return_value=("skip", "would start if needed (dry-run; no changes made)"),
+            ) as preview_watchdog,
             patch.object(cmd_doctor, "_fix_dotenv_perms") as fix_dotenv,
             patch.object(cmd_doctor, "_fix_pristine_backup") as fix_pristine,
             patch.object(cmd_doctor, "_fix_plugin_registry_required") as fix_plugin_reg,
@@ -1778,6 +1734,8 @@ class DoctorFixDryRunTests(unittest.TestCase):
             fix_token.assert_not_called()
             fix_token_env.assert_not_called()
             fix_drift.assert_not_called()
+            fix_watchdog.assert_not_called()
+            preview_watchdog.assert_called_once_with(cfg)
             fix_dotenv.assert_not_called()
             fix_pristine.assert_not_called()
             # OTHER-5: the plugin-registry dead-end fixer is wired into --fix
@@ -1793,7 +1751,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
         # Stale generated hooks are detected as a warning only — there is no
         # auto-fixer for them, so they do not appear here.
         fix_records = [c for c in result.checks if c["label"].startswith("fix:")]
-        self.assertEqual(len(fix_records), 7)
+        self.assertEqual(len(fix_records), 8)
         for record in fix_records:
             self.assertEqual(record["status"], "skip")
             self.assertIn("dry-run", record["detail"])
@@ -1813,6 +1771,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
             patch.object(cmd_doctor, "_fix_gateway_token", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_gateway_token_env", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_gateway_token_drift", return_value=("pass", "ok")),
+            patch.object(cmd_doctor, "_fix_watchdog_runtime", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_dotenv_perms", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_pristine_backup", return_value=("pass", "ok")),
             patch.object(cmd_doctor, "_fix_plugin_registry_required", return_value=("pass", "ok")),
@@ -1825,11 +1784,12 @@ class DoctorFixDryRunTests(unittest.TestCase):
             )
 
         fix_records = [c for c in result.checks if c["label"].startswith("fix:")]
-        # Seven fixers run: the connector-teardown fixer was removed (D7) and
+        # Eight fixers run: watchdog lifecycle repair was added, the
+        # connector-teardown fixer was removed (D7), and
         # the plugin-registry dead-end fixer was added (OTHER-5). Stale
         # generated hooks are warning-only (no auto-fixer), so they are not
         # counted here.
-        self.assertEqual(len(fix_records), 7)
+        self.assertEqual(len(fix_records), 8)
         for record in fix_records:
             self.assertEqual(record["status"], "pass")
         fix_residue.assert_not_called()
@@ -1850,6 +1810,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
 
         banner = cmd_doctor._auto_fix_hint(True)
         self.assertIn("nothing on disk changes", banner)
+        self.assertIn("start an enabled stopped watchdog", banner)
         self.assertIn("may restart the gateway sidecar", banner)
         self.assertIn("doctor never runs connector teardown", banner)
 

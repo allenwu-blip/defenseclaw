@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -73,6 +74,132 @@ func (b *bootStubConnector) HookRuntimeArtifacts(connector.SetupOpts) []string {
 	return []string{b.artifactPath}
 }
 
+type failingOpenCodeConnector struct {
+	bootStubConnector
+	pluginPath    string
+	poisonRestore bool
+}
+
+type incompletePublicationRollbackConnector struct {
+	bootStubConnector
+	rollbackErr error
+	verifyErr   error
+}
+
+type postureChangingConnector struct {
+	bootStubConnector
+	setupModes []string
+}
+
+type lockRestoreFailureConnector struct {
+	bootStubConnector
+}
+
+type failedSetupCleanupConnector struct {
+	bootStubConnector
+	teardownErr error
+	verifyErr   error
+}
+
+type registrationPostureConnector struct {
+	bootStubConnector
+	setupPostures []string
+}
+
+func (c *failedSetupCleanupConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	return c.teardownErr
+}
+
+func (c *failedSetupCleanupConnector) VerifyClean(connector.SetupOpts) error {
+	return c.verifyErr
+}
+
+func (c *registrationPostureConnector) Setup(_ context.Context, opts connector.SetupOpts) error {
+	c.setupCalls++
+	posture := fmt.Sprintf("%s|hilt=%t", opts.GuardrailMode, opts.HILTEnabled)
+	c.setupPostures = append(c.setupPostures, posture)
+	return os.WriteFile(c.artifactPath, []byte(posture+"\n"), 0o600)
+}
+
+func (c *registrationPostureConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	if err := os.Remove(c.artifactPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (c *lockRestoreFailureConnector) Setup(_ context.Context, opts connector.SetupOpts) error {
+	c.setupCalls++
+	lockPath := filepath.Join(opts.DataDir, "hook_contract_lock.json")
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(lockPath, "foreign"), []byte("not rollback-owned"), 0o600); err != nil {
+		return err
+	}
+	return errors.New("injected setup failure after lock-path replacement")
+}
+
+func (c *postureChangingConnector) Setup(_ context.Context, opts connector.SetupOpts) error {
+	c.setupCalls++
+	c.setupModes = append(c.setupModes, opts.HookFailMode)
+	return os.WriteFile(c.artifactPath, []byte(opts.HookFailMode+"\n"), 0o600)
+}
+
+func (c *postureChangingConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	if err := os.Remove(c.artifactPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (c *incompletePublicationRollbackConnector) Setup(context.Context, connector.SetupOpts) error {
+	c.setupCalls++
+	if err := os.WriteFile(c.artifactPath, []byte("new connector artifact"), 0o600); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *incompletePublicationRollbackConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	return c.rollbackErr
+}
+
+func (c *incompletePublicationRollbackConnector) VerifyClean(connector.SetupOpts) error {
+	return c.verifyErr
+}
+
+func (c *failingOpenCodeConnector) Setup(context.Context, connector.SetupOpts) error {
+	c.setupCalls++
+	if err := os.WriteFile(c.pluginPath, []byte("partial OpenCode plugin"), 0o600); err != nil {
+		return err
+	}
+	return errors.New("injected OpenCode setup failure")
+}
+
+func (c *failingOpenCodeConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	if err := os.Remove(c.pluginPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if c.poisonRestore {
+		if err := os.Mkdir(c.pluginPath, 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(c.pluginPath, "foreign"), []byte("not rollback-owned"), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func multiBootSidecar(t *testing.T) *Sidecar {
 	t.Helper()
 	return &Sidecar{
@@ -90,6 +217,17 @@ func failingHookTokenDataDir(t *testing.T) string {
 		t.Fatalf("write failing hook-token fixture: %v", err)
 	}
 	return path
+}
+
+func makeActiveConnectorPublicationUnsafe(t *testing.T, dataDir string) {
+	t.Helper()
+	lockPath := filepath.Join(dataDir, "active_connector.json.lock")
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove active connector advisory lock: %v", err)
+	}
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatalf("make active connector advisory lock unsafe: %v", err)
+	}
 }
 
 func TestRunActiveGuardrailPublishesScopedTokenFailure(t *testing.T) {
@@ -205,6 +343,42 @@ func TestSetupOneConnector_ActionModeUnverifiedContractSkips(t *testing.T) {
 	}
 	if conn.setupCalls != 0 {
 		t.Errorf("Setup must not run for a gated connector; setupCalls=%d, want 0", conn.setupCalls)
+	}
+}
+
+func TestSetupOneConnector_ObserveModeUnsupportedVersionSkipsBeforeSetup(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.Guardrail.Mode = "observe"
+	conn := &bootStubConnector{stubConnector: stubConnector{name: "opencode"}}
+	opts := mustConnectorSetupOpts(t, s, conn, "tok", "127.0.0.1:0", "127.0.0.1:0")
+	opts.AgentVersion = "opencode 1.18.12"
+
+	err := s.setupOneConnector(
+		context.Background(), conn, opts, "master", guardrail.NewRulePackCache(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "not covered by a known hook contract") {
+		t.Fatalf("error = %v, want observe-mode unsupported-version refusal", err)
+	}
+	if conn.setupCalls != 0 {
+		t.Fatalf("setupCalls = %d, want fail-before-setup", conn.setupCalls)
+	}
+}
+
+func TestSetupOneConnector_PeerObserveModeUnknownVersionStillRuns(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.Guardrail.Mode = "observe"
+	conn := &bootStubConnector{stubConnector: stubConnector{name: "codex"}}
+	opts := mustConnectorSetupOpts(t, s, conn, "tok", "127.0.0.1:0", "127.0.0.1:0")
+	opts.AgentVersion = "codex 0.123.0"
+
+	err := s.setupOneConnector(
+		context.Background(), conn, opts, "master", guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("peer observe-mode unknown version should retain warning-and-run behavior: %v", err)
+	}
+	if conn.setupCalls != 1 {
+		t.Fatalf("setupCalls = %d, want peer observe setup to run", conn.setupCalls)
 	}
 }
 
@@ -336,7 +510,7 @@ func TestSetupConnectorsIsolated_AllSucceed(t *testing.T) {
 	}
 }
 
-func TestSetupConnectorsIsolated_LockFailureRollsBackAndSkips(t *testing.T) {
+func TestSetupConnectorsIsolated_UnsafeLockFailsBeforeSetup(t *testing.T) {
 	s := multiBootSidecar(t)
 	if err := os.Mkdir(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"), 0o700); err != nil {
 		t.Fatal(err)
@@ -347,17 +521,833 @@ func TestSetupConnectorsIsolated_LockFailureRollsBackAndSkips(t *testing.T) {
 		context.Background(), []connector.Connector{conn}, "tok", "a", "b", "master",
 		guardrail.NewRulePackCache(),
 	)
+	if err == nil || !strings.Contains(err.Error(), "capture pre-setup hook contract lock") {
+		t.Fatalf("setupConnectorsIsolated error = %v, want unsafe pre-setup lock rejection", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("succeeded = %v, want no setup after snapshot rejection", got)
+	}
+	if conn.setupCalls != 0 || conn.teardownCalls != 0 {
+		t.Fatalf("setupCalls=%d teardownCalls=%d, want fail-before-mutation", conn.setupCalls, conn.teardownCalls)
+	}
+	if active := connector.LoadActiveConnector(s.cfg.DataDir); active != "" {
+		t.Fatalf("active connector = %q, want unsafe snapshot preflight to preserve roster", active)
+	}
+}
+
+func TestSetupConnectorsIsolated_FailurePreservesPriorRoster(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.health = NewSidecarHealth()
+	s.health.SetWatcher(StateRunning, "", map[string]interface{}{"last_known_state": "healthy"})
+	want := []string{"codex", "cursor"}
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, want); err != nil {
+		t.Fatal(err)
+	}
+	failed := &bootStubConnector{
+		stubConnector: stubConnector{name: "claudecode"},
+		setupErr:      errors.New("injected setup failure"),
+	}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{failed}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
 	if err != nil {
 		t.Fatalf("setupConnectorsIsolated: %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("succeeded = %v, want lock-save failure skipped", got)
+		t.Fatalf("succeeded = %v, want none", got)
 	}
-	if conn.teardownCalls != 1 {
-		t.Fatalf("teardownCalls = %d, want 1 rollback", conn.teardownCalls)
+	if active := connector.LoadActiveConnectors(s.cfg.DataDir); !reflect.DeepEqual(active, want) {
+		t.Fatalf("active connectors = %v, want exact prior roster %v", active, want)
 	}
-	if active := connector.LoadActiveConnector(s.cfg.DataDir); active != "codex" {
-		t.Fatalf("active connector = %q, want rollback marker codex", active)
+	if watcher := s.health.Snapshot().Watcher; watcher.State != StateRunning {
+		t.Fatalf("watcher state = %q, want unchanged running state after isolated setup failure", watcher.State)
+	}
+}
+
+func TestSetupConnectorsIsolated_OpenCodeFailureRestoresPluginAndLock(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	configDir := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	pluginPath := filepath.Join(configDir, "plugins", "defenseclaw.js")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	priorPlugin := []byte("// prior managed OpenCode plugin\n")
+	if err := os.WriteFile(pluginPath, priorPlugin, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorLock := connector.HookContractLockEntry{
+		Connector:           "opencode",
+		ContractID:          "opencode-hooks-v1",
+		CompatibilityStatus: connector.HookCompatibilityKnown,
+		HookScriptVersion:   "v7",
+		RawAgentVersion:     "opencode 1.18.11",
+	}
+	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorLock); err != nil {
+		t.Fatal(err)
+	}
+	failed := &failingOpenCodeConnector{
+		bootStubConnector: bootStubConnector{stubConnector: stubConnector{name: "opencode"}},
+		pluginPath:        pluginPath,
+	}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{failed}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("setupConnectorsIsolated: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("succeeded = %v, want failed OpenCode skipped", got)
+	}
+	plugin, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read restored plugin: %v", err)
+	}
+	if !reflect.DeepEqual(plugin, priorPlugin) {
+		t.Fatalf("restored plugin = %q, want exact prior bytes %q", plugin, priorPlugin)
+	}
+	if lock := connector.LoadHookContractLockEntry(s.cfg.DataDir, "opencode"); lock.ContractID != priorLock.ContractID || lock.RawAgentVersion != priorLock.RawAgentVersion {
+		t.Fatalf("restored lock = %+v, want prior contract/version", lock)
+	}
+	if active := connector.LoadActiveConnector(s.cfg.DataDir); active != "" {
+		t.Fatalf("active connector = %q, want failed OpenCode absent", active)
+	}
+}
+
+func TestSetupConnectorsIsolated_OpenCodeRestoreFailureAbortsSurvivors(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	configDir := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	pluginPath := filepath.Join(configDir, "plugins", "defenseclaw.js")
+	failed := &failingOpenCodeConnector{
+		bootStubConnector: bootStubConnector{stubConnector: stubConnector{name: "opencode"}},
+		pluginPath:        pluginPath,
+		poisonRestore:     true,
+	}
+	survivor := &bootStubConnector{stubConnector: stubConnector{name: "codex"}}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{survivor, failed}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "per-connector rollback incomplete") ||
+		!strings.Contains(err.Error(), "restore prior OpenCode registration") {
+		t.Fatalf("setupConnectorsIsolated error = %v, want fail-loud OpenCode restoration failure", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("succeeded = %v, want no published survivors after incomplete rollback", got)
+	}
+	if survivor.setupCalls != 1 || survivor.teardownCalls != 1 {
+		t.Fatalf(
+			"survivor lifecycle = setup %d, teardown %d; want earlier success rolled back before returning residue error",
+			survivor.setupCalls, survivor.teardownCalls,
+		)
+	}
+	if active := connector.LoadActiveConnectors(s.cfg.DataDir); len(active) != 0 {
+		t.Fatalf("active connectors = %v, want no rolled-back survivor publication", active)
+	}
+	if lock := connector.LoadHookContractLockEntry(s.cfg.DataDir, "codex"); lock.Connector != "" {
+		t.Fatalf("codex lock = %+v, want earlier survivor lock rolled back", lock)
+	}
+	if info, statErr := os.Stat(pluginPath); statErr != nil || !info.IsDir() {
+		t.Fatalf("injected foreign residue = %v, %v; want retained directory proving rollback was incomplete", info, statErr)
+	}
+}
+
+func TestSetupConnectorsIsolated_PriorLockRestoreFailureAbortsSurvivors(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	failed := &lockRestoreFailureConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "codex"},
+	}}
+	survivor := &bootStubConnector{stubConnector: stubConnector{name: "claudecode"}}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{failed, survivor}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "per-connector rollback incomplete") ||
+		!strings.Contains(err.Error(), "restore prior codex hook contract lock") {
+		t.Fatalf("setupConnectorsIsolated error = %v, want fail-loud prior-lock restoration failure", err)
+	}
+	if len(got) != 0 || survivor.setupCalls != 0 {
+		t.Fatalf("succeeded=%v survivor.setupCalls=%d, want abort before survivor publication", got, survivor.setupCalls)
+	}
+}
+
+func TestSetupConnectorsIsolated_CleanupResidueAbortsAndRollsBackSurvivors(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	survivor := &bootStubConnector{stubConnector: stubConnector{name: "codex"}}
+	failed := &failedSetupCleanupConnector{
+		bootStubConnector: bootStubConnector{
+			stubConnector: stubConnector{name: "claudecode"},
+			setupErr:      errors.New("injected connector setup failure"),
+		},
+		teardownErr: errors.New("injected teardown residue"),
+		verifyErr:   errors.New("injected VerifyClean residue"),
+	}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{survivor, failed}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
+	if err == nil || !strings.Contains(err.Error(), "per-connector rollback incomplete") ||
+		!strings.Contains(err.Error(), "injected teardown residue") ||
+		!strings.Contains(err.Error(), "injected VerifyClean residue") {
+		t.Fatalf("setupConnectorsIsolated error = %v, want joined teardown/VerifyClean rollback failure", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("succeeded = %v, want aborted survivor result cleared", got)
+	}
+	if survivor.setupCalls != 1 || survivor.teardownCalls != 1 {
+		t.Fatalf(
+			"survivor lifecycle = setup %d, teardown %d; want earlier success rolled back",
+			survivor.setupCalls, survivor.teardownCalls,
+		)
+	}
+	if active := connector.LoadActiveConnectors(s.cfg.DataDir); len(active) != 0 {
+		t.Fatalf("active connectors = %v, want no survivor publication beside failed cleanup residue", active)
+	}
+	if lock := connector.LoadHookContractLockEntry(s.cfg.DataDir, "codex"); lock.Connector != "" {
+		t.Fatalf("codex lock = %+v, want earlier survivor lock rolled back", lock)
+	}
+}
+
+func TestMultiConnectorActivePublicationFailureRestoresPreviouslyActivePosture(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.cfg.Guardrail.HookFailMode = "closed"
+	s.cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"codex": {Mode: "observe", HookFailMode: "closed"},
+	}
+	s.health = NewSidecarHealth()
+	artifactPath := filepath.Join(testenv.PrivateTempDir(t), "codex-registration-posture")
+	if err := os.WriteFile(artifactPath, []byte("open\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	priorLockEntry := connector.HookContractLockEntry{
+		Connector:           "codex",
+		ContractID:          "codex-hooks-v4",
+		CompatibilityStatus: connector.HookCompatibilityKnown,
+		HookScriptVersion:   "v8",
+		HookFailMode:        "open",
+		DefenseClawVersion:  "prior-build",
+		RegistrationPosture: &connector.HookRegistrationPosture{
+			GuardrailMode: "observe",
+			HILTEnabled:   false,
+		},
+	}
+	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorLockEntry); err != nil {
+		t.Fatal(err)
+	}
+	priorLock, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+	applied := &postureChangingConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "codex"},
+		artifactPath:  artifactPath,
+	}}
+
+	transaction, err := s.setupConnectorsIsolatedTransaction(
+		context.Background(), []connector.Connector{applied},
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("setup transaction: %v", err)
+	}
+	if body, readErr := os.ReadFile(artifactPath); readErr != nil || string(body) != "closed\n" {
+		t.Fatalf("setup posture = %q, %v; want changed closed posture before publication", body, readErr)
+	}
+
+	err = s.publishMultiConnectorReadyState(context.Background(), transaction, []string{"codex"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "restored applied connectors to their pre-setup state") {
+		t.Fatalf("publication error = %v, want successful prior-posture rollback", err)
+	}
+	if !reflect.DeepEqual(applied.setupModes, []string{"closed", "open"}) {
+		t.Fatalf("setup postures = %v, want current closed then prior open reapplication", applied.setupModes)
+	}
+	if applied.teardownCalls != 0 {
+		t.Fatalf("teardownCalls = %d, want prior active connector re-applied rather than torn down", applied.teardownCalls)
+	}
+	if body, readErr := os.ReadFile(artifactPath); readErr != nil || string(body) != "open\n" {
+		t.Fatalf("restored posture = %q, %v; want exact prior open posture", body, readErr)
+	}
+	if afterLock, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); readErr != nil || !reflect.DeepEqual(afterLock, priorLock) {
+		t.Fatalf("restored lock = %q, %v; want exact prior bytes %q", afterLock, readErr, priorLock)
+	}
+	if afterActive, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json")); readErr != nil || !reflect.DeepEqual(afterActive, priorActive) {
+		t.Fatalf("restored active state = %q, %v; want exact prior bytes %q", afterActive, readErr, priorActive)
+	}
+}
+
+func TestMultiConnectorActivePublicationFailureRestoresCursorModeAndHILTPosture(t *testing.T) {
+	tests := []struct {
+		name        string
+		priorMode   string
+		priorHILT   bool
+		currentMode string
+		currentHILT bool
+	}{
+		{name: "action_to_observe_failure", priorMode: "action", priorHILT: true, currentMode: "observe"},
+		{name: "observe_to_action_failure", priorMode: "observe", currentMode: "action", currentHILT: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s := multiBootSidecar(t)
+			s.cfg.DataDir = testenv.PrivateTempDir(t)
+			s.cfg.Guardrail.Enabled = true
+			s.cfg.Guardrail.Mode = test.currentMode
+			s.cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+				"cursor": {
+					Mode: test.currentMode,
+					HILT: &config.HILTConfig{Enabled: test.currentHILT, MinSeverity: "HIGH"},
+				},
+			}
+			s.health = NewSidecarHealth()
+
+			discovery, err := json.Marshal(map[string]any{
+				"agents": map[string]any{"cursor": map[string]any{"version": "cursor-agent 2026.07.23-e383d2b"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(s.cfg.DataDir, "agent_discovery.json"), discovery, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			artifactPath := filepath.Join(testenv.PrivateTempDir(t), "cursor-registration-posture")
+			priorPosture := fmt.Sprintf("%s|hilt=%t\n", test.priorMode, test.priorHILT)
+			if err := os.WriteFile(artifactPath, []byte(priorPosture), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"cursor"}); err != nil {
+				t.Fatal(err)
+			}
+			priorLockEntry := connector.HookContractLockEntry{
+				Connector:           "cursor",
+				RawAgentVersion:     "cursor-agent 2026.07.23-e383d2b",
+				ContractID:          "cursor-hooks-v1",
+				CompatibilityStatus: connector.HookCompatibilityKnown,
+				HookScriptVersion:   "v8",
+				HookFailMode:        "open",
+				DefenseClawVersion:  "prior-build",
+				RegistrationPosture: &connector.HookRegistrationPosture{
+					GuardrailMode: test.priorMode,
+					HILTEnabled:   test.priorHILT,
+				},
+			}
+			if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorLockEntry); err != nil {
+				t.Fatal(err)
+			}
+			priorLock, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			priorActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+			applied := &registrationPostureConnector{bootStubConnector: bootStubConnector{
+				stubConnector: stubConnector{name: "cursor"},
+				artifactPath:  artifactPath,
+			}}
+
+			transaction, err := s.setupConnectorsIsolatedTransaction(
+				context.Background(), []connector.Connector{applied},
+				"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+				guardrail.NewRulePackCache(),
+			)
+			if err != nil {
+				t.Fatalf("setup transaction: %v", err)
+			}
+			currentPosture := fmt.Sprintf("%s|hilt=%t", test.currentMode, test.currentHILT)
+			if body, readErr := os.ReadFile(artifactPath); readErr != nil || string(body) != currentPosture+"\n" {
+				t.Fatalf("setup posture = %q, %v; want %q", body, readErr, currentPosture)
+			}
+
+			err = s.publishMultiConnectorReadyState(context.Background(), transaction, []string{"cursor"}, nil)
+			if err == nil || !strings.Contains(err.Error(), "restored applied connectors to their pre-setup state") {
+				t.Fatalf("publication error = %v, want successful prior-posture rollback", err)
+			}
+			wantPostures := []string{currentPosture, strings.TrimSuffix(priorPosture, "\n")}
+			if !reflect.DeepEqual(applied.setupPostures, wantPostures) {
+				t.Fatalf("setup postures = %v, want current then exact prior %v", applied.setupPostures, wantPostures)
+			}
+			if applied.teardownCalls != 0 {
+				t.Fatalf("teardownCalls = %d, want prior active Cursor re-applied", applied.teardownCalls)
+			}
+			if body, readErr := os.ReadFile(artifactPath); readErr != nil || string(body) != priorPosture {
+				t.Fatalf("restored posture = %q, %v; want %q", body, readErr, priorPosture)
+			}
+			if afterLock, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); readErr != nil || !reflect.DeepEqual(afterLock, priorLock) {
+				t.Fatalf("restored lock = %q, %v; want exact prior bytes %q", afterLock, readErr, priorLock)
+			}
+			if afterActive, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json")); readErr != nil || !reflect.DeepEqual(afterActive, priorActive) {
+				t.Fatalf("restored active state = %q, %v; want exact prior bytes %q", afterActive, readErr, priorActive)
+			}
+		})
+	}
+}
+
+func TestMultiConnectorActivePublicationFailureRestoresExactOpenCodeTransaction(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.health = NewSidecarHealth()
+	configDir := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	pluginPath := filepath.Join(configDir, "plugins", "defenseclaw.js")
+	receiptPath := filepath.Join(s.cfg.DataDir, "connector_backups", "opencode", "config.json")
+
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"codex", "cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connector.MarkConnectorInactive(s.cfg.DataDir, "hermes"); err != nil {
+		t.Fatal(err)
+	}
+	priorActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorLockEntry := connector.HookContractLockEntry{
+		Connector:           "cursor",
+		ContractID:          "cursor-hooks-v1",
+		CompatibilityStatus: connector.HookCompatibilityKnown,
+		HookScriptVersion:   "v7",
+	}
+	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorLockEntry); err != nil {
+		t.Fatal(err)
+	}
+	priorLock, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+
+	transaction, err := s.setupConnectorsIsolatedTransaction(
+		context.Background(), []connector.Connector{connector.NewOpenCodeConnector()},
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("setup transaction: %v", err)
+	}
+	if len(transaction.succeeded) != 1 || transaction.succeeded[0] != "opencode" {
+		t.Fatalf("succeeded = %v, want [opencode]", transaction.succeeded)
+	}
+	if _, err := os.Stat(pluginPath); err != nil {
+		t.Fatalf("OpenCode plugin was not published before active-state failure: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); err != nil {
+		t.Fatalf("OpenCode receipt was not published before active-state failure: %v", err)
+	}
+	if got := connector.LoadHookContractLockEntry(s.cfg.DataDir, "opencode"); got.Connector != "opencode" {
+		t.Fatalf("OpenCode lock was not published before active-state failure: %+v", got)
+	}
+
+	err = s.publishMultiConnectorReadyState(
+		context.Background(), transaction, []string{"cursor", "opencode"}, []string{"cursor"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "restored applied connectors to their pre-setup state") {
+		t.Fatalf("publication error = %v, want successful transaction rollback", err)
+	}
+	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
+		t.Fatalf("failed active publication left OpenCode plugin residue: %v", err)
+	}
+	if _, err := os.Stat(receiptPath); !os.IsNotExist(err) {
+		t.Fatalf("failed active publication left OpenCode receipt residue: %v", err)
+	}
+	if got := connector.LoadHookContractLockEntry(s.cfg.DataDir, "opencode"); got.Connector != "" {
+		t.Fatalf("failed active publication left OpenCode lock residue: %+v", got)
+	}
+	afterLock, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil || !reflect.DeepEqual(afterLock, priorLock) {
+		t.Fatalf("hook lock rollback = %q, %v; want exact prior bytes %q", afterLock, err, priorLock)
+	}
+	afterActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil || !reflect.DeepEqual(afterActive, priorActive) {
+		t.Fatalf("active roster rollback = %q, %v; want exact prior bytes %q", afterActive, err, priorActive)
+	}
+	if got := connector.LoadActiveConnectors(s.cfg.DataDir); !reflect.DeepEqual(got, []string{"codex", "cursor"}) {
+		t.Fatalf("active roster = %v, want exact prior [codex cursor]", got)
+	}
+	if !connector.ConnectorExplicitlyInactive(s.cfg.DataDir, "hermes") {
+		t.Fatal("failed active publication lost unrelated inactive Hermes tombstone")
+	}
+	if health := s.health.Snapshot().Guardrail; health.State != StateError || !strings.Contains(health.LastError, "save active connector set with teardown retry state (cursor)") {
+		t.Fatalf("guardrail health = %+v, want truthful active-publication failure", health)
+	}
+}
+
+func TestMultiConnectorActivePublicationReportsIncompleteRollback(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.health = NewSidecarHealth()
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"codex"}); err != nil {
+		t.Fatal(err)
+	}
+	priorActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+	artifactPath := filepath.Join(testenv.PrivateTempDir(t), "new-connector-hook.js")
+	applied := &incompletePublicationRollbackConnector{
+		bootStubConnector: bootStubConnector{
+			stubConnector: stubConnector{name: "claudecode"},
+			artifactPath:  artifactPath,
+		},
+		verifyErr: errors.New("injected verification rollback failure"),
+	}
+
+	transaction, err := s.setupConnectorsIsolatedTransaction(
+		context.Background(), []connector.Connector{applied},
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("setup transaction: %v", err)
+	}
+	err = s.publishMultiConnectorReadyState(
+		context.Background(), transaction, []string{"claudecode"}, nil,
+	)
+	if err == nil || !strings.Contains(err.Error(), "multi-connector publication rollback incomplete") ||
+		!strings.Contains(err.Error(), "injected verification rollback failure") {
+		t.Fatalf("publication error = %v, want truthful incomplete rollback", err)
+	}
+	if _, err := os.Stat(artifactPath); err != nil {
+		t.Fatalf("injected incomplete rollback did not leave its expected residue: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); !os.IsNotExist(err) {
+		t.Fatalf("incomplete connector teardown also left lock residue: %v", err)
+	}
+	afterActive, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil || !reflect.DeepEqual(afterActive, priorActive) {
+		t.Fatalf("active state = %q, %v; want exact prior bytes %q", afterActive, err, priorActive)
+	}
+	if health := s.health.Snapshot().Guardrail; health.State != StateError ||
+		!strings.Contains(health.LastError, "rollback incomplete") {
+		t.Fatalf("guardrail health = %+v, want truthful incomplete rollback", health)
+	}
+}
+
+func TestMultiConnectorPublicationFailureRestoresSuccessfullyRemovedConnector(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"claudecode": {Mode: "observe"},
+	}
+	s.health = NewSidecarHealth()
+	removedArtifact := filepath.Join(testenv.PrivateTempDir(t), "removed-cursor-posture")
+	removed := &registrationPostureConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "cursor"},
+		artifactPath:  removedArtifact,
+	}}
+	survivor := &bootStubConnector{stubConnector: stubConnector{name: "claudecode"}}
+	registry := connector.NewRegistry()
+	registry.RegisterBuiltin(removed)
+	registry.RegisterBuiltin(survivor)
+
+	priorOpts := connector.SetupOpts{
+		DataDir:        s.cfg.DataDir,
+		GuardrailMode:  "action",
+		HILTEnabled:    true,
+		HookFailMode:   "closed",
+		AgentVersion:   "cursor-agent 2026.07.23-e383d2b",
+		HookContractID: "cursor-hooks-v1",
+	}
+	priorEntry := connector.NewHookContractLockEntry(priorOpts, removed, "prior-test-build")
+	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorEntry); err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(removedArtifact, []byte("action|hilt=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorLockBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorActiveBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeState, err := connector.CaptureActiveConnectorStateSnapshot(s.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hookLockState, err := connector.CaptureHookContractLockSnapshot(s.cfg.DataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed := multiConnectorSetupTransaction{activeState: activeState, hookLockState: hookLockState}
+	candidates, unavailable := s.removedConnectorRollbackCandidates(
+		registry, []string{"cursor"}, []string{"claudecode"},
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		hookLockState,
+	)
+	if len(unavailable) != 0 || len(candidates) != 1 {
+		t.Fatalf("removal candidates=%v unavailable=%v, want one rollback-authorized Cursor", candidates, unavailable)
+	}
+	seed.removed, unavailable = teardownRemovedConnectorCandidates(candidates, context.Background())
+	if len(unavailable) != 0 || len(seed.removed) != 1 {
+		t.Fatalf("removed=%v failed=%v, want successful transactional removal", seed.removed, unavailable)
+	}
+	if _, err := os.Stat(removedArtifact); !os.IsNotExist(err) {
+		t.Fatalf("successful removal left Cursor runtime artifact: %v", err)
+	}
+	if lock := connector.LoadHookContractLockEntry(s.cfg.DataDir, "cursor"); lock.Connector != "" {
+		t.Fatalf("successful removal left Cursor lock: %+v", lock)
+	}
+
+	transaction, err := s.setupConnectorsIsolatedTransaction(
+		context.Background(), []connector.Connector{survivor},
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		guardrail.NewRulePackCache(), seed,
+	)
+	if err != nil {
+		t.Fatalf("survivor setup transaction: %v", err)
+	}
+	makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+	err = s.publishMultiConnectorReadyState(context.Background(), transaction, []string{"claudecode"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "restored applied connectors") {
+		t.Fatalf("publication error = %v, want successful transaction rollback", err)
+	}
+	if removed.teardownCalls != 1 || removed.setupCalls != 1 {
+		t.Fatalf("removed Cursor lifecycle = teardown %d setup %d, want one removal and one restoration", removed.teardownCalls, removed.setupCalls)
+	}
+	if !reflect.DeepEqual(removed.setupPostures, []string{"action|hilt=true"}) {
+		t.Fatalf("restored Cursor posture = %v, want exact prior action/HILT posture", removed.setupPostures)
+	}
+	if body, readErr := os.ReadFile(removedArtifact); readErr != nil || string(body) != "action|hilt=true\n" {
+		t.Fatalf("restored Cursor artifact = %q, %v", body, readErr)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); readErr != nil || !reflect.DeepEqual(body, priorLockBytes) {
+		t.Fatalf("restored lock = %q, %v; want exact prior bytes %q", body, readErr, priorLockBytes)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json")); readErr != nil || !reflect.DeepEqual(body, priorActiveBytes) {
+		t.Fatalf("restored roster = %q, %v; want exact prior bytes %q", body, readErr, priorActiveBytes)
+	}
+}
+
+func TestSingleConnectorSwitchFailureRestoresExactPriorConnector(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.cfg.Guardrail.Connector = "claudecode"
+	s.cfg.Guardrail.Connectors = nil
+	s.health = NewSidecarHealth()
+	priorArtifact := filepath.Join(testenv.PrivateTempDir(t), "prior-cursor-posture")
+	requestedArtifact := filepath.Join(testenv.PrivateTempDir(t), "requested-claude-posture")
+	prior := &registrationPostureConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "cursor"},
+		artifactPath:  priorArtifact,
+	}}
+	requested := &registrationPostureConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "claudecode"},
+		artifactPath:  requestedArtifact,
+	}}
+	registry := connector.NewRegistry()
+	registry.RegisterBuiltin(prior)
+	registry.RegisterBuiltin(requested)
+
+	priorOpts := connector.SetupOpts{
+		DataDir:        s.cfg.DataDir,
+		GuardrailMode:  "action",
+		HILTEnabled:    true,
+		HookFailMode:   "closed",
+		AgentVersion:   "cursor-agent 2026.07.23-e383d2b",
+		HookContractID: "cursor-hooks-v1",
+	}
+	priorEntry := connector.NewHookContractLockEntry(priorOpts, prior, "prior-test-build")
+	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorEntry); err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(priorArtifact, []byte("action|hilt=true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorLockBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorActiveBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestedOpts := mustConnectorSetupOpts(
+		t, s, requested, "synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0",
+	)
+	authority, err := captureSingleConnectorRollbackAuthority(requestedOpts, requested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.teardownPreviousConnectorTransaction(
+		context.Background(), registry, requested,
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+		&authority,
+	); err != nil {
+		t.Fatalf("transactional prior teardown: %v", err)
+	}
+	if len(authority.removed) != 1 || authority.removed[0].conn.Name() != "cursor" {
+		t.Fatalf("captured removed authority = %+v, want prior Cursor", authority.removed)
+	}
+	if _, err := os.Stat(priorArtifact); !os.IsNotExist(err) {
+		t.Fatalf("prior Cursor was not removed before requested setup: %v", err)
+	}
+	if lock := connector.LoadHookContractLockEntry(s.cfg.DataDir, "cursor"); lock.Connector != "" {
+		t.Fatalf("prior Cursor lock remained after successful switch teardown: %+v", lock)
+	}
+	if err := requested.Setup(context.Background(), requestedOpts); err != nil {
+		t.Fatal(err)
+	}
+	makeActiveConnectorPublicationUnsafe(t, s.cfg.DataDir)
+	err = s.saveSingleConnectorReadyState(context.Background(), requestedOpts, requested, authority)
+	if err == nil || !strings.Contains(err.Error(), "active state save failed") {
+		t.Fatalf("requested publication error = %v, want active-state failure", err)
+	}
+	if prior.teardownCalls != 1 || prior.setupCalls != 1 {
+		t.Fatalf("prior Cursor lifecycle = teardown %d setup %d, want one switch removal and one rollback reapply", prior.teardownCalls, prior.setupCalls)
+	}
+	if !reflect.DeepEqual(prior.setupPostures, []string{"action|hilt=true"}) {
+		t.Fatalf("prior Cursor restored posture = %v, want exact action/HILT posture", prior.setupPostures)
+	}
+	if body, readErr := os.ReadFile(priorArtifact); readErr != nil || string(body) != "action|hilt=true\n" {
+		t.Fatalf("restored prior artifact = %q, %v", body, readErr)
+	}
+	if _, err := os.Stat(requestedArtifact); !os.IsNotExist(err) {
+		t.Fatalf("failed requested connector left runtime artifact: %v", err)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); readErr != nil || !reflect.DeepEqual(body, priorLockBytes) {
+		t.Fatalf("restored lock = %q, %v; want exact prior bytes %q", body, readErr, priorLockBytes)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json")); readErr != nil || !reflect.DeepEqual(body, priorActiveBytes) {
+		t.Fatalf("restored roster = %q, %v; want exact prior bytes %q", body, readErr, priorActiveBytes)
+	}
+}
+
+func TestSingleConnectorSwitchOpenCodeSnapshotFailureLeavesPriorConnectorUntouched(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	s.cfg.Guardrail.Enabled = true
+	s.cfg.Guardrail.Mode = "observe"
+	s.cfg.Guardrail.Connector = "opencode"
+	s.cfg.Guardrail.Connectors = nil
+	s.health = NewSidecarHealth()
+
+	priorArtifact := filepath.Join(testenv.PrivateTempDir(t), "prior-cursor-posture")
+	prior := &registrationPostureConnector{bootStubConnector: bootStubConnector{
+		stubConnector: stubConnector{name: "cursor"},
+		artifactPath:  priorArtifact,
+	}}
+	requested := &bootStubConnector{stubConnector: stubConnector{name: "opencode"}}
+	registry := connector.NewRegistry()
+	registry.RegisterBuiltin(prior)
+	registry.RegisterBuiltin(requested)
+
+	priorOpts := connector.SetupOpts{
+		DataDir:        s.cfg.DataDir,
+		GuardrailMode:  "action",
+		HILTEnabled:    true,
+		HookFailMode:   "closed",
+		AgentVersion:   "cursor-agent 2026.07.23-e383d2b",
+		HookContractID: "cursor-hooks-v1",
+	}
+	if err := connector.SaveHookContractLockEntry(
+		s.cfg.DataDir, connector.NewHookContractLockEntry(priorOpts, prior, "prior-test-build"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := connector.SaveActiveConnectors(s.cfg.DataDir, []string{"cursor"}); err != nil {
+		t.Fatal(err)
+	}
+	const priorArtifactBody = "action|hilt=true\n"
+	if err := os.WriteFile(priorArtifact, []byte(priorArtifactBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorLockBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorActiveBytes, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	unsafeTarget := filepath.Join(testenv.PrivateTempDir(t), "defenseclaw.js")
+	if err := os.Mkdir(unsafeTarget, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	previousPluginPath := connector.OpenCodePluginPathOverride
+	connector.OpenCodePluginPathOverride = unsafeTarget
+	t.Cleanup(func() { connector.OpenCodePluginPathOverride = previousPluginPath })
+	requestedOpts := connector.SetupOpts{
+		DataDir:        s.cfg.DataDir,
+		GuardrailMode:  "observe",
+		HookFailMode:   "open",
+		AgentVersion:   "1.18.11",
+		HookContractID: "opencode-hooks-v1",
+	}
+
+	_, err = s.prepareSingleConnectorSetupTransaction(
+		context.Background(), registry, requestedOpts, requested,
+		"synthetic gateway token", "127.0.0.1:0", "127.0.0.1:0", "synthetic master key",
+	)
+	if err == nil || !strings.Contains(err.Error(), "connector opencode rollback snapshot failed before setup") {
+		t.Fatalf("OpenCode snapshot preflight error = %v", err)
+	}
+	if prior.teardownCalls != 0 || prior.setupCalls != 0 {
+		t.Fatalf("prior Cursor lifecycle = teardown %d setup %d, want no mutation before failed OpenCode snapshot", prior.teardownCalls, prior.setupCalls)
+	}
+	if requested.setupCalls != 0 || requested.teardownCalls != 0 {
+		t.Fatalf("requested OpenCode lifecycle = setup %d teardown %d, want no mutation after failed snapshot", requested.setupCalls, requested.teardownCalls)
+	}
+	if body, readErr := os.ReadFile(priorArtifact); readErr != nil || string(body) != priorArtifactBody {
+		t.Fatalf("prior Cursor artifact = %q, %v; want exact original", body, readErr)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json")); readErr != nil || !reflect.DeepEqual(body, priorLockBytes) {
+		t.Fatalf("lock after failed OpenCode snapshot = %q, %v; want exact prior bytes %q", body, readErr, priorLockBytes)
+	}
+	if body, readErr := os.ReadFile(filepath.Join(s.cfg.DataDir, "active_connector.json")); readErr != nil || !reflect.DeepEqual(body, priorActiveBytes) {
+		t.Fatalf("roster after failed OpenCode snapshot = %q, %v; want exact prior bytes %q", body, readErr, priorActiveBytes)
+	}
+	if info, statErr := os.Stat(unsafeTarget); statErr != nil || !info.IsDir() {
+		t.Fatalf("unsafe OpenCode target changed during snapshot preflight: %v, %+v", statErr, info)
+	}
+	if _, statErr := os.Stat(filepath.Join(s.cfg.DataDir, "connector_backups", "opencode", "config.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed OpenCode snapshot left custody receipt mutation: %v", statErr)
 	}
 }
 
