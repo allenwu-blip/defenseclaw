@@ -62,6 +62,28 @@ class TestInitCommand(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Initialize DefenseClaw environment", result.output)
 
+    @patch("defenseclaw.commands.cmd_init._run_first_run_cmd")
+    def test_explicit_no_connector_uses_canonical_first_run_backend(self, run_first_run):
+        result = self.runner.invoke(
+            init_cmd,
+            [
+                "--skip-install",
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "none",
+                "--profile",
+                "observe",
+                "--no-start-gateway",
+                "--no-verify",
+            ],
+            obj=AppContext(),
+        )
+
+        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+        run_first_run.assert_called_once()
+        self.assertEqual(run_first_run.call_args.kwargs["connector"], "none")
+
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
     @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
@@ -1937,8 +1959,14 @@ class TestSaveOwnershipBackup(unittest.TestCase):
             stat_paths.append(os.path.normcase(os.path.realpath(path)))
             return real_stat(path, *args, **kwargs)
 
+        # This test covers the parent walk, not host system-binary custody.
         with (
             patch.object(cmd_init_sandbox.os, "stat", side_effect=recording_stat),
+            patch.object(
+                cmd_init_sandbox,
+                "_trusted_privileged_argv",
+                return_value=["/usr/bin/chmod"],
+            ),
             patch.object(cmd_init_sandbox.subprocess, "run", return_value=MagicMock(returncode=0)),
         ):
             cmd_init_sandbox._ensure_parent_traversal(os.path.join(self.oc_home, "target"))

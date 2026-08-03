@@ -37,6 +37,61 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _resolver_with_fixture_uv(
+    source: Path,
+    destination: Path,
+    uv_binary: Path,
+    archive_root: Path,
+) -> tuple[Path, Path]:
+    uv_assets = {
+        ("Darwin", "x86_64"): (
+            "uv-x86_64-apple-darwin.tar.gz",
+            "uv-x86_64-apple-darwin/uv",
+        ),
+        ("Darwin", "arm64"): (
+            "uv-aarch64-apple-darwin.tar.gz",
+            "uv-aarch64-apple-darwin/uv",
+        ),
+        ("Linux", "x86_64"): (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "uv-x86_64-unknown-linux-gnu/uv",
+        ),
+        ("Linux", "amd64"): (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "uv-x86_64-unknown-linux-gnu/uv",
+        ),
+        ("Linux", "aarch64"): (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "uv-aarch64-unknown-linux-gnu/uv",
+        ),
+        ("Linux", "arm64"): (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "uv-aarch64-unknown-linux-gnu/uv",
+        ),
+    }
+    uv_platform = (platform.system(), platform.machine())
+    if uv_platform not in uv_assets:
+        pytest.skip(f"unsupported uv bootstrap fixture platform: {uv_platform}")
+    asset, member = uv_assets[uv_platform]
+    archive = archive_root / asset
+    with tarfile.open(archive, mode="w:gz") as stream:
+        stream.add(uv_binary, arcname=member, recursive=False)
+
+    source_text = source.read_text(encoding="utf-8")
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    pattern = re.compile(
+        rf'(asset="{re.escape(asset)}"\n\s+expected=")[0-9a-f]{{64}}(")',
+    )
+    source_text, replacements = pattern.subn(
+        lambda match: f"{match.group(1)}{digest}{match.group(2)}",
+        source_text,
+    )
+    assert replacements == 1, f"could not patch fixture digest for {asset}"
+    destination.write_text(source_text, encoding="utf-8")
+    destination.chmod(0o755)
+    return destination, archive
+
+
 @pytest.fixture(scope="module")
 def packaged_target_controller_python(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build one isolated target-controller fixture with wheel-owned telemetry data."""
@@ -910,6 +965,13 @@ def test_bridge_start_failure_restores_source_artifacts_state_and_health(
         _make_hard_cut_contract_assets(fixtures)
     fake_bin.mkdir()
     source_venv.joinpath("bin").mkdir(parents=True)
+    source_site_packages = source_venv / "lib" / "python3.12" / "site-packages"
+    source_package = source_site_packages / "defenseclaw"
+    shutil.copytree(
+        ROOT / "cli" / "defenseclaw",
+        source_package,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     data_home.mkdir()
     install_dir.mkdir(parents=True)
     if openclaw_present:
@@ -937,7 +999,10 @@ def test_bridge_start_failure_restores_source_artifacts_state_and_health(
         "#!/usr/bin/env bash\n"
         'if [[ "$*" == *"from defenseclaw import __version__"* ]]; then '
         f"printf '%s\\n' '{source_version}'; exit 0; fi\n"
-        f'exec {sys.executable!r} "$@"\n',
+        "args=()\n"
+        'for arg in "$@"; do [[ "${arg}" == "-I" ]] || args+=("${arg}"); done\n'
+        f'export PYTHONPATH={str(source_site_packages)!r}\n'
+        f'exec {sys.executable!r} "${{args[@]}}"\n',
     )
     (install_dir / "defenseclaw").symlink_to(source_cli)
 
@@ -1013,6 +1078,12 @@ if [[ -n "${MIGRATION_FROM_VERSION:-}" ]]; then
     kill -KILL "${command_subshell_pid}" 2>/dev/null || true
     kill -KILL "$$"
   fi
+  if [[ -n "${TARGET_STATUS_PORT:-}" ]]; then
+    printf '%s\n' \
+      'gateway:' \
+      '  api_bind: 127.0.0.1' \
+      "  api_port: ${TARGET_STATUS_PORT}" >> "${DEFENSECLAW_CONFIG}"
+  fi
   config_dir="${DEFENSECLAW_CONFIG%/*}"
   config_base="${DEFENSECLAW_CONFIG##*/}"
   mkdir -p "${MIGRATION_OPENCLAW_HOME}"
@@ -1051,6 +1122,10 @@ printf '%s\n' "${TARGET_HEALTH_URL:-http://127.0.0.1:18970/health}"
         fake_bin / "uv",
         """#!/usr/bin/env bash
 set -euo pipefail
+if [[ "$#" -eq 1 && "$1" == "--version" ]]; then
+  printf '%s\n' 'uv 0.11.28'
+  exit 0
+fi
 venv=''
 previous=''
 for arg in "$@"; do
@@ -1083,6 +1158,12 @@ fi
 exit 0
 """,
     )
+    resolver_script, fixture_uv_archive = _resolver_with_fixture_uv(
+        resolver_script,
+        tmp_path / "upgrade-fixture-uv.sh",
+        fake_bin / "uv",
+        tmp_path,
+    )
     _write_executable(fake_bin / "cosign", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(fake_bin / "openclaw", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(
@@ -1096,11 +1177,15 @@ is_head=0
 for arg in "$@"; do
   if [[ "${want_out}" -eq 1 ]]; then out="${arg}"; want_out=0; continue; fi
   case "${arg}" in
-    -o) want_out=1 ;;
+    -o|--output) want_out=1 ;;
     --head) is_head=1 ;;
     http*) url="${arg}" ;;
   esac
 done
+if [[ "${url}" == https://github.com/astral-sh/uv/releases/download/* ]]; then
+  cp "${FIXTURE_UV_ARCHIVE}" "${out}"
+  exit 0
+fi
 if [[ "${url}" == http://127.0.0.1:*/health ]]; then
   if [[ "${FORCE_ORPHAN_HEALTH:-0}" == '1' ]]; then
     printf '%s\n' '{"api":{"state":"running"},"gateway":{"state":"starting"},"provenance":{"binary_version":"0.8.3"}}' > "${out}"
@@ -1158,6 +1243,7 @@ cp "${FIXTURE_ROOT}/${version}/${name}" "${out}"
             "DEFENSECLAW_HOME": str(controller_home),
             "OPENCLAW_HOME": str(openclaw_home),
             "FIXTURE_ROOT": str(fixtures),
+            "FIXTURE_UV_ARCHIVE": str(fixture_uv_archive),
             "TARGET_PYTHON_TEMPLATE": str(target_python_template),
             "TARGET_CLI_TEMPLATE": str(target_cli_template),
             "TARGET_RUNTIME_PYTHON": sys.executable,
@@ -1179,13 +1265,14 @@ cp "${FIXTURE_ROOT}/${version}/${name}" "${out}"
     if bridge_install_failure:
         env["FAIL_BRIDGE_WHEEL_INSTALL"] = "1"
         env["MUTATE_SOURCE_CLI_ON_VERSION"] = "1"
-    if crash_point == "migration-after-config":
+    if crash_point in {"migration-after-config", "after-bridge-health"}:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
             target_status_port = int(probe.getsockname()[1])
-        env["ALLOW_TARGET_GATEWAY_START"] = "1"
         env["TARGET_STATUS_PORT"] = str(target_status_port)
         env["TARGET_HEALTH_URL"] = f"http://127.0.0.1:{target_status_port}/health"
+    if crash_point == "migration-after-config":
+        env["ALLOW_TARGET_GATEWAY_START"] = "1"
     if target_exits_early:
         env["ALLOW_TARGET_GATEWAY_START"] = "1"
         env["TARGET_GATEWAY_EXIT_AFTER_START"] = "1"
@@ -1221,14 +1308,20 @@ cp "${FIXTURE_ROOT}/${version}/${name}" "${out}"
             else:
                 crash_variable = "INJECT_PHASE1_CRASH_ON_TARGET_VERSION"
                 env[crash_variable] = "1"
-            if crash_point == "migration-after-config":
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-                        probe.bind(("127.0.0.1", target_status_port))
-                except OSError as exc:
-                    pytest.fail(
-                        f"target status port {target_status_port} was claimed before the upgrade fixture started: {exc}"
-                    )
+            if crash_point in {"migration-after-config", "after-bridge-health"}:
+                for _attempt in range(10):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                            probe.bind(("127.0.0.1", target_status_port))
+                        break
+                    except OSError:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                            probe.bind(("127.0.0.1", 0))
+                            target_status_port = int(probe.getsockname()[1])
+                        env["TARGET_STATUS_PORT"] = str(target_status_port)
+                        env["TARGET_HEALTH_URL"] = f"http://127.0.0.1:{target_status_port}/health"
+                else:
+                    pytest.fail("could not allocate an isolated target status port")
             interrupted = subprocess.run(
                 ["bash", str(resolver_script), "--yes", "--version", target_version],
                 cwd=ROOT,
@@ -1846,6 +1939,14 @@ def test_path_shadow_cli_is_refused_before_service_stop(tmp_path: Path) -> None:
     shadow = tmp_path / "shadow"
     for directory in (controller / ".venv" / "bin", data, openclaw, install, shadow):
         directory.mkdir(parents=True, exist_ok=True)
+    (
+        controller
+        / ".venv"
+        / "lib"
+        / "python3.12"
+        / "site-packages"
+        / "defenseclaw"
+    ).mkdir(parents=True)
     _write_executable(
         controller / ".venv" / "bin" / "python",
         "#!/usr/bin/env bash\n"

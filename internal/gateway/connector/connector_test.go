@@ -352,7 +352,7 @@ func TestIsLoopback(t *testing.T) {
 
 func TestRegistry_DefaultContainsAllBuiltins(t *testing.T) {
 	r := NewDefaultRegistry()
-	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent"}
+	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
 	for _, name := range expected {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("default registry missing %q", name)
@@ -3273,8 +3273,8 @@ func TestCodex_ToolMode(t *testing.T) {
 		t.Errorf("expected both, got %q", c.ToolInspectionMode())
 	}
 	policy := c.SubprocessPolicy()
-	if policy != SubprocessSandbox && policy != SubprocessShims {
-		t.Errorf("expected sandbox or shims, got %q", policy)
+	if policy != SubprocessNone {
+		t.Errorf("expected no subprocess enforcement, got %q", policy)
 	}
 }
 
@@ -7199,16 +7199,16 @@ func TestTeardown_DoesNotDeleteOtherConnectorsHookScripts(t *testing.T) {
 
 func TestSecuritySurfaceCoverage(t *testing.T) {
 	type expectation struct {
-		name      string
-		toolMode  ToolInspectionMode
-		wantShims bool
+		name     string
+		toolMode ToolInspectionMode
+		policy   SubprocessPolicy
 	}
 
 	expectations := []expectation{
-		{"openclaw", ToolModeBoth, true},
-		{"zeptoclaw", ToolModeBoth, true},
-		{"claudecode", ToolModeBoth, true},
-		{"codex", ToolModeBoth, true},
+		{"openclaw", ToolModeBoth, ResolveSubprocessPolicy(SubprocessSandbox)},
+		{"zeptoclaw", ToolModeBoth, ResolveSubprocessPolicy(SubprocessSandbox)},
+		{"claudecode", ToolModeBoth, SubprocessNone},
+		{"codex", ToolModeBoth, SubprocessNone},
 	}
 
 	reg := NewDefaultRegistry()
@@ -7222,8 +7222,8 @@ func TestSecuritySurfaceCoverage(t *testing.T) {
 			t.Errorf("%s: ToolInspectionMode = %q, want %q", exp.name, c.ToolInspectionMode(), exp.toolMode)
 		}
 		policy := c.SubprocessPolicy()
-		if policy != SubprocessSandbox && policy != SubprocessShims {
-			t.Errorf("%s: SubprocessPolicy = %q, want sandbox or shims", exp.name, policy)
+		if policy != exp.policy {
+			t.Errorf("%s: SubprocessPolicy = %q, want %q", exp.name, policy, exp.policy)
 		}
 	}
 }
@@ -7370,8 +7370,8 @@ func TestDiscoverPlugins_EmptyDir(t *testing.T) {
 		t.Fatalf("DiscoverPlugins on empty dir: %v", err)
 	}
 	// Should still have only built-in connectors
-	if r.Len() != 13 {
-		t.Errorf("expected 13 built-in connectors, got %d", r.Len())
+	if r.Len() != 14 {
+		t.Errorf("expected 14 built-in connectors, got %d", r.Len())
 	}
 }
 
@@ -10074,6 +10074,7 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 		{"antigravity", func() Connector { return NewAntigravityConnector() }, []EnvScope{EnvScopeNone}},
 		{"opencode", func() Connector { return NewOpenCodeConnector() }, []EnvScope{EnvScopeNone}},
 		{"omnigent", func() Connector { return NewOmnigentConnector() }, []EnvScope{EnvScopeNone, EnvScopeProcess}},
+		{"amp", func() Connector { return NewAMPConnector() }, []EnvScope{EnvScopeNone}},
 	}
 
 	for _, c := range cases {

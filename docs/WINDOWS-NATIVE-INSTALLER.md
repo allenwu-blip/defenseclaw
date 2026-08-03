@@ -313,8 +313,13 @@ requires successful installation plus exact CLI and gateway version
 verification. It also proves that a second fresh-installer invocation refuses
 before changing installed state.
 
-This is the first native Windows release, so release acceptance is
-fresh-install-only.
+Version `0.8.7` was the first native Windows release and first published native
+Windows Setup, so its release acceptance was fresh-install-only. The immutable
+`0.8.6` release has no native Setup or Windows runtime assets. Published
+releases `0.8.7` through `0.8.10`
+record the outer Setup and DefenseClaw executables as `NotSigned`; those bytes
+are authenticated by the signed checksums and release provenance rather than
+an Authenticode signature.
 
 The workflow places Setup, its SHA-256, provenance, and SPDX SBOM metadata in
 the same sealed candidate as the Linux and macOS assets. Candidate assembly
@@ -328,3 +333,16 @@ testing. A publishable Setup is always rebuilt from the reviewed commit selected
 by the Release dispatch and tested as part of that same run. It is
 Authenticode-signed when the complete credential pair is available and
 otherwise carries explicit unverified provenance.
+
+Amp is part of the native Windows connector lifecycle, but provider-backed
+real-client execution is intentionally outside the release channel. Setup,
+repair, upgrade, Doctor, and uninstall manage only DefenseClaw's
+`%USERPROFILE%\.config\amp\plugins\defenseclaw.ts` policy plugin and preserve
+operator-owned Amp plugins and settings byte-for-byte. The secretless required
+Windows contract verifies the five documented Amp callbacks, Task/subagent
+boundary, allow/block policy, audit correlation, gateway-generated connector
+telemetry, private DACL, self-heal, tamper recovery, and exact teardown. The
+manual `Connector Live E2E` Windows cell uses `AMP_API_KEY` with the official
+Amp CLI to exercise the same native TypeScript plugin. That evidence is a
+regression layer, not a release prerequisite, and does not claim that Amp
+exports native OTLP.

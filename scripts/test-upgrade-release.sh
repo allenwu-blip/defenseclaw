@@ -970,19 +970,6 @@ prepare_required_bridge_assets() {
     fi
 }
 
-prepare_field_recovery_source_assets() {
-    [[ "${UPGRADE_SMOKE_FIELD_RECOVERY_CASES:-0}" == "1" ]] || return 0
-
-    # The clean missing-cursor resolver re-authenticates the exact published
-    # 0.8.6 source contract before it accepts that compatibility state. The
-    # smoke curl shim points versioned GitHub release URLs at RELEASE_ROOT, so
-    # stage this bounded source view before the local server starts. Reuse the
-    # same helper as bridge staging: it authenticates the checksum proof first,
-    # then every served wheel, gateway, manifest, and provenance payload.
-    prepare_authenticated_upgrade_release_assets \
-        "0.8.6" "field-recovery source" 1
-}
-
 tail_log() {
     local file="$1"
     if [[ -f "${file}" ]]; then

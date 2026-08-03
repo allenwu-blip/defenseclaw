@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import platform
 import re
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -25,11 +27,14 @@ VERSION = "0.8.8"
 COMMIT = "a" * 40
 CHANNEL_BRANCH_COMMIT = "f" * 40
 RESCUE = ROOT / "scripts/defenseclaw-rescue.sh"
+UPGRADE_RESOLVER = ROOT / "scripts/upgrade.sh"
 WINDOWS_RESCUE = ROOT / "scripts/defenseclaw-rescue.ps1"
 PUBLISHER = ROOT / "scripts/publish-release-channel.sh"
 WORKFLOW = ROOT / ".github/workflows/release.yaml"
 DOC = ROOT / "docs/RELEASE_CHANNEL.md"
 SCRIPT_TIMEOUT_SECONDS = 30
+IMMUTABLE_088_RESCUE_SHA256 = "0c98aa9aa7d56e88f04768e0fe70681f2de777fc22021f9af4ccc06be1d8099b"
+IMMUTABLE_088_RESCUE_SIZE = 28_419
 COSIGN_RELEASE_BASE_URL = (
     f"https://github.com/sigstore/cosign/releases/download/v{resolver_hint.COSIGN_BOOTSTRAP_VERSION}"
 )
@@ -1374,6 +1379,160 @@ def test_rescue_without_operator_arguments_executes_exact_tagged_resolver(
     assert completed.returncode == 0, completed.stderr
     assert f"Authenticated stable resolver {VERSION} ({COMMIT})" in completed.stdout
     assert completed.stdout.endswith(f"resolver-args: <--version> <{VERSION}>\n")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX rescue bootstrap")
+def test_immutable_088_rescue_hands_clean_path_to_new_resolver_uv_custody(
+    tmp_path: Path,
+) -> None:
+    rescue_bytes = RESCUE.read_bytes()
+    assert len(rescue_bytes) == IMMUTABLE_088_RESCUE_SIZE
+    assert hashlib.sha256(rescue_bytes).hexdigest() == IMMUTABLE_088_RESCUE_SHA256
+
+    upgrade_source = UPGRADE_RESOLVER.read_text(encoding="utf-8")
+    pin = re.search(r'readonly UV_BOOTSTRAP_VERSION="([^"]+)"', upgrade_source)
+    maximum = re.search(r'readonly UV_BOOTSTRAP_MAX_BYTES="([^"]+)"', upgrade_source)
+    assert pin is not None, "uv bootstrap version constant moved"
+    assert maximum is not None, "uv bootstrap size constant moved"
+    function_start = upgrade_source.find("resolve_upgrade_uv() {")
+    assert function_start >= 0, "resolve_upgrade_uv() was renamed or removed"
+    function_end = upgrade_source.find(
+        "\n\n# Keep one bounded, fail-closed parser",
+        function_start,
+    )
+    assert function_end > function_start, "resolve_upgrade_uv() end anchor moved"
+    resolver_function = upgrade_source[function_start:function_end]
+    uv_assets = {
+        ("Darwin", "x86_64"): (
+            "uv-x86_64-apple-darwin.tar.gz",
+            "uv-x86_64-apple-darwin/uv",
+            "2ad79983127ffca7d77b77ce6a24278d7e4f7b817a1acf72fea5f8124b4aac5e",
+        ),
+        ("Darwin", "arm64"): (
+            "uv-aarch64-apple-darwin.tar.gz",
+            "uv-aarch64-apple-darwin/uv",
+            "33540eb7c883ab857eff79bd5ac2aa31fe27b595abecb4a9c003a2c998447232",
+        ),
+        ("Linux", "x86_64"): (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "uv-x86_64-unknown-linux-gnu/uv",
+            "e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224",
+        ),
+        ("Linux", "amd64"): (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "uv-x86_64-unknown-linux-gnu/uv",
+            "e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224",
+        ),
+        ("Linux", "aarch64"): (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "uv-aarch64-unknown-linux-gnu/uv",
+            "03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533",
+        ),
+        ("Linux", "arm64"): (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "uv-aarch64-unknown-linux-gnu/uv",
+            "03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533",
+        ),
+    }
+    uv_platform = (platform.system(), platform.machine())
+    if uv_platform not in uv_assets:
+        pytest.skip(f"unsupported uv bootstrap fixture platform: {uv_platform}")
+    uv_asset, uv_member, production_uv_digest = uv_assets[uv_platform]
+    pinned_marker = tmp_path / "pinned-uv-executed"
+    uv_payload = (
+        "#!/bin/sh\n"
+        f"printf executed > {str(pinned_marker)!r}\n"
+        f"printf 'uv {pin.group(1)} (pinned fixture)\\n'\n"
+    ).encode()
+    uv_archive = tmp_path / uv_asset
+    with tarfile.open(uv_archive, mode="w:gz") as archive:
+        directory = tarfile.TarInfo(str(Path(uv_member).parent))
+        directory.type = tarfile.DIRTYPE
+        directory.mode = 0o755
+        archive.addfile(directory)
+        executable = tarfile.TarInfo(uv_member)
+        executable.mode = 0o755
+        executable.size = len(uv_payload)
+        archive.addfile(executable, io.BytesIO(uv_payload))
+    fixture_uv_digest = hashlib.sha256(uv_archive.read_bytes()).hexdigest()
+    assert resolver_function.count(production_uv_digest) == 1
+    resolver_function = resolver_function.replace(
+        production_uv_digest,
+        fixture_uv_digest,
+    )
+    resolver_payload = (
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "umask 077\n"
+        f'readonly UV_BOOTSTRAP_VERSION="{pin.group(1)}"\n'
+        f'readonly UV_BOOTSTRAP_MAX_BYTES="{maximum.group(1)}"\n'
+        'UV_BIN=""\n'
+        'die() { printf "die: %s\\n" "$*" >&2; exit 1; }\n'
+        'ok() { printf "ok: %s\\n" "$*"; }\n'
+        'warn() { printf "warn: %s\\n" "$*" >&2; }\n'
+        'info() { printf "info: %s\\n" "$*"; }\n'
+        "curl() {\n"
+        "  local output='' previous=''\n"
+        '  for arg in "$@"; do\n'
+        '    if [[ "${previous}" == "--output" ]]; then output="${arg}"; break; fi\n'
+        '    previous="${arg}"\n'
+        "  done\n"
+        '  [[ -n "${output}" ]] || return 94\n'
+        f"  cp {str(uv_archive)!r} \"${{output}}\"\n"
+        "}\n"
+        'STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/resolver-uv.XXXXXX")"\n'
+        + resolver_function
+        + "\n"
+        + "resolve_upgrade_uv\n"
+        + '"${UV_BIN}" --version\n'
+        + 'printf "resolver-private-uv=%s\\n" "${UV_BIN}"\n'
+        + '/usr/bin/env > "$TMPDIR/resolver-env.log"\n'
+        + 'printf "resolver-clean-path=%s\\n" "${PATH}"\n'
+        + "# DefenseClaw upgrade resolver complete v1\n"
+    ).encode()
+    env, rescue = _rescue_fixture(tmp_path, resolver_payload=resolver_payload)
+    home = tmp_path / "home"
+    known_bin = home / ".local" / "bin"
+    known_bin.mkdir(parents=True)
+    marker = tmp_path / "known-uv-executed"
+    _write_executable(
+        known_bin / "uv",
+        f"#!/usr/bin/env bash\nprintf executed > {str(marker)!r}\n"
+        f"printf 'uv {pin.group(1)} (fixture 2026-07-27)\\n'\n",
+    )
+    env["HOME"] = str(home)
+
+    completed = subprocess.run(
+        [str(rescue), "--yes"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SCRIPT_TIMEOUT_SECONDS,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (
+        f"Pinned uv {pin.group(1)} authenticated in private upgrade custody"
+        in completed.stdout
+    )
+    assert f"uv {pin.group(1)}" in completed.stdout
+    assert "resolver-clean-path=/usr/bin:/bin:/usr/sbin:/sbin" in completed.stdout
+    assert not marker.exists()
+    assert pinned_marker.read_text(encoding="utf-8") == "executed"
+    private_uv_line = next(
+        line
+        for line in completed.stdout.splitlines()
+        if line.startswith("resolver-private-uv=")
+    )
+    private_uv = Path(private_uv_line.removeprefix("resolver-private-uv="))
+    assert private_uv.name == "uv"
+    assert private_uv.parent.name == "upgrade-tools"
+    assert private_uv.parents[2] == Path(env["TMPDIR"])
+    resolver_environment = _environment(tmp_path / "resolver-env.log")
+    assert resolver_environment["HOME"] == str(home)
+    assert resolver_environment["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX rescue bootstrap")

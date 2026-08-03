@@ -17,15 +17,12 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import shutil
 import sqlite3
 import subprocess
 import sys
-import tarfile
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -33,11 +30,6 @@ from defenseclaw import resolver_hint
 
 ROOT = Path(__file__).resolve().parents[2]
 UPGRADE_SCRIPT = ROOT / "scripts" / "upgrade.sh"
-_CLEAN_086_GATEWAY_PAYLOAD = (
-    b"#!/usr/bin/env bash\n"
-    b'if [[ "${1:-}" == "--version" ]]; then echo \'DefenseClaw gateway 0.8.6\'; exit 0; fi\n'
-    b"exit 0\n"
-)
 _STAGED_COSIGN_SHA256_BY_ASSET = {
     "cosign-darwin-amd64": resolver_hint.COSIGN_BOOTSTRAP_SHA256[("darwin", "amd64")],
     "cosign-darwin-arm64": resolver_hint.COSIGN_BOOTSTRAP_SHA256[("darwin", "arm64")],
@@ -141,15 +133,28 @@ def _protected(payload: bytes) -> bytes:
     return b"DEFENSECLAW-PROTECTED-ARTIFACT-V1\n" + bytes(value ^ 0xA5 for value in payload)
 
 
-def _clean_086_package_files() -> dict[str, bytes]:
+def _source_gateway_payload(version: str) -> bytes:
+    assert version in {"0.8.6", "0.8.7"}
+    return (
+        b"#!/usr/bin/env bash\n"
+        + f'if [[ "${{1:-}}" == "--version" ]]; then echo \'DefenseClaw gateway {version}\'; exit 0; fi\n'.encode()
+        + b"exit 0\n"
+    )
+
+
+def _source_package_files(version: str) -> dict[str, bytes]:
+    assert version in {"0.8.6", "0.8.7"}
     return {
-        "defenseclaw/__init__.py": b'__version__ = "0.8.6"\n',
+        "defenseclaw/__init__.py": f'__version__ = "{version}"\n'.encode(),
         "defenseclaw/config.py": (
-            b"import os\n"
+            b"import json, os\n"
             b"from types import SimpleNamespace\n"
             b"def load():\n"
             b"    home = os.environ['DEFENSECLAW_HOME']\n"
-            b"    return SimpleNamespace(data_dir=home, claw=SimpleNamespace(home_dir=os.path.join(os.environ['HOME'], '.openclaw')))\n"
+            b"    with open(os.environ.get('DEFENSECLAW_CONFIG', os.path.join(home, 'config.yaml')), encoding='utf-8') as stream:\n"
+            b"        config = json.load(stream)\n"
+            b"    return SimpleNamespace(data_dir=config.get('data_dir', home), audit_db=config.get('audit_db', ''), "
+            b"claw=SimpleNamespace(home_dir=os.path.join(os.environ['HOME'], '.openclaw')))\n"
         ),
         "defenseclaw/observability/__init__.py": b"",
         "defenseclaw/observability/v8_config.py": (
@@ -164,36 +169,8 @@ def _clean_086_package_files() -> dict[str, bytes]:
             b"    if type(source.get('config_version')) is not int or source['config_version'] != 8: raise ValueError('invalid v8 config')\n"
             b"    return Validated(source)\n"
         ),
-        "defenseclaw/_data/local_observability_stack/README.md": b"authenticated clean 0.8.6 stack\n",
+        "defenseclaw/_data/local_observability_stack/README.md": (f"authenticated clean {version} stack\n".encode()),
     }
-
-
-def _clean_086_wheel() -> bytes:
-    output = io.BytesIO()
-    package_files = _clean_086_package_files()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for name, payload in package_files.items():
-            archive.writestr(name, payload)
-        archive.writestr(
-            "defenseclaw-0.8.6.dist-info/METADATA",
-            "Metadata-Version: 2.1\nName: defenseclaw\nVersion: 0.8.6\n",
-        )
-        archive.writestr(
-            "defenseclaw-0.8.6.dist-info/WHEEL",
-            "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        )
-        archive.writestr("defenseclaw-0.8.6.dist-info/RECORD", "")
-    return output.getvalue()
-
-
-def _clean_086_gateway_archive() -> bytes:
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode="w:gz") as archive:
-        info = tarfile.TarInfo("defenseclaw")
-        info.mode = 0o755
-        info.size = len(_CLEAN_086_GATEWAY_PAYLOAD)
-        archive.addfile(info, io.BytesIO(_CLEAN_086_GATEWAY_PAYLOAD))
-    return output.getvalue()
 
 
 def _release_provenance(version: str, bridge_checksums_sha256: str) -> dict[str, object]:
@@ -243,7 +220,7 @@ def resolver_env(tmp_path: Path):
             wheel_name = release_artifacts["wheel"]
             assert isinstance(wheel_name, str)
             wheel = release_dir / wheel_name
-            wheel_payload = _clean_086_wheel() if version == "0.8.6" else b"resolver target wheel fixture"
+            wheel_payload = b"resolver target wheel fixture"
             wheel.write_bytes(_protected(wheel_payload))
             checksum_rows.append(f"{hashlib.sha256(wheel.read_bytes()).hexdigest()}  {wheel.name}")
             gateways = release_artifacts["gateways"]
@@ -253,12 +230,7 @@ def resolver_env(tmp_path: Path):
                 for gateway_name in platform_gateways.values():
                     assert isinstance(gateway_name, str)
                     gateway = release_dir / gateway_name
-                    gateway_payload = (
-                        _clean_086_gateway_archive()
-                        if version == "0.8.6"
-                        else f"gateway fixture {gateway_name}\n".encode()
-                    )
-                    gateway.write_bytes(_protected(gateway_payload) if version == "0.8.6" else gateway_payload)
+                    gateway.write_bytes(f"gateway fixture {gateway_name}\n".encode())
                     checksum_rows.append(f"{hashlib.sha256(gateway.read_bytes()).hexdigest()}  {gateway.name}")
             if version in {"0.8.5", "0.8.6", "0.8.7", "0.8.8"}:
                 provenance = (
@@ -297,26 +269,6 @@ def resolver_env(tmp_path: Path):
         _write_executable(
             fake_bin / "cosign",
             '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "${COSIGN_LOG}"\nexit 0\n',
-        )
-        _write_executable(
-            fake_bin / "uv",
-            "#!/usr/bin/env bash\n"
-            "set -euo pipefail\n"
-            'printf \'%s\\n\' "$*" >> "${UV_LOG}"\n'
-            'if [[ "$#" -eq 10'
-            ' && "$1" == "--no-config"'
-            ' && "$2" == "pip"'
-            ' && "$3" == "install"'
-            ' && "$4" == "--python"'
-            ' && "$5" == "${DEFENSECLAW_HOME}/.venv/bin/python"'
-            ' && "$6" == "--dry-run"'
-            ' && "$7" == "--quiet"'
-            ' && "$8" == "--only-binary"'
-            ' && "$9" == "litellm"'
-            ' && "${10}" == */authenticated-source-0.8.6/defenseclaw-0.8.6-2-py3-none-any.whl ]]; then\n'
-            "    exit 0\n"
-            "fi\n"
-            "exit 99\n",
         )
         _write_executable(
             fake_bin / "sha256sum",
@@ -395,7 +347,6 @@ cp "${FIXTURE_ROOT}/${version}/${name}" "${out}"
         mutation_log = tmp_path / "mutations.log"
         curl_log = tmp_path / "curl.log"
         cosign_log = tmp_path / "cosign.log"
-        uv_log = tmp_path / "uv.log"
         env = os.environ.copy()
         for name in tuple(env):
             if name in {
@@ -413,7 +364,7 @@ cp "${FIXTURE_ROOT}/${version}/${name}" "${out}"
                 "MUTATION_LOG": str(mutation_log),
                 "CURL_LOG": str(curl_log),
                 "COSIGN_LOG": str(cosign_log),
-                "UV_LOG": str(uv_log),
+                "DEFENSECLAW_UPGRADE_TEST_MODE": "1",
                 "NO_COLOR": "1",
             }
         )
@@ -440,7 +391,11 @@ def test_resolver_env_excludes_ambient_observability_decisions(
     assert all(name not in env for name in names)
 
 
-def _install_clean_086_state(env: dict[str, str]) -> tuple[Path, Path]:
+def _install_release_owned_missing_cursor_state(
+    env: dict[str, str],
+    version: str,
+) -> tuple[Path, Path]:
+    assert version in {"0.8.6", "0.8.7"}
     data_home = Path(env["DEFENSECLAW_HOME"])
     data_home.mkdir()
     config_path = data_home / "config.yaml"
@@ -466,7 +421,7 @@ def _install_clean_086_state(env: dict[str, str]) -> tuple[Path, Path]:
     site_packages = data_home / ".venv" / "lib" / "python3.12" / "site-packages"
     package_root = site_packages / "defenseclaw"
     package_root.mkdir(parents=True)
-    for name, payload in _clean_086_package_files().items():
+    for name, payload in _source_package_files(version).items():
         relative = Path(name).relative_to("defenseclaw")
         destination = package_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -486,14 +441,22 @@ def _install_clean_086_state(env: dict[str, str]) -> tuple[Path, Path]:
     )
 
     gateway = Path(env["HOME"]) / ".local" / "bin" / "defenseclaw-gateway"
-    gateway.write_bytes(_CLEAN_086_GATEWAY_PAYLOAD)
+    gateway.write_bytes(_source_gateway_payload(version))
     gateway.chmod(0o755)
     return config_path, stack
 
 
 def _run(env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+    return _run_script(UPGRADE_SCRIPT, env, *args)
+
+
+def _run_script(
+    script: Path,
+    env: dict[str, str],
+    *args: str,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["bash", str(UPGRADE_SCRIPT), "--yes", *args],
+        ["bash", str(script), "--yes", *args],
         cwd=ROOT,
         env=env,
         text=True,
@@ -582,7 +545,6 @@ def test_explicit_final_target_still_resolves_verified_two_hop_plan(
     assert "No changes were made" in output
     assert not mutation_log.exists()
     assert not Path(env["DEFENSECLAW_HOME"]).exists()
-    assert not Path(env["UV_LOG"]).exists()
     downloads = curl_log.read_text(encoding="utf-8")
     assert "/releases/download/0.8.5/upgrade-manifest.json" in downloads
     assert "/releases/download/0.8.4/upgrade-manifest.json" in downloads
@@ -803,41 +765,39 @@ def test_manual_hard_cut_artifacts_over_v7_state_refuse_before_release_download(
 @pytest.mark.parametrize(
     ("local_stack", "unrelated_change"),
     ((False, False), (True, False), (False, True)),
-    ids=("retained-clean-no-stack", "exact-authenticated-stack", "valid-unrelated-llm-change"),
+    ids=("no-stack", "replaceable-local-stack", "configured-v8-state"),
 )
-def test_clean_086_missing_cursor_authenticates_recovery_without_mutation(
+@pytest.mark.parametrize("source_version", ("0.8.6", "0.8.7"))
+def test_public_cursorless_first_run_authorizes_recovery_without_mutation(
     resolver_env,
     local_stack: bool,
     unrelated_change: bool,
+    source_version: str,
 ) -> None:
-    env, mutation_log, curl_log = resolver_env("0.8.6")
-    config_path, stack = _install_clean_086_state(env)
+    env, mutation_log, curl_log = resolver_env(source_version)
+    config_path, stack = _install_release_owned_missing_cursor_state(env, source_version)
     if local_stack:
         stack.mkdir()
-        (stack / "README.md").write_bytes(b"authenticated clean 0.8.6 stack\n")
+        (stack / "README.md").write_bytes(f"authenticated clean {source_version} stack\n".encode())
     if unrelated_change:
         document = json.loads(config_path.read_text(encoding="utf-8"))
         document["llm"]["model"] = "operator-selected-model"
+        document["observability"] = {"destinations": [{"name": "operator-selected"}]}
         config_path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     before = config_path.read_bytes()
 
-    result = _run(env, "--version", "0.8.7", "--plan")
+    result = _run(env, "--version", "0.8.8", "--plan")
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
-    assert "Authenticated the exact clean 0.8.6 missing-cursor compatibility state" in output
-    assert "0.8.6 → 0.8.7" in output
+    assert f"Accepted exact public {source_version} cursorless first-run state" in output
+    assert f"{source_version} → 0.8.8" in output
     assert config_path.read_bytes() == before
     assert not (Path(env["DEFENSECLAW_HOME"]) / ".migration_state.json").exists()
     assert not mutation_log.exists()
-    uv_invocation = Path(env["UV_LOG"]).read_text(encoding="utf-8").split()
-    assert uv_invocation[:4] == ["--no-config", "pip", "install", "--python"]
-    assert uv_invocation[4] == f"{env['DEFENSECLAW_HOME']}/.venv/bin/python"
-    assert uv_invocation[5:9] == ["--dry-run", "--quiet", "--only-binary", "litellm"]
-    assert Path(uv_invocation[9]).name == "defenseclaw-0.8.6-2-py3-none-any.whl"
     downloads = curl_log.read_text(encoding="utf-8")
-    assert "/releases/download/0.8.6/release-provenance.json" in downloads
-    assert "defenseclaw-0.8.6-2-py3-none-any.dcwheel" in downloads
+    assert "/releases/download/0.8.8/release-provenance.json" in downloads
+    assert f"/releases/download/{source_version}/" not in downloads
 
 
 @pytest.mark.parametrize("path_kind", ("relative", "absolute"))
@@ -847,8 +807,12 @@ def test_staged_runtime_resolves_configured_audit_path_like_source_controller(
     path_kind: str,
 ) -> None:
     env, mutation_log, _curl_log = resolver_env("0.8.6")
-    config_path, _stack = _install_clean_086_state(env)
+    config_path, _stack = _install_release_owned_missing_cursor_state(env, "0.8.6")
     data_home = Path(env["DEFENSECLAW_HOME"])
+    (data_home / ".migration_state.json").write_text(
+        '{"schema":1,"applied":["0.8.5"]}\n',
+        encoding="utf-8",
+    )
     configured_audit_db = (
         "audit-state/custom.sqlite"
         if path_kind == "relative"
@@ -863,16 +827,9 @@ def test_staged_runtime_resolves_configured_audit_path_like_source_controller(
         connection.execute("CREATE TABLE audit_path_fixture (value TEXT NOT NULL)")
         connection.execute("INSERT INTO audit_path_fixture VALUES ('configured-path-probe')")
         connection.commit()
-        package_config = data_home / ".venv" / "lib" / "python3.12" / "site-packages" / "defenseclaw" / "config.py"
-        package_config.write_text(
-            "import os\n"
-            "from types import SimpleNamespace\n"
-            "def load():\n"
-            "    home = os.environ['DEFENSECLAW_HOME']\n"
-            f"    return SimpleNamespace(data_dir=home, audit_db={configured_audit_db!r}, "
-            "claw=SimpleNamespace(home_dir=os.path.join(os.environ['HOME'], '.openclaw')))\n",
-            encoding="utf-8",
-        )
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["audit_db"] = configured_audit_db
+        config_path.write_text(json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8")
 
         result = _run(env, "--version", "0.8.7", "--plan")
         output = result.stdout + result.stderr
@@ -933,9 +890,6 @@ def test_same_version_086_cursor_bootstrap_preserves_unrelated_v8_config_bytes(
     "near_miss",
     (
         "cursor",
-        "legacy-root",
-        "observability",
-        "stack",
         "migration-backup",
         "pending-cursor-retry",
         "receipt",
@@ -946,20 +900,9 @@ def test_clean_086_missing_cursor_recovery_rejects_near_miss_state(
     near_miss: str,
 ) -> None:
     env, mutation_log, _curl_log = resolver_env("0.8.6")
-    config_path, stack = _install_clean_086_state(env)
+    config_path, _stack = _install_release_owned_missing_cursor_state(env, "0.8.6")
     if near_miss == "cursor":
         (Path(env["DEFENSECLAW_HOME"]) / ".migration_state.json").write_text("{broken", encoding="utf-8")
-    elif near_miss == "legacy-root":
-        document = json.loads(config_path.read_text(encoding="utf-8"))
-        document["otel"] = {}
-        config_path.write_text(json.dumps(document), encoding="utf-8")
-    elif near_miss == "observability":
-        document = json.loads(config_path.read_text(encoding="utf-8"))
-        document["observability"] = {"destinations": [{"name": "custom"}]}
-        config_path.write_text(json.dumps(document), encoding="utf-8")
-    elif near_miss == "stack":
-        stack.mkdir()
-        (stack / "README.md").write_bytes(b"operator drift\n")
     elif near_miss == "migration-backup":
         Path(f"{config_path}.pre-observability-migration.bak").write_bytes(b"residue\n")
     elif near_miss == "pending-cursor-retry":
@@ -978,7 +921,7 @@ def test_clean_086_missing_cursor_recovery_rejects_near_miss_state(
     assert (
         "config-v8 migration state is absent or invalid" in output
         if near_miss == "cursor"
-        else "not the exact clean missing-cursor shape" in output
+        else "not the supported public cursorless first-run shape" in output
     )
     assert config_path.read_bytes() == before
     assert not mutation_log.exists()

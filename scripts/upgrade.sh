@@ -91,6 +91,8 @@ readonly UPGRADE_PROTOCOL_VERSION=2
 readonly OBSERVABILITY_V8_HARD_CUT_VERSION="0.8.5"
 readonly COSIGN_BOOTSTRAP_VERSION="2.6.3"
 readonly COSIGN_BOOTSTRAP_MAX_BYTES="209715200"
+readonly UV_BOOTSTRAP_VERSION="0.11.28"
+readonly UV_BOOTSTRAP_MAX_BYTES="209715200"
 readonly UPGRADE_MANIFEST_NAME="upgrade-manifest.json"
 readonly RELEASE_PROVENANCE_NAME="release-provenance.json"
 readonly HISTORICAL_BOOTSTRAP_MCP_SCANNER_CONSTRAINT='cisco-ai-mcp-scanner @ https://files.pythonhosted.org/packages/5d/74/6e72cbd496c0d33dfab1b4aee62792620236e63cccf278a8c896c6feb740/cisco_ai_mcp_scanner-4.7.2-py3-none-any.whl#sha256=6ed0b8ced168886f572aec30a971c7b0e2e1de7eea489d3821627184fd271ac8'
@@ -116,6 +118,8 @@ UPGRADE_ADVISORY_LOCK_DEVICE=""
 UPGRADE_ADVISORY_LOCK_INODE=""
 BRIDGE_PHASE1_RECOVERY_TERMINAL_CONTROLLER=""
 BRIDGE_PHASE1_RECOVERY_TERMINAL_VERSION=""
+UV_BIN=""
+STAGING_DIR=""
 
 # ── Terminal Formatting ───────────────────────────────────────────────────────
 
@@ -160,6 +164,161 @@ PY
 
 version_gte() {
     ! version_lt "$1" "$2"
+}
+
+prepare_upgrade_staging() {
+    if [[ -z "${STAGING_DIR}" ]]; then
+        STAGING_DIR="$(mktemp -d)" \
+            || die "Could not create private upgrade staging. No changes were made."
+        chmod 700 "${STAGING_DIR}" \
+            || die "Could not protect private upgrade staging. No changes were made."
+    fi
+    python3 - "${STAGING_DIR}" <<'PY' \
+        || die "Private upgrade staging is unsafe. No changes were made."
+import os
+import stat
+import sys
+
+path = os.path.abspath(sys.argv[1])
+info = os.lstat(path)
+if (
+    stat.S_ISLNK(info.st_mode)
+    or not stat.S_ISDIR(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or stat.S_IMODE(info.st_mode) != 0o700
+):
+    raise SystemExit(1)
+PY
+}
+
+cleanup_upgrade_staging() {
+    [[ -z "${STAGING_DIR:-}" ]] || rm -rf -- "${STAGING_DIR}"
+    STAGING_DIR=""
+    UV_BIN=""
+}
+
+resolve_upgrade_uv() {
+    [[ -n "${UV_BIN}" && -x "${UV_BIN}" ]] && return 0
+    [[ -n "${STAGING_DIR:-}" && -d "${STAGING_DIR}" && ! -L "${STAGING_DIR}" ]] \
+        || die "Private staging is unavailable for Python tool custody. No changes were made."
+
+    local tool_root="${STAGING_DIR}/upgrade-tools"
+    local archive=""
+    local asset=""
+    local expected=""
+    local member=""
+    mkdir -p "${tool_root}" \
+        || die "Could not create private Python tool custody. No changes were made."
+    chmod 700 "${tool_root}" \
+        || die "Could not protect private Python tool custody. No changes were made."
+
+    case "$(uname -s)/$(uname -m)" in
+        Darwin/x86_64)
+            asset="uv-x86_64-apple-darwin.tar.gz"
+            expected="2ad79983127ffca7d77b77ce6a24278d7e4f7b817a1acf72fea5f8124b4aac5e"
+            member="uv-x86_64-apple-darwin/uv"
+            ;;
+        Darwin/arm64)
+            asset="uv-aarch64-apple-darwin.tar.gz"
+            expected="33540eb7c883ab857eff79bd5ac2aa31fe27b595abecb4a9c003a2c998447232"
+            member="uv-aarch64-apple-darwin/uv"
+            ;;
+        Linux/x86_64|Linux/amd64)
+            asset="uv-x86_64-unknown-linux-gnu.tar.gz"
+            expected="e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224"
+            member="uv-x86_64-unknown-linux-gnu/uv"
+            ;;
+        Linux/aarch64|Linux/arm64)
+            asset="uv-aarch64-unknown-linux-gnu.tar.gz"
+            expected="03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533"
+            member="uv-aarch64-unknown-linux-gnu/uv"
+            ;;
+        *)
+            die "Automatic uv bootstrap is unavailable on this platform. No changes were made."
+            ;;
+    esac
+    archive="${tool_root}/${asset}"
+    info "Authenticating temporary pinned uv ${UV_BOOTSTRAP_VERSION}..."
+    curl --fail --silent --show-error --location \
+        --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        --max-filesize "${UV_BOOTSTRAP_MAX_BYTES}" \
+        --output "${archive}" \
+        "https://github.com/astral-sh/uv/releases/download/${UV_BOOTSTRAP_VERSION}/${asset}" \
+        || die "Could not download the pinned uv bootstrap. No changes were made."
+    python3 - "${archive}" "${expected}" "${UV_BOOTSTRAP_MAX_BYTES}" <<'PY' \
+        || die "Pinned uv bootstrap authentication failed. No changes were made."
+import hashlib
+import os
+import stat
+import sys
+
+path, expected, maximum_raw = sys.argv[1:]
+maximum = int(maximum_raw)
+info = os.lstat(path)
+if (
+    stat.S_ISLNK(info.st_mode)
+    or not stat.S_ISREG(info.st_mode)
+    or info.st_uid != os.geteuid()
+    or not 0 < info.st_size <= maximum
+):
+    raise SystemExit(1)
+digest = hashlib.sha256()
+with open(path, "rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
+raise SystemExit(0 if digest.hexdigest() == expected else 1)
+PY
+    tar -xOzf "${archive}" "${member}" > "${tool_root}/uv" \
+        || die "Could not extract the pinned uv executable. No changes were made."
+    [[ -s "${tool_root}/uv" \
+       && "$(wc -c < "${tool_root}/uv" | tr -d ' ')" -le "${UV_BOOTSTRAP_MAX_BYTES}" ]] \
+        || die "Pinned uv executable is empty or oversized. No changes were made."
+    chmod 700 "${tool_root}/uv" \
+        || die "Could not protect pinned uv private custody. No changes were made."
+    local uv_reported
+    uv_reported="$(env -i HOME="${HOME}" LANG=C LC_ALL=C PATH=/usr/bin:/bin \
+        "${tool_root}/uv" --version 2>/dev/null || true)"
+    [[ "${uv_reported}" == "uv ${UV_BOOTSTRAP_VERSION}"* ]] \
+        || die "Pinned uv executable reported an unexpected version. No changes were made."
+    UV_BIN="${tool_root}/uv"
+    ok "Pinned uv ${UV_BOOTSTRAP_VERSION} authenticated in private upgrade custody"
+}
+
+require_authenticated_upgrade_uv_handoff() {
+    [[ -n "${UV_BIN:-}" \
+       && "${UV_BIN}" == "${STAGING_DIR}/upgrade-tools/uv" \
+       && -f "${UV_BIN}" \
+       && -x "${UV_BIN}" \
+       && ! -L "${UV_BIN}" \
+       && "${UV_BIN%/*}" != *:* \
+       && -f "${INSTALL_DIR}/defenseclaw-gateway" \
+       && -x "${INSTALL_DIR}/defenseclaw-gateway" \
+       && ! -L "${INSTALL_DIR}/defenseclaw-gateway" \
+       && "${INSTALL_DIR}" != *:* ]] \
+        || die "Authenticated private uv or installed gateway is unavailable for the historical controller handoff."
+}
+
+retain_authenticated_upgrade_uv_staging() {
+    require_authenticated_upgrade_uv_handoff
+    local previous_staging="${STAGING_DIR}"
+    local retained_staging=""
+    retained_staging="$(mktemp -d "${STAGING_DIR%/*}/defenseclaw-upgrade-uv.XXXXXX")" \
+        || die "Could not retain authenticated uv for the historical controller handoff."
+    if ! chmod 700 "${retained_staging}" \
+        || ! mkdir "${retained_staging}/upgrade-tools" \
+        || ! chmod 700 "${retained_staging}/upgrade-tools"; then
+        rm -rf -- "${retained_staging}"
+        die "Could not protect retained authenticated uv custody."
+    fi
+    if ! mv -- "${UV_BIN}" "${retained_staging}/upgrade-tools/uv"; then
+        rm -rf -- "${retained_staging}"
+        die "Could not retain authenticated uv for the historical controller handoff."
+    fi
+    STAGING_DIR="${retained_staging}"
+    UV_BIN="${STAGING_DIR}/upgrade-tools/uv"
+    rm -rf -- "${previous_staging}" \
+        || die "Could not retire completed hard-cut staging."
+    require_authenticated_upgrade_uv_handoff
 }
 
 # Keep one bounded, fail-closed parser for every phase-one gateway.pid
@@ -389,9 +548,8 @@ preflight_python_wheel() {
     local wheel="$1"
     local uv_bin
     local -a dependency_args=(--only-binary litellm)
-    uv_bin="$(command -v uv 2>/dev/null || true)"
-    [[ -z "${uv_bin}" ]] \
-        && die "uv not found on PATH — cannot update Python CLI. Install uv, then re-run the upgrade."
+    resolve_upgrade_uv
+    uv_bin="${UV_BIN}"
 
     local preflight_python="${DEFENSECLAW_VENV}/bin/python"
     if [[ ! -x "${preflight_python}" ]]; then
@@ -497,7 +655,6 @@ recover_interrupted_phase_two() {
     [[ -e "${journal}" || -L "${journal}" ]] || return 0
     [[ "${PLAN_ONLY}" -eq 0 ]] \
         || die "An interrupted hard-cut recovery is active. Re-run without --plan so the authenticated 0.8.4 bridge can be restored first."
-
     section "Recovering Interrupted Hard-Cut Upgrade"
     local recovery_fields wheel expected_digest receipt_status recorded_config_path uv_bin venv_python
     recovery_fields="$(python3 - "${journal}" "${DEFENSECLAW_HOME}" <<'PY'
@@ -767,7 +924,15 @@ if status in {"succeeded", "rolled_back"}:
     if gateway_version.returncode != 0 or reported_versions != [expected_version]:
         raise SystemExit("terminal phase-two gateway version is not proven")
     cli_version = subprocess.run(
-        [str(venv_python), "-I", "-B", "-c", "from defenseclaw import __version__; print(__version__)"],
+        [
+            str(venv_python),
+            "-X",
+            "pycache_prefix=/dev/null",
+            "-I",
+            "-B",
+            "-c",
+            "from defenseclaw import __version__; print(__version__)",
+        ],
         capture_output=True,
         text=True,
         timeout=10,
@@ -816,9 +981,9 @@ PY
        && -n "${recorded_config_path}" ]] \
         || die "Interrupted phase-two recovery journal did not yield a pending bridge plan."
 
-    uv_bin="$(command -v uv 2>/dev/null || true)"
-    [[ -n "${uv_bin}" ]] \
-        || die "uv is required to bootstrap the retained 0.8.4 recovery controller."
+    prepare_upgrade_staging
+    resolve_upgrade_uv
+    uv_bin="${UV_BIN}"
     venv_python="${DEFENSECLAW_VENV}/bin/python"
     python3 - "${journal_root}/phase-two-mutator.lease" "${uv_bin}" \
         "${DEFENSECLAW_VENV}" "${venv_python}" "${wheel}" "${expected_digest}" <<'PY' \
@@ -4044,6 +4209,14 @@ ensure_upgrade_lock_before_mutation() {
     fi
 }
 
+early_recovery_exit_trap() {
+    local status=$?
+    trap - EXIT
+    cleanup_upgrade_staging
+    release_upgrade_lock
+    exit "${status}"
+}
+
 # ── Argument Parsing ──────────────────────────────────────────────────────────
 
 YES=0
@@ -4100,7 +4273,7 @@ if [[ -e "${UPGRADE_RECOVERY_ROOT}/phase-one-active.json" \
       || -e "${UPGRADE_RECOVERY_ROOT}/phase-two-active.json" \
       || -L "${UPGRADE_RECOVERY_ROOT}/phase-two-active.json" ]]; then
     acquire_upgrade_lock
-    trap release_upgrade_lock EXIT
+    trap early_recovery_exit_trap EXIT
     recover_interrupted_phase_two
     recover_interrupted_bridge_phase1
     if [[ "${BRIDGE_PHASE1_RECOVERY_TERMINAL_CONTROLLER}" == "bridge" \
@@ -4108,6 +4281,7 @@ if [[ -e "${UPGRADE_RECOVERY_ROOT}/phase-one-active.json" \
           && "${RELEASE_VERSION#v}" == "${BRIDGE_PHASE1_RECOVERY_TERMINAL_VERSION}" ]]; then
         section "Upgrade Complete"
         ok "Recovered and verified DefenseClaw ${BRIDGE_PHASE1_RECOVERY_TERMINAL_VERSION}"
+        cleanup_upgrade_staging
         release_upgrade_lock
         trap - EXIT
         exit 0
@@ -4164,7 +4338,7 @@ STAGED_FINAL_MIN_PROTOCOL=""
 POST_HARD_CUT_FINAL_VERSION=""
 EXISTING_BRIDGE_REFRESH=0
 HARD_CUT_CURSOR_RECOVERY=0
-HARD_CUT_CURSOR_RECOVERY_CANDIDATE=0
+HARD_CUT_CURSOR_RECOVERY_SOURCE_VERSION=""
 
 # ── Detect currently installed version ───────────────────────────────────────
 
@@ -4480,18 +4654,26 @@ valid = (
     and isinstance(cursor.get("applied"), list)
     and "0.8.5" in cursor["applied"]
 )
-clean_086_candidate = (
-    current_version == "0.8.6"
+release_owned_missing_cursor_candidate = (
+    current_version in {"0.8.6", "0.8.7"}
     and cursor_absent
     and isinstance(config, dict)
     and type(config.get("config_version")) is int
     and config["config_version"] == 8
 )
-print("valid" if valid else ("clean-0.8.6-missing-cursor" if clean_086_candidate else "invalid"))
+print(
+    "valid"
+    if valid
+    else (
+        f"release-owned-missing-cursor:{current_version}"
+        if release_owned_missing_cursor_candidate
+        else "invalid"
+    )
+)
 PY
 )"
-    if [[ "${hard_cut_state}" == "clean-0.8.6-missing-cursor" ]]; then
-        HARD_CUT_CURSOR_RECOVERY_CANDIDATE=1
+    if [[ "${hard_cut_state}" == "release-owned-missing-cursor:"* ]]; then
+        HARD_CUT_CURSOR_RECOVERY_SOURCE_VERSION="${hard_cut_state#*:}"
     elif [[ "${hard_cut_state}" != "valid" ]]; then
         die "CLI and gateway report hard-cut version ${CURRENT_VERSION}, but config-v8 migration state is absent or invalid and no recoverable journal is active. No changes were made.
   Unsupported manual overwrite detected.
@@ -4943,7 +5125,7 @@ configure_release
 
 section "Downloading Artifacts"
 
-STAGING_DIR="$(mktemp -d)"
+prepare_upgrade_staging
 BRIDGE_PHASE1=0
 BRIDGE_ROLLBACK_ARMED=0
 BRIDGE_ROLLBACK_RUNNING=0
@@ -4979,7 +5161,7 @@ upgrade_exit_trap() {
     fi
     [[ -z "${BRIDGE_GATEWAY_INSTALL_TEMP:-}" ]] || rm -f "${BRIDGE_GATEWAY_INSTALL_TEMP}"
     [[ -z "${BRIDGE_CANDIDATE_VENV:-}" ]] || rm -rf "${BRIDGE_CANDIDATE_VENV}"
-    [[ -z "${STAGING_DIR:-}" ]] || rm -rf "${STAGING_DIR}"
+    cleanup_upgrade_staging
     release_upgrade_lock
     if [[ "${rollback_status}" -ne 0 ]]; then
         err "Automatic source rollback was incomplete. Recovery evidence was preserved at ${BACKUP_DIR:-unknown}."
@@ -5694,68 +5876,28 @@ prepare_release_contract() {
     preflight_release_artifacts
 }
 
-authenticate_clean_086_missing_cursor_source() {
-    local requested_version="${RELEASE_VERSION}"
-    local source_root="${STAGING_DIR}/authenticated-source-0.8.6"
-    local source_wheel
-    mkdir -p "${source_root}"
+authorize_cursorless_field_recovery() {
+    local source_version="${HARD_CUT_CURSOR_RECOVERY_SOURCE_VERSION}"
+    [[ "${source_version}" =~ ^0[.]8[.][67]$ \
+       && "${CURRENT_VERSION}" == "${source_version}" \
+       && "${CURRENT_GATEWAY_VERSION}" == "${source_version}" ]] \
+        || die "Cursorless field recovery is restricted to matching 0.8.6 or 0.8.7 CLI and gateway versions. No changes were made."
 
-    RELEASE_VERSION="0.8.6"
-    configure_release
-    section "Authenticating Published 0.8.6 Source"
-    prepare_release_contract
-    python3 - "${RELEASE_PROVENANCE_FILE}" "${UPGRADE_MANIFEST_FILE}" <<'PY' \
-        || die "Published 0.8.6 lacks the exact source-install identity required for missing-cursor recovery. No changes were made."
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as stream:
-    provenance = json.load(stream)
-with open(sys.argv[2], encoding="utf-8") as stream:
-    manifest = json.load(stream)
-identity = provenance.get("source_install_identity")
-if not (
-    provenance.get("release_version") == "0.8.6"
-    and isinstance(identity, dict)
-    and identity.get("schema_version") == 1
-    and identity.get("source_release") == "0.8.6"
-    and type(identity.get("source_install_compatibility_epoch")) is int
-    and identity["source_install_compatibility_epoch"] == 2
-    and type(identity.get("runtime_config_version")) is int
-    and identity["runtime_config_version"] == 8
-    and manifest.get("schema_version") == 2
-    and manifest.get("release_version") == "0.8.6"
-    and type(manifest.get("runtime_config_version")) is int
-    and manifest["runtime_config_version"] == 8
-    and manifest.get("required_bridge_version") == "0.8.4"
-    and "0.8.5" in manifest.get("required_cli_migrations", [])
-):
-    raise SystemExit("0.8.6 source-install identity differs")
-PY
-
-    fetch_artifact "${WHL_URL}" "${source_root}/${WHL_NAME}"
-    verify_checksum "${source_root}/${WHL_NAME}" "${WHL_NAME}"
-    source_wheel="${source_root}/${MATERIALIZED_WHL_NAME}"
-    materialize_protected_artifact \
-        "${source_root}/${WHL_NAME}" "${source_wheel}" "${VERIFIED_CHECKSUM}" \
-        || die "Could not materialize the authenticated 0.8.6 source wheel. No changes were made."
-    preflight_python_wheel "${source_wheel}"
-
-    DEFENSECLAW_HOME="${DATA_DIR}" DEFENSECLAW_CONFIG="${CONFIG_PATH}" \
-        "${DEFENSECLAW_VENV}/bin/python" -I -B - \
-        "${source_wheel}" "${CONFIG_PATH}" "${DATA_DIR}" "${BACKUP_ROOT}" <<'PY' \
-        || die "Installed 0.8.6 mutable state is not the exact clean missing-cursor shape. No changes were made."
-import hashlib
+    "${DEFENSECLAW_VENV}/bin/python" -I -B - \
+        "${CONFIG_PATH}" "${DATA_DIR}" "${UPGRADE_RECOVERY_ROOT}" \
+        "${source_version}" <<'PY' \
+        || die "Installed ${source_version} state is not the supported public cursorless first-run shape. No changes were made."
 import os
-from pathlib import Path, PurePosixPath
 import stat
 import sys
-import zipfile
 
-wheel_path, config_path, data_dir, backup_root = map(os.path.abspath, sys.argv[1:])
+import yaml
+
+config_path, data_dir, recovery_root = map(os.path.abspath, sys.argv[1:4])
+source_version = sys.argv[4]
 uid = os.geteuid()
-sys.path.insert(0, wheel_path)
-from defenseclaw.observability.v8_config import load_validate_v8  # noqa: E402
+if source_version not in {"0.8.6", "0.8.7"}:
+    raise RuntimeError("unsupported cursorless source version")
 
 
 def read_regular(path, limit):
@@ -5764,140 +5906,43 @@ def read_regular(path, limit):
         stat.S_ISLNK(info.st_mode)
         or not stat.S_ISREG(info.st_mode)
         or info.st_uid != uid
+        or stat.S_IMODE(info.st_mode) & 0o022
         or not 0 < info.st_size <= limit
     ):
-        raise RuntimeError(f"unsafe clean 0.8.6 file: {path}")
-    descriptor = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        opened = os.fstat(descriptor)
-        if not os.path.samestat(info, opened):
-            raise RuntimeError("clean 0.8.6 file changed while opening")
-        raw = b""
-        while len(raw) <= info.st_size:
-            chunk = os.read(descriptor, info.st_size + 1 - len(raw))
-            if not chunk:
-                break
-            raw += chunk
-        if len(raw) != info.st_size:
-            raise RuntimeError("clean 0.8.6 file changed while reading")
-        return raw
-    finally:
-        os.close(descriptor)
+        raise RuntimeError(f"unsafe cursorless field-state file: {path}")
+    with open(path, "rb") as stream:
+        raw = stream.read(limit + 1)
+    if len(raw) != info.st_size:
+        raise RuntimeError("cursorless field-state file changed while reading")
+    return raw
 
 
-if os.path.lexists(os.path.join(data_dir, ".migration_state.json")):
-    raise RuntimeError("clean 0.8.6 recovery requires a completely absent migration cursor")
-source = load_validate_v8(
-    read_regular(config_path, 4 * 1024 * 1024),
-    source_name="config.yaml",
-).source
-legacy_roots = {"audit_db", "audit_sinks", "judge_bodies_db", "otel", "splunk"}
+config = yaml.safe_load(read_regular(config_path, 4 * 1024 * 1024))
 if (
-    type(source.get("config_version")) is not int
-    or source["config_version"] != 8
-    or "observability" not in source
-    or source["observability"] != {}
-    or any(name in source for name in legacy_roots)
+    not isinstance(config, dict)
+    or type(config.get("config_version")) is not int
+    or config["config_version"] != 8
 ):
-    raise RuntimeError("clean 0.8.6 config has migration or observability residue")
+    raise RuntimeError("config does not declare integer config_version 8")
 
-
-def decision_name(name):
-    return (
-        name in {
-            "DEFENSECLAW_DISABLE_REDACTION",
-            "DEFENSECLAW_JSONL_DISABLE",
-            "DEFENSECLAW_PERSIST_JUDGE",
-            "OTEL_SERVICE_NAME",
-        }
-        or name.startswith(("OTEL_", "DEFENSECLAW_OTEL_", "OPENCLAW_OTEL_"))
-    )
-
-
-if any(decision_name(name) for name in os.environ):
-    raise RuntimeError("clean 0.8.6 recovery refuses ambient observability decisions")
-environment_path = os.path.join(data_dir, ".env")
-if os.path.lexists(environment_path):
-    environment = read_regular(environment_path, 1024 * 1024).decode("utf-8")
-    for raw_line in environment.splitlines():
-        line = raw_line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            name = line.removeprefix("export ").split("=", 1)[0].strip()
-            if decision_name(name):
-                raise RuntimeError("clean 0.8.6 environment has observability decisions")
+cursor_path = os.path.join(data_dir, ".migration_state.json")
+if os.path.lexists(cursor_path):
+    raise RuntimeError("migration cursor must be wholly absent")
 
 for residue in (
     config_path + ".pre-observability-migration.bak",
     os.path.join(data_dir, ".migration_state.fresh.pending.json"),
     os.path.join(data_dir, ".upgrade-receipts"),
-    os.path.join(data_dir, ".upgrade-recovery"),
+    os.path.join(recovery_root, "phase-one-active.json"),
+    os.path.join(recovery_root, "phase-two-active.json"),
 ):
     if os.path.lexists(residue):
-        raise RuntimeError("clean 0.8.6 state has upgrade or migration residue")
-if os.path.lexists(backup_root):
-    backup_info = os.lstat(backup_root)
-    if (
-        stat.S_ISLNK(backup_info.st_mode)
-        or not stat.S_ISDIR(backup_info.st_mode)
-        or backup_info.st_uid != uid
-        or any(Path(backup_root).iterdir())
-    ):
-        raise RuntimeError("clean 0.8.6 state has prior or unsafe upgrade backups")
-
-expected = {}
-with zipfile.ZipFile(wheel_path) as archive:
-    infos = archive.infolist()
-    if len(infos) > 8192 or len({info.filename for info in infos}) != len(infos):
-        raise RuntimeError("authenticated 0.8.6 wheel has unsafe members")
-    for info in infos:
-        path = PurePosixPath(info.filename)
-        prefix = ("defenseclaw", "_data", "local_observability_stack")
-        if path.is_absolute() or ".." in path.parts:
-            raise RuntimeError("authenticated 0.8.6 wheel has an unsafe path")
-        if info.is_dir() or path.parts[:3] != prefix or len(path.parts) <= 3:
-            continue
-        if info.file_size > 64 * 1024 * 1024:
-            raise RuntimeError("authenticated 0.8.6 stack member exceeds its bound")
-        expected["/".join(path.parts[3:])] = hashlib.sha256(archive.read(info)).hexdigest()
-if not expected:
-    raise RuntimeError("authenticated 0.8.6 wheel lacks its local stack")
-
-stack_root = os.path.join(data_dir, "observability-stack")
-if not os.path.lexists(stack_root):
-    raise SystemExit(0)
-stack_info = os.lstat(stack_root)
-if (
-    stat.S_ISLNK(stack_info.st_mode)
-    or not stat.S_ISDIR(stack_info.st_mode)
-    or stack_info.st_uid != uid
-):
-    raise RuntimeError("clean 0.8.6 local stack is missing or unsafe")
-actual = {}
-for current, names, files in os.walk(stack_root, topdown=True, followlinks=False):
-    current_info = os.lstat(current)
-    if stat.S_ISLNK(current_info.st_mode) or not stat.S_ISDIR(current_info.st_mode):
-        raise RuntimeError("clean 0.8.6 local stack has an unsafe directory")
-    for name in names:
-        child = os.lstat(os.path.join(current, name))
-        if stat.S_ISLNK(child.st_mode) or not stat.S_ISDIR(child.st_mode):
-            raise RuntimeError("clean 0.8.6 local stack has an unsafe child")
-    for name in files:
-        path = os.path.join(current, name)
-        relative = os.path.relpath(path, stack_root).replace(os.sep, "/")
-        if len(actual) >= 4096:
-            raise RuntimeError("clean 0.8.6 local stack exceeds its file bound")
-        actual[relative] = hashlib.sha256(read_regular(path, 64 * 1024 * 1024)).hexdigest()
-if actual != expected:
-    raise RuntimeError("clean 0.8.6 local stack differs from the authenticated release")
+        raise RuntimeError("active or incomplete upgrade state is present")
 PY
 
     HARD_CUT_CURSOR_RECOVERY=1
-    RELEASE_VERSION="${requested_version}"
-    configure_release
-    ok "Authenticated the exact clean 0.8.6 missing-cursor compatibility state"
+    prepare_release_contract
+    ok "Accepted exact public ${source_version} cursorless first-run state"
 }
 
 
@@ -7265,9 +7310,8 @@ prepare_bridge_phase1_cli_preflight() {
     local uv_bin preflight_venv preflight_version
     [[ -n "${whl_name:-}" && -f "${STAGING_DIR}/${whl_name}" ]] \
         || die "Bridge CLI artifact is unavailable for preflight; no services changed."
-    uv_bin="$(command -v uv 2>/dev/null || true)"
-    [[ -n "${uv_bin}" ]] \
-        || die "uv not found on PATH — cannot prepare the 0.8.4 bridge without a rollback-safe CLI replacement. No services changed."
+    resolve_upgrade_uv
+    uv_bin="${UV_BIN}"
 
     [[ -d "${DEFENSECLAW_VENV}" && ! -L "${DEFENSECLAW_VENV}" ]] \
         || die "The installed CLI environment is not a managed regular directory at ${DEFENSECLAW_VENV}. No services changed."
@@ -7288,7 +7332,8 @@ if not os.path.islink(launcher) or os.path.realpath(launcher) != os.path.realpat
     )
 PY
 
-    BRIDGE_PYTHON_INTERPRETER="$("${DEFENSECLAW_VENV}/bin/python" -I -B -c 'import os,sys; print(os.path.realpath(getattr(sys, "_base_executable", "") or sys.executable))')" \
+    BRIDGE_PYTHON_INTERPRETER="$("${DEFENSECLAW_VENV}/bin/python" -I -B -c \
+        'import os,sys; print(os.path.realpath(getattr(sys, "_base_executable", "") or sys.executable))')" \
         || die "Could not resolve the source Python interpreter; no services changed."
     [[ -x "${BRIDGE_PYTHON_INTERPRETER}" ]] \
         || die "The source Python interpreter is unavailable; no services changed."
@@ -7476,7 +7521,8 @@ activate_bridge_phase1_cli() {
     local uv_bin source_venv_backup bridge_version bridge_seed
     [[ -n "${whl_name:-}" && -f "${BRIDGE_WHEEL_CUSTODY_PATH}" ]] \
         || die "Bridge CLI artifact is unavailable during activation"
-    uv_bin="$(command -v uv 2>/dev/null || true)"
+    resolve_upgrade_uv
+    uv_bin="${UV_BIN}"
     source_venv_backup="${BACKUP_DIR}/phase1-source-venv"
     [[ ! -e "${source_venv_backup}" && ! -L "${source_venv_backup}" ]] \
         || die "Phase-1 source CLI custody path already exists"
@@ -7881,9 +7927,8 @@ prepare_hard_cut_target_controller() {
         || die "Could not materialize the authenticated hard-cut target controller. No services changed."
     preflight_python_wheel "${materialized_wheel}"
 
-    uv_bin="$(command -v uv 2>/dev/null || true)"
-    [[ -n "${uv_bin}" ]] \
-        || die "uv not found on PATH — cannot prepare the fresh target controller. No services changed."
+    resolve_upgrade_uv
+    uv_bin="${UV_BIN}"
     [[ -x "${DEFENSECLAW_VENV}/bin/python" ]] \
         || die "The installed bridge Python environment is unavailable. No services changed."
     base_python="$("${DEFENSECLAW_VENV}"/bin/python -I -B -c \
@@ -8082,21 +8127,22 @@ continue_post_hard_cut_upgrade() {
     ok "${OBSERVABILITY_V8_HARD_CUT_VERSION} is healthy; continuing to ${final_version}"
 
     # The authenticated bootstrap controller is now installed outside the
-    # private target staging directory.  Drop the completed hard-cut handoff
-    # custody, but keep this resolver's cross-process lock until the ordinary
-    # post-cut child and any inherited mutators have exited.  The completed
-    # 0.8.4 hard-cut rollback is not re-armed for this later transaction.
+    # private target staging directory. Keep the authenticated private uv
+    # available to its frozen final-hop controller; the existing exit trap
+    # removes staging after that child and any inherited mutators have exited.
+    # The completed 0.8.4 hard-cut rollback is not re-armed for this later
+    # transaction.
     unset DEFENSECLAW_STAGED_UPGRADE
     unset DEFENSECLAW_STAGED_BRIDGE_VERSION
     unset DEFENSECLAW_STAGED_BRIDGE_ARTIFACT_DIR
     unset DEFENSECLAW_STAGED_TARGET_CONTROLLER_VERSION
-    [[ -z "${STAGING_DIR:-}" ]] || rm -rf "${STAGING_DIR}"
-    STAGING_DIR=""
+    retain_authenticated_upgrade_uv_staging
     # The immutable 0.8.5 controller gives child commands 30 seconds but owns
     # a separate 60-second, version-aware gateway health poll. Current gateway
     # binaries consume this process-scoped handoff marker after safe launch so
     # that the controller, rather than both layers, owns the readiness wait.
     env -u UV_CONSTRAINT -u UV_OVERRIDE -u UV_EXCLUDE_NEWER \
+        PATH="${UV_BIN%/*}:${INSTALL_DIR}:${PATH}" \
         DEFENSECLAW_UPGRADE_FRESH_PROCESS=1 \
         "${DEFENSECLAW_VENV}/bin/defenseclaw" upgrade --yes --version "${final_version}" \
         || final_status=$?
@@ -8133,10 +8179,11 @@ validate_tarball_members() {
     done <<< "${details}"
 }
 
-if [[ "${HARD_CUT_CURSOR_RECOVERY_CANDIDATE}" -eq 1 ]]; then
-    authenticate_clean_086_missing_cursor_source
+if [[ -n "${HARD_CUT_CURSOR_RECOVERY_SOURCE_VERSION}" ]]; then
+    authorize_cursorless_field_recovery
+else
+    prepare_release_contract
 fi
-prepare_release_contract
 FINAL_RELEASE_PROVENANCE_BRIDGE_CHECKSUMS_SHA256="${RELEASE_PROVENANCE_BRIDGE_CHECKSUMS_SHA256}"
 resolve_staged_upgrade
 if version_lt "${RELEASE_VERSION}" "0.8.4"; then
@@ -9181,9 +9228,7 @@ else
     die "Gateway version verification failed: expected ${RELEASE_VERSION}; binary reported: $(printf '%s' "${gw_version_output}" | head -n1 | cut -c1-200)"
 fi
 
-UV_BIN="$(command -v uv 2>/dev/null || true)"
-[[ -z "${UV_BIN}" ]] \
-    && die "uv not found on PATH — cannot update Python CLI. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+resolve_upgrade_uv
 
 if [[ "${BRIDGE_PHASE1}" -eq 1 ]]; then
     activate_bridge_phase1_cli
@@ -9464,9 +9509,11 @@ if [[ -n "${STAGED_FINAL_VERSION}" ]]; then
     export DEFENSECLAW_CONFIG="${CONFIG_PATH}"
     export OPENCLAW_HOME="${OPENCLAW_HOME}"
     target_status=0
+    require_authenticated_upgrade_uv_handoff
     env -u UV_OVERRIDE \
         UV_CONSTRAINT="${HISTORICAL_BOOTSTRAP_CONSTRAINTS_FILE}" \
         UV_EXCLUDE_NEWER="${HISTORICAL_BOOTSTRAP_EXCLUDE_NEWER}" \
+        PATH="${UV_BIN%/*}:${INSTALL_DIR}:${PATH}" \
         "${TARGET_CONTROLLER_CLI}" upgrade --yes --version "${final_version}" \
         || target_status=$?
     if [[ "${target_status}" -eq 0 ]]; then

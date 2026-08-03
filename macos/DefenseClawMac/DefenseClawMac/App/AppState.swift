@@ -1095,7 +1095,7 @@ final class AppState {
             releaseTag: runtimeUpdate.tag
         ) else {
             let failure = """
-            The available release identifier is not canonical, so no copy/paste command was produced. No installed files or services were changed. Follow the authenticated release-asset instructions at https://github.com/cisco-ai-defense/defenseclaw/blob/main/docs/CLI.md#upgrade.
+            The available release identifier is not canonical, so no copy/paste command was produced. No installed files or services were changed. Follow the authenticated release-asset instructions at https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/upgrade/.
             """
             runtimeUpgradeLogTail = ""
             runtimeUpgradeLog = failure
@@ -1459,7 +1459,7 @@ final class AppState {
             notices.append(.init(level: .warn, message: "LLM guardrail not configured - set it up in Setup → Guardrail"))
         }
         if !skillScannerAvailable {
-            notices.append(.init(level: .warn, message: "skill-scanner not on PATH - run: pip install skill-scanner"))
+            notices.append(.init(level: .warn, message: "skill-scanner unavailable - repair the DefenseClaw installation"))
         }
         if silentBypassCount > 0 {
             notices.append(.init(level: .warn, message: "\(silentBypassCount) silent LLM bypass event(s) in the last 5m - see Alerts -> egress"))
@@ -1513,7 +1513,7 @@ final class AppState {
             return "\(name) connector has seen 0 hook events after \(formatted) - normal until Claude Code emits a hook event; verify Claude Code hooks if this persists"
         case "omnigent":
             return "\(name) connector has seen 0 policy events after \(formatted) - normal until OmniGent emits a supported policy callback; verify OmniGent policy setup if this persists"
-        case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode":
+        case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "amp":
             return "\(name) connector has seen 0 hook events after \(formatted) - verify connector hook setup if this persists"
         default:
             return "\(name) connector has seen 0 requests after \(formatted) - verify your agent is dialing the gateway port (gateway.port)"
@@ -1968,7 +1968,7 @@ final class AppState {
     /// Connectors-table fallback roster.
     static let knownConnectors = ["openclaw", "zeptoclaw", "codex", "claudecode", "hermes",
                                   "cursor", "windsurf", "geminicli", "copilot", "openhands",
-                                  "antigravity", "opencode", "omnigent"]
+                                  "antigravity", "opencode", "amp", "omnigent"]
 
     func configuredConnectors() -> [String] {
         let fromHealth = health.connectors.map(\.name)

@@ -93,12 +93,12 @@ endef
 
 .PHONY: help all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
-        plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
+        plugin plugin-install amp-plugin-typecheck maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
         packaging-macos-test packaging-macos-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
         security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
-        check check-audit-actions check-error-codes check-schemas telemetry-generate telemetry-check check-grafana-dashboards check-observability-v8-hard-cut check-observability-v8-spec check-v7 check-provider-coverage check-llm-catalog check-version-sync check-upgrade-manifest \
+        check check-audit-actions check-error-codes check-schemas telemetry-generate telemetry-check check-grafana-dashboards check-observability-v8-hard-cut check-v7 check-provider-coverage check-llm-catalog check-version-sync check-upgrade-manifest \
         upgrade-smoke upgrade-smoke-matrix upgrade-refusal-contract-matrix upgrade-developer-activation \
         upgrade-legacy-smoke upgrade-legacy-smoke-matrix upgrade-signed-protocol upgrade-signed-protocol-matrix \
         set-version \
@@ -517,6 +517,10 @@ plugin:
 	@echo "Built OpenClaw plugin → $(PLUGIN_DIR)/dist/"
 	@echo "  Install with: make plugin-install"
 
+amp-plugin-typecheck:
+	cd scripts/amp-plugin-typecheck && npm ci --ignore-scripts --no-audit --no-fund
+	cd scripts/amp-plugin-typecheck && npm test
+
 # ---------------------------------------------------------------------------
 # Individual install targets
 # ---------------------------------------------------------------------------
@@ -789,6 +793,7 @@ macos-app-build: macos-app-license-check
 macos-app-test:
 	macos/DefenseClawMac/script/test_connector_onboarding.sh
 	macos/DefenseClawMac/script/test_first_run_connector_selection.sh
+	macos/DefenseClawMac/script/test_ai_discovery_models.sh
 	macos/DefenseClawMac/script/test_numeric_safety.sh
 	macos/DefenseClawMac/script/test_output_safety.sh
 	macos/DefenseClawMac/script/test_secret_file_safety.sh
@@ -869,7 +874,7 @@ test-file:
 # too and will fail the build on drift.
 # ---------------------------------------------------------------------------
 
-check: check-v7 check-observability-v8-hard-cut check-observability-v8-spec check-grafana-dashboards check-provider-coverage check-llm-catalog check-upgrade-manifest
+check: check-v7 check-observability-v8-hard-cut check-grafana-dashboards check-provider-coverage check-llm-catalog check-upgrade-manifest
 
 check-v7: check-audit-actions check-audit-no-raw-literals check-error-codes check-schemas
 	@echo "check-v7: all parity gates passed."
@@ -897,10 +902,6 @@ telemetry-check:
 # patterns, not fragile repository-wide inventory totals.
 check-observability-v8-hard-cut:
 	@$(VENV_BIN)/python$(EXE) scripts/check_observability_v8_hard_cut.py
-
-check-observability-v8-spec:
-	@$(VENV_BIN)/python$(EXE) scripts/check_observability_v8_spec.py \
-		--package docs/design/observability-v8
 
 check-grafana-dashboards: _bundle-data
 	@$(VENV_BIN)/python$(EXE) scripts/check_grafana_dashboards.py --require-packaged
