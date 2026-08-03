@@ -676,8 +676,8 @@ jobs:
     env:
       DC_WINDOWS_STATE: D:\DefenseClaw-PR655-Copilot-Delta-State
       DC_COPILOT_PACKAGE_ROOT: D:\DefenseClaw-PR655-Copilot-Delta-Package
-      DC_E2E_RESULTS: ${{ runner.temp }}\connector-live-e2e-results-copilot.jsonl
-      DC_E2E_ARTIFACTS: ${{ runner.temp }}\defenseclaw-copilot-live-e2e-logs
+      DC_E2E_RESULTS: ${{ github.workspace }}\connector-live-e2e-results-copilot.jsonl
+      DC_E2E_ARTIFACTS: ${{ github.workspace }}\defenseclaw-copilot-live-e2e-logs
       DC_COPILOT_DEDICATED_RUNNER: "1"
       DC_COPILOT_VERSION: "1.0.77"
       COPILOT_GITHUB_TOKEN: ""
