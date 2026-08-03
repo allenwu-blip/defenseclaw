@@ -100,18 +100,33 @@ def _normalized(path: str) -> str:
     return os.path.normcase(os.path.abspath(os.path.expanduser(path)))
 
 
-def _managed_runtime(argv: list[str]) -> tuple[bool, str]:
+def _managed_runtime(
+    argv: list[str],
+    *,
+    expected_runtime_paths: set[str] | None = None,
+) -> tuple[bool, str]:
     if not argv:
         return False, ""
     target = os.path.expanduser(argv[0])
     basename = os.path.basename(target).lower()
-    if basename in {"cursor-hook.sh", "cursor-hook.ps1"} and len(argv) == 1:
-        return True, target
-    if basename in {"defenseclaw-hook", "defenseclaw-hook.exe"} and argv[1:] == [
-        "hook",
-        "--connector",
-        "cursor",
-    ]:
+    is_managed_shape = basename in {"cursor-hook.sh", "cursor-hook.ps1"} and len(argv) == 1
+    is_managed_shape = is_managed_shape or (
+        basename in {"defenseclaw-hook", "defenseclaw-hook.exe"}
+        and argv[1:]
+        == [
+            "hook",
+            "--connector",
+            "cursor",
+        ]
+    )
+    # A current contract lock turns the runtime path into the ownership
+    # boundary. Cursor preserves foreign hooks, including commands whose leaf
+    # happens to be cursor-hook.ps1, so a basename match must not make those
+    # registrations managed. The empty-set fallback retains the established
+    # offline/legacy validation used before a lock has been published.
+    if is_managed_shape and (
+        not expected_runtime_paths or _normalized(target) in expected_runtime_paths
+    ):
         return True, target
     return False, ""
 
@@ -124,6 +139,9 @@ def validate_cursor_registration(
     require_runtime_markers: bool = True,
 ) -> CursorRegistrationValidation:
     """Validate Cursor schema, event coverage, runtime binding, and advisory mode."""
+    expected_paths = {
+        _normalized(str(value)) for value in expected_runtime_paths if str(value).strip()
+    }
     try:
         document = _read_regular_json(path)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -149,7 +167,10 @@ def validate_cursor_registration(
                 continue
             command = str(entry.get("command") or "").strip()
             argv = split_cursor_hook_command(command, platform_name=platform_name)
-            is_managed, runtime_path = _managed_runtime(argv)
+            is_managed, runtime_path = _managed_runtime(
+                argv,
+                expected_runtime_paths=expected_paths,
+            )
             if not is_managed:
                 continue
             if set(entry) != _ENTRY_KEYS:
@@ -212,7 +233,6 @@ def validate_cursor_registration(
         return CursorRegistrationValidation(False, "DefenseClaw Cursor entries use inconsistent commands")
     command = next(iter(commands))
     runtime_path = next(iter(runtime_values))
-    expected_paths = {_normalized(value) for value in expected_runtime_paths if str(value).strip()}
     if expected_paths and _normalized(runtime_path) not in expected_paths:
         return CursorRegistrationValidation(
             False,

@@ -475,6 +475,50 @@ class TestCheckConnectorHooks(unittest.TestCase):
         cfg.guardrail.effective_hook_fail_mode.return_value = "closed" if fail_closed else "open"
         return cfg, hooks_path, runtime
 
+    def _write_cursor_lock(self, tmp: str, hooks_path: str, runtime: str) -> None:
+        with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+            json.dump(
+                {
+                    "connectors": {
+                        "cursor": {
+                            "locations": {
+                                "hook_config_paths": [hooks_path],
+                                "hook_script_paths": [runtime],
+                            }
+                        }
+                    }
+                },
+                fh,
+            )
+
+    def _locked_cursor_case(self, tmp: str):
+        cfg, hooks_path, runtime = self._cursor_runtime_case(
+            tmp,
+            mode="observe",
+            fail_closed=False,
+        )
+        cfg.data_dir = tmp
+        with open(hooks_path, encoding="utf-8") as fh:
+            document = json.load(fh)
+        return cfg, hooks_path, runtime, document
+
+    def _run_locked_cursor_doctor(self, tmp: str, cfg, hooks_path: str, runtime: str, document):
+        with open(hooks_path, "w", encoding="utf-8") as fh:
+            json.dump(document, fh)
+        self._write_cursor_lock(tmp, hooks_path, runtime)
+        r = _DoctorResult()
+        _check_cursor_configured_runtime(
+            cfg,
+            hooks_path,
+            "Cursor hooks",
+            r,
+            platform_name="nt",
+            probe_runtime=False,
+        )
+        with open(hooks_path, encoding="utf-8") as fh:
+            after = json.load(fh)
+        return r.checks[-1], after
+
     def test_cursor_doctor_validates_configured_windows_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg, hooks_path, runtime = self._cursor_runtime_case(
@@ -499,6 +543,59 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertIn("authority=user-hook advisory", r.checks[-1]["detail"])
         self.assertIn("hard-action=unsupported", r.checks[-1]["detail"])
         self.assertNotIn("inspect-tool.sh", r.checks[-1]["detail"])
+
+    def test_cursor_doctor_ignores_high_cardinality_foreign_same_basename_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, runtime, document = self._locked_cursor_case(tmp)
+            for event, entries in document["hooks"].items():
+                foreign = [
+                    {
+                        "type": "command",
+                        "command": "& '"
+                        + os.path.join(tmp, "foreign", event, f"{index:02d}", "cursor-hook.ps1").replace(
+                            "'", "''"
+                        )
+                        + "'",
+                    }
+                    for index in range(22)
+                ]
+                document["hooks"][event] = [*foreign, *entries]
+            check, after = self._run_locked_cursor_doctor(tmp, cfg, hooks_path, runtime, document)
+
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("entries=21", check["detail"])
+        self.assertEqual(json.dumps(after, sort_keys=True), json.dumps(document, sort_keys=True))
+
+    def test_cursor_doctor_still_rejects_duplicate_exact_locked_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, runtime, document = self._locked_cursor_case(tmp)
+            document["hooks"]["preToolUse"].append(dict(document["hooks"]["preToolUse"][0]))
+            check, _after = self._run_locked_cursor_doctor(tmp, cfg, hooks_path, runtime, document)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("duplicated: preToolUse", check["detail"])
+
+    def test_cursor_doctor_foreign_same_basename_cannot_replace_locked_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, runtime, document = self._locked_cursor_case(tmp)
+            foreign = os.path.join(tmp, "foreign", "cursor-hook.ps1")
+            document["hooks"]["preToolUse"][0]["command"] = "& '" + foreign.replace("'", "''") + "'"
+            check, _after = self._run_locked_cursor_doctor(tmp, cfg, hooks_path, runtime, document)
+
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("incomplete: preToolUse", check["detail"])
+
+    def test_cursor_doctor_preserves_tampered_command_as_foreign(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, hooks_path, runtime, document = self._locked_cursor_case(tmp)
+            tampered = dict(document["hooks"]["preToolUse"][0])
+            tampered["command"] += " -OperatorChanged"
+            document["hooks"]["preToolUse"].insert(0, tampered)
+            check, after = self._run_locked_cursor_doctor(tmp, cfg, hooks_path, runtime, document)
+
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("entries=21", check["detail"])
+        self.assertEqual(after["hooks"]["preToolUse"][0], tampered)
 
     @patch("defenseclaw.commands.cmd_doctor._probe_cursor_windows_runtime")
     def test_cursor_doctor_is_passive_by_default(self, probe_mock) -> None:

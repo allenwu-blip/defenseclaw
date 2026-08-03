@@ -36,6 +36,13 @@ func TestHookLauncherPayloadInterfaceIsCanonicalAndRequired(t *testing.T) {
 	}
 }
 
+func TestVCRuntimePayloadIsRequired(t *testing.T) {
+	manifest := payloadManifest{VCRuntime: "vc-runtime.zip", Files: map[string]string{}}
+	if !slices.Contains(requiredPayloadFiles(manifest), manifest.VCRuntime) {
+		t.Fatal("app-local Microsoft VC++ runtime payload is not required")
+	}
+}
+
 func TestStageHookLauncherCopiesCanonicalPayloadToInstalledSource(t *testing.T) {
 	payloadRoot := t.TempDir()
 	staging := t.TempDir()
@@ -1678,6 +1685,7 @@ func TestVerifyPayloadManifestRejectsMissingRequiredHash(t *testing.T) {
 		GatewayArchive:     "gateway.zip",
 		Wheel:              "defenseclaw.whl",
 		PythonEmbed:        "python.zip",
+		VCRuntime:          "vc-runtime.zip",
 		YaraCompatWheel:    "yara-python.whl",
 		SitePackages:       "site-packages.zip",
 		Launcher:           "launcher.exe",

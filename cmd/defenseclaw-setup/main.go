@@ -203,6 +203,7 @@ type payloadManifest struct {
 	GatewayArchive     string                `json:"gateway_archive"`
 	Wheel              string                `json:"wheel"`
 	PythonEmbed        string                `json:"python_embed"`
+	VCRuntime          string                `json:"vc_runtime"`
 	YaraCompatWheel    string                `json:"yara_compat_wheel"`
 	UpgradeManifest    string                `json:"upgrade_manifest"`
 	SitePackages       string                `json:"site_packages"`
@@ -1610,6 +1611,9 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 	if err := extractZipFile(filepath.Join(payload.Root, payload.Manifest.PythonEmbed), filepath.Join(staging, "runtime", "python")); err != nil {
 		return fmt.Errorf("extract embedded Python: %w", err)
 	}
+	if err := extractZipFile(filepath.Join(payload.Root, payload.Manifest.VCRuntime), filepath.Join(staging, "runtime", "python")); err != nil {
+		return fmt.Errorf("extract app-local Microsoft VC++ runtime: %w", err)
+	}
 	if err := configurePythonPTH(filepath.Join(staging, "runtime", "python")); err != nil {
 		return err
 	}
@@ -2490,6 +2494,7 @@ func requiredPayloadFiles(manifest payloadManifest) []string {
 		manifest.GatewayArchive,
 		manifest.Wheel,
 		manifest.PythonEmbed,
+		manifest.VCRuntime,
 		manifest.YaraCompatWheel,
 		manifest.SitePackages,
 		manifest.Launcher,
