@@ -418,6 +418,55 @@ func TestAntigravityInitializationEnvironmentBindsVerifiedSetupParent(t *testing
 	}
 }
 
+func TestDeferredUninstallConnectorVerifyArgsBindExactCleanupAuthority(t *testing.T) {
+	transactionID := "0123456789abcdef0123456789abcdef"
+	setupPath := filepath.Join(`C:\Users\tester\AppData\Local\DefenseClaw\InstallerCache`, setupArtifactName)
+	dataRoot := `C:\Users\tester\.defenseclaw`
+	configHome := `C:\Users\tester\.claude`
+	recordPath := `C:\Users\tester\AppData\Local\DefenseClaw\InstallerState\uninstall-cleanup.json`
+	transaction := setupTransaction{
+		ID:              transactionID,
+		Action:          "uninstall",
+		DataRoot:        dataRoot,
+		MaintenancePath: setupPath,
+	}
+	args, err := deferredUninstallConnectorVerifyCommandArgs(
+		transaction,
+		setupPath,
+		recordPath,
+		"claudecode",
+		[]string{"CLAUDE_CONFIG_DIR=" + configHome},
+	)
+	if err != nil {
+		t.Fatalf("deferred verify args: %v", err)
+	}
+	want := []string{
+		"connector", "verify",
+		"--connector", "claudecode",
+		"--data-dir", dataRoot,
+		"--config-home", configHome,
+		"--json",
+		"--internal-setup-parent", setupPath,
+		"--internal-deferred-cleanup-record", recordPath,
+		"--internal-deferred-cleanup-transaction", transactionID,
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("deferred verify args = %v, want %v", args, want)
+	}
+
+	foreign := transaction
+	foreign.ID = "invalid"
+	if _, err := deferredUninstallConnectorVerifyCommandArgs(
+		foreign,
+		setupPath,
+		recordPath,
+		"claudecode",
+		[]string{"CLAUDE_CONFIG_DIR=" + configHome},
+	); err == nil {
+		t.Fatal("invalid cleanup transaction was accepted")
+	}
+}
+
 func TestParseArgsRejectsPublicAntigravitySetupSelection(t *testing.T) {
 	for _, args := range [][]string{
 		{"/quiet", "CONNECTOR=antigravity"},
