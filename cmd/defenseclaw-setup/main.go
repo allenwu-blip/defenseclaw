@@ -529,7 +529,7 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 		installRoot,
 		dataRoot,
 		maintenancePath,
-		transaction.ID,
+		transaction,
 		pathEntryOwned,
 		pathSeparatorReused,
 		pathValueCreated,
@@ -1593,7 +1593,7 @@ func publishMaintenanceCopyForTransaction(transaction setupTransaction, unsigned
 	return nil
 }
 
-func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, maintenancePath, transactionID string, pathEntryOwned, pathSeparatorReused, pathValueCreated bool, opts options) error {
+func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, maintenancePath string, transaction setupTransaction, pathEntryOwned, pathSeparatorReused, pathValueCreated bool, opts options) error {
 	if err := createExclusiveStagingRoot(staging); err != nil {
 		return err
 	}
@@ -1675,8 +1675,6 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		PathEntryOwned:         pathEntryOwned,
 		PathSeparatorReused:    pathSeparatorReused,
 		PathValueCreated:       pathValueCreated,
-		Connector:              opts.Connector,
-		Mode:                   opts.Mode,
 		CodexHome:              opts.CodexHome,
 		ClaudeConfigDir:        opts.ClaudeConfigDir,
 		CopilotHome:            opts.CopilotHome,
@@ -1691,8 +1689,8 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		ReleaseSigningRequired: true,
 		Toolchain:              payload.Manifest.Toolchain,
 		InstalledAtUTC:         time.Now().UTC().Format(time.RFC3339),
-		TransactionID:          transactionID,
 	}
+	bindStagedInstallStateOwnership(&state, transaction)
 	if err := writeJSON(filepath.Join(staging, "installer", "install-state.json"), state); err != nil {
 		return err
 	}
@@ -1715,6 +1713,12 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		}
 	}
 	return nil
+}
+
+func bindStagedInstallStateOwnership(state *installState, transaction setupTransaction) {
+	state.TransactionID = transaction.ID
+	state.Connector = transaction.TargetConnector
+	state.Mode = transaction.TargetMode
 }
 
 func prepareStagedInstallerRoot(staging string) (string, error) {

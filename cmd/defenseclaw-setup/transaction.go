@@ -261,14 +261,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	}
 	previousConnectors = normalizeStringSlice(previousConnectors)
 	preserveConnectorConfiguration := action == "install" && opts.PreserveConnectorConfiguration
-	targetConnector := opts.Connector
-	targetMode := opts.Mode
-	if action == "install" && targetConnector == "cursor" && targetMode == "action" {
-		// Cursor's user hook is below Enterprise, Team, and Project hooks. The
-		// native installer must not persist or display hard-action authority that
-		// the connector cannot prove, including during repair of an older preview.
-		targetMode = "observe"
-	}
+	targetConnector, targetMode := setupTransactionTarget(action, opts)
 	targetServices := requestedServices(opts, previousServices)
 	if preserveConnectorConfiguration && len(previousConnectors) != 0 {
 		// CLI configuration can add connectors after an installer-first "none"
@@ -277,7 +270,6 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		targetServices.Gateway = true
 	}
 	if action == "uninstall" {
-		targetConnector = "none"
 		targetServices = serviceState{}
 	}
 	if action == "install" && targetServices.Gateway && autoStartSnapshot.Existed {
@@ -517,6 +509,21 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		UninstallPathSeparatorReused:   uninstallPathSeparatorReused,
 		UninstallPathValueCreated:      uninstallPathValueCreated,
 	}, nil
+}
+
+func setupTransactionTarget(action string, opts options) (string, string) {
+	targetConnector := opts.Connector
+	targetMode := opts.Mode
+	if action == "install" && targetConnector == "cursor" && targetMode == "action" {
+		// Cursor's user hook is below Enterprise, Team, and Project hooks. The
+		// native installer must not persist or display hard-action authority that
+		// the connector cannot prove, including during repair of an older preview.
+		targetMode = "observe"
+	}
+	if action == "uninstall" {
+		targetConnector = "none"
+	}
+	return targetConnector, targetMode
 }
 
 func newUninstallHandoffTransaction(source setupTransaction, oldState *installState, opts options) (setupTransaction, error) {

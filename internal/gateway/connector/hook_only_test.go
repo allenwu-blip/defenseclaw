@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 	"gopkg.in/yaml.v3"
@@ -2623,6 +2624,128 @@ func TestCursorHooks_RefreshMigratesNativeCommandAndUpdatesFailClosed(t *testing
 	}
 	if !foreignFound || managedCount != 1 {
 		t.Fatalf("refresh did not preserve foreign hook and deduplicate adapter: %#v", entries)
+	}
+}
+
+func TestCursorHookOwnershipMatcherKeepsConnectorBoundaryExact(t *testing.T) {
+	ownedAdapter := `& 'C:\Users\tester\.defenseclaw\hooks\cursor-hook.ps1'`
+	ownedPortable := `C:\Users\tester\.defenseclaw\hooks\cursor-hook.sh`
+	owned := []string{ownedAdapter, ownedPortable}
+
+	tests := []struct {
+		name  string
+		entry interface{}
+		want  bool
+	}{
+		{name: "exact owned command", entry: map[string]interface{}{"command": ownedAdapter}, want: true},
+		{name: "exact owned powershell", entry: map[string]interface{}{"powershell": ownedAdapter}, want: true},
+		{name: "shell quoted owned portable", entry: map[string]interface{}{"bash": shellWord(ownedPortable)}, want: true},
+		{name: "malformed entry", entry: map[string]interface{}{"command": json.Number("1")}, want: false},
+		{name: "tampered owned command", entry: map[string]interface{}{"command": ownedAdapter + " -OperatorChanged"}, want: false},
+		{
+			name: "Copilot shaped command",
+			entry: map[string]interface{}{
+				"powershell": windowsCopilotPowerShellHookCommandForEvent("preToolUse", defenseclawHookBinary()),
+			},
+			want: false,
+		},
+		{
+			name:  "foreign Cursor adapter",
+			entry: map[string]interface{}{"command": `& 'C:\Operator\cursor-hook.ps1'`},
+			want:  false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := managedCursorHookEntry(test.entry, owned)
+			generic := false
+			for _, command := range owned {
+				if managedHookCommandEntry(test.entry, command) {
+					generic = true
+					break
+				}
+			}
+			if got != generic {
+				t.Fatalf("Cursor matcher = %v, generic ownership matcher = %v", got, generic)
+			}
+			if got != test.want {
+				t.Fatalf("managedCursorHookEntry() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCursorHooksHighCardinalityForeignRegistrationsStayWithinLifecycleBudget(t *testing.T) {
+	dataDir := `C:\Users\tester\.defenseclaw`
+	legacyShellScript := filepath.Join(dataDir, "hooks", "cursor-hook.sh")
+	hookScript := hookInvocationCommandFor("windows", "cursor", legacyShellScript)
+	currentCommand := shellWord(hookScript)
+	opts := SetupOpts{DataDir: dataDir}
+	hooks := make(map[string]interface{}, len(cursorHookEvents))
+	for _, event := range cursorHookEvents {
+		entries := make([]interface{}, 0, 23)
+		for index := 0; index < 22; index++ {
+			foreignPath := fmt.Sprintf(`C:\stale-defenseclaw\%s\%02d\cursor-hook.ps1`, event, index)
+			entries = append(entries, map[string]interface{}{
+				"type":    "command",
+				"command": "& " + powershellQuoteLiteral(foreignPath),
+			})
+		}
+		hooks[event] = entries
+	}
+
+	started := time.Now()
+	const iterations = 100
+	for iteration := 0; iteration < iterations; iteration++ {
+		patchMatcher := newCursorHookCommandMatcher(cursorManagedHookCommands(hookScript, legacyShellScript))
+		for _, event := range cursorHookEvents {
+			entry := map[string]interface{}{
+				"type":       "command",
+				"command":    currentCommand,
+				"timeout":    json.Number("30"),
+				"failClosed": false,
+			}
+			hooks[event] = replaceManagedCursorHooks(hooks[event], patchMatcher, entry)
+		}
+		verifyCommands := uniqueNonEmptyStrings(append(
+			[]string{hookScript, currentCommand},
+			cursorOwnedHookCommands(opts)...,
+		))
+		verifyMatcher := newCursorHookCommandMatcher(verifyCommands)
+		// Exercise the exact post-write scan twice. Setup performs the first check;
+		// the published-hook presence gate performs the same high-cardinality scan.
+		if !cursorHookContractPresent(hooks, currentCommand, verifyMatcher) ||
+			!cursorHookContractPresent(hooks, currentCommand, verifyMatcher) {
+			t.Fatal("high-cardinality Cursor contract did not retain one exact managed entry per event")
+		}
+	}
+	elapsed := time.Since(started)
+	t.Logf("%d Cursor 21x23 patch plus two exact ownership-scan cycles completed in %s (average %s)", iterations, elapsed, elapsed/iterations)
+	if elapsed > 15*time.Second {
+		t.Fatalf("Cursor patch plus repeated ownership verification took %s, want <=15s within the fixed 2m lifecycle budget", elapsed)
+	}
+
+	for _, event := range cursorHookEvents {
+		entries, _ := hooks[event].([]interface{})
+		if len(entries) != 23 {
+			t.Fatalf("Cursor %s entries = %d, want 22 preserved foreign entries plus one exact owned entry", event, len(entries))
+		}
+		ownedCount := 0
+		staleCount := 0
+		for _, raw := range entries {
+			entry, _ := raw.(map[string]interface{})
+			command, _ := entry["command"].(string)
+			switch {
+			case command == currentCommand:
+				ownedCount++
+			case strings.Contains(command, `C:\stale-defenseclaw\`):
+				staleCount++
+			}
+		}
+		if ownedCount != 1 || staleCount != 22 {
+			t.Fatalf("Cursor %s preservation counts = owned:%d stale:%d, want 1/22", event, ownedCount, staleCount)
+		}
 	}
 }
 

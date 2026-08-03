@@ -3194,6 +3194,7 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 		return err
 	}
 	hooks := ensureJSONObject(cfg, "hooks")
+	ownedCommands := newCursorHookCommandMatcher(cursorManagedHookCommands(hookScript, legacyShellScript))
 	cfg["version"] = 1
 	for _, event := range cursorHookEvents {
 		entry := map[string]interface{}{
@@ -3207,7 +3208,7 @@ func patchCursorHooks(path, hookScript, legacyShellScript string, failClosed boo
 		// direct-native Windows command to the PowerShell adapter and refreshes
 		// failClosed when the connector moves between observe and action mode.
 		// Entries not owned by DefenseClaw are preserved in their original order.
-		hooks[event] = replaceManagedCursorHooks(hooks[event], hookScript, legacyShellScript, entry)
+		hooks[event] = replaceManagedCursorHooks(hooks[event], ownedCommands, entry)
 	}
 	return writeJSONObject(path, cfg)
 }
@@ -3270,34 +3271,39 @@ func (c *hookOnlyConnector) ownedCursorHookContractPresent(opts SetupOpts) (bool
 		[]string{c.hookCommand(opts), currentCommand},
 		cursorOwnedHookCommands(opts)...,
 	))
+	ownedMatcher := newCursorHookCommandMatcher(ownedCommands)
+	return cursorHookContractPresent(hooks, currentCommand, ownedMatcher), nil
+}
+
+func cursorHookContractPresent(hooks map[string]interface{}, currentCommand string, ownedMatcher cursorHookCommandMatcher) bool {
 	expected := make(map[string]struct{}, len(cursorHookEvents))
 	for _, event := range cursorHookEvents {
 		expected[event] = struct{}{}
 		entries, ok := hooks[event].([]interface{})
 		if !ok {
-			return false, nil
+			return false
 		}
 		ownedCount := 0
 		for _, raw := range entries {
-			if !managedCursorHookEntry(raw, ownedCommands) {
+			if !ownedMatcher.matches(raw) {
 				continue
 			}
 			ownedCount++
 			entry, ok := raw.(map[string]interface{})
 			if !ok || len(entry) != 4 || entry["type"] != "command" || entry["command"] != currentCommand {
-				return false, nil
+				return false
 			}
 			timeout, ok := entry["timeout"].(json.Number)
 			if !ok || timeout.String() != "30" {
-				return false, nil
+				return false
 			}
 			failClosed, ok := entry["failClosed"].(bool)
 			if !ok || failClosed {
-				return false, nil
+				return false
 			}
 		}
 		if ownedCount != 1 {
-			return false, nil
+			return false
 		}
 	}
 	for event, raw := range hooks {
@@ -3306,12 +3312,12 @@ func (c *hookOnlyConnector) ownedCursorHookContractPresent(opts SetupOpts) (bool
 		}
 		entries, _ := raw.([]interface{})
 		for _, entry := range entries {
-			if managedCursorHookEntry(entry, ownedCommands) {
-				return false, nil
+			if ownedMatcher.matches(entry) {
+				return false
 			}
 		}
 	}
-	return true, nil
+	return true
 }
 
 func (c *hookOnlyConnector) cursorRuntimePath(opts SetupOpts) string {
@@ -3322,10 +3328,8 @@ func (c *hookOnlyConnector) cursorRuntimePath(opts SetupOpts) string {
 	return filepath.Join(opts.DataDir, "hooks", name)
 }
 
-func replaceManagedCursorHooks(raw interface{}, hookScript, legacyShellScript string, entry map[string]interface{}) []interface{} {
-	list, _ := raw.([]interface{})
-	out := make([]interface{}, 0, len(list)+1)
-	ownedCommands := uniqueNonEmptyStrings(append(
+func cursorManagedHookCommands(hookScript, legacyShellScript string) []string {
+	return uniqueNonEmptyStrings(append(
 		[]string{
 			hookScript,
 			legacyShellScript,
@@ -3333,8 +3337,13 @@ func replaceManagedCursorHooks(raw interface{}, hookScript, legacyShellScript st
 		},
 		legacyCursorNativeHookCommands()...,
 	))
+}
+
+func replaceManagedCursorHooks(raw interface{}, ownedCommands cursorHookCommandMatcher, entry map[string]interface{}) []interface{} {
+	list, _ := raw.([]interface{})
+	out := make([]interface{}, 0, len(list)+1)
 	for _, item := range list {
-		if managedCursorHookEntry(item, ownedCommands) {
+		if ownedCommands.matches(item) {
 			continue
 		}
 		out = append(out, item)
@@ -3371,13 +3380,42 @@ func legacyCursorNativeHookCommands() []string {
 	return uniqueNonEmptyStrings(commands)
 }
 
-func managedCursorHookEntry(raw interface{}, ownedCommands []string) bool {
-	for _, command := range ownedCommands {
-		if managedHookCommandEntry(raw, command) {
+type cursorHookCommandMatcher map[string]struct{}
+
+// newCursorHookCommandMatcher computes the exact strings accepted by
+// managedHookCommandEntry once per Cursor reconciliation. Cursor ownership is
+// deliberately path-bound; none of its commands use Copilot's cross-version
+// native-command equivalence. Keeping Cursor on this exact-string rail avoids
+// re-running the much broader Copilot recognizer for every foreign hook entry.
+func newCursorHookCommandMatcher(ownedCommands []string) cursorHookCommandMatcher {
+	matcher := make(cursorHookCommandMatcher, len(ownedCommands)*2)
+	for _, owned := range ownedCommands {
+		owned = strings.TrimSpace(owned)
+		if owned == "" {
+			continue
+		}
+		matcher[owned] = struct{}{}
+		matcher[strings.TrimSpace(shellWord(owned))] = struct{}{}
+	}
+	return matcher
+}
+
+func (matcher cursorHookCommandMatcher) matches(raw interface{}) bool {
+	entry, ok := raw.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	for _, key := range []string{"command", "bash", "powershell"} {
+		command, _ := entry[key].(string)
+		if _, ok := matcher[strings.TrimSpace(command)]; ok && strings.TrimSpace(command) != "" {
 			return true
 		}
 	}
 	return false
+}
+
+func managedCursorHookEntry(raw interface{}, ownedCommands []string) bool {
+	return newCursorHookCommandMatcher(ownedCommands).matches(raw)
 }
 
 func patchWindsurfHooks(path, hookScript, legacyShellScript string) error {

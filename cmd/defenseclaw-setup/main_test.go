@@ -347,6 +347,51 @@ func TestCursorInitializationDowngradesUnsupportedAction(t *testing.T) {
 	}
 }
 
+func TestCursorActionTransactionStagesNormalizedOwnership(t *testing.T) {
+	requested := options{Connector: "cursor", Mode: "action"}
+	connector, mode := setupTransactionTarget("install", requested)
+	if otherConnector, otherMode := setupTransactionTarget(
+		"install",
+		options{Connector: "codex", Mode: "action"},
+	); otherConnector != "codex" || otherMode != "action" {
+		t.Fatalf("non-Cursor transaction target = %s/%s, want codex/action", otherConnector, otherMode)
+	}
+	if uninstallConnector, uninstallMode := setupTransactionTarget(
+		"uninstall",
+		requested,
+	); uninstallConnector != "none" || uninstallMode != "action" {
+		t.Fatalf("uninstall transaction target = %s/%s, want none/action", uninstallConnector, uninstallMode)
+	}
+	transaction := setupTransaction{
+		ID:              "0123456789abcdef0123456789abcdef",
+		TargetConnector: connector,
+		TargetMode:      mode,
+	}
+	state := installState{Connector: requested.Connector, Mode: requested.Mode}
+	bindStagedInstallStateOwnership(&state, transaction)
+
+	if transaction.TargetConnector != "cursor" || transaction.TargetMode != "observe" {
+		t.Fatalf(
+			"Cursor action transaction target = %s/%s, want cursor/observe",
+			transaction.TargetConnector,
+			transaction.TargetMode,
+		)
+	}
+	if state.TransactionID != transaction.ID ||
+		state.Connector != transaction.TargetConnector ||
+		state.Mode != transaction.TargetMode {
+		t.Fatalf(
+			"staged install ownership = txn %q %s/%s, want txn %q %s/%s",
+			state.TransactionID,
+			state.Connector,
+			state.Mode,
+			transaction.ID,
+			transaction.TargetConnector,
+			transaction.TargetMode,
+		)
+	}
+}
+
 func TestCursorRepairUsesAdditiveAdvisorySetup(t *testing.T) {
 	args := cursorAdvisoryConfigurationArgs()
 	want := []string{
