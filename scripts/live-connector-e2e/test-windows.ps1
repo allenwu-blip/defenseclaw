@@ -2238,8 +2238,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $doctorContract.Contains("`$check.detail -notmatch 'authority=user-hook advisory'") -and
         $doctorContract.Contains("`$check.detail -notmatch 'hard-action=unsupported'")) `
         'Cursor contract preserves advisory observe/fail-open posture for its non-authoritative user hook'
-    Assert-True ($doctorContract -match "'cursor' \{ 'configured Cursor runtime does not match the contract lock' \}") `
-        'Cursor tamper contract expects exact lock rejection before missing-runtime diagnostics'
+    Assert-True ($doctorContract -match "'cursor' \{ 'configured file has no DefenseClaw Cursor command entries' \}") `
+        'Cursor tamper contract expects exact zero-managed-entry rejection after lock-bound ownership filtering'
     Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
         'Windsurf contract uses the scoped Legacy Cascade Doctor label'
     Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `

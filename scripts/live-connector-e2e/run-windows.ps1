@@ -4195,7 +4195,7 @@ function Assert-DoctorWindowsHookRegistration {
                 )
                 "registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"
             }
-            'cursor' { 'configured Cursor runtime does not match the contract lock' }
+            'cursor' { 'configured file has no DefenseClaw Cursor command entries' }
             'hermes' { 'does not use the direct native DefenseClaw executable' }
             'windsurf' { 'cannot be resolved' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
