@@ -2024,14 +2024,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $officialInstallerContract -match 'reviewed option contract' -and
         $officialInstallerContract -match 'Invoke-Expression' -and
         $officialManifestContract -match 'MaximumRedirection 0' -and
-        $harnessText -match [regex]::Escape('https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.9-6572839516635136/windows-x64/cli_windows_x64.exe') -and
+        $harnessText -match [regex]::Escape('https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.10-6423386432339968/windows-x64/cli_windows_x64.exe') -and
         $officialManifestContract -match 'official Antigravity release manifest drifted') `
         'official installer and update provenance reject hash, option-contract, redirect, host, URL, version, and release-digest drift'
     Assert-True ($officialClientContract -match "Join-Path \`$Paths.LocalAppData 'agy\\bin\\agy\.exe'" -and
         $officialClientContract -match 'Get-AuthenticodeSignature' -and
         $harnessText -match 'Google LLC' -and
         $harnessText -match '607A3EDAA64933E94422FC8F0C80388E0590986C' -and
-        $officialClientContract -match '1\\\.1\\\.9' -and
+        $officialClientContract -match '1\\\.1\\\.10' -and
         $harnessText -match "'--skip-aliases', '--skip-path'" -and
         $harnessText -notmatch "Install-OfficialAntigravityClient.*?--dir") `
         'canonical client install pins exact LocalAppData path, official bytes/version/signature, and documented no-alias/no-PATH flags'
@@ -2039,7 +2039,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $trustedDiscoveryContract -match "'agent', 'discover', '--refresh', '--no-cache', '--json', '--no-emit-otel'" -and
         $trustedDiscoveryContract -match 'packaged trusted-discovery ACL/reparse gate' -and
         $trustedDiscoveryContract -match 'Assert-ExactPath' -and
-        $trustedDiscoveryContract -match '1\\\.1\\\.9') `
+        $trustedDiscoveryContract -match '1\\\.1\\\.10') `
         'canonical client eligibility is accepted only through packaged trusted discovery with exact path and version'
     Assert-True ($heldStateContract -match "phase = 'armed'" -and
         $heldStateContract -match "ValidateSet\('held', 'interactive', 'awaiting_resume'\)" -and

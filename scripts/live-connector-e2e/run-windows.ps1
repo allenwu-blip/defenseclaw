@@ -54,9 +54,9 @@ $script:AntigravityWorkflowSHA256 = ''
 $script:AntigravityOfficialInstallerURL = 'https://antigravity.google/cli/install.ps1'
 $script:AntigravityOfficialInstallerSHA256 = '51c2cb4fada22ce0228da71b9506370383d6544bfebcec85fe7616a52b805344'
 $script:AntigravityOfficialManifestURL = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json'
-$script:AntigravityOfficialVersion = '1.1.9'
-$script:AntigravityOfficialArtifactURL = 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.9-6572839516635136/windows-x64/cli_windows_x64.exe'
-$script:AntigravityOfficialBinarySHA512 = 'ea4e55761b8252dcf5e051c61b1cdae1dcafcb9b8a76672aab13a2e8407fd8ae9fa5a389449f594c2fc970991afd5188a4bead1b06fe86dbb096ac2472893af1'
+$script:AntigravityOfficialVersion = '1.1.10'
+$script:AntigravityOfficialArtifactURL = 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.10-6423386432339968/windows-x64/cli_windows_x64.exe'
+$script:AntigravityOfficialBinarySHA512 = 'b2fee3202b1083308621715e3332c4b8280a0dfb0e13a6de0d4140db09a64d9c877b3274f3dc1dbaee86c0c67b4f665ef1c260fe5d4ec761a8cd48feaf19d8ea'
 $script:AntigravityOfficialSignerSubject = 'CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=3582691, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US'
 $script:AntigravityOfficialSignerThumbprint = '607A3EDAA64933E94422FC8F0C80388E0590986C'
 $script:AntigravityDurableRoot = 'D:\DefenseClaw-PR655-Antigravity-Held-State'
@@ -600,7 +600,7 @@ function Read-OfficialAntigravityReleaseManifest {
     }
     $artifactURI = [Uri][string]$manifest.url
     if ($artifactURI.Scheme -cne 'https' -or $artifactURI.Host -cne 'storage.googleapis.com' -or
-        $artifactURI.AbsolutePath -cne '/antigravity-public/antigravity-cli/1.1.9-6572839516635136/windows-x64/cli_windows_x64.exe') {
+        $artifactURI.AbsolutePath -cne '/antigravity-public/antigravity-cli/1.1.10-6423386432339968/windows-x64/cli_windows_x64.exe') {
         throw 'official Antigravity release manifest selected an unauthorized artifact URL'
     }
     return $manifest
@@ -641,9 +641,9 @@ function Assert-OfficialAntigravityClient([pscustomobject]$Paths) {
         -ArgumentList @('--version') -TimeoutSeconds 30 `
         -LogPath (Join-Path $script:LogRoot 'official-antigravity-version.log')
     $versionText = ($version.StdOut + $version.StdErr).Trim()
-    $versions = [regex]::Matches($versionText, '(?<![0-9A-Za-z.+-])1\.1\.9(?![0-9A-Za-z.+-])')
+    $versions = [regex]::Matches($versionText, '(?<![0-9A-Za-z.+-])1\.1\.10(?![0-9A-Za-z.+-])')
     if ($versions.Count -ne 1) {
-        throw "canonical official Antigravity version output is not exact 1.1.9: $versionText"
+        throw "canonical official Antigravity version output is not exact 1.1.10: $versionText"
     }
     $script:AgentPath = $Paths.AntigravityExecutable
     $script:AgentVersion = $versionText
@@ -662,8 +662,8 @@ function Assert-PackagedAntigravityTrustedDiscovery([pscustomobject]$Paths) {
     }
     Assert-ExactPath ([string]$signal.Value.binary_path) $Paths.AntigravityExecutable `
         'packaged trusted-discovery Antigravity path'
-    if ([string]$signal.Value.version -cnotmatch '(?<![0-9A-Za-z.+-])1\.1\.9(?![0-9A-Za-z.+-])') {
-        throw 'packaged trusted-discovery Antigravity version is not exact 1.1.9'
+    if ([string]$signal.Value.version -cnotmatch '(?<![0-9A-Za-z.+-])1\.1\.10(?![0-9A-Za-z.+-])') {
+        throw 'packaged trusted-discovery Antigravity version is not exact 1.1.10'
     }
     Write-Result 'antigravity:trusted-client' pass `
         'packaged discovery accepted only the canonical token-bound LocalAppData client after ACL/reparse and stable-digest version validation'
