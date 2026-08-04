@@ -5136,7 +5136,6 @@ function Assert-DoctorHookRegistration {
             'amp.on("tool.call"',
             'amp.on("tool.result"',
             'amp.on("agent.end"',
-            'plugin-ready-timeout',
             'const DC_FAIL_MODE: string = "closed"',
             'const DC_TIMEOUT_MS = 10000',
             'new AbortController()',

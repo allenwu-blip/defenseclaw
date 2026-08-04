@@ -1327,6 +1327,12 @@ func hookRuntimeArtifactPaths(opts SetupOpts, conn Connector) []string {
 			paths = append(paths, filepath.Join(opts.DataDir, "hooks", name))
 		}
 	}
+	// Auto-loaded managed plugins are part of the agent-visible enforcement
+	// runtime even when the connector also owns a generated data-dir hook.
+	// Persist their digests so readiness can bind the canonical config path to
+	// the exact bytes Setup published. Providers such as Amp may report the
+	// same path through both interfaces; the final normalization deduplicates it.
+	paths = append(paths, ManagedPluginArtifacts(conn, opts)...)
 	if runtime.GOOS == "windows" && conn != nil {
 		name := normalizeConnectorName(conn.Name())
 		if name == "claudecode" || name == "codex" {

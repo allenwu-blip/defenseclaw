@@ -18,7 +18,9 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -102,6 +104,31 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	}
 	if err := conn.VerifyClean(opts); err != nil {
 		t.Errorf("VerifyClean after teardown: %v", err)
+	}
+}
+
+func TestOpenCodeHookContractLockIncludesManagedPluginDigest(t *testing.T) {
+	dir := t.TempDir()
+	pluginPath := filepath.Join(dir, "plugins", "defenseclaw.js")
+	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	pluginBody := []byte("// defenseclaw-managed-plugin v7\nconst route = \"/api/v1/opencode/hook\";\n")
+	if err := os.WriteFile(pluginPath, pluginBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousPath := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = pluginPath
+	t.Cleanup(func() { OpenCodePluginPathOverride = previousPath })
+
+	entry := NewHookContractLockEntry(
+		SetupOpts{DataDir: filepath.Join(dir, "dc")},
+		NewOpenCodeConnector(),
+		"test-build",
+	)
+	wantPluginDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(pluginBody))
+	if got := entry.HookScriptDigests[filepath.Base(pluginPath)]; got != wantPluginDigest {
+		t.Fatalf("OpenCode lock plugin digest = %q, want %q", got, wantPluginDigest)
 	}
 }
 
