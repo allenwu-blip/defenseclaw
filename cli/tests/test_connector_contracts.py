@@ -258,8 +258,20 @@ class TestConnectorContractManifest(unittest.TestCase):
                 self.assertEqual(compat.status, STATUS_KNOWN)
                 self.assertEqual(compat.contract.contract_id, "cursor-hooks-v1")
                 self.assertIn("subagentStart", compat.contract.events)
-                self.assertEqual(compat.contract.capabilities["block_events"], [])
-                self.assertNotIn("subagentStart", compat.contract.capabilities["ask_events"])
+                self.assertEqual(
+                    compat.contract.capabilities["block_events"],
+                    [
+                        "preToolUse",
+                        "subagentStart",
+                        "beforeShellExecution",
+                        "beforeMCPExecution",
+                        "beforeReadFile",
+                        "beforeTabFileRead",
+                        "beforeSubmitPrompt",
+                    ],
+                )
+                self.assertEqual(compat.contract.capabilities["ask_events"], [])
+                self.assertFalse(compat.contract.capabilities["can_ask_native"])
 
         for raw_version in (
             "cursor-agent 2026.07.23-deadbee",
@@ -502,7 +514,7 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         with patch(
             "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
             return_value=_discovery("claudecode", installed=True, version="2.1.154"),
-        ):
+        ), patch("defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"):
             ok = _apply_hook_connector_setup(
                 self.app,
                 connector="claude-code",
@@ -520,6 +532,7 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
                 "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
                 return_value=_discovery("claudecode", installed=True, version="2.1.154"),
             ),
+            patch("defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"),
             patch("defenseclaw.commands.cmd_setup._sync_guardrail_hilt_to_opa") as sync_hilt,
         ):
             ok = _apply_hook_connector_setup(

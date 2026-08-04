@@ -529,6 +529,11 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 	if c.name == "geminicli" {
 		profile.NativeOTLP = geminiCLINativeOTLPSpec(opts)
 	}
+	if c.name == "amp" {
+		// Amp exposes an opaque plugin span ID but no documented W3C
+		// traceparent propagation surface.
+		profile.SupportsTraceparent = false
+	}
 	if c.name == "antigravity" {
 		// Antigravity's documented stdin is camelCase and intentionally omits
 		// the event name. Setup binds each handler to a distinct --event
@@ -703,6 +708,75 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 	}
 
 	switch c.name {
+	case "amp":
+		settings := ampSettingsPaths(opts)
+		plugins := ampPluginPaths(opts)
+		caps.MCP = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ConfigPaths:   settings,
+			ReadPaths:     settings,
+			DiscoveryOnly: true,
+			RequiresOptIn: true,
+			Notes: []string{
+				"Amp MCP servers are discovered from the top-level amp.mcpServers setting; use `amp mcp add` for schema-preserving writes and workspace approval.",
+				"Skill-bundled mcp.json servers are discovered through Amp skill roots and remain lower precedence than user/workspace settings.",
+			},
+		}
+		caps.Skills = SurfaceCapability{
+			Supported:      true,
+			Scope:          "workspace,user",
+			ReadPaths:      ampSkillPaths(opts),
+			WritePaths:     ampSkillWritePaths(opts),
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes: []string{
+				"Amp AgentSkills use SKILL.md directories; amp.skills.path adds operator-configured roots and amp.skills.disableClaudeCodeSkills controls Claude-compatible roots.",
+			},
+		}
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     plugins,
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Project and system TypeScript plugins are scanned. Connector setup manages only ~/.config/amp/plugins/defenseclaw.ts.",
+			},
+		}
+		caps.Rules = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     ampRulePaths(opts),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Amp consumes AGENTS.md and scoped/global .agents/checks definitions; DefenseClaw discovers these policy-bearing files without overwriting them.",
+			},
+		}
+		caps.Agents = SurfaceCapability{
+			Supported:     true,
+			Scope:         "plugin",
+			ReadPaths:     plugins,
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Amp custom agents and agent modes are plugin-defined rather than a standalone file surface.",
+				"Built-in Oracle, Task, MCP, and plugin-tool delegation is enforced at tool.call; child threads are correlated independently when Amp emits their plugin events.",
+			},
+		}
+		caps.CodeGuard.Supported = true
+		caps.CodeGuard.InstallTargets = []string{"skill"}
+		caps.Telemetry = TelemetryCapability{
+			NativeOTLP:  false,
+			HookSignals: []string{"logs", "metrics", "traces"},
+			ConfigPaths: []string{ampPluginPath(opts)},
+			AuthMode:    "header-token",
+			SourceModes: []string{"hook"},
+			Notes: []string{
+				"DefenseClaw emits Agent360, Galileo, audit, log, metric, and trace records from Amp's session.start, agent.start, tool.call, tool.result, and agent.end plugin events.",
+				"Amp does not document a customer native-OTLP exporter or W3C traceparent propagation for plugins; thread, message, and toolUseID fields provide exact hook correlation.",
+				"No dedicated subagent lifecycle callback is documented; delegation is controlled at tool.call and child-thread events are ingested when emitted.",
+				"Headless `amp -x` action-mode runs must pass `--plugin-ready-timeout 30` so the policy plugin is loaded before the turn starts; fail-closed is authoritative only after plugin load.",
+			},
+		}
 	case "hermes":
 		configPath := hermesConfigPath(opts)
 		if validateHermesWindowsConfigPath(configPath) != nil {
@@ -1154,6 +1228,9 @@ func (c *hookOnlyConnector) setupPluginArtifact(opts SetupOpts) error {
 		}
 		return setupErr
 	}
+	if err := validatePluginArtifactDestination(path); err != nil {
+		return fmt.Errorf("%s validate plugin destination: %w", c.name, err)
+	}
 	if err := captureManagedFileBackup(opts.DataDir, c.name, "config", path); err != nil {
 		return rollback(fmt.Errorf("%s capture plugin backup: %w", c.name, err))
 	}
@@ -1211,6 +1288,37 @@ func OpenCodeRegistrationCurrent(opts SetupOpts) (bool, error) {
 		return false, nil
 	}
 	return managedFileBackupExpectedHash(&backup) == managedFileSnapshotHash(body, true), nil
+}
+
+// validatePluginArtifactDestination protects the scoped gateway token embedded
+// in bridge plugins. Plugin directories are host-agent auto-load locations, so
+// they must meet the same owner/ACL requirements as the hook API token tree.
+// Unlike ordinary agent config writes, plugin installation never follows a
+// symlink: an existing target must be the trusted regular file we inspected.
+func validatePluginArtifactDestination(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("plugin path must be absolute: %q", path)
+	}
+	if err := hookAPIValidateDirectory(filepath.Dir(filepath.Clean(path))); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("inspect plugin target %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("plugin target must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("plugin target must be a regular file: %s", path)
+	}
+	if err := hookAPIValidateOwner(path, info); err != nil {
+		return err
+	}
+	return nil
 }
 
 // hookCommand returns the command an agent runs for this connector's hook. On
@@ -1409,6 +1517,24 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			return c.verifyCursorHookArtifactsClean(opts)
 		}
 		return err
+	} else if c.pluginArtifact && c.name == "amp" {
+		if _, backupErr := os.Stat(managedFileBackupPath(opts.DataDir, c.name, "config")); backupErr == nil {
+			return fmt.Errorf("%s teardown incomplete: managed plugin still present at %s", c.name, path)
+		} else if !os.IsNotExist(backupErr) {
+			return fmt.Errorf("%s inspect managed plugin backup: %w", c.name, backupErr)
+		}
+		tmpl, templateErr := hookFS.ReadFile("hooks/" + c.pluginArtifactAsset)
+		if templateErr != nil {
+			return fmt.Errorf("%s read managed plugin identity: %w", c.name, templateErr)
+		}
+		marker, _, _ := bytes.Cut(tmpl, []byte("\n"))
+		if len(marker) == 0 || !bytes.HasPrefix(marker, []byte("// defenseclaw-managed-plugin v")) {
+			return fmt.Errorf("%s managed plugin identity is invalid", c.name)
+		}
+		if bytes.Contains(data, marker) {
+			return fmt.Errorf("%s teardown incomplete: managed plugin still present at %s", c.name, path)
+		}
+		return nil
 	} else if c.pluginArtifact {
 		// The bridge plugin is a standalone managed file; a clean
 		// teardown removes it entirely. Any residual DefenseClaw marker
@@ -1590,10 +1716,14 @@ func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	caps := c.Capabilities(opts)
 	patched := uniqueNonEmptyStrings(append([]string{c.configPath(opts)}, caps.Telemetry.ConfigPaths...))
 	backups := []string{managedFileBackupPath(opts.DataDir, c.name, c.managedBackupLogicalName())}
+	hookScripts := hookScriptPathsForConnector(opts, c)
+	if c.name == "amp" {
+		hookScripts = []string{c.configPath(opts)}
+	}
 	return AgentPaths{
 		PatchedFiles: uniqueNonEmptyStrings(patched),
 		BackupFiles:  backups,
-		HookScripts:  hookScriptPathsForConnector(opts, c),
+		HookScripts:  hookScripts,
 	}
 }
 
@@ -1602,6 +1732,12 @@ func (c *hookOnlyConnector) HookScripts(opts SetupOpts) []string {
 }
 
 func (c *hookOnlyConnector) RequiredEnv() []EnvRequirement {
+	if c.name == "amp" {
+		return []EnvRequirement{{
+			Scope:       EnvScopeNone,
+			Description: "No environment variables are required. For headless action mode, launch Amp with `amp -x --plugin-ready-timeout 30` so the managed policy plugin is ready before the turn starts.",
+		}}
+	}
 	if c.name == "copilot" {
 		return append([]EnvRequirement{{
 			Scope:       EnvScopeNone,
@@ -1612,6 +1748,17 @@ func (c *hookOnlyConnector) RequiredEnv() []EnvRequirement {
 		Scope:       EnvScopeNone,
 		Description: "No environment variables are required; this connector installs native hook configuration only.",
 	}}
+}
+
+func (c *hookOnlyConnector) RequiresScopedHookToken() bool {
+	return c != nil && c.pluginArtifact
+}
+
+func (c *hookOnlyConnector) ManagedPluginArtifacts(opts SetupOpts) []string {
+	if c == nil || !c.pluginArtifact {
+		return nil
+	}
+	return []string{c.configPath(opts)}
 }
 
 func (c *hookOnlyConnector) SupportsComponentScanning() bool {

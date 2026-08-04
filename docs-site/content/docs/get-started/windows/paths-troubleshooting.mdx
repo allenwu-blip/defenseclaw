@@ -43,6 +43,7 @@ intact when diagnosing a problem.
 | `%CODEX_HOME%\managed_config.toml` | Effective native Windows Codex hook policy. Default home is `%USERPROFILE%\.codex`. | Do not edit DefenseClaw-managed hooks; use setup/remove. |
 | `%CODEX_HOME%\config.toml` | Codex user config plus DefenseClaw-marked OTLP/notify fields. | Other Codex settings are user-owned; use DefenseClaw teardown to remove managed fields. |
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
+| `%USERPROFILE%\.config\amp\plugins\defenseclaw.ts` | DefenseClaw-managed Amp TypeScript system-policy plugin with a connector-scoped credential. | **Never print, copy, or hand-edit.** Use setup/remove; operator-owned sibling plugins are separate. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw preview entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
 | `%USERPROFILE%\.codeium\windsurf\hooks.json` | Legacy Cascade user hook configuration in Devin Desktop. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. Devin Local uses separate hooks and is unsupported. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
 | `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Optional read-only legacy Cascade MCP inventory. It is not hook configuration and its absence does not make the connector unhealthy. | Manage MCP servers through Devin Desktop. DefenseClaw does not create this file or use it to repair hooks. |
@@ -67,6 +68,9 @@ override. Antigravity's global hook path is fixed at
 `%USERPROFILE%\.gemini\config\hooks.json`; Setup keeps any predecessor custom
 path only as internal custody needed for exact migration and restoration.
 Cursor and legacy Cascade likewise record their exact native paths internally.
+Amp has no connector-home override: its supported system plugin path is fixed
+beneath the current `%USERPROFILE%` at
+`.config\amp\plugins\defenseclaw.ts`.
 
 <Tabs items={['PowerShell', 'cmd']}>
   <Tab value="PowerShell">
@@ -236,14 +240,15 @@ residue automatically.
     registration; repair Setup if it is missing. The watchdog runs only when
     `gateway.watchdog.enabled` is configured and is not a Windows service.
   </Accordion>
-  <Accordion title="Connector enforcement does not appear">
+  <Accordion title="Connector hooks, policy plugin, or enforcement do not appear">
     Confirm the agent runs natively as the same Windows user. Run
     `defenseclaw guardrail status` and `defenseclaw doctor`, then re-run the
     supported or preview connector setup in observe mode. Fully restart the
-    agent if its documented reload behavior requires it. Do not
+    agent if its documented reload behavior requires it; fully exit and
+    relaunch Amp, using `--plugin-ready-timeout 30` for headless execution. Do not
     copy hook entries between `config.toml`, `managed_config.toml`, and
     `settings.json` by hand, and do not edit or copy OpenCode's
-    `plugins\defenseclaw.js`, or add PowerShell/Bash syntax to Hermes
+    `plugins\defenseclaw.js`, Amp's `defenseclaw.ts`, or add PowerShell/Bash syntax to Hermes
     `config.yaml`. Hermes Doctor must report its direct native command and
     preview fail-open posture.
   </Accordion>
@@ -274,6 +279,12 @@ residue automatically.
     `defenseclaw setup rotate-token --yes` only for an intentional global
     rotation. Never print, compare, copy, or manually replace token files or
     OTLP headers.
+
+    Amp has no documented native-OTLP channel, so this diagnostic does not
+    apply to Amp callback telemetry. Run `defenseclaw doctor`,
+    `defenseclaw guardrail status`, and `defenseclaw-gateway status`; reconcile
+    the plugin with `defenseclaw setup amp --mode observe`, then fully exit and
+    relaunch Amp.
   </Accordion>
   <Accordion title="Upgrade is refused or interrupted">
     A source not listed in the target release's authenticated Windows baseline matrix
@@ -313,9 +324,12 @@ Complete this without real secrets or destructive tools:
   provenance is `closed`.
 - Run `defenseclaw config validate` and `defenseclaw doctor`; resolve every
   connector registration or authentication failure.
-- Restart each configured native agent. In an empty disposable directory,
-  submit a non-sensitive prompt such as “Reply with the word ready.” Do not use
-  customer data, credentials, or a destructive tool call.
+- Restart each configured Codex or Claude Code agent; fully exit and relaunch
+  Amp. In an empty disposable directory, submit a non-sensitive prompt such as
+  “Reply with the word ready.” For `amp -x`, include
+  `--plugin-ready-timeout 30`. An authenticated Amp live turn additionally
+  requires `AMP_API_KEY`; do not paste it into the command or diagnostics. Do
+  not use customer data, credentials, or a destructive tool call.
 - Open `defenseclaw tui` or use `defenseclaw alerts` and confirm new activity is
   attributed only to the agent you exercised.
 - If multiple connectors are installed, repeat the harmless prompt once in each;

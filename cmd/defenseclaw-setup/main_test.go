@@ -242,7 +242,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connector := range []string{"none", "amp", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -317,7 +317,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connectorName := range []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -764,6 +764,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	dataRoot := t.TempDir()
 	markers := []string{
 		filepath.Join("connector_backups", "antigravity", "hooks.json.json"),
+		filepath.Join("connector_backups", "amp", "config.json"),
 		filepath.Join("connector_backups", "codex", "config.toml.json"),
 		filepath.Join("connector_backups", "claudecode", "settings.json.json"),
 		filepath.Join("connector_backups", "copilot", "config.json"),
@@ -787,7 +788,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "copilot", "cursor", "windsurf", "antigravity", "opencode", "omnigent", "hermes"}
+	want := []string{"codex", "claudecode", "amp", "copilot", "cursor", "windsurf", "antigravity", "opencode", "omnigent", "hermes"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -818,6 +819,8 @@ guardrail:
   enabled: false
   connector: openclaw
   connectors:
+    amp:
+      mode: action
     antigravity:
       mode: observe
     claudecode:
@@ -842,7 +845,7 @@ observability:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"antigravity", "claudecode", "codex", "copilot", "cursor", "opencode"}
+	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "opencode"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -1146,6 +1149,24 @@ func TestFreshRollbackRecoveryEnvBypassesOnlyStaleClaudeReadiness(t *testing.T) 
 	}
 	if count != 1 {
 		t.Fatalf("recovery readiness marker count = %d, want 1", count)
+	}
+}
+
+func TestManagedChildEnvPinsUserProfileFromNativeDataRoot(t *testing.T) {
+	profile := t.TempDir()
+	dataRoot := filepath.Join(profile, ".defenseclaw")
+	t.Setenv("USERPROFILE", filepath.Join(t.TempDir(), "foreign-profile"))
+
+	env := managedChildEnv(dataRoot)
+	profiles := []string{}
+	for _, entry := range env {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok && strings.EqualFold(name, "USERPROFILE") {
+			profiles = append(profiles, value)
+		}
+	}
+	if !slices.Equal(profiles, []string{profile}) {
+		t.Fatalf("managed USERPROFILE bindings = %q, want only %q", profiles, profile)
 	}
 }
 

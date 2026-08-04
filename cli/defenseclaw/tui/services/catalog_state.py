@@ -1640,6 +1640,8 @@ def mcp_unset_target_for_connector(connector: str) -> str:
             return "~/.openhands/mcp.json"
         case "antigravity":
             return "~/.gemini/config/mcp_config.json / <workspace>/.agents/mcp_config.json"
+        case "amp":
+            return "read-only; manage with `amp mcp add` or Amp settings"
         case "opencode":
             user_target = os.path.join(connector_home("opencode"), "opencode.json")
             return f"{user_target} / <workspace>/opencode.json"
@@ -1693,6 +1695,8 @@ def friendly_connector_name(connector: str) -> str:
             return "Antigravity"
         case "opencode":
             return "OpenCode"
+        case "amp":
+            return "Amp"
         case "omnigent":
             return "OmniGent"
         case value:
@@ -1741,6 +1745,13 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/skills/<skill>/SKILL.md",
             "~/.gemini/antigravity-cli/skills/*.md (discovery-only)",
         ),
+        ("amp", "skills"): (
+            "~/.config/agents/skills",
+            "~/.agents/skills",
+            "~/.config/amp/skills",
+            "<workspace>/.agents/skills",
+            "~/.claude/plugins/cache/.../skills (unless Claude-compatible skills are disabled)",
+        ),
         ("opencode", "skills"): ("unsupported by the OpenCode connector",),
         ("omnigent", "skills"): ("unsupported by the OmniGent connector",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
@@ -1755,6 +1766,11 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/mcp_config.json",
             "<plugin>/mcp_config.json (discovery-only)",
         ),
+        ("amp", "mcps"): (
+            "~/.config/amp/settings.json or settings.jsonc (amp.mcpServers; read-only)",
+            "<workspace>/.amp/settings.json or settings.jsonc (amp.mcpServers; read-only)",
+            "<skill>/mcp.json",
+        ),
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
         ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
@@ -1768,6 +1784,14 @@ def connector_source_label(connector: str, category: str) -> str:
             "~/.gemini/config/plugins/<plugin>/ (read/write)",
             "~/.gemini/antigravity-cli/plugins/<plugin>/ (discovery-only)",
             "<workspace>/.agents/plugins/<plugin>/ (read/write)",
+        ),
+        ("amp", "plugins"): (
+            "~/.config/amp/plugins/defenseclaw.ts",
+            "<workspace>/.amp/plugins",
+        ),
+        ("amp", "config"): (
+            "~/.config/amp/settings.json or settings.jsonc",
+            "<workspace>/.amp/settings.json or settings.jsonc",
         ),
         ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),

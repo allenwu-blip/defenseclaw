@@ -37,6 +37,7 @@ A HIGH-risk Claude Code action paused at `PreToolUse`, where the connector can p
 | Cursor | None authoritative (ask-capable schemas exist at `beforeShellExecution` and `beforeMCPExecution`) | Alert/context fallback; higher-priority hooks merge above the DefenseClaw user hook and `raw_action` remains auditable |
 | Copilot CLI | `preToolUse` | Alert/context fallback; `raw_action` remains auditable |
 | Antigravity | `PreToolUse` only | `PreInvocation` and `PostInvocation` are context-transform surfaces, `PostToolUse` is observation-only, and DefenseClaw returns allow for `Stop`. No permission-bypass override is claimed without persisted official-client evidence. |
+| Amp | `tool.call` and model-bound `tool.result` in the active foreground thread | A background thread or unavailable plugin UI rejects the call or withholds the result safely |
 | OmniGent | Pre-action `request`, `tool_call`, `llm_request` phases | Post-phase confirm is audited and continues without a pause; DENY may suppress onward-visible content but cannot roll back completed work |
 | ZeptoClaw, Codex, Hermes, Gemini CLI, Devin Desktop legacy Cascade, OpenHands | None | Connector-specific alert/allow/context behavior; no pause or TUI resume. The `windsurf` alias does not cover Devin Local. |
 | OpenCode | `permission.ask` intentionally unimplemented | No native ask or context injection claim; no pause or TUI resume |

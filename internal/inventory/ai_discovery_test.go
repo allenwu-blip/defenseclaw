@@ -366,6 +366,68 @@ func TestExpandCandidatePath_SkipsUnsetEnvironment(t *testing.T) {
 	}
 }
 
+func TestAmpSignatureIncludesNativeConfigAndAssetPaths(t *testing.T) {
+	sigs, err := LoadAISignatures()
+	if err != nil {
+		t.Fatalf("LoadAISignatures: %v", err)
+	}
+	var amp *AISignature
+	for i := range sigs {
+		if sigs[i].ID == "amp" {
+			amp = &sigs[i]
+			break
+		}
+	}
+	if amp == nil {
+		t.Fatal("Amp signature missing")
+	}
+	if amp.SupportedConnector != "amp" || amp.Vendor != "Amp" {
+		t.Fatalf("Amp identity mismatch: %+v", *amp)
+	}
+	for _, want := range []string{
+		"~/.config/amp/settings.json",
+		"~/.config/amp/settings.jsonc",
+		"/Library/Application Support/ampcode/managed-settings.json",
+		"/etc/ampcode/managed-settings.json",
+		"$ProgramData/ampcode/managed-settings.json",
+		".amp/settings.json",
+		".amp/plugins",
+		"~/.config/amp/plugins",
+		"~/.config/agents/skills",
+		"~/.config/amp/skills",
+		".agents/checks",
+		"~/.config/amp/checks",
+		"~/.config/amp/AGENTS.md",
+		"~/.config/AGENTS.md",
+		"/Library/Application Support/ampcode/AGENTS.md",
+		"/etc/ampcode/AGENTS.md",
+		"$ProgramData/ampcode/AGENTS.md",
+	} {
+		if !stringSliceContains(amp.ConfigPaths, want) {
+			t.Errorf("Amp config paths missing %q: %v", want, amp.ConfigPaths)
+		}
+	}
+	for _, want := range []string{
+		"~/.config/amp/settings.json",
+		"~/.config/amp/settings.jsonc",
+		"/Library/Application Support/ampcode/managed-settings.json",
+		"/etc/ampcode/managed-settings.json",
+		"$ProgramData/ampcode/managed-settings.json",
+		".amp/settings.json",
+		".amp/settings.jsonc",
+	} {
+		if !stringSliceContains(amp.MCPPaths, want) {
+			t.Errorf("Amp MCP paths missing %q: %v", want, amp.MCPPaths)
+		}
+	}
+	if !stringSliceContains(amp.PackageNames, "@ampcode/cli") {
+		t.Errorf("Amp package names missing @ampcode/cli: %v", amp.PackageNames)
+	}
+	if !stringSliceContains(amp.EnvVarNames, "AMP_API_KEY") {
+		t.Errorf("Amp environment variables missing AMP_API_KEY: %v", amp.EnvVarNames)
+	}
+}
+
 func TestLoadAISignaturesWithManagedPackAndDisabledIDs(t *testing.T) {
 	tmp := t.TempDir()
 	packDir := filepath.Join(tmp, "signature-packs")
@@ -1031,6 +1093,33 @@ func TestIngestExternalReport_DoesNotNotifyAutomationObservers(t *testing.T) {
 	}
 }
 
+func TestIngestExternalReportRecomputesModelProvenance(t *testing.T) {
+	svc := NewContinuousDiscoveryServiceWithOptions(AIDiscoveryOptions{
+		Enabled: true, Mode: "enhanced", DataDir: t.TempDir(), HomeDir: t.TempDir(),
+	}, []AISignature{testAISignature()})
+	cleanupPreparedDiscoveryService(t, svc)
+	report := AIDiscoveryReport{
+		Summary: AIDiscoverySummary{ScanID: "external-model"},
+		Signals: []AISignal{{
+			Category: SignalLocalModel, State: AIStateSeen,
+			Model: &LocalModelInfo{
+				ID: "Qwen/Qwen3-4B", Status: "installed",
+				Provenance: &LocalModelProvenance{
+					Publisher: "Meta", CountryCode: "US", RootModel: "meta-llama/Llama-3",
+					Source: "catalog_exact", Confidence: "high",
+				},
+			},
+		}},
+	}
+	if err := svc.IngestExternalReport(context.Background(), &report); err != nil {
+		t.Fatalf("IngestExternalReport: %v", err)
+	}
+	got := report.Signals[0].Model.Provenance
+	if got == nil || got.Publisher != "Alibaba Cloud" || got.CountryCode != "CN" || got.RootModel != "Qwen/Qwen3-4B" {
+		t.Fatalf("external provenance was trusted instead of recomputed: %+v", got)
+	}
+}
+
 // TestRunScan_NonFullTickShipsFullInventoryConsistentWithSummary
 // pins the Bug A fix: on a process-only ticker tick, the API
 // payload must still expose every active fingerprint (so the
@@ -1553,7 +1642,14 @@ func TestValidateSanitizedAIDiscoveryReportValidatesModelMetadata(t *testing.T) 
 		Summary: AIDiscoverySummary{ScanID: "scan-model"},
 		Signals: []AISignal{{
 			Category: SignalLocalModel,
-			Model:    &LocalModelInfo{ID: "Qwen3-0.6B-GGUF", Status: "installed", Format: "gguf"},
+			Model: &LocalModelInfo{
+				ID: "Qwen3-0.6B-GGUF", Status: "installed", Format: "gguf",
+				Provenance: &LocalModelProvenance{
+					Publisher: "Alibaba Cloud", CountryCode: "CN", RootModel: "Qwen/Qwen3-0.6B",
+					Quantized: modelBool(true), Quantization: "Q4_K_M", Derivation: "quantized",
+					Source: "catalog_family", Confidence: "medium",
+				},
+			},
 		}},
 	}
 	if err := ValidateSanitizedAIDiscoveryReport(base); err != nil {
@@ -1575,6 +1671,17 @@ func TestValidateSanitizedAIDiscoveryReportValidatesModelMetadata(t *testing.T) 
 	badUnicodeControl.Signals[0].Model.ID = "private\u009bmodel"
 	if err := ValidateSanitizedAIDiscoveryReport(badUnicodeControl); err == nil {
 		t.Fatal("model id containing a Unicode C1 control accepted")
+	}
+
+	badCountry := cloneAIDiscoveryReport(base)
+	badCountry.Signals[0].Model.Provenance.CountryCode = "ZZ"
+	if err := ValidateSanitizedAIDiscoveryReport(badCountry); err == nil {
+		t.Fatal("unsupported model provenance country code accepted")
+	}
+	badDerivation := cloneAIDiscoveryReport(base)
+	badDerivation.Signals[0].Model.Provenance.Derivation = "distilled"
+	if err := ValidateSanitizedAIDiscoveryReport(badDerivation); err == nil {
+		t.Fatal("inconsistent model derivation accepted")
 	}
 
 	missingModel := cloneAIDiscoveryReport(base)
@@ -2084,5 +2191,114 @@ func TestHashPath_KeyedVsUnsalted(t *testing.T) {
 	legacy2 := hashPath(samplePath)
 	if legacy2 != legacy {
 		t.Fatalf("after key removal, legacy digest changed: was %q, now %q — SetPathHashKey(nil) rollback is broken", legacy, legacy2)
+	}
+}
+
+func TestAIStateStorePersistsInternalModelProvenanceLifecycle(t *testing.T) {
+	t.Parallel()
+	store := NewAIStateStore(filepath.Join(t.TempDir(), "ai-discovery-state.json"))
+	resolvedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	wantHash := hashValue("hub-provenance")
+	want := AISignal{
+		Fingerprint:                  "model-fingerprint",
+		SignalID:                     "model-signal",
+		SignatureID:                  "local-model",
+		Name:                         "Model",
+		Vendor:                       "Local",
+		Product:                      "Local Model Artifact",
+		Category:                     SignalLocalModel,
+		Detector:                     "model_file",
+		State:                        AIStateSeen,
+		Confidence:                   0.9,
+		Source:                       "sidecar",
+		FirstSeen:                    resolvedAt.Add(-time.Hour),
+		LastSeen:                     resolvedAt,
+		EvidenceHash:                 hashValue("local-evidence"),
+		ModelProvenanceHubResolvedAt: resolvedAt,
+		ModelProvenanceHubHash:       wantHash,
+		Model: &LocalModelInfo{
+			ID: "Qwen/Qwen3-4B", Status: "installed",
+			Provenance: &LocalModelProvenance{
+				Publisher: "Alibaba Cloud", CountryCode: "CN", RootModel: "Qwen/Qwen3-4B",
+				BaseModels: []string{"Qwen/Qwen3-4B"}, Source: "huggingface_hub", Confidence: "high",
+			},
+		},
+	}
+	state := aiStateFile{Signals: map[string]aiStoredSignal{
+		want.Fingerprint: {AISignal: want},
+	}}
+	if err := store.Save(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	got, ok := loaded.Signals[want.Fingerprint]
+	if !ok {
+		t.Fatal("persisted model signal is missing")
+	}
+	if !got.ModelProvenanceHubResolvedAt.Equal(resolvedAt) ||
+		got.ModelProvenanceHubHash != wantHash ||
+		got.StoredModelProvenanceHubResolvedAt == nil ||
+		!got.StoredModelProvenanceHubResolvedAt.Equal(resolvedAt) ||
+		got.StoredModelProvenanceHubHash != wantHash {
+		t.Fatalf("Hub lifecycle fields did not round trip: %+v", got)
+	}
+	publicJSON, err := json.Marshal(got.AISignal)
+	if err != nil {
+		t.Fatalf("marshal public signal: %v", err)
+	}
+	publicText := string(publicJSON)
+	if strings.Contains(publicText, "model_provenance_hub_resolved_at") ||
+		strings.Contains(publicText, "model_provenance_hub_hash") ||
+		strings.Contains(publicText, wantHash) {
+		t.Fatalf("public signal leaked internal Hub lifecycle fields: %s", publicJSON)
+	}
+}
+
+func TestAIStoredSignalModelProvenanceHubResolvedAtJSON(t *testing.T) {
+	t.Parallel()
+	resolvedAt := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	zero := time.Time{}
+
+	for _, tc := range []struct {
+		name       string
+		resolvedAt *time.Time
+		want       string
+	}{
+		{name: "absent"},
+		{name: "legacy zero", resolvedAt: &zero},
+		{name: "populated", resolvedAt: &resolvedAt, want: `"2026-07-20T12:00:00Z"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ai-discovery-state.json")
+			store := NewAIStateStore(path)
+			if err := store.Save(aiStateFile{Signals: map[string]aiStoredSignal{
+				"model": {StoredModelProvenanceHubResolvedAt: tc.resolvedAt},
+			}}); err != nil {
+				t.Fatalf("save state: %v", err)
+			}
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read state: %v", err)
+			}
+			var state struct {
+				Signals map[string]map[string]json.RawMessage `json:"signals"`
+			}
+			if err := json.Unmarshal(raw, &state); err != nil {
+				t.Fatalf("decode state: %v", err)
+			}
+			got, present := state.Signals["model"]["model_provenance_hub_resolved_at"]
+			if tc.want == "" {
+				if present {
+					t.Fatalf("absent Hub timestamp serialized as %s", got)
+				}
+				return
+			}
+			if !present || string(got) != tc.want {
+				t.Fatalf("Hub timestamp JSON = %s (present %t), want %s", got, present, tc.want)
+			}
+		})
 	}
 }

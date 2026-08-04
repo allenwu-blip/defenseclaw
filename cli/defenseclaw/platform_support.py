@@ -111,6 +111,10 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "Setup and official-client validation; OpenCode recommends WSL but does "
         "not require it.",
     ),
+    "amp": ConnectorPlatformSupport(
+        SUPPORTED,
+        "Amp and the DefenseClaw system policy plugin are supported on native Windows x64.",
+    ),
     "hermes": ConnectorPlatformSupport(
         PREVIEW,
         "Hermes native shell hooks use a direct DefenseClaw executable; "

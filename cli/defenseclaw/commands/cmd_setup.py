@@ -127,6 +127,7 @@ _SETUP_RESTART_HANDLED_KEY = "defenseclaw._setup_restart_handled"
 _SETUP_BATCH_READINESS_KEY = "defenseclaw._setup_batch_readiness_connectors"
 _SETUP_BATCH_ROLLBACK_KEY = "defenseclaw._setup_batch_rollback_snapshot"
 _CONNECTOR_RUNTIME_READY_TIMEOUT_SECONDS = 60.0
+_CONNECTOR_RUNTIME_READY_ABSOLUTE_CAP_SECONDS = 300.0
 _GATEWAY_API_READY_TIMEOUT_SECONDS = 45.0
 _DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS = 60
 _DEFENSE_GATEWAY_STATUS_TIMEOUT_SECONDS = 10
@@ -3102,6 +3103,7 @@ _CONNECTOR_NAMES_FALLBACK = [
     "openhands",
     "antigravity",
     "opencode",
+    "amp",
     "omnigent",
 ]
 
@@ -3238,6 +3240,12 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
+    "amp": {
+        "label": "Amp",
+        "description": "system TypeScript policy plugin with synchronous tool.call allow/confirm/block verdicts",
+        "tool_mode": "both",
+        "subprocess_policy": "none",
+    },
     "omnigent": {
         "label": "OmniGent",
         "description": "custom Python policy bridge with ALLOW/ASK/DENY and optional native OTLP",
@@ -3360,6 +3368,26 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
             "plugin auto-loaded by opencode; no opencode.json edit and no "
             "shell-hook config patch"
         ),
+    ),
+    "amp": (
+        (
+            "~/.config/amp/plugins/defenseclaw.ts — owner-only system "
+            "policy plugin loaded by Amp on macOS, Linux, and native Windows"
+        ),
+        (
+            "~/.config/amp/settings.json or settings.jsonc, "
+            "<workspace>/.amp/settings.json or settings.jsonc, "
+            "and OS enterprise managed-settings.json are discovery-only"
+        ),
+        (
+            "Amp-native amp.permissions, amp.guardedFiles.allowlist, "
+            "amp.dangerouslyAllowAll, and amp.mcpPermissions are reported but never mutated"
+        ),
+        (
+            "AGENTS.md guidance and .agents/checks / global checks are "
+            "discovered read-only; DefenseClaw does not rewrite them"
+        ),
+        "Amp MCP registrations are discovered read-only; manage them with `amp mcp add`",
     ),
     "omnigent": (
         "OmniGent's effective config.yaml policy_modules and server-wide policies",
@@ -4945,6 +4973,7 @@ def setup_guardrail(
 _PICKED_CONNECTOR_FILENAME = "picked_connector"
 _AGENT_SELECTION_FILENAME = "agent_selection.json"
 _AGENT_SELECTION_MAX_BYTES = 64 << 10
+_SETUP_CONFIG_MAX_BYTES = 16 << 20
 
 
 def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
@@ -4985,6 +5014,8 @@ class _SetupConfigSnapshot:
     """Exact rollback point for desired config and setup authority receipts."""
 
     config: Any
+    config_existed: bool
+    config_bytes: bytes
     picked_connector_existed: bool
     picked_connector_bytes: bytes
     agent_selection_existed: bool
@@ -5034,6 +5065,14 @@ def _capture_protected_setup_file(path: str, maximum: int, label: str) -> tuple[
 
 def _capture_setup_config_snapshot(cfg) -> _SetupConfigSnapshot:
     data_dir = getattr(cfg, "data_dir", None)
+    config_existed = False
+    config_body = b""
+    if data_dir:
+        config_existed, config_body = _capture_protected_setup_file(
+            os.path.abspath(os.fspath(config_path_for_data_dir(data_dir))),
+            _SETUP_CONFIG_MAX_BYTES,
+            "config.yaml",
+        )
     existed = False
     body = b""
     if data_dir:
@@ -5062,6 +5101,8 @@ def _capture_setup_config_snapshot(cfg) -> _SetupConfigSnapshot:
         )
     return _SetupConfigSnapshot(
         config=copy.deepcopy(cfg),
+        config_existed=config_existed,
+        config_bytes=config_body,
         picked_connector_existed=existed,
         picked_connector_bytes=body,
         agent_selection_existed=selection_existed,
@@ -5075,7 +5116,7 @@ def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapsh
     cfg = _restore_setup_config_in_memory(app, snapshot)
     restore_errors: list[str] = []
     try:
-        cfg.save()
+        _restore_setup_config_file_snapshot(cfg, snapshot)
     except Exception as exc:  # noqa: BLE001 — still restore independent protected receipts.
         restore_errors.append(f"config: {exc}")
     try:
@@ -5098,6 +5139,27 @@ def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapsh
             restore_errors.append(f"agent_selection.json: {exc}")
     if restore_errors:
         raise OSError("setup rollback was incomplete: " + "; ".join(restore_errors))
+
+
+def _restore_setup_config_file_snapshot(cfg, snapshot: _SetupConfigSnapshot) -> None:
+    """Restore exact pre-setup YAML without the modeled-delta save path.
+
+    ``Config.save()`` applies only values that differ from the object's loaded
+    v8 baseline. The restored object and its baseline both describe the prior
+    generation, while the file still describes the failed requested generation;
+    another modeled save would therefore see no delta and preserve the failed
+    file. Republish the captured bytes before asking the gateway to re-apply
+    and verify the prior runtime generation.
+    """
+
+    if not cfg.data_dir:
+        return
+    config_path = os.path.abspath(os.fspath(config_path_for_data_dir(cfg.data_dir)))
+    with locked_config_yaml(config_path):
+        if snapshot.config_existed:
+            atomic_write_private_bytes(config_path, snapshot.config_bytes)
+        elif os.path.lexists(config_path):
+            delete_file_durable(config_path)
 
 
 def _restore_setup_agent_selection_snapshot(cfg, snapshot: _SetupConfigSnapshot) -> None:
@@ -5403,6 +5465,7 @@ def _apply_hook_connector_setup(
     allow_trusted_path_prompt: bool = True,
     trusted_prompt_cache: dict[str, bool] | None = None,
     _downgrade_refused_action: bool = False,
+    _version_preflighted: bool = False,
     _selection_preflighted: bool = False,
 ) -> bool:
     """Pin DefenseClaw to *connector* in hook-driven mode.
@@ -5453,23 +5516,27 @@ def _apply_hook_connector_setup(
     desired_mode = (mode or "").strip().lower()
     if desired_mode not in ("observe", "action"):
         desired_mode = "observe"
-    version_check_kwargs = {
-        "mode": desired_mode,
-        "data_dir": getattr(app.cfg, "data_dir", None),
-        "_allow_prompt": allow_trusted_path_prompt,
-    }
-    if trusted_prompt_cache is not None:
-        version_check_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
-    if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
-        if desired_mode == "action" and _downgrade_refused_action:
-            label = _CONNECTOR_META.get(connector, {}).get("label", connector)
-            ux.warn(f"{label}: requested action mode was refused; checking observe-mode eligibility.")
-            desired_mode = "observe"
-            version_check_kwargs["mode"] = desired_mode
-            if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
+    if not _version_preflighted:
+        version_check_kwargs = {
+            "mode": desired_mode,
+            "data_dir": getattr(app.cfg, "data_dir", None),
+            "_allow_prompt": allow_trusted_path_prompt,
+        }
+        if trusted_prompt_cache is not None:
+            version_check_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
+        if not _check_connector_version_supported_for_setup(connector, **version_check_kwargs):
+            # Every non-OpenCode hook contract deliberately permits observe
+            # when action admission is refused (missing, unversioned, or
+            # outside the validated range).  Reusing that decision avoids a
+            # second discovery/probe whose answer can drift within the same
+            # setup transaction.  OpenCode is the strict exception: unknown
+            # versions are refused in both modes and never reach this fallback.
+            if desired_mode == "action" and _downgrade_refused_action and connector != "opencode":
+                label = _CONNECTOR_META.get(connector, {}).get("label", connector)
+                ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
+                desired_mode = "observe"
+            else:
                 return False
-        else:
-            return False
 
     cfg = app.cfg
     gc = cfg.guardrail
@@ -5748,7 +5815,15 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
     click.echo(f"  DefenseClaw — {label} {mode} setup")
     click.echo("  ─────────────────────────────────────────────────────────")
     click.echo()
-    if connector == "omnigent":
+    if connector == "amp":
+        click.echo("  This installs DefenseClaw as Amp's system TypeScript policy")
+        click.echo("  plugin. No proxy is inserted in the LLM data path; Amp")
+        if mode == "action":
+            click.echo("  waits for synchronous tool.call allow, confirm, or reject")
+            click.echo("  verdicts before the requested tool can execute.")
+        else:
+            click.echo("  tool activity is recorded but never blocked.")
+    elif connector == "omnigent":
         click.echo("  This wires OmniGent into DefenseClaw through its custom")
         click.echo("  Python policy API. No proxy is inserted in the LLM data")
         if mode == "action":
@@ -5777,7 +5852,17 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
             click.echo("  path; activity is recorded but never blocked.")
     click.echo()
     click.echo("  Telemetry channels:")
-    if connector == "omnigent":
+    if connector == "amp":
+        click.echo("    • Plugin API — session/agent/tool lifecycle → /api/v1/amp/hook")
+        click.echo(
+            "    • Enforcement — synchronous tool.call execution gate "
+            "+ model-bound tool.result output gate"
+        )
+        click.echo(
+            "    • Agent360 / Galileo — correlated session, turn, tool, outcome, "
+            "decision, audit, log, metric, and trace views"
+        )
+    elif connector == "omnigent":
         click.echo("    • Policy API — six request/tool/model phases → /api/v1/omnigent/hook")
     elif connector == "hermes":
         click.echo("    • Hooks      — 23 classified v0.19 events → /api/v1/hermes/hook")
@@ -5800,6 +5885,8 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
             click.echo("    • Native OTel — documented agent telemetry → /v1/logs, /v1/metrics, and/or /v1/traces")
     if connector == "codex":
         click.echo("    • Notify     — agent-turn-complete events → /api/v1/codex/notify")
+    if connector == "amp":
+        click.echo("    • Headless   — use `amp -x ... --plugin-ready-timeout 30` for complete lifecycle telemetry")
     click.echo()
     if mode == "observe":
         click.echo("  To later turn enforcement on:")
@@ -5854,7 +5941,13 @@ def _print_observability_summary(
     """One-screen summary surfaced after a successful alias run."""
     label = _CONNECTOR_META[connector]["label"]
     setup_slug = "claude-code" if connector == "claudecode" else connector
-    if connector == "omnigent":
+    if connector == "amp":
+        enforcement_label = (
+            "enabled (synchronous policy plugin)"
+            if mode == "action"
+            else "disabled (observe-only)"
+        )
+    elif connector == "omnigent":
         enforcement_label = "enabled (custom policy API)" if mode == "action" else "disabled (observe-only)"
     elif connector == "hermes":
         enforcement_label = (
@@ -6695,22 +6788,30 @@ def _apply_setup_batch(
     default_mode = "action" if (mode or "").strip().lower() == "action" else "observe"
     setup_snapshot = _prior_snapshot or _capture_setup_config_snapshot(app.cfg)
 
+    resolved_connector_modes = {
+        connector_name: (connector_modes or {}).get(connector_name, default_mode)
+        for connector_name in connectors
+    }
+
     # Resolve every contract before replacing the desired roster. A selected
     # connector that cannot be set up must leave the exact prior roster intact,
     # rather than becoming desired state that the gateway can never apply.
     for connector_name in connectors:
-        connector_mode = (connector_modes or {}).get(connector_name, default_mode)
+        connector_mode = resolved_connector_modes[connector_name]
         preflight_kwargs = {
             "mode": connector_mode,
-            "emit": False,
+            "emit": True,
             "data_dir": getattr(app.cfg, "data_dir", None),
             "_allow_prompt": False,
         }
         if trusted_prompt_cache is not None:
             preflight_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
         if not _check_connector_version_supported_for_setup(connector_name, **preflight_kwargs):
-            preflight_kwargs["emit"] = True
-            _check_connector_version_supported_for_setup(connector_name, **preflight_kwargs)
+            if (connector_mode or "").strip().lower() == "action" and connector_name != "opencode":
+                label = _CONNECTOR_META.get(connector_name, {}).get("label", connector_name)
+                ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
+                resolved_connector_modes[connector_name] = "observe"
+                continue
             _restore_setup_config_in_memory(app, setup_snapshot)
             raise click.ClickException(
                 f"connector {connector_name!r} did not pass setup preflight; prior roster was not changed"
@@ -6746,7 +6847,7 @@ def _apply_setup_batch(
     else:
         trusted_prompt_cache = None
     for c in connectors:
-        connector_mode = (connector_modes or {}).get(c, default_mode)
+        connector_mode = resolved_connector_modes[c]
         enable_judge: bool | None = None
         if prompt_per_connector:
             connector_mode = _prompt_connector_mode(c, default_mode=connector_mode)
@@ -6765,6 +6866,7 @@ def _apply_setup_batch(
                 allow_trusted_path_prompt=allow_trusted_path_prompt,
                 trusted_prompt_cache=trusted_prompt_cache,
                 _downgrade_refused_action=True,
+                _version_preflighted=True,
                 _selection_preflighted=True,
             )
         except Exception as exc:
@@ -7489,7 +7591,11 @@ def setup_remove(
 def _make_observability_setup_command(connector: str) -> click.Command:
     """Create a ``defenseclaw setup <connector>`` hook-driven alias."""
     label = _CONNECTOR_META[connector]["label"]
-    surface_name = "custom policy API" if connector == "omnigent" else "agent lifecycle hooks"
+    surface_name = (
+        "synchronous policy plugin"
+        if connector == "amp"
+        else ("custom policy API" if connector == "omnigent" else "agent lifecycle hooks")
+    )
     platform = platform_support.connector_platform_support(connector)
     platform_note = (
         ""
@@ -7675,6 +7781,7 @@ for _observability_connector in (
     "openhands",
     "antigravity",
     "opencode",
+    "amp",
     "omnigent",
 ):
     setup.add_command(_make_observability_setup_command(_observability_connector))
@@ -7713,6 +7820,7 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "openhands",
         "antigravity",
         "opencode",
+        "amp",
         "omnigent",
     }
 )
@@ -9136,9 +9244,13 @@ def _restart_services(
     connector_state_before = (
         _active_connector_state_marker(data_dir) if wait_for_connector_ready and hook_targets else None
     )
-    hook_contract_lock_before = (
-        _hook_contract_lock_marker(data_dir) if wait_for_connector_ready and hook_targets else None
-    )
+    if wait_for_connector_ready and hook_targets:
+        hook_contract_lock_before, hook_contract_publications_before = _hook_contract_lock_progress_baseline(
+            data_dir,
+            set(hook_targets),
+        )
+    else:
+        hook_contract_lock_before, hook_contract_publications_before = None, {}
 
     gateway_restarted = (
         _restart_defense_gateway(data_dir)
@@ -9149,12 +9261,15 @@ def _restart_services(
         failed.append("defenseclaw-gateway")
 
     if wait_for_connector_ready and hook_targets and gateway_restarted:
+        gateway_generation = _gateway_health_generation(data_dir)
         click.echo("  connector runtime: waiting for verified setup...", nl=False)
         if _wait_for_connector_runtime(
             data_dir,
             hook_targets,
             connector_state_before,
             hook_contract_lock_before,
+            previous_lock_publications=hook_contract_publications_before,
+            gateway_generation=gateway_generation,
         ):
             click.echo(" ✓")
         else:
@@ -9188,7 +9303,11 @@ def _restart_services(
         # No proxy listener binds for hook-only connectors — the agent
         # talks directly to its native upstream and DefenseClaw
         # observes/enforces via the hook bus on the sidecar API port.
-        surface = "custom policy API" if connector == "omnigent" else "hook bus"
+        surface = (
+            "synchronous policy plugin"
+            if connector == "amp"
+            else ("custom policy API" if connector == "omnigent" else "hook bus")
+        )
         ux.subhead(
             f"{connector} connector: enforcement via {surface} on the sidecar API port. "
             f"No proxy listener — {connector} talks directly to its native upstream."
@@ -9285,42 +9404,97 @@ def _hook_contract_lock_covers(
         if not expected.issubset(actual) or not (actual - expected).issubset(inactive):
             return False
     for name in expected:
-        entry = entries.get(name)
-        if not isinstance(entry, dict):
+        if not _hook_contract_lock_entry_covers(name, entries.get(name)):
             return False
-        connector_name = entry.get("connector")
-        if not isinstance(connector_name, str) or normalize_connector(connector_name) != name:
-            return False
-        if name == "cursor":
-            if entry.get("contract_id") != "cursor-hooks-v1":
-                return False
-            if entry.get("compatibility_status") not in {"known", "unversioned"}:
-                return False
-            if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") not in {"open", "closed"}:
-                return False
-            locations = entry.get("locations")
-            if not isinstance(locations, dict):
-                return False
-            hook_paths = locations.get("hook_config_paths")
-            runtime_paths = locations.get("hook_script_paths")
-            if not isinstance(hook_paths, list) or len(hook_paths) != 1:
-                return False
-            if not isinstance(runtime_paths, list) or not runtime_paths:
-                return False
-        if name == "opencode":
-            if entry.get("contract_id") != "opencode-hooks-v1":
-                return False
-            if entry.get("compatibility_status") != "known":
-                return False
-            if entry.get("hook_script_version") != "v7":
-                return False
-            locations = entry.get("locations")
-            if not isinstance(locations, dict):
-                return False
-            hook_paths = locations.get("hook_config_paths")
-            if not isinstance(hook_paths, list) or len(hook_paths) != 1:
-                return False
     return True
+
+
+def _hook_contract_lock_entry_covers(name: str, entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    connector_name = entry.get("connector")
+    if not isinstance(connector_name, str) or normalize_connector(connector_name) != name:
+        return False
+    if name == "cursor":
+        if entry.get("contract_id") != "cursor-hooks-v1":
+            return False
+        if entry.get("compatibility_status") not in {"known", "unversioned"}:
+            return False
+        if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") not in {"open", "closed"}:
+            return False
+        locations = entry.get("locations")
+        if not isinstance(locations, dict):
+            return False
+        hook_paths = locations.get("hook_config_paths")
+        runtime_paths = locations.get("hook_script_paths")
+        if not isinstance(hook_paths, list) or len(hook_paths) != 1:
+            return False
+        if not isinstance(runtime_paths, list) or not runtime_paths:
+            return False
+    if name == "opencode":
+        if entry.get("contract_id") != "opencode-hooks-v1":
+            return False
+        if entry.get("compatibility_status") != "known":
+            return False
+        if entry.get("hook_script_version") != "v7":
+            return False
+        locations = entry.get("locations")
+        if not isinstance(locations, dict):
+            return False
+        hook_paths = locations.get("hook_config_paths")
+        if not isinstance(hook_paths, list) or len(hook_paths) != 1:
+            return False
+    return True
+
+
+def _validated_hook_contract_lock_publications(lock: Any, expected: set[str]) -> dict[str, str]:
+    """Return per-connector publication tokens from a structurally valid lock.
+
+    A token is useful only after the corresponding expected entry satisfies the
+    same metadata checks as final readiness. The caller compares these opaque
+    RFC3339 timestamps with the protected pre-restart snapshot; timestamp text
+    never grants readiness by itself.
+    """
+
+    if not isinstance(lock, dict):
+        return {}
+    version = lock.get("version")
+    entries = lock.get("connectors")
+    if type(version) is not int or version < 1 or version > 2 or not isinstance(entries, dict):
+        return {}
+    normalized_names: set[str] = set()
+    for raw_name in entries:
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            return {}
+        normalized = normalize_connector(raw_name)
+        if not normalized or normalized in normalized_names:
+            return {}
+        normalized_names.add(normalized)
+    publications: dict[str, str] = {}
+    for name in expected:
+        entry = entries.get(name)
+        if not _hook_contract_lock_entry_covers(name, entry):
+            continue
+        updated_at = entry.get("updated_at")
+        if (
+            isinstance(updated_at, str)
+            and updated_at.strip() == updated_at
+            and updated_at
+            and not any(char in updated_at for char in "\x00\r\n")
+        ):
+            publications[name] = updated_at
+    return publications
+
+
+def _hook_contract_lock_progress_baseline(
+    data_dir: str,
+    expected: set[str],
+) -> tuple[int | None, dict[str, str]]:
+    try:
+        lock, marker = _read_stable_regular_json(os.path.join(data_dir, "hook_contract_lock.json"))
+    except (OSError, ValueError):
+        return None, {}
+    return marker, _validated_hook_contract_lock_publications(lock, expected)
 
 
 def _connector_runtime_state_sets(state: Any) -> tuple[set[str], set[str] | None] | None:
@@ -9439,44 +9613,193 @@ def _opencode_registration_from_lock(lock: Any) -> bool:
     return isinstance(expected, str) and expected == actual
 
 
+def _connector_runtime_snapshot_ready(
+    state: Any,
+    state_marker: int,
+    lock: Any,
+    lock_marker: int,
+    *,
+    expected: set[str],
+    previous_state_marker: int | None,
+    previous_lock_marker: int | None,
+) -> bool:
+    runtime_sets = _connector_runtime_state_sets(state)
+    if runtime_sets is None:
+        return False
+    active, inactive = runtime_sets
+    state_fresh = previous_state_marker is None or state_marker != previous_state_marker
+    lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
+    return bool(
+        active == expected
+        and state_fresh
+        and lock_fresh
+        and _hook_contract_lock_covers(lock, expected, inactive)
+        and ("cursor" not in expected or _cursor_registration_from_lock(lock))
+        and ("opencode" not in expected or _opencode_registration_from_lock(lock))
+    )
+
+
+def _connector_runtime_ready_once(
+    state_path: str,
+    lock_path: str,
+    *,
+    expected: set[str],
+    previous_state_marker: int | None,
+    previous_lock_marker: int | None,
+) -> bool:
+    try:
+        state, state_marker = _read_stable_regular_json(state_path)
+        lock, lock_marker = _read_stable_regular_json(lock_path)
+    except (OSError, ValueError):
+        return False
+    return _connector_runtime_snapshot_ready(
+        state,
+        state_marker,
+        lock,
+        lock_marker,
+        expected=expected,
+        previous_state_marker=previous_state_marker,
+        previous_lock_marker=previous_lock_marker,
+    )
+
+
+def _read_gateway_health(data_dir: str, *, timeout: float = 1.0) -> dict[str, Any] | None:
+    try:
+        config_path = config_path_for_data_dir(data_dir)
+        if not os.path.isfile(config_path):
+            return None
+        cfg = load_config(data_dir=data_dir)
+        gateway = cfg.gateway
+        from defenseclaw.logger import _gateway_api_host
+
+        host = _gateway_api_host(cfg)
+        port = int(getattr(gateway, "api_port", 18970) or 18970)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+    if not 1 <= port <= 65535:
+        return None
+    connection = http.client.HTTPConnection(host, port, timeout=max(0.01, min(timeout, 1.0)))
+    try:
+        connection.request("GET", "/health")
+        response = connection.getresponse()
+        body = response.read(1 << 20)
+        if response.status != 200:
+            return None
+        health = _json.loads(body)
+        return health if isinstance(health, dict) else None
+    except (OSError, http.client.HTTPException, UnicodeDecodeError, ValueError):
+        return None
+    finally:
+        connection.close()
+
+
+def _gateway_health_generation(data_dir: str) -> str | None:
+    health = _read_gateway_health(data_dir)
+    started_at = health.get("started_at") if isinstance(health, dict) else None
+    if not isinstance(started_at, str) or not started_at.strip():
+        return None
+    return started_at.strip()
+
+
+def _new_gateway_health_is_terminal_failure(data_dir: str, generation: str | None) -> bool:
+    """Fail early only for a terminal state from the restarted generation."""
+
+    if not generation:
+        return False
+    health = _read_gateway_health(data_dir)
+    if not isinstance(health, dict) or health.get("started_at") != generation:
+        return False
+    guardrail = health.get("guardrail")
+    state = guardrail.get("state") if isinstance(guardrail, dict) else None
+    # ``guardrail`` is initialized as disabled before connector boot begins,
+    # so disabled is not terminal for a freshly started generation. Error and
+    # stopped cannot converge into a verified connector runtime without a new
+    # generation and may fail this wait early.
+    return isinstance(state, str) and state.strip().lower() in {"error", "stopped"}
+
+
 def _wait_for_connector_runtime(
     data_dir: str,
     connectors: list[str],
     previous_state_marker: int | None,
     previous_lock_marker: int | None,
     timeout: float = _CONNECTOR_RUNTIME_READY_TIMEOUT_SECONDS,
+    *,
+    previous_lock_publications: dict[str, str] | None = None,
+    gateway_generation: str | None = None,
 ) -> bool:
     expected = {normalize_connector(name) for name in connectors if name}
     if not expected:
         return True
     state_path = os.path.join(data_dir, "active_connector.json")
     lock_path = os.path.join(data_dir, "hook_contract_lock.json")
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    per_connector_budget = max(0.0, timeout)
+    started_at = time.monotonic()
+    no_progress_deadline = started_at + per_connector_budget
+    absolute_budget = min(
+        _CONNECTOR_RUNTIME_READY_ABSOLUTE_CAP_SECONDS,
+        per_connector_budget * max(1, len(expected) + 1),
+    )
+    absolute_deadline = started_at + absolute_budget
+    baseline_publications = dict(previous_lock_publications or {})
+    observed_fresh_publications: set[str] = set()
+
+    while True:
+        now = time.monotonic()
+        if now >= no_progress_deadline or now >= absolute_deadline:
+            # One final same-handle/stable JSON read closes the boundary race:
+            # a transaction committing exactly as its bounded wait expires is
+            # accepted only if every original readiness predicate is now true.
+            if _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
+                return False
+            return _connector_runtime_ready_once(
+                state_path,
+                lock_path,
+                expected=expected,
+                previous_state_marker=previous_state_marker,
+                previous_lock_marker=previous_lock_marker,
+            )
         try:
             state, state_marker = _read_stable_regular_json(state_path)
             lock, lock_marker = _read_stable_regular_json(lock_path)
         except (OSError, ValueError):
-            time.sleep(0.2)
-            continue
-        runtime_sets = _connector_runtime_state_sets(state)
-        if runtime_sets is None:
-            time.sleep(0.2)
-            continue
-        active, inactive = runtime_sets
-        state_fresh = previous_state_marker is None or state_marker != previous_state_marker
-        lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
-        if (
-            active == expected
-            and state_fresh
-            and lock_fresh
-            and _hook_contract_lock_covers(lock, expected, inactive)
-            and ("cursor" not in expected or _cursor_registration_from_lock(lock))
-            and ("opencode" not in expected or _opencode_registration_from_lock(lock))
-        ):
-            return True
-        time.sleep(0.2)
-    return False
+            state = lock = None
+        else:
+            snapshot_ready = _connector_runtime_snapshot_ready(
+                state,
+                state_marker,
+                lock,
+                lock_marker,
+                expected=expected,
+                previous_state_marker=previous_state_marker,
+                previous_lock_marker=previous_lock_marker,
+            )
+            if _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
+                return False
+            if snapshot_ready:
+                return True
+
+            lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
+            if lock_fresh:
+                publications = _validated_hook_contract_lock_publications(lock, expected)
+                freshly_published = {
+                    name
+                    for name, token in publications.items()
+                    if token != baseline_publications.get(name)
+                }
+                new_progress = freshly_published - observed_fresh_publications
+                if new_progress:
+                    observed_fresh_publications.update(new_progress)
+                    progress_at = time.monotonic()
+                    no_progress_deadline = min(absolute_deadline, progress_at + per_connector_budget)
+
+        if state is None and _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
+            # Health is only a negative terminal signal for the exact restarted
+            # generation. It can never replace the file/lock/registration gate.
+            return False
+        sleep_for = min(0.2, max(0.0, min(no_progress_deadline, absolute_deadline) - time.monotonic()))
+        if sleep_for:
+            time.sleep(sleep_for)
 
 
 def _restart_openclaw_gateway() -> bool:

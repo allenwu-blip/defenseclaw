@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,6 +228,8 @@ func (c *Config) ReadMCPServersForConnector(connector string) ([]MCPServerEntry,
 		return readMCPServersOpenHands()
 	case "opencode":
 		return readMCPServersOpenCode(workspaceDir)
+	case "amp":
+		return readMCPServersAMP(workspaceDir)
 	case "antigravity":
 		return readMCPServersAntigravity(workspaceDir)
 	case "omnigent":
@@ -383,6 +386,26 @@ func parseMCPServersJSONArray(data []byte) ([]MCPServerEntry, error) {
 		})
 	}
 	return entries, nil
+}
+
+// ParseMCPServersJSON is the exported wrapper around parseMCPServersJSON
+// so packages outside `config` (e.g. inventory's AI-discovery scanner)
+// can enumerate the servers declared inside a matched `mcp.json` /
+// `.cursor/mcp.json` / claude-desktop config file without duplicating the
+// parser. The input is the raw file bytes; the output is one
+// MCPServerEntry per top-level key in the JSON object form
+// (`{"mcpServers": {...}}` callers must pass the inner `mcpServers`
+// object; plain-object callers pass their whole file). Callers that need
+// the array shape should use ParseMCPServersJSONArray.
+func ParseMCPServersJSON(data []byte) ([]MCPServerEntry, error) {
+	return parseMCPServersJSON(data)
+}
+
+// ParseMCPServersJSONArray is the exported wrapper around
+// parseMCPServersJSONArray for callers that need the alternate top-level
+// array form (`[{"name": "...", ...}, ...]`).
+func ParseMCPServersJSONArray(data []byte) ([]MCPServerEntry, error) {
+	return parseMCPServersJSONArray(data)
 }
 
 func workspaceSkillsDir(homeDir string, oc *openclawConfig) string {
@@ -542,6 +565,10 @@ func (c *Config) ConnectorHomeDir(connector string) string {
 		// opencode keeps its config under ~/.config/opencode/ (XDG-style);
 		// matches connector_paths.connector_home("opencode").
 		return filepath.Join(home, ".config", "opencode")
+	case "amp":
+		// Amp uses this same config home on macOS, Linux, and native
+		// Windows (%USERPROFILE%\.config\amp).
+		return filepath.Join(home, ".config", "amp")
 	case "omnigent":
 		if configHome := strings.TrimSpace(os.Getenv("OMNIGENT_CONFIG_HOME")); configHome != "" {
 			return expandPath(configHome)
@@ -683,6 +710,8 @@ func (c *Config) SkillDirsForConnector(connector string) []string {
 		// These connectors have no documented local skills surface. Keep
 		// them isolated from OpenClaw's skill directories.
 		return nil
+	case "amp":
+		return ampSkillDirs(home, cwd)
 	case "antigravity":
 		return dedupNonEmpty([]string{
 			filepath.Join(home, ".gemini", "config", "skills"),
@@ -765,6 +794,11 @@ func (c *Config) PluginDirsForConnector(connector string) []string {
 			filepath.Join(home, ".gemini", "antigravity-cli", "plugins"),
 			workspaceJoin(cwd, ".agents", "plugins"),
 			workspaceJoin(cwd, "_agents", "plugins"),
+		})
+	case "amp":
+		return dedupNonEmpty([]string{
+			filepath.Join(home, ".config", "amp", "plugins"),
+			workspaceJoin(cwd, ".amp", "plugins"),
 		})
 	case "cursor", "windsurf", "copilot", "openhands", "opencode", "omnigent":
 		return nil
@@ -1167,6 +1201,427 @@ func readMCPFromZeptoConfig(path string) ([]MCPServerEntry, error) {
 	default:
 		return nil, nil
 	}
+}
+
+const ampSettingsReadLimit int64 = 2 << 20
+
+func ampClaudePluginCacheSkillDirs(home string) []string {
+	const (
+		maxDepth   = 4
+		maxEntries = 4096
+	)
+	root := filepath.Join(home, ".claude", "plugins", "cache")
+	info, err := os.Lstat(root)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return nil
+	}
+	type pendingDir struct {
+		path  string
+		depth int
+	}
+	pending := []pendingDir{{path: root}}
+	inspected := 0
+	var skillDirs []string
+	for len(pending) > 0 && inspected < maxEntries {
+		current := pending[0]
+		pending = pending[1:]
+		entries, err := readBoundedAMPDirectory(current.path, maxEntries-inspected)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			inspected++
+			if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() {
+				continue
+			}
+			childDepth := current.depth + 1
+			child := filepath.Join(current.path, entry.Name())
+			if strings.EqualFold(entry.Name(), "skills") {
+				skillDirs = append(skillDirs, child)
+				continue
+			}
+			if childDepth < maxDepth {
+				pending = append(pending, pendingDir{path: child, depth: childDepth})
+			}
+		}
+	}
+	return dedupNonEmpty(skillDirs)
+}
+
+func ampManagedSettingsPath() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return filepath.Join(string(filepath.Separator), "Library", "Application Support", "ampcode", "managed-settings.json")
+	case "linux":
+		return filepath.Join(string(filepath.Separator), "etc", "ampcode", "managed-settings.json")
+	case "windows":
+		if programData := strings.TrimSpace(os.Getenv("ProgramData")); programData != "" {
+			return filepath.Join(programData, "ampcode", "managed-settings.json")
+		}
+	}
+	return ""
+}
+
+func ampSettingsPaths(home, workspace string, workspaceFirst bool) []string {
+	user := []string{preferredAMPSettingsPath(
+		filepath.Join(home, ".config", "amp", "settings.json"),
+		filepath.Join(home, ".config", "amp", "settings.jsonc"),
+	)}
+	project := []string{preferredAMPSettingsPath(
+		workspaceJoin(workspace, ".amp", "settings.json"),
+		workspaceJoin(workspace, ".amp", "settings.jsonc"),
+	)}
+	managed := []string{ampManagedSettingsPath()}
+	if workspaceFirst {
+		return dedupNonEmpty(append(managed, append(project, user...)...))
+	}
+	return dedupNonEmpty(append(append(user, project...), managed...))
+}
+
+func ampSkillDirs(home, workspace string) []string {
+	disableClaude := false
+	var extraPath string
+	// Read user then workspace so the documented workspace override wins.
+	for _, path := range ampSettingsPaths(home, workspace, false) {
+		doc, err := readJSONObjectJSONC(path)
+		if err != nil {
+			continue
+		}
+		if value, ok := doc["amp.skills.disableClaudeCodeSkills"].(bool); ok {
+			disableClaude = value
+		}
+		if value, ok := doc["amp.skills.path"].(string); ok {
+			extraPath = value
+		}
+	}
+
+	dirs := []string{
+		filepath.Join(home, ".config", "agents", "skills"),
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".config", "amp", "skills"),
+		workspaceJoin(workspace, ".agents", "skills"),
+	}
+	if !disableClaude {
+		dirs = append(dirs,
+			workspaceJoin(workspace, ".claude", "skills"),
+			filepath.Join(home, ".claude", "skills"),
+		)
+		dirs = append(dirs, ampClaudePluginCacheSkillDirs(home)...)
+	}
+	for _, configured := range filepath.SplitList(extraPath) {
+		configured = expandPath(strings.TrimSpace(configured))
+		if configured == "" {
+			continue
+		}
+		// Never resolve a relative path against the DefenseClaw daemon's cwd.
+		// With a pinned workspace, relative additions are workspace-relative;
+		// otherwise only the documented absolute/~ forms are actionable.
+		if !filepath.IsAbs(configured) {
+			if workspace == "" {
+				continue
+			}
+			configured = filepath.Join(workspace, configured)
+		}
+		dirs = append(dirs, filepath.Clean(configured))
+	}
+	// Plugin-bundled skills are the lowest local precedence documented by
+	// Amp. Only directory plugins can bundle a skills/ component; standalone
+	// .ts plugins remain visible through plugin inventory, not this list.
+	for _, pluginRoot := range dedupNonEmpty([]string{
+		filepath.Join(home, ".config", "amp", "plugins"),
+		workspaceJoin(workspace, ".amp", "plugins"),
+	}) {
+		entries, err := readBoundedAMPDirectory(pluginRoot, 4096)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				dirs = append(dirs, filepath.Join(pluginRoot, entry.Name(), "skills"))
+			}
+		}
+	}
+	return dedupNonEmpty(dirs)
+}
+
+func preferredAMPSettingsPath(primary, fallback string) string {
+	for _, candidate := range []string{primary, fallback} {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return primary
+}
+
+func readBoundedAMPDirectory(path string, remaining int) ([]os.DirEntry, error) {
+	if remaining <= 0 {
+		return nil, nil
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	entries, readErr := directory.ReadDir(remaining)
+	closeErr := directory.Close()
+	if readErr != nil && readErr != io.EOF {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	sort.Slice(entries, func(left, right int) bool {
+		return strings.ToLower(entries[left].Name()) < strings.ToLower(entries[right].Name())
+	})
+	return entries, nil
+}
+
+func readJSONObjectJSONC(path string) (map[string]any, error) {
+	data, err := readStableAMPSettingsFile(path)
+	if err != nil {
+		return nil, err
+	}
+	data = stripJSONCComments(data)
+	data = stripJSONCTrailingCommas(data)
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}
+
+func readMCPFromClaudeSettings(path string) ([]MCPServerEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	var settings struct {
+		MCPServers map[string]struct {
+			Command string            `json:"command"`
+			Args    []string          `json:"args"`
+			Env     map[string]string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return nil, err
+	}
+
+	entries := make([]MCPServerEntry, 0, len(settings.MCPServers))
+	for name, s := range settings.MCPServers {
+		entries = append(entries, MCPServerEntry{
+			Name:    name,
+			Command: s.Command,
+			Args:    s.Args,
+			Env:     s.Env,
+		})
+	}
+	return entries, nil
+}
+
+func readMCPFromOpenCodeConfig(path string) ([]MCPServerEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		MCP map[string]struct {
+			Type        string            `json:"type"`
+			Command     []string          `json:"command"`
+			Environment map[string]string `json:"environment"`
+			URL         string            `json:"url"`
+		} `json:"mcp"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	entries := make([]MCPServerEntry, 0, len(doc.MCP))
+	for name, cfg := range doc.MCP {
+		kind := strings.ToLower(strings.TrimSpace(cfg.Type))
+		if kind == "remote" || (kind == "" && cfg.URL != "" && len(cfg.Command) == 0) {
+			entries = append(entries, MCPServerEntry{
+				Name:      name,
+				URL:       cfg.URL,
+				Transport: "remote",
+			})
+			continue
+		}
+		command := ""
+		var args []string
+		if len(cfg.Command) > 0 {
+			command = cfg.Command[0]
+			if len(cfg.Command) > 1 {
+				args = cfg.Command[1:]
+			}
+		}
+		entries = append(entries, MCPServerEntry{
+			Name:      name,
+			Command:   command,
+			Args:      args,
+			Env:       cfg.Environment,
+			Transport: "local",
+		})
+	}
+	return entries, nil
+}
+
+func readMCPServersAMP(workspaceDir string) ([]MCPServerEntry, error) {
+	home, _ := os.UserHomeDir()
+	cwd := strings.TrimSpace(workspaceDir)
+	var entries []MCPServerEntry
+
+	for _, path := range ampSettingsPaths(home, cwd, true) {
+		doc, err := readJSONObjectJSONC(path)
+		if err != nil {
+			continue
+		}
+		if found, err := readMCPFromAnyPaths(doc, []string{"amp.mcpServers"}); err == nil {
+			entries = append(entries, found...)
+		}
+	}
+
+	for _, skillRoot := range ampSkillDirs(home, cwd) {
+		children, err := os.ReadDir(skillRoot)
+		if err != nil {
+			continue
+		}
+		for _, child := range children {
+			if !child.IsDir() {
+				continue
+			}
+			if found, err := readMCPFromDotMCPJSON(filepath.Join(skillRoot, child.Name(), "mcp.json")); err == nil {
+				entries = append(entries, found...)
+			}
+		}
+	}
+	return dedupMCPEntries(entries), nil
+}
+
+func readStableAMPSettingsFile(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("Amp settings source is not a regular file")
+	}
+	if before.Size() > ampSettingsReadLimit {
+		return nil, fmt.Errorf("Amp settings source exceeds %d bytes", ampSettingsReadLimit)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, statErr := file.Stat()
+	data, readErr := io.ReadAll(io.LimitReader(file, ampSettingsReadLimit+1))
+	closeErr := file.Close()
+	if statErr != nil {
+		return nil, statErr
+	}
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("Amp settings source changed during inspection")
+	}
+	if int64(len(data)) > ampSettingsReadLimit {
+		return nil, fmt.Errorf("Amp settings source exceeds %d bytes", ampSettingsReadLimit)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() ||
+		!os.SameFile(opened, after) || before.Size() != after.Size() ||
+		!before.ModTime().Equal(after.ModTime()) {
+		return nil, fmt.Errorf("Amp settings source changed during inspection")
+	}
+	return data, nil
+}
+
+func stripJSONCComments(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	escaped := false
+	for i := 0; i < len(data); {
+		b := data[i]
+		if inString {
+			out = append(out, b)
+			if escaped {
+				escaped = false
+			} else if b == '\\' {
+				escaped = true
+			} else if b == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		if b == '"' {
+			inString = true
+			out = append(out, b)
+			i++
+			continue
+		}
+		if b == '/' && i+1 < len(data) && data[i+1] == '/' {
+			i += 2
+			for i < len(data) && data[i] != '\n' && data[i] != '\r' {
+				i++
+			}
+			continue
+		}
+		if b == '/' && i+1 < len(data) && data[i+1] == '*' {
+			i += 2
+			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(data) {
+				i += 2
+			}
+			continue
+		}
+		out = append(out, b)
+		i++
+	}
+	return out
+}
+
+func stripJSONCTrailingCommas(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	inString := false
+	escaped := false
+	for i := 0; i < len(data); i++ {
+		b := data[i]
+		if inString {
+			out = append(out, b)
+			if escaped {
+				escaped = false
+			} else if b == '\\' {
+				escaped = true
+			} else if b == '"' {
+				inString = false
+			}
+			continue
+		}
+		if b == '"' {
+			inString = true
+			out = append(out, b)
+			continue
+		}
+		if b == ',' {
+			j := i + 1
+			for j < len(data) && (data[j] == ' ' || data[j] == '\t' || data[j] == '\n' || data[j] == '\r') {
+				j++
+			}
+			if j < len(data) && (data[j] == '}' || data[j] == ']') {
+				continue
+			}
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 func dedupMCPEntries(entries []MCPServerEntry) []MCPServerEntry {

@@ -22,7 +22,7 @@ runtime, and maintenance copy as one transaction.
 | User context | A signed-in, **non-elevated interactive user**. Setup rejects Run as administrator, service identities, session zero, and background/batch launch for every state-changing action, including `/quiet`. |
 | Install scope | Current user only. There is no machine-scope Setup or MSI. |
 | Terminal | The installed commands run from PowerShell or cmd. Windows Terminal and PowerShell 7 are optional hosts, not prerequisites. |
-| Agent | A supported or preview agent installed natively for the same Windows user. For native Claude Code, Git for Windows is recommended upstream so Claude can use its Bash tool, but it is optional; without it Claude uses its native PowerShell tool. The DefenseClaw Claude preview does not install or require Git Bash. Hermes installs PortableGit and uses Git Bash for its upstream terminal tool; DefenseClaw neither installs nor invokes that dependency. OpenCode supports direct Windows execution while recommending, but not requiring, WSL; the DefenseClaw preview uses only direct native execution. The OmniGent preview requires the reviewed OmniGent 0.7.x range (`>=0.7.0,<0.8.0`) in its official same-user `uv tool` layout. |
+| Agent | A supported or preview agent installed natively for the same Windows user. Amp uses its owner-only system-policy plugin. For native Claude Code, Git for Windows is recommended upstream so Claude can use its Bash tool, but it is optional; without it Claude uses its native PowerShell tool. The DefenseClaw Claude preview does not install or require Git Bash. Hermes installs PortableGit and uses Git Bash for its upstream terminal tool; DefenseClaw neither installs nor invokes that dependency. OpenCode supports direct Windows execution while recommending, but not requiring, WSL; the DefenseClaw preview uses only direct native execution. The OmniGent preview requires the reviewed OmniGent 0.7.x range (`>=0.7.0,<0.8.0`) in its official same-user `uv tool` layout. |
 | Included runtime | Setup includes the CLI/TUI runtime, gateway, hook launcher, scanners, and pinned packages. No separate Python, `uv`, Go, Node.js, or global scanner install is required. |
 | Networking | Release download needs network unless staged offline. At runtime, the certified DefenseClaw path is authenticated loopback, normally `127.0.0.1:18970`; each agent still reaches its own upstream normally. |
 | Disk and memory | No exact minimum is published. Setup checks and stages the packaged transaction; an allocation or publication failure is reported and recovered rather than converted into an invented requirement. |
@@ -86,6 +86,7 @@ is a stop condition; do not bypass it.
 
 Double-click the EXE without **Run as administrator**. Choose one of:
 
+- **Amp** to configure the supported owner-only system-policy plugin.
 - **Claude Code** to configure its native preview while authentic packaged and
   official-client certification evidence remains pending.
 - **Codex**, **Cursor Agent**, **Devin Desktop legacy Cascade**, or **Hermes Agent** to configure
@@ -141,7 +142,7 @@ DefenseClawSetup-x64.exe /quiet /norestart INSTALLSCOPE=user CONNECTOR=codex MOD
   </Tab>
 </Tabs>
 
-Use `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=cursor`, `windsurf`,
+Use `CONNECTOR=amp` for Amp, `CONNECTOR=claudecode` for Claude Code, `CONNECTOR=cursor`, `windsurf`,
 `hermes`, `opencode`, or `omnigent` for a preview, and `copilot` or `antigravity` for a
 certification-pending lifecycle. Gemini CLI is not a Windows Setup choice. To
 install without configuring an agent or starting the gateway, use
@@ -155,7 +156,7 @@ Public Setup properties are:
 | Action | fresh install, `/repair`, `/upgrade`, or `/uninstall` |
 | UI | interactive or `/quiet` (`/qn` alias); `/norestart` is accepted |
 | Scope | `INSTALLSCOPE=user` only |
-| Connector | `CONNECTOR=antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `hermes`, `omnigent`, `opencode`, `windsurf`, or `none` |
+| Connector | `CONNECTOR=amp`, `antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `hermes`, `omnigent`, `opencode`, `windsurf`, or `none` |
 | Policy mode | `MODE=observe` or `action` |
 | Gateway | `STARTGATEWAY=1` or `0`, subject to the connector rule above |
 | User data on uninstall | `DELETEUSERDATA=0` (default) or `1` |
@@ -176,6 +177,7 @@ For explicit supported or preview connectors:
 ```powershell
 defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
+defenseclaw setup amp --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
 defenseclaw setup hermes --mode observe
@@ -183,13 +185,14 @@ defenseclaw setup omnigent --mode observe
 defenseclaw setup opencode --mode observe
 ```
 
-One local gateway can host all seven. Add connectors without removing the
+One local gateway can host all eight. Add connectors without removing the
 first:
 
 ```powershell
 defenseclaw setup `
   --connector codex `
   --connector claudecode `
+  --connector amp `
   --connector cursor `
   --connector windsurf `
   --connector hermes `
@@ -217,6 +220,11 @@ teardown has finished, so an environment change cannot strand an owned
 client loads the reconciled plugin state. The packaged data root itself is
 fixed to the current Windows profile; see
 [Path and override rules](/docs/get-started/windows/paths-troubleshooting#supported-path-overrides).
+
+Amp has no connector-home override: its system plugin uses
+`%USERPROFILE%\.config\amp\plugins\defenseclaw.ts`. Fully exit and relaunch Amp
+after setup changes; headless execute mode must use `--plugin-ready-timeout 30`
+so the policy plugin is ready before the turn begins.
 
 ## Startup behavior
 

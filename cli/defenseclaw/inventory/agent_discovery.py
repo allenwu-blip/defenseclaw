@@ -49,6 +49,7 @@ from defenseclaw.config import config_path_for_data_dir, default_data_path
 from defenseclaw.connector_paths import (
     KNOWN_CONNECTORS,
     _expand,
+    amp_managed_settings_path,
     claude_settings_paths,
     connector_config_files,
     connector_home,
@@ -684,6 +685,10 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 # to this token-bound product directory and verifies its
                 # updater-manifest SHA-512 before publication.
                 os.path.join(codex_local_app_data, "agy", "bin"),
+                # The desktop application is a metadata-only discovery
+                # fallback. Keep it token-bound and product-specific; it is
+                # never launched by inventory discovery.
+                os.path.join(codex_local_app_data, "Programs", "antigravity"),
                 # Hermes' official Windows updater owns this exact venv. Bind
                 # discovery to the current token's Known Folder instead of an
                 # inherited LOCALAPPDATA value or a coexisting legacy home.
@@ -779,6 +784,7 @@ DISCOVERY_PRECEDENCE: tuple[str, ...] = (
     "openhands",
     "antigravity",
     "opencode",
+    "amp",
     "omnigent",
 )
 
@@ -859,6 +865,7 @@ _SPECS: dict[str, _AgentSpec] = {
         # configuration alone never proves an installed official client.
         (
             "~/.gemini/config/hooks.json",
+            "~/.gemini/antigravity-cli/hooks.json",
         ),
         "agy",
         ("--version",),
@@ -879,6 +886,18 @@ _SPECS: dict[str, _AgentSpec] = {
             ".opencode/plugins/defenseclaw.js",
         ),
         "opencode",
+        ("--version",),
+    ),
+    "amp": _AgentSpec(
+        (
+            "~/.config/amp/plugins/defenseclaw.ts",
+            "~/.config/amp/settings.json",
+            "~/.config/amp/settings.jsonc",
+            ".amp/plugins/defenseclaw.ts",
+            ".amp/settings.json",
+            ".amp/settings.jsonc",
+        ),
+        "amp",
         ("--version",),
     ),
     "omnigent": _AgentSpec(
@@ -1037,7 +1056,12 @@ def _scan_agent(
     elif name == "hermes":
         config_candidates = (hermes_config_path(),)
     elif name == "antigravity":
-        config_candidates = (os.path.join(connector_home("antigravity"), "hooks.json"),)
+        config_candidates = _dedup_nonempty_candidates(
+            (
+                os.path.join(connector_home("antigravity"), "hooks.json"),
+                *spec.config_candidates,
+            )
+        )
     elif name == "opencode":
         config_home = connector_home("opencode")
         config_candidates = (
@@ -1047,6 +1071,12 @@ def _scan_agent(
             os.path.join(config_home, "tui.json"),
             os.path.join(config_home, "tui.jsonc"),
             *spec.config_candidates,
+        )
+    elif name == "amp":
+        # Enterprise managed settings are read-only configuration evidence.
+        # Keep the platform-owned path ahead of user/workspace candidates.
+        config_candidates = _dedup_nonempty_candidates(
+            (amp_managed_settings_path(), *config_candidates)
         )
     elif name == "omnigent":
         config_path = omnigent_config_path()
@@ -1094,6 +1124,19 @@ def _scan_agent(
         error=error,
         configured=bool(config_path),
     )
+
+
+def _dedup_nonempty_candidates(candidates: tuple[str, ...]) -> tuple[str, ...]:
+    """Preserve ordered discovery candidates without empty path aliases."""
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        out.append(candidate)
+    return tuple(out)
 
 
 def _ai_discovery_trust_config(
@@ -1692,6 +1735,14 @@ def _version_for_agent_binary(
 ) -> tuple[str, str]:
     """Probe a CLI, or read metadata for a GUI that must not be launched."""
 
+    command_name = _binary_command_name(binary_path)
+    if name == "antigravity" and _is_windows_host() and command_name == "antigravity":
+        return _windows_file_version_for_binary(
+            binary_path,
+            require_trusted_binary_paths=True,
+            data_dir=data_dir,
+        )
+
     if name == "antigravity" and _is_windows_host():
         if not _is_canonical_antigravity_windows_binary(binary_path):
             return "", "binary is not the official token-bound LocalAppData\\agy\\bin\\agy.exe path"
@@ -1717,7 +1768,6 @@ def _version_for_agent_binary(
             return "", "official Antigravity CLI changed during its version probe"
         return version, ""
 
-    command_name = _binary_command_name(binary_path)
     if (
         name == "windsurf"
         and _is_windows_host()
@@ -1933,7 +1983,10 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
         return tuple(
             candidate
             for root in _windows_current_user_local_app_data_roots()
-            for candidate in (os.path.join(root, "agy", "bin", "agy.exe"),)
+            for candidate in (
+                os.path.join(root, "agy", "bin", "agy.exe"),
+                os.path.join(root, "Programs", "antigravity", "Antigravity.exe"),
+            )
             if os.path.isfile(candidate)
         )
     candidates: list[str] = []
@@ -2066,6 +2119,11 @@ def _windows_binary_candidates(connector: str, binary_name: str) -> tuple[str, .
         ]
         if local_app_data:
             prefixes.insert(0, os.path.join(local_app_data, "Programs", "cursor", "resources", "app", "bin"))
+    elif connector == "antigravity":
+        prefixes[0:0] = [
+            os.path.join(root, "agy", "bin")
+            for root in _windows_current_user_local_app_data_roots()
+        ]
     elif connector == "windsurf" and local_app_data:
         prefixes.insert(0, os.path.join(local_app_data, "Programs", "Windsurf", "bin"))
     elif connector == "opencode" and home:

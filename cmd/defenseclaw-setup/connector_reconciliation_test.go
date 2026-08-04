@@ -433,6 +433,7 @@ func TestConnectorDefaultHomeBesideDataRootIsStrictlyBound(t *testing.T) {
 	for connectorName, want := range map[string]string{
 		"codex":      filepath.Join(root, ".codex"),
 		"claudecode": filepath.Join(root, ".claude"),
+		"amp":        filepath.Join(root, ".config", "amp"),
 		"copilot":    filepath.Join(root, ".copilot"),
 		"cursor":     filepath.Join(root, ".cursor"),
 	} {

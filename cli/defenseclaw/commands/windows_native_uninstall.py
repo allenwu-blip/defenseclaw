@@ -497,6 +497,7 @@ def _validate_install_state(
         or state.get("install_scope") != "user"
         or state.get("connector")
         not in {
+            "amp",
             "antigravity",
             "codex",
             "claudecode",

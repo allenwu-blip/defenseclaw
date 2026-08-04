@@ -506,6 +506,7 @@ upstream agent-gateway address. Set log verbosity through the sidecar's
 | Antigravity | `~/.gemini/config/hooks.json`; Google documents no configuration-home environment override, and DefenseClaw owns only this global registration. Antigravity also discovers `<workspace>/.agents/hooks.json`, which DefenseClaw does not patch to avoid duplicate ownership. |
 | Hermes | `~/.hermes/config.yaml` |
 | OpenCode | `~/.config/opencode/plugins/defenseclaw.js` (managed bridge plugin — written whole, not patched; removed on teardown) |
+| Amp | `~/.config/amp/plugins/defenseclaw.ts` on macOS/Linux or `%USERPROFILE%\.config\amp\plugins\defenseclaw.ts` on native Windows (managed system policy plugin) |
 | OmniGent | `$OMNIGENT_CONFIG` when set, then `$OMNIGENT_CONFIG_HOME/config.yaml` or `~/.omnigent/config.yaml`; `~/.defenseclaw/hooks/defenseclaw_omnigent_policy.py`; and `defenseclaw_omnigent.pth` in OmniGent's Python environment. The CLI server must receive the selected YAML through `--config`. |
 
 A managed backup record is stored at

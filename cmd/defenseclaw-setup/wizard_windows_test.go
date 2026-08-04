@@ -367,6 +367,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "Configure later", Value: "none"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
+		{Label: "Amp", Value: "amp"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent (preview)", Value: "hermes"},

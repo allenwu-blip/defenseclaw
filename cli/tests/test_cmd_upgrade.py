@@ -6728,6 +6728,7 @@ class TestUpgradeManifest(unittest.TestCase):
         version: str = "0.8.7",
         source_commit: str = "a" * 40,
         recorded_install_root: str | None = None,
+        connector: str = "codex",
     ) -> tuple[str, str, dict[str, object]]:
         local_appdata = os.path.join(temp, "LocalAppData")
         profile = os.path.join(temp, "Profile")
@@ -6755,7 +6756,7 @@ class TestUpgradeManifest(unittest.TestCase):
             "runtime": os.path.join(install_root, "runtime", "python"),
             "maintenance_path": maintenance,
             "path_entry_owned": True,
-            "connector": "codex",
+            "connector": connector,
             "mode": "action",
         }
         with open(
@@ -7601,6 +7602,22 @@ class TestUpgradeManifest(unittest.TestCase):
             ),
         )
 
+    def test_native_windows_install_state_accepts_amp_connector(self):
+        with TemporaryDirectory() as temp:
+            local_appdata, profile, _state = self._native_install_state_fixture(
+                temp,
+                connector="amp",
+            )
+
+            with patch(
+                "defenseclaw.commands.cmd_upgrade._windows_known_folder",
+                side_effect=[local_appdata, profile],
+            ), self._native_windows_acl_fixture():
+                loaded = _native_windows_install_state("windows", expected_version="0.8.7")
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded["connector"], "amp")
+
     def test_native_windows_install_state_ignores_environment_install_root(self):
         with TemporaryDirectory() as temp:
             local_appdata, profile, _state = self._native_install_state_fixture(temp)
@@ -8095,7 +8112,7 @@ class TestUpgradeManifest(unittest.TestCase):
         self.assertTrue(any(arg.startswith("WAITPID=") for arg in args))
         self.assertIn("DefenseClaw 9.9.9", output)
 
-    def test_windows_setup_handoff_preserves_windsurf_selection(self):
+    def test_windows_setup_handoff_preserves_supported_selection(self):
         manifest = {
             "windows_installer": {
                 "asset": "DefenseClawSetup-x64.exe",
@@ -8108,31 +8125,33 @@ class TestUpgradeManifest(unittest.TestCase):
                 "managed_policy": "respect",
             },
         }
-        state = {
-            "version": "0.8.7",
-            "connector": "windsurf",
-            "mode": "action",
-            "maintenance_path": r"C:\Trusted\DefenseClawSetup-x64.exe",
-        }
-        with (
-            patch(
-                "defenseclaw.commands.cmd_upgrade._cache_verified_windows_setup",
-                return_value=state["maintenance_path"],
-            ),
-            patch("defenseclaw.commands.cmd_upgrade.subprocess.Popen") as popen_mock,
-        ):
-            _handoff_windows_setup_upgrade(
-                r"C:\Download\DefenseClawSetup-x64.exe",
-                "DefenseClawSetup-x64.exe",
-                "9.9.9",
-                state,
-                manifest,
-                yes=True,
-            )
+        for connector in ("windsurf", "amp"):
+            with self.subTest(connector=connector):
+                state = {
+                    "version": "0.8.7",
+                    "connector": connector,
+                    "mode": "action",
+                    "maintenance_path": r"C:\Trusted\DefenseClawSetup-x64.exe",
+                }
+                with (
+                    patch(
+                        "defenseclaw.commands.cmd_upgrade._cache_verified_windows_setup",
+                        return_value=state["maintenance_path"],
+                    ),
+                    patch("defenseclaw.commands.cmd_upgrade.subprocess.Popen") as popen_mock,
+                ):
+                    _handoff_windows_setup_upgrade(
+                        r"C:\Download\DefenseClawSetup-x64.exe",
+                        "DefenseClawSetup-x64.exe",
+                        "9.9.9",
+                        state,
+                        manifest,
+                        yes=True,
+                    )
 
-        args = popen_mock.call_args.args[0]
-        self.assertIn("CONNECTOR=windsurf", args)
-        self.assertIn("MODE=action", args)
+                args = popen_mock.call_args.args[0]
+                self.assertIn(f"CONNECTOR={connector}", args)
+                self.assertIn("MODE=action", args)
 
     def test_machine_install_self_update_is_rejected(self):
         with self.assertRaises(SystemExit) as ctx:

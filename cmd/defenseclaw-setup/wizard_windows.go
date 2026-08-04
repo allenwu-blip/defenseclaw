@@ -212,6 +212,7 @@ var (
 		{Label: "Configure later", Value: "none"},
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
+		{Label: "Amp", Value: "amp"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent (preview)", Value: "hermes"},
@@ -738,6 +739,8 @@ func wizardCompletionDescription(connector string) string {
 		return "Codex CLI is configured and the DefenseClaw hooks are trusted automatically." + installed
 	case "claudecode":
 		return "Claude Code is configured and its native Windows hooks are ready." + installed
+	case "amp":
+		return "Amp is configured with the DefenseClaw system policy plugin under %USERPROFILE%\\.config\\amp\\plugins. Use --plugin-ready-timeout 30 with amp -x." + installed
 	case "copilot":
 		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
 	case "cursor":

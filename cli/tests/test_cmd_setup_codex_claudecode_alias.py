@@ -655,6 +655,52 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         self.assertTrue(restored_call.kwargs["wait_for_connector_ready"])
         self.assertTrue(restored_call.kwargs["start_if_stopped"])
 
+    def test_opencode_readiness_failure_rechecks_the_exact_prior_four_connector_generation(self):
+        from defenseclaw.config import PerConnectorGuardrailConfig
+
+        prior_modes = {
+            "claudecode": ("action", "closed"),
+            "codex": ("observe", "open"),
+            "cursor": ("action", "closed"),
+            "omnigent": ("observe", "open"),
+        }
+        self.app.cfg.guardrail.connector = "claudecode"
+        self.app.cfg.claw.mode = "claudecode"
+        self.app.cfg.guardrail.connectors = {
+            name: PerConnectorGuardrailConfig(mode=mode, hook_fail_mode=fail_mode)
+            for name, (mode, fail_mode) in prior_modes.items()
+        }
+        prior_roster = tuple(self.app.cfg.active_connectors())
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_services",
+                side_effect=[RuntimeError("requested five-connector readiness failed"), None],
+            ) as restart_mock,
+            patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+        ):
+            result = _invoke(["opencode", "--yes", "--mode", "action"], self.app)
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("restored the prior connector configuration and runtime", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior_roster)
+        self.assertEqual(restart_mock.call_count, 2)
+        requested_call, restored_call = restart_mock.call_args_list
+        self.assertEqual(set(requested_call.kwargs["connectors"]), set(prior_roster) | {"opencode"})
+        self.assertEqual(set(restored_call.kwargs["connectors"]), set(prior_roster))
+        self.assertNotIn("opencode", restored_call.kwargs["connectors"])
+        self.assertTrue(restored_call.kwargs["wait_for_connector_ready"])
+        self.assertTrue(restored_call.kwargs["start_if_stopped"])
+        for name, (mode, fail_mode) in prior_modes.items():
+            override = self.app.cfg.guardrail.connectors[name]
+            self.assertEqual(override.mode, mode)
+            self.assertEqual(override.hook_fail_mode, fail_mode)
+
+
     def test_post_save_side_effect_failure_restores_prior_desired_state(self):
         from defenseclaw.config import PerConnectorGuardrailConfig
 

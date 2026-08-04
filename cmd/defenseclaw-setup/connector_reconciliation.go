@@ -374,6 +374,8 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		logicalName = "config.toml"
 	case "claudecode":
 		logicalName = "settings.json"
+	case "amp":
+		logicalName = "config"
 	case "copilot", "omnigent":
 		logicalName = "config"
 	case "cursor":
@@ -408,6 +410,8 @@ func connectorDefaultHomeBesideDataRoot(dataRoot, connectorName string) string {
 		directory = ".codex"
 	case "claudecode":
 		directory = ".claude"
+	case "amp":
+		return filepath.Join(filepath.Dir(cleanDataRoot), ".config", "amp")
 	case "copilot":
 		directory = ".copilot"
 	case "cursor":
@@ -741,6 +745,11 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousClaudeConfigDir
 		}
 		return transaction.ClaudeConfigDir
+	case "amp":
+		// Amp has no home override. DataRoot is bound to the current token's
+		// %USERPROFILE%\.defenseclaw, so this is the exact documented
+		// %USERPROFILE%\.config\amp directory for lifecycle operations.
+		return connectorDefaultHomeBesideDataRoot(transaction.DataRoot, connectorName)
 	case "copilot":
 		if previous {
 			return transaction.PreviousCopilotHome

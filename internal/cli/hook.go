@@ -99,7 +99,7 @@ func newHookCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&connector, "connector", "", "connector name (e.g. claudecode, codex, cursor)")
+	cmd.Flags().StringVar(&connector, "connector", "", "connector name (e.g. claudecode, codex, amp, cursor)")
 	cmd.Flags().StringVar(&event, "event", "", "agent hook event name (selects the request deadline; inferred when omitted)")
 	cmd.Flags().StringVar(&hookContractID, "hook-contract", "", "installer-bound connector hook contract")
 	cmd.Flags().StringVar(&apiAddr, "api-addr", "", "gateway host:port (defaults to the hook sidecar / local gateway)")

@@ -409,6 +409,19 @@ func TestDecisionGolden(t *testing.T) {
 			wantCode:  0,
 		},
 		{
+			name:       "amp block writes stderr exit 2 no stdout",
+			connector:  "amp",
+			respBody:   `{"action":"block","reason":"nope"}`,
+			wantStderr: "nope",
+			wantCode:   2,
+		},
+		{
+			name:      "amp allow exit 0",
+			connector: "amp",
+			respBody:  `{"action":"allow"}`,
+			wantCode:  0,
+		},
+		{
 			name:      "hermes allow with no hook_output exit 0",
 			connector: "hermes",
 			respBody:  `{"action":"allow"}`,
@@ -637,6 +650,7 @@ func TestOversizedPayload(t *testing.T) {
 		stdout string
 		code   int
 	}{
+		"amp":        {stdout: "", code: 2},
 		"claudecode": {stdout: `{"decision":"block","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
 		"codex":      {stdout: `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"DefenseClaw hook payload too large"}}` + "\n", code: 0},
 		"openhands":  {stdout: `{"decision":"deny","reason":"DefenseClaw hook payload too large"}` + "\n", code: 2},
@@ -1066,6 +1080,7 @@ func TestRequestWiring(t *testing.T) {
 
 func TestNativeConnectorEndpointMatrix(t *testing.T) {
 	tests := map[string]string{
+		"amp":         "/api/v1/amp/hook",
 		"codex":       "/api/v1/codex/hook",
 		"claudecode":  "/api/v1/claude-code/hook",
 		"cursor":      "/api/v1/cursor/hook",
@@ -1663,7 +1678,7 @@ func TestReadTokenFile(t *testing.T) {
 
 func TestSupportedConnectorsSorted(t *testing.T) {
 	got := SupportedConnectors()
-	want := []string{"antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "openhands", "windsurf"}
+	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "openhands", "windsurf"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

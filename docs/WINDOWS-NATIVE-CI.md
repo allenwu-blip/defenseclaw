@@ -10,7 +10,8 @@ fails, is cancelled, or is skipped.
 
 The merge gate covers:
 
-- native Go tests, `go vet`, and gateway/hook builds;
+- native Go tests, including current-user Windows DACL regressions, followed by
+  `go vet` and gateway/hook builds;
 - the Python suite and headless TUI checks;
 - PowerShell parsing, timeout, redaction, and process-tree cleanup contracts;
 - a release-shaped Windows amd64 gateway archive and Python wheel;
@@ -19,11 +20,16 @@ The merge gate covers:
   token-bound disposable Windows profile;
 - installed CLI, gateway lifecycle, doctor, scanner, and dependency checks;
 - Setup build and native install/repair/uninstall acceptance, including the
-  staged connector selection, repair, custody, and exact-restoration paths; and
+  staged connector selection, repair, custody, and exact-restoration paths;
 - deterministic Codex, Claude Code, and OpenCode connector contract tests.
   OpenCode's contract imports the installed JavaScript bridge, proves
   `tool.execute.before` permits on normal return and blocks on a thrown error,
-  and treats `tool.execute.after` as observation only.
+  and treats `tool.execute.after` as observation only; and
+- a required Amp PowerShell contract cell covering setup, observe/action
+  allow/block behavior, audit correlation, gateway-generated connector
+  telemetry, bounded timeout handling, teardown, and cleanup. It additionally
+  proves all five documented plugin callbacks, the Task/subagent boundary, a
+  private managed plugin, self-heal, and tamper-recovery behavior.
 
 The staged Copilot Setup lifecycle is exercised as pre-certification evidence.
 It does not add Copilot to the certified Windows connector matrix; packaged
@@ -43,6 +49,13 @@ process, listener, account/profile, and temporary-state cleanup.
 
 A merge to `main` is the review-and-CI boundary. The Release workflow trusts
 that boundary and does not poll or replay `Windows Native CI`.
+
+The secret-bearing real-client cells in `Connector Live E2E` are a separate,
+manual regression layer, not a release dependency or fork-pull-request merge
+gate. Its native Windows matrix covers Codex, Claude Code, and Amp. The Amp cell
+uses `AMP_API_KEY`, runs the official CLI through its native TypeScript plugin,
+and requires lifecycle, tool allow/block, audit, and gateway-generated
+connector telemetry evidence. It does not claim that Amp exports native OTLP.
 
 One manual Release dispatch builds the publishable Windows amd64 and arm64
 gateway binaries plus the x64 `DefenseClawSetup-x64.exe` from the reviewed

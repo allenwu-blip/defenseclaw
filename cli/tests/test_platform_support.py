@@ -62,7 +62,7 @@ from defenseclaw.tui.services.cli_choices import (
 
 from tests.helpers import cleanup_app, make_app_context
 
-WINDOWS_SUPPORTED: set[str] = set()
+WINDOWS_SUPPORTED: set[str] = {"amp"}
 WINDOWS_PREVIEW: set[str] = {
     "claudecode",
     "codex",

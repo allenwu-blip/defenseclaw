@@ -2033,7 +2033,14 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             _restart_services(tmpdir, connector="codex", wait_for_connector_ready=True)
 
-        mock_wait.assert_called_once_with(tmpdir, ["codex"], None, None)
+        mock_wait.assert_called_once_with(
+            tmpdir,
+            ["codex"],
+            None,
+            None,
+            previous_lock_publications={},
+            gateway_generation=None,
+        )
 
     @patch("defenseclaw.commands.cmd_setup._wait_for_connector_runtime", return_value=False)
     @patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True)
@@ -2045,6 +2052,374 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 _restart_services(tmpdir, connector="codex", wait_for_connector_ready=True)
 
         self.assertIn("connector runtime readiness", str(raised.exception))
+
+    @patch("defenseclaw.commands.cmd_setup.connector_paths.connector_config_files")
+    def test_sequential_connector_lock_progress_extends_only_the_bounded_readiness_wait(
+        self,
+        config_files,
+    ):
+        from defenseclaw.commands.cmd_setup import _restart_services
+        from defenseclaw.cursor_contract import CURSOR_HOOK_EVENTS
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, _seconds):
+                self.now += 10.0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_name = "cursor-hook.ps1" if os.name == "nt" else "cursor-hook.sh"
+            runtime_path = os.path.join(tmpdir, runtime_name)
+            runtime_body = "# defenseclaw-managed-hook v8\n"
+            if os.name == "nt":
+                runtime_body += (
+                    "$failClosed = $true\n--input-file\ndefenseclaw-hook.exe\n"
+                    "ProcessStartInfo\nRedirectStandardOutput\nWaitForExit\n"
+                )
+                command = "& '" + runtime_path.replace("'", "''") + "'"
+            else:
+                command = runtime_path
+            with open(runtime_path, "w", encoding="utf-8") as runtime_file:
+                runtime_file.write(runtime_body)
+            hooks_path = os.path.join(tmpdir, "cursor-hooks.json")
+            hooks = {
+                event: [
+                    {
+                        "type": "command",
+                        "command": command,
+                        "timeout": 30,
+                        "failClosed": True,
+                    }
+                ]
+                for event in CURSOR_HOOK_EVENTS
+            }
+            with open(hooks_path, "w", encoding="utf-8") as hooks_file:
+                json.dump({"version": 1, "hooks": hooks}, hooks_file)
+
+            plugin_path = os.path.join(tmpdir, "defenseclaw.js")
+            plugin_body = b"// defenseclaw-managed-plugin v7\n/api/v1/opencode/hook\n"
+            with open(plugin_path, "wb") as plugin_file:
+                plugin_file.write(plugin_body)
+            config_files.return_value = [plugin_path]
+
+            def entry(name, token):
+                value = {"connector": name, "updated_at": token}
+                if name == "cursor":
+                    value.update(
+                        {
+                            "contract_id": "cursor-hooks-v1",
+                            "compatibility_status": "known",
+                            "hook_script_version": "v8",
+                            "hook_fail_mode": "closed",
+                            "locations": {
+                                "hook_config_paths": [hooks_path],
+                                "hook_script_paths": [runtime_path],
+                            },
+                        }
+                    )
+                elif name == "opencode":
+                    value.update(
+                        {
+                            "contract_id": "opencode-hooks-v1",
+                            "compatibility_status": "known",
+                            "hook_script_version": "v7",
+                            "locations": {"hook_config_paths": [plugin_path]},
+                            "hook_script_digests": {
+                                "defenseclaw.js": "sha256:" + hashlib.sha256(plugin_body).hexdigest()
+                            },
+                        }
+                    )
+                return value
+
+            for requested in (
+                ["claudecode", "codex", "cursor", "omnigent"],
+                ["claudecode", "codex", "cursor", "omnigent", "opencode"],
+            ):
+                with self.subTest(requested=requested):
+                    clock = Clock()
+                    baseline = {name: f"old-{name}" for name in requested}
+
+                    def read_snapshot(path):
+                        fresh_count = min(len(requested), int(clock.now // 50.0))
+                        connectors = {
+                            name: entry(
+                                name,
+                                f"new-{name}" if index < fresh_count else baseline[name],
+                            )
+                            for index, name in enumerate(requested)
+                        }
+                        if path.endswith("hook_contract_lock.json"):
+                            return {"version": 2, "connectors": connectors}, 10 + fresh_count
+                        active = requested if fresh_count == len(requested) else requested[:-1]
+                        return {
+                            "version": 3,
+                            "name": active[0],
+                            "names": active,
+                            "inactive_names": [],
+                        }, 20 if fresh_count == len(requested) else 1
+
+                    with (
+                        patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+                        patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=clock.monotonic),
+                        patch("defenseclaw.commands.cmd_setup.time.sleep", side_effect=clock.sleep),
+                        patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True) as restart,
+                        patch("defenseclaw.commands.cmd_setup._gateway_health_generation", return_value=None),
+                        patch(
+                            "defenseclaw.commands.cmd_setup._new_gateway_health_is_terminal_failure",
+                            return_value=False,
+                        ),
+                    ):
+                        _restart_services(
+                            tmpdir,
+                            connector="cursor",
+                            connectors=requested,
+                            wait_for_connector_ready=True,
+                        )
+
+                    self.assertGreater(clock.now, 60.0)
+                    self.assertLessEqual(clock.now, 250.0)
+                    restart.assert_called_once()
+
+    def test_malformed_or_mismatched_lock_churn_never_advances_readiness(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, _seconds):
+                self.now += 10.0
+
+        state = {"version": 3, "name": "codex", "names": ["codex"], "inactive_names": []}
+        for bad_entry in (
+            {"connector": "cursor", "updated_at": "new"},
+            "not-an-entry",
+            {"connector": "codex", "updated_at": "old"},
+        ):
+            with self.subTest(bad_entry=bad_entry):
+                clock = Clock()
+                reads = {"lock": 0}
+
+                def read_snapshot(path):
+                    if path.endswith("hook_contract_lock.json"):
+                        reads["lock"] += 1
+                        return {"version": 2, "connectors": {"codex": bad_entry}}, reads["lock"]
+                    return state, 1
+
+                with (
+                    patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+                    patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=clock.monotonic),
+                    patch("defenseclaw.commands.cmd_setup.time.sleep", side_effect=clock.sleep),
+                    patch(
+                        "defenseclaw.commands.cmd_setup._new_gateway_health_is_terminal_failure",
+                        return_value=False,
+                    ),
+                ):
+                    self.assertFalse(
+                        _wait_for_connector_runtime(
+                            "unused",
+                            ["codex"],
+                            1,
+                            1,
+                            timeout=60.0,
+                            previous_lock_publications={"codex": "old"},
+                        )
+                    )
+                self.assertEqual(clock.now, 60.0)
+                self.assertGreaterEqual(reads["lock"], 2)  # Includes the final exact boundary read.
+
+    def test_readiness_deadline_performs_one_final_exact_snapshot_read(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        clock = SimpleNamespace(now=0.0)
+        reads = {"state": 0}
+
+        def monotonic():
+            return clock.now
+
+        def sleep(_seconds):
+            clock.now = 60.0
+
+        def read_snapshot(path):
+            if path.endswith("hook_contract_lock.json"):
+                return {
+                    "version": 2,
+                    "connectors": {"codex": {"connector": "codex", "updated_at": "new"}},
+                }, 2
+            reads["state"] += 1
+            fresh = reads["state"] > 1
+            return {"version": 2, "name": "codex", "names": ["codex"]}, 2 if fresh else 1
+
+        with (
+            patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+            patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=monotonic),
+            patch("defenseclaw.commands.cmd_setup.time.sleep", side_effect=sleep),
+            patch(
+                "defenseclaw.commands.cmd_setup._new_gateway_health_is_terminal_failure",
+                return_value=False,
+            ),
+        ):
+            self.assertTrue(
+                _wait_for_connector_runtime(
+                    "unused",
+                    ["codex"],
+                    1,
+                    1,
+                    timeout=60.0,
+                    previous_lock_publications={"codex": "old"},
+                )
+            )
+        self.assertEqual(reads["state"], 2)
+
+    def test_validated_progress_cannot_extend_past_the_strict_absolute_cap(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+            def sleep(self, _seconds):
+                self.now += 10.0
+
+        expected = ["claudecode", "codex", "cursor", "omnigent", "opencode"]
+        baseline = {name: f"old-{name}" for name in expected}
+        clock = Clock()
+
+        def entry(name, token):
+            value = {"connector": name, "updated_at": token}
+            if name == "cursor":
+                value.update(
+                    {
+                        "contract_id": "cursor-hooks-v1",
+                        "compatibility_status": "known",
+                        "hook_script_version": "v8",
+                        "hook_fail_mode": "closed",
+                        "locations": {
+                            "hook_config_paths": ["unused-cursor.json"],
+                            "hook_script_paths": ["unused-cursor.ps1"],
+                        },
+                    }
+                )
+            elif name == "opencode":
+                value.update(
+                    {
+                        "contract_id": "opencode-hooks-v1",
+                        "compatibility_status": "known",
+                        "hook_script_version": "v7",
+                        "locations": {"hook_config_paths": ["unused-opencode.js"]},
+                    }
+                )
+            return value
+
+        def read_snapshot(path):
+            fresh_count = min(len(expected), int(clock.now // 50.0))
+            if path.endswith("hook_contract_lock.json"):
+                return {
+                    "version": 2,
+                    "connectors": {
+                        name: entry(
+                            name,
+                            f"new-{name}" if index < fresh_count else baseline[name],
+                        )
+                        for index, name in enumerate(expected)
+                    },
+                }, 10 + fresh_count
+            # The prior four-connector roster never reaches the requested five.
+            return {
+                "version": 3,
+                "name": "claudecode",
+                "names": expected[:-1],
+                "inactive_names": [],
+            }, 1
+
+        with (
+            patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+            patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=clock.monotonic),
+            patch("defenseclaw.commands.cmd_setup.time.sleep", side_effect=clock.sleep),
+            patch(
+                "defenseclaw.commands.cmd_setup._new_gateway_health_is_terminal_failure",
+                return_value=False,
+            ),
+        ):
+            self.assertFalse(
+                _wait_for_connector_runtime(
+                    "unused",
+                    expected,
+                    1,
+                    10,
+                    timeout=60.0,
+                    previous_lock_publications=baseline,
+                )
+            )
+        self.assertEqual(clock.now, 300.0)
+
+    def test_new_generation_terminal_health_fails_but_running_health_never_satisfies(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        state = {"version": 2, "name": "codex", "names": ["codex"]}
+        lock = {
+            "version": 2,
+            "connectors": {"codex": {"connector": "codex", "updated_at": "new"}},
+        }
+
+        def read_snapshot(path):
+            return (lock, 2) if path.endswith("hook_contract_lock.json") else (state, 1)
+
+        for health_state, observed_generation, expected_sleep_calls in (
+            ("error", "generation-2", 0),
+            ("disabled", "generation-2", 1),
+            ("running", "generation-2", 1),
+            ("error", "generation-1", 1),
+        ):
+            with self.subTest(health_state=health_state, observed_generation=observed_generation):
+                clock = SimpleNamespace(now=0.0)
+
+                def monotonic():
+                    return clock.now
+
+                def sleep(_seconds):
+                    clock.now = 60.0
+
+                with (
+                    patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+                    patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=monotonic),
+                    patch("defenseclaw.commands.cmd_setup.time.sleep", side_effect=sleep) as sleep_mock,
+                    patch(
+                        "defenseclaw.commands.cmd_setup._read_gateway_health",
+                        return_value={
+                            "started_at": observed_generation,
+                            "guardrail": {"state": health_state},
+                        },
+                    ),
+                ):
+                    self.assertFalse(
+                        _wait_for_connector_runtime(
+                            "unused",
+                            ["codex"],
+                            1,
+                            1,
+                            timeout=60.0,
+                            previous_lock_publications={"codex": "old"},
+                            gateway_generation="generation-2",
+                        )
+                    )
+                self.assertEqual(sleep_mock.call_count, expected_sleep_calls)
+
+    def test_readiness_health_probe_never_falls_back_to_another_data_directory(self):
+        from defenseclaw.commands.cmd_setup import _read_gateway_health
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("defenseclaw.commands.cmd_setup.load_config") as load_config_mock:
+                self.assertIsNone(_read_gateway_health(tmpdir))
+            load_config_mock.assert_not_called()
+
 
     def test_wait_for_connector_runtime_requires_fresh_matching_state(self):
         from defenseclaw.commands.cmd_setup import (

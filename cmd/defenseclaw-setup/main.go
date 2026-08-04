@@ -951,6 +951,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 		pathExists(filepath.Join(dataRoot, "connector_backups", "claudecode", "settings.json.json")) {
 		add("claudecode")
 	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "amp", "config.json")) {
+		add("amp")
+	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "copilot", "config.json")) {
 		add("copilot")
 	}
@@ -1326,11 +1329,17 @@ func connectorLifecycleCommandArgs(dataRoot, connectorName, action string, env [
 
 func connectorLifecycleConfigHome(env []string, connectorName string) (string, error) {
 	variable := ""
+	suffix := []string{}
 	switch connectorName {
 	case "codex":
 		variable = "CODEX_HOME"
 	case "claudecode":
 		variable = "CLAUDE_CONFIG_DIR"
+	case "amp":
+		// Amp has no config-home override. Bind its documented native Windows
+		// home beneath the current token's USERPROFILE.
+		variable = "USERPROFILE"
+		suffix = []string{".config", "amp"}
 	case "copilot":
 		variable = "COPILOT_HOME"
 	case "cursor":
@@ -1370,6 +1379,9 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		!filepath.IsAbs(value) || filepath.Clean(value) != value {
 		return "", fmt.Errorf("%s is not an absolute normalized path", variable)
 	}
+	if len(suffix) != 0 {
+		value = filepath.Join(append([]string{value}, suffix...)...)
+	}
 	return value, nil
 }
 
@@ -1392,6 +1404,7 @@ func validConnector(value string) bool {
 }
 
 var nativeLifecycleConnectorNames = []string{
+	"amp",
 	"antigravity",
 	"claudecode",
 	"codex",
@@ -2740,7 +2753,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
 	}
 	if opts.ConnectorSet && opts.Connector == "antigravity" &&
 		(opts.Action == "install" || opts.Action == "repair" || opts.Action == "upgrade") {
@@ -2789,6 +2802,8 @@ func normalizeConnector(value string) string {
 		return "codex"
 	case "claude", "claudecode", "claude-code":
 		return "claudecode"
+	case "amp", "ampcode":
+		return "amp"
 	case "copilot", "githubcopilot", "github-copilot":
 		return "copilot"
 	case "cursor", "cursoragent", "cursor-agent":
@@ -2807,7 +2822,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 
@@ -2874,23 +2889,38 @@ func sanitizePythonEnv(input []string) []string {
 
 func managedChildEnv(dataRoot string) []string {
 	env := sanitizePythonEnv(os.Environ())
-	filtered := make([]string, 0, len(env)+3)
+	profile := ""
+	cleanDataRoot := filepath.Clean(dataRoot)
+	if filepath.IsAbs(cleanDataRoot) && strings.EqualFold(filepath.Base(cleanDataRoot), ".defenseclaw") {
+		profile = filepath.Dir(cleanDataRoot)
+	}
+	filtered := make([]string, 0, len(env)+4)
 	for _, entry := range env {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok {
 			switch strings.ToUpper(name) {
 			case "DEFENSECLAW_HOME", "PYTHONIOENCODING", "PYTHONUTF8", upgradeFreshProcessEnv:
 				continue
+			case "USERPROFILE":
+				if profile != "" {
+					// Use the token-bound profile already proven by DataRoot,
+					// never a foreign inherited environment value.
+					continue
+				}
 			}
 		}
 		filtered = append(filtered, entry)
 	}
-	return append(
+	filtered = append(
 		filtered,
 		"DEFENSECLAW_HOME="+dataRoot,
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
 	)
+	if profile != "" {
+		filtered = append(filtered, "USERPROFILE="+profile)
+	}
+	return filtered
 }
 
 func managedRecoveryChildEnv(dataRoot string) []string {

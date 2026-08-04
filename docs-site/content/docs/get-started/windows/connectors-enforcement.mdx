@@ -4,6 +4,7 @@ description: Exact native Windows connector and preview hook/policy coverage, ac
 keywords:
   - DefenseClaw Windows Codex
   - DefenseClaw Windows Claude Code
+  - DefenseClaw Windows Amp
   - DefenseClaw Windows Cursor
   - DefenseClaw Windows legacy Cascade
   - DefenseClaw Windows Hermes Agent
@@ -16,7 +17,8 @@ keywords:
 
 Native Windows enforcement is connector-native and proxy-free. A supported
 or preview agent invokes its managed native hook or awaited policy path. Codex, Claude Code,
-and Hermes invoke `defenseclaw-hook.exe`; Cursor and legacy Cascade use managed native
+and Hermes invoke `defenseclaw-hook.exe`; Amp loads an owner-only TypeScript
+system-policy plugin; Cursor and legacy Cascade use managed native
 PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
 OmniGent imports a Python policy bridge into its selected native `uv tool`
 environment.
@@ -28,7 +30,7 @@ verdict back into that event's documented response shape.
 DefenseClaw does not proxy supported or preview connector model traffic on
 Windows. A
 prompt, tool, subprocess, file change, or response that the agent does not emit
-through a registered hook or native telemetry surface is not silently
+through a registered hook, Amp plugin callback, or native telemetry surface is not silently
 intercepted by DefenseClaw.
 </Callout>
 
@@ -48,6 +50,7 @@ Start with observe:
 ```powershell
 defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
+defenseclaw setup amp --mode observe
 defenseclaw setup cursor --mode observe
 defenseclaw setup windsurf --mode observe
 defenseclaw setup hermes --mode observe
@@ -61,6 +64,7 @@ time:
 ```powershell
 defenseclaw setup codex --mode action
 defenseclaw setup claude-code --mode action
+defenseclaw setup amp --mode action
 # Cursor action uses event-native deny and failClosed=true; native HITL stays disabled.
 defenseclaw setup cursor --mode action --no-human-approval
 defenseclaw setup windsurf --mode action
@@ -148,6 +152,54 @@ Claude Code permission prompt there. `PostToolUse` is advisory because the
 tool already ran; `PostToolBatch` can stop the loop before another model call.
 `ConfigChange` cannot override Claude Code's higher-authority policy-settings
 source.
+
+## Amp
+
+DefenseClaw installs Amp's system policy plugin at:
+
+```text
+%USERPROFILE%\.config\amp\plugins\defenseclaw.ts
+```
+
+The packaged lifecycle protects that managed file with a current-user-only
+Windows ACL, preserves operator-owned siblings, and restores a backed-up
+pre-existing target during teardown. Amp loads the TypeScript file directly;
+the connector does not require a shell hook, Git Bash, `jq`, WSL, or
+`defenseclaw-hook.exe`.
+
+Amp documents exactly five plugin callbacks:
+
+| Amp callback | Action-mode role |
+| --- | --- |
+| `session.start` | Observe thread/session lifecycle. |
+| `agent.start` | Observe the turn and prompt context. |
+| `tool.call` | Synchronously allow, reject, or request Amp's native confirmation before the tool runs. |
+| `tool.result` | Preserve, withhold/replace, or request native confirmation before the completed result reaches the model. It cannot undo tool side effects. |
+| `agent.end` | Observe turn completion. |
+
+`tool.call` gates execution and `tool.result` gates model-bound output. Amp does
+not document `session.end` or a separate subagent lifecycle callback. Task,
+Oracle, MCP, and plugin-defined tools are governed when Amp emits their
+`tool.call`; child-thread callbacks are correlated independently when Amp emits
+them, without inventing an unavailable parent edge.
+
+Native confirmation is available only for an active foreground thread. A
+denied prompt, background thread, or unavailable confirmation UI rejects the
+call or withholds the result instead of silently allowing it. The three
+session/agent callbacks remain observation-only.
+
+Amp can begin a headless turn before plugins finish loading. In execute mode,
+use:
+
+```powershell
+amp -x "Reply with the word ready." --plugin-ready-timeout 30
+```
+
+The timeout is required for complete lifecycle capture and tool call/result
+guard readiness. Fail-closed behavior begins only after the managed plugin has
+loaded and can govern a `tool.call`; it cannot retroactively cover earlier host
+activity. Fully exit and relaunch Amp after setup, removal, or repair so every
+new thread gets the intended plugin generation.
 
 ## Cursor preview
 

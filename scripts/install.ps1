@@ -84,6 +84,7 @@ $CosignMaximumBytes = 268435456
 $CosignUrl = "https://github.com/sigstore/cosign/releases/download/v$CosignVersion/$CosignAsset"
 $ConnectorChoices = @(
     "antigravity",
+    "amp",
     "codex",
     "claudecode",
     "copilot",

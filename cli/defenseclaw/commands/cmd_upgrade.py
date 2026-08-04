@@ -2799,6 +2799,7 @@ def _native_windows_install_state(
         or state.get("connector")
         not in {
             "none",
+            "amp",
             "antigravity",
             "codex",
             "claudecode",
@@ -3835,6 +3836,7 @@ def _handoff_windows_setup_upgrade(
     _windows_installer_policy(manifest)
     connector = state.get("connector")
     if connector not in {
+        "amp",
         "antigravity",
         "codex",
         "claudecode",

@@ -775,6 +775,45 @@ type HookConfigReferenceOwner interface {
 	HookConfigReferenceNeedles(opts SetupOpts) []string
 }
 
+// ScopedHookTokenRequirement is implemented by connector runtimes that place
+// a bearer credential in a host-agent auto-loaded artifact. Such connectors
+// must fail setup if a least-privilege hook token cannot be established; they
+// may never fall back to embedding the gateway master token.
+type ScopedHookTokenRequirement interface {
+	RequiresScopedHookToken() bool
+}
+
+// ManagedPluginArtifactOwner identifies connector-managed plugin files that
+// host agents auto-load directly. Unlike shell hooks, these artifacts are
+// owner-readable policy/config files: they may be absent before first install,
+// must remain mode 0600 when they embed a scoped token, and are exclusively
+// written by DefenseClaw.
+type ManagedPluginArtifactOwner interface {
+	ManagedPluginArtifacts(opts SetupOpts) []string
+}
+
+// ManagedPluginArtifacts returns the connector's auto-loaded managed plugin
+// files, if any. The normalized list lets privileged installers distinguish a
+// plugin artifact from an executable hook even when legacy AgentPaths reports
+// the same file in HookScripts for lifecycle compatibility.
+func ManagedPluginArtifacts(conn Connector, opts SetupOpts) []string {
+	if conn == nil {
+		return nil
+	}
+	owner, ok := conn.(ManagedPluginArtifactOwner)
+	if !ok {
+		return nil
+	}
+	return uniqueNonEmptyStrings(owner.ManagedPluginArtifacts(opts))
+}
+
+// RequiresScopedHookToken reports whether conn must have a connector-scoped
+// credential before its managed runtime can be installed.
+func RequiresScopedHookToken(conn Connector) bool {
+	requirement, ok := conn.(ScopedHookTokenRequirement)
+	return ok && requirement.RequiresScopedHookToken()
+}
+
 // OwnsManagedHookRuntime reports whether the enterprise guardian can install
 // and verify this connector's native enforcement surface.
 func OwnsManagedHookRuntime(conn Connector) bool {

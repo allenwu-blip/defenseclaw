@@ -274,6 +274,72 @@ class TestAdditiveSetupCommand(unittest.TestCase):
             self.assertEqual(handle.read(), prior_runtime)
         self.assertEqual(restart.call_count, 2)
 
+    def test_direct_opencode_rollback_restores_exact_prior_persistence_before_prior_readiness(self):
+        # Exercise the real v8 config merge writer. A mocked ``save`` cannot
+        # reproduce the rollback defect where the restored object's modeled
+        # baseline matches its prior-four state while config.yaml still holds
+        # the newly staged five-connector generation.
+        del self.app.cfg.save
+        prior_connectors = ("claudecode", "codex", "cursor", "omnigent")
+        self._seed_map(*prior_connectors)
+        self.app.cfg.guardrail.connectors["cursor"].mode = "action"
+        self.app.cfg.guardrail.connectors["cursor"].hook_fail_mode = "closed"
+        self.app.cfg.save()
+
+        data_dir = self.app.cfg.data_dir
+        config_path = os.path.join(data_dir, "config.yaml")
+        hint_path = os.path.join(data_dir, "picked_connector")
+        selection_path = os.path.join(data_dir, "agent_selection.json")
+        prior_hint = b"cursor\n"
+        prior_selection = (
+            b'{"schema_version":1,"selections":{'
+            b'"claudecode":{"executable":"prior-claude"},'
+            b'"codex":{"executable":"prior-codex"},'
+            b'"omnigent":{"executable":"prior-omnigent"}}}\n'
+        )
+        atomic_write_private_bytes(hint_path, prior_hint)
+        atomic_write_private_bytes(selection_path, prior_selection)
+        with open(config_path, "rb") as handle:
+            prior_config = handle.read()
+
+        restart_attempt = 0
+
+        def _restart(*_args, **kwargs):
+            nonlocal restart_attempt
+            restart_attempt += 1
+            if restart_attempt == 1:
+                self.assertEqual(set(kwargs["connectors"]), {*prior_connectors, "opencode"})
+                self.assertIn("opencode", load(data_dir=data_dir).active_connectors())
+                raise click.ClickException("requested five-connector readiness failed")
+            self.assertEqual(set(kwargs["connectors"]), set(prior_connectors))
+            self.assertEqual(tuple(load(data_dir=data_dir).active_connectors()), prior_connectors)
+            with open(config_path, "rb") as handle:
+                self.assertEqual(handle.read(), prior_config)
+            with open(hint_path, "rb") as handle:
+                self.assertEqual(handle.read(), prior_hint)
+            with open(selection_path, "rb") as handle:
+                self.assertEqual(handle.read(), prior_selection)
+            raise click.ClickException("prior four-connector readiness failed")
+
+        with _setup_patches() as restart:
+            restart.side_effect = _restart
+            result = _invoke(
+                ["opencode", "--yes", "--mode", "action", "--no-human-approval"],
+                self.app,
+            )
+
+        self.assertNotEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("rollback was incomplete", result.output)
+        self.assertIn("prior four-connector readiness failed", result.output)
+        self.assertEqual(tuple(self.app.cfg.active_connectors()), prior_connectors)
+        with open(config_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_config)
+        with open(hint_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_hint)
+        with open(selection_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_selection)
+        self.assertEqual(restart.call_count, 2)
+
     def test_successful_batch_records_complete_codex_and_hermes_selection_receipt(self):
         self._seed_single("codex")
         selection_path = os.path.join(self.app.cfg.data_dir, "agent_selection.json")

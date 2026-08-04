@@ -2355,7 +2355,9 @@ func isGenericToolInspectionEvent(event string) bool {
 		// opencode plugin hook: tool.execute.before fires before a tool
 		// runs; the DefenseClaw bridge plugin throws to abort it. Routes
 		// through inspectToolPolicy so tool-call rules can block.
-		"toolexecutebefore":
+		"toolexecutebefore",
+		// Amp's documented synchronous pre-execution plugin request.
+		"toolcall":
 		return true
 	default:
 		return false
@@ -2365,7 +2367,7 @@ func isGenericToolInspectionEvent(event string) bool {
 func isPromptLikeEvent(event string) bool {
 	switch canonicalEvent(event) {
 	case "userpromptsubmit", "userpromptsubmitted", "userprompttransformed", "beforesubmitprompt", "preuserprompt", "subagentstart",
-		"prellmcall", "beforeagent", "beforemodel":
+		"prellmcall", "beforeagent", "beforemodel", "agentstart", "preinvocation":
 		return true
 	default:
 		return false
@@ -2386,7 +2388,7 @@ func isResultLikeEvent(event string) bool {
 		"postllmcall", "postcascaderesponse", "postcascaderesponsewithtranscript",
 		// opencode plugin hook: tool.execute.after fires after a tool
 		// returns; observe-only telemetry routed as a tool_result.
-		"toolexecuteafter":
+		"toolexecuteafter", "toolresult", "agentend", "postinvocation":
 		return true
 	default:
 		return false

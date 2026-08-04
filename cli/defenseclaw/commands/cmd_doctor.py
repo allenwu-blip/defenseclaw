@@ -50,14 +50,18 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
 from defenseclaw import ux
 from defenseclaw.audit_actions import ACTION_DOCTOR
 from defenseclaw.connector_paths import (
+    amp_config_home,
+    amp_managed_settings_path,
     codex_home,
     connector_config_files,
     connector_home,
+    connector_policy_settings,
     copilot_home,
     copilot_settings_resolution,
     hermes_config_path,
     hermes_profile_unsupported_reason,
     omnigent_config_path,
+    rule_paths,
     windsurf_hook_config_path,
 )
 from defenseclaw.context import AppContext, pass_ctx
@@ -75,6 +79,7 @@ from defenseclaw.doctor_hooks import (
     validate_windows_hook_registration,
 )
 from defenseclaw.envvars import active_security_overrides
+from defenseclaw.inventory.plugin_identity import is_link_or_reparse
 from defenseclaw.safety import NoRedirectError, build_no_redirect_opener
 from defenseclaw.scanner_binary import resolve_scanner_binary
 from defenseclaw.webhooks import list_webhooks, validate_webhook_url
@@ -645,6 +650,14 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
             "pass",
             "Human approval",
             "Antigravity documents native PreToolUse ask; no override of permission-bypass flags is claimed",
+            r=r,
+        )
+    elif connector == "amp":
+        _emit(
+            "pass",
+            "Human approval",
+            "Amp supports native foreground confirmation on synchronous tool.call and "
+            "model-bound tool.result; unavailable headless UI rejects or withholds safely",
             r=r,
         )
     elif connector == "omnigent":
@@ -1939,6 +1952,10 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         (os.path.join(".config", "opencode", "plugins", "defenseclaw.js"),),
         ("defenseclaw",),
     ),
+    "amp": (
+        (os.path.join(".config", "amp", "plugins", "defenseclaw.ts"),),
+        ("DefenseClaw Amp policy bridge", "/api/v1/amp/hook"),
+    ),
     "omnigent": (
         (os.path.join(".omnigent", "config.yaml"),),
         ("defenseclaw_omnigent_policy", "defenseclaw_guardrail"),
@@ -1951,6 +1968,7 @@ _HOOK_HEALTH_LABELS = {
     "windsurf": "Legacy Cascade hooks",
     "geminicli": "Gemini CLI hooks",
     "opencode": "OpenCode hooks",
+    "amp": "Amp policy plugin",
     "omnigent": "OmniGent policy",
 }
 
@@ -2751,6 +2769,15 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
                     "are unverified; reload or restart every Hermes CLI/TUI/gateway/desktop/service host; live=false",
                     r=r,
                 )
+            elif connector == "amp":
+                _emit(
+                    "pass",
+                    label,
+                    f"reachable at {path}; execute mode must use "
+                    "`amp -x ... --plugin-ready-timeout 30` for plugin readiness "
+                    "and complete lifecycle capture",
+                    r=r,
+                )
             else:
                 _emit("pass", label, f"reachable at {path}", r=r)
             return
@@ -2760,6 +2787,92 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
         "hook file exists but does not reference DefenseClaw: " + ", ".join(present),
         r=r,
     )
+
+
+def _check_amp_native_policy_surfaces(cfg, r: _DoctorResult) -> None:
+    """Report Amp-native settings/guidance without taking ownership of them."""
+
+    workspace = _workspace_dir(cfg)
+    third_party_plugins = _amp_non_defenseclaw_direct_plugins(cfg)
+    if third_party_plugins:
+        rendered = ", ".join(third_party_plugins)
+        _emit(
+            "warn",
+            "Amp plugin initialization",
+            f"non-DefenseClaw direct TypeScript plugin(s) discovered: {rendered}. "
+            "Amp executes top-level plugin code outside DefenseClaw's tool.call "
+            "interception, plugin handler order is undefined, and DefenseClaw does "
+            "not sandbox Amp plugin initialization. Review every direct plugin.",
+            r=r,
+        )
+
+    managed = amp_managed_settings_path()
+    if managed and os.path.isfile(managed):
+        _emit("pass", "Amp managed settings", f"read-only enterprise policy at {managed}", r=r)
+
+    settings = connector_policy_settings("amp", workspace_dir=workspace)
+    if settings:
+        keys = ", ".join(sorted(settings))
+        dangerously_allow_all = settings.get("amp.dangerouslyAllowAll")
+        if dangerously_allow_all is True:
+            _emit(
+                "warn",
+                "Amp native permissions",
+                f"discovered {keys}; amp.dangerouslyAllowAll=true disables Amp's legacy "
+                "permission prompts, while the DefenseClaw policy plugin remains active",
+                r=r,
+            )
+        else:
+            _emit("pass", "Amp native permissions", f"discovered read-only settings: {keys}", r=r)
+
+    guidance = [path for path in rule_paths("amp", workspace_dir=workspace) if os.path.exists(path)]
+    if guidance:
+        _emit(
+            "pass",
+            "Amp guidance / checks",
+            f"{len(guidance)} read-only AGENTS.md or checks surface(s) discovered",
+            r=r,
+        )
+
+
+def _amp_non_defenseclaw_direct_plugins(cfg) -> list[str]:
+    """Return direct third-party Amp ``.ts`` files without following links."""
+
+    try:
+        roots = tuple(cfg.plugin_dirs("amp"))
+    except Exception:
+        return []
+    first_party = os.path.normcase(
+        os.path.abspath(os.path.join(amp_config_home(), "plugins", "defenseclaw.ts"))
+    )
+    discovered: list[str] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not isinstance(root, str) or not root or is_link_or_reparse(root):
+            continue
+        try:
+            with os.scandir(root) as iterator:
+                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.name.casefold().endswith(".ts"):
+                continue
+            try:
+                if (
+                    entry.is_symlink()
+                    or is_link_or_reparse(entry.path)
+                    or not entry.is_file(follow_symlinks=False)
+                ):
+                    continue
+            except OSError:
+                continue
+            normalized = os.path.normcase(os.path.abspath(entry.path))
+            if normalized == first_party or normalized in seen:
+                continue
+            seen.add(normalized)
+            discovered.append(entry.path)
+    return discovered
 
 
 def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
@@ -2793,6 +2906,8 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         # Cursor / Gemini CLI / OpenCode use the lock-file-driven health row;
         # Windows-native connectors with richer contracts dispatch above.
         _check_hook_health(cfg, connector, r)
+        if connector == "amp":
+            _check_amp_native_policy_surfaces(cfg, r)
 
 
 def _workspace_dir(cfg) -> str:
@@ -3063,6 +3178,7 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "openhands",
         "antigravity",
         "opencode",
+        "amp",
         "omnigent",
     }
 )
@@ -3110,12 +3226,19 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
                 "policy-driven for omnigent (native-degraded preview; mode=observe) "
                 "— proxy port intentionally closed"
             )
+        if connectors[0] == "amp":
+            if mode == "action":
+                return (
+                    "plugin-enforced for amp (mode=action via synchronous tool.call/tool.result) "
+                    "— proxy port intentionally closed"
+                )
+            return "plugin-driven for amp (mode=observe) — proxy port intentionally closed"
         if mode == "action":
             return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
-    if "omnigent" not in modes and all(mode == "action" for mode in modes.values()):
+    if not ({"omnigent", "amp"} & modes.keys()) and all(mode == "action" for mode in modes.values()):
         return f"hook-enforced for {label} (mode=action via PreToolUse deny) — proxy port intentionally closed"
-    if "omnigent" not in modes and all(mode != "action" for mode in modes.values()):
+    if not ({"omnigent", "amp"} & modes.keys()) and all(mode != "action" for mode in modes.values()):
         return f"hook-driven for {label} (mode=observe) — proxy port intentionally closed"
     parts = []
     for connector, mode in modes.items():
@@ -3129,6 +3252,10 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
             parts.append("omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)")
         elif connector == "omnigent":
             parts.append("omnigent (native-degraded preview; mode=observe via custom policy API)")
+        elif connector == "amp" and mode == "action":
+            parts.append("amp (mode=action via synchronous tool.call/tool.result)")
+        elif connector == "amp":
+            parts.append("amp (mode=observe via policy plugin)")
         elif mode == "action":
             parts.append(f"{connector} (mode=action via PreToolUse deny)")
         else:
@@ -4781,6 +4908,7 @@ _CONNECTOR_LABELS = {
     "openhands": "OpenHands",
     "antigravity": "Antigravity",
     "opencode": "OpenCode",
+    "amp": "Amp",
     "omnigent": "OmniGent",
 }
 

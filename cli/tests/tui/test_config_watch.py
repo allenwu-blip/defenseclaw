@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ from pathlib import Path
 import pytest
 import yaml
 from defenseclaw import config as config_module
+from defenseclaw.file_permissions import make_private_directory, protect_private_file
 from defenseclaw.tui import app as app_module
 from defenseclaw.tui.app import DefenseClawTUI
 from defenseclaw.tui.panels.overview import EnforcementCounts
@@ -446,7 +448,17 @@ async def test_native_windows_open_tui_observes_external_cli_mode_change(
 ) -> None:
     """Two-terminal acceptance: an open TUI observes setup CLI replacement."""
 
+    agent_bin = tmp_path / "trusted-agent-bin"
+    make_private_directory(agent_bin)
+    claude_executable = agent_bin / "claude.exe"
+    shutil.copy2(current_windows_gateway, claude_executable)
+    protect_private_file(claude_executable)
+
     initial = _config_payload(tmp_path, {"claudecode": {"mode": "observe"}})
+    initial["ai_discovery"] = {
+        "require_trusted_binary_paths": True,
+        "trusted_binary_prefixes": [str(agent_bin)],
+    }
     path = _configure_active_path(monkeypatch, tmp_path, initial)
     app = DefenseClawTUI(config=config_module.load(), config_path=path)
     # This acceptance targets config polling, not network/process pollers.
@@ -469,6 +481,7 @@ async def test_native_windows_open_tui_observes_external_cli_mode_change(
             "DEFENSECLAW_GATEWAY_BIN": str(current_windows_gateway),
             "DEFENSECLAW_HOME": str(tmp_path),
             "HOME": str(isolated_home),
+            "PATH": str(agent_bin) + os.pathsep + os.environ.get("PATH", ""),
             "USERPROFILE": str(isolated_home),
         }
     )

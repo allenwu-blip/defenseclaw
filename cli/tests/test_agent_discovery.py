@@ -408,6 +408,7 @@ def test_config_evidence_helper_rejects_directories(tmp_path):
         ("claudecode", (".claude",)),
         ("openhands", (".openhands",)),
         ("antigravity", (".gemini", "antigravity-cli")),
+        ("amp", (".config", "amp")),
         ("omnigent", (".omnigent",)),
     ],
 )
@@ -520,6 +521,7 @@ def test_windsurf_optional_mcp_file_is_not_hook_configuration_evidence(
         ("openhands", (".openhands", "hooks.json")),
         ("antigravity", (".gemini", "config", "hooks.json")),
         ("opencode", (".config", "opencode", "opencode.json")),
+        ("amp", (".config", "amp", "settings.json")),
         ("omnigent", (".omnigent", "config.yaml")),
     ],
 )
@@ -642,6 +644,26 @@ def test_claude_discovery_falls_back_to_user_settings(monkeypatch, tmp_path):
 
     assert signal.configured is True
     assert signal.config_path == str(user_settings)
+
+
+def test_amp_discovery_reads_platform_managed_settings_without_mutating(
+    monkeypatch,
+    tmp_path,
+):
+    _pin_home(monkeypatch, tmp_path / "home")
+    managed = tmp_path / "program-data" / "ampcode" / "managed-settings.json"
+    managed.parent.mkdir(parents=True)
+    managed.write_text('{"amp.dangerouslyAllowAll": false}\n', encoding="utf-8")
+    monkeypatch.setattr(ad, "amp_managed_settings_path", lambda: str(managed))
+    monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
+
+    before = managed.read_bytes()
+    signal = ad._scan_agent("amp")
+
+    assert signal.installed is False
+    assert signal.configured is True
+    assert signal.config_path == str(managed)
+    assert managed.read_bytes() == before
 
 
 def test_hermes_legacy_windows_config_is_not_current_configuration_evidence(
@@ -796,6 +818,37 @@ def test_antigravity_windows_discovery_rejects_path_and_gui_fallbacks(
     assert signal.binary_path == ""
     assert signal.config_path == ""
     assert signal.version == ""
+
+
+def test_antigravity_gui_fallback_reads_metadata_without_launch(
+    monkeypatch,
+    tmp_path,
+    windows_host_no_path,
+):
+    _pin_home(monkeypatch, tmp_path)
+    local_app_data = tmp_path / "local-app-data"
+    gui = local_app_data / "Programs" / "antigravity" / "Antigravity.exe"
+    gui.parent.mkdir(parents=True)
+    gui.write_bytes(b"test executable")
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setattr(
+        ad,
+        "_windows_current_user_local_app_data_roots",
+        lambda: (str(local_app_data),),
+    )
+    monkeypatch.setattr(ad, "_windows_file_version_for_binary", lambda path, **_kwargs: ("2.2.1", ""))
+    monkeypatch.setattr(
+        ad.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("GUI executable was launched")),
+    )
+
+    signal = ad._scan_agent("antigravity")
+
+    assert signal.installed is True
+    assert signal.binary_path == str(gui)
+    assert signal.config_path == ""
+    assert signal.version == "2.2.1"
 
 
 def test_antigravity_windows_roots_are_narrow_trusted_prefixes(monkeypatch, tmp_path):
@@ -1379,6 +1432,7 @@ def test_windsurf_windows_desktop_uses_narrow_product_trust_roots(monkeypatch, t
         ("openhands", ("home", ".local", "bin", "openhands.exe")),
         ("antigravity", ("local", "agy", "bin", "agy.exe")),
         ("opencode", ("home", ".opencode", "bin", "opencode.exe")),
+        ("amp", ("roaming", "npm", "amp.cmd")),
         ("omnigent", ("home", ".local", "bin", "omnigent.exe")),
     ],
 )

@@ -1207,7 +1207,7 @@ def zero_connector_requests_notice(connector_name: str, uptime: timedelta) -> st
                 f"{name} connector has seen 0 policy events after {formatted} - "
                 "normal until OmniGent emits a supported policy callback; verify OmniGent policy setup if this persists"
             )
-        case "hermes" | "cursor" | "windsurf" | "geminicli" | "copilot" | "openhands" | "antigravity" | "opencode":
+        case "hermes" | "cursor" | "windsurf" | "geminicli" | "copilot" | "openhands" | "antigravity" | "opencode" | "amp":
             return (
                 f"{name} connector has seen 0 hook events after {formatted} - "
                 "normal until the agent emits a supported hook; verify connector hook setup if this persists"
@@ -1245,6 +1245,8 @@ def friendly_connector_name(connector: str) -> str:
             return "Antigravity"
         case "opencode":
             return "OpenCode"
+        case "amp":
+            return "Amp"
         case "omnigent":
             return "OmniGent"
         case value:
@@ -1309,6 +1311,13 @@ def connector_source_label(connector: str, category: str) -> str:
             "~/.gemini/antigravity-cli/skills/*.md (discovery-only)",
         ),
         ("opencode", "skills"): ("unsupported/hooks-only surface",),
+        ("amp", "skills"): (
+            "~/.config/agents/skills",
+            "~/.agents/skills",
+            "~/.config/amp/skills",
+            "<workspace>/.agents/skills",
+            "~/.claude/plugins/cache/.../skills (unless Claude-compatible skills are disabled)",
+        ),
         ("omnigent", "skills"): ("unsupported by the OmniGent connector",),
         ("openclaw", "mcps"): ("openclaw config get mcp.servers", "openclaw.json (mcp.servers)"),
         ("claudecode", "mcps"): (f"{claude_config} (mcpServers)", "./.mcp.json"),
@@ -1329,6 +1338,11 @@ def connector_source_label(connector: str, category: str) -> str:
             "<plugin>/mcp_config.json (discovery-only)",
         ),
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
+        ("amp", "mcps"): (
+            "~/.config/amp/settings.json or settings.jsonc (amp.mcpServers; read-only)",
+            "<workspace>/.amp/settings.json or settings.jsonc (amp.mcpServers; read-only)",
+            "<skill>/mcp.json",
+        ),
         ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
         ("claudecode", "plugins"): (os.path.join(claude_root, "plugins"),),
@@ -1354,6 +1368,10 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/plugins/<plugin>/ (read/write)",
         ),
         ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
+        ("amp", "plugins"): (
+            "~/.config/amp/plugins/defenseclaw.ts (DefenseClaw policy plugin)",
+            "<workspace>/.amp/plugins",
+        ),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),
         ("openclaw", "config"): ("~/.openclaw/openclaw.json",),
         ("claudecode", "config"): (claude_config,),
@@ -1367,6 +1385,11 @@ def connector_source_label(connector: str, category: str) -> str:
         ("openhands", "config"): ("~/.openhands/hooks.json",),
         ("antigravity", "config"): ("~/.gemini/config/hooks.json",),
         ("opencode", "config"): (opencode_plugin,),
+        ("amp", "config"): (
+            "~/.config/amp/plugins/defenseclaw.ts",
+            "~/.config/amp/settings.json or settings.jsonc",
+            "<workspace>/.amp/settings.json or settings.jsonc",
+        ),
         ("omnigent", "config"): ("$OMNIGENT_CONFIG, $OMNIGENT_CONFIG_HOME/config.yaml, or ~/.omnigent/config.yaml; CLI server requires --config",),
     }
     return ", ".join(sources.get((connector, category), ()))

@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -91,6 +92,10 @@ func applyHermeticConnectorHomes(t *testing.T) {
 		connector.OmnigentConfigPathOverride = prevOmnigentConfig
 		connector.OmnigentSitePackagesPathOverride = prevOmnigentSite
 	})
+
+	prevAMP := connector.AMPPluginPathOverride
+	connector.AMPPluginPathOverride = filepath.Join(tmpHome, ".config", "amp", "plugins", "defenseclaw.ts")
+	t.Cleanup(func() { connector.AMPPluginPathOverride = prevAMP })
 
 	// Plan A4 / S0.12: ZeptoClaw's Setup refuses to proceed when the
 	// provider list is empty. Seed a single usable provider so the
@@ -214,9 +219,12 @@ func TestSwitchConnector_PerConnectorPersistsState(t *testing.T) {
 	// under -race.
 	applyHermeticConnectorHomes(t)
 
-	cases := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent"}
+	cases := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
 	for _, target := range cases {
 		t.Run(target, func(t *testing.T) {
+			if target == "hermes" && runtime.GOOS == "windows" {
+				t.Skip("native Windows Hermes setup requires a fresh protected executable-selection receipt; dedicated admission tests cover that authority path")
+			}
 			dir := t.TempDir()
 			// Copilot's Setup refuses any WorkspaceDir nested inside
 			// DataDir (audit DB / gateway config / secrets must not
@@ -319,8 +327,11 @@ func TestApplyRuntime_PerConnectorSwitch(t *testing.T) {
 	// than parallelize them.
 	applyHermeticConnectorHomes(t)
 
-	for _, target := range []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent"} {
+	for _, target := range []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"} {
 		t.Run(target, func(t *testing.T) {
+			if target == "hermes" && runtime.GOOS == "windows" {
+				t.Skip("native Windows Hermes setup requires a fresh protected executable-selection receipt; dedicated admission tests cover that authority path")
+			}
 			dir := t.TempDir()
 			// See note in TestSwitchConnector_PerConnectorPersistsState:
 			// keep WorkspaceDir outside DataDir so copilot's Setup

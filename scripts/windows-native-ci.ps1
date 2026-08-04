@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -43,7 +43,7 @@ if (-not ('DefenseClaw.SetupStandardUserLauncher' -as [type])) {
 
 function Get-RedactionValues {
     $names = @(
-        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
+        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AMP_API_KEY', 'AZURE_OPENAI_API_KEY',
         'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
         'AWS_SESSION_TOKEN', 'LLM_API_KEY', 'GH_TOKEN', 'GITHUB_TOKEN',
         'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN', 'DC_E2E_TEST_SECRET',
@@ -1700,15 +1700,73 @@ print('managed imports:', ', '.join(('defenseclaw', 'skill_scanner', 'mcpscanner
 function Invoke-HeadlessTui([string]$Python) {
     $code = @'
 import asyncio
+from textual.widgets import DataTable
+
 from defenseclaw.tui.app import DefenseClawTUI
+from defenseclaw.tui.panels.ai_discovery import AIDiscoveryPanelModel
+from defenseclaw.tui.services.ai_discovery_state import (
+    AIUsageModel,
+    AIUsageModelProvenance,
+    AIUsageSignal,
+    AIUsageSnapshot,
+)
 
 async def smoke():
-    app = DefenseClawTUI()
-    async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause()
+    discovery = AIDiscoveryPanelModel()
+    discovery.set_snapshot(AIUsageSnapshot(enabled=True, signals=(
+        AIUsageSignal(signal_id='agent', state='seen', product='Codex'),
+        AIUsageSignal(
+            signal_id='model', state='seen', category='local_model',
+            model=AIUsageModel(
+                id='Qwen/Qwen3-4B-GGUF', status='installed', format='gguf',
+                provenance=AIUsageModelProvenance(
+                    publisher='Alibaba Cloud', country_code='CN',
+                    root_model='Qwen/Qwen3-4B', quantized=True,
+                    quantization='Q4_K_M', derivation='quantized',
+                    source='catalog_exact', confidence='high',
+                ),
+            ),
+        ),
+    )))
+    app = DefenseClawTUI(ai_discovery_model=discovery)
+    async with app.run_test(size=(180, 50)) as pilot:
+        await pilot.press('V')
+        products = app.query_one('#panel-table', DataTable)
+        models = app.query_one('#ai-model-table', DataTable)
+
+        # Panel switching intentionally paints an acknowledgement frame before
+        # its deferred table projection. A single scheduler yield is racy on
+        # the installed Windows runtime, so wait on the observable rows with a
+        # strict local deadline instead of assuming one Textual frame is enough.
+        loop = asyncio.get_running_loop()
+        render_deadline = loop.time() + 10
+        while loop.time() < render_deadline:
+            await pilot.pause()
+            if app.active_panel == 'ai' and products.row_count == 1 and models.row_count == 1:
+                break
+            await asyncio.sleep(0.025)
+        else:
+            raise RuntimeError(
+                'packaged AI table split failed: '
+                f'panel={app.active_panel} products={products.row_count} models={models.row_count}'
+            )
+        model_cells = tuple(str(cell) for cell in models.get_row_at(0))
+        if not any('Qwen/Qwen3-4B-GGUF' in cell for cell in model_cells):
+            raise RuntimeError(f'packaged model row missing model ID: {model_cells}')
+        if not any('CN' in cell for cell in model_cells):
+            raise RuntimeError(f'packaged model row missing accessible country code: {model_cells}')
+        await pilot.press('t')
+        focus_deadline = loop.time() + 5
+        while loop.time() < focus_deadline:
+            await pilot.pause()
+            if app.focused is models and discovery.active_table == 'models':
+                break
+            await asyncio.sleep(0.025)
+        else:
+            raise RuntimeError('packaged keyboard could not focus the local-model table')
 
 asyncio.run(asyncio.wait_for(smoke(), timeout=20))
-print('headless TUI started and stopped cleanly')
+print('headless TUI rendered separate AI product/model tables with provenance')
 '@
     Invoke-Installed $Python @('-I', '-c', $code) -Timeout 30 | Out-Null
 }
@@ -1921,6 +1979,13 @@ import sys
 
 from defenseclaw.file_permissions import windows_acl_write_error
 from defenseclaw.tui.app import DefenseClawTUI
+from defenseclaw.tui.panels.ai_discovery import AIDiscoveryPanelModel
+from defenseclaw.tui.services.ai_discovery_state import (
+    AIUsageModel,
+    AIUsageModelProvenance,
+    AIUsageSignal,
+    AIUsageSnapshot,
+)
 from defenseclaw.tui.services.tui_state import TUIState, TUIStateStore
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -1930,13 +1995,30 @@ if before is None:
 store = TUIStateStore(root)
 if not store.save(TUIState(palette_mru=('doctor',))):
     raise SystemExit('packaged TUI state save failed')
-app = DefenseClawTUI(data_dir=root)
+discovery = AIDiscoveryPanelModel()
+discovery.set_snapshot(AIUsageSnapshot(enabled=True, signals=(
+    AIUsageSignal(
+        signal_id='model', state='seen', category='local_model',
+        model=AIUsageModel(
+            id='Qwen/Qwen3-4B-GGUF',
+            provenance=AIUsageModelProvenance(
+                publisher='Alibaba Cloud', country_code='CN',
+                root_model='Qwen/Qwen3-4B', source='catalog_exact', confidence='high',
+            ),
+        ),
+    ),
+)))
+app = DefenseClawTUI(data_dir=root, ai_discovery_model=discovery)
 audit = app._export_audit(pathlib.Path('packaged-audit-export.json'))
-for path in (root, store.path, audit):
+app._export_ai_discovery_snapshot()
+ai_exports = tuple(root.glob('defenseclaw-ai-usage-*.json'))
+if len(ai_exports) != 1:
+    raise SystemExit(f'packaged AI export count was {len(ai_exports)}, want one')
+for path in (root, store.path, audit, ai_exports[0]):
     problem = windows_acl_write_error(path)
     if problem is not None:
         raise SystemExit(f'unsafe packaged DACL for {path}: {problem}')
-print('packaged TUI state and audit export DACLs are private')
+print('packaged TUI state, audit export, and AI provenance export DACLs are private')
 '@
     Invoke-Installed $Python @('-I', '-c', $code, $exportRoot) -Timeout 120 | Out-Null
 }
@@ -3289,8 +3371,9 @@ function New-WizardAgentFixtures([string]$Root) {
     $claudeBin = Join-Path $userProfile '.local\bin'
     $codexPath = Join-Path $codexBin 'codex.exe'
     $claudePath = Join-Path $claudeBin 'claude.exe'
+    $ampPath = Join-Path $claudeBin 'amp.exe'
     $cursorPath = Join-Path $claudeBin 'agent.exe'
-    foreach ($existing in @($claudePath, $cursorPath)) {
+    foreach ($existing in @($claudePath, $ampPath, $cursorPath)) {
         if (Test-Path -LiteralPath $existing) {
             throw "refusing to replace an existing connector executable fixture target: $existing"
         }
@@ -3357,6 +3440,19 @@ public static class CursorAgentVersionFixture {
     }
 }
 "@
+        },
+        [pscustomobject]@{
+            Path = $ampPath
+            ClassName = 'AmpVersionFixture'
+            Source = @"
+using System;
+public static class AmpVersionFixture {
+    public static int Main(string[] arguments) {
+        Console.WriteLine("amp 0.0.1785334225-g9abe75");
+        return 0;
+    }
+}
+"@
         }
         )
         foreach ($fixture in $fixtures) {
@@ -3385,6 +3481,10 @@ public static class CursorAgentVersionFixture {
         if ($cursorVersion.StdOut.Trim() -ne 'cursor-agent 2026.07.23-e383d2b') {
             throw "Cursor Agent fixture returned an unexpected version: $($cursorVersion.StdOut)"
         }
+        $ampVersion = Invoke-WindowsNativeProcess $ampPath @('--version') -TimeoutSeconds 30
+        if ($ampVersion.StdOut.Trim() -ne 'amp 0.0.1785334225-g9abe75') {
+            throw "Amp fixture returned an unexpected version: $($ampVersion.StdOut)"
+        }
         Assert-WizardCodexPolicyFixture $codexPath
         return [pscustomobject]@{
             CodexBin = $codexBin
@@ -3395,11 +3495,12 @@ public static class CursorAgentVersionFixture {
             SearchPath = $claudeBin
             CodexPath = $codexPath
             ClaudePath = $claudePath
+            AmpPath = $ampPath
             CursorPath = $cursorPath
             CodexTrustedRoot = $codexTrustedRoot
         }
     } catch {
-        foreach ($path in @($codexPath, $claudePath, $cursorPath)) {
+        foreach ($path in @($codexPath, $claudePath, $ampPath, $cursorPath)) {
             Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $codexBin -PathType Container) {
@@ -3479,6 +3580,7 @@ function Remove-WizardAgentFixtures([AllowNull()][object]$Fixtures) {
     $owned = @(
         [pscustomobject]@{ Path = [string]$Fixtures.CodexPath; Root = [string]$Fixtures.CodexTrustedRoot; Name = 'codex.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.ClaudePath; Root = [string]$Fixtures.ClaudeBin; Name = 'claude.exe' },
+        [pscustomobject]@{ Path = [string]$Fixtures.AmpPath; Root = [string]$Fixtures.ClaudeBin; Name = 'amp.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.CursorPath; Root = [string]$Fixtures.ClaudeBin; Name = 'agent.exe' }
     )
     foreach ($entry in $owned) {
@@ -3525,6 +3627,12 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
             ConfigPath = Join-Path $UserProfile '.claude\settings.json'
             DoctorLabel = 'Claude Code hooks'
             DoctorRuntimePattern = 'healthy Windows-native executable registration'
+        }
+        amp = @{
+            HookScript = ''
+            ConfigPath = Join-Path $UserProfile '.config\amp\plugins\defenseclaw.ts'
+            DoctorLabel = 'Amp policy plugin'
+            DoctorRuntimePattern = 'plugin-ready-timeout 30'
         }
         copilot = @{
             HookScript = 'copilot-hook.sh'
@@ -3593,6 +3701,9 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
                 'connector_backups\claudecode\settings.json.json'
             )
         }
+        'amp' {
+            @('connector_backups\amp\config.json')
+        }
         'copilot' {
             @('connector_backups\copilot\config.json')
         }
@@ -3620,12 +3731,12 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('antigravity', 'codex', 'claudecode', 'copilot', 'cursor', 'windsurf')) {
+        if ([string]$name -notin @('antigravity', 'codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
     }
-    $required = @('codex', 'claudecode')
+    $required = @('codex', 'claudecode', 'amp')
     # Antigravity remains not-certified on Windows, so its packaged gate must
     # not manufacture cleanup authority when setup correctly refuses to write.
     if ($configured.Contains('antigravity') -or
@@ -3661,7 +3772,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
-    foreach ($connector in @('antigravity', 'codex', 'claudecode', 'copilot', 'cursor', 'windsurf')) {
+    foreach ($connector in @('antigravity', 'codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
         }
@@ -3979,11 +4090,15 @@ function Assert-WizardHookRegistration(
     [ValidateSet('observe', 'action')][string]$Mode
 ) {
     $hookDir = Join-Path $DataRoot 'hooks'
-    $expectedHook = Join-Path $hookDir $Specification.HookScript
-    if (-not (Test-Path -LiteralPath $expectedHook -PathType Leaf)) {
-        throw "wizard-selected connector hook is missing: $expectedHook"
+    $expectedHook = ''
+    if ($Specification.Connector -ne 'amp') {
+        $expectedHook = Join-Path $hookDir $Specification.HookScript
+        if (-not (Test-Path -LiteralPath $expectedHook -PathType Leaf)) {
+            throw "wizard-selected connector hook is missing: $expectedHook"
+        }
     }
     foreach ($otherHookScript in @($Specification.OtherHookScripts)) {
+        if ([string]::IsNullOrWhiteSpace([string]$otherHookScript)) { continue }
         $wrongHook = Join-Path $hookDir $otherHookScript
         if (Test-Path -LiteralPath $wrongHook) {
             throw "wizard configured the wrong connector hook: $wrongHook"
@@ -4249,6 +4364,31 @@ function Assert-WizardHookRegistration(
                 throw "wizard-selected Cursor adapter is missing required marker $marker"
             }
         }
+    } elseif ($Specification.Connector -eq 'amp') {
+        foreach ($marker in @(
+            'DefenseClaw Amp policy bridge',
+            '/api/v1/amp/hook',
+            'amp.on("session.start"',
+            'amp.on("agent.start"',
+            'amp.on("tool.call"',
+            'amp.on("tool.result"',
+            'amp.on("agent.end"',
+            'const DC_FAIL_MODE: string = "closed"',
+            'const DC_TIMEOUT_MS = 10000',
+            'new AbortController()',
+            'ctx.ui.confirm',
+            'amp.activeThread.current',
+            'isPluginUINotAvailableError',
+            'action: "reject-and-continue"',
+            'Authorization = `Bearer ${DC_API_TOKEN}`'
+        )) {
+            if ($registration.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+                throw "wizard-selected Amp policy plugin is missing required contract marker: $marker"
+            }
+        }
+        if ($registration -match '(?i)defenseclaw-hook(?:\.exe|\.cmd)|\bwsl\b|\bbash\b|\bchmod\b') {
+            throw 'wizard-selected Amp policy plugin depends on a shell hook or compatibility layer'
+        }
     } elseif ($Specification.Connector -eq 'windsurf') {
         try { $settings = $registration | ConvertFrom-Json -ErrorAction Stop }
         catch { throw "wizard-selected Windsurf registration is not valid JSON: $($_.Exception.Message)" }
@@ -4394,6 +4534,11 @@ function Assert-WizardConnectorHealth(
     $hookRows = @($doctor.checks | Where-Object {
         [string]::Equals([string]$_.label, $Specification.DoctorLabel, [StringComparison]::Ordinal)
     })
+    $healthyDetailPattern = if ($Specification.Connector -eq 'amp') {
+        'plugin-ready-timeout 30'
+    } else {
+        'healthy Windows-native executable registration'
+    }
     if ($hookRows.Count -ne 1 -or [string]$hookRows[0].status -ne 'pass' -or
         [string]$hookRows[0].detail -notmatch [string]$Specification.DoctorRuntimePattern) {
         throw "wizard doctor did not validate the selected native hook: $($hookRows | ConvertTo-Json -Compress -Depth 5)"
@@ -4669,6 +4814,7 @@ function Invoke-SetupAcceptance {
         (Join-Path $userProfile '.codex\config.toml'),
         (Join-Path $userProfile '.codex\managed_config.toml'),
         (Join-Path $userProfile '.claude\settings.json'),
+        (Join-Path $userProfile '.config\amp\plugins\defenseclaw.ts'),
         (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
         (Join-Path $userProfile '.cursor\hooks.json'),
         (Join-Path $userProfile '.codeium\windsurf\hooks.json')
@@ -4729,6 +4875,12 @@ function Invoke-SetupAcceptance {
             Invoke-WizardConnectorAcceptance `
                 $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                 $fixtureSearchPath $userPathBefore 'claudecode' 'action'
+            Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
+            $env:PATH = "$fixtureSearchPath;$processPathBefore"
+
+            Invoke-WizardConnectorAcceptance `
+                $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
+                $fixtureSearchPath $userPathBefore 'amp' 'action'
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = "$fixtureSearchPath;$processPathBefore"
 
@@ -4824,6 +4976,9 @@ function Invoke-SetupAcceptance {
             'setup', 'claude-code', '--yes', '--no-restart'
         ) -Timeout 300 -Log (Join-Path $logs 'setup-add-claudecode.log') | Out-Null
         Invoke-Installed $launcher @(
+            'setup', 'amp', '--yes', '--no-restart'
+        ) -Timeout 300 -Log (Join-Path $logs 'setup-add-amp.log') | Out-Null
+        Invoke-Installed $launcher @(
             'setup', 'cursor', '--yes', '--no-restart'
         ) -Timeout 300 -Log (Join-Path $logs 'setup-add-cursor.log') | Out-Null
 
@@ -4863,7 +5018,7 @@ function Invoke-SetupAcceptance {
         }
         $rosterLine = $rosterLines[0]
         $roster = @($rosterLine.Substring('DC_ROSTER='.Length) | ConvertFrom-Json)
-        foreach ($expectedConnector in @('codex', 'claudecode', 'cursor')) {
+        foreach ($expectedConnector in @('codex', 'claudecode', 'amp', 'cursor')) {
             if ($expectedConnector -notin $roster) {
                 throw "packaged connector setup collapsed the existing roster; missing $expectedConnector"
             }
@@ -4908,6 +5063,7 @@ guardrail:
   retain_judge_bodies: true
   mode: observe
   connectors:
+    amp: {}
     codex: {}
     claudecode: {}
     cursor: {}
@@ -5022,7 +5178,7 @@ assert not otlp.get("signal_overrides")
 assert (otlp.get("tls") or {}).get("insecure") is True
 assert (otlp.get("network_safety") or {}).get("allow_private_networks") is True
 assert (document.get("guardrail") or {}).get("retain_judge_bodies") is True
-assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"codex", "claudecode", "cursor"}
+assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp", "codex", "claudecode", "cursor"}
 '@
         Invoke-Installed $python @('-I', '-c', $assertMigratedConfig, $configPath, $setupOtlpPort) -Timeout 120 `
             -Log (Join-Path $logs 'setup-seeded-v8-contract.log') | Out-Null
@@ -5347,7 +5503,7 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"cod
             catch { Write-Warning "setup acceptance watchdog cleanup failed: $($_.Exception.Message)" }
             try { Invoke-Installed $gateway @('stop') @(0, 1) 60 | Out-Null }
             catch { Write-Warning "setup acceptance gateway cleanup failed: $($_.Exception.Message)" }
-            foreach ($configuredConnector in @('codex', 'claudecode', 'copilot', 'cursor', 'windsurf', 'antigravity')) {
+            foreach ($configuredConnector in @('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf', 'antigravity')) {
                 try {
                     Invoke-Installed $gateway @('connector', 'teardown', '--connector', $configuredConnector) `
                         @(0, 1) 120 | Out-Null
@@ -5420,8 +5576,15 @@ function Get-WindowsReleaseClientSpecifications {
             Command = 'claude.cmd'
         },
         [pscustomobject]@{
+            Connector = 'amp'
+            Version = '0.0.1785334225-g9abe75'
+            Package = '@ampcode/cli'
+            Manifest = 'node_modules\@ampcode\cli\package.json'
+            Command = 'amp.cmd'
+        },
+        [pscustomobject]@{
             Connector = 'opencode'
-            Version = '1.18.10'
+            Version = '1.18.11'
             Package = 'opencode-ai'
             Manifest = 'node_modules\opencode-ai\package.json'
             Command = 'opencode.cmd'
@@ -5449,7 +5612,7 @@ function Assert-WindowsReleaseCertificationEnvironment {
     if ([string]$env:WINDOWS_RELEASE_VERSION -cnotmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
         throw 'release-certification requires the exact resolved WINDOWS_RELEASE_VERSION'
     }
-    foreach ($secretName in @('OPENAI_API_KEY', 'ANTHROPIC_API_KEY')) {
+    foreach ($secretName in @('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AMP_API_KEY')) {
         if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($secretName))) {
             throw "$secretName is required for non-advisory real-client release certification"
         }
@@ -5709,7 +5872,7 @@ function Assert-WindowsReleaseRealClientResults([string]$ResultsPath) {
         'install', 'doctor:windows-hook-registration', 'lifecycle:fires', 'tool-allow:fires',
         'tool-block:enforced', 'audit-correlation', 'telemetry', 'teardown'
     )
-    foreach ($connectorName in @('codex', 'claudecode', 'opencode')) {
+    foreach ($connectorName in @('codex', 'claudecode', 'amp', 'opencode')) {
         foreach ($eventName in $requiredEvents) {
             $matches = @($rows | Where-Object {
                 $_.connector -eq $connectorName -and
@@ -5729,23 +5892,110 @@ function Assert-WindowsReleaseRealClientResults([string]$ResultsPath) {
     if ($autoTrust.Count -lt 1) {
         throw 'release certification is missing automatic Codex managed-hook trust evidence'
     }
+    foreach ($eventName in @(
+        'amp:private-plugin',
+        'amp:self-heal',
+        'doctor:windows-hook-tamper',
+        'doctor:windows-hook-recovery'
+    )) {
+        $matches = @($rows | Where-Object {
+            $_.connector -eq 'amp' -and
+            $_.event -eq $eventName -and
+            $_.status -eq 'pass'
+        })
+        if ($matches.Count -lt 1) {
+            throw "release certification is missing amp/$eventName pass evidence"
+        }
+    }
 }
 
-function Assert-WindowsReleaseDoctorRows([string]$Launcher, [string]$Logs) {
+function Assert-WindowsReleaseAmpPlugin([string]$Path, [string]$Context) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Context did not preserve the managed Amp policy plugin: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "$Context replaced the managed Amp policy plugin with a reparse point"
+    }
+    $plugin = [IO.File]::ReadAllText($Path)
+    foreach ($marker in @(
+        'DefenseClaw Amp policy bridge',
+        '/api/v1/amp/hook',
+        'amp.on("session.start"',
+        'amp.on("agent.start"',
+        'amp.on("tool.call"',
+        'amp.on("tool.result"',
+        'amp.on("agent.end"',
+        'ctx.ui.confirm',
+        'amp.activeThread.current',
+        'action: "reject-and-continue"'
+    )) {
+        if ($plugin.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
+            throw "$Context left an incomplete Amp policy plugin: missing $marker"
+        }
+    }
+    if ($plugin -match '(?i)defenseclaw-hook(?:\.exe|\.cmd)|\bwsl\b|\bbash\b|\bchmod\b') {
+        throw "$Context made the Amp policy plugin depend on a shell hook or compatibility layer"
+    }
+}
+
+function Assert-WindowsReleasePreservedFile(
+    [string]$Path,
+    [byte[]]$ExpectedBytes,
+    [string]$Label
+) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "release lifecycle removed the unrelated ${Label}: $Path"
+    }
+    $actual = [IO.File]::ReadAllBytes($Path)
+    if ([Convert]::ToBase64String($actual) -cne [Convert]::ToBase64String($ExpectedBytes)) {
+        throw "release lifecycle did not preserve the unrelated $Label byte-for-byte"
+    }
+}
+
+function Assert-WindowsReleaseDoctorRows(
+    [string]$Launcher,
+    [string]$Logs,
+    [string]$AmpPluginPath
+) {
     $doctor = Invoke-WindowsNativeProcess $Launcher @('doctor', '--json-output') `
         -TimeoutSeconds 300 -LogPath (Join-Path $Logs 'release-doctor-after-maintenance.json')
     try { $report = $doctor.StdOut | ConvertFrom-Json -ErrorAction Stop }
     catch { throw "installed Doctor returned invalid JSON after repair/upgrade: $($_.Exception.Message)" }
-    foreach ($label in @('Codex hooks', 'Claude Code hooks', 'OpenCode hooks')) {
-        $rows = @($report.checks | Where-Object { [string]$_.label -like "$label*" })
-        $healthyPattern = if ($label -eq 'OpenCode hooks') {
-            'managed plugin digest current'
-        } else {
-            'healthy Windows-native'
+    foreach ($expectation in @(
+        [pscustomobject]@{
+            Label = 'Codex hooks'
+            Detail = 'healthy Windows-native'
+            Target = ''
+        },
+        [pscustomobject]@{
+            Label = 'Claude Code hooks'
+            Detail = 'healthy Windows-native'
+            Target = ''
+        },
+        [pscustomobject]@{
+            Label = 'Amp policy plugin'
+            Detail = 'plugin-ready-timeout 30'
+            Target = $AmpPluginPath
+        },
+        [pscustomobject]@{
+            Label = 'OpenCode hooks'
+            Detail = 'managed plugin digest current'
+            Target = ''
         }
+    )) {
+        $label = [string]$expectation.Label
+        $rows = @($report.checks | Where-Object { [string]$_.label -like "$label*" })
         if ($rows.Count -ne 1 -or [string]$rows[0].status -ne 'pass' -or
-            [string]$rows[0].detail -notmatch $healthyPattern) {
+            [string]$rows[0].detail -notmatch [regex]::Escape([string]$expectation.Detail)) {
             throw "Doctor did not verify $label after exact-installer repair/upgrade"
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$expectation.Target) -and
+            ([string]$rows[0].detail).IndexOf(
+                [string]$expectation.Target,
+                [StringComparison]::OrdinalIgnoreCase
+            ) -lt 0) {
+            throw "Doctor verified an unexpected $label target after exact-installer repair/upgrade"
         }
     }
 }
@@ -5760,7 +6010,11 @@ function Assert-WindowsReleaseCleanUninstall(
     [string]$PreservedCodexHooksPath,
     [string]$ExpectedCodexHooks,
     [string]$PreservedCodexManagedConfigPath,
-    [string]$ExpectedCodexManagedConfig
+    [string]$ExpectedCodexManagedConfig,
+    [string]$PreservedAmpPluginPath,
+    [byte[]]$ExpectedAmpPlugin,
+    [string]$PreservedAmpSettingsPath,
+    [byte[]]$ExpectedAmpSettings
 ) {
     for ($attempt = 0; $attempt -lt 40 -and (Test-Path -LiteralPath $CacheRoot); $attempt++) {
         Start-Sleep -Milliseconds 250
@@ -5789,6 +6043,10 @@ function Assert-WindowsReleaseCleanUninstall(
     )) {
         throw 'release uninstall did not preserve the unrelated Codex managed config byte-for-byte'
     }
+    Assert-WindowsReleasePreservedFile `
+        $PreservedAmpPluginPath $ExpectedAmpPlugin 'Amp plugin'
+    Assert-WindowsReleasePreservedFile `
+        $PreservedAmpSettingsPath $ExpectedAmpSettings 'Amp settings'
     if (-not [string]::Equals(
         $OriginalUserPath,
         [Environment]::GetEnvironmentVariable('Path', 'User'),
@@ -5871,15 +6129,28 @@ function Invoke-WindowsReleaseCertification {
     $codexManagedConfigPath = Join-Path $userProfile '.codex\managed_config.toml'
     $codexHooksPath = Join-Path $userProfile '.codex\hooks.json'
     $claudeConfigPath = Join-Path $userProfile '.claude\settings.json'
+    $ampConfigRoot = Join-Path $userProfile '.config\amp'
+    $ampPluginRoot = Join-Path $ampConfigRoot 'plugins'
+    $ampPluginPath = Join-Path $ampPluginRoot 'defenseclaw.ts'
+    $ampOperatorPluginPath = Join-Path $ampPluginRoot 'operator.ts'
+    $ampSettingsPath = Join-Path $ampConfigRoot 'settings.json'
     $openCodePluginPath = Join-Path $userProfile '.config\opencode\plugins\defenseclaw.js'
     $connectorConfigs = @(
         $codexConfigPath,
         $codexManagedConfigPath,
         $codexHooksPath,
         $claudeConfigPath,
+        $ampPluginPath,
         $openCodePluginPath
     )
-    foreach ($path in @($installRoot, $dataRoot, $cacheRoot, $arpKey) + $connectorConfigs) {
+    foreach ($path in @(
+        $installRoot,
+        $dataRoot,
+        $cacheRoot,
+        $arpKey,
+        $ampOperatorPluginPath,
+        $ampSettingsPath
+    ) + $connectorConfigs) {
         if (Test-Path -LiteralPath $path) {
             throw "release certification refuses pre-existing product or connector state: $path"
         }
@@ -5908,6 +6179,15 @@ function Invoke-WindowsReleaseCertification {
         $unrelatedCodexManagedConfig,
         [Text.UTF8Encoding]::new($false)
     )
+    [IO.Directory]::CreateDirectory($ampPluginRoot) | Out-Null
+    $unrelatedAmpPlugin = [Text.UTF8Encoding]::new($false).GetBytes(
+        "export default function operatorPlugin() {}`n"
+    )
+    $unrelatedAmpSettings = [Text.UTF8Encoding]::new($false).GetBytes(
+        "{`n  `"amp.mcpServers`": {}`n}`n"
+    )
+    [IO.File]::WriteAllBytes($ampOperatorPluginPath, $unrelatedAmpPlugin)
+    [IO.File]::WriteAllBytes($ampSettingsPath, $unrelatedAmpSettings)
 
     $originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $originalEnvironment = @{}
@@ -6000,7 +6280,7 @@ function Invoke-WindowsReleaseCertification {
         Assert-PackagedV8ResourceContract $python (Join-Path $installRoot 'runtime\python')
         $env:PATH = "$bin;$(@($toolBins) -join ';');$($originalEnvironment['PATH'])"
 
-        foreach ($connectorName in @('codex', 'claudecode', 'opencode')) {
+        foreach ($connectorName in @('codex', 'claudecode', 'amp', 'opencode')) {
             $client = $clients[$connectorName]
             Invoke-WindowsReleaseRealConnector `
                 $client.Specification $client.Path $client.Root $results $diagnostics
@@ -6014,17 +6294,35 @@ function Invoke-WindowsReleaseCertification {
             'setup', 'claude-code', '--yes', '--mode', 'action', '--restart'
         ) -TimeoutSeconds 300 -LogPath (Join-Path $logs 'release-reconfigure-claudecode.log') | Out-Null
         Invoke-WindowsNativeProcess $launcher @(
+            'setup', 'amp', '--yes', '--mode', 'action', '--restart'
+        ) -TimeoutSeconds 300 -LogPath (Join-Path $logs 'release-reconfigure-amp.log') | Out-Null
+        Assert-WindowsReleaseAmpPlugin $ampPluginPath 'Amp reconfiguration'
+        Assert-WindowsReleasePreservedFile `
+            $ampOperatorPluginPath $unrelatedAmpPlugin 'Amp plugin'
+        Assert-WindowsReleasePreservedFile `
+            $ampSettingsPath $unrelatedAmpSettings 'Amp settings'
+        Invoke-WindowsNativeProcess $launcher @(
             'setup', 'opencode', '--yes', '--mode', 'action', '--restart'
         ) -TimeoutSeconds 300 -LogPath (Join-Path $logs 'release-reconfigure-opencode.log') | Out-Null
 
         Invoke-WindowsNativeProcess $setup @(
             '/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user'
         ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'release-setup-repair.log') | Out-Null
+        Assert-WindowsReleaseAmpPlugin $ampPluginPath 'exact-installer repair'
+        Assert-WindowsReleasePreservedFile `
+            $ampOperatorPluginPath $unrelatedAmpPlugin 'Amp plugin'
+        Assert-WindowsReleasePreservedFile `
+            $ampSettingsPath $unrelatedAmpSettings 'Amp settings'
         Invoke-WindowsNativeProcess $setup @(
             '/upgrade', '/quiet', '/norestart', 'INSTALLSCOPE=user'
         ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'release-setup-upgrade.log') | Out-Null
+        Assert-WindowsReleaseAmpPlugin $ampPluginPath 'exact-installer upgrade'
+        Assert-WindowsReleasePreservedFile `
+            $ampOperatorPluginPath $unrelatedAmpPlugin 'Amp plugin'
+        Assert-WindowsReleasePreservedFile `
+            $ampSettingsPath $unrelatedAmpSettings 'Amp settings'
         Assert-PackagedV8ResourceContract $python (Join-Path $installRoot 'runtime\python')
-        Assert-WindowsReleaseDoctorRows $launcher $logs
+        Assert-WindowsReleaseDoctorRows $launcher $logs $ampPluginPath
 
         # Uninstall must tear down all three active connectors itself. A pre-teardown
         # here would hide the release defect this certification is meant to catch.
@@ -6034,7 +6332,9 @@ function Invoke-WindowsReleaseCertification {
         Assert-WindowsReleaseCleanUninstall `
             $installRoot $dataRoot $cacheRoot $arpKey $connectorConfigs $originalUserPath `
             $codexHooksPath $unrelatedCodexHooks `
-            $codexManagedConfigPath $unrelatedCodexManagedConfig
+            $codexManagedConfigPath $unrelatedCodexManagedConfig `
+            $ampOperatorPluginPath $unrelatedAmpPlugin `
+            $ampSettingsPath $unrelatedAmpSettings
 
         $finalHash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($finalHash -cne $setupHash) {
@@ -6068,9 +6368,10 @@ function Invoke-WindowsReleaseCertification {
             clients = [ordered]@{
                 codex = [string]$clients['codex'].Specification.Version
                 claudecode = [string]$clients['claudecode'].Specification.Version
+                amp = [string]$clients['amp'].Specification.Version
                 opencode = [string]$clients['opencode'].Specification.Version
             }
-            connectors = @('codex', 'claudecode', 'opencode')
+            connectors = @('codex', 'claudecode', 'amp', 'opencode')
             requirements = @(
                 'automatic-codex-trust', 'lifecycle', 'tool-allow', 'tool-block',
                 'gateway-jsonl', 'audit-correlation', 'connector-telemetry',
@@ -6086,7 +6387,7 @@ function Invoke-WindowsReleaseCertification {
             ($evidence | ConvertTo-Json -Depth 8),
             [Text.UTF8Encoding]::new($false)
         )
-        Write-Host 'Exact signed Windows installer passed all three real-client release certifications.'
+        Write-Host 'Exact signed Windows installer passed all four real-client release certifications.'
         $completed = $true
     } finally {
         if ($installed -and (Test-Path -LiteralPath $setup -PathType Leaf)) {
@@ -6105,7 +6406,9 @@ function Invoke-WindowsReleaseCertification {
             Assert-WindowsReleaseCleanUninstall `
                 $installRoot $dataRoot $cacheRoot $arpKey $connectorConfigs $originalUserPath `
                 $codexHooksPath $unrelatedCodexHooks `
-                $codexManagedConfigPath $unrelatedCodexManagedConfig
+                $codexManagedConfigPath $unrelatedCodexManagedConfig `
+                $ampOperatorPluginPath $unrelatedAmpPlugin `
+                $ampSettingsPath $unrelatedAmpSettings
         }
     }
 }
