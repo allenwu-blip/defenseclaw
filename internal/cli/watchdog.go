@@ -84,6 +84,7 @@ var (
 	watchdogExecutablePath              = os.Executable
 	watchdogCurrentProcessStartIdentity = watchdogProcessStartIdentity
 	watchdogLoopRunner                  = runWatchdogLoop
+	watchdogStartPublicationProbe       = watchdogStartPublicationReady
 )
 
 func (recorder *watchdogAPIRecoveryRecorder) RecordWatchdogRecovery(ctx context.Context) error {
@@ -661,18 +662,22 @@ var watchdogOwnedRecordWait = waitForWatchdogOwnedRecord
 func waitForWatchdogStart(pidPath string, expectedPID int, timeout, interval time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		locked, info, err := watchdogIsLocked(pidPath)
-		if err == nil && locked {
-			if info.PID != expectedPID {
-				// Atomic publication intentionally acquires ownership before it
-				// replaces the canonical PID record. During that short window a
-				// reader may still see the prior record; keep polling until the
-				// bounded readiness deadline instead of rejecting the child early.
-				err = fmt.Errorf("ownership lock belongs to PID %d, expected %d", info.PID, expectedPID)
-			} else if !verifyWatchdogProcess(info) {
-				err = fmt.Errorf("ownership lock PID %d lacks a verified process identity", expectedPID)
-			} else {
-				return nil
+		publicationReady, err := watchdogStartPublicationProbe(pidPath, expectedPID)
+		if publicationReady {
+			locked, info, inspectionErr := watchdogIsLocked(pidPath)
+			err = inspectionErr
+			if err == nil && locked {
+				if info.PID != expectedPID {
+					// Atomic publication intentionally acquires ownership before it
+					// replaces the canonical PID record. During that short window a
+					// reader may still see the prior record; keep polling until the
+					// bounded readiness deadline instead of rejecting the child early.
+					err = fmt.Errorf("ownership lock belongs to PID %d, expected %d", info.PID, expectedPID)
+				} else if !verifyWatchdogProcess(info) {
+					err = fmt.Errorf("ownership lock PID %d lacks a verified process identity", expectedPID)
+				} else {
+					return nil
+				}
 			}
 		}
 		if !time.Now().Before(deadline) {

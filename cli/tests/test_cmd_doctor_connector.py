@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -895,13 +896,19 @@ class TestCheckConnectorHooks(unittest.TestCase):
         process = popen_mock.return_value
         process.pid = 4242
         events = []
+        communication_started = threading.Event()
 
-        def communicate(*, timeout):
-            events.append(("communicate", timeout))
-            if len(events) == 1:
-                raise subprocess.TimeoutExpired(["powershell.exe"], timeout)
+        def wait(*, timeout):
+            self.assertTrue(communication_started.wait(timeout=2))
+            events.append(("wait", timeout))
+            raise subprocess.TimeoutExpired(["powershell.exe"], timeout)
+
+        def communicate():
+            events.append(("communicate", None))
+            communication_started.set()
             return b"", b""
 
+        process.wait.side_effect = wait
         process.communicate.side_effect = communicate
         job = job_type_mock.return_value
 
@@ -921,9 +928,9 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertEqual(
             events,
             [
-                ("communicate", _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS),
+                ("communicate", None),
+                ("wait", _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS),
                 ("terminate", _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS),
-                ("communicate", _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS),
             ],
         )
         job_type_mock.assert_called_once_with(4242, allow_breakaway=False)
@@ -931,6 +938,46 @@ class TestCheckConnectorHooks(unittest.TestCase):
         process.kill.assert_not_called()
         creationflags = popen_mock.call_args.kwargs["creationflags"]
         self.assertTrue(creationflags & getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object probe containment")
+    @patch("defenseclaw.tui.windows_process.WindowsJob")
+    @patch("defenseclaw.commands.cmd_doctor.subprocess.Popen")
+    def test_cursor_windows_runtime_completed_root_reaps_pipe_holding_descendant(
+        self,
+        popen_mock,
+        job_type_mock,
+    ) -> None:
+        process = popen_mock.return_value
+        process.pid = 4242
+        process.returncode = 0
+        descendant_reaped = threading.Event()
+
+        def communicate():
+            if not descendant_reaped.wait(timeout=2):
+                raise AssertionError("probe output was read before descendant cleanup")
+            return b"{}", b""
+
+        process.communicate.side_effect = communicate
+        job = job_type_mock.return_value
+
+        def terminate_sync(*, timeout):
+            self.assertEqual(timeout, _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+            descendant_reaped.set()
+            return True
+
+        job.terminate_sync.side_effect = terminate_sync
+
+        result = _run_cursor_windows_runtime_process(
+            ["powershell.exe"],
+            env={},
+            timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"{}")
+        process.wait.assert_called_once_with(timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS)
+        job.terminate_sync.assert_called_once_with(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+        job.close.assert_called_once_with()
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch(

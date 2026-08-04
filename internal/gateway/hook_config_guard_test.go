@@ -767,12 +767,29 @@ func TestHookConfigGuard_PeriodicClaudePolicyAuditRepairsWithoutFileDebounce(t *
 	// The notifier is the completion barrier for Setup and its effective-policy
 	// verification. Polling OwnedHooksPresent while Setup atomically replaces the
 	// file races the repair on Windows.
+	repairNotified := false
 	select {
 	case paths := <-healed:
+		repairNotified = true
 		if len(paths) != 1 || paths[0] != "periodic effective-policy audit" {
 			t.Fatalf("heal notifier paths = %v, want periodic effective-policy audit", paths)
 		}
 	case <-time.After(5 * time.Second):
+		// Join an in-flight serialized repair before diagnosing a missing
+		// notification. The notifier runs before repairMu is released, so this
+		// waits for actual completion without changing the audit-start deadline.
+		guard.repairMu.Lock()
+		guard.repairMu.Unlock()
+		select {
+		case paths := <-healed:
+			repairNotified = true
+			if len(paths) != 1 || paths[0] != "periodic effective-policy audit" {
+				t.Fatalf("heal notifier paths = %v, want periodic effective-policy audit", paths)
+			}
+		default:
+		}
+	}
+	if !repairNotified {
 		present, err := connector.OwnedHooksPresent(conn, opts)
 		t.Fatalf("periodic policy audit did not report a completed repair (present=%v err=%v)", present, err)
 	}

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -606,6 +607,70 @@ func TestWindowsWaitForWatchdogStartRejectsWeakHeldPublication(t *testing.T) {
 	got, err := os.ReadFile(pidPath)
 	if err != nil || string(got) != string(weak) {
 		t.Fatalf("readiness mutated weak publication: got=%q err=%v", got, err)
+	}
+}
+
+func TestWindowsWaitForWatchdogStartDoesNotProbeOwnershipBeforePublication(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), watchdogPIDFile)
+	if err := ensureWatchdogOwnershipFile(filepath.Join(filepath.Dir(pidPath), watchdogOwnershipFile)); err != nil {
+		t.Fatal(err)
+	}
+	info := watchdogPIDInfo{
+		PID:           os.Getpid(),
+		Executable:    mustWatchdogTestExecutable(t),
+		StartIdentity: watchdogProcessStartIdentity(os.Getpid()),
+	}
+
+	originalProbe := watchdogStartPublicationProbe
+	originalInspector := watchdogOwnershipLockInspector
+	probeStarted := make(chan struct{})
+	releaseProbe := make(chan struct{})
+	inspected := make(chan struct{}, 1)
+	var firstProbe sync.Once
+	watchdogStartPublicationProbe = func(path string, expectedPID int) (bool, error) {
+		firstProbe.Do(func() {
+			close(probeStarted)
+			<-releaseProbe
+		})
+		return watchdogStartPublicationReady(path, expectedPID)
+	}
+	watchdogOwnershipLockInspector = func(path string) (bool, bool, error) {
+		select {
+		case inspected <- struct{}{}:
+		default:
+		}
+		return originalInspector(path)
+	}
+	t.Cleanup(func() {
+		watchdogStartPublicationProbe = originalProbe
+		watchdogOwnershipLockInspector = originalInspector
+	})
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- waitForWatchdogStart(pidPath, info.PID, time.Second, time.Millisecond)
+	}()
+	<-probeStarted
+	select {
+	case <-inspected:
+		t.Fatal("readiness probed the ownership byte before PID publication")
+	default:
+	}
+
+	holder, err := acquireWatchdogPIDFile(pidPath, info)
+	if err != nil {
+		close(releaseProbe)
+		t.Fatalf("child could not acquire ownership before publishing: %v", err)
+	}
+	defer holder.Close()
+	close(releaseProbe)
+	if err := <-waitDone; err != nil {
+		t.Fatalf("waitForWatchdogStart: %v", err)
+	}
+	select {
+	case <-inspected:
+	default:
+		t.Fatal("readiness never verified held ownership after PID publication")
 	}
 }
 

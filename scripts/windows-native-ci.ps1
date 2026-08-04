@@ -424,6 +424,58 @@ function Protect-TestDirectory([string]$Path) {
     [IO.FileSystemAclExtensions]::SetAccessControl($directory, $security)
 }
 
+function New-ProductPrivateTestDirectory([string]$Path) {
+    $fullPath = Assert-NoReparseAncestors $Path
+    if ([IO.Directory]::Exists($fullPath) -or [IO.File]::Exists($fullPath)) {
+        throw "refusing to replace an existing product-private test path: $fullPath"
+    }
+    $parent = [IO.Directory]::GetParent($fullPath)
+    if ($null -eq $parent -or -not $parent.Exists) {
+        throw "product-private test directory requires an existing parent: $fullPath"
+    }
+    $null = Assert-NoReparseAncestors $parent.FullName
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User) { throw 'current Windows identity has no user SID' }
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetOwner($identity.User)
+    $security.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $propagation = [Security.AccessControl.PropagationFlags]::None
+    $allow = [Security.AccessControl.AccessControlType]::Allow
+    $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    foreach ($sid in @($identity.User, $system)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            $propagation,
+            $allow
+        )
+        [void]$security.AddAccessRule($rule)
+    }
+
+    # Create with the protected descriptor in the same filesystem operation;
+    # never expose a product-managed leaf with inherited general-harness writers.
+    $directory = [IO.DirectoryInfo]::new($fullPath)
+    [IO.FileSystemAclExtensions]::Create($directory, $security)
+    $null = Assert-NoReparseAncestors $fullPath
+    $directory.Refresh()
+    if (-not $directory.Exists -or
+        ($directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "product-private test path is not a regular directory: $fullPath"
+    }
+    $ownerSecurity = [IO.FileSystemAclExtensions]::GetAccessControl(
+        $directory,
+        [Security.AccessControl.AccessControlSections]::Owner
+    )
+    $owner = $ownerSecurity.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($null -eq $owner -or -not $owner.Equals($identity.User)) {
+        throw 'product-private test directory is not owned by the current Windows identity'
+    }
+}
+
 function Initialize-WindowsNativeTestEnvironment([string]$Root) {
     Set-CurrentUserAsDefaultOwner
     $safeRoot = Assert-SafeStateRoot $Root
@@ -7240,6 +7292,9 @@ function Invoke-Contract {
     $officialWindsurfConfig = Join-Path $realProfile '.codeium\windsurf\hooks.json'
     $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
+        if ($disposableGithubRunner) {
+            Set-CurrentUserAsDefaultOwner
+        }
         foreach ($path in @(
             $contractHome,
             (Join-Path $contractHome 'AppData\Roaming'),
@@ -7249,14 +7304,15 @@ function Invoke-Contract {
             $claudeHome,
             $copilotHome,
             $ampHome,
-            $ampPluginDir,
             $cursorHome,
             $hermesHome,
-            $openCodeHome,
-            $openCodePluginDir
+            $openCodeHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
             Protect-TestDirectory $path
+        }
+        foreach ($path in @($ampPluginDir, $openCodePluginDir)) {
+            New-ProductPrivateTestDirectory $path
         }
         # Setup records the trusted connector homes in installed state. The
         # launcher intentionally rejects later ambient overrides.
@@ -7275,7 +7331,6 @@ function Invoke-Contract {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
         }
         if ($disposableGithubRunner) {
-            Set-CurrentUserAsDefaultOwner
             $agentFixtures = New-WizardAgentFixtures $root
             $fixtureSearchPath = [string]$agentFixtures.SearchPath
         }

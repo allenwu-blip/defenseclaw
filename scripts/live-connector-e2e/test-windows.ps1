@@ -3044,16 +3044,44 @@ private-secret-name = "DefenseClaw must remain redacted"
         $contractFunction,
         '(?s)foreach \(\$path in @\((?<paths>.*?)\)\) \{\s*\[IO\.Directory\]::CreateDirectory\(\$path\)'
     )
+    $productPrivateProvisioning = [regex]::Match(
+        $contractFunction,
+        '(?s)foreach \(\$path in @\(\$ampPluginDir, \$openCodePluginDir\)\) \{\s*New-ProductPrivateTestDirectory \$path'
+    )
+    $productPrivateDirectoryFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function New-ProductPrivateTestDirectory\b.*?\n\}'
+    ).Value
     Assert-True ($contractProfileProvisioning.Success -and
         $contractProfileProvisioning.Groups['paths'].Value -match '\$ampHome' -and
-        $contractProfileProvisioning.Groups['paths'].Value -match '\$ampPluginDir' -and
-        $contractProfileProvisioning.Groups['paths'].Value -match '\$openCodePluginDir' -and
-        $contractProfileProvisioning.Groups['paths'].Value -match '\$cursorHome') `
-        'connector contract privately provisions Amp/OpenCode plugin directories and the profile-relative Cursor home'
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$openCodeHome' -and
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$cursorHome' -and
+        $contractProfileProvisioning.Groups['paths'].Value -notmatch '\$ampPluginDir|\$openCodePluginDir' -and
+        $productPrivateProvisioning.Success) `
+        'connector contract isolates Amp/OpenCode plugin leaves from general test-directory provisioning'
+    Assert-True ($productPrivateDirectoryFunction -match 'Assert-NoReparseAncestors' -and
+        $productPrivateDirectoryFunction -match 'not owned by the current Windows identity' -and
+        $productPrivateDirectoryFunction -match 'SetAccessRuleProtection\(\$true, \$false\)' -and
+        $productPrivateDirectoryFunction -match 'foreach \(\$sid in @\(\$identity\.User, \$system\)\)' -and
+        $productPrivateDirectoryFunction -match 'FileSystemAclExtensions\]::Create\(\$directory, \$security\)' -and
+        $productPrivateDirectoryFunction -notmatch 'S-1-5-32-544') `
+        'product-private connector leaves are atomically created with only current-user/SYSTEM writers and custody/reparse checks'
     $contractInstall = $contractFunction.IndexOf(
         'Invoke-WindowsSetupStandardUserProcess $setup',
         [StringComparison]::Ordinal
     )
+    $contractOwnerPin = $contractFunction.IndexOf(
+        'Set-CurrentUserAsDefaultOwner',
+        [StringComparison]::Ordinal
+    )
+    $productPrivateCreate = $contractFunction.IndexOf(
+        'New-ProductPrivateTestDirectory $path',
+        [StringComparison]::Ordinal
+    )
+    Assert-True ($contractOwnerPin -ge 0 -and
+        $contractOwnerPin -lt $productPrivateCreate -and
+        $productPrivateCreate -lt $contractInstall) `
+        'connector contract pins disposable hosted ownership before product-private leaves and native Setup'
     Assert-True ($nativeHarnessText -match 'Join-Path \$realProfile ''\.defenseclaw-ci-contract''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''codex-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''claude-home''' -and

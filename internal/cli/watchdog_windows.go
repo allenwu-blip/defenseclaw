@@ -468,6 +468,36 @@ func inspectWatchdogCanonical(path string) (windowsWatchdogPIDState, error) {
 	return windowsWatchdogPIDState{exists: true, info: info, readErr: readErr}, nil
 }
 
+// watchdogStartPublicationReady passively waits for the expected canonical
+// PID record before the launcher probes the stable lifetime lock. A lock probe
+// can briefly acquire an as-yet-unowned byte; doing that while the child is
+// between creating .watchdog.lock and LockFileEx can make the child lose its
+// own startup race. This read is synchronization only. The caller still
+// requires held ownership and a verified process identity before reporting
+// readiness.
+func watchdogStartPublicationReady(path string, expectedPID int) (bool, error) {
+	f, exists, err := openPrivateWatchdogFile(
+		path,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+	)
+	if err != nil || !exists {
+		return false, err
+	}
+	defer f.Close()
+	info, err := readWatchdogPIDInfoFile(f)
+	if err != nil {
+		return false, err
+	}
+	if info.PID != expectedPID {
+		return false, fmt.Errorf("published PID belongs to %d, expected %d", info.PID, expectedPID)
+	}
+	if !verifyWatchdogProcess(info) {
+		return false, fmt.Errorf("published PID %d lacks a verified process identity", expectedPID)
+	}
+	return true, nil
+}
+
 func watchdogOwnershipLocked(path string) (bool, bool, error) {
 	f, exists, err := openPrivateWatchdogFile(
 		path,

@@ -3917,25 +3917,65 @@ def _run_cursor_windows_runtime_process(
                 pass
             raise
 
+        communication: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+        def communicate() -> None:
+            try:
+                value: tuple[str, object] = ("result", process.communicate())
+            except BaseException as exc:
+                value = ("error", exc)
+            try:
+                communication.put_nowait(value)
+            except queue.Full:
+                pass
+
+        # Drain both pipes while the root runs so bounded output cannot fill a
+        # Windows pipe and prevent process exit. Pipe EOF is not the completion
+        # boundary: a descendant can retain an inherited handle after the
+        # PowerShell/adapter root has returned its authenticated response.
+        communicator = threading.Thread(
+            target=communicate,
+            name="defenseclaw-cursor-runtime-output",
+            daemon=True,
+        )
+        communicator.start()
+        timed_out = False
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            try:
-                reaped = job.terminate_sync(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
-            except OSError as cleanup_exc:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+
+        # Closing the kill-on-close job would apply the same cleanup in the
+        # outer finally block, but do it synchronously here so inherited pipe
+        # handles are released before collecting the bounded probe evidence.
+        try:
+            reaped = job.terminate_sync(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+        except OSError as cleanup_exc:
+            if timed_out:
                 raise OSError("could not terminate timed-out Cursor runtime probe tree") from cleanup_exc
-            if not reaped:
+            raise OSError("could not terminate completed Cursor runtime probe descendants") from cleanup_exc
+        if not reaped:
+            if timed_out:
                 raise OSError("timed-out Cursor runtime probe tree did not terminate")
-            try:
-                stdout, stderr = process.communicate(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
-            except subprocess.TimeoutExpired as cleanup_exc:
+            raise OSError("completed Cursor runtime probe descendants did not terminate")
+
+        try:
+            kind, payload = communication.get(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+        except queue.Empty as cleanup_exc:
+            if timed_out:
                 raise OSError("could not reap timed-out Cursor runtime probe") from cleanup_exc
-            raise subprocess.TimeoutExpired(
-                argv,
-                timeout,
-                output=stdout if stdout is not None else exc.output,
-                stderr=stderr if stderr is not None else exc.stderr,
-            ) from None
+            raise OSError("could not drain completed Cursor runtime probe output") from cleanup_exc
+        if kind == "error":
+            if isinstance(payload, BaseException):
+                raise payload
+            raise OSError("Cursor runtime probe output reader failed")
+        if not isinstance(payload, tuple) or len(payload) != 2:
+            raise OSError("Cursor runtime probe output reader returned an invalid result")
+        stdout, stderr = payload
+        if timed_out:
+            # A timed-out root never becomes a successful runtime proof merely
+            # because cleanup recovered JSON from its output pipes.
+            raise subprocess.TimeoutExpired(argv, timeout, output=stdout, stderr=stderr)
         return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
     finally:
         if job is not None:
