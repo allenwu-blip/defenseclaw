@@ -2825,6 +2825,9 @@ private-secret-name = "DefenseClaw must remain redacted"
                 $doctorSetupContract `
                 $wizardHookValidation.Replace($ampAuthorizationMarker, ''))) `
         'Amp authentication predicate rejects a wizard validator missing the bearer marker'
+    Assert-True ($doctorSetupContract -match '\$expectedAmpFailMode\s*=\s*if\s*\(\$script:LastSetupMode\s*-eq\s*''action''\)\s*\{\s*''closed''\s*\}\s*else\s*\{\s*''open''\s*\}' -and
+        $doctorSetupContract -match 'const DC_FAIL_MODE: string = .*expectedAmpFailMode') `
+        'Amp setup validator binds the generated plugin fail mode to the requested setup posture'
     foreach ($marker in @(
         'const DC_FAIL_MODE: string = "closed"',
         'const DC_TIMEOUT_MS = 10000',

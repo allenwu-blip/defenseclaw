@@ -5128,6 +5128,7 @@ function Assert-DoctorHookRegistration {
         $codexCommand = Get-CodexWindowsHookCommand $registration
         Assert-CodexSynchronousWindowsHookCommand $codexCommand 'setup-created Codex registration'
     } elseif ($Connector -eq 'amp') {
+        $expectedAmpFailMode = if ($script:LastSetupMode -eq 'action') { 'closed' } else { 'open' }
         foreach ($marker in @(
             'DefenseClaw Amp policy bridge',
             '/api/v1/amp/hook',
@@ -5136,7 +5137,7 @@ function Assert-DoctorHookRegistration {
             'amp.on("tool.call"',
             'amp.on("tool.result"',
             'amp.on("agent.end"',
-            'const DC_FAIL_MODE: string = "closed"',
+            "const DC_FAIL_MODE: string = `"$expectedAmpFailMode`"",
             'const DC_TIMEOUT_MS = 10000',
             'new AbortController()',
             'ctx.ui.confirm',
