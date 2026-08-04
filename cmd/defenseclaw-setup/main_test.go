@@ -328,6 +328,115 @@ func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
 	}
 }
 
+func TestConfiguredSetupWatchdogEnabledDefaultsAndOverride(t *testing.T) {
+	dataRoot := t.TempDir()
+	enabled, err := configuredSetupWatchdogEnabled(dataRoot)
+	if err != nil || !enabled {
+		t.Fatalf("missing canonical config watchdog enabled = %v, error = %v", enabled, err)
+	}
+
+	configPath := filepath.Join(dataRoot, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("gateway:\n  watchdog:\n    enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err = configuredSetupWatchdogEnabled(dataRoot)
+	if err != nil || enabled {
+		t.Fatalf("explicitly disabled watchdog enabled = %v, error = %v", enabled, err)
+	}
+
+	if err := os.WriteFile(configPath, []byte("gateway:\n  watchdog: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err = configuredSetupWatchdogEnabled(dataRoot)
+	if err != nil || !enabled {
+		t.Fatalf("defaulted watchdog enabled = %v, error = %v", enabled, err)
+	}
+}
+
+func TestConfiguredSetupWatchdogEnabledRejectsUnsafeStructureWithoutValueLeak(t *testing.T) {
+	privateValue := "private-synthetic-watchdog-value"
+	for _, test := range []struct {
+		name        string
+		config      string
+		wantMessage string
+	}{
+		{
+			name:        "malformed",
+			config:      "private_field: " + privateValue + "\ngateway: [\n",
+			wantMessage: "invalid YAML",
+		},
+		{
+			name: "multiple documents",
+			config: "private_field: " + privateValue + "\ngateway: {}\n---\n" +
+				"gateway:\n  watchdog:\n    enabled: false\n",
+			wantMessage: "document count",
+		},
+		{
+			name: "alias",
+			config: "private_field: " + privateValue + "\ndefault_enabled: &default_enabled false\n" +
+				"gateway:\n  watchdog:\n    enabled: *default_enabled\n",
+			wantMessage: "must not use an alias",
+		},
+		{
+			name: "duplicate",
+			config: "private_field: " + privateValue + "\ngateway:\n  watchdog:\n" +
+				"    enabled: true\n    enabled: false\n",
+			wantMessage: "duplicate enabled field",
+		},
+		{
+			name:        "non boolean",
+			config:      "gateway:\n  watchdog:\n    enabled: " + privateValue + "\n",
+			wantMessage: "not a boolean",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataRoot := t.TempDir()
+			configPath := filepath.Join(dataRoot, "config.yaml")
+			if err := os.WriteFile(configPath, []byte(test.config), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := configuredSetupWatchdogEnabled(dataRoot)
+			if err == nil || !strings.Contains(err.Error(), test.wantMessage) {
+				t.Fatalf("unsafe watchdog configuration error = %v", err)
+			}
+			if strings.Contains(err.Error(), privateValue) {
+				t.Fatal("watchdog configuration error leaked a configuration value")
+			}
+		})
+	}
+}
+
+func TestConfiguredInstallServicesRequiresEnabledWatchdog(t *testing.T) {
+	dataRoot := t.TempDir()
+	wanted, err := configuredInstallServices(
+		serviceState{Gateway: true},
+		dataRoot,
+	)
+	if err != nil || !wanted.Gateway || !wanted.Watchdog {
+		t.Fatalf("fresh Copilot services = %+v, error = %v", wanted, err)
+	}
+
+	configPath := filepath.Join(dataRoot, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("gateway:\n  watchdog:\n    enabled: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wanted, err = configuredInstallServices(
+		serviceState{Gateway: true},
+		dataRoot,
+	)
+	if err != nil || !wanted.Gateway || wanted.Watchdog {
+		t.Fatalf("watchdog-disabled Copilot services = %+v, error = %v", wanted, err)
+	}
+
+	wanted, err = configuredInstallServices(
+		serviceState{Gateway: true, Watchdog: true},
+		dataRoot,
+	)
+	if err != nil || !wanted.Watchdog {
+		t.Fatalf("previously running watchdog was not preserved: %+v, error = %v", wanted, err)
+	}
+}
+
 func TestCanonicalInitializationUsesExplicitNoConnectorAuthority(t *testing.T) {
 	args := initialConfigurationArgs(options{Connector: "none", Mode: "observe"})
 	want := []string{

@@ -3187,7 +3187,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $copilotLiveJob -match '-ExpectedAgentVersion' -and
         [regex]::Matches($copilotLiveJob, '-Operation cleanup').Count -eq 1) `
         'Copilot workflow installs the exact task-local client and binds run/package/source/artifact/workflow/client identities into one cleanup-protected invocation'
-    Assert-True ($liveWorkflowText -match 'connector: \[codex, claudecode, cursor, opencode\]' -and
+    Assert-True ($liveWorkflowText -match 'connector: \[codex, claudecode, amp, cursor, opencode\]' -and
         $liveWorkflowText -match 'needs: \[contract-matrix, live-matrix, windows-live, windows-copilot-live,') `
         'Copilot is excluded from the generic Windows matrix and included only through the protected report dependency'
     $workflowText = $nativeWorkflowText + "`n" + $liveWorkflowText

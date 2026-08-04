@@ -269,6 +269,12 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		// even when it was stopped before repair.
 		targetServices.Gateway = true
 	}
+	if action == "install" {
+		targetServices, err = configuredInstallServices(targetServices, dataRoot)
+		if err != nil {
+			return setupTransaction{}, err
+		}
+	}
 	if action == "uninstall" {
 		targetServices = serviceState{}
 	}

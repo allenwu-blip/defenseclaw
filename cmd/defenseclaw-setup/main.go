@@ -916,6 +916,72 @@ func requestedServices(opts options, previous serviceState) serviceState {
 	}
 }
 
+func configuredSetupWatchdogEnabled(dataRoot string) (bool, error) {
+	data, exists, err := readBoundedNativeStateFile(
+		filepath.Join(dataRoot, "config.yaml"),
+		nativeConfigRosterLimit,
+	)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		// Canonical initialization creates a schema-v8 configuration with the
+		// watchdog enabled by default. Record that service in the transaction
+		// before publication so a failed gateway auto-start cannot be mistaken
+		// for successful runtime convergence.
+		return true, nil
+	}
+
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return false, fmt.Errorf("parse watchdog configuration: invalid YAML")
+	}
+	var extra yaml.Node
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("parse watchdog configuration: invalid YAML document count")
+	}
+	root, err := nativeYAMLMappingRoot(&document)
+	if err != nil {
+		return false, err
+	}
+	gateway, err := nativeYAMLMappingChild(root, "gateway")
+	if err != nil || gateway == nil {
+		return true, err
+	}
+	watchdog, err := nativeYAMLMappingChild(gateway, "watchdog")
+	if err != nil || watchdog == nil {
+		return true, err
+	}
+	enabledNode, err := nativeYAMLChild(watchdog, "enabled")
+	if err != nil || enabledNode == nil {
+		return true, err
+	}
+	if enabledNode.Kind == yaml.AliasNode || enabledNode.Alias != nil {
+		return false, fmt.Errorf("watchdog enabled field must not use an alias")
+	}
+	if enabledNode.Kind != yaml.ScalarNode || enabledNode.Tag != "!!bool" {
+		return false, fmt.Errorf("watchdog enabled field is not a boolean")
+	}
+	var enabled bool
+	if err := enabledNode.Decode(&enabled); err != nil {
+		return false, fmt.Errorf("watchdog enabled field is not a boolean")
+	}
+	return enabled, nil
+}
+
+func configuredInstallServices(wanted serviceState, dataRoot string) (serviceState, error) {
+	if !wanted.Gateway {
+		return wanted, nil
+	}
+	watchdogEnabled, err := configuredSetupWatchdogEnabled(dataRoot)
+	if err != nil {
+		return serviceState{}, fmt.Errorf("read configured watchdog service target: %w", err)
+	}
+	wanted.Watchdog = wanted.Watchdog || watchdogEnabled
+	return wanted, nil
+}
+
 func connectorsForNativeUninstall(state *installState, dataRoot string) ([]string, error) {
 	seen := map[string]bool{}
 	connectors := make([]string, 0, len(nativeLifecycleConnectorNames))
