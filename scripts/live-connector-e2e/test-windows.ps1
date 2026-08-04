@@ -1806,12 +1806,15 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupAcceptanceFunction -match 'Remove-WizardAgentFixtures' -and
         $setupAcceptanceFunction -notmatch 'DEFENSECLAW_TRUSTED_BIN_PREFIXES') `
         'interactive Setup acceptance owns and cleans built-in-root fixtures without environment trust authority'
-    Assert-True ($setupAcceptanceFunction -match "(?s)'setup', 'claude-code', '--yes', '--no-restart'.*?'setup', 'amp', '--yes', '--no-restart'" -and
-        $setupAcceptanceFunction -match 'foreach \(\$expectedConnector in @\(''codex'', ''claudecode'', ''amp''\)\)' -and
-        $setupAcceptanceFunction -match 'connectors:\r?\n\s+amp: \{\}' -and
-        $setupAcceptanceFunction -match '\{"amp", "codex", "claudecode"\}' -and
-        $setupAcceptanceFunction -match 'foreach \(\$configuredConnector in @\(''codex'', ''claudecode'', ''amp''\)\)') `
-        'packaged Setup preserves, migrates, and uninstalls the complete Codex, Claude Code, and Amp roster'
+    Assert-True ($setupAcceptanceFunction -match "(?s)'setup', 'claude-code', '--yes', '--no-restart'.*?'setup', 'amp', '--yes', '--no-restart'.*?'setup', 'cursor', '--yes', '--no-restart'" -and
+        $setupAcceptanceFunction -match 'foreach \(\$expectedConnector in @\(''codex'', ''claudecode'', ''amp'', ''cursor''\)\)' -and
+        $setupAcceptanceFunction -match '(?s)connectors:\r?\n\s+amp: \{\}\r?\n\s+codex: \{\}\r?\n\s+claudecode: \{\}\r?\n\s+cursor: \{\}' -and
+        $setupAcceptanceFunction -match '\{"amp", "codex", "claudecode", "cursor"\}' -and
+        $setupAcceptanceFunction.Contains('if ((@($repairedRoster | Sort-Object) -join "`0") -cne (@($roster | Sort-Object) -join "`0"))') -and
+        $setupAcceptanceFunction -match 'Assert-NativeConnectorCleanupAuthorityPresent \$dataRoot \$repairedRoster' -and
+        $setupAcceptanceFunction -match 'Assert-NativeConnectorBackupMarkersConsumed \$dataRoot' -and
+        $setupAcceptanceFunction -match 'foreach \(\$configuredConnector in @\(''codex'', ''claudecode'', ''amp'', ''copilot'', ''cursor'', ''windsurf'', ''antigravity''\)\)') `
+        'packaged Setup preserves and migrates the exact staged connector roster with complete supported cleanup custody'
     Assert-True ($setupAcceptanceFunction -match '\$cachedSetup' -and
         $setupAcceptanceFunction -match 'Join-Path \$cacheRoot ''DefenseClawSetup-x64\.exe''' -and
         $setupAcceptanceFunction -match '-AllowedExitCodes @\(3010\)' -and

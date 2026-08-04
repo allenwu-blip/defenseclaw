@@ -85,7 +85,10 @@ func main() {
             stdout=output,
             stderr=subprocess.STDOUT,
             check=False,
-            timeout=60,
+            # Hosted Windows can spend over a minute scheduling and priming a
+            # cold Go cache. Keep the build bounded with the allowance used by
+            # other native one-file test fixtures.
+            timeout=180,
         )
     assert completed.returncode == 0, build_log.read_text(encoding="utf-8", errors="replace")
     return binary

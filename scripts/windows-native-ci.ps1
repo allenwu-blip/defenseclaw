@@ -502,6 +502,165 @@ function Get-WindowsNativeJsonString([object]$Object, [string]$Name) {
     return [string]$property.Value
 }
 
+function ConvertFrom-WindowsNativeDoctorJson([object]$Result, [string]$Context) {
+    if ($null -eq $Result) { throw "$Context returned no process result" }
+
+    $exitCode = Get-WindowsNativeJsonString $Result 'ExitCode'
+    $stderr = Limit-WindowsNativeText (Get-WindowsNativeJsonString $Result 'StdErr') 4096
+    if ([string]::IsNullOrWhiteSpace($stderr)) { $stderr = '(empty)' }
+    $diagnostic = "process exit code ${exitCode}; bounded stderr: $stderr"
+    $stdoutProperty = $Result.PSObject.Properties['StdOut']
+    if ($null -eq $stdoutProperty -or
+        [string]::IsNullOrWhiteSpace([string]$stdoutProperty.Value)) {
+        throw "$Context emitted no Doctor JSON on stdout; $diagnostic"
+    }
+
+    try {
+        $document = [string]$stdoutProperty.Value | ConvertFrom-Json -NoEnumerate -ErrorAction Stop
+    } catch {
+        throw "$Context emitted invalid Doctor JSON: $($_.Exception.Message); $diagnostic"
+    }
+    if ($null -eq $document -or $document -isnot [pscustomobject]) {
+        throw "$Context must emit one Doctor v2 JSON object; $diagnostic"
+    }
+
+    foreach ($name in @(
+        'schema_version', 'run_id', 'mode', 'passive', 'outcome', 'exit_code',
+        'passed', 'failed', 'warned', 'skipped', 'summary', 'checks',
+        'repair_summary', 'repairs'
+    )) {
+        if ($null -eq $document.PSObject.Properties[$name]) {
+            throw "$Context Doctor v2 JSON is missing '$name'; $diagnostic"
+        }
+    }
+    $schemaVersion = 0
+    if ($document.schema_version -is [string] -or
+        -not [int]::TryParse([string]$document.schema_version, [ref]$schemaVersion) -or
+        $schemaVersion -ne 2) {
+        throw "$Context did not emit Doctor schema_version 2; $diagnostic"
+    }
+    if ($document.summary -isnot [pscustomobject] -or
+        $document.repair_summary -isnot [pscustomobject] -or
+        $document.checks -isnot [array] -or
+        $document.repairs -isnot [array]) {
+        throw "$Context Doctor v2 JSON has invalid summary/check/repair containers; $diagnostic"
+    }
+    if (@($document.checks).Count -eq 0) {
+        throw "$Context Doctor v2 JSON contains no health checks; $diagnostic"
+    }
+
+    foreach ($name in @('passed', 'failed', 'warned', 'skipped')) {
+        $topProperty = $document.PSObject.Properties[$name]
+        $summaryProperty = $document.summary.PSObject.Properties[$name]
+        $topValue = 0
+        $summaryValue = 0
+        if ($null -eq $summaryProperty -or
+            $topProperty.Value -is [string] -or $summaryProperty.Value -is [string] -or
+            -not [int]::TryParse([string]$topProperty.Value, [ref]$topValue) -or
+            -not [int]::TryParse([string]$summaryProperty.Value, [ref]$summaryValue) -or
+            $topValue -lt 0 -or $summaryValue -lt 0 -or $topValue -ne $summaryValue) {
+            throw "$Context Doctor v2 JSON has inconsistent '$name' counters; $diagnostic"
+        }
+    }
+    foreach ($check in @($document.checks)) {
+        if ($null -eq $check -or $check -isnot [pscustomobject] -or
+            $null -eq $check.PSObject.Properties['status'] -or
+            $null -eq $check.PSObject.Properties['label'] -or
+            $null -eq $check.PSObject.Properties['detail'] -or
+            [string]::IsNullOrWhiteSpace([string]$check.label) -or
+            [string]$check.status -notin @('pass', 'fail', 'warn', 'skip')) {
+            throw "$Context Doctor v2 JSON contains an invalid health-check row; $diagnostic"
+        }
+    }
+
+    $payloadExitCode = -1
+    $processExitCode = -1
+    if ($document.exit_code -is [string] -or
+        -not [int]::TryParse([string]$document.exit_code, [ref]$payloadExitCode) -or
+        -not [int]::TryParse($exitCode, [ref]$processExitCode) -or
+        $payloadExitCode -notin @(0, 1) -or $payloadExitCode -ne $processExitCode) {
+        throw "$Context Doctor v2 exit_code disagrees with the process result; $diagnostic"
+    }
+    return $document
+}
+
+function Test-WindowsNativeDoctorJsonParser {
+    $healthyPayload = [ordered]@{
+        schema_version = 2
+        run_id = 'doctor-parser-fixture'
+        mode = 'check'
+        passive = $false
+        outcome = 'healthy'
+        exit_code = 0
+        passed = 1
+        failed = 0
+        warned = 0
+        skipped = 0
+        summary = [ordered]@{ passed = 1; failed = 0; warned = 0; skipped = 0 }
+        checks = @([ordered]@{ status = 'pass'; label = 'Fixture'; detail = 'healthy' })
+        repair_summary = [ordered]@{}
+        repairs = @()
+    }
+    $healthyResult = [pscustomobject]@{
+        ExitCode = 0
+        StdOut = $healthyPayload | ConvertTo-Json -Compress -Depth 6
+        StdErr = ''
+    }
+    $healthy = ConvertFrom-WindowsNativeDoctorJson $healthyResult 'healthy fixture'
+    if (@($healthy.checks).Count -ne 1 -or [string]$healthy.checks[0].status -ne 'pass') {
+        throw 'Doctor JSON parser did not preserve a healthy check row'
+    }
+
+    $failedPayload = [ordered]@{} + $healthyPayload
+    $failedPayload.outcome = 'failed'
+    $failedPayload.exit_code = 1
+    $failedPayload.passed = 0
+    $failedPayload.failed = 1
+    $failedPayload.summary = [ordered]@{ passed = 0; failed = 1; warned = 0; skipped = 0 }
+    $failedPayload.checks = @([ordered]@{ status = 'fail'; label = 'Fixture'; detail = 'unhealthy' })
+    $failedResult = [pscustomobject]@{
+        ExitCode = 1
+        StdOut = $failedPayload | ConvertTo-Json -Compress -Depth 6
+        StdErr = ''
+    }
+    $failed = ConvertFrom-WindowsNativeDoctorJson $failedResult 'failed fixture'
+    if ([int]$failed.failed -ne 1 -or [string]$failed.checks[0].status -ne 'fail') {
+        throw 'Doctor JSON parser did not preserve a failed check row'
+    }
+
+    $stderrMarker = 'fixture Doctor child failed before JSON'
+    $emptyFailedLoud = $false
+    try {
+        ConvertFrom-WindowsNativeDoctorJson ([pscustomobject]@{
+            ExitCode = 1
+            StdOut = ''
+            StdErr = $stderrMarker
+        }) 'empty fixture' | Out-Null
+    } catch {
+        $emptyFailedLoud = $_.Exception.Message.Contains('no Doctor JSON') -and
+            $_.Exception.Message.Contains($stderrMarker)
+    }
+    if (-not $emptyFailedLoud) {
+        throw 'Doctor JSON parser did not expose bounded stderr for empty stdout'
+    }
+
+    foreach ($stdout in @('{}', '[]', 'null')) {
+        $invalidRejected = $false
+        try {
+            ConvertFrom-WindowsNativeDoctorJson ([pscustomobject]@{
+                ExitCode = 1
+                StdOut = $stdout
+                StdErr = 'invalid fixture stderr'
+            }) 'invalid fixture' | Out-Null
+        } catch {
+            $invalidRejected = $_.Exception.Message.Contains('bounded stderr')
+        }
+        if (-not $invalidRejected) {
+            throw "Doctor JSON parser accepted an invalid top-level payload: $stdout"
+        }
+    }
+}
+
 function Get-GoTestFailureSummary(
     [AllowNull()][string]$Text,
     [int]$MaxBytes = 262144
@@ -1778,14 +1937,7 @@ function Assert-PackagedDoctorSmoke([string]$CliShim, [string]$Logs) {
     # not an artificially green result before lifecycle acceptance starts it.
     $doctor = Invoke-Installed $CliShim @('doctor', '--json-output') @(0, 1) 300 `
         (Join-Path $Logs 'doctor.json')
-    try { $report = $doctor.StdOut | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "packaged doctor did not emit valid JSON: $($_.Exception.Message)" }
-    if ($null -eq $report.checks -or @($report.checks).Count -eq 0) {
-        throw 'packaged doctor emitted no health checks'
-    }
-    if (($doctor.ExitCode -eq 0) -ne ([int]$report.failed -eq 0)) {
-        throw 'packaged doctor exit code disagrees with its failed-check count'
-    }
+    ConvertFrom-WindowsNativeDoctorJson $doctor 'packaged doctor' | Out-Null
 }
 
 function Get-ManagedProcessIdentity([string]$DataDir, [string]$PIDFileName) {
@@ -4514,8 +4666,7 @@ function Assert-WizardCodexLegacyLauncherNeedsRepair(
     Set-WizardCodexLegacyNonWaitingHook $Specification
     $doctorResult = Invoke-Installed $Launcher @('doctor', '--json-output') @(0, 1) 300 `
         (Join-Path $Logs 'wizard-codex-legacy-launcher-doctor.json')
-    try { $doctor = $doctorResult.StdOut | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "legacy-launcher doctor did not emit valid JSON: $($_.Exception.Message)" }
+    $doctor = ConvertFrom-WindowsNativeDoctorJson $doctorResult 'legacy-launcher doctor'
     $hookRows = @($doctor.checks | Where-Object {
         [string]::Equals([string]$_.label, $Specification.DoctorLabel, [StringComparison]::Ordinal)
     })
@@ -4548,8 +4699,7 @@ function Assert-WizardConnectorHealth(
 
     $doctorResult = Invoke-Installed $Launcher @('doctor', '--json-output') @(0, 1) 300 `
         (Join-Path $Logs "wizard-$($Specification.Connector)-$Phase-doctor.json")
-    try { $doctor = $doctorResult.StdOut | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "wizard doctor did not emit valid JSON: $($_.Exception.Message)" }
+    $doctor = ConvertFrom-WindowsNativeDoctorJson $doctorResult 'wizard doctor'
     $hookRows = @($doctor.checks | Where-Object {
         [string]::Equals([string]$_.label, $Specification.DoctorLabel, [StringComparison]::Ordinal)
     })
@@ -5981,8 +6131,7 @@ function Assert-WindowsReleaseDoctorRows(
 ) {
     $doctor = Invoke-WindowsNativeProcess $Launcher @('doctor', '--json-output') `
         -TimeoutSeconds 300 -LogPath (Join-Path $Logs 'release-doctor-after-maintenance.json')
-    try { $report = $doctor.StdOut | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "installed Doctor returned invalid JSON after repair/upgrade: $($_.Exception.Message)" }
+    $report = ConvertFrom-WindowsNativeDoctorJson $doctor 'installed Doctor after repair/upgrade'
     foreach ($expectation in @(
         [pscustomobject]@{
             Label = 'Codex hooks'
@@ -7327,6 +7476,7 @@ function Invoke-Cleanup {
 
 function Invoke-SelfTest {
     Assert-NativeWindowsX64
+    Test-WindowsNativeDoctorJsonParser
     $root = Assert-SafeStateRoot $StateRoot
     $env:DC_WINDOWS_NATIVE_BASE_ROOT = $root
     $originalProfile = $env:USERPROFILE

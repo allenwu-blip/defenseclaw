@@ -1891,6 +1891,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
             "would start the enabled stopped watchdog",
         )
         with (
+            patch.object(cmd_doctor.sys, "platform", "win32"),
             patch.object(
                 cmd_doctor,
                 "_plan_canonical_config_preflight",
@@ -2005,6 +2006,7 @@ class DoctorFixDryRunTests(unittest.TestCase):
             "would start the enabled stopped watchdog",
         )
         with (
+            patch.object(cmd_doctor.sys, "platform", "win32"),
             patch.object(
                 cmd_doctor,
                 "_plan_canonical_config_preflight",
