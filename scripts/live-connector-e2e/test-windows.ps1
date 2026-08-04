@@ -2203,20 +2203,27 @@ private-secret-name = "DefenseClaw must remain redacted"
         $packageIdentity -match 'Assert-DisposableNoReparseAncestors' -and
         $packageIdentity -match 'ReparsePoint') `
         'authenticated Antigravity package lane pins provenance, bytes, protected DACL, and non-reparse custody'
-    Assert-True ($packageBootstrap -match "'CONNECTOR=none'" -and
+    Assert-True ($packageBootstrap -match "'CONNECTOR=antigravity'" -and
         $packageBootstrap -match "'MODE=action'" -and
         $packageBootstrap -match "'STARTGATEWAY=1'" -and
-        $packageBootstrap -match "(?s)'CONNECTOR=antigravity'.*?\) @\(2\) 'public-antigravity-rejection'" -and
+        $packageBootstrap -match "(?s)'CONNECTOR=antigravity'.*?\) @\(0\) 'public-antigravity-install'" -and
         ([regex]::Matches($packageBootstrap, "'CONNECTOR=antigravity'")).Count -eq 1 -and
         $packageBootstrap -match 'Assert-AuthenticatedAntigravityInstallState' -and
-        $harnessText -match "\[string\]\`$State\.connector -cne 'none'") `
-        'fresh exact Setup remains connector=none after the one explicit fail-closed public rejection probe'
+        $packageBootstrap -match 'Assert-AuthenticatedAntigravityPublicCLIAvailable' -and
+        $packageBootstrap -notmatch "'CONNECTOR=none'|public-antigravity-rejection|fresh-none-install" -and
+        $harnessText -match "\[string\]\`$State\.connector -cne 'antigravity'" -and
+        $harnessText -match "\[string\]\`$State\.mode -cne 'action'") `
+        'fresh exact Setup installs only connector=antigravity/action through the ordinary supported path'
     Assert-True (([regex]::Matches($packageBootstrap, "Write-Result 'package-setup:identity' pass")).Count -eq 1 -and
         $packageBootstrap -match 'Get-FileHash -LiteralPath \$script:PackagedSetupExecutable' -and
         $packageBootstrap -match '\.Hash\.ToLowerInvariant\(\)' -and
         $packageBootstrap -match 'package_source_commit=\$ExpectedPackageSourceCommit harness_source_commit=\$ExpectedHarnessSourceCommit installer_sha256=\$packagedSetupHash') `
         'authenticated results separately bind exact package and harness/workflow source commits plus recomputed lowercase installer SHA-256 once'
-    Assert-True ($packageBootstrap -match '(?s)Save-AntigravityOriginalConfig\s+Write-AuthenticatedAntigravityCleanupManifest \$paths.*?public-antigravity-rejection.*?Assert-AntigravityOriginalConfigRestored.*?fresh-none-install.*?Assert-AuthenticatedAntigravityInstallState.*?Assert-AntigravityOriginalConfigRestored' -and
+    Assert-True ($packageBootstrap -match '(?s)Save-AntigravityOriginalConfig\s+Write-AuthenticatedAntigravityCleanupManifest \$paths.*?public-antigravity-install.*?Assert-AuthenticatedAntigravityInstallState.*?Assert-PackagedAntigravityTrustedDiscovery.*?Assert-AuthenticatedAntigravityPublicCLIAvailable' -and
+        $packageBootstrap -notmatch 'public-antigravity-rejection|fresh-none-install|Assert-AntigravityOriginalConfigRestored' -and
+        $antigravitySupportedAvailability -match '\$stateBefore = \(Get-FileHash' -and
+        $antigravitySupportedAvailability -match '\$configBefore = \(Get-FileHash' -and
+        $antigravitySupportedAvailability -match '\$backupAfter -cne \$backupBefore' -and
         $hookFingerprint -match 'Assert-DisposableNoReparseAncestors' -and
         $hookFingerprint -match '-AllowedRoot \$Paths\.Profile' -and
         $hookFingerprint -match '(?s)Assert-DisposableNoReparseAncestors.*?\$exists = Test-Path' -and
@@ -2227,7 +2234,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $hookFingerprint -match 'GetGroup\(\[Security\.Principal\.SecurityIdentifier\]\)' -and
         $hookFingerprint -match 'GetSecurityDescriptorSddlForm' -and
         $hookFingerprint -match 'SecuritySHA256') `
-        'real Antigravity hook bytes and owner/group/DACL custody are captured before Setup and rechecked after rejection and connector=none install'
+        'real Antigravity hook custody is captured before supported Setup and idempotent public init rejects state, config, or backup mutation'
     Assert-True ($packageBootstrap -notmatch 'preflight-uninstall' -and
         $packageBootstrap -match 'Invoke-AuthenticatedAntigravityCleanup -PreserveRunInputs' -and
         $packageBootstrap -match 'refuses preexisting install/data without its matching protected cleanup manifest' -and
@@ -2947,12 +2954,29 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Initialize-ProtectedCopilotPackage\b.*?(?=\nfunction Assert-ProtectedCopilotConfiguredPosture\b)'
     ).Value
-    Assert-True ($protectedCopilotBootstrap -match "CONNECTOR=none" -and
-        $protectedCopilotBootstrap -match 'Assert-ProtectedCopilotPublicGate' -and
-        $protectedCopilotBootstrap -match "CONNECTOR=copilot" -and
-        $protectedCopilotBootstrap -match 'Assert-CopilotSynchronousWindowsHookConfig' -and
-        $protectedCopilotBootstrap -match "Write-Result 'copilot:hitl' skip") `
-        'protected Copilot package lane proves the public gate before the restricted 14-event Setup path and leaves HITL unclaimed'
+    $protectedCopilotInstallState = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-ProtectedCopilotInstallState\b.*?(?=\nfunction Set-ProtectedCopilotInstalledPath\b)'
+    ).Value
+    $protectedCopilotConfiguredPosture = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-ProtectedCopilotConfiguredPosture\b.*?(?=\nfunction Repair-ProtectedCopilotPackage\b)'
+    ).Value
+    Assert-True ($protectedCopilotBootstrap -match
+        "(?s)Save-ProtectedCopilotOriginalHook.*?Write-ProtectedCopilotCleanupManifest.*?Write-Result 'copilot:provenance' pass.*?Invoke-ProtectedCopilotSetup @\(.*?'CONNECTOR=copilot'.*?'MODE=action'.*?'STARTGATEWAY=0'.*?\) @\(0\) 'fresh-copilot-install'.*?Read-ProtectedCopilotInstallState.*?Assert-ProtectedCopilotInstallState .*? 'copilot' 'fresh protected Copilot package state'.*?Assert-CopilotSynchronousWindowsHookConfig.*?Set-ProtectedCopilotCleanupPhase 'configured'.*?Write-Result 'package-setup:copilot' pass.*?Write-Result 'copilot:hitl' skip" -and
+        $protectedCopilotInstallState -match
+        "(?s)\[int\]\`$State\.schema_version -lt 1.*?\[string\]\`$State\.install_kind -cne 'native-windows-exe'.*?\[string\]\`$State\.install_scope -cne 'user'.*?\[string\]\`$State\.distribution_flavor -cne 'oss'.*?\[string\]\`$State\.source_commit -cne \`$ExpectedPackageSourceCommit.*?\[string\]\`$State\.connector -cne \`$ExpectedConnector.*?\[string\]\`$State\.mode -cne 'action'" -and
+        $protectedCopilotInstallState -match 'install_root' -and
+        $protectedCopilotInstallState -match 'command_dir' -and
+        $protectedCopilotInstallState -match 'data_root' -and
+        $protectedCopilotInstallState -match 'runtime' -and
+        $protectedCopilotInstallState -match 'maintenance_path' -and
+        $protectedCopilotInstallState -match 'copilot_home' -and
+        $protectedCopilotConfiguredPosture -match
+        "(?s)\`$rows\.Count -ne 1.*?\`$copilot\.Count -ne 1.*?source -cne 'manual'.*?mode -cne 'action'.*?enabled.*?Assert-ProtectedCopilotInstallState .*? 'copilot'.*?Assert-ProtectedCopilotFingerprintEqual" -and
+        $protectedCopilotBootstrap -notmatch
+        'CONNECTOR=none|Assert-ProtectedCopilotPublicGate|public-copilot-rejection|not_certified|preview|native-setup-copilot') `
+        'protected Copilot package lane proves ordinary supported action Setup after custody, exact state and hook posture, no retired rejection/preview/bootstrap-bypass path, and leaves HITL unclaimed'
     Assert-True ($protectedCopilotBootstrap -match "Get-Process -Name 'defenseclaw-gateway', 'defenseclaw-watchdog'" -and
         $protectedCopilotBootstrap -match 'requires an absent DefenseClaw product baseline' -and
         $protectedCopilotBootstrap -match 'Save-ProtectedCopilotOriginalHook' -and
@@ -2965,8 +2989,11 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($protectedCopilotMaintenance -match "@\('/repair', '/quiet', '/norestart'\)" -and
         $protectedCopilotMaintenance -match "@\('/upgrade', '/quiet', '/norestart'\)" -and
         [regex]::Matches($protectedCopilotMaintenance, 'Assert-ProtectedCopilotConfiguredPosture').Count -eq 4 -and
+        [regex]::Matches($protectedCopilotMaintenance, '-ExpectedHookFingerprint \$fingerprint').Count -eq 4 -and
+        $protectedCopilotMaintenance -match 'no-override repair preserved exact source, Copilot home, action roster, and 14-event hook bytes' -and
+        $protectedCopilotMaintenance -match 'same-package no-override upgrade preserved exact source, Copilot home, action roster, and hook bytes' -and
         $protectedCopilotMaintenance -match 'copilot:restart-persistence') `
-        'protected Copilot lane proves repair, upgrade, status, restart, and exact hook persistence'
+        'protected Copilot lane proves idempotent no-override repair and upgrade plus status, restart, and exact hook persistence'
     $protectedCopilotCleanup = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-ProtectedCopilotCleanup\b.*?(?=\nfunction Install-Agent\b)'

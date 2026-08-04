@@ -22,7 +22,10 @@ const gatewayStartDiagnosticMaxBytes = 4 << 10
 
 func trustedNativeGatewayRecovery() func(context.Context, error) error {
 	executable := nativeHookExecutable()
-	state, recognized, err := hookruntime.ReadTrustedForExecutable(executable)
+	state, recognized, err, prepared := preparedNativeHookRuntime(executable)
+	if !prepared {
+		state, recognized, err = nativeHookRuntimeReader(executable)
+	}
 	if err != nil || !recognized || !state.ColdStartCapable() {
 		return nil
 	}

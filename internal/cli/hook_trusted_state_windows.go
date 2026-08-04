@@ -55,6 +55,23 @@ var nativeEnterpriseHookRuntimeSnapshot struct {
 	err        error
 }
 
+// preparedNativeHookRuntime returns the exact process-local admission result
+// already established by NativeHookRuntimeNoop. The stable/full-hook identity
+// and executable path must match; callers that do not enter through the native
+// launcher receive prepared=false and must perform their own trusted read.
+func preparedNativeHookRuntime(executable string) (hookruntime.State, bool, error, bool) {
+	nativeHookRuntimeSnapshot.Lock()
+	defer nativeHookRuntimeSnapshot.Unlock()
+	if !nativeHookRuntimeSnapshot.prepared ||
+		!sameWindowsHookPath(nativeHookRuntimeSnapshot.executable, executable) {
+		return hookruntime.State{}, false, nil, false
+	}
+	return nativeHookRuntimeSnapshot.state,
+		nativeHookRuntimeSnapshot.recognized,
+		nativeHookRuntimeSnapshot.err,
+		true
+}
+
 func nativeHookExecutable() string {
 	if hookExecutableOverride != "" {
 		return hookExecutableOverride

@@ -59,6 +59,41 @@ func TestTrustedGatewayStartCommandIsExactBoundAndWindowless(t *testing.T) {
 	}
 }
 
+func TestTrustedNativeGatewayRecoveryReusesPreparedHookRuntimeAdmission(t *testing.T) {
+	executable := filepath.Join(t.TempDir(), hookruntime.LauncherName)
+	previousExecutable := hookExecutableOverride
+	hookExecutableOverride = executable
+	t.Cleanup(func() { hookExecutableOverride = previousExecutable })
+
+	state := hookruntime.State{
+		SchemaVersion:  hookruntime.SchemaVersion,
+		Status:         hookruntime.StatusActive,
+		DataRoot:       filepath.Clean(t.TempDir()),
+		GatewayPath:    filepath.Join(t.TempDir(), hookruntime.GatewayName),
+		GatewaySHA256:  strings.Repeat("a", 64),
+		LauncherPath:   executable,
+		LauncherSHA256: strings.Repeat("b", 64),
+	}
+	reads := 0
+	stubNativeHookRuntimeReader(t, func(gotExecutable string) (hookruntime.State, bool, error) {
+		reads++
+		if gotExecutable != executable {
+			t.Fatalf("runtime reader executable = %q, want %q", gotExecutable, executable)
+		}
+		return state, true, nil
+	})
+
+	if NativeHookRuntimeNoop() {
+		t.Fatal("trusted active hook runtime was classified as a no-op")
+	}
+	if recovery := trustedNativeGatewayRecovery(); recovery == nil {
+		t.Fatal("prepared cold-start-capable runtime did not install recovery")
+	}
+	if reads != 1 {
+		t.Fatalf("trusted runtime admission reads = %d, want one process-local admission", reads)
+	}
+}
+
 func TestTrustedGatewayStartRunsPinnedNativeExecutableAndHonorsDeadline(t *testing.T) {
 	gateway := buildColdStartGatewayHelper(t)
 	digest := testFileSHA256(t, gateway)
