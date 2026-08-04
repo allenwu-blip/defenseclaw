@@ -5150,6 +5150,9 @@ function Assert-DoctorHookRegistration {
                 throw "setup-created Amp policy plugin is missing $marker"
             }
         }
+        if ($registration -match '(?i)defenseclaw-hook(?:\.exe|\.cmd)|\bwsl\b|\bbash\b|\bchmod\b') {
+            throw 'setup-created Amp policy plugin depends on a shell hook or compatibility layer'
+        }
         Assert-AmpPluginPrivateACL $config
     } elseif ($Connector -eq 'copilot') {
         Assert-CopilotSynchronousWindowsHookConfig $registration 'setup-created Copilot registration'

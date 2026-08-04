@@ -1810,7 +1810,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupAcceptanceFunction -match 'foreach \(\$expectedConnector in @\(''codex'', ''claudecode'', ''amp'', ''cursor''\)\)' -and
         $setupAcceptanceFunction -match '(?s)connectors:\r?\n\s+amp: \{\}\r?\n\s+codex: \{\}\r?\n\s+claudecode: \{\}\r?\n\s+cursor: \{\}' -and
         $setupAcceptanceFunction -match '\{"amp", "codex", "claudecode", "cursor"\}' -and
-        $setupAcceptanceFunction.Contains('if ((@($repairedRoster | Sort-Object) -join "`0") -cne (@($roster | Sort-Object) -join "`0"))') -and
+        $setupAcceptanceFunction -match '\$expectedRosterBeforeRepair = @\(''amp'', ''claudecode'', ''codex'', ''cursor''\)' -and
+        $setupAcceptanceFunction -match '(?s)if \(\(@\(\$rosterBeforeRepair \| Sort-Object\) -join "`0"\) -cne\s+\(@\(\$expectedRosterBeforeRepair \| Sort-Object\) -join "`0"\)\)' -and
+        $setupAcceptanceFunction -match '(?s)\$configHashBeforeRepair = \(Get-FileHash -LiteralPath \$configPath -Algorithm SHA256\)\.Hash.*?\$configHashAfterRepair = \(Get-FileHash -LiteralPath \$configPath -Algorithm SHA256\)\.Hash' -and
+        $setupAcceptanceFunction.Contains('if ($configHashAfterRepair -cne $configHashBeforeRepair)') -and
+        $setupAcceptanceFunction -match '(?s)if \(\(@\(\$repairedRoster \| Sort-Object\) -join "`0"\) -cne\s+\(@\(\$rosterBeforeRepair \| Sort-Object\) -join "`0"\)\)' -and
+        $setupAcceptanceFunction -notmatch '\(@\(\$roster \| Sort-Object\) -join "`0"\)\) \{' -and
         $setupAcceptanceFunction -match 'Assert-NativeConnectorCleanupAuthorityPresent \$dataRoot \$repairedRoster' -and
         $setupAcceptanceFunction -match 'Assert-NativeConnectorBackupMarkersConsumed \$dataRoot' -and
         $setupAcceptanceFunction -match 'foreach \(\$configuredConnector in @\(''codex'', ''claudecode'', ''amp'', ''copilot'', ''cursor'', ''windsurf'', ''antigravity''\)\)') `
@@ -2768,11 +2773,33 @@ private-secret-name = "DefenseClaw must remain redacted"
             $wizardHookValidation.Contains($marker)) `
             "Windows contracts require the Amp fail-safe marker: $marker"
     }
-    Assert-True ($doctorSetupContract.Contains('defenseclaw-hook(?:\.exe|\.cmd)') -and
-        $wizardHookValidation.Contains('defenseclaw-hook(?:\.exe|\.cmd)') -and
-        $doctorSetupContract.Contains('\bwsl\b|\bbash\b|\bchmod\b') -and
-        $wizardHookValidation.Contains('\bwsl\b|\bbash\b|\bchmod\b')) `
+    $ampNativeHookPattern = 'defenseclaw-hook(?:\.exe|\.cmd)'
+    $ampCompatibilityPattern = '\bwsl\b|\bbash\b|\bchmod\b'
+    $hasAmpShellRejectionContract = {
+        param([string]$SetupContract, [string]$WizardContract)
+        return $SetupContract.Contains($ampNativeHookPattern) -and
+            $SetupContract.Contains($ampCompatibilityPattern) -and
+            $WizardContract.Contains($ampNativeHookPattern) -and
+            $WizardContract.Contains($ampCompatibilityPattern)
+    }
+    Assert-True (& $hasAmpShellRejectionContract $doctorSetupContract $wizardHookValidation) `
         'Amp Windows setup and wizard contracts reject shell-hook compatibility layers'
+    Assert-True (-not (& $hasAmpShellRejectionContract `
+                $doctorSetupContract.Replace($ampNativeHookPattern, '') `
+                $wizardHookValidation)) `
+        'Amp shell rejection predicate rejects a setup validator missing the native-hook pattern'
+    Assert-True (-not (& $hasAmpShellRejectionContract `
+                $doctorSetupContract.Replace($ampCompatibilityPattern, '') `
+                $wizardHookValidation)) `
+        'Amp shell rejection predicate rejects a setup validator missing the compatibility pattern'
+    Assert-True (-not (& $hasAmpShellRejectionContract `
+                $doctorSetupContract `
+                $wizardHookValidation.Replace($ampNativeHookPattern, ''))) `
+        'Amp shell rejection predicate rejects a wizard validator missing the native-hook pattern'
+    Assert-True (-not (& $hasAmpShellRejectionContract `
+                $doctorSetupContract `
+                $wizardHookValidation.Replace($ampCompatibilityPattern, ''))) `
+        'Amp shell rejection predicate rejects a wizard validator missing the compatibility pattern'
     $ampACLContract = [regex]::Match(
         $harnessText,
         '(?s)function Assert-AmpPluginPrivateACL\b.*?(?=\r?\nfunction )'

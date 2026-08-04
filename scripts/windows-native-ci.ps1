@@ -5458,12 +5458,28 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp
         Invoke-Installed $gateway @('watchdog', 'start') -Timeout 90 -Log (Join-Path $logs 'setup-watchdog-start.log') | Out-Null
         Invoke-Installed $gateway @('status') -Timeout 30 | Out-Null
         Invoke-Installed $gateway @('watchdog', 'status') -Timeout 30 | Out-Null
+        $rosterBeforeRepairResult = Invoke-Installed $python @('-I', '-c', $rosterProbe) -Timeout 120 `
+            -Log (Join-Path $logs 'setup-connector-roster-before-repair.log')
+        $rosterBeforeRepairLines = @($rosterBeforeRepairResult.StdOut -split "`r?`n" | Where-Object {
+            $_.StartsWith('DC_ROSTER=')
+        })
+        if ($rosterBeforeRepairLines.Count -ne 1) {
+            throw "packaged connector roster pre-repair probe returned $($rosterBeforeRepairLines.Count) structured results; expected one"
+        }
+        $rosterBeforeRepair = @($rosterBeforeRepairLines[0].Substring('DC_ROSTER='.Length) | ConvertFrom-Json)
+        $expectedRosterBeforeRepair = @('amp', 'claudecode', 'codex', 'cursor')
+        if ((@($rosterBeforeRepair | Sort-Object) -join "`0") -cne
+            (@($expectedRosterBeforeRepair | Sort-Object) -join "`0")) {
+            throw "seeded setup upgrade produced an unexpected pre-repair connector roster: $($rosterBeforeRepair -join ', ')"
+        }
+        $configHashBeforeRepair = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $beforeRepair = Get-GatewayIdentity $dataRoot
         $preserved = Join-Path $dataRoot 'installer-preservation.txt'
         Set-Content -LiteralPath $preserved -Value 'preserve' -Encoding ascii
 
         Invoke-WindowsSetupStandardUserProcess $setup @('/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user') `
             -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-repair.log') | Out-Null
+        $configHashAfterRepair = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $repairedRosterResult = Invoke-Installed $python @('-I', '-c', $rosterProbe) -Timeout 120 `
             -Log (Join-Path $logs 'setup-connector-roster-after-repair.log')
         $repairedRosterLines = @($repairedRosterResult.StdOut -split "`r?`n" | Where-Object {
@@ -5473,7 +5489,11 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp
             throw "packaged connector roster repair probe returned $($repairedRosterLines.Count) structured results; expected one"
         }
         $repairedRoster = @($repairedRosterLines[0].Substring('DC_ROSTER='.Length) | ConvertFrom-Json)
-        if ((@($repairedRoster | Sort-Object) -join "`0") -cne (@($roster | Sort-Object) -join "`0")) {
+        if ($configHashAfterRepair -cne $configHashBeforeRepair) {
+            throw 'setup repair changed the user-configured config bytes'
+        }
+        if ((@($repairedRoster | Sort-Object) -join "`0") -cne
+            (@($rosterBeforeRepair | Sort-Object) -join "`0")) {
             throw "setup repair changed the user-configured connector roster: $($repairedRoster -join ', ')"
         }
         $afterRepair = Get-GatewayIdentity $dataRoot
