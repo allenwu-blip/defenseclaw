@@ -2093,11 +2093,18 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'Get-TreeFingerprint' -and $harnessText -match 'AllowedExitCodes @\(1\)') 'enterprise hooks elevation rejection is bounded, exit 1, and checks an unchanged tree'
     Assert-True ($harnessText -match 'Assert-DoctorWindowsHookRegistration' -and $harnessText -match 'healthy Windows-native executable registration') 'connector contract runs Doctor against the registered Windows hook executable'
     $contractRun = [regex]::Match($harnessText, '(?s)function Invoke-ContractRun\b.*?\n\}').Value
-    Assert-True ($contractRun -match "'session\.start'.*?'session_start\.json'" -and
-        $contractRun -match "'agent\.start'.*?'agent_start\.json'" -and
-        $contractRun -match "'tool\.result'.*?'tool_result\.json'" -and
+    $ampFiveEventContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-AmpFiveEventProviderContract\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($contractRun -match 'Invoke-AmpFiveEventProviderContract \$golden' -and
+        $ampFiveEventContract -match "'session\.start'.*?'session_start\.json'" -and
+        $ampFiveEventContract -match "'agent\.start'.*?'agent_start\.json'" -and
+        $ampFiveEventContract -match "'tool\.call'.*?'pre_tool_allow\.json'" -and
+        $ampFiveEventContract -match "'tool\.result'.*?'tool_result\.json'" -and
+        $ampFiveEventContract -match "'agent\.end'.*?'agent_end\.json'" -and
         $contractRun -match "'tool\.call'.*?'subagent_tool_call\.json'" -and
-        $contractRun -match "'agent\.end'.*?'agent_end\.json'") `
+        $ampFiveEventContract -match 'Invoke-Hook \$spec\.Event \$payloadPath allow') `
         'Amp Windows contract exercises all five native callbacks plus the subagent delegation boundary'
     Assert-True ($contractRun -match "\`$actionBlockExpectation = 'block'" -and
         $contractRun -match "\`$requireAdvisoryBlock = \`$false" -and

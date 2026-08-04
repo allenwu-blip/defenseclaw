@@ -718,6 +718,16 @@ class GatewayEvidence:
             return ListenerEvidence("unavailable", reason="native Windows listener inspection is unavailable")
         return _windows_listener_evidence(port, host=host)
 
+    def watchdog_state(self, path: str) -> WatchdogStateEvidence:
+        return read_watchdog_state(path)
+
+    def watchdog_ownership(self, stable_path: str, legacy_pid_path: str) -> WatchdogOwnershipEvidence:
+        return inspect_watchdog_ownership(
+            stable_path,
+            legacy_pid_path,
+            platform_name=self.platform_name,
+        )
+
 
 def _linux_process_evidence(
     pid: int,
@@ -849,17 +859,6 @@ def _darwin_process_evidence(pid: int) -> ProcessEvidence:
         executable=executable,
         start_identity=start_identity,
     )
-
-    def watchdog_state(self, path: str) -> WatchdogStateEvidence:
-        return read_watchdog_state(path)
-
-    def watchdog_ownership(self, stable_path: str, legacy_pid_path: str) -> WatchdogOwnershipEvidence:
-        return inspect_watchdog_ownership(
-            stable_path,
-            legacy_pid_path,
-            platform_name=self.platform_name,
-        )
-
 
 def _windows_process_evidence(pid: int) -> ProcessEvidence:  # pragma: no cover - native Windows only
     from ctypes import wintypes

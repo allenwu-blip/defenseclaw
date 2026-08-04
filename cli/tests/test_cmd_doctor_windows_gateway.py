@@ -464,6 +464,43 @@ class WindowsWatchdogDoctorTests(unittest.TestCase):
         self.assertTrue(applicable)
         return result
 
+    def test_real_gateway_evidence_exposes_watchdog_runtime_collectors(self):
+        executable = os.path.abspath("defenseclaw-gateway.exe")
+        record = PIDRecord(
+            "ok",
+            pid=4242,
+            executable=executable,
+            start_identity="start-1",
+        )
+        process = ProcessEvidence(
+            "ok",
+            pid=4242,
+            executable=executable,
+            start_identity="start-1",
+        )
+        ownership = WatchdogOwnershipEvidence("held", source="stable", reason="ownership lock is held")
+        state = WatchdogStateEvidence("ok", state="healthy")
+        evidence = cmd_doctor.GatewayEvidence(platform_name="win32")
+
+        with (
+            patch("defenseclaw.doctor_gateway.read_watchdog_pid_record", return_value=record) as pid_reader,
+            patch("defenseclaw.doctor_gateway._windows_process_evidence", return_value=process) as process_reader,
+            patch("defenseclaw.doctor_gateway.inspect_watchdog_ownership", return_value=ownership) as ownership_reader,
+            patch("defenseclaw.doctor_gateway.read_watchdog_state", return_value=state) as state_reader,
+        ):
+            posture, detail, observed_state = cmd_doctor._inspect_windows_watchdog_runtime(self.cfg, evidence)
+
+        pid_path = os.path.join(self.temp.name, "watchdog.pid")
+        ownership_path = os.path.join(self.temp.name, ".watchdog.lock")
+        state_path = os.path.join(self.temp.name, "watchdog.state")
+        self.assertEqual(posture, "running")
+        self.assertIn("stable .watchdog.lock", detail)
+        self.assertEqual(observed_state, state)
+        pid_reader.assert_called_once_with(pid_path, platform_name="win32")
+        process_reader.assert_called_once_with(4242)
+        ownership_reader.assert_called_once_with(ownership_path, pid_path, platform_name="win32")
+        state_reader.assert_called_once_with(state_path)
+
     def test_enabled_missing_zero_byte_and_stale_are_exact_failures(self):
         cases = (
             (PIDRecord("missing", reason="PID file is missing"), ProcessEvidence("missing"), "missing"),
