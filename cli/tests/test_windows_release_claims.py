@@ -97,6 +97,9 @@ def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> Non
     install = (
         ROOT / "docs-site/content/docs/get-started/install.mdx"
     ).read_text(encoding="utf-8")
+    cli_reference = (
+        ROOT / "docs-site/content/docs/reference/cli.mdx"
+    ).read_text(encoding="utf-8")
     live_workflow = (
         ROOT / ".github/workflows/connector-live-e2e.yml"
     ).read_text(encoding="utf-8")
@@ -107,6 +110,10 @@ def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> Non
     assert "`copilot`, and `antigravity` are supported and selectable" in capabilities
     assert "selectable previews" not in capabilities
     assert "`claude-code` is the certified connector alias" not in capabilities
+    assert "Native Windows supports Amp plus Codex, Claude Code, Cursor" in cli_reference
+    assert "remain previews or not-certified choices" not in cli_reference
+    assert "Preview user-hook alias for Cursor" not in cli_reference
+    assert "excluded from the native Windows release" in cli_reference
     assert (
         "Native Windows x64 release certification currently covers Claude Code"
         not in live_workflow

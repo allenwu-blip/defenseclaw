@@ -39,14 +39,14 @@ import (
 )
 
 const (
-	watchdogPIDFile        = "watchdog.pid"
-	watchdogOwnershipFile  = ".watchdog.lock"
-	watchdogLogFile        = "watchdog.log"
-	watchdogStateFile      = "watchdog.state"
-	maxWatchdogHealthBytes = 64 << 10
-	maxWatchdogPIDBytes    = 64 << 10
-	watchdogStartTimeout   = 15 * time.Second
-	watchdogStartInterval  = 25 * time.Millisecond
+	watchdogPIDFile         = "watchdog.pid"
+	watchdogOwnershipFile   = ".watchdog.lock"
+	watchdogLogFile         = "watchdog.log"
+	watchdogStateFile       = "watchdog.state"
+	maxWatchdogHealthBytes  = 64 << 10
+	maxWatchdogPIDFileBytes = 16 << 10
+	watchdogStartTimeout    = 15 * time.Second
+	watchdogStartInterval   = 25 * time.Millisecond
 )
 
 type watchdogState int
@@ -959,12 +959,15 @@ func readWatchdogPIDInfoFile(f *os.File) (watchdogPIDInfo, error) {
 	if _, err := f.Seek(0, 0); err != nil {
 		return watchdogPIDInfo{}, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxWatchdogPIDBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxWatchdogPIDFileBytes+1))
 	if err != nil {
 		return watchdogPIDInfo{}, err
 	}
-	if len(data) > maxWatchdogPIDBytes {
-		return watchdogPIDInfo{}, fmt.Errorf("watchdog: pid file exceeds %d bytes", maxWatchdogPIDBytes)
+	if len(data) > maxWatchdogPIDFileBytes {
+		return watchdogPIDInfo{}, fmt.Errorf(
+			"watchdog: pid file exceeds %d bytes",
+			maxWatchdogPIDFileBytes,
+		)
 	}
 	return parseWatchdogPIDInfo(data)
 }

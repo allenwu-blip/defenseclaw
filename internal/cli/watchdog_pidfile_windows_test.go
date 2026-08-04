@@ -791,6 +791,211 @@ func TestWindowsWatchdogLockStateIsAuthoritative(t *testing.T) {
 	}
 }
 
+func TestWindowsWatchdogObservationRejectsRetainedWriter(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "watchdog.pid")
+	writer, err := os.OpenFile(pidPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := safefile.ProtectFile(pidPath); err != nil {
+		t.Fatal(err)
+	}
+	info := watchdogPIDInfo{
+		PID:           os.Getpid(),
+		StartIdentity: watchdogProcessStartIdentity(os.Getpid()),
+		ControlName:   "legacy-retained-writer",
+	}
+	if err := writeWatchdogPIDInfo(writer, info); err != nil {
+		t.Fatal(err)
+	}
+	lock := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
+	if err := windows.LockFileEx(
+		windows.Handle(writer.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		lock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.UnlockFileEx(windows.Handle(writer.Fd()), 0, 1, 0, lock) //nolint:errcheck
+
+	locked, got, err := watchdogIsLocked(pidPath)
+	if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("mutable locked record = (locked=%v info=%+v err=%v), want sharing violation", locked, got, err)
+	}
+	if locked || got != (watchdogPIDInfo{}) {
+		t.Fatalf("mutable locked record was trusted: locked=%v info=%+v", locked, got)
+	}
+}
+
+func TestWindowsWatchdogObservationRejectsUnsafeCustody(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "watchdog.pid")
+	info := watchdogPIDInfo{
+		PID:           os.Getpid(),
+		StartIdentity: watchdogProcessStartIdentity(os.Getpid()),
+		ControlName:   "unsafe-custody",
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := safefile.WritePrivate(pidPath, data); err != nil {
+		t.Fatal(err)
+	}
+	everyone, err := windows.CreateWellKnownSid(windows.WinWorldSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsafeACL, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.GENERIC_ALL,
+		AccessMode:        windows.GRANT_ACCESS,
+		Inheritance:       windows.NO_INHERITANCE,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+			TrusteeValue: windows.TrusteeValueFromSID(everyone),
+		},
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(
+		pidPath,
+		windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		unsafeACL,
+		nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	holder, err := os.Open(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	lock := &windows.Overlapped{OffsetHigh: watchdogLockOffsetHigh}
+	if err := windows.LockFileEx(
+		windows.Handle(holder.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY,
+		0,
+		1,
+		0,
+		lock,
+	); err != nil {
+		t.Fatal(err)
+	}
+	defer windows.UnlockFileEx(windows.Handle(holder.Fd()), 0, 1, 0, lock) //nolint:errcheck
+
+	locked, got, err := watchdogIsLocked(pidPath)
+	if err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("unsafe-custody observation = (locked=%v info=%+v err=%v)", locked, got, err)
+	}
+	if locked || got != (watchdogPIDInfo{}) {
+		t.Fatalf("unsafe-custody locked record was trusted: locked=%v info=%+v", locked, got)
+	}
+}
+
+func TestWindowsWatchdogObservationAllowsStableReadAndDeniesMutation(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "watchdog.pid")
+	info := watchdogPIDInfo{
+		PID:           os.Getpid(),
+		Executable:    mustWatchdogTestExecutable(t),
+		StartIdentity: watchdogProcessStartIdentity(os.Getpid()),
+		ControlName:   "stable-read-control",
+	}
+	holder, err := acquireWatchdogPIDFile(pidPath, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+
+	observer, exists, err := openPrivateWatchdogFile(
+		pidPath,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+	)
+	if err != nil || !exists || observer == nil {
+		t.Fatalf("open stable watchdog observation: exists=%v err=%v", exists, err)
+	}
+	defer observer.Close()
+	data, err := io.ReadAll(io.LimitReader(observer, maxWatchdogPIDFileBytes+1))
+	if err != nil {
+		t.Fatalf("stable read of live watchdog identity: %v", err)
+	}
+	var got watchdogPIDInfo
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode live watchdog identity: %v", err)
+	}
+	if got != info {
+		t.Fatalf("live watchdog identity = %+v, want %+v", got, info)
+	}
+
+	writer, writeErr := os.OpenFile(pidPath, os.O_WRONLY, 0)
+	if writeErr == nil {
+		_ = writer.Close()
+		t.Fatal("stable watchdog observation allowed an in-place writer")
+	}
+	if !errors.Is(writeErr, windows.ERROR_SHARING_VIOLATION) {
+		t.Fatalf("in-place writer error = %v, want sharing violation", writeErr)
+	}
+
+	replacementPath := filepath.Join(filepath.Dir(pidPath), "watchdog-replacement.pid")
+	if err := os.WriteFile(replacementPath, []byte(`{"pid":999}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	from, err := windows.UTF16PtrFromString(replacementPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := windows.UTF16PtrFromString(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaceErr := windows.MoveFileEx(
+		from,
+		to,
+		windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH,
+	)
+	if replaceErr == nil {
+		t.Fatal("stable watchdog observation allowed pathname replacement")
+	}
+	if !errors.Is(replaceErr, windows.ERROR_SHARING_VIOLATION) &&
+		!errors.Is(replaceErr, windows.ERROR_ACCESS_DENIED) {
+		t.Fatalf("pathname replacement error = %v, want sharing/access denial", replaceErr)
+	}
+}
+
+func TestWindowsWatchdogOwnershipValidationBindsOpenedObjectToPath(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.pid")
+	secondPath := filepath.Join(dir, "second.pid")
+	if err := safefile.WritePrivate(firstPath, []byte(`{"pid":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := safefile.WritePrivate(secondPath, []byte(`{"pid":2}`)); err != nil {
+		t.Fatal(err)
+	}
+	first, exists, err := openPrivateWatchdogFile(
+		firstPath,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+	)
+	if err != nil || !exists || first == nil {
+		t.Fatalf("open first private PID object: exists=%v err=%v", exists, err)
+	}
+	defer first.Close()
+	if err := validateWatchdogOwnershipFile(secondPath, first); err == nil ||
+		!strings.Contains(err.Error(), "changed while opening") {
+		t.Fatalf("mismatched ownership path validation error = %v", err)
+	}
+}
+
 func TestWindowsWatchdogOwnedRemovalLocksThroughExactDelete(t *testing.T) {
 	pidPath := filepath.Join(t.TempDir(), "watchdog.pid")
 	old := watchdogPIDInfo{

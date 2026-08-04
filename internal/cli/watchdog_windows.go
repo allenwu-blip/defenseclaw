@@ -404,22 +404,50 @@ func openPrivateWatchdogFile(path string, access, share uint32) (*os.File, bool,
 		err := fmt.Errorf("watchdog: refusing non-regular or reparse-point lifecycle file: %s", path)
 		return nil, true, errors.Join(err, windows.CloseHandle(handle))
 	}
-	if err := safefile.ValidatePrivateHandle(handle); err != nil {
-		return nil, true, errors.Join(err, windows.CloseHandle(handle))
-	}
 	file := os.NewFile(uintptr(handle), path)
 	if file == nil {
 		err := fmt.Errorf("watchdog: wrap lifecycle file handle: %s", path)
 		return nil, true, errors.Join(err, windows.CloseHandle(handle))
 	}
+	if err := validateWatchdogOwnershipFile(path, file); err != nil {
+		return nil, true, errors.Join(err, file.Close())
+	}
 	return file, true, nil
+}
+
+// validateWatchdogOwnershipFile binds the non-reparse handle to the current
+// private pathname before callers consume either lifecycle ownership or PID
+// identity. Access, security-descriptor, and pathname lookup failures are
+// deliberately returned so lifecycle decisions fail closed.
+func validateWatchdogOwnershipFile(path string, file *os.File) error {
+	if file == nil {
+		return errors.New("watchdog: nil ownership file")
+	}
+	if err := safefile.ValidatePrivateFile(path); err != nil {
+		return fmt.Errorf("watchdog: validate private lifecycle path: %w", err)
+	}
+	if err := safefile.ValidatePrivateHandle(windows.Handle(file.Fd())); err != nil {
+		return fmt.Errorf("watchdog: validate private lifecycle handle: %w", err)
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	current, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !opened.Mode().IsRegular() || !current.Mode().IsRegular() || !os.SameFile(opened, current) {
+		return fmt.Errorf("watchdog: lifecycle path changed while opening: %s", path)
+	}
+	return nil
 }
 
 func inspectWatchdogCanonical(path string) (windowsWatchdogPIDState, error) {
 	f, exists, err := openPrivateWatchdogFile(
 		path,
 		windows.GENERIC_READ,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_SHARE_READ,
 	)
 	if err != nil || !exists {
 		return windowsWatchdogPIDState{exists: exists}, err
@@ -555,12 +583,12 @@ func removeWatchdogPIDFileIf(path string, matches func([]byte) bool) (bool, erro
 	if _, err := file.Seek(0, 0); err != nil {
 		return false, err
 	}
-	data, err := io.ReadAll(io.LimitReader(file, maxWatchdogPIDBytes+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxWatchdogPIDFileBytes+1))
 	if err != nil {
 		return false, err
 	}
-	if len(data) > maxWatchdogPIDBytes {
-		return false, fmt.Errorf("watchdog: PID file exceeds %d bytes", maxWatchdogPIDBytes)
+	if len(data) > maxWatchdogPIDFileBytes {
+		return false, fmt.Errorf("watchdog: PID file exceeds %d bytes", maxWatchdogPIDFileBytes)
 	}
 	if !matches(data) {
 		return false, nil
