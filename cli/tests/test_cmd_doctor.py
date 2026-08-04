@@ -2369,6 +2369,34 @@ class DoctorHttpProbeRedirectTests(unittest.TestCase):
         self.assertIn("total deadline", body)
         self.assertLess(elapsed, 1.0)
 
+    def test_published_probe_result_does_not_wait_for_worker_teardown(self):
+        import queue
+        import threading
+
+        from defenseclaw.commands import cmd_doctor
+
+        real_queue = queue.Queue
+        result_published = threading.Event()
+        release_teardown = threading.Event()
+
+        class _TeardownGatedQueue(real_queue):
+            def put_nowait(self, item):
+                super().put_nowait(item)
+                result_published.set()
+                release_teardown.wait(timeout=5)
+
+        try:
+            with (
+                patch.object(cmd_doctor.queue, "Queue", _TeardownGatedQueue),
+                patch.object(cmd_doctor, "_http_probe_once", return_value=(200, "reached")),
+            ):
+                status, body = cmd_doctor._http_probe(self._url("/unused"), timeout=1.0)
+
+            self.assertTrue(result_published.is_set())
+            self.assertEqual((status, body), (200, "reached"))
+        finally:
+            release_teardown.set()
+
     def test_sidecar_health_parses_complete_large_multi_connector_document(self):
         self.assertGreater(len(self.health_body), 2_000)
         cfg = SimpleNamespace(

@@ -729,13 +729,13 @@ def _http_probe(
 
     worker = threading.Thread(target=_run, name="defenseclaw-doctor-http", daemon=True)
     worker.start()
-    worker.join(timeout)
-    if worker.is_alive():
-        return 0, f"probe exceeded {timeout:g}s total deadline"
     try:
-        return result.get_nowait()
+        # Publication is the completion boundary.  Worker teardown can still
+        # be in progress after a complete result is queued, so waiting for the
+        # thread itself can discard valid evidence at the deadline.
+        return result.get(timeout=timeout)
     except queue.Empty:
-        return 0, "probe ended without a result"
+        return 0, f"probe exceeded {timeout:g}s total deadline"
 
 
 def _http_probe_once(

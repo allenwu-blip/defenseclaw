@@ -3543,17 +3543,22 @@ function New-WizardAgentFixtures([string]$Root) {
     $codexTrustedRoot = Join-Path $localAppData 'OpenAI\Codex\bin'
     $codexBin = Join-Path $codexTrustedRoot ("000-defenseclaw-ci-" + [guid]::NewGuid().ToString('N'))
     $claudeBin = Join-Path $userProfile '.local\bin'
+    $hermesBin = Join-Path $localAppData 'hermes\hermes-agent\venv\Scripts'
     $codexPath = Join-Path $codexBin 'codex.exe'
     $claudePath = Join-Path $claudeBin 'claude.exe'
     $ampPath = Join-Path $claudeBin 'amp.exe'
     $cursorPath = Join-Path $claudeBin 'agent.exe'
-    foreach ($existing in @($claudePath, $ampPath, $cursorPath)) {
+    $hermesPath = Join-Path $hermesBin 'hermes.exe'
+    $openCodePath = Join-Path $claudeBin 'opencode.exe'
+    foreach ($existing in @(
+        $claudePath, $ampPath, $cursorPath, $hermesPath, $openCodePath
+    )) {
         if (Test-Path -LiteralPath $existing) {
             throw "refusing to replace an existing connector executable fixture target: $existing"
         }
     }
     try {
-        foreach ($path in @($codexTrustedRoot, $codexBin, $claudeBin)) {
+        foreach ($path in @($codexTrustedRoot, $codexBin, $claudeBin, $hermesBin)) {
             Protect-TestDirectory $path
         }
         $fixtures = @(
@@ -3627,6 +3632,32 @@ public static class AmpVersionFixture {
     }
 }
 "@
+        },
+        [pscustomobject]@{
+            Path = $hermesPath
+            ClassName = 'HermesVersionFixture'
+            Source = @"
+using System;
+public static class HermesVersionFixture {
+    public static int Main(string[] arguments) {
+        Console.WriteLine("Hermes Agent v0.20.0 (2026.8.3)");
+        return 0;
+    }
+}
+"@
+        },
+        [pscustomobject]@{
+            Path = $openCodePath
+            ClassName = 'OpenCodeVersionFixture'
+            Source = @"
+using System;
+public static class OpenCodeVersionFixture {
+    public static int Main(string[] arguments) {
+        Console.WriteLine("opencode 1.18.11");
+        return 0;
+    }
+}
+"@
         }
         )
         foreach ($fixture in $fixtures) {
@@ -3659,6 +3690,14 @@ public static class AmpVersionFixture {
         if ($ampVersion.StdOut.Trim() -ne 'amp 0.0.1785334225-g9abe75') {
             throw "Amp fixture returned an unexpected version: $($ampVersion.StdOut)"
         }
+        $hermesVersion = Invoke-WindowsNativeProcess $hermesPath @('--version') -TimeoutSeconds 30
+        if ($hermesVersion.StdOut.Trim() -ne 'Hermes Agent v0.20.0 (2026.8.3)') {
+            throw "Hermes fixture returned an unexpected version: $($hermesVersion.StdOut)"
+        }
+        $openCodeVersion = Invoke-WindowsNativeProcess $openCodePath @('--version') -TimeoutSeconds 30
+        if ($openCodeVersion.StdOut.Trim() -ne 'opencode 1.18.11') {
+            throw "OpenCode fixture returned an unexpected version: $($openCodeVersion.StdOut)"
+        }
         Assert-WizardCodexPolicyFixture $codexPath
         return [pscustomobject]@{
             CodexBin = $codexBin
@@ -3671,10 +3710,15 @@ public static class AmpVersionFixture {
             ClaudePath = $claudePath
             AmpPath = $ampPath
             CursorPath = $cursorPath
+            HermesBin = $hermesBin
+            HermesPath = $hermesPath
+            OpenCodePath = $openCodePath
             CodexTrustedRoot = $codexTrustedRoot
         }
     } catch {
-        foreach ($path in @($codexPath, $claudePath, $ampPath, $cursorPath)) {
+        foreach ($path in @(
+            $codexPath, $claudePath, $ampPath, $cursorPath, $hermesPath, $openCodePath
+        )) {
             Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
         }
         if (Test-Path -LiteralPath $codexBin -PathType Container) {
@@ -3755,7 +3799,9 @@ function Remove-WizardAgentFixtures([AllowNull()][object]$Fixtures) {
         [pscustomobject]@{ Path = [string]$Fixtures.CodexPath; Root = [string]$Fixtures.CodexTrustedRoot; Name = 'codex.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.ClaudePath; Root = [string]$Fixtures.ClaudeBin; Name = 'claude.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.AmpPath; Root = [string]$Fixtures.ClaudeBin; Name = 'amp.exe' },
-        [pscustomobject]@{ Path = [string]$Fixtures.CursorPath; Root = [string]$Fixtures.ClaudeBin; Name = 'agent.exe' }
+        [pscustomobject]@{ Path = [string]$Fixtures.CursorPath; Root = [string]$Fixtures.ClaudeBin; Name = 'agent.exe' },
+        [pscustomobject]@{ Path = [string]$Fixtures.HermesPath; Root = [string]$Fixtures.HermesBin; Name = 'hermes.exe' },
+        [pscustomobject]@{ Path = [string]$Fixtures.OpenCodePath; Root = [string]$Fixtures.ClaudeBin; Name = 'opencode.exe' }
     )
     foreach ($entry in $owned) {
         $path = [IO.Path]::GetFullPath($entry.Path)
@@ -7173,12 +7219,14 @@ function Invoke-Contract {
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
     $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
     $ampHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.config\amp')).TrimEnd('\')
+    $ampPluginDir = Join-Path $ampHome 'plugins'
     # Amp and Cursor publish no configuration-home override. Exercise their
     # profile-relative contracts under this disposable profile instead of
     # treating DefenseClaw's internal custody binding as a vendor selector.
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.cursor')).TrimEnd('\')
     $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
     $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
+    $openCodePluginDir = Join-Path $openCodeHome 'plugins'
     $null = Assert-WindowsNativePathsDisjoint @(
         $contractHome, $codexHome, $claudeHome, $copilotHome, $hermesHome, $openCodeHome
     )
@@ -7201,9 +7249,11 @@ function Invoke-Contract {
             $claudeHome,
             $copilotHome,
             $ampHome,
+            $ampPluginDir,
             $cursorHome,
             $hermesHome,
-            $openCodeHome
+            $openCodeHome,
+            $openCodePluginDir
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
             Protect-TestDirectory $path

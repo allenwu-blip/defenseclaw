@@ -698,6 +698,23 @@ private-secret-name = "DefenseClaw must remain redacted"
                     [string]$actionPayload.$identityField
             ) "observe/action dangerous fixtures have distinct $identityField values"
         }
+
+        $Connector = 'codex'
+        $codexObservePayload = [IO.File]::ReadAllText((
+            New-DangerousCommandPayload 'fixture' 'synthetic command' $dangerousPayloadRoot observe
+        )) | ConvertFrom-Json
+        $codexActionPayload = [IO.File]::ReadAllText((
+            New-DangerousCommandPayload 'fixture' 'synthetic command' $dangerousPayloadRoot action
+        )) | ConvertFrom-Json
+        Assert-True ([string]$codexObservePayload.tool_call_id -ceq
+            [string]$codexObservePayload.tool_use_id) `
+            'Codex dangerous fixture aliases identify one observe invocation'
+        Assert-True ([string]$codexActionPayload.tool_call_id -ceq
+            [string]$codexActionPayload.tool_use_id) `
+            'Codex dangerous fixture aliases identify one action invocation'
+        Assert-True ([string]$codexObservePayload.tool_use_id -cne
+            [string]$codexActionPayload.tool_use_id) `
+            'Codex observe/action dangerous fixtures retain distinct tool identities'
     } finally {
         $Layer = $savedLayer
         $Connector = $savedConnector
@@ -1790,6 +1807,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function New-WizardAgentFixtures\b.*?(?=\r?\nfunction Remove-WizardAgentFixtures)'
     ).Value
+    $agentFixtureCleanupFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Remove-WizardAgentFixtures\b.*?(?=\r?\nfunction )'
+    ).Value
     Assert-True ($agentFixtureFunction -match "'OpenAI\\Codex\\bin'" -and
         $agentFixtureFunction -match "'\.local\\bin'" -and
         $agentFixtureFunction -match 'app-server' -and
@@ -1802,6 +1823,20 @@ private-secret-name = "DefenseClaw must remain redacted"
         $agentFixtureFunction -notmatch 'SearchPath = @\(\$codexBin' -and
         $agentFixtureFunction -notmatch 'DEFENSECLAW_TRUSTED_BIN_PREFIXES') `
         'Windows fixtures exercise native Codex, Claude Code, and Amp discovery without env-only trust'
+    Assert-True ($agentFixtureFunction -match
+        '\$hermesBin = Join-Path \$localAppData ''hermes\\hermes-agent\\venv\\Scripts''' -and
+        $agentFixtureFunction -match 'HermesVersionFixture' -and
+        $agentFixtureFunction -match 'Hermes Agent v0\.20\.0 \(2026\.8\.3\)' -and
+        $agentFixtureFunction -match 'HermesPath = \$hermesPath' -and
+        $agentFixtureFunction -match
+        '\$openCodePath = Join-Path \$claudeBin ''opencode\.exe''' -and
+        $agentFixtureFunction -match 'OpenCodeVersionFixture' -and
+        $agentFixtureFunction -match 'opencode 1\.18\.11' -and
+        $agentFixtureFunction -match 'OpenCodePath = \$openCodePath' -and
+        $agentFixtureCleanupFunction -match 'Fixtures\.HermesPath' -and
+        $agentFixtureCleanupFunction -match 'Fixtures\.HermesBin' -and
+        $agentFixtureCleanupFunction -match 'Fixtures\.OpenCodePath') `
+        'Windows fixtures provision and clean supported Hermes and OpenCode executables only in built-in trusted prefixes'
     Assert-True ($setupAcceptanceFunction -match 'New-WizardAgentFixtures' -and
         $setupAcceptanceFunction -match 'Remove-WizardAgentFixtures' -and
         $setupAcceptanceFunction -notmatch 'DEFENSECLAW_TRUSTED_BIN_PREFIXES') `
@@ -2096,7 +2131,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $dangerousPayloadContract -match 'conversationId = "dc-windows-contract-\$Connector-\$probeID"' -and
         $dangerousPayloadContract -match 'session_id = "dc-windows-contract-\$Connector-\$Mode"' -and
         $dangerousPayloadContract -match 'turn_id = "dc-windows-contract-\$Connector-\$probeID"' -and
-        $dangerousPayloadContract -match '(?s)\$Connector -eq ''codex''.*?event_id = "dc-windows-contract-\$Connector-\$probeID-event".*?tool_use_id = "dc-windows-contract-\$Connector-\$probeID-tool"' -and
+        $dangerousPayloadContract -match '(?s)\$Connector -eq ''codex''.*?event_id = "dc-windows-contract-\$Connector-\$probeID-event".*?tool_use_id = \$payload\.tool_call_id' -and
         $dangerousPayloadContract -match '\$path = Join-Path \$Root "\$probeID\.json"' -and
         $harnessText -match 'New-DangerousCommandPayload \$case\.Name \$command \$payloadRoot \$Mode') `
         'observe/action dangerous-command fixtures use distinct exact correlation and file identities'
@@ -2898,11 +2933,11 @@ private-secret-name = "DefenseClaw must remain redacted"
     $doctorWait = $doctorContract.LastIndexOf('Wait-Gateway', [StringComparison]::Ordinal)
     Assert-True ($doctorRegistration -ge 0 -and $doctorAmpSelfHeal -gt $doctorRegistration -and
         $doctorStop -gt $doctorAmpSelfHeal -and
-        $doctorTamper -gt $doctorStop -and $doctorRecovery -gt $doctorTamper -and
-        $doctorStart -gt $doctorRecovery -and $doctorWait -gt $doctorStart) `
-        'Doctor tamper validation pauses isolated self-heal and restores the gateway afterward'
-    Assert-True ($doctorContract -match "(?s)Write-Result 'doctor:windows-hook-recovery'.*?try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?defenseclaw-gateway' @\('start'\).*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT.*?\}.*?Wait-Gateway") `
-        'unversioned fixture override is scoped to the post-Doctor gateway restart'
+        $doctorTamper -gt $doctorStop -and $doctorStart -gt $doctorTamper -and
+        $doctorWait -gt $doctorStart -and $doctorRecovery -gt $doctorWait) `
+        'Doctor tamper validation pauses self-heal, restores the gateway, then validates live recovery'
+    Assert-True ($doctorContract -match "(?s)DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?defenseclaw-gateway' @\('start'\).*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT.*?\}.*?Wait-Gateway.*?Write-Result 'doctor:windows-hook-recovery'") `
+        'unversioned fixture override is scoped to the pre-recovery gateway restart'
     $openCodeDoctorContract = [regex]::Match($harnessText, '(?s)function Assert-OpenCodePluginContract\b.*?\n\}').Value
     Assert-True ($openCodeDoctorContract -match "recoveredChecks\[0\]\.status -ne 'warn'" -and
         $openCodeDoctorContract -match 'managed plugin digest current' -and
@@ -3011,8 +3046,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     )
     Assert-True ($contractProfileProvisioning.Success -and
         $contractProfileProvisioning.Groups['paths'].Value -match '\$ampHome' -and
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$ampPluginDir' -and
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$openCodePluginDir' -and
         $contractProfileProvisioning.Groups['paths'].Value -match '\$cursorHome') `
-        'connector contract provisions required profile-relative Amp and Cursor homes'
+        'connector contract privately provisions Amp/OpenCode plugin directories and the profile-relative Cursor home'
     $contractInstall = $contractFunction.IndexOf(
         'Invoke-WindowsSetupStandardUserProcess $setup',
         [StringComparison]::Ordinal
@@ -3022,9 +3059,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''claude-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''copilot-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractHome ''\.config\\amp''' -and
+        $nativeHarnessText -match '\$ampPluginDir = Join-Path \$ampHome ''plugins''' -and
         $nativeHarnessText -match 'Join-Path \$contractHome ''\.cursor''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
+        $nativeHarnessText -match '\$openCodePluginDir = Join-Path \$openCodeHome ''plugins''' -and
         $nativeHarnessText -match '\$officialWindsurfConfig = Join-Path \$realProfile ''\.codeium\\windsurf\\hooks\.json''' -and
         $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome, \$openCodeHome\s*\)' -and
         $contractInstall -ge 0) `

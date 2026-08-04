@@ -5394,9 +5394,11 @@ function New-DangerousCommandPayload(
         # The observe and action corpora intentionally repeat the same command.
         # Give those distinct synthetic Codex deliveries exact official source
         # and tool identities so correlation replay protection does not treat
-        # the second policy-mode probe as a replay of the first.
+        # the second policy-mode probe as a replay of the first. Codex emits
+        # tool_call_id and tool_use_id as aliases for the same invocation, so
+        # those two fields must agree within each delivery.
         $payload.event_id = "dc-windows-contract-$Connector-$probeID-event"
-        $payload.tool_use_id = "dc-windows-contract-$Connector-$probeID-tool"
+        $payload.tool_use_id = $payload.tool_call_id
     }
     $path = Join-Path $Root "$probeID.json"
     [IO.File]::WriteAllText($path, ($payload | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
@@ -5936,6 +5938,17 @@ function Assert-DoctorWindowsHookRegistration {
         [IO.File]::WriteAllBytes($configPath, $originalConfig)
     }
 
+    # Doctor's Cursor check requires a live connector row. Restore the isolated
+    # gateway before validating recovery so the check proves both the original
+    # registration bytes and the live native hook path.
+    try {
+        $env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'
+        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
+    } finally {
+        Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT -ErrorAction SilentlyContinue
+    }
+    Wait-Gateway
+
     $recovered = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1) -Timeout 120
     try { $recoveredReport = $recovered.StdOut | ConvertFrom-Json } catch { throw "Recovered Doctor run did not return JSON: $($_.Exception.Message)" }
     $recoveredChecks = @($recoveredReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
@@ -5944,13 +5957,6 @@ function Assert-DoctorWindowsHookRegistration {
         throw "Doctor did not recover after restoring the $Connector hook command"
     }
     Write-Result 'doctor:windows-hook-recovery' pass 'original registration restored byte-for-byte and validated'
-    try {
-        $env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'
-        Invoke-Tool 'defenseclaw-gateway' @('start') -Timeout 90 | Out-Null
-    } finally {
-        Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT -ErrorAction SilentlyContinue
-    }
-    Wait-Gateway
 }
 
 function Assert-NativeEnterpriseHooksRequireElevation {
