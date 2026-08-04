@@ -8574,6 +8574,51 @@ function Copy-AuthenticatedAntigravityFixtureDocument([pscustomobject]$Document)
     return $Document | ConvertTo-Json -Depth 8 | ConvertFrom-Json -ErrorAction Stop
 }
 
+function Set-AuthenticatedAntigravityFixtureFileOwner(
+    [string]$Path,
+    [string]$AllowedRoot
+) {
+    $null = Assert-DisposableNoReparseAncestors -Path $Path `
+        -AllowedRoot $AllowedRoot -RequireExists
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'authenticated Antigravity owner fixture target is not a plain file'
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User -or $null -eq $identity.Owner) {
+        throw 'authenticated Antigravity owner fixture identity is incomplete'
+    }
+    $ownerSection = [Security.AccessControl.AccessControlSections]::Owner
+    $currentSecurity = [IO.FileSystemAclExtensions]::GetAccessControl(
+        $item, $ownerSection
+    )
+    $currentOwner = $currentSecurity.GetOwner(
+        [Security.Principal.SecurityIdentifier]
+    )
+    if ($null -eq $currentOwner) {
+        throw 'authenticated Antigravity owner fixture target has no owner'
+    }
+    if ($currentOwner.Value -cne $identity.User.Value) {
+        if ($currentOwner.Value -cne $identity.Owner.Value) {
+            throw 'refusing to normalize an authenticated Antigravity fixture file with a foreign owner'
+        }
+        $ownerSecurity = [Security.AccessControl.FileSecurity]::new()
+        $ownerSecurity.SetOwner($identity.User)
+        [IO.FileSystemAclExtensions]::SetAccessControl($item, $ownerSecurity)
+        $currentSecurity = [IO.FileSystemAclExtensions]::GetAccessControl(
+            $item, $ownerSection
+        )
+        $currentOwner = $currentSecurity.GetOwner(
+            [Security.Principal.SecurityIdentifier]
+        )
+    }
+    if ($null -eq $currentOwner -or
+        $currentOwner.Value -cne $identity.User.Value) {
+        throw 'authenticated Antigravity fixture file owner normalization failed'
+    }
+}
+
 function Invoke-AuthenticatedAntigravityLocalAuthorityFixture {
     if (-not $IsWindows) { throw 'local Antigravity authority fixture requires Windows' }
     $fixtureRoot = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\')
@@ -8659,10 +8704,28 @@ function Invoke-AuthenticatedAntigravityLocalAuthorityFixture {
         Assert-AuthenticatedAntigravityFixtureRejects {
             Assert-AuthenticatedAntigravityLocalAuthorityDocument $extra $paths
         } 'local authority extra schema field'
-        Write-AuthenticatedAntigravityLocalAuthority $document
+        $authorityPath = Get-AuthenticatedAntigravityLocalAuthorityPath
+        $temporaryPath = Join-Path $StateRoot (
+            'antigravity-local-authority.{0}.tmp' -f [Guid]::NewGuid().ToString('N')
+        )
+        try {
+            # An elevated fixture token can default new files to Administrators.
+            # Normalize only the fixture temp before it becomes trusted custody.
+            [IO.File]::WriteAllText(
+                $temporaryPath, ($document | ConvertTo-Json -Depth 4),
+                [Text.UTF8Encoding]::new($false)
+            )
+            Set-AuthenticatedAntigravityFixtureFileOwner `
+                $temporaryPath $StateRoot
+            [IO.File]::Move($temporaryPath, $authorityPath)
+        } finally {
+            if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+                [IO.File]::Delete($temporaryPath)
+            }
+        }
+        Assert-AuthenticatedAntigravityCleanupManifestCustody $authorityPath
         $roundTrip = Read-AuthenticatedAntigravityLocalAuthority
         Assert-AuthenticatedAntigravityLocalAuthorityDocument $roundTrip $paths
-        $authorityPath = Get-AuthenticatedAntigravityLocalAuthorityPath
         $sections = [Security.AccessControl.AccessControlSections]::Access
         $authorityItem = Get-Item -LiteralPath $authorityPath -Force
         $security = [IO.FileSystemAclExtensions]::GetAccessControl($authorityItem, $sections)
@@ -9008,6 +9071,10 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
                 '{"fixture":"existing-profile-original"}'
             )
             [IO.File]::WriteAllBytes($custodyPaths.HookConfig, $originalHookBytes)
+            # Owner normalization is part of fixture construction, so capture it
+            # in the exact baseline that restoration must reproduce.
+            Set-AuthenticatedAntigravityFixtureFileOwner `
+                $custodyPaths.HookConfig $custodyFixtureRoot
             $script:AntigravityOriginalConfig = `
                 Get-AntigravityHookConfigFingerprint $custodyPaths
             $script:AntigravityOriginalHookSDDL = `
