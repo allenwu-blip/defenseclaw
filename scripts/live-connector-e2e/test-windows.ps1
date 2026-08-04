@@ -2007,6 +2007,32 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupHealthSampler -match "'event_correlation', 'projection', 'record'" -and
         $setupHealthSampler -notmatch '\$_\.Exception') `
         'Setup health sampler uses the real health generation and bounded nonsecret failure categories'
+    $hasHealthSamplerPrewarm = {
+        param([string]$Source)
+        $prewarm = $Source.IndexOf(
+            "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)",
+            [StringComparison]::Ordinal
+        )
+        $readiness = $Source.IndexOf(
+            "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')",
+            [StringComparison]::Ordinal
+        )
+        return $prewarm -ge 0 -and $readiness -gt $prewarm
+    }
+    Assert-True (& $hasHealthSamplerPrewarm $setupHealthSampler) `
+        'Setup health sampler initializes its listener provider before publishing readiness'
+    Assert-True (-not (& $hasHealthSamplerPrewarm $setupHealthSampler.Replace(
+                "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
+            ))) `
+        'Setup health sampler prewarm predicate rejects a missing listener-provider initialization'
+    $reorderedHealthSampler = $setupHealthSampler.Replace(
+        "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
+    ).Replace(
+        "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')",
+        "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')`n`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)"
+    )
+    Assert-True (-not (& $hasHealthSamplerPrewarm $reorderedHealthSampler)) `
+        'Setup health sampler prewarm predicate rejects readiness published before preload'
     Assert-True ($setupHealthSamplerContract -match '\$listener = \[Net\.Sockets\.TcpListener\]::new\(\[Net\.IPAddress\]::Loopback, 0\)' -and
         $setupHealthSamplerContract -match 'started_at = \$startedAt' -and
         $setupHealthSamplerContract -match 'uptime_ms = 1' -and

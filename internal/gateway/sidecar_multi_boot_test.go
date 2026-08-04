@@ -106,6 +106,39 @@ type registrationPostureConnector struct {
 	setupPostures []string
 }
 
+type orphanReconcileFailureConnector struct {
+	bootStubConnector
+	hookPath             string
+	removeHookOnTeardown bool
+	teardownErr          error
+	verifyErr            error
+}
+
+func (c *orphanReconcileFailureConnector) Teardown(context.Context, connector.SetupOpts) error {
+	c.teardownCalls++
+	if c.teardownErr != nil {
+		return c.teardownErr
+	}
+	if c.removeHookOnTeardown {
+		if err := os.Remove(c.hookPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *orphanReconcileFailureConnector) VerifyClean(connector.SetupOpts) error {
+	if c.verifyErr != nil {
+		return c.verifyErr
+	}
+	if c.removeHookOnTeardown {
+		if _, err := os.Stat(c.hookPath); !os.IsNotExist(err) {
+			return fmt.Errorf("orphan hook still exists: %v", err)
+		}
+	}
+	return nil
+}
+
 func (c *failedSetupCleanupConnector) Teardown(context.Context, connector.SetupOpts) error {
 	c.teardownCalls++
 	return c.teardownErr
@@ -1053,6 +1086,269 @@ func TestMultiConnectorActivePublicationReportsIncompleteRollback(t *testing.T) 
 	if health := s.health.Snapshot().Guardrail; health.State != StateError ||
 		!strings.Contains(health.LastError, "rollback incomplete") {
 		t.Fatalf("guardrail health = %+v, want truthful incomplete rollback", health)
+	}
+}
+
+func TestReconcileOrphanedConnectorRegistrationCleansLegacyWindsurfBeforeRequestedSetup(t *testing.T) {
+	for _, requestedConnector := range []string{"copilot", "antigravity", "opencode"} {
+		t.Run(requestedConnector, func(t *testing.T) {
+			dataDir := testenv.PrivateTempDir(t)
+			configDir := testenv.PrivateTempDir(t)
+			configPath := filepath.Join(configDir, "hooks.json")
+			priorConfig := []byte("{\n  \"hooks\": {\"operator-owned\": []}\n}\n")
+			if err := os.WriteFile(configPath, priorConfig, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			previousOverride := connector.WindsurfHooksPathOverride
+			connector.WindsurfHooksPathOverride = configPath
+			t.Cleanup(func() { connector.WindsurfHooksPathOverride = previousOverride })
+
+			windsurf := connector.NewWindsurfConnector()
+			opts := connector.SetupOpts{
+				DataDir:       dataDir,
+				APIAddr:       "127.0.0.1:18970",
+				APIToken:      "synthetic connector token",
+				HookAPIToken:  "synthetic hook token",
+				HookFailMode:  "closed",
+				GuardrailMode: "action",
+			}
+			if err := windsurf.Setup(context.Background(), opts); err != nil {
+				t.Fatalf("stage legacy Windsurf registration: %v", err)
+			}
+			registeredConfig, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if reflect.DeepEqual(registeredConfig, priorConfig) || !strings.Contains(strings.ToLower(string(registeredConfig)), "defenseclaw") {
+				t.Fatalf("fixture did not stage a Windsurf registration: %q", registeredConfig)
+			}
+			entry := connector.NewHookContractLockEntry(opts, windsurf, "0.8.10")
+			entry.RegistrationPosture = nil // Models the pre-transaction lock found on the affected installation.
+			if err := connector.SaveFreshHookContractLockEntry(dataDir, entry); err != nil {
+				t.Fatalf("stage legacy Windsurf lock: %v", err)
+			}
+			priorRoster := []string{"claudecode", "codex", "cursor", "omnigent"}
+			if err := connector.SaveActiveConnectors(dataDir, priorRoster); err != nil {
+				t.Fatalf("stage prior active roster: %v", err)
+			}
+
+			requested := append(append([]string(nil), priorRoster...), requestedConnector)
+			err = reconcileOrphanedConnectorRegistrations(
+				context.Background(),
+				connector.NewDefaultRegistry(),
+				dataDir,
+				requested,
+				orphanConnectorReconcileOps{
+					resolveOpts: func(conn connector.Connector) (connector.SetupOpts, error) {
+						if conn.Name() != "windsurf" {
+							return connector.SetupOpts{}, fmt.Errorf("unexpected connector %s", conn.Name())
+						}
+						return opts, nil
+					},
+					clearLock: connector.ClearHookContractLockEntry,
+				},
+			)
+			if err != nil {
+				t.Fatalf("reconcile legacy lock-only registration: %v", err)
+			}
+			afterConfig, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(afterConfig, priorConfig) {
+				t.Fatalf("Windsurf config = %q, want exact prior bytes %q", afterConfig, priorConfig)
+			}
+			if got := connector.LoadHookContractLockEntry(dataDir, "windsurf"); got.Connector != "" {
+				t.Fatalf("orphaned Windsurf lock survived cleanup: %+v", got)
+			}
+			if got := connector.LoadActiveConnectors(dataDir); !reflect.DeepEqual(got, priorRoster) {
+				t.Fatalf("active roster = %v, want exact prior %v", got, priorRoster)
+			}
+			if !connector.ConnectorExplicitlyInactive(dataDir, "windsurf") {
+				t.Fatal("orphaned Windsurf cleanup did not retain its inactive tombstone")
+			}
+		})
+	}
+}
+
+func TestReconcileOrphanedConnectorRegistrationFailureRestoresExactActiveState(t *testing.T) {
+	for _, tc := range []struct {
+		name                 string
+		teardownErr          error
+		verifyErr            error
+		clearErr             error
+		removeHookOnTeardown bool
+		wantHook             bool
+		wantError            string
+	}{
+		{name: "teardown", teardownErr: errors.New("injected teardown failure"), wantHook: true, wantError: "teardown lock-only connector"},
+		{name: "verify", verifyErr: errors.New("injected verify failure"), wantHook: true, wantError: "verify lock-only connector"},
+		{name: "lock-clear", clearErr: errors.New("injected lock clear failure"), removeHookOnTeardown: true, wantError: "clear lock-only connector"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := testenv.PrivateTempDir(t)
+			hookPath := filepath.Join(testenv.PrivateTempDir(t), "windsurf-hook")
+			const hookBody = "truthful pre-reconciliation hook bytes\n"
+			if err := os.WriteFile(hookPath, []byte(hookBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			conn := &orphanReconcileFailureConnector{
+				bootStubConnector: bootStubConnector{
+					stubConnector: stubConnector{name: "windsurf"},
+					artifactPath:  hookPath,
+				},
+				hookPath:             hookPath,
+				removeHookOnTeardown: tc.removeHookOnTeardown,
+				teardownErr:          tc.teardownErr,
+				verifyErr:            tc.verifyErr,
+			}
+			opts := connector.SetupOpts{
+				DataDir:       dataDir,
+				HookFailMode:  "closed",
+				GuardrailMode: "action",
+			}
+			if err := connector.SaveFreshHookContractLockEntry(
+				dataDir,
+				connector.NewHookContractLockEntry(opts, conn, "0.8.10"),
+			); err != nil {
+				t.Fatal(err)
+			}
+			priorRoster := []string{"claudecode", "codex", "cursor", "omnigent"}
+			if err := connector.SaveActiveConnectors(dataDir, priorRoster); err != nil {
+				t.Fatal(err)
+			}
+			activePath := filepath.Join(dataDir, "active_connector.json")
+			lockPath := filepath.Join(dataDir, "hook_contract_lock.json")
+			priorActive, err := os.ReadFile(activePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			priorLock, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry := connector.NewRegistry()
+			registry.RegisterBuiltin(conn)
+			clearCalls := 0
+			err = reconcileOrphanedConnectorRegistrations(
+				context.Background(),
+				registry,
+				dataDir,
+				append(append([]string(nil), priorRoster...), "copilot"),
+				orphanConnectorReconcileOps{
+					resolveOpts: func(connector.Connector) (connector.SetupOpts, error) { return opts, nil },
+					clearLock: func(dataDir, name string) error {
+						clearCalls++
+						if tc.clearErr != nil {
+							return tc.clearErr
+						}
+						return connector.ClearHookContractLockEntry(dataDir, name)
+					},
+				},
+			)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("reconciliation error = %v, want %q", err, tc.wantError)
+			}
+			if body, readErr := os.ReadFile(activePath); readErr != nil || !reflect.DeepEqual(body, priorActive) {
+				t.Fatalf("active state = %q, %v; want exact prior bytes %q", body, readErr, priorActive)
+			}
+			if connector.ConnectorExplicitlyInactive(dataDir, "windsurf") {
+				t.Fatal("failed reconciliation committed a new inactive tombstone")
+			}
+			if body, readErr := os.ReadFile(lockPath); readErr != nil || !reflect.DeepEqual(body, priorLock) {
+				t.Fatalf("lock state = %q, %v; want exact prior bytes %q", body, readErr, priorLock)
+			}
+			hookBodyAfter, hookErr := os.ReadFile(hookPath)
+			if tc.wantHook {
+				if hookErr != nil || string(hookBodyAfter) != hookBody {
+					t.Fatalf("hook state = %q, %v; want exact prior hook bytes", hookBodyAfter, hookErr)
+				}
+			} else if !os.IsNotExist(hookErr) {
+				t.Fatalf("verified cleanup left hook state %q, %v", hookBodyAfter, hookErr)
+			}
+			if tc.clearErr != nil && clearCalls != 1 {
+				t.Fatalf("lock clear calls = %d, want 1", clearCalls)
+			}
+		})
+	}
+}
+
+func TestReconcileOrphanedConnectorRegistrationRequiresProtectedActiveAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		activeBody []byte
+	}{
+		{name: "missing"},
+		{name: "malformed", activeBody: []byte("{malformed active state")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := testenv.PrivateTempDir(t)
+			hookPath := filepath.Join(testenv.PrivateTempDir(t), "windsurf-hook")
+			const hookBody = "protected orphan hook bytes\n"
+			if err := os.WriteFile(hookPath, []byte(hookBody), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			conn := &orphanReconcileFailureConnector{
+				bootStubConnector: bootStubConnector{
+					stubConnector: stubConnector{name: "windsurf"},
+					artifactPath:  hookPath,
+				},
+				hookPath: hookPath,
+			}
+			opts := connector.SetupOpts{DataDir: dataDir, HookFailMode: "closed", GuardrailMode: "action"}
+			if err := connector.SaveFreshHookContractLockEntry(
+				dataDir,
+				connector.NewHookContractLockEntry(opts, conn, "0.8.10"),
+			); err != nil {
+				t.Fatal(err)
+			}
+			activePath := filepath.Join(dataDir, "active_connector.json")
+			if tc.activeBody != nil {
+				if err := os.WriteFile(activePath, tc.activeBody, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			lockPath := filepath.Join(dataDir, "hook_contract_lock.json")
+			priorLock, err := os.ReadFile(lockPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry := connector.NewRegistry()
+			registry.RegisterBuiltin(conn)
+			clearCalls := 0
+			err = reconcileOrphanedConnectorRegistrations(
+				context.Background(),
+				registry,
+				dataDir,
+				[]string{"claudecode", "codex", "copilot", "cursor", "omnigent"},
+				orphanConnectorReconcileOps{
+					resolveOpts: func(connector.Connector) (connector.SetupOpts, error) { return opts, nil },
+					clearLock: func(dataDir, name string) error {
+						clearCalls++
+						return connector.ClearHookContractLockEntry(dataDir, name)
+					},
+				},
+			)
+			if err == nil || !strings.Contains(err.Error(), "protected active connector") {
+				t.Fatalf("reconciliation error = %v, want protected active-state failure", err)
+			}
+			if conn.teardownCalls != 0 || clearCalls != 0 {
+				t.Fatalf("destructive calls = teardown %d clear %d, want zero", conn.teardownCalls, clearCalls)
+			}
+			if body, readErr := os.ReadFile(lockPath); readErr != nil || !reflect.DeepEqual(body, priorLock) {
+				t.Fatalf("lock state = %q, %v; want exact prior bytes %q", body, readErr, priorLock)
+			}
+			if body, readErr := os.ReadFile(hookPath); readErr != nil || string(body) != hookBody {
+				t.Fatalf("hook state = %q, %v; want exact prior bytes", body, readErr)
+			}
+			if tc.activeBody == nil {
+				if _, statErr := os.Stat(activePath); !os.IsNotExist(statErr) {
+					t.Fatalf("missing active state was mutated: %v", statErr)
+				}
+			} else if body, readErr := os.ReadFile(activePath); readErr != nil || !reflect.DeepEqual(body, tc.activeBody) {
+				t.Fatalf("malformed active state = %q, %v; want exact bytes %q", body, readErr, tc.activeBody)
+			}
+		})
 	}
 }
 

@@ -296,6 +296,73 @@ func LoadActiveConnectors(dataDir string) []string {
 	return names
 }
 
+// LoadProtectedActiveConnectors returns the exact authoritative active roster
+// required before destructive lock-only registration recovery. Legacy,
+// missing, malformed, redirected, insufficiently protected, or non-canonical
+// state is not teardown authority and fails closed.
+func LoadProtectedActiveConnectors(dataDir string) ([]string, error) {
+	body, exists, err := readRequiredStablePrivateStateFile(
+		dataDir,
+		activeConnectorFile,
+		activeConnectorStateMaxBytes,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, errors.New("protected active connector state is missing")
+	}
+	var state connectorState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return nil, fmt.Errorf("decode protected active connector state: %w", err)
+	}
+	if state.Version < 2 || state.Version > activeConnectorStateVersion {
+		return nil, fmt.Errorf("unsupported protected active connector state version %d", state.Version)
+	}
+	if strings.TrimSpace(state.UpdatedAt) != state.UpdatedAt || state.UpdatedAt == "" {
+		return nil, errors.New("protected active connector state has no canonical freshness timestamp")
+	}
+	if _, err := time.Parse(time.RFC3339, state.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("parse protected active connector state freshness: %w", err)
+	}
+	names, err := canonicalProtectedConnectorNames("active", state.Names)
+	if err != nil {
+		return nil, err
+	}
+	inactive, err := canonicalProtectedConnectorNames("inactive", state.InactiveNames)
+	if err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		if state.Name != "" {
+			return nil, errors.New("protected active connector state has a primary name without an active roster")
+		}
+	} else if state.Name != names[0] {
+		return nil, errors.New("protected active connector state primary name does not match its canonical roster")
+	}
+	for _, name := range names {
+		if containsConnectorName(inactive, name) {
+			return nil, fmt.Errorf("protected active connector state names %q as both active and inactive", name)
+		}
+	}
+	return names, nil
+}
+
+func canonicalProtectedConnectorNames(field string, rawNames []string) ([]string, error) {
+	names := make([]string, len(rawNames))
+	for i, rawName := range rawNames {
+		name := normalizeConnectorName(rawName)
+		if name == "" || name != rawName {
+			return nil, fmt.Errorf("protected active connector state has non-canonical %s name %q", field, rawName)
+		}
+		if i > 0 && names[i-1] >= name {
+			return nil, fmt.Errorf("protected active connector state has unsorted or duplicate %s name %q", field, rawName)
+		}
+		names[i] = name
+	}
+	return names, nil
+}
+
 // ReadActiveConnectorState reads the active connector set without collapsing
 // an explicitly empty state file into the same result as a missing or corrupt
 // file. Callers that need teardown intent must use ConnectorExplicitlyInactive;
@@ -598,6 +665,48 @@ func LoadHookContractLockEntry(dataDir, connectorName string) HookContractLockEn
 		}
 	}
 	return entry
+}
+
+// LoadProtectedHookContractLockEntries returns the complete validated lock
+// roster from the private runtime-state file. Callers use this only for
+// reconciliation: a lock-only connector must never be silently ignored when
+// the active roster no longer names it. Unlike loadHookContractLock, this
+// reader fails closed on malformed, redirected, or insufficiently protected
+// state instead of converting it to an empty document.
+func LoadProtectedHookContractLockEntries(dataDir string) (map[string]HookContractLockEntry, error) {
+	body, exists, err := readRequiredStablePrivateStateFile(
+		dataDir,
+		hookContractLockFile,
+		hookContractLockMaxBytes,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return map[string]HookContractLockEntry{}, nil
+	}
+	var lock hookContractLock
+	if err := json.Unmarshal(body, &lock); err != nil {
+		return nil, fmt.Errorf("decode hook contract lock: %w", err)
+	}
+	if lock.Version < 1 || lock.Version > hookContractLockVersion || lock.Connectors == nil {
+		return nil, fmt.Errorf("unsupported or incomplete hook contract lock version %d", lock.Version)
+	}
+	entries := make(map[string]HookContractLockEntry, len(lock.Connectors))
+	for rawName, entry := range lock.Connectors {
+		name := normalizeConnectorName(rawName)
+		if name == "" || name != strings.TrimSpace(rawName) {
+			return nil, fmt.Errorf("hook contract lock has non-canonical connector key %q", rawName)
+		}
+		if _, duplicate := entries[name]; duplicate {
+			return nil, fmt.Errorf("hook contract lock has duplicate connector key %q", name)
+		}
+		if normalizeConnectorName(entry.Connector) != name {
+			return nil, fmt.Errorf("hook contract lock entry %q names connector %q", name, entry.Connector)
+		}
+		entries[name] = entry
+	}
+	return entries, nil
 }
 
 func SaveHookContractLockEntry(dataDir string, entry HookContractLockEntry) error {

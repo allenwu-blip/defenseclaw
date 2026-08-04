@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -3122,6 +3123,29 @@ func (s *Sidecar) runGuardrailMulti(ctx context.Context) error {
 		return s.runManagedEnterpriseMultiHookGuardrail(ctx, registry, conns, apiToken, proxyAddr, apiAddr, masterKey)
 	}
 
+	// A pre-transaction runtime may contain an old lock-only registration that
+	// is absent from both the authoritative active roster and current config.
+	// Reconcile that orphan before capturing the requested setup transaction:
+	// otherwise every later exact-lock readiness check fails while the stale
+	// host hook remains live. This recovery commits only after the connector's
+	// normal teardown and VerifyClean paths prove the recorded location clean.
+	if err := reconcileOrphanedConnectorRegistrations(
+		ctx,
+		registry,
+		s.currentConfig().DataDir,
+		names,
+		orphanConnectorReconcileOps{
+			resolveOpts: func(conn connector.Connector) (connector.SetupOpts, error) {
+				return s.connectorSetupOptsChecked(conn, apiToken, proxyAddr, apiAddr)
+			},
+			clearLock: connector.ClearHookContractLockEntry,
+		},
+	); err != nil {
+		reconcileErr := fmt.Errorf("reconcile orphaned connector registration: %w", err)
+		s.health.SetGuardrail(StateError, reconcileErr.Error(), nil)
+		return reconcileErr
+	}
+
 	// Set-difference teardown: any connector active on a previous boot but
 	// absent from the current set is torn down once, before setup. Uses a
 	// base opts carrying just the fields Teardown needs.
@@ -4498,6 +4522,179 @@ func teardownRemovedConnectors(registry *connector.Registry, previous, current [
 		fmt.Fprintf(os.Stderr, "[guardrail] removed connector %s teardown verified clean\n", prevName)
 	}
 	return failed
+}
+
+type orphanConnectorOptsResolver func(connector.Connector) (connector.SetupOpts, error)
+
+type orphanConnectorReconcileOps struct {
+	resolveOpts orphanConnectorOptsResolver
+	clearLock   func(dataDir, connectorName string) error
+}
+
+// reconcileOrphanedConnectorRegistrations removes protected lock evidence and
+// host hooks that are absent from both the last published active roster and the
+// requested configuration. These entries can be left by pre-transactional
+// connector switches. Treating them as readiness-irrelevant would weaken the
+// full-lock gate, while restoring them into the active roster would invent
+// configuration. Cleanup therefore runs as a bounded recovery transaction
+// before the requested setup snapshot is captured.
+func reconcileOrphanedConnectorRegistrations(
+	ctx context.Context,
+	registry *connector.Registry,
+	dataDir string,
+	desired []string,
+	ops orphanConnectorReconcileOps,
+) error {
+	if registry == nil || ops.resolveOpts == nil || ops.clearLock == nil {
+		return errors.New("orphaned connector reconciliation owner is unavailable")
+	}
+	entries, err := connector.LoadProtectedHookContractLockEntries(dataDir)
+	if err != nil {
+		return fmt.Errorf("load protected hook contract roster: %w", err)
+	}
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, rawName := range desired {
+		if name := strings.ToLower(strings.TrimSpace(rawName)); name != "" {
+			desiredSet[name] = struct{}{}
+		}
+	}
+	needsAuthority := false
+	for name := range entries {
+		if _, requested := desiredSet[name]; !requested {
+			needsAuthority = true
+			break
+		}
+	}
+	if !needsAuthority {
+		return nil
+	}
+	previous, err := connector.LoadProtectedActiveConnectors(dataDir)
+	if err != nil {
+		return fmt.Errorf("load protected active connector roster: %w", err)
+	}
+	retained := make(map[string]struct{}, len(desiredSet)+len(previous))
+	for name := range desiredSet {
+		retained[name] = struct{}{}
+	}
+	for _, name := range previous {
+		retained[name] = struct{}{}
+	}
+	orphans := make([]string, 0)
+	for name := range entries {
+		if _, keep := retained[name]; !keep {
+			orphans = append(orphans, name)
+		}
+	}
+	sort.Strings(orphans)
+
+	for _, name := range orphans {
+		entry := entries[name]
+		conn, ok := registry.Get(name)
+		if !ok {
+			return fmt.Errorf("protected lock-only connector %q is not registered", name)
+		}
+		opts, err := ops.resolveOpts(conn)
+		if err != nil {
+			return fmt.Errorf("resolve lock-only connector %s teardown scope: %w", name, err)
+		}
+		point := multiConnectorSetupRollbackPoint{
+			conn:         conn,
+			opts:         opts,
+			previousLock: entry,
+		}
+		if entry.RegistrationPosture != nil {
+			opts, err = priorConnectorSetupOpts(point)
+			if err != nil {
+				return fmt.Errorf("resolve lock-only connector %s recorded posture: %w", name, err)
+			}
+		} else {
+			// Older entries predate registration_posture. They are recoverable
+			// only when the connector's current canonical config locations are
+			// exactly the protected locations recorded in the lock.
+			if err := requireExactOrphanHookLocations(opts, conn, entry); err != nil {
+				return fmt.Errorf("validate lock-only connector %s teardown scope: %w", name, err)
+			}
+			opts.HookFailMode = entry.HookFailMode
+			opts.AgentVersion = entry.RawAgentVersion
+			opts.AgentExecutable = entry.AgentExecutable
+			opts.HookContractID = entry.ContractID
+		}
+		restoreActiveState, err := connector.MarkConnectorInactive(dataDir, name)
+		if err != nil {
+			return fmt.Errorf("mark lock-only connector %s inactive: %w", name, err)
+		}
+		if err := conn.Teardown(ctx, opts); err != nil {
+			return restoreOrphanActiveStateAfterFailure(
+				restoreActiveState,
+				fmt.Errorf("teardown lock-only connector %s: %w", name, err),
+			)
+		}
+		if err := conn.VerifyClean(opts); err != nil {
+			return restoreOrphanActiveStateAfterFailure(
+				restoreActiveState,
+				fmt.Errorf("verify lock-only connector %s cleanup: %w", name, err),
+			)
+		}
+		if err := ops.clearLock(dataDir, name); err != nil {
+			return restoreOrphanActiveStateAfterFailure(
+				restoreActiveState,
+				fmt.Errorf("clear lock-only connector %s contract evidence: %w", name, err),
+			)
+		}
+		fmt.Fprintf(os.Stderr, "[guardrail] reconciled orphaned connector registration: %s\n", name)
+	}
+	return nil
+}
+
+func restoreOrphanActiveStateAfterFailure(restore func() error, stageErr error) error {
+	if restore == nil {
+		return errors.Join(stageErr, errors.New("restore prior active connector state: restore authority is unavailable"))
+	}
+	if err := restore(); err != nil {
+		return errors.Join(stageErr, fmt.Errorf("restore prior active connector state: %w", err))
+	}
+	return stageErr
+}
+
+func requireExactOrphanHookLocations(
+	opts connector.SetupOpts,
+	conn connector.Connector,
+	entry connector.HookContractLockEntry,
+) error {
+	recorded, err := canonicalConnectorPathSet(entry.Locations.HookConfigPaths)
+	if err != nil {
+		return fmt.Errorf("recorded hook config paths: %w", err)
+	}
+	resolved, err := canonicalConnectorPathSet(connector.ResolvedConnectorLocations(opts, conn).HookConfigPaths)
+	if err != nil {
+		return fmt.Errorf("resolved hook config paths: %w", err)
+	}
+	if len(recorded) == 0 || !reflect.DeepEqual(recorded, resolved) {
+		return fmt.Errorf("protected hook config locations do not match the current canonical teardown scope")
+	}
+	return nil
+}
+
+func canonicalConnectorPathSet(paths []string) (map[string]struct{}, error) {
+	set := make(map[string]struct{}, len(paths))
+	for _, rawPath := range paths {
+		path := strings.TrimSpace(rawPath)
+		if path == "" || path != rawPath || strings.ContainsAny(path, "\x00\r\n") || !filepath.IsAbs(path) {
+			return nil, fmt.Errorf("non-canonical absolute path %q", rawPath)
+		}
+		clean := filepath.Clean(path)
+		if clean != path {
+			return nil, fmt.Errorf("non-canonical absolute path %q", rawPath)
+		}
+		if runtime.GOOS == "windows" {
+			clean = strings.ToLower(clean)
+		}
+		if _, duplicate := set[clean]; duplicate {
+			return nil, fmt.Errorf("duplicate path %q", rawPath)
+		}
+		set[clean] = struct{}{}
+	}
+	return set, nil
 }
 
 // removedConnectorRollbackCandidates captures enough unfiltered authority to

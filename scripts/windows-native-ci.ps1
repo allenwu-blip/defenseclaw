@@ -2694,6 +2694,9 @@ $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
 $pidPath = Join-Path $DataRoot 'gateway.pid'
 $jsonlPath = Join-Path $DataRoot 'gateway.jsonl'
+# Initialize the NetTCPIP command and its CIM provider before publishing sampler
+# readiness so their fresh-process cost cannot consume the sample deadline.
+$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort $ApiPort -ErrorAction Stop)
 $stream = [IO.FileStream]::new($OutcomePath, 'CreateNew', 'Write', 'Read')
 try {
     $header = $utf8.GetBytes("schema=1`n")
