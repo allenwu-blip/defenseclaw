@@ -2350,9 +2350,17 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Read-OfficialAntigravityReleaseManifest\b.*?(?=\nfunction Assert-FreshAntigravityVendorBaseline\b)'
     ).Value
+    $officialClientIdentityContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-OfficialAntigravityClientIdentity\b.*?(?=\nfunction Assert-OfficialAntigravityClient\b)'
+    ).Value
     $officialClientContract = [regex]::Match(
         $harnessText,
-        '(?s)function Assert-OfficialAntigravityClient\b.*?(?=\nfunction Install-OfficialAntigravityClient\b)'
+        '(?s)function Assert-OfficialAntigravityClient\b.*?(?=\nfunction Assert-PackagedAntigravityTrustedDiscovery\b)'
+    ).Value
+    $officialClientInstallContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Install-OfficialAntigravityClient\b.*?(?=\nfunction Invoke-AuthenticatedAntigravitySetup\b)'
     ).Value
     $trustedDiscoveryContract = [regex]::Match(
         $harnessText,
@@ -2401,14 +2409,76 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText -match [regex]::Escape('https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.10-6423386432339968/windows-x64/cli_windows_x64.exe') -and
         $officialManifestContract -match 'official Antigravity release manifest drifted') `
         'official installer and update provenance reject hash, option-contract, redirect, host, URL, version, and release-digest drift'
-    Assert-True ($officialClientContract -match "Join-Path \`$Paths.LocalAppData 'agy\\bin\\agy\.exe'" -and
-        $officialClientContract -match 'Get-AuthenticodeSignature' -and
-        $harnessText -match 'Google LLC' -and
-        $harnessText -match '607A3EDAA64933E94422FC8F0C80388E0590986C' -and
-        $officialClientContract -match '1\\\.1\\\.10' -and
-        $harnessText -match "'--skip-aliases', '--skip-path'" -and
-        $harnessText -notmatch "Install-OfficialAntigravityClient.*?--dir") `
+    $officialClientContractPredicate = {
+        param(
+            [string]$IdentityContract,
+            [string]$ClientContract,
+            [string]$InstallContract,
+            [string]$Source
+        )
+        $identityCall = $ClientContract.IndexOf(
+            'Assert-OfficialAntigravityClientIdentity $Paths',
+            [StringComparison]::Ordinal
+        )
+        $versionProbe = $ClientContract.IndexOf(
+            'Invoke-NativeProcess',
+            [StringComparison]::Ordinal
+        )
+        $manifestRead = $InstallContract.IndexOf(
+            'Read-OfficialAntigravityReleaseManifest',
+            [StringComparison]::Ordinal
+        )
+        $installerRun = $InstallContract.IndexOf(
+            'Invoke-NativeProcess',
+            [StringComparison]::Ordinal
+        )
+        $clientValidation = $InstallContract.IndexOf(
+            'Assert-OfficialAntigravityClient $Paths',
+            [StringComparison]::Ordinal
+        )
+        return (
+            -not [string]::IsNullOrWhiteSpace($IdentityContract) -and
+            -not [string]::IsNullOrWhiteSpace($ClientContract) -and
+            -not [string]::IsNullOrWhiteSpace($InstallContract) -and
+            $IdentityContract -match "Join-Path \`$Paths.LocalAppData 'agy\\bin\\agy\.exe'" -and
+            $IdentityContract -match '(?s)Assert-DisposableNoReparseAncestors.*?-AllowedRoot \$Paths\.LocalAppData -RequireExists' -and
+            $IdentityContract -match '(?s)PSIsContainer.*?ReparsePoint' -and
+            $IdentityContract -match '(?s)Get-FileHash.*?-Algorithm SHA512.*?\$hash -cne \$script:AntigravityOfficialBinarySHA512' -and
+            $IdentityContract -match '(?s)Get-AuthenticodeSignature.*?Status.*?SignerCertificate\.Subject -cne \$script:AntigravityOfficialSignerSubject.*?SignerCertificate\.Thumbprint -cne \$script:AntigravityOfficialSignerThumbprint' -and
+            $Source.Contains('$script:AntigravityOfficialVersion = ''1.1.10''') -and
+            $Source.Contains('$script:AntigravityOfficialBinarySHA512 = ''b2fee3202b1083308621715e3332c4b8280a0dfb0e13a6de0d4140db09a64d9c877b3274f3dc1dbaee86c0c67b4f665ef1c260fe5d4ec761a8cd48feaf19d8ea''') -and
+            $Source.Contains('$script:AntigravityOfficialSignerSubject = ''CN=Google LLC, O=Google LLC, L=Mountain View, S=California, C=US, SERIALNUMBER=3582691, OID.2.5.4.15=Private Organization, OID.1.3.6.1.4.1.311.60.2.1.2=Delaware, OID.1.3.6.1.4.1.311.60.2.1.3=US''') -and
+            $Source.Contains('$script:AntigravityOfficialSignerThumbprint = ''607A3EDAA64933E94422FC8F0C80388E0590986C''') -and
+            $identityCall -ge 0 -and $versionProbe -gt $identityCall -and
+            $ClientContract -match '(?s)''--version''.*?1\\\.1\\\.10.*?\$versions\.Count -ne 1' -and
+            $InstallContract -match "'--skip-aliases', '--skip-path'" -and
+            $InstallContract -notmatch '(?i)--dir' -and
+            $manifestRead -ge 0 -and $installerRun -gt $manifestRead -and
+            $clientValidation -gt $installerRun
+        )
+    }
+    Assert-True (& $officialClientContractPredicate $officialClientIdentityContract `
+        $officialClientContract $officialClientInstallContract $harnessText) `
         'canonical client install pins exact LocalAppData path, official bytes/version/signature, and documented no-alias/no-PATH flags'
+    $officialClientContractMutations = @(
+        [pscustomobject]@{ Name = 'noncanonical executable path'; Identity = $officialClientIdentityContract.Replace('agy\bin\agy.exe', 'agy\bin\other.exe'); Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'missing non-reparse custody'; Identity = $officialClientIdentityContract.Replace('Assert-DisposableNoReparseAncestors', 'Skip-DisposableNoReparseAncestors'); Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'weakened binary digest'; Identity = $officialClientIdentityContract.Replace('-Algorithm SHA512', '-Algorithm SHA256'); Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'missing Authenticode verification'; Identity = $officialClientIdentityContract.Replace('Get-AuthenticodeSignature', 'Skip-AuthenticodeSignature'); Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'unreviewed binary digest'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText.Replace('b2fee3202b1083308621715e3332c4b8280a0dfb0e13a6de0d4140db09a64d9c877b3274f3dc1dbaee86c0c67b4f665ef1c260fe5d4ec761a8cd48feaf19d8ea', ('0' * 128)) },
+        [pscustomobject]@{ Name = 'unreviewed signer subject'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText.Replace('SERIALNUMBER=3582691', 'SERIALNUMBER=0000000') },
+        [pscustomobject]@{ Name = 'unreviewed signer thumbprint'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract; Source = $harnessText.Replace('607A3EDAA64933E94422FC8F0C80388E0590986C', ('0' * 40)) },
+        [pscustomobject]@{ Name = 'version before identity'; Identity = $officialClientIdentityContract; Client = $officialClientContract.Replace('Assert-OfficialAntigravityClientIdentity $Paths', "Invoke-NativeProcess`n    Assert-OfficialAntigravityClientIdentity `$Paths"); Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'unreviewed client version'; Identity = $officialClientIdentityContract; Client = $officialClientContract.Replace('1\.1\.10', '1\.1\.11'); Install = $officialClientInstallContract; Source = $harnessText },
+        [pscustomobject]@{ Name = 'missing no-PATH installer flag'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract.Replace("'--skip-aliases', '--skip-path'", "'--skip-aliases'"); Source = $harnessText },
+        [pscustomobject]@{ Name = 'installer directory override'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract.Replace("'--skip-aliases', '--skip-path'", "'--skip-aliases', '--skip-path', '--dir'"); Source = $harnessText },
+        [pscustomobject]@{ Name = 'client validation before install'; Identity = $officialClientIdentityContract; Client = $officialClientContract; Install = $officialClientInstallContract.Replace('Assert-FreshAntigravityVendorBaseline $Paths', "Assert-OfficialAntigravityClient `$Paths`n    Assert-FreshAntigravityVendorBaseline `$Paths"); Source = $harnessText }
+    )
+    foreach ($mutation in $officialClientContractMutations) {
+        Assert-True (-not (& $officialClientContractPredicate $mutation.Identity `
+            $mutation.Client $mutation.Install $mutation.Source)) `
+            "canonical Antigravity client contract rejects $($mutation.Name)"
+    }
     Assert-True ($packageBootstrap -match 'Assert-PackagedAntigravityTrustedDiscovery' -and
         $trustedDiscoveryContract -match "'agent', 'discover', '--refresh', '--no-cache', '--json', '--no-emit-otel'" -and
         $trustedDiscoveryContract -match 'packaged trusted-discovery ACL/reparse gate' -and

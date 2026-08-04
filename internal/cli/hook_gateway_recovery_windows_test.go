@@ -74,9 +74,17 @@ func TestTrustedNativeGatewayRecoveryReusesPreparedHookRuntimeAdmission(t *testi
 		LauncherPath:   executable,
 		LauncherSHA256: strings.Repeat("b", 64),
 	}
-	reads := 0
+	delegatedReads := 0
+	fullImageReads := 0
+	stubNativeDelegatedHookRuntimeReader(t, func(gotExecutable string) (hookruntime.State, bool, error) {
+		delegatedReads++
+		if gotExecutable != executable {
+			t.Fatalf("delegated runtime reader executable = %q, want %q", gotExecutable, executable)
+		}
+		return state, true, nil
+	})
 	stubNativeHookRuntimeReader(t, func(gotExecutable string) (hookruntime.State, bool, error) {
-		reads++
+		fullImageReads++
 		if gotExecutable != executable {
 			t.Fatalf("runtime reader executable = %q, want %q", gotExecutable, executable)
 		}
@@ -89,8 +97,12 @@ func TestTrustedNativeGatewayRecoveryReusesPreparedHookRuntimeAdmission(t *testi
 	if recovery := trustedNativeGatewayRecovery(); recovery == nil {
 		t.Fatal("prepared cold-start-capable runtime did not install recovery")
 	}
-	if reads != 1 {
-		t.Fatalf("trusted runtime admission reads = %d, want one process-local admission", reads)
+	if delegatedReads != 1 || fullImageReads != 0 {
+		t.Fatalf(
+			"runtime admission reads = delegated %d, full-image %d; want one parent-bound read and no second full hash",
+			delegatedReads,
+			fullImageReads,
+		)
 	}
 }
 

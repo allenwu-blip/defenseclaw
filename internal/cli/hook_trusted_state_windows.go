@@ -34,6 +34,7 @@ const (
 var (
 	hookExecutableOverride           string
 	nativeHookRuntimeReader          = hookruntime.ReadTrustedForExecutable
+	nativeDelegatedHookRuntimeReader = hookruntime.ReadTrustedDelegatedForExecutable
 	enterpriseManagedRuntimeResolver = enterprisehooks.ResolveWindowsClaudeManagedHookRuntime
 )
 
@@ -94,7 +95,10 @@ func NativeHookRuntimeNoop() bool {
 		return enterpriseManagedHookRuntimeNoop()
 	}
 	executable := nativeHookExecutable()
-	state, recognized, err := nativeHookRuntimeReader(executable)
+	state, recognized, err := nativeDelegatedHookRuntimeReader(executable)
+	if !recognized {
+		state, recognized, err = nativeHookRuntimeReader(executable)
+	}
 	nativeHookRuntimeSnapshot.Lock()
 	nativeHookRuntimeSnapshot.prepared = true
 	nativeHookRuntimeSnapshot.executable = executable

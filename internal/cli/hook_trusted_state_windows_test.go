@@ -41,6 +41,13 @@ func stubNativeHookRuntimeReader(t *testing.T, read func(string) (hookruntime.St
 	})
 }
 
+func stubNativeDelegatedHookRuntimeReader(t *testing.T, read func(string) (hookruntime.State, bool, error)) {
+	t.Helper()
+	previous := nativeDelegatedHookRuntimeReader
+	nativeDelegatedHookRuntimeReader = read
+	t.Cleanup(func() { nativeDelegatedHookRuntimeReader = previous })
+}
+
 func stubEnterpriseManagedRuntimeResolver(t *testing.T, resolve func(string) (string, bool, error)) {
 	t.Helper()
 	previous := enterpriseManagedRuntimeResolver
