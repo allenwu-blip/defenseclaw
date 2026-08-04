@@ -42,7 +42,7 @@ from defenseclaw.paths import (
     bundled_rego_dir,
     bundled_splunk_bridge_dir,
 )
-from defenseclaw.process_liveness import _process_image_path_windows
+from defenseclaw.process_liveness import _process_image_path_windows, _process_parent_id_windows
 from defenseclaw.safety import DotenvValueError, sanitize_dotenv_value
 
 _stdout_is_tty = terminal_checkbox.stdout_is_tty
@@ -51,7 +51,9 @@ _checkbox_key_name = terminal_checkbox.checkbox_key_name
 _render_checkbox_menu = terminal_checkbox.render_checkbox_menu
 _INTERNAL_SETUP_CONNECTOR_ENV = "DEFENSECLAW_INTERNAL_SETUP_CONNECTOR"
 _INTERNAL_SETUP_PARENT_ENV = "DEFENSECLAW_INTERNAL_SETUP_PARENT"
+_INSTALL_ROOT_ENV = "DEFENSECLAW_INSTALL_ROOT"
 _WINDOWS_SETUP_EXECUTABLE = "DefenseClawSetup-x64.exe"
+_WINDOWS_LAUNCHER_EXECUTABLE = "defenseclaw.exe"
 
 
 @click.command("init")
@@ -1900,7 +1902,7 @@ def _native_setup_antigravity_invocation_allowed(
 
 
 def _internal_antigravity_setup_parent_matches() -> bool:
-    """Bind packaged Antigravity initialization to the actual Setup parent."""
+    """Bind packaged Antigravity initialization to Setup through its launcher."""
 
     if os.environ.get(_INTERNAL_SETUP_CONNECTOR_ENV, "").strip().lower() != "antigravity":
         return False
@@ -1909,13 +1911,27 @@ def _internal_antigravity_setup_parent_matches() -> bool:
         return False
     if os.path.basename(expected).casefold() != _WINDOWS_SETUP_EXECUTABLE.casefold():
         return False
+    # The packaged launcher removes ambient copies and restores this value
+    # from its validated installer-owned state before starting Python.
+    install_root = os.environ.get(_INSTALL_ROOT_ENV, "").strip()
+    if not install_root or not os.path.isabs(install_root):
+        return False
+    expected_launcher = os.path.join(install_root, "bin", _WINDOWS_LAUNCHER_EXECUTABLE)
+    launcher_pid = os.getppid()
     try:
-        actual = _process_image_path_windows(os.getppid())
+        actual_launcher = _process_image_path_windows(launcher_pid)
+        setup_pid = _process_parent_id_windows(launcher_pid)
+        actual_setup = _process_image_path_windows(setup_pid) if setup_pid else None
     except OSError:
         return False
-    if not actual:
+    if not actual_launcher or not actual_setup:
         return False
-    return os.path.normcase(os.path.abspath(actual)) == os.path.normcase(os.path.abspath(expected))
+    return (
+        os.path.normcase(os.path.abspath(actual_launcher))
+        == os.path.normcase(os.path.abspath(expected_launcher))
+        and os.path.normcase(os.path.abspath(actual_setup))
+        == os.path.normcase(os.path.abspath(expected))
+    )
 
 
 def _render_first_run_report(report, renderer) -> None:

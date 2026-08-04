@@ -508,19 +508,90 @@ class TestInitFirstRunBackend(unittest.TestCase):
         from defenseclaw.commands import cmd_init
 
         expected = os.path.join(self.tmp_dir, "DefenseClawSetup-x64.exe")
+        install_root = os.path.join(self.tmp_dir, "installed")
+        launcher = os.path.join(install_root, "bin", "defenseclaw.exe")
+        launcher_pid = 101
+        setup_pid = 202
+        setup_args = [
+            "--non-interactive",
+            "--yes",
+            "--connector",
+            "antigravity",
+            "--profile",
+            "observe",
+            "--skip-install",
+            "--no-start-gateway",
+            "--no-verify",
+            "--json-summary",
+        ]
         environment = {
             cmd_init._INTERNAL_SETUP_CONNECTOR_ENV: "antigravity",
             cmd_init._INTERNAL_SETUP_PARENT_ENV: expected,
+            cmd_init._INSTALL_ROOT_ENV: install_root,
         }
         with patch.dict(os.environ, environment, clear=False), patch(
+            "defenseclaw.commands.cmd_init.os.getppid",
+            return_value=launcher_pid,
+        ), patch(
+            "defenseclaw.commands.cmd_init._process_parent_id_windows",
+            return_value=setup_pid,
+        ), patch(
             "defenseclaw.commands.cmd_init._process_image_path_windows",
-            return_value=expected,
+            side_effect=lambda pid: {launcher_pid: launcher, setup_pid: expected}.get(pid),
         ):
             self.assertTrue(cmd_init._internal_antigravity_setup_parent_matches())
+            with patch(
+                "defenseclaw.commands.cmd_init.platform_support.host_os",
+                return_value="windows",
+            ):
+                result = self.runner.invoke(
+                    init_cmd,
+                    setup_args,
+                    obj=AppContext(),
+                    env={"DEFENSECLAW_HOME": self.tmp_dir, **environment},
+                )
+            self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+            self.assertEqual(json.loads(result.output)["connector"], "antigravity")
 
         with patch.dict(os.environ, environment, clear=False), patch(
+            "defenseclaw.commands.cmd_init.os.getppid",
+            return_value=launcher_pid,
+        ), patch(
+            "defenseclaw.commands.cmd_init._process_parent_id_windows",
+            return_value=setup_pid,
+        ), patch(
             "defenseclaw.commands.cmd_init._process_image_path_windows",
-            return_value=os.path.join(self.tmp_dir, "powershell.exe"),
+            side_effect=lambda pid: {
+                launcher_pid: launcher,
+                setup_pid: os.path.join(self.tmp_dir, "powershell.exe"),
+            }.get(pid),
+        ):
+            self.assertFalse(cmd_init._internal_antigravity_setup_parent_matches())
+            with patch(
+                "defenseclaw.commands.cmd_init.platform_support.host_os",
+                return_value="windows",
+            ):
+                result = self.runner.invoke(
+                    init_cmd,
+                    setup_args,
+                    obj=AppContext(),
+                    env={"DEFENSECLAW_HOME": self.tmp_dir, **environment},
+                )
+            self.assertNotEqual(result.exit_code, 0)
+            self.assertIn("internal Antigravity Setup binding is invalid", result.output)
+
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "defenseclaw.commands.cmd_init.os.getppid",
+            return_value=launcher_pid,
+        ), patch(
+            "defenseclaw.commands.cmd_init._process_parent_id_windows",
+            return_value=setup_pid,
+        ), patch(
+            "defenseclaw.commands.cmd_init._process_image_path_windows",
+            side_effect=lambda pid: {
+                launcher_pid: os.path.join(self.tmp_dir, "attacker", "defenseclaw.exe"),
+                setup_pid: expected,
+            }.get(pid),
         ):
             self.assertFalse(cmd_init._internal_antigravity_setup_parent_matches())
 

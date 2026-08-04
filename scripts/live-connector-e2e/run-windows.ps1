@@ -9025,7 +9025,6 @@ function Invoke-AuthenticatedAntigravityHeldStateFixture {
             [IO.File]::Copy($custodyPaths.HookConfig, $fixtureBackup, $false)
             [IO.File]::WriteAllText($custodyPaths.HookConfig, '{"fixture":"mutated"}')
             $privateHookSecurity = [Security.AccessControl.FileSecurity]::new()
-            $privateHookSecurity.SetOwner($identity.User)
             $privateHookSecurity.SetAccessRuleProtection($true, $false)
             foreach ($sid in @($identity.User.Value, 'S-1-5-18', 'S-1-5-32-544')) {
                 $privateRule = [Security.AccessControl.FileSystemAccessRule]::new(

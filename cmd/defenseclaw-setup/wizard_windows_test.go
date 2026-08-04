@@ -417,7 +417,8 @@ func TestWizardChoiceMappings(t *testing.T) {
 }
 
 func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
-	for connectorSelection, connector := range []string{"none", "codex", "claudecode", "copilot", "cursor", "hermes", "windsurf", "omnigent", "opencode"} {
+	for connectorSelection, choice := range wizardConnectorChoices {
+		connector := choice.Value
 		for modeSelection, mode := range []string{"observe", "action"} {
 			for _, startGateway := range []bool{false, true} {
 				name := connector + "/" + mode

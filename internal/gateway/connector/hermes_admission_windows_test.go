@@ -46,6 +46,33 @@ func TestHermesAdmissionAcceptsMergedProtectedReceiptWithoutMutation(t *testing.
 	}
 }
 
+func TestHermesConnectorLifecycleWithProtectedAdmission(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, "hermes-home", "config.yaml")
+	previousConfigPath := HermesConfigPathOverride
+	HermesConfigPathOverride = configPath
+	t.Cleanup(func() { HermesConfigPathOverride = previousConfigPath })
+
+	opts := prepareHermesSetupAdmissionFixture(t, SetupOpts{
+		DataDir:  filepath.Join(root, "defenseclaw-data"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "lifecycle-matrix-token",
+	})
+	conn := NewHermesConnector()
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean before Setup: %v", err)
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	if err := conn.Teardown(context.Background(), opts); err != nil {
+		t.Fatalf("Teardown: %v", err)
+	}
+	if err := conn.VerifyClean(opts); err != nil {
+		t.Fatalf("VerifyClean after Teardown: %v", err)
+	}
+}
+
 func TestHermesSetupAdmissionRejectsChangedPathBytesVersionAndCustodyBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name      string

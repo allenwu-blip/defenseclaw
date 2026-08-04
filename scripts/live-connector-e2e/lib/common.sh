@@ -286,7 +286,7 @@ dc_invoke_hook() {
   bound_event="${event}"
   case "${connector}:${event}" in
     copilot:SessionStart) bound_event="sessionStart" ;;
-    copilot:PreTool-allow|copilot:PreTool-block) bound_event="preToolUse" ;;
+    copilot:PreToolUse) bound_event="preToolUse" ;;
     codex:PreTool-allow|codex:PreTool-block|antigravity:PreTool-allow|antigravity:PreTool-block)
       bound_event="PreToolUse"
       ;;

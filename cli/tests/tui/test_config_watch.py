@@ -444,6 +444,7 @@ async def test_external_mode_refresh_preserves_filter_and_overview_scroll(
 async def test_native_windows_open_tui_observes_external_cli_mode_change(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    current_windows_claude_version_probe: Path,
     current_windows_gateway: Path,
 ) -> None:
     """Two-terminal acceptance: an open TUI observes setup CLI replacement."""
@@ -451,7 +452,7 @@ async def test_native_windows_open_tui_observes_external_cli_mode_change(
     agent_bin = tmp_path / "trusted-agent-bin"
     make_private_directory(agent_bin)
     claude_executable = agent_bin / "claude.exe"
-    shutil.copy2(current_windows_gateway, claude_executable)
+    shutil.copy2(current_windows_claude_version_probe, claude_executable)
     protect_private_file(claude_executable)
 
     initial = _config_payload(tmp_path, {"claudecode": {"mode": "observe"}})
@@ -474,10 +475,8 @@ async def test_native_windows_open_tui_observes_external_cli_mode_change(
     environment = os.environ.copy()
     environment.update(
         {
-            # Connector compatibility is covered separately. This acceptance
-            # targets the open TUI's response to an external config writer and
-            # must not fall back to observe when the CI host lacks Claude Code.
-            "DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "1",
+            # Use the isolated version-probe fixture instead of a live Claude
+            # client while preserving normal version and executable custody.
             "DEFENSECLAW_CONFIG": str(path),
             "DEFENSECLAW_GATEWAY_BIN": str(current_windows_gateway),
             "DEFENSECLAW_HOME": str(tmp_path),

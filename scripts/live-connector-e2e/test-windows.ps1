@@ -1417,7 +1417,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($wizardHarnessText -match "Get-WizardControl \`$window 1 'primary action'" -and
         $wizardHarnessText -match "Send-WizardCommand \`$window 2 'Cancel'") `
         'wizard automation uses standard Win32 IDOK and IDCANCEL semantics'
-    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.9\)' -and
+    Assert-True ($wizardHarnessText -match 'foreach \(\$index in 0\.\.\(\$connectorIndices\.Count - 1\)\)' -and
         $wizardHarnessText -match 'foreach \(\$index in 0\.\.1\)' -and
         $wizardHarnessText -match 'connectorIndices\s*=\s*@\{[^}]*amp\s*=\s*3' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$false' -and
@@ -1436,16 +1436,40 @@ private-secret-name = "DefenseClaw must remain redacted"
         'codex = 1',
         'claudecode = 2',
         'amp = 3',
-        'copilot = 4',
-        'cursor = 5',
-        'hermes = 6',
-        'windsurf = 7',
-        'omnigent = 8',
-        'opencode = 9'
+        'antigravity = 4',
+        'copilot = 5',
+        'cursor = 6',
+        'hermes = 7',
+        'windsurf = 8',
+        'omnigent = 9',
+        'opencode = 10'
     )) {
         Assert-True ($wizardHarnessText.Contains($wizardChoice)) `
             "wizard driver preserves the integrated selection contract: $wizardChoice"
     }
+    $wizardChoiceSource = [regex]::Match(
+        $setupWizardSourceText,
+        '(?s)wizardConnectorChoices = \[\]wizardChoice\{(.*?)\n\s*\}'
+    ).Groups[1].Value
+    $wizardChoiceValues = @([regex]::Matches($wizardChoiceSource, 'Value: "([^"]+)"') |
+        ForEach-Object { $_.Groups[1].Value })
+    $wizardIndexSource = [regex]::Match(
+        $wizardHarnessText,
+        '(?s)\$connectorIndices = @\{(.*?)\r?\n\}'
+    ).Groups[1].Value
+    $wizardIndexValues = @([regex]::Matches(
+        $wizardIndexSource,
+        '(?m)^\s*([a-z]+)\s*=\s*(\d+)\s*$'
+    ) | Sort-Object { [int]$_.Groups[2].Value } | ForEach-Object { $_.Groups[1].Value })
+    $wizardValidateSource = [regex]::Match(
+        $wizardHarnessText,
+        '(?s)\[ValidateSet\((.*?)\)\]\s*\[string\]\$Connector'
+    ).Groups[1].Value
+    $wizardValidateValues = @([regex]::Matches($wizardValidateSource, "'([^']+)'") |
+        ForEach-Object { $_.Groups[1].Value })
+    Assert-True (($wizardChoiceValues -join ',') -ceq ($wizardIndexValues -join ',') -and
+        ($wizardChoiceValues -join ',') -ceq ($wizardValidateValues -join ',')) `
+        'wizard Go choices, driver indices, and accepted connector values have exact ordered parity'
     $wizardInstall = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WizardInstall\b.*?(?=\r?\nfunction )'
