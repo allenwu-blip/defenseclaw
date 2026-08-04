@@ -5363,6 +5363,7 @@ function New-DangerousCommandPayload(
     }
     $toolName = if ($Connector -eq 'opencode') { 'bash' } else { Get-ConnectorToolName }
     $toolEvent = switch ($Connector) {
+        'amp' { 'tool.call' }
         'copilot' { 'preToolUse' }
         'cursor' { 'preToolUse' }
         'hermes' { 'pre_tool_call' }
@@ -5373,13 +5374,15 @@ function New-DangerousCommandPayload(
     $payload = [ordered]@{
         hook_event_name = $toolEvent
         session_id = "dc-windows-contract-$Connector-$Mode"
+        thread_id = "dc-windows-contract-$Connector-$Mode"
         turn_id = "dc-windows-contract-$Connector-$probeID"
+        message_id = "dc-windows-contract-$Connector-$probeID"
         agent_id = "$Connector-windows-contract"
         agent_name = "$Connector Windows contract"
         agent_type = $(if ($Connector -eq 'amp') { 'amp' } else { "$Connector-cli" })
-        source_event_id = "$nativeEvent`:dc-windows-contract-$Connector`:$occurrence"
-        source_sequence = "$occurrence"
-        tool_call_id = "dc-windows-contract-$Connector-$occurrence"
+        source_event_id = "$toolEvent`:dc-windows-contract-$Connector`:$probeID"
+        source_sequence = $probeID
+        tool_call_id = "dc-windows-contract-$Connector-$probeID"
         tool_name = $toolName
         tool_input = [ordered]@{ command = $Command }
     }

@@ -1431,6 +1431,16 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'.*?Invoke-WizardConnectorAcceptance.*?'amp' 'action'" -and
         $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor', 'windsurf'\)\)") `
         'setup acceptance performs Configure Later, reference mode installs, and the established additive connector wizard lifecycle samples'
+    $antigravitySupportedAvailability = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-PackagedAntigravitySupportedAvailability\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($antigravitySupportedAvailability -match
+        '(?s)Invoke-Installed \$Launcher @\(.*?\)\s*\x60\s*@\(0\)\s+300\s+\$LogPath' -and
+        $antigravitySupportedAvailability -match
+        'connector was not detected locally; refusing action-mode hook setup' -and
+        $antigravitySupportedAvailability -match 'unexpectedly wrote hooks') `
+        'supported Antigravity absent-client setup succeeds after a truthful observe downgrade without writing hooks'
     foreach ($wizardChoice in @(
         'none = 0',
         'codex = 1',
