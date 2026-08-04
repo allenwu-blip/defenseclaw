@@ -3037,12 +3037,59 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText -notmatch 'Join-Path \$env:USERPROFILE ''\.codex\\config\.toml''' -and
         $harnessText -notmatch 'Join-Path \$env:USERPROFILE ''\.claude\\settings\.json''') `
         'contract setup, Doctor, and teardown share effective homes and never fall back behind explicit overrides'
-    Assert-True ($contractFunction -match '\$ampPluginPath\s*=\s*Join-Path \$ampPluginDir ''defenseclaw\.ts''' -and
-        $contractFunction -match '\$ampSiblingPath\s*=\s*Join-Path \$ampPluginDir ''operator\.ts''' -and
-        $contractFunction -match '\[IO\.File\]::WriteAllBytes\(\$ampPluginPath, \$ampOriginalPlugin\)' -and
-        $contractFunction -match '\[IO\.File\]::WriteAllBytes\(\$ampSiblingPath, \$ampSiblingPlugin\)' -and
-        $contractFunction -match 'Amp connector lifecycle did not preserve the \$\(\$preservedPlugin\.Label\) plugin byte-for-byte') `
-        'packaged Amp lifecycle restores a pre-existing target plugin and preserves an unrelated sibling byte-for-byte'
+    $releaseCertificationFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Invoke-WindowsReleaseCertification\b.*?(?=\r?\nfunction )'
+    ).Value
+    $releaseCleanUninstallFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-WindowsReleaseCleanUninstall\b.*?(?=\r?\nfunction )'
+    ).Value
+    $hasAmpReleaseCustodyContract = {
+        param([string]$ReleaseContract, [string]$CleanUninstallContract)
+        $refusal = [regex]::Match(
+            $ReleaseContract,
+            '(?s)\$connectorConfigs = @\(.*?\$ampPluginPath,.*?\).*?foreach \(\$path in @\(.*?\$ampOperatorPluginPath,\s*\$ampSettingsPath\s*\) \+ \$connectorConfigs\) \{.*?release certification refuses pre-existing product or connector state: \$path'
+        )
+        $fixtureWrite = $ReleaseContract.IndexOf(
+            '[IO.File]::WriteAllBytes($ampOperatorPluginPath, $unrelatedAmpPlugin)',
+            [StringComparison]::Ordinal
+        )
+        $settingsWrite = $ReleaseContract.IndexOf(
+            '[IO.File]::WriteAllBytes($ampSettingsPath, $unrelatedAmpSettings)',
+            [StringComparison]::Ordinal
+        )
+        if (-not $refusal.Success -or $fixtureWrite -lt 0 -or $settingsWrite -lt 0 -or
+            $refusal.Index -gt $fixtureWrite -or $refusal.Index -gt $settingsWrite) {
+            return $false
+        }
+        foreach ($phasePattern in @(
+            '(?s)release-reconfigure-amp\.log.*?Assert-WindowsReleaseAmpPlugin \$ampPluginPath ''Amp reconfiguration''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampOperatorPluginPath \$unrelatedAmpPlugin ''Amp plugin''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampSettingsPath \$unrelatedAmpSettings ''Amp settings''',
+            '(?s)release-setup-repair\.log.*?Assert-WindowsReleaseAmpPlugin \$ampPluginPath ''exact-installer repair''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampOperatorPluginPath \$unrelatedAmpPlugin ''Amp plugin''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampSettingsPath \$unrelatedAmpSettings ''Amp settings''',
+            '(?s)release-setup-upgrade\.log.*?Assert-WindowsReleaseAmpPlugin \$ampPluginPath ''exact-installer upgrade''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampOperatorPluginPath \$unrelatedAmpPlugin ''Amp plugin''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$ampSettingsPath \$unrelatedAmpSettings ''Amp settings'''
+        )) {
+            if ($ReleaseContract -notmatch $phasePattern) { return $false }
+        }
+        return $ReleaseContract -match
+                '(?s)release-setup-uninstall\.log.*?Assert-WindowsReleaseCleanUninstall.*?\$ampOperatorPluginPath \$unrelatedAmpPlugin\s+`?\s*\$ampSettingsPath \$unrelatedAmpSettings' -and
+            $CleanUninstallContract -match 'Assert-NoDefenseClawRegistration \$ConnectorConfigs' -and
+            $CleanUninstallContract -match
+                '(?s)Assert-WindowsReleasePreservedFile\s+`?\s*\$PreservedAmpPluginPath \$ExpectedAmpPlugin ''Amp plugin''.*?Assert-WindowsReleasePreservedFile\s+`?\s*\$PreservedAmpSettingsPath \$ExpectedAmpSettings ''Amp settings'''
+    }
+    Assert-True (& $hasAmpReleaseCustodyContract `
+            $releaseCertificationFunction $releaseCleanUninstallFunction) `
+        'release Amp lifecycle refuses a pre-existing managed target and preserves unrelated plugin/settings bytes through reconfigure, repair, upgrade, and uninstall'
+    Assert-True (-not (& $hasAmpReleaseCustodyContract `
+                $releaseCertificationFunction.Replace('$ampPluginPath,', '$unownedAmpPluginPath,') `
+                $releaseCleanUninstallFunction)) `
+        'Amp release custody predicate rejects a lifecycle that no longer refuses the managed target'
+    Assert-True (-not (& $hasAmpReleaseCustodyContract `
+                $releaseCertificationFunction.Replace(
+                    '$ampOperatorPluginPath $unrelatedAmpPlugin ''Amp plugin''',
+                    '$ampOperatorPluginPath $unrelatedAmpPlugin ''unchecked plugin'''
+                ) `
+                $releaseCleanUninstallFunction)) `
+        'Amp release custody predicate rejects missing unrelated-plugin preservation checks'
     Assert-True ($harnessText -match 'Assert-DoctorHookRegistration' -and $harnessText -match 'doctor-hooks pass') 'contract validates setup-created hooks with Doctor'
     Assert-True ($nativeHarnessText -match '\.codex\\managed_config\.toml' -and
         $nativeHarnessText -match 'unrelated Codex managed config byte-for-byte') `

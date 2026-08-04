@@ -51,7 +51,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from defenseclaw.commands.cmd_doctor import (
     _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS,
+    _CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS,
     _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+    _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS,
     _active_connector,
     _check_amp_native_policy_surfaces,
     _check_codex_hooks,
@@ -75,6 +77,7 @@ from defenseclaw.commands.cmd_doctor import (
     _omnigent_setup_repair_command,
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
+    _run_cursor_windows_runtime_process,
     _windows_native_hook_check,
 )
 from defenseclaw.doctor_hooks import WindowsHookCheck
@@ -721,7 +724,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
             r"C:\Windows",
         ),
     )
-    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
     def test_cursor_windows_runtime_probe_accepts_event_native_json_and_counter_advance(
         self,
         run_mock,
@@ -765,7 +768,6 @@ class TestCheckConnectorHooks(unittest.TestCase):
                 "-EncodedCommand",
             ],
         )
-        self.assertFalse(run_mock.call_args.kwargs.get("shell", False))
         self.assertEqual(run_mock.call_args.kwargs["env"]["SystemRoot"], r"C:\Windows")
         self.assertEqual(run_mock.call_args.kwargs["env"]["WINDIR"], r"C:\Windows")
         self.assertEqual(
@@ -787,8 +789,52 @@ class TestCheckConnectorHooks(unittest.TestCase):
             r"C:\Windows",
         ),
     )
-    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
-    def test_cursor_windows_runtime_probe_fails_at_strict_outer_deadline(
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
+    def test_cursor_windows_runtime_probe_retries_only_after_contained_timeout(
+        self,
+        run_mock,
+        _powershell_mock,
+        http_probe_mock,
+    ) -> None:
+        health = json.dumps({"connectors": [{"name": "cursor", "requests": 4, "errors": 0}]})
+        after = json.dumps({"connectors": [{"name": "cursor", "requests": 5, "errors": 0}]})
+        http_probe_mock.side_effect = [(200, health), (200, health), (200, after)]
+        run_mock.side_effect = [
+            subprocess.TimeoutExpired(
+                cmd=["powershell.exe"],
+                timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+            ),
+            subprocess.CompletedProcess(
+                args=["powershell.exe"],
+                returncode=0,
+                stdout=b"{}",
+                stderr=b"",
+            ),
+        ]
+        cfg = MagicMock()
+        cfg.gateway.api_port = 18970
+
+        ok, detail = _probe_cursor_windows_runtime(cfg, r"C:\DefenseClaw\cursor-hook.ps1")
+
+        self.assertTrue(ok)
+        self.assertIn("requests 4->5", detail)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertEqual(http_probe_mock.call_count, 3)
+        self.assertEqual(
+            run_mock.call_args.kwargs["timeout"],
+            _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+
+    @patch("defenseclaw.commands.cmd_doctor._http_probe")
+    @patch(
+        "defenseclaw.commands.cmd_doctor._windows_system_powershell",
+        return_value=(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Windows",
+        ),
+    )
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
+    def test_cursor_windows_runtime_probe_fails_after_strict_bounded_attempts(
         self,
         run_mock,
         _powershell_mock,
@@ -807,12 +853,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertEqual(detail, "Cursor runtime probe timed out")
-        self.assertEqual(run_mock.call_count, 1)
-        self.assertEqual(http_probe_mock.call_count, 1)
-        self.assertEqual(
-            run_mock.call_args.kwargs["timeout"],
-            _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
-        )
+        self.assertEqual(run_mock.call_count, _CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS)
+        self.assertEqual(http_probe_mock.call_count, _CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS)
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch(
@@ -822,7 +864,83 @@ class TestCheckConnectorHooks(unittest.TestCase):
             r"C:\Windows",
         ),
     )
-    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
+    def test_cursor_windows_runtime_probe_never_retries_incomplete_tree_cleanup(
+        self,
+        run_mock,
+        _powershell_mock,
+        http_probe_mock,
+    ) -> None:
+        health = json.dumps({"connectors": [{"name": "cursor", "requests": 4, "errors": 0}]})
+        http_probe_mock.return_value = (200, health)
+        run_mock.side_effect = OSError("timed-out Cursor runtime probe tree did not terminate")
+        cfg = MagicMock()
+        cfg.gateway.api_port = 18970
+
+        ok, detail = _probe_cursor_windows_runtime(cfg, r"C:\DefenseClaw\cursor-hook.ps1")
+
+        self.assertFalse(ok)
+        self.assertIn("tree did not terminate", detail)
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(http_probe_mock.call_count, 1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows Job Object probe containment")
+    @patch("defenseclaw.tui.windows_process.WindowsJob")
+    @patch("defenseclaw.commands.cmd_doctor.subprocess.Popen")
+    def test_cursor_windows_runtime_timeout_reaps_tree_before_returning(
+        self,
+        popen_mock,
+        job_type_mock,
+    ) -> None:
+        process = popen_mock.return_value
+        process.pid = 4242
+        events = []
+
+        def communicate(*, timeout):
+            events.append(("communicate", timeout))
+            if len(events) == 1:
+                raise subprocess.TimeoutExpired(["powershell.exe"], timeout)
+            return b"", b""
+
+        process.communicate.side_effect = communicate
+        job = job_type_mock.return_value
+
+        def terminate_sync(*, timeout):
+            events.append(("terminate", timeout))
+            return True
+
+        job.terminate_sync.side_effect = terminate_sync
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            _run_cursor_windows_runtime_process(
+                ["powershell.exe"],
+                env={},
+                timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+            )
+
+        self.assertEqual(
+            events,
+            [
+                ("communicate", _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS),
+                ("terminate", _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS),
+                ("communicate", _CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS),
+            ],
+        )
+        job_type_mock.assert_called_once_with(4242, allow_breakaway=False)
+        job.close.assert_called_once_with()
+        process.kill.assert_not_called()
+        creationflags = popen_mock.call_args.kwargs["creationflags"]
+        self.assertTrue(creationflags & getattr(subprocess, "CREATE_SUSPENDED", 0x00000004))
+
+    @patch("defenseclaw.commands.cmd_doctor._http_probe")
+    @patch(
+        "defenseclaw.commands.cmd_doctor._windows_system_powershell",
+        return_value=(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Windows",
+        ),
+    )
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
     def test_cursor_windows_runtime_probe_rejects_generic_continue_output(
         self,
         run_mock,
@@ -846,6 +964,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("invalid sessionStart fields: continue", detail)
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(http_probe_mock.call_count, 1)
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch(
@@ -855,7 +975,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
             r"C:\Windows",
         ),
     )
-    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
+    @patch("defenseclaw.commands.cmd_doctor._run_cursor_windows_runtime_process")
     def test_cursor_windows_runtime_probe_rejects_fail_open_without_delivery(
         self,
         run_mock,
@@ -877,6 +997,8 @@ class TestCheckConnectorHooks(unittest.TestCase):
 
         self.assertFalse(ok)
         self.assertIn("did not advance", detail)
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(http_probe_mock.call_count, 2)
 
     def test_unknown_connector_is_noop(self) -> None:
         r = _DoctorResult()

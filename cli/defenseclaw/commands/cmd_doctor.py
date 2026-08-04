@@ -3860,6 +3860,86 @@ _CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS = 5.0
 _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS = (
     _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS + _CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS
 )
+_CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS = 2
+_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS = 2.0
+
+
+def _run_cursor_windows_runtime_process(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    timeout: float,
+) -> subprocess.CompletedProcess:
+    """Run one Cursor transport probe with bounded descendant ownership.
+
+    Windows PowerShell starts the generated adapter, which starts the stable
+    native launcher, which may in turn delegate to the installed full hook.
+    ``subprocess.run`` terminates only the PowerShell process on timeout and can
+    leave those descendants running with inherited stdout/stderr handles. Put
+    the suspended PowerShell process in a kill-on-close Job Object before it can
+    create children so a timeout is fully reaped before the caller may retry.
+    """
+
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name != "nt":
+        return subprocess.run(
+            argv,
+            capture_output=True,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            timeout=timeout,
+            check=False,
+            creationflags=creationflags,
+        )
+
+    from defenseclaw.tui.windows_process import WindowsJob
+
+    creationflags |= getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        env=env,
+        creationflags=creationflags,
+    )
+    job = None
+    try:
+        try:
+            job = WindowsJob(process.pid, allow_breakaway=False)
+        except BaseException:
+            try:
+                process.kill()
+                process.wait(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            raise
+
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                reaped = job.terminate_sync(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+            except OSError as cleanup_exc:
+                raise OSError("could not terminate timed-out Cursor runtime probe tree") from cleanup_exc
+            if not reaped:
+                raise OSError("timed-out Cursor runtime probe tree did not terminate")
+            try:
+                stdout, stderr = process.communicate(timeout=_CURSOR_WINDOWS_RUNTIME_TREE_REAP_SECONDS)
+            except subprocess.TimeoutExpired as cleanup_exc:
+                raise OSError("could not reap timed-out Cursor runtime probe") from cleanup_exc
+            raise subprocess.TimeoutExpired(
+                argv,
+                timeout,
+                output=stdout if stdout is not None else exc.output,
+                stderr=stderr if stderr is not None else exc.stderr,
+            ) from None
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    finally:
+        if job is not None:
+            job.close()
 
 
 def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
@@ -3879,17 +3959,6 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
         return False, "cannot resolve the sidecar API port for a Cursor runtime probe"
 
     health_url = _gateway_api_url(cfg, "/health")
-    before_code, before_body = _http_probe(
-        health_url,
-        timeout=3.0,
-        response_limit=_HEALTH_DOCUMENT_MAX_BYTES,
-        allow_truncation=False,
-        bypass_proxy=True,
-    )
-    before = _cursor_health_row(before_body) if before_code == 200 else None
-    if before is None:
-        return False, "sidecar /health has no live Cursor connector row"
-
     payload = json.dumps(
         {
             "hook_event_name": "sessionStart",
@@ -3920,7 +3989,6 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
             f"& {{ $input | & {_powershell_literal(adapter_path)} }}"
         )
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         powershell, windows_directory = _windows_system_powershell()
         if not powershell:
             return False, "the custody-verified system PowerShell executable is unavailable"
@@ -3935,30 +4003,42 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
         if data_dir:
             child_env["DEFENSECLAW_HOME"] = data_dir
             child_env["DEFENSECLAW_DATA_DIR"] = data_dir
+        argv = [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            encoded,
+        ]
         # The registered Cursor command contract permits 30 seconds. Doctor
-        # launches that command inside a custody-verified PowerShell host, so
-        # allow only the adapter's bounded five-second child-drain interval on
-        # top of the native contract before failing the probe loudly.
-        proc = subprocess.run(
-            [
-                powershell,
-                "-NoProfile",
-                "-NonInteractive",
-                "-EncodedCommand",
-                encoded,
-            ],
-            capture_output=True,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            env=child_env,
-            timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
-            check=False,
-            creationflags=creationflags,
-        )
+        # allows only the adapter's bounded five-second child-drain interval on
+        # top of that contract. A contained timeout may be retried once, but the
+        # first process tree is fully reaped and live sidecar state is read again
+        # before a second native event is allowed to start.
+        for attempt in range(_CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS):
+            before_code, before_body = _http_probe(
+                health_url,
+                timeout=3.0,
+                response_limit=_HEALTH_DOCUMENT_MAX_BYTES,
+                allow_truncation=False,
+                bypass_proxy=True,
+            )
+            before = _cursor_health_row(before_body) if before_code == 200 else None
+            if before is None:
+                return False, "sidecar /health has no live Cursor connector row"
+            try:
+                proc = _run_cursor_windows_runtime_process(
+                    argv,
+                    env=child_env,
+                    timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                if attempt + 1 < _CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS:
+                    continue
+                return False, "Cursor runtime probe timed out"
+            break
     except FileNotFoundError:
         return False, "powershell.exe is unavailable for the Cursor runtime probe"
-    except subprocess.TimeoutExpired:
-        return False, "Cursor runtime probe timed out"
     except OSError as exc:
         return False, f"Cursor runtime probe could not start: {exc}"
     finally:
