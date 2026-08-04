@@ -3855,6 +3855,13 @@ def _windows_system_powershell() -> tuple[str, str]:
     return executable, windows_directory
 
 
+_CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS = 30.0
+_CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS = 5.0
+_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS = (
+    _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS + _CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS
+)
+
+
 def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
     """Exercise Cursor's real PowerShell transport and verify gateway receipt.
 
@@ -3928,6 +3935,10 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
         if data_dir:
             child_env["DEFENSECLAW_HOME"] = data_dir
             child_env["DEFENSECLAW_DATA_DIR"] = data_dir
+        # The registered Cursor command contract permits 30 seconds. Doctor
+        # launches that command inside a custody-verified PowerShell host, so
+        # allow only the adapter's bounded five-second child-drain interval on
+        # top of the native contract before failing the probe loudly.
         proc = subprocess.run(
             [
                 powershell,
@@ -3940,7 +3951,7 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
             shell=False,
             stdin=subprocess.DEVNULL,
             env=child_env,
-            timeout=15.0,
+            timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
             check=False,
             creationflags=creationflags,
         )

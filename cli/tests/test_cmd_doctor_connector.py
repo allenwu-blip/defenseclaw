@@ -50,6 +50,8 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from defenseclaw.commands.cmd_doctor import (
+    _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS,
+    _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
     _active_connector,
     _check_amp_native_policy_surfaces,
     _check_codex_hooks,
@@ -766,6 +768,51 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertFalse(run_mock.call_args.kwargs.get("shell", False))
         self.assertEqual(run_mock.call_args.kwargs["env"]["SystemRoot"], r"C:\Windows")
         self.assertEqual(run_mock.call_args.kwargs["env"]["WINDIR"], r"C:\Windows")
+        self.assertEqual(
+            run_mock.call_args.kwargs["timeout"],
+            _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(_CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS, 30.0)
+        self.assertEqual(_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS, 35.0)
+        self.assertGreater(
+            run_mock.call_args.kwargs["timeout"],
+            _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS,
+        )
+
+    @patch("defenseclaw.commands.cmd_doctor._http_probe")
+    @patch(
+        "defenseclaw.commands.cmd_doctor._windows_system_powershell",
+        return_value=(
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            r"C:\Windows",
+        ),
+    )
+    @patch("defenseclaw.commands.cmd_doctor.subprocess.run")
+    def test_cursor_windows_runtime_probe_fails_at_strict_outer_deadline(
+        self,
+        run_mock,
+        _powershell_mock,
+        http_probe_mock,
+    ) -> None:
+        health = json.dumps({"connectors": [{"name": "cursor", "requests": 4, "errors": 0}]})
+        http_probe_mock.return_value = (200, health)
+        run_mock.side_effect = subprocess.TimeoutExpired(
+            cmd=["powershell.exe"],
+            timeout=_CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
+        cfg = MagicMock()
+        cfg.gateway.api_port = 18970
+
+        ok, detail = _probe_cursor_windows_runtime(cfg, r"C:\DefenseClaw\cursor-hook.ps1")
+
+        self.assertFalse(ok)
+        self.assertEqual(detail, "Cursor runtime probe timed out")
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(http_probe_mock.call_count, 1)
+        self.assertEqual(
+            run_mock.call_args.kwargs["timeout"],
+            _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS,
+        )
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
     @patch(

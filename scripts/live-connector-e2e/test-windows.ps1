@@ -2110,10 +2110,25 @@ private-secret-name = "DefenseClaw must remain redacted"
         $contractRun -match "\`$requireAdvisoryBlock = \`$false" -and
         $contractRun -match "(?s)Invoke-DangerousCommandCorpus action.*?Invoke-Hook 'PreTool-block'.*?\`$actionBlockExpectation \`$requireAdvisoryBlock") `
         'all final action-profile probes, including Cursor, require enforced blocking'
-    Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-init:supported' -and
-        $contractRun -match 'ordinary CLI exit=0; idempotent install/config/hook/custody state unchanged' -and
-        $contractRun -match "not_certified\|preview" -and
-        $contractRun -notmatch 'native-setup-antigravity') `
+    $antigravityPackageInitialization = [regex]::Match(
+        $harnessText,
+        '(?s)function Initialize-AuthenticatedAntigravityPackage\b.*?(?=\r?\nfunction )'
+    ).Value
+    $antigravitySupportedAvailability = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-AuthenticatedAntigravityPublicCLIAvailable\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($antigravityPackageInitialization -match
+        "(?s)Invoke-AuthenticatedAntigravitySetup @\(.*?'CONNECTOR=antigravity'.*?'MODE=action'.*?'STARTGATEWAY=1'.*?\) @\(0\).*?Assert-AuthenticatedAntigravityPublicCLIAvailable \`$paths" -and
+        $antigravitySupportedAvailability -match
+        "(?s)\`$result = Invoke-Tool 'defenseclaw' @\(.*?'init', '--skip-install', '--non-interactive', '--yes'.*?'--connector', 'antigravity', '--profile', 'action'.*?'--no-start-gateway', '--no-verify'.*?\) @\(0\)" -and
+        $antigravitySupportedAvailability -match
+        "(?s)if \(\(\`$result\.StdOut \+ .*?\`$result\.StdErr\) -match '\(\?i\)not_certified\|preview'\) \{\s+throw 'ordinary Antigravity init emitted a stale platform gate or preview warning'" -and
+        $antigravitySupportedAvailability -match
+        '(?s)if \(\(Get-FileHash -LiteralPath \$Paths\.StatePath -Algorithm SHA256\)\.Hash -cne \$stateBefore -or\s+\(Get-FileHash -LiteralPath \$configPath -Algorithm SHA256\)\.Hash -cne \$configBefore -or\s+\$backupAfter -cne \$backupBefore\) \{\s+throw ''ordinary idempotent Antigravity init changed package state, config, or connector custody''' -and
+        $antigravitySupportedAvailability -match
+        'Write-Result ''public-init:supported'' pass `\r?\n\s+''ordinary CLI exit=0; idempotent install/config/hook/custody state unchanged; evidence fields remain empty and live=false''' -and
+        $harnessText -notmatch 'native-setup-antigravity') `
         'packaged Antigravity contract proves ordinary supported availability without a preview warning or public bootstrap flag'
     $connectorSetup = [regex]::Match($harnessText, '(?s)function Invoke-Setup\b.*?\n\}').Value
     Assert-True ($connectorSetup -notmatch 'native-setup-antigravity') `
