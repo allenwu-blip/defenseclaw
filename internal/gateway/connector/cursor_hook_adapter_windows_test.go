@@ -125,9 +125,9 @@ func renderCursorAdapterForTest(t *testing.T, hookPath string, timeoutMS int, fa
 		t.Fatalf("read Cursor adapter template: %v", err)
 	}
 	rendered, err := renderTemplate(string(tTemplate), templateData{
-		HookBinaryPS:  strings.ReplaceAll(hookPath, "'", "''"),
-		HookTimeoutMS: timeoutMS,
-		FailMode:      failMode,
+		HookBinaryPS:        strings.ReplaceAll(hookPath, "'", "''"),
+		CursorHookTimeoutMS: timeoutMS,
+		FailMode:            failMode,
 	})
 	if err != nil {
 		t.Fatalf("render Cursor adapter: %v", err)

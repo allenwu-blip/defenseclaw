@@ -1785,9 +1785,10 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 					t.Errorf("Cursor adapter does not invoke the native launcher through --input-file:\n%s", adapter)
 				}
 				for _, marker := range []string{
-					"$timeoutMs = 10000",
+					fmt.Sprintf("$timeoutMs = %d", cursorWindowsHookAdapterTimeoutMS),
 					"WaitForExit($timeoutMs)",
 					"$process.Kill()",
+					fmt.Sprintf("[void]$process.WaitForExit(%d)", cursorWindowsHookCleanupBudgetMS),
 					`{"continue":true}`,
 					"could not remove temporary Cursor payload",
 				} {

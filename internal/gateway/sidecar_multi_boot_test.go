@@ -1119,7 +1119,9 @@ func TestReconcileOrphanedConnectorRegistrationCleansLegacyWindsurfBeforeRequest
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reflect.DeepEqual(registeredConfig, priorConfig) || !strings.Contains(strings.ToLower(string(registeredConfig)), "defenseclaw") {
+			hookScripts := windsurf.HookScripts(opts)
+			registeredHook := filepath.Base(hookScripts[len(hookScripts)-1])
+			if reflect.DeepEqual(registeredConfig, priorConfig) || !strings.Contains(string(registeredConfig), registeredHook) {
 				t.Fatalf("fixture did not stage a Windsurf registration: %q", registeredConfig)
 			}
 			entry := connector.NewHookContractLockEntry(opts, windsurf, "0.8.10")

@@ -7172,8 +7172,9 @@ function Invoke-Contract {
     $codexHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'codex-home')).TrimEnd('\')
     $claudeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'claude-home')).TrimEnd('\')
     $copilotHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'copilot-home')).TrimEnd('\')
-    # Cursor publishes no configuration-home override. Exercise its authentic
-    # profile-relative contract under this disposable profile instead of
+    $ampHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.config\amp')).TrimEnd('\')
+    # Amp and Cursor publish no configuration-home override. Exercise their
+    # profile-relative contracts under this disposable profile instead of
     # treating DefenseClaw's internal custody binding as a vendor selector.
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.cursor')).TrimEnd('\')
     $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
@@ -7199,6 +7200,7 @@ function Invoke-Contract {
             $codexHome,
             $claudeHome,
             $copilotHome,
+            $ampHome,
             $cursorHome,
             $hermesHome,
             $openCodeHome

@@ -3005,6 +3005,14 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeHarnessText -match '-StateRoot \$contractProfileRoot -HomeRoot \$contractHome' -and
         $harnessText -match 'HomeRoot must be contained by StateRoot') `
         'connector contract keeps alternate agent homes inside the current-user-owned profile root'
+    $contractProfileProvisioning = [regex]::Match(
+        $contractFunction,
+        '(?s)foreach \(\$path in @\((?<paths>.*?)\)\) \{\s*\[IO\.Directory\]::CreateDirectory\(\$path\)'
+    )
+    Assert-True ($contractProfileProvisioning.Success -and
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$ampHome' -and
+        $contractProfileProvisioning.Groups['paths'].Value -match '\$cursorHome') `
+        'connector contract provisions required profile-relative Amp and Cursor homes'
     $contractInstall = $contractFunction.IndexOf(
         'Invoke-WindowsSetupStandardUserProcess $setup',
         [StringComparison]::Ordinal
@@ -3013,13 +3021,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''codex-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''claude-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''copilot-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractHome ''\.config\\amp''' -and
         $nativeHarnessText -match 'Join-Path \$contractHome ''\.cursor''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
         $nativeHarnessText -match '\$officialWindsurfConfig = Join-Path \$realProfile ''\.codeium\\windsurf\\hooks\.json''' -and
         $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome, \$openCodeHome\s*\)' -and
         $contractInstall -ge 0) `
-        'connector contract uses official Cursor and Windsurf profile custody with disjoint real-override homes'
+        'connector contract uses official Amp, Cursor, and Windsurf profile custody with disjoint real-override homes'
     foreach ($homeAssignment in @(
         '$env:CODEX_HOME = $codexHome',
         '$env:CLAUDE_CONFIG_DIR = $claudeHome',

@@ -52,7 +52,10 @@ type templateData struct {
 	ScopedToken   bool
 	ConnectorName string
 	HookBinaryPS  string // absolute launcher path, escaped for a PowerShell single-quoted literal
-	HookTimeoutMS int    // Native PowerShell adapter child timeout; zero for templates that do not use it
+	HookTimeoutMS int    // Default native PowerShell adapter child timeout; zero for templates that do not use it
+	// Cursor's 30-second host contract must also cover the stable launcher's
+	// custody verification and the adapter's bounded child cleanup.
+	CursorHookTimeoutMS int
 }
 
 // defaultHookFailMode is injected into every hook when the caller does not
@@ -68,11 +71,20 @@ type templateData struct {
 // persists to guardrail.hook_fail_mode in config.yaml).
 const defaultHookFailMode = "closed"
 
-// windowsHookAdapterTimeoutMS matches the existing 10-second connector hook
-// request budget and stays inside Cursor's configured 30-second command-hook
-// timeout. Keeping adapters bounded lets them terminate a stuck launcher and
-// return the selected availability posture to the host.
+// windowsHookAdapterTimeoutMS matches the existing 10-second connector request
+// budget for adapters that do not have a larger documented host contract.
 const windowsHookAdapterTimeoutMS = 10_000
+
+// cursorWindowsHookAdapterTimeoutMS reserves the existing bounded kill/drain
+// window from Cursor's exact 30-second command-hook contract.
+// The remaining child budget covers both stable-launcher custody verification
+// and the full hook's own bounded gateway request; those stages are serial and
+// therefore cannot share the old 10-second request-only deadline.
+const (
+	cursorWindowsHookContractTimeoutMS = 30_000
+	cursorWindowsHookCleanupBudgetMS   = 5_000
+	cursorWindowsHookAdapterTimeoutMS  = cursorWindowsHookContractTimeoutMS - cursorWindowsHookCleanupBudgetMS
+)
 
 // normalizeHookFailMode coerces a caller-supplied string to one of
 // the two values the hook scripts understand. Anything other than
@@ -461,15 +473,16 @@ func writeHookScriptsCommonWithOptions(hookDir, apiAddr, token, failMode string,
 	}
 
 	connectorData := templateData{
-		APIAddr:       apiAddr,
-		APIToken:      "",
-		FailMode:      normalizeHookFailMode(failMode),
-		Managed:       managed,
-		TokenFile:     tokenFile,
-		ScopedToken:   scopedToken,
-		ConnectorName: strings.ToLower(strings.TrimSpace(connectorName)),
-		HookBinaryPS:  strings.ReplaceAll(defenseclawHookBinary(), "'", "''"),
-		HookTimeoutMS: windowsHookAdapterTimeoutMS,
+		APIAddr:             apiAddr,
+		APIToken:            "",
+		FailMode:            normalizeHookFailMode(failMode),
+		Managed:             managed,
+		TokenFile:           tokenFile,
+		ScopedToken:         scopedToken,
+		ConnectorName:       strings.ToLower(strings.TrimSpace(connectorName)),
+		HookBinaryPS:        strings.ReplaceAll(defenseclawHookBinary(), "'", "''"),
+		HookTimeoutMS:       windowsHookAdapterTimeoutMS,
+		CursorHookTimeoutMS: cursorWindowsHookAdapterTimeoutMS,
 	}
 	// The inspect-* family has one physical copy per data directory.  Its
 	// bytes must therefore depend only on install-wide inputs; connector mode,

@@ -111,7 +111,7 @@ end {
             }
             $stdoutTask = $process.StandardOutput.ReadToEndAsync()
             $stderrTask = $process.StandardError.ReadToEndAsync()
-            $timeoutMs = {{.HookTimeoutMS}}
+            $timeoutMs = {{.CursorHookTimeoutMS}}
             if (-not $process.WaitForExit($timeoutMs)) {
                 try {
                     $process.Kill()
