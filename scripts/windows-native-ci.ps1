@@ -3340,20 +3340,39 @@ function Invoke-Acceptance {
     Invoke-GatewayLifecycleAcceptance -Profile $profile -Root $root -Artifacts $artifacts
 }
 
-function Assert-PackagedAntigravityPlatformGate(
+function Assert-PackagedAntigravitySupportedAvailability(
     [string]$Launcher,
     [string]$UserProfile,
     [string]$LogPath
 ) {
-    $result = Invoke-Installed $Launcher @('setup', 'antigravity', '--yes', '--no-restart') `
+    # The hosted package runner has no authenticated Antigravity installation.
+    # Use that clean absence to prove ordinary public Setup passes the platform
+    # gate and reaches the normal action-mode discovery refusal without writing
+    # user hook state. Authentic provider login and hook execution remain a
+    # separate protected-lane concern.
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    $clientPath = Join-Path $localAppData 'agy\bin\agy.exe'
+    $hooksPath = Join-Path $UserProfile '.gemini\config\hooks.json'
+    foreach ($preexisting in @($clientPath, $hooksPath)) {
+        if (Test-Path -LiteralPath $preexisting) {
+            throw "Antigravity supported-availability probe requires absent state: $preexisting"
+        }
+    }
+    $result = Invoke-Installed $Launcher @(
+        'setup', 'antigravity', '--mode', 'action', '--yes', '--no-restart'
+    ) `
         @(1) 300 $LogPath
     $combined = $result.StdOut + "`n" + $result.StdErr
-    if ($combined -notmatch "connector 'antigravity' is not_certified on windows") {
-        throw "packaged Antigravity setup did not enforce its Windows certification gate: $combined"
+    if ($combined -match '(?i)not_certified|preview') {
+        throw "packaged Antigravity setup emitted a stale support gate or warning: $combined"
     }
-    $hooksPath = Join-Path $UserProfile '.gemini\config\hooks.json'
+    if ($combined -notmatch '(?i)connector was not detected locally; refusing action-mode hook setup') {
+        throw "packaged Antigravity setup did not reach the expected discovery gate: $combined"
+    }
     if (Test-Path -LiteralPath $hooksPath) {
-        throw "not-certified Antigravity setup unexpectedly wrote hooks: $hooksPath"
+        throw "Antigravity supported-availability probe unexpectedly wrote hooks: $hooksPath"
     }
 }
 
@@ -3737,8 +3756,8 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
         $null = $configured.Add([string]$name)
     }
     $required = @('codex', 'claudecode', 'amp')
-    # Antigravity remains not-certified on Windows, so its packaged gate must
-    # not manufacture cleanup authority when setup correctly refuses to write.
+    # Antigravity is supported on Windows, but cleanup authority is required
+    # only after this run configured it or found an owned backup marker.
     if ($configured.Contains('antigravity') -or
         @(Get-NativeConnectorBackupMarkers $DataRoot 'antigravity').Count -ne 0) {
         $required += 'antigravity'
@@ -4543,7 +4562,9 @@ function Assert-WizardConnectorHealth(
         [string]$hookRows[0].detail -notmatch [string]$Specification.DoctorRuntimePattern) {
         throw "wizard doctor did not validate the selected native hook: $($hookRows | ConvertTo-Json -Compress -Depth 5)"
     }
-    $expectedHookTarget = if ($Specification.Connector -eq 'cursor') {
+    $expectedHookTarget = if ($Specification.Connector -eq 'amp') {
+        [string]$Specification.ConfigPath
+    } elseif ($Specification.Connector -eq 'cursor') {
         Join-Path ([Environment]::GetEnvironmentVariable('DEFENSECLAW_HOME')) 'hooks\cursor-hook.ps1'
     } elseif ($Specification.Connector -eq 'windsurf') {
         Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
@@ -5003,10 +5024,10 @@ function Invoke-SetupAcceptance {
         # The enclosing finally block remains the failure-path cleanup authority.
         # The packaged Go suite separately executes the hardened absolute-path
         # Antigravity hook command from an untrusted working directory. The
-        # installer acceptance must preserve the product's current support
-        # contract: Antigravity is not yet certified on native Windows and may
-        # not be configured merely because the dormant writer is hardened.
-        Assert-PackagedAntigravityPlatformGate $launcher $userProfile `
+        # installer acceptance additionally proves ordinary Setup is supported
+        # and reaches the normal absent-client discovery gate without claiming
+        # provider-authenticated or live validation evidence.
+        Assert-PackagedAntigravitySupportedAvailability $launcher $userProfile `
             (Join-Path $logs 'setup-antigravity.log')
 
         $rosterProbe = 'import json; from defenseclaw.config import load; print("DC_ROSTER=" + json.dumps(load().active_connectors()))'

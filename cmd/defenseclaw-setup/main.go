@@ -1922,16 +1922,10 @@ func initialConfigurationArgs(opts options) []string {
 		"--profile", profile,
 		"--no-start-gateway", "--no-verify",
 	}
-	switch opts.Connector {
-	case "copilot":
-		// This hidden, installer-shaped escape hatch permits the staged native
-		// implementation to be exercised without changing Copilot's public
-		// not_certified platform classification.
+	if opts.Connector == "copilot" {
+		// Retain the exact installer-shaped bootstrap for compatibility while
+		// ordinary public Copilot initialization is also supported.
 		args = append(args, "--native-setup-copilot")
-	case "antigravity":
-		// Antigravity remains publicly not_certified. Native Setup binds the
-		// verified parent executable through the child environment instead of
-		// exposing a CLI flag that an operator could reproduce manually.
 	}
 	return args
 }
@@ -2755,10 +2749,6 @@ func parseArgs(args []string) (options, error) {
 	if !validConnector(opts.Connector) {
 		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
 	}
-	if opts.ConnectorSet && opts.Connector == "antigravity" &&
-		(opts.Action == "install" || opts.Action == "repair" || opts.Action == "upgrade") {
-		return opts, errors.New("Antigravity is not_certified and cannot be selected by public Setup; repair or upgrade an existing recorded installation without a CONNECTOR override")
-	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
 	}
@@ -2822,7 +2812,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|antigravity|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

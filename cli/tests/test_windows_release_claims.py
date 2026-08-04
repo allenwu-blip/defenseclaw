@@ -22,20 +22,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_windows_release_metadata_is_exact() -> None:
-    assert WINDOWS_SUPPORTED_CONNECTORS == {"amp"}
-    assert WINDOWS_PREVIEW_CONNECTORS == {
+    assert WINDOWS_SUPPORTED_CONNECTORS == {
+        "amp",
         "claudecode",
         "codex",
+        "copilot",
         "cursor",
         "hermes",
         "windsurf",
         "opencode",
         "omnigent",
-    }
-    assert WINDOWS_NOT_CERTIFIED_CONNECTORS == {
-        "copilot",
         "antigravity",
     }
+    assert WINDOWS_PREVIEW_CONNECTORS == set()
+    assert WINDOWS_NOT_CERTIFIED_CONNECTORS == set()
     assert WINDOWS_UNSUPPORTED_CONNECTORS == {
         "geminicli",
         "openhands",
@@ -63,17 +63,18 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "WSL is not supported" in text
     assert "Windows x64" in text and "`amd64`" in text
     assert "Windows ARM64" in text and "Not certified" in text
-    assert "| Codex | `codex` | **Preview**" in text
-    assert "| Claude Code | `claudecode` | **Preview**" in text
-    assert "| Devin Desktop — legacy Cascade only | `windsurf` | **Preview / not certified**" in text
-    assert "| OpenCode | `opencode` | **Preview**" in text
-    assert "| OmniGent | `omnigent` | **Preview — native degraded**" in text
+    assert "| Codex | `codex` | **Supported**" in text
+    assert "| Claude Code | `claudecode` | **Supported**" in text
+    assert "| Devin Desktop — legacy Cascade only | `windsurf` | **Supported**" in text
+    assert "| OpenCode | `opencode` | **Supported**" in text
+    assert "| OmniGent | `omnigent` | **Supported — native degraded**" in text
+    assert "| Copilot CLI, Antigravity | `copilot`, `antigravity` | **Supported**" in text
     assert "local observability" in text
     assert "Local Splunk" in text
     assert "Hyper-V backend" in text
     assert "per-user Docker Desktop" in text
     assert "WSL2 engines" in text
-    assert "Hermes" in text and "Preview" in text
+    assert "| Hermes | `hermes` | **Supported**" in text
     assert "```bash" not in text and "```sh" not in text
     assert text.count("```powershell") >= 8
     for label in (
@@ -87,7 +88,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
         assert label in text
 
 
-def test_claude_windows_docs_keep_preview_and_optional_git_boundary() -> None:
+def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> None:
     windows_docs = ROOT / "docs-site/content/docs/get-started/windows"
     capabilities = (windows_docs / "capabilities-commands.mdx").read_text(
         encoding="utf-8"
@@ -100,14 +101,11 @@ def test_claude_windows_docs_keep_preview_and_optional_git_boundary() -> None:
         ROOT / ".github/workflows/connector-live-e2e.yml"
     ).read_text(encoding="utf-8")
 
-    assert "| Claude Code connector setup | **Preview**" in capabilities
-    assert (
-        "**Preview** for Claude Code/Codex/Cursor/legacy Cascade/Hermes/OpenCode/OmniGent"
-        in capabilities
-    )
-    assert "`claude-code`, `codex`, `cursor`, `windsurf`, `hermes`" in capabilities
-    assert "`opencode`, and `omnigent` are selectable previews" in capabilities
-    assert "Claude Code connector setup | **Supported**" not in capabilities
+    assert "| Claude Code connector setup | **Supported**" in capabilities
+    assert "| Copilot CLI and Antigravity setup | **Supported**" in capabilities
+    assert "`amp`, `claude-code`, `codex`, `cursor`, `windsurf`, `hermes`" in capabilities
+    assert "`copilot`, and `antigravity` are supported and selectable" in capabilities
+    assert "selectable previews" not in capabilities
     assert "`claude-code` is the certified connector alias" not in capabilities
     assert (
         "Native Windows x64 release certification currently covers Claude Code"
@@ -289,16 +287,15 @@ def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
     assert "<workspace>/.agents/hooks.json" in config_reference
     assert "only hard-blocking claim for the connector" in connector_page_text
     assert "does not document non-zero hook exit status as enforcement" in connector_page_text
-    assert "CLI v1.1.9" in connector_page
-    assert "CLI v1.1.9" in research_contract
+    assert "CLI v1.1.10" in connector_page
+    assert "CLI v1.1.10" in research_contract
     assert "`>=1.1.8`" in compatibility
-    assert "currently publish `1.1.9`" in compatibility
+    assert "pins official CLI `1.1.10`" in compatibility
     assert validated["live"] is False
     assert validated["os"]["windows"]["last_validated_version"] == ""
     assert "availability metadata only" in validated["notes"]
-    assert "only public not_certified gate rejection" in validated["notes"]
-    assert "no protected-client, authentication, or client-provenance test occurred" in validated["notes"]
-    assert "shared readiness remains integration-owned" in validated["notes"]
+    assert "Native Windows x64 setup is supported" in validated["notes"]
+    assert "No protected-client, authentication, HITL, client-provenance, or official-client live evidence is claimed" in validated["notes"]
     assert "remain out of scope and unverified" in validated["notes"]
 
     combined = "\n".join((connector_index, connector_page, config_reference, setup_source))

@@ -634,7 +634,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "warn",
             "Human approval",
-            "OpenCode v1.18.10-v1.18.11 publishes permission.ask, but the DefenseClaw preview bridge "
+            "OpenCode v1.18.10-v1.18.11 publishes permission.ask, but the DefenseClaw bridge "
             "intentionally does not implement or claim that surface",
             r=r,
         )
@@ -664,7 +664,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "pass",
             "Human approval",
-            "OmniGent native-degraded preview supports ASK on request, tool_call, and llm_request; "
+            "OmniGent native-degraded support includes ASK on request, tool_call, and llm_request; "
             "post-action confirms use fallback",
             r=r,
         )
@@ -1898,7 +1898,7 @@ def _check_hermes_hooks(
     if unsupported:
         _emit(
             "fail",
-            "Hermes hooks (preview; fail-open)",
+            "Hermes hooks (fail-open)",
             f"unsupported profile topology: {unsupported}",
             r=r,
         )
@@ -1907,7 +1907,7 @@ def _check_hermes_hooks(
         _check_windows_native_hooks(
             cfg,
             "hermes",
-            "Hermes hooks (preview; fail-open)",
+            "Hermes hooks (fail-open)",
             r,
             config_path=selected_config,
             install_root=install_root,
@@ -1963,7 +1963,7 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 }
 
 _HOOK_HEALTH_LABELS = {
-    "hermes": "Hermes hooks (preview; fail-open)",
+    "hermes": "Hermes hooks (fail-open)",
     "cursor": "Cursor hooks",
     "windsurf": "Legacy Cascade hooks",
     "geminicli": "Gemini CLI hooks",
@@ -2297,7 +2297,7 @@ def _check_cursor_configured_runtime(
         f"configured runtime={result.runtime_path}; entries={result.entry_count}; "
         f"mode={mode}; failClosed={str(expected_fail_closed).lower()}; "
         f"failure=fail-{expected_fail_mode}; enforcement="
-        f"{'preview user-hook native deny' if mode == 'action' else 'observe-only'}; "
+        f"{'user-hook native deny' if mode == 'action' else 'observe-only'}; "
         "priority=Enterprise > Team > Project > User; "
         "higher-priority conflict detection=unavailable (none inferred); "
         "human-approval=unsupported"
@@ -2702,7 +2702,7 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
     _emit(
         live_status,
         "OmniGent policy",
-        f"native-degraded preview; {live_detail}; module={module_path}; import={pth_path}",
+        f"native-degraded; {live_detail}; module={module_path}; import={pth_path}",
         r=r,
     )
 
@@ -3219,11 +3219,11 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
         if connectors[0] == "omnigent":
             if mode == "action":
                 return (
-                    "policy-enforced for omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY) "
+                    "policy-enforced for omnigent (native-degraded; mode=action via ALLOW/ASK/DENY) "
                     "— proxy port intentionally closed"
                 )
             return (
-                "policy-driven for omnigent (native-degraded preview; mode=observe) "
+                "policy-driven for omnigent (native-degraded; mode=observe) "
                 "— proxy port intentionally closed"
             )
         if connectors[0] == "amp":
@@ -3244,14 +3244,14 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
     for connector, mode in modes.items():
         if connector == "cursor":
             parts.append(
-                "cursor (mode=action via preview user-hook native deny)"
+                "cursor (mode=action via user-hook native deny)"
                 if mode == "action"
                 else "cursor (mode=observe)"
             )
         elif connector == "omnigent" and mode == "action":
-            parts.append("omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)")
+            parts.append("omnigent (native-degraded; mode=action via ALLOW/ASK/DENY)")
         elif connector == "omnigent":
-            parts.append("omnigent (native-degraded preview; mode=observe via custom policy API)")
+            parts.append("omnigent (native-degraded; mode=observe via custom policy API)")
         elif connector == "amp" and mode == "action":
             parts.append("amp (mode=action via synchronous tool.call/tool.result)")
         elif connector == "amp":

@@ -256,15 +256,14 @@ class WindowsHookDoctorTests(unittest.TestCase):
         with self.assertRaisesRegex(_InspectionError, "operator-copy"):
             _validate_antigravity_hook_matrix(aliased)
 
-    def test_antigravity_repair_guidance_uses_only_recorded_setup_maintenance(self) -> None:
+    def test_antigravity_repair_guidance_uses_public_setup(self) -> None:
         detail = doctor_hooks._repair_detail("antigravity", "registration drifted")
 
-        self.assertIn("not_certified", detail)
-        self.assertIn("Setup /repair", detail)
-        self.assertIn("without a CONNECTOR override", detail)
-        self.assertIn("doctor --fix do not repair", detail)
-        self.assertNotIn("defenseclaw setup antigravity", detail)
-        self.assertNotIn("run `", detail)
+        self.assertEqual(
+            detail,
+            "registration drifted; run `defenseclaw setup antigravity --yes --restart` "
+            "to repair the native registration",
+        )
 
     def test_antigravity_rejects_non_system_outer_powershell(self) -> None:
         runtime = self._runtime()

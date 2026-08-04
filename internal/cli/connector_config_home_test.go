@@ -412,7 +412,7 @@ func TestCursorReconcileWritesOnlyExplicitConfigHome(t *testing.T) {
 	)
 	if !strings.Contains(stdout, `"connector":"cursor"`) ||
 		!strings.Contains(stdout, `"fail_mode":"open"`) ||
-		(stderr != "" && !strings.Contains(stderr, "preview on windows")) {
+		stderr != "" {
 		t.Fatalf("Cursor reconcile: stdout=%q stderr=%q", stdout, stderr)
 	}
 	hooksPath := filepath.Join(bound, "hooks.json")

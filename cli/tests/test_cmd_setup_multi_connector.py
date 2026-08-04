@@ -94,7 +94,9 @@ class TestAdditiveSetupCommand(unittest.TestCase):
     def setUp(self):
         self.app, self.tmp_dir, self.db_path = make_app_context()
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
-        self.app.cfg.save = lambda: open(self.cfg_path, "w").write("x\n")  # type: ignore[assignment]
+        self.app.cfg.save = lambda: atomic_write_private_bytes(  # type: ignore[assignment]
+            self.cfg_path, b"x\n"
+        )
 
     def tearDown(self):
         cleanup_app(self.app, self.db_path, self.tmp_dir)
@@ -647,7 +649,7 @@ class TestObservabilitySummaryDisplay(unittest.TestCase):
         self.assertNotIn("gateway.jsonl", out)
         self.assertNotIn("Get-Content -LiteralPath", out)
 
-    def test_hermes_action_summary_reports_preview_posture(self):
+    def test_hermes_action_summary_reports_fail_open_posture(self):
         self._seed_map("hermes")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):

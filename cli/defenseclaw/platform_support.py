@@ -68,28 +68,28 @@ class ConnectorPlatformSupport:
 # upstream Windows binary is not sufficient for DefenseClaw certification.
 WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
     "codex": ConnectorPlatformSupport(
-        PREVIEW,
-        "Codex CLI and the DefenseClaw hook entrypoint are available as a native "
-        "Windows x64 preview; no authentic packaged plus official-client "
-        "release-certification record is available.",
+        SUPPORTED,
+        "Codex CLI and the DefenseClaw hook entrypoint are supported on native "
+        "Windows x64; authentic packaged plus official-client validation metadata "
+        "is not recorded and live evidence remains false.",
     ),
     "claudecode": ConnectorPlatformSupport(
-        PREVIEW,
+        SUPPORTED,
         "Claude Code and the DefenseClaw native executable hook entrypoint are "
-        "available as a native Windows x64 preview; no immutable packaged plus "
-        "official-client certification record is persisted.",
+        "supported on native Windows x64; immutable packaged plus official-client "
+        "validation metadata is not recorded and live evidence remains false.",
     ),
     "cursor": ConnectorPlatformSupport(
-        PREVIEW,
+        SUPPORTED,
         "Cursor Agent and the DefenseClaw PowerShell hook adapter are available "
-        "as a native Windows x64 preview pending integrated packaged and "
-        "official-client validation.",
+        "on native Windows x64; official-client validation metadata is not recorded "
+        "and live evidence remains false.",
     ),
     "windsurf": ConnectorPlatformSupport(
-        PREVIEW,
-        "Legacy Cascade-only hooks and the native PowerShell adapter are available as a Windows x64 preview. "
+        SUPPORTED,
+        "Legacy Cascade-only hooks and the native PowerShell adapter are supported on Windows x64. "
         "Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer "
-        "enforcement are not covered; packaged and official-client certification is pending.",
+        "enforcement are not covered; packaged and official-client validation metadata is not recorded.",
     ),
     "geminicli": ConnectorPlatformSupport(
         UNSUPPORTED,
@@ -98,17 +98,19 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "non-Windows support is unchanged.",
     ),
     "copilot": ConnectorPlatformSupport(
-        NOT_CERTIFIED,
-        "The DefenseClaw GitHub Copilot CLI integration has not completed native Windows x64 certification.",
+        SUPPORTED,
+        "The DefenseClaw GitHub Copilot CLI integration is supported on native Windows x64; "
+        "authentication, HITL, and official-client live evidence remain unverified and unclaimed.",
     ),
     "antigravity": ConnectorPlatformSupport(
-        NOT_CERTIFIED,
-        "The native Windows x64 implementation is awaiting integrated packaged and official-client validation.",
+        SUPPORTED,
+        "The Antigravity integration is supported on native Windows x64; authentication, HITL, "
+        "and official-client live evidence remain unverified and unclaimed.",
     ),
     "opencode": ConnectorPlatformSupport(
-        PREVIEW,
-        "OpenCode native Windows support is preview pending integrated packaged "
-        "Setup and official-client validation; OpenCode recommends WSL but does "
+        SUPPORTED,
+        "OpenCode native Windows setup is supported; official-client validation "
+        "metadata is not recorded and live evidence remains false. OpenCode recommends WSL but does "
         "not require it.",
     ),
     "amp": ConnectorPlatformSupport(
@@ -116,18 +118,19 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "Amp and the DefenseClaw system policy plugin are supported on native Windows x64.",
     ),
     "hermes": ConnectorPlatformSupport(
-        PREVIEW,
+        SUPPORTED,
         "Hermes native shell hooks use a direct DefenseClaw executable; "
-        "packaged and official-client Windows x64 certification is pending.",
+        "packaged and official-client Windows x64 validation metadata is not recorded, "
+        "running-client state remains pending reload, and live evidence remains false.",
     ),
     "openhands": ConnectorPlatformSupport(
         UNSUPPORTED,
         "OpenHands CLI requires WSL; DefenseClaw does not implement a WSL connector path.",
     ),
     "omnigent": ConnectorPlatformSupport(
-        PREVIEW,
-        "OmniGent 0.7.0 supports native Windows server and SDK harnesses in "
-        "degraded mode; DefenseClaw uses its awaited in-process policy API "
+        SUPPORTED,
+        "OmniGent 0.7.0 is supported on native Windows in degraded mode; "
+        "DefenseClaw uses its awaited in-process policy API "
         "without terminal wrapping or filesystem/network sandbox parity.",
     ),
     "openclaw": ConnectorPlatformSupport(

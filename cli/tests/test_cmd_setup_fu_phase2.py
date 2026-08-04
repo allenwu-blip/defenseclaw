@@ -50,6 +50,7 @@ pytestmark = pytest.mark.supported_connector_host
 from defenseclaw.commands import cmd_setup
 from defenseclaw.commands.cmd_setup import setup as setup_group
 from defenseclaw.config import PerConnectorGuardrailConfig
+from defenseclaw.file_permissions import atomic_write_private_bytes
 from defenseclaw.logger import CanonicalObservabilityUnavailableError
 
 from tests.helpers import cleanup_app, make_app_context
@@ -81,7 +82,9 @@ class _BaseSetup(unittest.TestCase):
         self.app, self.tmp_dir, self.db_path = make_app_context()
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
         # Lightweight save shim: tests assert on the in-memory config object.
-        self.app.cfg.save = lambda: open(self.cfg_path, "w").write("x\n")  # type: ignore[assignment]
+        self.app.cfg.save = lambda: atomic_write_private_bytes(  # type: ignore[assignment]
+            self.cfg_path, b"x\n"
+        )
 
     def tearDown(self):
         cleanup_app(self.app, self.db_path, self.tmp_dir)

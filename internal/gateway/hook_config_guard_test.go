@@ -19,6 +19,7 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/observability"
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 const guardTestDebounce = 40 * time.Millisecond
@@ -578,12 +579,12 @@ func TestHookConfigGuard_NotifierFiresOnHeal(t *testing.T) {
 }
 
 func TestHookConfigGuard_DoesNotReportRepairWhenClaudePolicyStillDisablesHooks(t *testing.T) {
-	settingsDir := filepath.Join(t.TempDir(), "claude")
+	settingsDir := filepath.Join(testenv.PrivateTempDir(t), "claude")
 	settingsPath := filepath.Join(settingsDir, "settings.json")
 	previous := connector.ClaudeCodeSettingsPathOverride
 	connector.ClaudeCodeSettingsPathOverride = settingsPath
 	t.Cleanup(func() { connector.ClaudeCodeSettingsPathOverride = previous })
-	opts := connector.SetupOpts{DataDir: t.TempDir(), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
+	opts := connector.SetupOpts{DataDir: testenv.PrivateTempDir(t), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
 	conn := connector.NewClaudeCodeConnector()
 	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
 		t.Fatalf("create Claude settings directory: %v", err)
@@ -682,9 +683,25 @@ func TestHookConfigGuard_DoesNotReportRepairWhenClaudePolicyStillDisablesHooks(t
 	// OwnedHooksPresent here races those same reads against Setup's atomic
 	// replacement on Windows and can either starve the heal or observe the
 	// installed bytes before the notifier step has completed.
+	repairNotified := false
 	select {
 	case <-notified:
+		repairNotified = true
 	case <-time.After(5 * time.Second):
+		// The timeout can race a repair that has already restored the hook
+		// bytes but is still completing verification and lifecycle emission
+		// before it invokes the notifier. Join that serialized repair before
+		// diagnosing a missing notification so a slow Windows runner does not
+		// report failure at the completion boundary.
+		guard.repairMu.Lock()
+		guard.repairMu.Unlock()
+		select {
+		case <-notified:
+			repairNotified = true
+		default:
+		}
+	}
+	if !repairNotified {
 		present, presenceErr := connector.OwnedHooksPresent(conn, opts)
 		data, _ := os.ReadFile(settingsPath)
 		guard.mu.Lock()

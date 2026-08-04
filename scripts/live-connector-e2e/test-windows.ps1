@@ -136,6 +136,20 @@ try {
         'authenticated Antigravity held-state dynamic fixture did not report PASS'
     Assert-True (-not (Test-Path -LiteralPath $heldStateFixtureRoot)) `
         'authenticated Antigravity held-state dynamic fixture left its D: root behind'
+    $localAuthorityFixtureRoot = 'D:\dc-antigravity-local-authority-fixture-' + `
+        [Guid]::NewGuid().ToString('N')
+    $localAuthorityFixtureOutput = @(& $fixturePowerShell `
+        -NoLogo -NoProfile -NonInteractive -File $harness `
+        -LocalAuthorityFixture -StateRoot $localAuthorityFixtureRoot 2>&1)
+    Assert-True ($LASTEXITCODE -eq 0) (
+        'authenticated Antigravity local-authority dynamic fixture failed: ' +
+        ($localAuthorityFixtureOutput -join [Environment]::NewLine)
+    )
+    Assert-True ($localAuthorityFixtureOutput -contains `
+        'authenticated Antigravity local-authority dynamic fixture: PASS') `
+        'authenticated Antigravity local-authority fixture did not report PASS'
+    Assert-True (-not (Test-Path -LiteralPath $localAuthorityFixtureRoot)) `
+        'authenticated Antigravity local-authority fixture left its D: root behind'
     & $standardUserSafetyTest
     if (-not ('DefenseClaw.DisposableStandardUserLauncher' -as [type])) {
         Add-Type -Path $standardUserLauncher
@@ -1261,7 +1275,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($omniGentJob -match "if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}" -and
         $omniGentJob -match 'continue-on-error:\s*true' -and
         $omniGentJob -notmatch '(?m)^\s{6}- windows-native-required\s*$') `
-        'OmniGent native-degraded preview remains manual and advisory, outside the required aggregate'
+        'OmniGent native-degraded support remains manual and advisory, outside the required aggregate'
     Assert-True ($nativeWorkflowText -notmatch 'shell:\s*bash') 'dedicated Windows workflow never selects Bash'
     Assert-True ($nativeWorkflowText -notmatch 'secrets\.') 'dedicated deterministic workflow consumes no secrets'
     Assert-True ([regex]::Matches(
@@ -1449,6 +1463,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         $wizardAcceptance -match 'setup repair changed the selected' -and
         $wizardAcceptance -notmatch 'DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT') `
         'wizard connector acceptance validates canonical state, hooks, health, and repair without a contract override'
+    $wizardHealth = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-WizardConnectorHealth\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($wizardHealth -match "(?s)Connector -eq 'amp'.*?Specification\.ConfigPath") `
+        'Amp wizard Doctor validation requires the native plugin path rather than the hook runtime executable'
     Assert-True ($wizardAcceptance -match "C:\\\\Vendor\\\\audit\.ps1") `
         'Windsurf preservation fixture JSON-escapes its third-party Windows hook path'
     $wizardHookValidation = [regex]::Match(
@@ -2046,13 +2066,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $contractRun -match "\`$requireAdvisoryBlock = \`$false" -and
         $contractRun -match "(?s)Invoke-DangerousCommandCorpus action.*?Invoke-Hook 'PreTool-block'.*?\`$actionBlockExpectation \`$requireAdvisoryBlock") `
         'all final action-profile probes, including Cursor, require enforced blocking'
-    Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-setup:not-certified' -and
-        $contractRun -match "connector 'antigravity' is not_certified on windows" -and
+    Assert-True ($contractRun -match '(?s)\$Connector -eq ''antigravity''.*?public-init:supported' -and
+        $contractRun -match 'ordinary CLI exit=0; idempotent install/config/hook/custody state unchanged' -and
+        $contractRun -match "not_certified\|preview" -and
         $contractRun -notmatch 'native-setup-antigravity') `
-        'packaged Antigravity contract proves the public not_certified gate without a removed bootstrap flag'
+        'packaged Antigravity contract proves ordinary supported availability without a preview warning or public bootstrap flag'
     $connectorSetup = [regex]::Match($harnessText, '(?s)function Invoke-Setup\b.*?\n\}').Value
     Assert-True ($connectorSetup -notmatch 'native-setup-antigravity') `
-        'generic connector setup cannot bypass Antigravity public certification'
+        'generic connector setup does not invent an Antigravity bootstrap flag'
     $packagePaths = [regex]::Match(
         $harnessText,
         '(?s)function Get-AuthenticatedAntigravityPackagePaths\b.*?(?=\nfunction Assert-ExactPath\b)'
@@ -2251,10 +2272,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $packageRecovery -match '(?s)try \{\s*Stop-AuthenticatedAntigravityHeldTUIProcess.*?catch \{.*?\$cleanupIncomplete = \$true' -and
         $packageRecovery -match '(?s)Remove-DisposableTreeSafely -Path \$StateRoot.*?Remove-DisposableTreeSafely -Path \$packageRoot.*?if \(\$null -ne \$cleanupFailure\) \{ throw \$cleanupFailure \}') `
         'client drift is retained as the primary diagnostic while exact authenticated teardown/restoration/removal continues; foreign or reused live TUI identity keeps cleanup incomplete'
-    Assert-True ($harnessText -match 'public-init:not-certified' -and
-        $harnessText -match 'ordinary CLI exit=1; install/config/hook/custody state unchanged; live=false' -and
-        $harnessText -match 'not_certified/live=false; does not prove Setup internal Antigravity bootstrap or ordinary public Setup support; certification requires promotion, rebuild, and public Setup retest') `
-        'authenticated preview reports public rejection and explicitly disclaims certification evidence'
+    Assert-True ($harnessText -match 'public-init:supported' -and
+        $harnessText -match 'ordinary CLI exit=0; idempotent install/config/hook/custody state unchanged; evidence fields remain empty and live=false' -and
+        $harnessText -match 'authentication, HITL, and live evidence remain unverified and unclaimed') `
+        'authenticated lane reports supported public availability without fabricating certification evidence'
     $officialInstallerContract = [regex]::Match(
         $harnessText,
         '(?s)function Assert-OfficialAntigravityInstaller\b.*?(?=\nfunction Read-OfficialAntigravityReleaseManifest\b)'
@@ -2484,14 +2505,14 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupWizardSourceText,
         '(?s)wizardConnectorChoices = \[\]wizardChoice\{.*?\n\s*\}'
     ).Value
-    Assert-True ($wizardConnectorChoices -notmatch 'antigravity' -and
-        $setupMainSourceText -match 'CONNECTOR=codex\|claudecode\|copilot\|cursor\|hermes\|omnigent\|opencode\|windsurf\|none' -and
-        $setupMainSourceText -match 'Antigravity is not_certified and cannot be selected by public Setup' -and
-        $setupMainTestsText -match 'TestParseArgsRejectsPublicAntigravitySetupSelection' -and
+    Assert-True ($wizardConnectorChoices -match 'Google Antigravity.*?antigravity' -and
+        $setupMainSourceText -match 'CONNECTOR=amp\|antigravity\|codex\|claudecode\|copilot\|cursor\|hermes\|omnigent\|opencode\|windsurf\|none' -and
+        $setupMainSourceText -notmatch 'Antigravity is not_certified and cannot be selected by public Setup' -and
+        $setupMainTestsText -match 'TestParseArgsAllowsPublicAntigravitySetupSelection' -and
         $setupMainTestsText -match 'TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride' -and
-        $setupMainTestsText -match 'TestPrintUsageDoesNotAdvertisePublicAntigravitySelection' -and
-        $harnessText -match 'wizard absence is a static/unit contract; it is not exercised by this protected live lane') `
-        'exact-head source/unit linkage keeps Antigravity absent from the public wizard and Setup usage'
+        $setupMainTestsText -match 'TestPrintUsageAdvertisesPublicAntigravitySelection' -and
+        $setupMainSourceText -match 'internalSetupParentEnv') `
+        'exact-head source/unit linkage exposes supported Antigravity while preserving internal Setup parent binding'
     Assert-True ($contractRun -match "(?s)try\s*\{.*?DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT = '1'.*?Invoke-Setup action.*?\}\s*finally\s*\{.*?Remove-Item Env:DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT") `
         'unversioned fixture override is removed before Doctor tamper validation'
     $liveRun = [regex]::Match($harnessText, '(?s)function Invoke-LiveRun\b.*?\n\}').Value
@@ -2645,7 +2666,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $doctorContract.Contains("`$expectedFailure = if (`$expectedMode -eq 'action') { 'fail-closed' } else { 'fail-open' }") -and
         $doctorContract.Contains("`$check.detail -notmatch 'higher-priority conflict detection=unavailable \(none inferred\)'") -and
         $doctorContract.Contains("`$check.detail -notmatch 'human-approval=unsupported'")) `
-        'Cursor contract requires mode-matched action/fail-closed or observe/fail-open preview posture without unsupported claims'
+        'Cursor contract requires mode-matched action/fail-closed or observe/fail-open posture without unsupported claims'
     Assert-True ($doctorContract -match "'cursor' \{ 'configured file has no DefenseClaw Cursor command entries' \}") `
         'Cursor tamper contract expects exact zero-managed-entry rejection after lock-bound ownership filtering'
     Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `

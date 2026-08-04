@@ -1,13 +1,13 @@
 ---
 title: Devin Desktop — legacy Cascade
-description: Preview connector for the legacy Cascade hook surface in Devin Desktop; Devin Local, cloud, and ACP are unsupported.
+description: Supported connector for the legacy Cascade hook surface in Devin Desktop; Devin Local, cloud, and ACP are unsupported.
 keywords:
   - DefenseClaw Windsurf connector
   - Windsurf Cascade hooks
   - Windsurf observability
 ---
 
-The `windsurf` connector is a **legacy Cascade-only preview**. It wires
+The `windsurf` connector is a **supported legacy Cascade-only integration**. It wires
 DefenseClaw into the official
 [Cascade hooks](https://docs.devin.ai/desktop/cascade/hooks) surface in Devin
 Desktop so supported prompts, code reads, code writes, command runs, and MCP
@@ -24,8 +24,8 @@ defenseclaw setup windsurf
 ```
 
 <Callout type="warning">
-This connector covers legacy Cascade only. Native Windows x64 setup is a
-preview and is not certified. Devin Local, cloud agents, ACP, Restricted Mode,
+This connector covers legacy Cascade only. Native Windows x64 setup is
+supported, while validation metadata remains empty and `live=false`. Devin Local, cloud agents, ACP, Restricted Mode,
 and managed/system hook layers are outside this connector's enforcement
 boundary.
 </Callout>
@@ -57,9 +57,9 @@ Cascade's
 native ask surface, so confirm verdicts use its non-pausing fallback with
 `raw_action` preserved for audit.
 
-### Native Windows x64 preview
+### Native Windows x64 support
 
-The legacy Cascade native Windows implementation is available as a preview.
+The legacy Cascade native Windows implementation is supported.
 With the official [Devin Desktop Windows x64 build](https://devin.ai/download)
 installed for the same signed-in user, run this from PowerShell or cmd:
 
@@ -95,7 +95,7 @@ including blocking exit `2`. This path uses no Bash, Git Bash, Cygwin/MSYS,
 WSL, Docker, or VM.
 
 Packaged Windows and interactive official-client validation remain release
-gates. No live-client evidence is asserted here. Do not treat preview
+gates. No live-client evidence is asserted here. Do not treat supported
 availability as certification or as coverage for Devin Local, cloud, or ACP.
 Doctor can validate the twelve persisted registrations but cannot passively
 read the workspace's Restricted Mode UI state; it therefore warns explicitly
@@ -161,7 +161,7 @@ defenseclaw setup guardrail \
   --restart
 ```
 
-The alias selects the Devin Desktop legacy Cascade preview; the follow-up `setup guardrail --connector windsurf` swaps in the strict rule pack, keeps scanning local, and turns the LLM judge on as a second-pass adjudicator on regex-flagged events. It does not enable Devin Local, cloud agents, or ACP. Configure the remote scanner separately through [full guardrail setup](/docs/setup/guardrail), which validates its endpoint and API-key environment variable.
+The alias selects the supported Devin Desktop legacy Cascade connector; the follow-up `setup guardrail --connector windsurf` swaps in the strict rule pack, keeps scanning local, and turns the LLM judge on as a second-pass adjudicator on regex-flagged events. It does not enable Devin Local, cloud agents, or ACP. Configure the remote scanner separately through [full guardrail setup](/docs/setup/guardrail), which validates its endpoint and API-key environment variable.
 
 </Tab>
 

@@ -225,7 +225,7 @@ class TestClaudeCodeWrites:
     @pytest.mark.skipif(os.name != "nt", reason="Windows MAX_PATH publication contract")
     def test_windows_private_metadata_uses_compact_staging_name(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
-        settings = tmp_path / ".claude" / "settings.json"
+        settings = tmp_path / ".claude.json"
 
         # Choose a data-home length that leaves the durable metadata name
         # valid while the historical basename-repeating candidate exceeds

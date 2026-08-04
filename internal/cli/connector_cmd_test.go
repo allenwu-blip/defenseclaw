@@ -767,7 +767,7 @@ func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *test
 	}
 }
 
-func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *testing.T) {
+func TestConnectorReconcileCopilotSupportsOrdinaryPath(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows Setup maintenance contract")
 	}
@@ -777,33 +777,22 @@ func TestConnectorReconcileCopilotAllowsOnlyHomeBoundInstallerMaintenance(t *tes
 		t.Fatal(err)
 	}
 	defer withConnectorState(t, dataDir, "copilot")()
+	connectorFlagConfigHome = home
 	cfg.Guardrail.Enabled = true
 	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
 		"copilot": {HookFailMode: "open"},
 	}
 
-	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "copilot", "--json")
-	if !strings.Contains(stderr, "not certified on windows") {
-		t.Fatalf("unbound Copilot reconcile bypassed public platform gate: %q", stderr)
-	}
-	if _, err := os.Stat(filepath.Join(home, "hooks", "defenseclaw.json")); !os.IsNotExist(err) {
-		t.Fatalf("unbound Copilot reconcile mutated hook config: %v", err)
-	}
-
-	connectorFlagConfigHome = home
-	stdout, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "copilot", "--json")
-	if !strings.Contains(stderr, "installer maintenance for not-certified native Windows connector") {
-		t.Fatalf("bound Copilot reconcile omitted certification warning: %q", stderr)
-	}
-	if !strings.Contains(stdout, `"connector":"copilot"`) {
-		t.Fatalf("bound Copilot reconcile output = %q", stdout)
+	stdout, stderr, exitCode := runConnectorCmd(t, "reconcile", "--connector", "copilot", "--json")
+	if stderr != "" || exitCode != 0 || !strings.Contains(stdout, `"connector":"copilot"`) {
+		t.Fatalf("ordinary Copilot reconcile failed: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 	}
 	hookConfig := filepath.Join(home, "hooks", "defenseclaw.json")
 	if _, err := os.Stat(hookConfig); err != nil {
 		t.Fatalf("bound Copilot reconcile did not publish hook config: %v", err)
 	}
 
-	_, stderr, exitCode := runConnectorCmd(t, "teardown", "--connector", "copilot")
+	_, stderr, exitCode = runConnectorCmd(t, "teardown", "--connector", "copilot")
 	if stderr != "" || exitCode != 0 {
 		t.Fatalf("Copilot teardown failed: exit=%d stderr=%q", exitCode, stderr)
 	}

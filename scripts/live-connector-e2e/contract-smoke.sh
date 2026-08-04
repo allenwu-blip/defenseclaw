@@ -97,7 +97,11 @@ overall_rc=0
 drive_event() {
   local label="$1" payload="$2" expect="$3"
   local before after out code native_event
-  if ! native_event="$(jq -er '.hook_event_name | select(type == "string" and length > 0)' "${payload}")"; then
+  if [ "${DC_E2E_CONNECTOR}" = "antigravity" ]; then
+    # Antigravity's official stdin schema omits the event name; setup binds
+    # each installed hook command to its trusted event out-of-band.
+    native_event="PreToolUse"
+  elif ! native_event="$(jq -er '.hook_event_name | select(type == "string" and length > 0)' "${payload}")"; then
     dc_record_result "${label}:fixture" fail "missing non-empty hook_event_name in ${payload}"
     overall_rc=1
     return

@@ -78,7 +78,7 @@ native `agent` command was not installed.
   loaded, the documented recovery is to restart Cursor.
 
 Because Cursor does not publish per-event introduction versions, DefenseClaw
-does not invent version tiers for the 21-event surface. The preview contract is
+does not invent version tiers for the 21-event surface. The supported contract is
 pinned only to Cursor Agent build `2026.07.23-e383d2b`, the exact date-hash
 published by the official native Windows installer inspected on 2026-07-30.
 The separate Cursor Desktop `3.13` release remains desktop discovery evidence,

@@ -683,7 +683,7 @@ class TestCheckConnectorHooks(unittest.TestCase):
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertIn("mode=action", r.checks[-1]["detail"])
         self.assertIn("failClosed=true", r.checks[-1]["detail"])
-        self.assertIn("enforcement=preview user-hook native deny", r.checks[-1]["detail"])
+        self.assertIn("enforcement=user-hook native deny", r.checks[-1]["detail"])
         self.assertIn("human-approval=unsupported", r.checks[-1]["detail"])
 
     def test_cursor_doctor_rejects_millisecond_timeout(self) -> None:
@@ -1253,7 +1253,7 @@ class TestCheckHookHealth(unittest.TestCase):
             r = _DoctorResult()
             _check_hook_health(self._cfg(tmp, "hermes", [hook]), "hermes", r)
         self.assertEqual(r.checks[-1]["status"], "fail")
-        self.assertEqual(r.checks[-1]["label"], "Hermes hooks (preview; fail-open)")
+        self.assertEqual(r.checks[-1]["label"], "Hermes hooks (fail-open)")
         self.assertIn(hook, r.checks[-1]["detail"])
         self.assertIn("live=false", r.checks[-1]["detail"])
 
@@ -1897,7 +1897,7 @@ class TestCheckHookHealth(unittest.TestCase):
         """``_check_connector_hooks`` must dispatch each generic connector
         unhandled connectors to the generic hook-health row."""
         for connector, label in (
-            ("hermes", "Hermes hooks (preview; fail-open)"),
+            ("hermes", "Hermes hooks (fail-open)"),
             ("cursor", "Cursor hooks"),
             ("windsurf", "Legacy Cascade hooks"),
             ("geminicli", "Gemini CLI hooks"),

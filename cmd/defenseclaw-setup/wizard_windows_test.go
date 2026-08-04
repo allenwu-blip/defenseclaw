@@ -368,12 +368,13 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "Codex CLI", Value: "codex"},
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "Amp", Value: "amp"},
+		{Label: "Google Antigravity", Value: "antigravity"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
-		{Label: "Hermes Agent (preview)", Value: "hermes"},
+		{Label: "Hermes Agent", Value: "hermes"},
 		{Label: "Windsurf", Value: "windsurf"},
-		{Label: "OmniGent (native degraded preview)", Value: "omnigent"},
-		{Label: "OpenCode (preview)", Value: "opencode"},
+		{Label: "OmniGent (native degraded)", Value: "omnigent"},
+		{Label: "OpenCode", Value: "opencode"},
 	}
 	modes := []wizardChoice{
 		{Label: "Observe", Value: "observe"},
@@ -505,11 +506,11 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "claudecode", want: "Claude Code is configured", reject: "defenseclaw init"},
 		{connector: "copilot", want: "GitHub Copilot CLI is configured", reject: "defenseclaw init"},
 		{connector: "cursor", want: "Cursor Agent is configured", reject: "certified"},
-		{connector: "hermes", want: "Hermes preview hooks", reject: "fail-closed"},
-		{connector: "windsurf", want: "preview", reject: "certified"},
+		{connector: "hermes", want: "Hermes hooks", reject: "fail-closed"},
+		{connector: "windsurf", want: "PowerShell Cascade hooks", reject: "certified"},
 		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
-		{connector: "omnigent", want: "native degraded policy preview", reject: "trusted automatically"},
-		{connector: "opencode", want: "OpenCode preview is configured", reject: "certified"},
+		{connector: "omnigent", want: "native degraded policy integration", reject: "trusted automatically"},
+		{connector: "opencode", want: "OpenCode is configured", reject: "certified"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},
 	} {
 		t.Run(tc.connector, func(t *testing.T) {

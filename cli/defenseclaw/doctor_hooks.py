@@ -139,6 +139,7 @@ _REPAIR = {
     "codex": "defenseclaw setup codex --yes --restart",
     "claudecode": "defenseclaw setup claude-code --yes --restart",
     "copilot": "defenseclaw setup copilot --yes --restart",
+    "antigravity": "defenseclaw setup antigravity --yes --restart",
     "windsurf": "defenseclaw setup windsurf --yes --restart",
     "hermes": "defenseclaw setup hermes --yes --restart",
 }
@@ -615,12 +616,6 @@ def _validate_codex_effective_policy(data_dir: str, config_path: str) -> str:
 
 
 def _repair_detail(connector: str, detail: str) -> str:
-    if connector == "antigravity":
-        return (
-            f"{detail}; Antigravity remains not_certified, so public setup and doctor --fix "
-            "do not repair this connector; run the packaged DefenseClaw Setup /repair action "
-            "without a CONNECTOR override to reconcile an existing recorded installation"
-        )
     return f"{detail}; run `{_REPAIR[connector]}` to repair the native registration"
 
 

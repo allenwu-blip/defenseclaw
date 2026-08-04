@@ -820,35 +820,33 @@ def test_antigravity_windows_discovery_rejects_path_and_gui_fallbacks(
     assert signal.version == ""
 
 
-def test_antigravity_gui_fallback_reads_metadata_without_launch(
+def test_antigravity_windows_version_probe_rejects_gui_fallback(
     monkeypatch,
     tmp_path,
     windows_host_no_path,
 ):
-    _pin_home(monkeypatch, tmp_path)
     local_app_data = tmp_path / "local-app-data"
     gui = local_app_data / "Programs" / "antigravity" / "Antigravity.exe"
-    gui.parent.mkdir(parents=True)
-    gui.write_bytes(b"test executable")
-    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
     monkeypatch.setattr(
         ad,
         "_windows_current_user_local_app_data_roots",
         lambda: (str(local_app_data),),
     )
-    monkeypatch.setattr(ad, "_windows_file_version_for_binary", lambda path, **_kwargs: ("2.2.1", ""))
     monkeypatch.setattr(
-        ad.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("GUI executable was launched")),
+        ad,
+        "_windows_file_version_for_binary",
+        lambda *_args, **_kwargs: pytest.fail("GUI metadata must not be trusted"),
     )
 
-    signal = ad._scan_agent("antigravity")
+    version, error = ad._version_for_agent_binary(
+        "antigravity",
+        str(gui),
+        ("--version",),
+        require_trusted_binary_paths=False,
+    )
 
-    assert signal.installed is True
-    assert signal.binary_path == str(gui)
-    assert signal.config_path == ""
-    assert signal.version == "2.2.1"
+    assert version == ""
+    assert "official token-bound LocalAppData\\agy\\bin\\agy.exe path" in error
 
 
 def test_antigravity_windows_roots_are_narrow_trusted_prefixes(monkeypatch, tmp_path):
@@ -865,6 +863,7 @@ def test_antigravity_windows_roots_are_narrow_trusted_prefixes(monkeypatch, tmp_
 
     assert ad._path_key(str(token_local_app_data / "agy" / "bin")) in prefixes
     assert ad._path_key(str(ambient_local_app_data / "agy" / "bin")) not in prefixes
+    assert ad._path_key(str(token_local_app_data / "Programs" / "antigravity")) not in prefixes
     assert ad._path_key(str(ambient_local_app_data / "Programs" / "antigravity")) not in prefixes
     assert ad._path_key(str(token_local_app_data)) not in prefixes
     assert ad._is_canonical_antigravity_windows_binary(

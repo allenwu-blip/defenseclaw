@@ -2367,7 +2367,7 @@ func isGenericToolInspectionEvent(event string) bool {
 func isPromptLikeEvent(event string) bool {
 	switch canonicalEvent(event) {
 	case "userpromptsubmit", "userpromptsubmitted", "userprompttransformed", "beforesubmitprompt", "preuserprompt", "subagentstart",
-		"prellmcall", "beforeagent", "beforemodel", "agentstart", "preinvocation":
+		"prellmcall", "beforeagent", "beforemodel", "agentstart":
 		return true
 	default:
 		return false
@@ -2388,7 +2388,7 @@ func isResultLikeEvent(event string) bool {
 		"postllmcall", "postcascaderesponse", "postcascaderesponsewithtranscript",
 		// opencode plugin hook: tool.execute.after fires after a tool
 		// returns; observe-only telemetry routed as a tool_result.
-		"toolexecuteafter", "toolresult", "agentend", "postinvocation":
+		"toolexecuteafter", "toolresult", "agentend":
 		return true
 	default:
 		return false

@@ -21,10 +21,10 @@ the same local audit and optional outbound observability pipeline.
 | Codex | Ten events on `0.133.x–0.144.x`; eleven on `>=0.145.0` with observation-only `SessionEnd`; hooks are the only enforcement path. | OTLP logs, metrics, and traces over HTTP/JSON. | Hooks in `%CODEX_HOME%\managed_config.toml`; marked OTLP/notify fields in `%CODEX_HOME%\config.toml`. |
 | Claude Code | 28 current lifecycle/tool/configuration events; the only enforcement path. | OTLP logs and metrics over HTTP/JSON; traces are explicitly disabled. | Marked hooks and OTLP environment entries in `%CLAUDE_CONFIG_DIR%\settings.json`. |
 | Amp | Five plugin callbacks; `tool.call` gates execution and `tool.result` can withhold output before model delivery. The other three are observation-only. | No documented customer native-OTLP exporter or W3C `traceparent` surface. DefenseClaw generates canonical logs, metrics, and spans from the callbacks. | Owner-only TypeScript system plugin at `%USERPROFILE%\.config\amp\plugins\defenseclaw.ts`. |
-| Cursor preview | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
-| Devin Desktop legacy Cascade preview | Twelve Cascade events; only five pre-hooks can block. Devin Local/cloud/ACP are unsupported. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. Managed/system layers are unverified. |
-| Copilot CLI (not certified) | Fourteen current documented events; event-specific hooks are the only DefenseClaw enforcement and telemetry input. | Upstream documents optional OTel traces and metrics, but DefenseClaw does not configure, authenticate, or certify that native surface. | PowerShell-only entries in `%COPILOT_HOME%\hooks\defenseclaw.json` or an explicitly pinned workspace hook file; hook credential remains in the protected DefenseClaw runtime. |
-| Hermes Agent (preview) | All 23 v0.19 events are registered and independently classified; only a valid `pre_tool_call` JSON block can veto a tool. | No official native OTLP logs, metrics, or traces. Hook-derived events enter the same v8 audit pipeline. | Owned handlers in `%HERMES_HOME%\config.yaml`; no native exporter settings are invented. |
+| Cursor | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
+| Devin Desktop legacy Cascade | Twelve Cascade events; only five pre-hooks can block. Devin Local/cloud/ACP are unsupported. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. Managed/system layers are unverified. |
+| Copilot CLI | Fourteen current documented events; event-specific hooks are the only DefenseClaw enforcement and telemetry input. | Upstream documents optional OTel traces and metrics, but DefenseClaw does not configure, authenticate, or certify that native surface. Authentication, HITL, and live evidence remain unverified and unclaimed. | PowerShell-only entries in `%COPILOT_HOME%\hooks\defenseclaw.json` or an explicitly pinned workspace hook file; hook credential remains in the protected DefenseClaw runtime. |
+| Hermes Agent | All 23 v0.19 events are registered and independently classified; only a valid `pre_tool_call` JSON block can veto a tool. | No official native OTLP logs, metrics, or traces. Hook-derived events enter the same v8 audit pipeline. | Owned handlers in `%HERMES_HOME%\config.yaml`; no native exporter settings are invented. |
 | OpenCode | Awaited `tool.execute.before` is the only enforcement path; `tool.execute.after` and generic lifecycle delivery are best-effort observation. | No documented native OTLP surface; the plugin emits hook-generated audit/telemetry. | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, default `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`. |
 
 Codex and Claude Code configure a connector-scoped bearer and source/client
@@ -138,8 +138,8 @@ defenseclaw doctor
 
 ## Loopback and network boundaries
 
-The certified connector topology—and the topology exercised by the OpenCode
-preview—uses the current user's native agent and gateway on loopback, normally
+The supported connector topology uses the current user's native agent and
+gateway on loopback, normally
 `127.0.0.1:18970`. The loopback HTTP receiver is
 authenticated; it is not a claim that localhost is inherently trusted.
 
@@ -174,9 +174,10 @@ substitute for that gate. In particular, an authenticated Amp turn requires
 `AMP_API_KEY`; the absence or presence of that optional secret does not change
 the packaged native Windows support classification.
 
-That artifact trust chain does not certify preview connectors. Codex, Cursor,
-legacy Cascade, Hermes, OpenCode, and OmniGent retain their preview status until
-their packaged lifecycle and authentic official-client gates pass.
+That artifact trust chain does not fabricate connector evidence. Supported
+availability for Codex, Cursor, legacy Cascade, Hermes, OpenCode, OmniGent,
+Copilot, and Antigravity does not populate validation fields or change
+`live=false`; authentic official-client evidence remains independently gated.
 
 For `0.8.10`, the authenticated provenance says `unsigned: true` and
 `product_executables_authenticode_signed: false`; Windows observes the outer

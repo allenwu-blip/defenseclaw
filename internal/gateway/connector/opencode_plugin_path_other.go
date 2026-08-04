@@ -23,8 +23,11 @@ func prepareOpenCodePluginArtifactDestination(path string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("OpenCode managed plugin target is not a regular non-link file: %s", path)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("plugin target must not be a symlink: %s", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("plugin target must be a regular file: %s", path)
 	}
 	return nil
 }

@@ -47,7 +47,7 @@
         "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       },
-      "notes": "Native Windows implementation is present but not certified; official-client Windows evidence remains pending."
+      "notes": "Native Windows setup is supported. Authentication, HITL, and official-client live evidence remain unverified and unclaimed; Windows validation version/date/run fields remain empty and live=false."
     },
     "openhands": {
       "version_probe": "openhands --version",
@@ -64,7 +64,7 @@
     "windsurf": {
       "version_probe": "",
       "live": false,
-      "notes": "legacy Cascade-only contract (Layer A); preview/not certified. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed/ProgramData layers are unsupported and unverified; no real-client evidence is recorded."
+      "notes": "Supported legacy Cascade-only contract (Layer A). Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed/ProgramData layers are unsupported and unverified; no real-client evidence is recorded and live=false."
     },
     "opencode": {
       "version_probe": "opencode --version",
@@ -72,12 +72,12 @@
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       },
-      "notes": "Source-reviewed contract is pinned to OpenCode 1.18.11 (reviewed range >=1.18.10,<1.18.12); the relevant 1.18.11 plugin/runtime files are byte-identical to 1.18.10. Native Windows implementation remains preview/not_certified with live=false; authentic packaged Setup and official-client certification evidence remain pending."
+      "notes": "Source-reviewed contract is pinned to OpenCode 1.18.11 (reviewed range >=1.18.10,<1.18.12); the relevant 1.18.11 plugin/runtime files are byte-identical to 1.18.10. Native Windows setup is supported, while authentic official-client validation metadata remains empty and live=false."
     },
     "antigravity": {
       "version_probe": "agy --version",
       "live": false,
-      "notes": "Native Windows x64 implementation and contract checks are present but certification remains pending integrated packaged and official-client validation. The vendor updater manifest and official release page reported CLI 1.1.9 on 2026-07-31; that is availability metadata only and is not a validation record. The current manual delta confirms only public not_certified gate rejection; no protected-client, authentication, or client-provenance test occurred, and shared readiness remains integration-owned. Enterprise/managed, Team, ProgramData, cloud-dashboard, MDM, and organization-policy surfaces remain out of scope and unverified. Real official-client E2E is manual on a dedicated pre-authenticated Windows runner because Google documents Windows Credential Manager/browser auth, not API-key bootstrap.",
+      "notes": "Native Windows x64 setup is supported. The accepted protected harness pins official CLI 1.1.10 as availability metadata only, not as a validation record. No protected-client, authentication, HITL, client-provenance, or official-client live evidence is claimed; validation version/date/run fields remain empty and live=false. Enterprise/managed, Team, ProgramData, cloud-dashboard, MDM, and organization-policy surfaces remain out of scope and unverified. Real official-client E2E requires a dedicated pre-authenticated Windows runner because Google documents Windows Credential Manager/browser auth, not API-key bootstrap.",
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       }
@@ -98,7 +98,7 @@
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       },
-      "notes": "contract-only; native Windows server/SDK policy bridge is degraded preview and its official-client job remains advisory"
+      "notes": "contract-only; the supported native Windows server/SDK policy bridge remains degraded, its official-client job remains advisory, and live=false"
     }
   }
 }

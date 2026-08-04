@@ -22,15 +22,13 @@ import (
 	"testing"
 )
 
-var windowsSupportedConnectorNames = []string{}
-
-var windowsPreviewConnectorNames = []string{
-	"claudecode", "codex", "cursor", "hermes", "omnigent", "opencode", "windsurf",
+var windowsSupportedConnectorNames = []string{
+	"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf",
 }
 
-var windowsNotCertifiedConnectorNames = []string{
-	"antigravity", "copilot",
-}
+var windowsPreviewConnectorNames = []string{}
+
+var windowsNotCertifiedConnectorNames = []string{}
 
 var windowsUnsupportedConnectorNames = []string{
 	"geminicli",
@@ -147,8 +145,10 @@ func TestConnectorSupportOnOS(t *testing.T) {
 }
 
 func TestValidateConnectorSupportedOnOS(t *testing.T) {
-	if err := validateConnectorSupportedOnOS("hermes", "windows"); err != nil {
-		t.Fatalf("preview connector should remain available: %v", err)
+	for _, name := range []string{"copilot", "antigravity", "hermes"} {
+		if err := validateConnectorSupportedOnOS(name, "windows"); err != nil {
+			t.Fatalf("supported connector %s should remain available: %v", name, err)
+		}
 	}
 	err := validateConnectorSupportedOnOS("openhands", "windows")
 	if err == nil || !strings.Contains(err.Error(), "requires WSL") {
@@ -158,13 +158,15 @@ func TestValidateConnectorSupportedOnOS(t *testing.T) {
 
 func TestCheckPlatformSupportPreservesOperatorWording(t *testing.T) {
 	warning, err := CheckPlatformSupport("cursor", "windows")
-	if err != nil || !strings.Contains(warning, "preview on windows") {
-		t.Fatalf("preview result warning=%q err=%v", warning, err)
+	if err != nil || warning != "" {
+		t.Fatalf("supported Cursor result warning=%q err=%v", warning, err)
 	}
 
-	warning, err = CheckPlatformSupport("hermes", "windows")
-	if err != nil || !strings.Contains(warning, "preview") {
-		t.Fatalf("preview result warning=%q err=%v", warning, err)
+	for _, name := range []string{"copilot", "antigravity", "hermes"} {
+		warning, err = CheckPlatformSupport(name, "windows")
+		if err != nil || warning != "" {
+			t.Fatalf("supported %s result warning=%q err=%v", name, warning, err)
+		}
 	}
 
 	warning, err = CheckPlatformSupport("openhands", "windows")

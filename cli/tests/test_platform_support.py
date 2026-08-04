@@ -62,17 +62,20 @@ from defenseclaw.tui.services.cli_choices import (
 
 from tests.helpers import cleanup_app, make_app_context
 
-WINDOWS_SUPPORTED: set[str] = {"amp"}
-WINDOWS_PREVIEW: set[str] = {
+WINDOWS_SUPPORTED: set[str] = {
+    "amp",
     "claudecode",
     "codex",
+    "copilot",
     "cursor",
     "hermes",
     "windsurf",
     "opencode",
     "omnigent",
+    "antigravity",
 }
-WINDOWS_NOT_CERTIFIED = {"copilot", "antigravity"}
+WINDOWS_PREVIEW: set[str] = set()
+WINDOWS_NOT_CERTIFIED: set[str] = set()
 WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
@@ -286,7 +289,7 @@ def test_all_connector_lists_share_one_taxonomy() -> None:
     assert set(_HOOK_ENFORCED_CONNECTORS) == ALL_CONNECTORS - set(PROXY_CONNECTORS)
 
 
-def test_windows_views_include_labeled_preview_and_hide_unavailable() -> None:
+def test_windows_views_include_supported_connectors_without_preview_labels() -> None:
     expected = WINDOWS_SUPPORTED | WINDOWS_PREVIEW
     assert set(supported_connector_choices("windows")) == expected
     assert set(visible_connector_choices("windows")) == expected
@@ -294,12 +297,8 @@ def test_windows_views_include_labeled_preview_and_hide_unavailable() -> None:
     win_modes = visible_mode_picker_choices("windows")
     assert {choice.wire for choice in win_modes} == expected
     labels = {choice.wire: choice.label.lower() for choice in win_modes}
-    assert all("preview" in labels[connector] for connector in WINDOWS_PREVIEW)
-    assert all(
-        "preview" not in label
-        for connector, label in labels.items()
-        if connector not in WINDOWS_PREVIEW
-    )
+    assert all("preview" not in label for label in labels.values())
+    assert {"copilot", "antigravity"} <= set(labels)
     assert "omnigent" in {choice.wire for choice in win_modes}
 
 

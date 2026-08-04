@@ -685,10 +685,6 @@ def _windows_default_trusted_bin_prefixes() -> tuple[str, ...]:
                 # to this token-bound product directory and verifies its
                 # updater-manifest SHA-512 before publication.
                 os.path.join(codex_local_app_data, "agy", "bin"),
-                # The desktop application is a metadata-only discovery
-                # fallback. Keep it token-bound and product-specific; it is
-                # never launched by inventory discovery.
-                os.path.join(codex_local_app_data, "Programs", "antigravity"),
                 # Hermes' official Windows updater owns this exact venv. Bind
                 # discovery to the current token's Known Folder instead of an
                 # inherited LOCALAPPDATA value or a coexisting legacy home.
@@ -1735,14 +1731,6 @@ def _version_for_agent_binary(
 ) -> tuple[str, str]:
     """Probe a CLI, or read metadata for a GUI that must not be launched."""
 
-    command_name = _binary_command_name(binary_path)
-    if name == "antigravity" and _is_windows_host() and command_name == "antigravity":
-        return _windows_file_version_for_binary(
-            binary_path,
-            require_trusted_binary_paths=True,
-            data_dir=data_dir,
-        )
-
     if name == "antigravity" and _is_windows_host():
         if not _is_canonical_antigravity_windows_binary(binary_path):
             return "", "binary is not the official token-bound LocalAppData\\agy\\bin\\agy.exe path"
@@ -1768,6 +1756,7 @@ def _version_for_agent_binary(
             return "", "official Antigravity CLI changed during its version probe"
         return version, ""
 
+    command_name = _binary_command_name(binary_path)
     if (
         name == "windsurf"
         and _is_windows_host()
@@ -1983,10 +1972,7 @@ def _binary_candidates_for_agent(name: str, spec: _AgentSpec) -> tuple[str, ...]
         return tuple(
             candidate
             for root in _windows_current_user_local_app_data_roots()
-            for candidate in (
-                os.path.join(root, "agy", "bin", "agy.exe"),
-                os.path.join(root, "Programs", "antigravity", "Antigravity.exe"),
-            )
+            for candidate in (os.path.join(root, "agy", "bin", "agy.exe"),)
             if os.path.isfile(candidate)
         )
     candidates: list[str] = []

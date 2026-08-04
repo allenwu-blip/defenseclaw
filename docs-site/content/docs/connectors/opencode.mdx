@@ -19,11 +19,10 @@ The OpenCode connector wires DefenseClaw into [OpenCode](https://opencode.ai). O
 **No `opencode.json` edit, no shell shim.** Local plugins are loaded automatically, so installing the connector is just writing one file. The bridge uses the runtime's global `fetch`, so it needs no npm dependencies and never triggers a `bun install`.
 </Callout>
 
-<Callout type="warning" title="Native Windows preview">
-The direct native Windows implementation is preview pending the integrated
-packaged-Setup and pinned official-client release gates. The implementation
-being present in Setup and CI does not itself promote a certified release
-claim. OpenCode 1.18.11 publishes CLI and Desktop assets for Windows x64 and
+<Callout type="info" title="Native Windows support">
+The direct native Windows setup path is supported. Validation metadata remains
+empty and `live=false`; Setup and CI presence does not fabricate authentic
+official-client evidence. OpenCode 1.18.11 publishes CLI and Desktop assets for Windows x64 and
 ARM64, but DefenseClaw's current passive identity gate covers only the pinned
 CLI/npm x64 identity. It cannot yet distinguish a Desktop sidecar from the CLI
 or certify ARM64, so both surfaces remain explicitly unverified.
@@ -66,7 +65,7 @@ runtime signal.
 OpenCode's [Windows guide](https://opencode.ai/docs/windows-wsl/) says that
 OpenCode can run directly on Windows while recommending WSL for the best
 experience. WSL is **recommended, not required**. The DefenseClaw Windows
-preview covers only the direct native path: OpenCode, DefenseClaw, the gateway, the JavaScript plugin,
+support covers only the direct native path: OpenCode, DefenseClaw, the gateway, the JavaScript plugin,
 and their configuration paths must all be native Windows processes and paths.
 Do not substitute WSL, Docker, a VM, Git Bash, Cygwin, or MSYS. OpenCode's
 [installation page](https://opencode.ai/docs/) documents direct Windows
@@ -92,8 +91,8 @@ The review pins the official
 [`v1.18.11` release](https://github.com/anomalyco/opencode/releases/tag/v1.18.11),
 published August 1, 2026, and its plugin/config/MCP source. This is source
 compatibility evidence only: packaged Setup and authentic official-client
-Windows validation remain unrecorded, `live` remains `false`, and the connector
-remains preview/not certified.
+Windows validation remain unrecorded and `live` remains `false`; supported
+availability does not alter those evidence fields.
 
 ## Lifecycle events
 

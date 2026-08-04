@@ -2334,8 +2334,8 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             )
 
         self.assertFalse(inv["live"])
-        self.assertEqual(inv["support_status"], "not_certified")
-        self.assertEqual(inv["release_channel"], "preview")
+        self.assertEqual(inv["support_status"], "supported")
+        self.assertEqual(inv["release_channel"], "supported")
         self.assertEqual({row["id"] for row in inv["skills"]}, {"local-skill", "external-skill"})
         plugins = {row["id"]: row for row in inv["plugins"]}
         self.assertTrue(plugins["user-plugin"]["enabled"])

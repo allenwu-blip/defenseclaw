@@ -17,17 +17,18 @@ That makes a direct native-Windows DefenseClaw integration eligible. WSL,
 Git Bash, Cygwin, MSYS, Docker, VMs, and Unix shell shims are not part of this
 contract.
 
-DefenseClaw's public platform status remains **not certified** until the
-packaged and real-client Windows certification phase passes. Internal contract
-tests do not promote that status.
+DefenseClaw supports ordinary Copilot setup on native Windows. That product
+availability does not certify an official-client run: validated Windows
+version, timestamp, run URL, authentication, HITL, and live evidence remain
+empty or unverified, and `live` remains `false`.
 
 The native Setup executable includes Copilot in its staged connector selection
 and durable lifecycle. It records the exact `COPILOT_HOME`, replays the
 home-bound maintenance command during repair and upgrade, carries the binding
 through uninstall handoff and deferred cleanup, and consumes the managed hook
-backup only during exact restoration. The ordinary CLI/TUI setup surface
-continues to reject Copilot on Windows while its public status is
-`not_certified`; Setup's narrow internal bootstrap does not change that claim.
+backup only during exact restoration. The ordinary CLI, TUI, and Setup
+surfaces use this same guarded lifecycle; there is no hidden public-platform
+bypass.
 
 ## Official sources
 
@@ -89,8 +90,8 @@ precedence over `.claude` at each level. The
 [plugin-reference loading diagram](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-plugin-reference#loading-order-and-precedence)
 places the user directory first and groups the project conventions
 differently. DefenseClaw follows the dedicated custom-agent reference; real
-official-client certification must confirm the effective order before the
-connector can graduate from `not_certified`.
+official-client validation must confirm the effective order before any live
+evidence or certification claim can be recorded.
 
 The official read-only inventory command is
 `copilot plugins list --kind plugin --json`. DefenseClaw uses it only to
@@ -176,11 +177,12 @@ be enforced on Windows. DefenseClaw hook decisions still operate on their
 documented surfaces, but documentation and certification evidence must not
 claim that Copilot's Windows sandbox provides per-path filesystem enforcement.
 
-## Certification still required
+## Live evidence still required
 
-Before changing `not_certified` to `supported`, the later Windows verification
-phase must run the packaged deterministic contract and a real official 1.0.77
-or newer client with an entitled credential. It must prove user-scope setup,
+Before recording validated-version or live evidence, the later Windows
+verification phase must run the packaged deterministic contract and a real
+official 1.0.77 or newer client with an entitled credential. It must prove
+user-scope setup,
 restart/reconciliation, allow/ask/block/failure behavior, stdin/stdout/exit
 propagation, audit and protected-runtime evidence, tamper repair, exact
 restoration, and teardown without WSL or a Unix shell.
@@ -188,10 +190,9 @@ restoration, and teardown without WSL or a Unix shell.
 The prepared native driver is
 `scripts/live-connector-e2e/run-windows.ps1 -Connector copilot`. Its live layer
 uses the official `@github/copilot` Windows package (or an explicitly pinned
-official client for release certification), `copilot version`, the documented
-headless `copilot -p` surface, and the official token precedence. Until public
-certification changes, its setup transitions use the same hidden
-transaction-shaped bootstrap and explicitly home-bound maintenance command as
-native Setup; they do not bypass the ordinary CLI/TUI platform gate. The
-driver is not certification evidence until that later run completes
+official client for release validation), `copilot version`, the documented
+headless `copilot -p` surface, and the official token precedence. Its setup
+transitions use the same transaction-shaped and explicitly home-bound
+maintenance command as ordinary native Setup. The driver is not certification
+evidence until that later run completes
 successfully.

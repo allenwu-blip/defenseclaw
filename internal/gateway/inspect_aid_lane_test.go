@@ -69,10 +69,11 @@ func TestHandleAgentHook_AIDAppliesAcrossHookProfiles(t *testing.T) {
 	}{
 		{"codex", "/api/v1/codex/hook", "PreToolUse", "block", false},
 		{"claudecode", "/api/v1/claude-code/hook", "PreToolUse", "block", false},
-		// Cursor's user hook is lower priority than project/team/enterprise
-		// hooks, so AID findings remain visible but cannot claim an
-		// authoritative block at this integration boundary.
-		{"cursor", "/api/v1/cursor/hook", "beforeShellExecution", "allow", true},
+		// Cursor's documented user hook accepts a native deny on this
+		// pre-action event. Higher-priority hooks may override it, but Cursor
+		// exposes no safe conflict-detection API, so the connector does not
+		// infer a conflict at this integration boundary.
+		{"cursor", "/api/v1/cursor/hook", "beforeShellExecution", "block", false},
 		{"geminicli", "/api/v1/geminicli/hook", "BeforeTool", "block", false},
 		{"hermes", "/api/v1/hermes/hook", "pre_tool_call", "block", false},
 		{"windsurf", "/api/v1/windsurf/hook", "pre_run_command", "block", false},

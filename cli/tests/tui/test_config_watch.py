@@ -460,6 +460,7 @@ async def test_native_windows_open_tui_observes_external_cli_mode_change(
         "trusted_binary_prefixes": [str(agent_bin)],
     }
     path = _configure_active_path(monkeypatch, tmp_path, initial)
+    protect_private_file(path)
     app = DefenseClawTUI(config=config_module.load(), config_path=path)
     # This acceptance targets config polling, not network/process pollers.
     monkeypatch.setattr(app, "_schedule_health_poll", lambda: None)

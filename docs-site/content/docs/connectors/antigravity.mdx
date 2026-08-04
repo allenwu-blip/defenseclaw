@@ -1,6 +1,6 @@
 ---
 title: Antigravity
-description: Google Antigravity (`agy`) lifecycle hook contract and the native Windows implementation awaiting integrated certification.
+description: Google Antigravity (`agy`) lifecycle hook contract and supported native Windows setup path.
 keywords:
   - DefenseClaw Antigravity connector
   - Antigravity hooks
@@ -15,13 +15,13 @@ Antigravity model traffic.
 
 Google currently publishes Antigravity 2.0 v2.4.3. Its updater manifest and
 [official CLI releases](https://github.com/google-antigravity/antigravity-cli/releases)
-publish CLI v1.1.9 (July 31, 2026). This is vendor availability metadata, not
+publish CLI v1.1.10. This is vendor availability metadata, not
 DefenseClaw validation or certification. The
 [official install page](https://antigravity.google/docs/cli/install) says the
 CLI runs natively on Windows, macOS, and Linux. The
 [download page](https://antigravity.google/download) provides native Windows
-x64 and ARM64 clients; DefenseClaw's native Windows x64 implementation remains
-behind the not-certified platform gate pending packaged and official-client validation. Windows 10
+x64 and ARM64 clients; DefenseClaw supports the native Windows x64 setup path.
+Validation metadata remains empty and `live=false`. Windows 10
 64-bit is the documented minimum.
 
 ## Native Windows setup
@@ -42,16 +42,14 @@ canonical path, applies its trusted ACL boundary, and checks a stable no-follow
 SHA-512 across the version probe. It does not claim a vendor signer pin or
 certification.
 
-The current manual delta confirms only that public Setup rejects Antigravity as
-`not_certified`. No protected-client, authentication, or client-provenance test
-occurred, so it contributes no certification evidence. Shared readiness remains
-integration-owned.
+No protected-client, authentication, HITL, client-provenance, or official-client
+live evidence is claimed. Provider login through Windows Credential Manager or
+the vendor browser flow remains required; there is no authentication bypass.
 
-The native Setup/bootstrap lifecycle and manual validation harness implement
-this connector for integration testing. The ordinary `defenseclaw setup`
-CLI/TUI platform gate does not expose Antigravity while it is not certified;
-there is no supported public setup command until authentic packaged and
-official-client evidence is approved.
+The native Setup lifecycle and manual validation harness implement this
+connector's custody and acceptance infrastructure. Ordinary
+`defenseclaw setup antigravity`, first-run, batch, and CLI/TUI selection are
+supported independently of the optional protected live harness.
 
 DefenseClaw uses a native Windows process chain:
 
@@ -165,12 +163,11 @@ Claude Code fields such as `systemMessage`, `additionalContext`, and
 - connector-scoped gateway authentication and runtime freshness;
 - stale, malformed, foreign, missing, or inconsistent registrations.
 
-Doctor never executes command text read from `hooks.json`. Because this preview
-remains `not_certified`, public `defenseclaw setup antigravity` and
-`defenseclaw doctor --fix` do not repair it. For an existing recorded packaged
-installation, run the cached DefenseClaw Setup `/repair` action without a
-`CONNECTOR` override; that already-supported maintenance path reloads the
-recorded connector and reconciles its native registration.
+Doctor never executes command text read from `hooks.json`. Public
+`defenseclaw setup antigravity` repairs the connector through the same guarded
+custody and rollback path. For an existing recorded packaged installation,
+the cached DefenseClaw Setup `/repair` action without a `CONNECTOR` override
+also reloads the recorded connector and reconciles its native registration.
 
 Teardown restores the pre-Setup file when it is unchanged. If an operator
 edited it, teardown removes only DefenseClaw-owned current and legacy commands,
@@ -195,10 +192,10 @@ Windows and hook transitions: v1.0.8 corrected the shared
 `~/.gemini/config/hooks.json` path; v1.0.10 selected PowerShell as the Windows
 default shell; v1.0.15 fixed Windows output behavior; v1.1.1 fixed workspace
 hook loading; v1.1.7 fixed disabled plugins still running hooks; and v1.1.8 is
-the compatibility floor for the five-event contract. The current v1.1.9
+the compatibility floor for the five-event contract. The current v1.1.10
 updater/release metadata does not document a replacement hook schema, so
 DefenseClaw does not infer one from the version delta and does not promote the
-connector beyond `not_certified` / `live: false`.
+connector's authentic validation metadata; `live: false` remains unchanged.
 
 ## Local customization surfaces
 
@@ -242,4 +239,4 @@ stable bytes without following links or reparse points from global `GEMINI.md`,
 current `.agents/rules`, legacy `.agent/rules`, and plugin `rules/*.md` sources.
 
 Enterprise/managed, Team, ProgramData, cloud-dashboard, MDM, and organization
-policy surfaces are outside this connector preview and remain unverified.
+policy surfaces are outside this connector contract and remain unverified.

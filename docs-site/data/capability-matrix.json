@@ -60,7 +60,7 @@
     {
       "id": "cursor",
       "label": "Cursor",
-      "summary": "Preview user hooks with bounded inspection and event-native deny decisions.",
+      "summary": "User hooks with bounded inspection and event-native deny decisions.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
@@ -73,12 +73,12 @@
         "scope": "user"
       },
       "hilt": "DefenseClaw does not enable Cursor native human approval. Confirm verdicts remain attributed alerts and cannot resume the original hook call.",
-      "notes": "Preview/not certified. The connector writes only ~/.cursor/hooks.json. Action mode returns Cursor's documented native deny response on supported pre-action events and writes failClosed=true; observe returns allow/would-block and writes failClosed=false. Cursor merges conflicts Enterprise > Team > Project > User, but exposes no safe API for detecting an actual higher-priority conflict, so DefenseClaw reports that limitation and does not infer a conflict. The direct native adapter and all documented event schemas remain active for bounded inspection, including subagentStart and post/result fields. Agent CLI version evidence is separate from the event payload's Cursor application/Desktop cursor_version. Local inventory covers documented MCP, recursive skill and compatibility roots, .cursor/rules/**/*.mdc, root/nested AGENTS.md, local plugins, and project/user compatibility subagents; multi-root, cloud, marketplace/team/private, dynamic, and effective same-name sources remain unverified."
+      "notes": "Native Windows setup is supported. Validation version/date/run metadata remains empty and live=false. The connector writes only ~/.cursor/hooks.json. Action mode returns Cursor's documented native deny response on supported pre-action events and writes failClosed=true; observe returns allow/would-block and writes failClosed=false. Cursor merges conflicts Enterprise > Team > Project > User, but exposes no safe API for detecting an actual higher-priority conflict, so DefenseClaw reports that limitation and does not infer a conflict. The direct native adapter and all documented event schemas remain active for bounded inspection, including subagentStart and post/result fields. Agent CLI version evidence is separate from the event payload's Cursor application/Desktop cursor_version. Local inventory covers documented MCP, recursive skill and compatibility roots, .cursor/rules/**/*.mdc, root/nested AGENTS.md, local plugins, and project/user compatibility subagents; multi-root, cloud, marketplace/team/private, dynamic, and effective same-name sources remain unverified."
     },
     {
       "id": "hermes",
       "label": "Hermes",
-      "summary": "Preview native lifecycle hooks with valid-JSON pre-tool blocking and unconditional failure-open behavior.",
+      "summary": "Native lifecycle hooks with valid-JSON pre-tool blocking and unconditional failure-open behavior.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",
@@ -91,7 +91,7 @@
         "scope": "user"
       },
       "hilt": "Hermes has no native human-approval surface; confirm verdicts are recorded and alerted but cannot pause or resume the hook.",
-      "notes": "Preview/not certified/live:false on native Windows. The connector covers one resolved default HERMES_HOME only and rejects named or multiplex profiles. It stages all 23 Hermes v0.19 hooks in config.yaml while preserving hooks_auto_accept, and transactionally owns only exact DefenseClaw event/command approvals in shell-hooks-allowlist.json. Running hosts cache callbacks, so registration and revocation remain pending reload; Windows teardown writes a direct-native disabled tombstone for stale callbacks. Only valid synchronous pre_tool_call block JSON vetoes a tool; pre_llm_call may inject context and pre_verify may continue a bounded verification loop. Other events are audit-only where the official shell parser proves no effect, and all failures remain open. The command is a directly quoted absolute native defenseclaw-hook.exe argv parsed by shlex.split and run with shell=False; there is no shell fallback and Hermes's PortableGit terminal is outside the integration. Bounded default-profile inventory covers MCP, local/external skills, SOUL.md, built-in/provider memory, and bundled/Nix/user/pip plugins; project-conditional, named-profile, and managed/ProgramData/cloud/MDM sources remain unverified."
+      "notes": "Native Windows setup is supported; validation metadata remains empty and live=false. The connector covers one resolved default HERMES_HOME only and rejects named or multiplex profiles. It stages all 23 Hermes v0.19 hooks in config.yaml while preserving hooks_auto_accept, and transactionally owns only exact DefenseClaw event/command approvals in shell-hooks-allowlist.json. Running hosts cache callbacks, so registration and revocation remain pending reload; Windows teardown writes a direct-native disabled tombstone for stale callbacks. Only valid synchronous pre_tool_call block JSON vetoes a tool; pre_llm_call may inject context and pre_verify may continue a bounded verification loop. Other events are audit-only where the official shell parser proves no effect, and all failures remain open. The command is a directly quoted absolute native defenseclaw-hook.exe argv parsed by shlex.split and run with shell=False; there is no shell fallback and Hermes's PortableGit terminal is outside the integration. Bounded default-profile inventory covers MCP, local/external skills, SOUL.md, built-in/provider memory, and bundled/Nix/user/pip plugins; project-conditional, named-profile, and managed/ProgramData/cloud/MDM sources remain unverified."
     },
     {
       "id": "opencode",
@@ -109,7 +109,7 @@
         "scope": "user"
       },
       "hilt": "No native human-approval surface; blocks by throwing in the bridge plugin's tool.execute.before. confirm verdicts fall back to allow.",
-      "notes": "Native Windows is preview pending integrated packaged Setup and pinned official-client validation. Governed by a DefenseClaw JS bridge plugin auto-loaded from OPENCODE_CONFIG_DIR/plugins/defenseclaw.js or the default ~/.config/opencode/plugins/defenseclaw.js (no opencode.json edit). tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) to abort the tool on a block decision; tool.execute.after is best-effort observe-only. Fail-closed applies only to the awaited before hook: the bridge throws there when the gateway is unreachable and FAIL_MODE=closed."
+      "notes": "Native Windows setup is supported; validation metadata remains empty and live=false. Governed by a DefenseClaw JS bridge plugin auto-loaded from OPENCODE_CONFIG_DIR/plugins/defenseclaw.js or the default ~/.config/opencode/plugins/defenseclaw.js (no opencode.json edit). tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) to abort the tool on a block decision; tool.execute.after is best-effort observe-only. Fail-closed applies only to the awaited before hook: the bridge throws there when the gateway is unreachable and FAIL_MODE=closed."
     },
     {
       "id": "amp",
@@ -186,7 +186,7 @@
         "scope": "user,workspace"
       },
       "hilt": "Copilot CLI supports native ask on documented preToolUse hooks.",
-      "notes": "Global hooks under ~/.copilot/hooks by default; optional workspace hooks under <workspace>/.github/hooks."
+      "notes": "Native Windows setup is supported. Provider authentication remains required; HITL and official-client live evidence are unverified and unclaimed, validation metadata remains empty, and live=false. Global hooks live under ~/.copilot/hooks by default with optional workspace hooks under <workspace>/.github/hooks."
     },
     {
       "id": "openhands",
@@ -222,12 +222,12 @@
         "scope": "user"
       },
       "hilt": "Antigravity documents native ask on PreToolUse only. DefenseClaw does not claim that this response overrides permission-bypass flags without persisted official-client evidence; force_ask is retained only as internal raw_action telemetry.",
-      "notes": "DefenseClaw's v2 contract registers all five documented Antigravity lifecycle events (PreInvocation, PreToolUse, PostToolUse, PostInvocation, Stop) in ~/.gemini/config/hooks.json with their vendor-specific direct-list or matcher-group shapes. Only synchronous PreToolUse exposes documented hard deny and native ask decisions; invocation events are context-transform surfaces, PostToolUse is observe-only, and DefenseClaw returns allow for Stop rather than claiming stop blocking. MCP read/write uses ~/.gemini/config/mcp_config.json and <workspace>/.agents/mcp_config.json. AgentSkills folder form is read/write at ~/.gemini/config/skills and <workspace>/.agents/skills. Plugins live at ~/.gemini/config/plugins or <workspace>/.agents/plugins; the CLI staging path is also discovered. Rules and standalone or plugin-contained agents remain discovery/scan only."
+      "notes": "Native Windows setup is supported. Provider authentication remains required; HITL and official-client live evidence are unverified and unclaimed, validation metadata remains empty, and live=false. DefenseClaw's v2 contract registers all five documented Antigravity lifecycle events (PreInvocation, PreToolUse, PostToolUse, PostInvocation, Stop) in ~/.gemini/config/hooks.json with their vendor-specific direct-list or matcher-group shapes. Only synchronous PreToolUse exposes documented hard deny and native ask decisions; invocation events are context-transform surfaces, PostToolUse is observe-only, and DefenseClaw returns allow for Stop rather than claiming stop blocking. MCP read/write uses ~/.gemini/config/mcp_config.json and <workspace>/.agents/mcp_config.json. AgentSkills folder form is read/write at ~/.gemini/config/skills and <workspace>/.agents/skills. Plugins live at ~/.gemini/config/plugins or <workspace>/.agents/plugins; the CLI staging path is also discovered. Rules and standalone or plugin-contained agents remain discovery/scan only."
     },
     {
       "id": "windsurf",
       "label": "Devin Desktop — legacy Cascade",
-      "summary": "Preview coverage for legacy Cascade hooks; Devin Local, cloud, and ACP are unsupported.",
+      "summary": "Supported legacy Cascade hook coverage; Devin Local, cloud, and ACP are unsupported.",
       "family": "hooks",
       "toolInspection": "pre-execution + response-scan",
       "subprocessPolicy": "none",

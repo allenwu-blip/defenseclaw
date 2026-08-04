@@ -53,52 +53,52 @@ var proxyConnectors = map[string]struct{}{
 // cli/defenseclaw/platform_support.py WINDOWS_CONNECTOR_SUPPORT mapping.
 var windowsConnectorSupport = map[string]PlatformSupport{
 	"codex": {
-		Status: PlatformPreview,
-		Reason: "Codex CLI and the DefenseClaw hook entrypoint are available as a native Windows x64 preview; no authentic packaged plus official-client release-certification record is available.",
+		Status: PlatformSupported,
+		Reason: "Codex CLI and the DefenseClaw hook entrypoint are supported on native Windows x64; authentic packaged plus official-client validation metadata is not recorded and live evidence remains false.",
 	},
 	"claudecode": {
-		Status: PlatformPreview,
-		Reason: "Claude Code and the DefenseClaw native executable hook entrypoint are available as a native Windows x64 preview; no immutable packaged plus official-client certification record is persisted.",
+		Status: PlatformSupported,
+		Reason: "Claude Code and the DefenseClaw native executable hook entrypoint are supported on native Windows x64; immutable packaged plus official-client validation metadata is not recorded and live evidence remains false.",
 	},
 	"cursor": {
-		Status: PlatformPreview,
-		Reason: "Cursor Agent and the DefenseClaw PowerShell hook adapter are available as a native Windows x64 preview pending integrated packaged and official-client validation.",
+		Status: PlatformSupported,
+		Reason: "Cursor Agent and the DefenseClaw PowerShell hook adapter are available on native Windows x64; official-client validation metadata is not recorded and live evidence remains false.",
 	},
 	"windsurf": {
-		Status: PlatformPreview,
-		Reason: "Legacy Cascade-only hooks and the native PowerShell adapter are available as a Windows x64 preview. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer enforcement are not covered; packaged and official-client certification is pending.",
+		Status: PlatformSupported,
+		Reason: "Legacy Cascade-only hooks and the native PowerShell adapter are supported on Windows x64. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer enforcement are not covered; packaged and official-client validation metadata is not recorded.",
 	},
 	"geminicli": {
 		Status: PlatformUnsupported,
 		Reason: "Gemini CLI native Windows support is excluded from this release because the intended product and audience path was discontinued; existing non-Windows support is unchanged.",
 	},
 	"copilot": {
-		Status: PlatformNotCertified,
-		Reason: "The DefenseClaw GitHub Copilot CLI integration has not completed native Windows x64 certification.",
+		Status: PlatformSupported,
+		Reason: "The DefenseClaw GitHub Copilot CLI integration is supported on native Windows x64; authentication, HITL, and official-client live evidence remain unverified and unclaimed.",
 	},
 	"antigravity": {
-		Status: PlatformNotCertified,
-		Reason: "The native Windows x64 implementation is awaiting integrated packaged and official-client validation.",
+		Status: PlatformSupported,
+		Reason: "The Antigravity integration is supported on native Windows x64; authentication, HITL, and official-client live evidence remain unverified and unclaimed.",
 	},
 	"opencode": {
-		Status: PlatformPreview,
-		Reason: "OpenCode native Windows support is preview pending integrated packaged Setup and official-client validation; OpenCode recommends WSL but does not require it.",
+		Status: PlatformSupported,
+		Reason: "OpenCode native Windows setup is supported; official-client validation metadata is not recorded and live evidence remains false. OpenCode recommends WSL but does not require it.",
 	},
 	"amp": {
 		Status: PlatformSupported,
 		Reason: "Amp and the DefenseClaw system policy plugin are supported on native Windows x64.",
 	},
 	"hermes": {
-		Status: PlatformPreview,
-		Reason: "Hermes native shell hooks use a direct DefenseClaw executable; packaged and official-client Windows x64 certification is pending.",
+		Status: PlatformSupported,
+		Reason: "Hermes native shell hooks use a direct DefenseClaw executable; packaged and official-client Windows x64 validation metadata is not recorded, running-client state remains pending reload, and live evidence remains false.",
 	},
 	"openhands": {
 		Status: PlatformUnsupported,
 		Reason: "OpenHands CLI requires WSL; DefenseClaw does not implement a WSL connector path.",
 	},
 	"omnigent": {
-		Status: PlatformPreview,
-		Reason: "OmniGent 0.7.0 supports native Windows server and SDK harnesses in degraded mode; DefenseClaw uses its awaited in-process policy API without terminal wrapping or filesystem/network sandbox parity.",
+		Status: PlatformSupported,
+		Reason: "OmniGent 0.7.0 is supported on native Windows in degraded mode; DefenseClaw uses its awaited in-process policy API without terminal wrapping or filesystem/network sandbox parity.",
 	},
 	"openclaw": {
 		Status: PlatformUnsupported,

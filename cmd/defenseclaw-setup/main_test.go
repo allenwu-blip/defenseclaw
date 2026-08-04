@@ -399,7 +399,7 @@ func TestCursorActionTransactionStagesNormalizedOwnership(t *testing.T) {
 	}
 }
 
-func TestCopilotInitializationUsesNarrowNativeSetupBootstrap(t *testing.T) {
+func TestCopilotInitializationRetainsNarrowNativeSetupBootstrap(t *testing.T) {
 	args := initialConfigurationArgs(options{Connector: "copilot", Mode: "action"})
 	want := []string{
 		"init", "--skip-install", "--non-interactive", "--yes",
@@ -506,14 +506,18 @@ func TestDeferredUninstallConnectorVerifyArgsBindExactCleanupAuthority(t *testin
 	}
 }
 
-func TestParseArgsRejectsPublicAntigravitySetupSelection(t *testing.T) {
+func TestParseArgsAllowsPublicAntigravitySetupSelection(t *testing.T) {
 	for _, args := range [][]string{
 		{"/quiet", "CONNECTOR=antigravity"},
 		{"/repair", "/quiet", "CONNECTOR=antigravity"},
 		{"/upgrade", "/quiet", "CONNECTOR=antigravity"},
 	} {
-		if _, err := parseArgs(args); err == nil || !strings.Contains(err.Error(), "not_certified") {
-			t.Fatalf("parseArgs(%q) error = %v, want not_certified public Setup refusal", args, err)
+		got, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", args, err)
+		}
+		if got.Connector != "antigravity" || !got.ConnectorSet {
+			t.Fatalf("parseArgs(%q) connector = %q set=%v", args, got.Connector, got.ConnectorSet)
 		}
 	}
 }
@@ -530,7 +534,7 @@ func TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride(t *testing
 	}
 }
 
-func TestPrintUsageDoesNotAdvertisePublicAntigravitySelection(t *testing.T) {
+func TestPrintUsageAdvertisesPublicAntigravitySelection(t *testing.T) {
 	readEnd, writeEnd, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -548,8 +552,8 @@ func TestPrintUsageDoesNotAdvertisePublicAntigravitySelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(payload), "CONNECTOR=antigravity") {
-		t.Fatalf("public Setup usage still advertises Antigravity selection: %s", payload)
+	if !strings.Contains(string(payload), "CONNECTOR=amp|antigravity|") {
+		t.Fatalf("public Setup usage omits Antigravity selection: %s", payload)
 	}
 }
 

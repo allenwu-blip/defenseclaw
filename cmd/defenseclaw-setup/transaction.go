@@ -1373,8 +1373,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousHermesHome, transaction.HermesHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
-		// Antigravity is the deliberate equality exception above: older preview
-		// builds could persist a DefenseClaw-only custom home. Its Previous*
+		// Antigravity is the deliberate equality exception above: older builds
+		// could persist a DefenseClaw-only custom home. Its Previous*
 		// path remains exact restoration authority while the universal install
 		// check above pins the current registration to the official home.
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {

@@ -56,14 +56,14 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
         "Cursor",
         "u",
         False,
-        "preview command hooks + event-scoped deny; no native human approval",
+        "command hooks + event-scoped deny; no native human approval",
     ),
     ModeChoice(
         "windsurf",
         "Devin Desktop — legacy Cascade",
         "w",
         False,
-        "preview: Cascade hooks only; Devin Local/cloud/ACP unsupported",
+        "Cascade hooks only; Devin Local/cloud/ACP unsupported",
     ),
     ModeChoice(
         "geminicli",

@@ -456,21 +456,7 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("connector reconcile: selected refresh is supported only for amp, antigravity, claudecode, codex, copilot, cursor, hermes, omnigent, opencode, and windsurf")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
-		// Transactional Windows Setup must be able to preserve and repair a
-		// preview registration while its public certification classification
-		// remains not_certified. The hidden, absolute --config-home binding is
-		// Setup's custody proof. Unsupported connectors and ordinary unbound
-		// calls remain rejected.
-		support := connector.ConnectorSupportOnHostOS(name)
-		if connectorFlagConfigHome == "" || support.Status != connector.PlatformNotCertified {
-			return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
-		}
-		fmt.Fprintf(
-			cmd.ErrOrStderr(),
-			"connector reconcile %s: installer maintenance for not-certified native Windows connector: %s\n",
-			name,
-			support.Reason,
-		)
+		return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
 	} else if warning != "" {
 		fmt.Fprintf(cmd.ErrOrStderr(), "connector reconcile %s: warning: %s\n", name, warning)
 	}

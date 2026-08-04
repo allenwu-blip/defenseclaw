@@ -3194,7 +3194,7 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "cursor": {
         "label": "Cursor",
-        "description": "preview user hooks with event-scoped deny + bounded local inventory",
+        "description": "user hooks with event-scoped deny + bounded local inventory",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -5951,13 +5951,13 @@ def _print_observability_summary(
         enforcement_label = "enabled (custom policy API)" if mode == "action" else "disabled (observe-only)"
     elif connector == "hermes":
         enforcement_label = (
-            "preview (pre_tool deny; pre_verify continue; failures open; no ask)"
+            "pre_tool deny; pre_verify continue; failures open; no ask"
             if mode == "action"
             else "disabled (observe-only)"
         )
     elif connector == "cursor":
         enforcement_label = (
-            "enabled (preview user-hook native deny; failClosed=true; no native ask)"
+            "enabled (user-hook native deny; failClosed=true; no native ask)"
             if mode == "action"
             else "disabled (observe-only; failClosed=false)"
         )
@@ -6011,7 +6011,7 @@ def _print_observability_summary(
                 ("native ask/approve", "unsupported"),
                 ("native OTel", "unsupported; hook-derived audit only"),
                 ("running Hermes hosts", "unverified; reload/restart required"),
-                ("certification", "preview; not_certified; live=false"),
+                ("validation evidence", "not recorded; live=false"),
             ]
         )
     elif connector == "cursor":
@@ -6019,7 +6019,7 @@ def _print_observability_summary(
             [
                 ("native human approval", "unsupported"),
                 ("priority conflict check", "unavailable; none inferred"),
-                ("certification", "preview; not certified"),
+                ("validation evidence", "not recorded; live=false"),
             ]
         )
     for k, v in rows:

@@ -247,7 +247,7 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(gemini.connector, "geminicli")
         self.assertEqual(gemini.status, STATUS_UNVERSIONED)
 
-    def test_cursor_current_preview_contract_is_pinned_to_exact_agent_build(self) -> None:
+    def test_cursor_current_supported_contract_is_pinned_to_exact_agent_build(self) -> None:
         for raw_version in (
             "2026.07.23-e383d2b",
             "agent v2026.07.23-e383d2b",

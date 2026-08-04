@@ -98,10 +98,13 @@ class TestSetupCodexAlias(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
-            with open(self.cfg_path, "w") as fh:
-                fh.write(
-                    f"claw_mode: {self.app.cfg.claw.mode}\nguardrail_connector: {self.app.cfg.guardrail.connector}\n"
-                )
+            atomic_write_private_bytes(
+                self.cfg_path,
+                (
+                    f"claw_mode: {self.app.cfg.claw.mode}\n"
+                    f"guardrail_connector: {self.app.cfg.guardrail.connector}\n"
+                ).encode(),
+            )
 
         self.app.cfg.save = _save  # type: ignore[assignment]
 
@@ -238,8 +241,7 @@ class TestSetupCodexAlias(unittest.TestCase):
             save_calls += 1
             if save_calls == 1:
                 raise OSError("injected config publication failure")
-            with open(self.cfg_path, "w", encoding="utf-8") as handle:
-                handle.write("restored: true\n")
+            atomic_write_private_bytes(self.cfg_path, b"restored: true\n")
 
         def _record(data_dir, connectors):
             self.assertEqual(tuple(connectors), ("codex",))
@@ -314,8 +316,7 @@ class TestSetupClaudeCodeAlias(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
-            with open(self.cfg_path, "w") as fh:
-                fh.write("placeholder\n")
+            atomic_write_private_bytes(self.cfg_path, b"placeholder\n")
 
         self.app.cfg.save = _save  # type: ignore[assignment]
 
@@ -395,10 +396,13 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
-            with open(self.cfg_path, "w") as fh:
-                fh.write(
-                    f"claw_mode: {self.app.cfg.claw.mode}\nguardrail_connector: {self.app.cfg.guardrail.connector}\n"
-                )
+            atomic_write_private_bytes(
+                self.cfg_path,
+                (
+                    f"claw_mode: {self.app.cfg.claw.mode}\n"
+                    f"guardrail_connector: {self.app.cfg.guardrail.connector}\n"
+                ).encode(),
+            )
 
         self.app.cfg.save = _save  # type: ignore[assignment]
 
@@ -926,8 +930,7 @@ class TestApplyConnectorObservabilityHelper(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
-            with open(self.cfg_path, "w") as fh:
-                fh.write("placeholder\n")
+            atomic_write_private_bytes(self.cfg_path, b"placeholder\n")
 
         self.app.cfg.save = _save  # type: ignore[assignment]
 
@@ -1064,8 +1067,7 @@ class TestConnectorRulePackFlag(unittest.TestCase):
         self.cfg_path = os.path.join(self.tmp_dir, "config.yaml")
 
         def _save():
-            with open(self.cfg_path, "w") as fh:
-                fh.write("placeholder\n")
+            atomic_write_private_bytes(self.cfg_path, b"placeholder\n")
 
         self.app.cfg.save = _save  # type: ignore[assignment]
 

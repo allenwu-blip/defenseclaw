@@ -3995,8 +3995,8 @@ def _build_aibom_from_filesystem(
         "limitations": limitations,
     }
     if connector_paths.normalize(connector) == "hermes":
-        out["support_status"] = "not_certified"
-        out["release_channel"] = "preview"
+        out["support_status"] = "supported"
+        out["release_channel"] = "supported"
         out["profile_scope"] = "default-single-profile"
     _attach_connector_paths(out, cfg, connector)
     _sync_legacy_connector_paths(out)

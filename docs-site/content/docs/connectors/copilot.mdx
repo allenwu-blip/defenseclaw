@@ -10,8 +10,8 @@ keywords:
 
 The GitHub Copilot CLI connector wires DefenseClaw into [Copilot CLI hooks](https://docs.github.com/copilot/) globally under `~/.copilot/hooks/` by default, with an optional workspace mode for `<workspace>/.github/hooks/`. Native ask is supported on `preToolUse`, so HITL approvals surface inside the agent UI.
 
-<Callout type="warn">
-Direct native Windows is eligible upstream but is not yet certified by DefenseClaw. The current Windows platform gate therefore refuses Copilot setup until the packaged and real official-client certification phase passes. WSL, Git Bash, Cygwin, MSYS, Docker, and VM workarounds are not supported.
+<Callout type="info">
+Direct native Windows setup is supported. Normal GitHub provider authentication remains required; HITL and official-client live evidence are unverified and unclaimed, validation metadata remains empty, and `live=false`. WSL, Git Bash, Cygwin, MSYS, Docker, and VM workarounds are not supported.
 </Callout>
 
 ## Setup
@@ -21,9 +21,9 @@ defenseclaw setup copilot
 defenseclaw setup copilot --workspace /path/to/repo
 ```
 
-<Callout type="warning">
-GitHub Copilot CLI setup is supported on macOS and Linux. The DefenseClaw
-connector is not certified on native Windows x64, so setup rejects it there.
+<Callout type="info">
+GitHub Copilot CLI setup is supported on native Windows x64, macOS, and Linux.
+The official client retains its normal provider login requirements.
 </Callout>
 
 By default this is **global/user-scoped**: DefenseClaw writes hook entries into `~/.copilot/hooks/defenseclaw.json`. Pass `--workspace /path/to/repo` only when you intentionally want repo-local `<workspace>/.github/hooks/defenseclaw.json` wiring. **There is no proxy-enforcement path** for Copilot CLI — blocking happens hook-side only through the documented `preToolUse`, `permissionRequest`, `agentStop`, and `subagentStop` responses. `postToolUseFailure` is advisory-only and can add recovery context after the tool has already failed. Native ask is supported on `preToolUse`, so HITL approvals surface inside the agent UI for that surface.
@@ -55,8 +55,8 @@ GitHub's current custom-agent command reference and plugin-reference loading
 diagram disagree about whether project or personal agents load first and how
 the project conventions are grouped. DefenseClaw follows the dedicated
 custom-agent reference (project/ancestor first, `.github` before `.claude` at
-each level); official-client certification must confirm that order before this
-connector can graduate from `not_certified`.
+each level); the effective order remains unverified pending official-client
+evidence.
 
 Read-only plugin inventory uses the official
 `copilot plugins list --kind plugin --json` command. DefenseClaw does not use

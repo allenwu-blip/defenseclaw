@@ -11,8 +11,8 @@ The Hermes connector wires DefenseClaw into the Hermes agent runtime through
 the effective default-profile `HERMES_HOME/config.yaml`
 (`%LOCALAPPDATA%\hermes\config.yaml` on native Windows when `HERMES_HOME` is
 unset) and exact approvals in `shell-hooks-allowlist.json`. Native Windows
-support remains **preview / not certified / live: false** pending reload and
-packaged real-client validation.
+setup is **supported** on native Windows. Running-client state remains pending
+reload, validation metadata remains empty, and `live: false`.
 
 <Callout type="warning" title="Hermes terminal commands still use Git Bash on Windows">
 Hermes itself officially runs its terminal tool through installer-managed
@@ -68,7 +68,7 @@ The connector rejects named-profile homes, a non-default `active_profile`, and
 multiplex gateways because one `HERMES_HOME` cannot cover them. Project plugins
 and other launch-directory-conditional sources remain unverified. Enterprise,
 managed, Team, ProgramData, cloud-dashboard, and MDM surfaces are outside this
-preview connector.
+connector contract.
 </Callout>
 
 #### What `setup hermes` actually does

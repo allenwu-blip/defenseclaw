@@ -10,7 +10,7 @@ keywords:
 
 The OmniGent connector uses OmniGent's documented custom Python policy API. It does not proxy OmniGent's model traffic. A small in-process policy bridge sends each policy event to the local DefenseClaw gateway, then maps the result back to OmniGent `ALLOW`, `ASK`, or `DENY`.
 
-On Windows this is a **native degraded preview** for the reviewed OmniGent
+On Windows this is **supported with native-degraded limitations** for the reviewed OmniGent
 0.7.x range (`>=0.7.0,<0.8.0`).
 Only `omnigent server` and SDK-based harnesses are in scope. Native
 tmux/PTY terminal wrappers, filesystem/network sandboxing, and the L7 egress
@@ -65,12 +65,12 @@ lock. Direct `uv.exe` and tool-Python metadata probes have connector-owned
 deadlines; setup does not fall back to a shell or an unbounded child process.
 
 The native Windows Setup executable accepts the explicit
-`CONNECTOR=omnigent` preview selection. Its transaction ledger records the
+`CONNECTOR=omnigent` selection. Its transaction ledger records the
 exact previous and current `OMNIGENT_CONFIG_HOME`, carries that binding through
 repair and upgrade, reconciles all three managed backup identities, and retains
 failed teardown evidence for retry or deferred uninstall. This implemented
-lifecycle remains preview-only until the advisory packaged Setup and official
-client validation completes successfully. Connector setup and teardown share a
+lifecycle remains supported while validation metadata stays empty and
+`live=false`. Connector setup and teardown share a
 process-local plus owned cross-process lifecycle lock; scoped credentials are
 refreshed inside that transaction and revoked only after clean teardown.
 

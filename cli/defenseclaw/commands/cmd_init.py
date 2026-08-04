@@ -250,7 +250,15 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
         start_gateway=start_gateway,
         verify=verify,
     )
-    installer_antigravity = _native_setup_antigravity_invocation_allowed(
+    if native_setup_copilot and not installer_copilot:
+        raise click.ClickException(
+            "--native-setup-copilot is reserved for the exact non-interactive native Windows Setup invocation"
+        )
+    internal_antigravity_binding = bool(
+        os.environ.get(_INTERNAL_SETUP_CONNECTOR_ENV, "").strip()
+        or os.environ.get(_INTERNAL_SETUP_PARENT_ENV, "").strip()
+    )
+    if internal_antigravity_binding and not _native_setup_antigravity_invocation_allowed(
         connector=connector,
         requested_connectors=requested_connectors,
         skip_install=skip_install,
@@ -261,22 +269,15 @@ def init_cmd(  # noqa: PLR0913 - first-run CLI mirrors the setup surface.
         action_connectors=action_connectors,
         start_gateway=start_gateway,
         verify=verify,
-    )
-    if native_setup_copilot and not installer_copilot:
+    ):
         raise click.ClickException(
-            "--native-setup-copilot is reserved for the exact non-interactive native Windows Setup invocation"
+            "internal Antigravity Setup binding is invalid for this invocation"
         )
     for requested in requested_connectors:
         if requested == "none":
             continue
         support = platform_support.connector_platform_support(requested)
-        installer_preview = (
-            (installer_copilot and requested == "copilot")
-            or (installer_antigravity and requested == "antigravity")
-        )
-        if not support.available and not (
-            installer_preview and support.status == platform_support.NOT_CERTIFIED
-        ):
+        if not support.available:
             raise click.ClickException(
                 f"connector {requested!r} is {support.status} on "
                 f"{platform_support.host_os()}: {support.reason}"
@@ -1850,13 +1851,7 @@ def _native_setup_copilot_invocation_allowed(
     start_gateway: bool | None,
     verify: bool | None,
 ) -> bool:
-    """Recognize only Setup's narrow pre-certification Copilot bootstrap.
-
-    Public CLI/TUI setup remains governed by the not_certified platform
-    classification. Native Windows Setup uses this hidden path to seed the
-    canonical config inside its durable transaction before the maintenance
-    gateway performs the explicitly home-bound connector reconcile.
-    """
+    """Recognize only Setup's narrow, backward-compatible Copilot bootstrap."""
 
     return (
         platform_support.host_os() == "windows"
@@ -1886,7 +1881,7 @@ def _native_setup_antigravity_invocation_allowed(
     start_gateway: bool | None,
     verify: bool | None,
 ) -> bool:
-    """Recognize only Setup's parent-bound pre-certification bootstrap."""
+    """Recognize only Setup's parent-bound Antigravity initialization."""
 
     return (
         platform_support.host_os() == "windows"
@@ -1905,7 +1900,7 @@ def _native_setup_antigravity_invocation_allowed(
 
 
 def _internal_antigravity_setup_parent_matches() -> bool:
-    """Bind the internal bootstrap to the actual packaged Setup parent process."""
+    """Bind packaged Antigravity initialization to the actual Setup parent."""
 
     if os.environ.get(_INTERNAL_SETUP_CONNECTOR_ENV, "").strip().lower() != "antigravity":
         return False

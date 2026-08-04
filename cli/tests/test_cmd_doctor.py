@@ -585,7 +585,7 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertIn("PreToolUse ask", result.checks[0]["detail"])
         self.assertIn("no override", result.checks[0]["detail"])
 
-    def test_hilt_omnigent_preserves_preview_and_pre_action_ask_scope(self):
+    def test_hilt_omnigent_preserves_native_degraded_pre_action_ask_scope(self):
         cfg = Config(
             data_dir="/tmp/defenseclaw",
             audit_db="/tmp/defenseclaw/audit.db",
@@ -603,7 +603,7 @@ class DoctorGuardrailTests(unittest.TestCase):
 
         self.assertEqual(result.passed, 1, result.checks)
         self.assertEqual(result.warned, 0, result.checks)
-        self.assertIn("native-degraded preview", result.checks[0]["detail"])
+        self.assertIn("native-degraded support", result.checks[0]["detail"])
         self.assertIn("request, tool_call, and llm_request", result.checks[0]["detail"])
 
 
@@ -2177,12 +2177,12 @@ class GuardrailProxyMultiConnectorTests(unittest.TestCase):
         self.assertTrue(detail.startswith("enforced for"), detail)
         self.assertIn("codex (mode=action via PreToolUse deny)", detail)
         self.assertIn(
-            "omnigent (native-degraded preview; mode=action via ALLOW/ASK/DENY)",
+            "omnigent (native-degraded; mode=action via ALLOW/ASK/DENY)",
             detail,
         )
         self.assertIn("proxy port intentionally closed", detail)
 
-    def test_single_omnigent_status_preserves_native_degraded_preview(self):
+    def test_single_omnigent_status_preserves_native_degraded_posture(self):
         from defenseclaw.commands.cmd_doctor import (
             _guardrail_proxy_intentionally_closed,
         )
@@ -2191,7 +2191,7 @@ class GuardrailProxyMultiConnectorTests(unittest.TestCase):
             self._cfg(["omnigent"], mode="action")
         )
 
-        self.assertIn("native-degraded preview", detail)
+        self.assertIn("native-degraded", detail)
         self.assertIn("mode=action via ALLOW/ASK/DENY", detail)
         self.assertIn("proxy port intentionally closed", detail)
 

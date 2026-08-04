@@ -1,6 +1,6 @@
 ---
 title: Cursor
-description: Cursor connector wires preview user hooks for observe-only inspection or event-native action denial.
+description: Cursor connector wires user hooks for observe-only inspection or event-native action denial.
 keywords:
   - DefenseClaw Cursor connector
   - Cursor hooks
@@ -22,11 +22,11 @@ writes `failClosed: true`; observe remains allow/`would_block` with
 `failClosed: false`. Native ask/HITL is not enabled. No Enterprise or Team hook
 system is implemented by this connector.
 
-<Callout type="warning" title="Native Windows is preview">
-Cursor Agent and the managed PowerShell hook adapter run directly on Windows,
-but packaged end-to-end certification remains pending. This is a preview, not
-a certified Windows connector. WSL and mixed Windows/WSL paths are outside
-this preview.
+<Callout type="info" title="Native Windows support">
+Cursor Agent and the managed PowerShell hook adapter are supported directly on
+Windows. Validation metadata remains empty and `live=false`; this support label
+does not fabricate certification evidence. WSL and mixed Windows/WSL paths are
+outside this native contract.
 </Callout>
 
 ## Setup
@@ -152,7 +152,7 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
       <File name="cursor-hook.sh (macOS and Linux)" />
-      <File name="cursor-hook.ps1 (native Windows preview)" />
+      <File name="cursor-hook.ps1 (native Windows)" />
     </Folder>
   </Folder>
 </Files>
@@ -201,7 +201,7 @@ Observe maps the same policy findings to allow plus `would_block` audit state.
 only a follow-up message and are not blocking surfaces.
 
 The hook payload's `cursor_version` is the Cursor application/Desktop version.
-It is not Agent CLI evidence. This preview keeps `agent --version` contract
+It is not Agent CLI evidence. The connector keeps `agent --version` contract
 selection separate and remains pinned to the exact reviewed Agent build; no
 Desktop release number is promoted into that Agent contract.
 
