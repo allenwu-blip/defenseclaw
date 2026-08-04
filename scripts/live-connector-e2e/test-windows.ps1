@@ -2727,6 +2727,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Codex certification never bypasses hook trust'
     $doctorContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorWindowsHookRegistration\b.*?\n\}').Value
     $doctorSetupContract = [regex]::Match($harnessText, '(?s)function Assert-DoctorHookRegistration\b.*?\n\}').Value
+    $ampAuthorizationMarker = 'Authorization = `Bearer ${DC_API_TOKEN}`'
     foreach ($marker in @(
         'amp.on("session.start"',
         'amp.on("agent.start"',
@@ -2737,12 +2738,27 @@ private-secret-name = "DefenseClaw must remain redacted"
         'amp.activeThread.current',
         'isPluginUINotAvailableError',
         'action: "reject-and-continue"',
-        'Authorization = `Bearer ${DC_API_TOKEN}`'
+        $ampAuthorizationMarker
     )) {
         Assert-True ($doctorSetupContract.Contains($marker) -and
             $wizardHookValidation.Contains($marker)) `
             "Windows setup and wizard contracts require the Amp plugin marker: $marker"
     }
+    $hasAmpAuthorizationContract = {
+        param([string]$SetupContract, [string]$WizardContract)
+        $SetupContract.Contains($ampAuthorizationMarker) -and
+            $WizardContract.Contains($ampAuthorizationMarker)
+    }
+    Assert-True (& $hasAmpAuthorizationContract $doctorSetupContract $wizardHookValidation) `
+        'Windows setup and wizard contracts retain Amp bearer authentication'
+    Assert-True (-not (& $hasAmpAuthorizationContract `
+                $doctorSetupContract.Replace($ampAuthorizationMarker, '') `
+                $wizardHookValidation)) `
+        'Amp authentication predicate rejects a setup validator missing the bearer marker'
+    Assert-True (-not (& $hasAmpAuthorizationContract `
+                $doctorSetupContract `
+                $wizardHookValidation.Replace($ampAuthorizationMarker, ''))) `
+        'Amp authentication predicate rejects a wizard validator missing the bearer marker'
     foreach ($marker in @(
         'const DC_FAIL_MODE: string = "closed"',
         'const DC_TIMEOUT_MS = 10000',

@@ -266,6 +266,20 @@
       "security_note": "Private paired Setup binding only. This is not a public path override and must be accepted only when it names the packaged Setup process above the custody-bound installed launcher."
     },
     {
+      "name": "DEFENSECLAW_INTERNAL_HOOK_DELEGATION",
+      "category": "hook_internal",
+      "purpose": "Carries the parent-owned proof for a stable hook launcher to delegate to the exact full-hook generation it already admitted. The launcher removes inherited copies and sets the marker only for its direct child while keeping the verified full-hook image open through process creation.",
+      "default": "unset (set and overwritten by the stable hook launcher on Windows)",
+      "accepted_values": ["v2:<inherited parent handle>:<32-hex transaction id>:<64-hex hook SHA-256>", "unset"],
+      "security_impact": "high",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "internal/hookruntime/delegation_windows.go", "description": "Binds the delegated child to its live canonical launcher parent and the exact protected runtime generation before reusing the parent-completed full-image admission"}
+      ],
+      "since": "0.8.10",
+      "security_note": "Private parent-to-child hook admission proof only. The environment value has no authority without the inherited live-process handle, canonical launcher identity, protected state, and exact transaction and digest match."
+    },
+    {
       "name": "DEFENSECLAW_UPGRADE_TEST_MODE",
       "category": "test_fixture",
       "purpose": "Explicitly enables the loopback-only unpublished release endpoint used by upgrade protocol release-candidate tests.",
@@ -2513,6 +2527,19 @@
         {"location": "internal/hookruntime/delegation_windows_test.go", "description": "Native Windows hook-delegation test fixture; never read by production runtime paths"}
       ],
       "since": "0.8.8"
+    },
+    {
+      "name": "DEFENSECLAW_HOOK_DELEGATED_ADMISSION_TEST_ROOT",
+      "category": "test_fixture",
+      "purpose": "Selects the isolated protected runtime root for the delegated hook-admission helper subprocess.",
+      "default": "unset",
+      "accepted_values": ["test-defined absolute directory path", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "internal/hookruntime/delegation_windows_test.go", "description": "Native Windows delegated-admission test fixture; never read by production runtime paths"}
+      ],
+      "since": "0.8.10"
     },
     {
       "name": "DEFENSECLAW_DELEGATION_ENV_SENTINEL",

@@ -5143,7 +5143,8 @@ function Assert-DoctorHookRegistration {
             'ctx.ui.confirm',
             'amp.activeThread.current',
             'isPluginUINotAvailableError',
-            'action: "reject-and-continue"'
+            'action: "reject-and-continue"',
+            'Authorization = `Bearer ${DC_API_TOKEN}`'
         )) {
             if ($registration.IndexOf($marker, [StringComparison]::Ordinal) -lt 0) {
                 throw "setup-created Amp policy plugin is missing $marker"

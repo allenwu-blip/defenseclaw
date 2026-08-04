@@ -246,6 +246,35 @@ func TestDelegatedAdmissionFailsClosedForSpoofedParentAndGenerationRotation(t *t
 	})
 }
 
+func TestPreparedDelegatedGenerationRefreshRequiresExactProtectedState(t *testing.T) {
+	fixture := newDelegationFixture(t)
+	prepared, recognized, err := readTrustedForExecutableAt(fixture.paths, fixture.hook)
+	if err != nil || !recognized || !prepared.Active() {
+		t.Fatalf("initial full-hook admission = %+v, recognized=%t, err=%v", prepared, recognized, err)
+	}
+	refreshed, err := revalidatePreparedGenerationForExecutableAt(
+		fixture.paths,
+		fixture.hook,
+		prepared,
+	)
+	if err != nil || refreshed != prepared {
+		t.Fatalf("unchanged prepared generation refresh = %+v, err=%v", refreshed, err)
+	}
+
+	rotated := prepared
+	rotated.TransactionID = stableRuntimeTransactionTwo
+	if err := writeState(fixture.paths, rotated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := revalidatePreparedGenerationForExecutableAt(
+		fixture.paths,
+		fixture.hook,
+		prepared,
+	); err == nil || !strings.Contains(err.Error(), "generation changed") {
+		t.Fatalf("rotated protected state refresh error = %v", err)
+	}
+}
+
 func TestActiveDelegationPreservesArgumentsCWDStdioEnvironmentAndExit(t *testing.T) {
 	fixture := newDelegationFixture(t)
 	t.Setenv(delegationHelperEnvironment, "1")
