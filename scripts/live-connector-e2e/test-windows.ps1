@@ -1613,7 +1613,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $standardUserCIText -match '-Operation contract -Connector \$Connector' -and
         $standardUserCIText -match '\$arguments \+= @\(''-Connector'', \$Connector\)' -and
         $standardUserCIText -match 'live-connector-e2e\\run-windows\.ps1' -and
-        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp'\)" -and
+        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode'\)" -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_allow.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_block.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\session_start.json') -and

@@ -174,11 +174,11 @@ func removeWatchdogPIDFileIf(path string, matches func([]byte) bool) (bool, erro
 	if _, err := f.Seek(0, 0); err != nil {
 		return false, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, maxWatchdogPIDBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxWatchdogPIDFileBytes+1))
 	if err != nil {
 		return false, err
 	}
-	if len(data) > maxWatchdogPIDBytes {
+	if len(data) > maxWatchdogPIDFileBytes {
 		return false, errors.New("watchdog: PID file exceeds inspection limit")
 	}
 	if !matches(data) {
