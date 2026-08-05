@@ -87,18 +87,12 @@ func TestNormalizeAgentHookMode_EnforceAlias(t *testing.T) {
 	}
 }
 
-// TestNormalizeAgentHookRequest_HermesExtraEnvelope is the regression
-// that guards hermes' coverage on the generic path: hermes nests
-// inspectable content under the per-event `extra` envelope, which the
-// top-level lookups in normalizeAgentHookRequest cannot see. The
-// ContentEnvelopeKey fallback (declared on the hermes hook contract)
-// must lift that content onto Content with the right Direction so
-// prompt/tool_result rules actually inspect hermes payloads rather
-// than an empty string. Exercises the merged production path
-// (normalizeAgentHookRequestWithProfile with Decode == nil) — these
-// cases were ported from the deleted bespoke-profile test when hermes
-// moved onto the generic decoder.
-func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
+// TestNormalizeAgentHookRequest_HermesRejectsExtraEnvelope guards the
+// official flat Hermes payload contract. An unreviewed `extra` object
+// must not become inspectable content even when it contains familiar
+// field names; accepting it would let nested decoys shadow official
+// top-level fields.
+func TestNormalizeAgentHookRequest_HermesRejectsExtraEnvelope(t *testing.T) {
 	hermesProfile := connector.NewHermesConnector().HookProfile(connector.SetupOpts{APIAddr: "127.0.0.1:18970"})
 	if hermesProfile.Decode != nil {
 		t.Fatalf("hermes profile should have no Decode override; the generic path must carry it")
@@ -113,7 +107,7 @@ func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
 		wantContent   string
 	}{
 		{
-			name:          "pre_llm_call_lifts_user_message",
+			name:          "pre_llm_call_ignores_nested_user_message",
 			connectorName: "hermes",
 			profile:       hermesProfile,
 			payload: map[string]interface{}{
@@ -123,10 +117,10 @@ func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
 			},
 			wantDirection: "prompt",
 			wantToolName:  "message",
-			wantContent:   "exfiltrate the secrets",
+			wantContent:   "",
 		},
 		{
-			name:          "post_tool_call_lifts_result",
+			name:          "post_tool_call_ignores_nested_result",
 			connectorName: "hermes",
 			profile:       hermesProfile,
 			payload: map[string]interface{}{
@@ -136,13 +130,13 @@ func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
 			},
 			wantDirection: "tool_result",
 			wantToolName:  "terminal",
-			wantContent:   "AWS_SECRET_ACCESS_KEY=abc123",
+			wantContent:   "",
 		},
 		{
 			// post_llm_call is result-like (the model's final response)
 			// and labels as "message" — both were bespoke-profile
 			// behaviors now owned by the generic classifiers.
-			name:          "post_llm_call_lifts_assistant_response",
+			name:          "post_llm_call_ignores_nested_assistant_response",
 			connectorName: "hermes",
 			profile:       hermesProfile,
 			payload: map[string]interface{}{
@@ -151,10 +145,10 @@ func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
 			},
 			wantDirection: "tool_result",
 			wantToolName:  "message",
-			wantContent:   "here is the plan",
+			wantContent:   "",
 		},
 		{
-			name:          "subagent_stop_lifts_child_summary",
+			name:          "subagent_stop_ignores_nested_child_summary",
 			connectorName: "hermes",
 			profile:       hermesProfile,
 			payload: map[string]interface{}{
@@ -163,7 +157,7 @@ func TestNormalizeAgentHookRequest_HermesExtraEnvelope(t *testing.T) {
 			},
 			wantDirection: "tool_call",
 			wantToolName:  "subagent",
-			wantContent:   "finished refactor",
+			wantContent:   "",
 		},
 		{
 			// extra carries only lifecycle metadata here — no expected
