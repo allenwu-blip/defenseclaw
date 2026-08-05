@@ -1905,13 +1905,15 @@ private-secret-name = "DefenseClaw must remain redacted"
         $agentFixtureFunction -match 'Hermes Agent v0\.20\.0 \(2026\.8\.3\)' -and
         $agentFixtureFunction -match 'HermesPath = \$hermesPath' -and
         $agentFixtureFunction -match
-        '\$openCodePath = Join-Path \$claudeBin ''opencode\.exe''' -and
+        '\$openCodeBin = Join-Path \$localAppData ''Microsoft\\WinGet\\Packages\\SST\.opencode_Microsoft\.Winget\.Source_8wekyb3d8bbwe''' -and
+        '\$openCodePath = Join-Path \$openCodeBin ''opencode\.exe''' -and
         $agentFixtureFunction -match 'OpenCodeVersionFixture' -and
         $agentFixtureFunction -match 'opencode 1\.18\.11' -and
         $agentFixtureFunction -match 'OpenCodePath = \$openCodePath' -and
         $agentFixtureCleanupFunction -match 'Fixtures\.HermesPath' -and
         $agentFixtureCleanupFunction -match 'Fixtures\.HermesBin' -and
-        $agentFixtureCleanupFunction -match 'Fixtures\.OpenCodePath') `
+        $agentFixtureCleanupFunction -match 'Fixtures\.OpenCodePath' -and
+        $agentFixtureCleanupFunction -match 'Fixtures\.OpenCodeBin') `
         'Windows fixtures provision and clean supported Hermes and OpenCode executables only in built-in trusted prefixes'
     Assert-True ($setupAcceptanceFunction -match 'New-WizardAgentFixtures' -and
         $setupAcceptanceFunction -match 'Remove-WizardAgentFixtures' -and

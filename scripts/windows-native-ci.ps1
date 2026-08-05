@@ -3630,12 +3630,13 @@ function New-WizardAgentFixtures([string]$Root) {
     $codexBin = Join-Path $codexTrustedRoot ("000-defenseclaw-ci-" + [guid]::NewGuid().ToString('N'))
     $claudeBin = Join-Path $userProfile '.local\bin'
     $hermesBin = Join-Path $localAppData 'hermes\hermes-agent\venv\Scripts'
+    $openCodeBin = Join-Path $localAppData 'Microsoft\WinGet\Packages\SST.opencode_Microsoft.Winget.Source_8wekyb3d8bbwe'
     $codexPath = Join-Path $codexBin 'codex.exe'
     $claudePath = Join-Path $claudeBin 'claude.exe'
     $ampPath = Join-Path $claudeBin 'amp.exe'
     $cursorPath = Join-Path $claudeBin 'agent.exe'
     $hermesPath = Join-Path $hermesBin 'hermes.exe'
-    $openCodePath = Join-Path $claudeBin 'opencode.exe'
+    $openCodePath = Join-Path $openCodeBin 'opencode.exe'
     foreach ($existing in @(
         $claudePath, $ampPath, $cursorPath, $hermesPath, $openCodePath
     )) {
@@ -3644,7 +3645,7 @@ function New-WizardAgentFixtures([string]$Root) {
         }
     }
     try {
-        foreach ($path in @($codexTrustedRoot, $codexBin, $claudeBin, $hermesBin)) {
+        foreach ($path in @($codexTrustedRoot, $codexBin, $claudeBin, $hermesBin, $openCodeBin)) {
             Protect-TestDirectory $path
         }
         $fixtures = @(
@@ -3798,6 +3799,7 @@ public static class OpenCodeVersionFixture {
             CursorPath = $cursorPath
             HermesBin = $hermesBin
             HermesPath = $hermesPath
+            OpenCodeBin = $openCodeBin
             OpenCodePath = $openCodePath
             CodexTrustedRoot = $codexTrustedRoot
         }
@@ -3887,7 +3889,7 @@ function Remove-WizardAgentFixtures([AllowNull()][object]$Fixtures) {
         [pscustomobject]@{ Path = [string]$Fixtures.AmpPath; Root = [string]$Fixtures.ClaudeBin; Name = 'amp.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.CursorPath; Root = [string]$Fixtures.ClaudeBin; Name = 'agent.exe' },
         [pscustomobject]@{ Path = [string]$Fixtures.HermesPath; Root = [string]$Fixtures.HermesBin; Name = 'hermes.exe' },
-        [pscustomobject]@{ Path = [string]$Fixtures.OpenCodePath; Root = [string]$Fixtures.ClaudeBin; Name = 'opencode.exe' }
+        [pscustomobject]@{ Path = [string]$Fixtures.OpenCodePath; Root = [string]$Fixtures.OpenCodeBin; Name = 'opencode.exe' }
     )
     foreach ($entry in $owned) {
         $path = [IO.Path]::GetFullPath($entry.Path)
