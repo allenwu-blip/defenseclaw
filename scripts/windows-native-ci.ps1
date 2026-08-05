@@ -7582,7 +7582,8 @@ function Get-WindowsNativeCaptureFiles([string]$Root) {
     return @(
         Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object {
-                ($_.Name -match '^(gateway|watchdog|results|doctor|.*\.log)' -or
+                ($_.Name -match '^(?:gateway|watchdog|results|doctor).*\.(?:json|jsonl|txt|log)$' -or
+                    $_.Name -match '\.log$' -or
                     $_.Name -ceq 'setup-seeded-health.jsonl') -and
                     $_.Length -le 1048576
             } |
