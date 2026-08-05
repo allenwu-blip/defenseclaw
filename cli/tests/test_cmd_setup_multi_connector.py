@@ -1558,6 +1558,33 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertEqual(pause.call_count, 3)
         pause.assert_called_with(cmd_setup._SETUP_RUNTIME_SNAPSHOT_RETRY_SECONDS)
 
+    def test_runtime_capture_keeps_complete_sample_across_transient_read_error(self):
+        stable = self._evidence(generation="stable")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
+                side_effect=[stable, OSError("private transient"), stable],
+            ) as capture,
+            patch("defenseclaw.commands.cmd_setup.time.sleep") as pause,
+        ):
+            result = cmd_setup._capture_setup_applied_runtime(self.app.cfg)
+
+        self.assertEqual(result, stable)
+        self.assertEqual(capture.call_count, 3)
+        self.assertEqual(pause.call_count, 2)
+
+    def test_runtime_capture_replaces_complete_sample_after_observed_change(self):
+        first = self._evidence(generation="first")
+        stable = self._evidence(generation="stable")
+        with patch(
+            "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
+            side_effect=[first, OSError("private transient"), stable, stable],
+        ) as capture:
+            result = cmd_setup._capture_setup_applied_runtime(self.app.cfg)
+
+        self.assertEqual(result, stable)
+        self.assertEqual(capture.call_count, 4)
+
     def test_runtime_capture_rejects_generation_race_without_leaking_details(self):
         private_detail = os.path.join(self.tmp_dir, "secret-profile", "gateway.json")
         evidence = [

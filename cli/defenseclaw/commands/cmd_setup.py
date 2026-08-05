@@ -6399,7 +6399,11 @@ def _capture_setup_applied_runtime(
         try:
             current = _capture_setup_applied_runtime_once(cfg, required_registration_locations)
         except Exception as exc:  # noqa: BLE001 - retry one bounded evidence race.
-            previous = None
+            # An unavailable read is not contradictory runtime evidence. Keep
+            # the last complete, internally generation-fenced sample so a
+            # later equal complete sample can establish the rollback point.
+            # A later different sample still replaces it below, and the
+            # bounded loop still fails closed without two equal successes.
             last_error = exc
         else:
             if previous == current:
