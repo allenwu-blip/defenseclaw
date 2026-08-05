@@ -6650,6 +6650,48 @@ async def test_overview_disabled_connector_marked_but_still_filterable() -> None
         assert app._connector_filter() == "codex"
 
 
+def test_cursor_disclosure_renders_for_enabled_and_disabled_rows_only() -> None:
+    from rich.console import Console
+
+    disclosure = "priority-conflict-detection=unavailable (none inferred)"
+    for disabled in (False, True):
+        cfg = OverviewConfig(
+            claw_mode="codex",
+            guardrail_connector="codex",
+            connector_modes=(("codex", "action"), ("cursor", "observe")),
+            connector_disabled=("cursor",) if disabled else (),
+        )
+        overview = OverviewPanelModel(cfg, version="test")
+        overview.set_health(
+            HealthSnapshot(
+                gateway=SubsystemHealth(state="running"),
+                connectors=(
+                    (ConnectorHealth(name="codex", state="running"),)
+                    if disabled
+                    else (
+                        ConnectorHealth(name="codex", state="running"),
+                        ConnectorHealth(name="cursor", state="running"),
+                    )
+                ),
+            )
+        )
+        app = DefenseClawTUI(overview_model=overview, audit_model=AuditPanelModel())
+        rows = {row.connector: row for row in app._overview_connector_rows()}
+        panel = app._overview_connectors_panel(list(rows.values()))
+        console = Console(file=io.StringIO(), width=170, record=True)
+        console.print(panel)
+        rich_text = console.export_text()
+        fallback_text = app._overview_connectors_text(list(rows.values()))
+
+        assert rows["cursor"].status == ("disabled" if disabled else "running")
+        assert rich_text.count(disclosure) == 1
+        assert fallback_text.count(disclosure) == 1
+        assert f"Cursor (cursor): {disclosure}" in rich_text
+        assert f"Cursor (cursor): {disclosure}" in fallback_text
+        assert f"Codex (codex): {disclosure}" not in rich_text
+        assert f"Codex (codex): {disclosure}" not in fallback_text
+
+
 @pytest.mark.asyncio
 async def test_overview_enforcement_narrows_to_selected_connector() -> None:
     """8.13: ENFORCEMENT shows global stats under "All", and narrows to the
@@ -6776,6 +6818,34 @@ async def test_overview_connector_rows_status_falls_back_to_gateway() -> None:
         assert all(row.status == "active" for row in rows)
 
 
+def test_overview_connector_rows_degrade_only_unverified_opencode_runtime() -> None:
+    now = datetime.now(timezone.utc)
+    cfg = OverviewConfig(
+        data_dir="/tmp/dc",
+        claw_mode="opencode",
+        guardrail_connector="opencode",
+        connector_modes=(("opencode", "action"), ("cursor", "observe")),
+    )
+    overview = OverviewPanelModel(cfg, version="test")
+    overview.set_health(
+        HealthSnapshot(
+            started_at=(now - timedelta(hours=1)).isoformat(),
+            gateway=SubsystemHealth(state="running"),
+            api=SubsystemHealth(state="running"),
+            connectors=(
+                ConnectorHealth(name="opencode", state="running"),
+                ConnectorHealth(name="cursor", state="running"),
+            ),
+        )
+    )
+    app = DefenseClawTUI(overview_model=overview, audit_model=AuditPanelModel())
+
+    rows = {row.connector: row for row in app._overview_connector_rows()}
+
+    assert rows["opencode"].status == "degraded"
+    assert rows["cursor"].status == "running"
+
+
 @pytest.mark.asyncio
 async def test_overview_connector_rows_empty_for_single_connector() -> None:
     """8.13 no-op: single-connector installs render no CONNECTORS table."""
@@ -6835,12 +6905,15 @@ def test_connectors_health_array_parsed() -> None:
                 {
                     "name": "codex",
                     "state": "running",
+                    "source": "manual",
                     "requests": 5,
                     "last_activity_at": "2026-07-01T14:35:00Z",
+                    "load_heartbeat_at": "2026-07-01T14:35:01Z",
                 },
                 {
                     "name": "cursor",
                     "state": "degraded",
+                    "source": 7,
                     "lastActivityAt": "2026-07-01T14:36:00Z",
                 },
                 {"state": "running"},  # nameless entry is skipped
@@ -6853,7 +6926,10 @@ def test_connectors_health_array_parsed() -> None:
     assert snap.connector is not None
     assert snap.connector.last_activity_at == "2026-07-01T14:35:00Z"
     assert snap.connectors[0].last_activity_at == "2026-07-01T14:35:00Z"
+    assert snap.connectors[0].source == "manual"
+    assert snap.connectors[0].load_heartbeat_at == "2026-07-01T14:35:01Z"
     assert snap.connectors[1].last_activity_at == "2026-07-01T14:36:00Z"
+    assert snap.connectors[1].source == ""
 
 
 # --- A2: _overview_config roster build is defensive -------------------------

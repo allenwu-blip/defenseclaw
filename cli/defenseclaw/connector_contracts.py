@@ -20,6 +20,7 @@ outside the DefenseClaw-supported hook surface.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from importlib import resources
@@ -233,6 +234,54 @@ def resolve_connector_contract(connector: str, raw_version: str | None) -> Conne
         reason="no hook contract matches normalized agent version",
         contract=None,
     )
+
+
+def connector_lock_contract_invariant(connector: str, entry: Any) -> str:
+    """Return the first incompatible protected-lock invariant, if any."""
+
+    name = normalize_connector(connector)
+    recorded_connector = entry.get("connector") if isinstance(entry, dict) else None
+    if not isinstance(recorded_connector, str) or normalize_connector(recorded_connector) != name:
+        return "contract"
+    raw_version = entry.get("raw_agent_version")
+    if not isinstance(raw_version, str):
+        return "version"
+    compatibility = resolve_connector_contract(name, raw_version)
+    contract = compatibility.contract
+    if contract is None or not compatibility.supported:
+        return "contract"
+    if compatibility.status == STATUS_UNVERSIONED and not contract.default_for_unversioned:
+        return "version"
+    if entry.get("compatibility_status") != compatibility.status:
+        return "contract"
+    if entry.get("normalized_agent_version", "") != compatibility.normalized_version:
+        return "version"
+    if entry.get("contract_id") != contract.contract_id:
+        return "contract"
+    if entry.get("hook_script_version") != contract.hook_script_version:
+        return "version"
+    if entry.get("hook_fail_mode") not in {"open", "closed"}:
+        return "fail-mode"
+    locations = entry.get("locations")
+    if not isinstance(locations, dict):
+        return "location"
+    config_paths = locations.get("hook_config_paths")
+    runtime_paths = locations.get("hook_script_paths")
+    if not isinstance(config_paths, list) or not config_paths:
+        return "location"
+    if not isinstance(runtime_paths, list) or not runtime_paths:
+        return "location"
+    for path in (*config_paths, *runtime_paths):
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.strip() != path
+            or any(char in path for char in "\x00\r\n")
+            or not os.path.isabs(path)
+            or os.path.normpath(path) != path
+        ):
+            return "location"
+    return ""
 
 
 def _contract_matches_agent_version(

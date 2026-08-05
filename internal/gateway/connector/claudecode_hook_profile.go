@@ -62,7 +62,7 @@ func claudeCodeProfileDecode(payload map[string]interface{}) HookProfileRequest 
 			hookFirstString(payload, "error_details", "errorDetails"),
 		), "\n")
 		req.Direction = "tool_result"
-	case "SubagentStart", "CwdChanged", "WorktreeRemove", "TaskCreated",
+	case "SubagentStart", "CwdChanged", "DirectoryAdded", "WorktreeRemove", "TaskCreated",
 		"TaskCompleted", "TeammateIdle", "PreCompact", "PostCompact",
 		"Elicitation", "ElicitationResult", "Notification":
 		req.Content = claudeCodeProfileEventContent(payload)
@@ -98,6 +98,7 @@ func claudeCodeProfileEventContent(payload map[string]interface{}) string {
 		hookFirstString(payload, "agent_type", "agentType"),
 		hookFirstString(payload, "old_cwd", "oldCwd"),
 		hookFirstString(payload, "new_cwd", "newCwd"),
+		hookFirstString(payload, "directory"),
 		hookFirstString(payload, "worktree_path", "worktreePath"),
 		hookFirstString(payload, "last_assistant_message", "lastAssistantMessage"),
 		hookFirstString(payload, "content"),

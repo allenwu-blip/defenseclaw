@@ -69,6 +69,7 @@ from defenseclaw.connector_paths import (
     copilot_settings_resolution,
     hermes_config_path,
     hermes_profile_unsupported_reason,
+    normalize,
     omnigent_config_path,
     rule_paths,
     windsurf_hook_config_path,
@@ -90,6 +91,7 @@ from defenseclaw.doctor_gateway import (
     ListenerEvidence,
     PIDRecord,
     ProcessEvidence,
+    _pid_record_integrity_error,
     canonical_path,
     gateway_executable_name,
     parse_pid_record_bytes,
@@ -108,6 +110,9 @@ from defenseclaw.envvars import active_security_overrides
 from defenseclaw.file_lock import FileLockTimeoutError, locked_file_update
 from defenseclaw.file_permissions import (
     MAX_DOTENV_BYTES,
+    UNSAFE_PATH_CHANGED,
+    UNSAFE_PATH_EXCEEDS_LIMIT,
+    UnsafePathError,
     atomic_write_private_bytes,
     darwin_acl_confidentiality_error,
     darwin_acl_write_error,
@@ -115,6 +120,7 @@ from defenseclaw.file_permissions import (
     dotenv_key_is_valid,
     read_regular_file_no_follow,
     trusted_system_subprocess_env,
+    windows_acl_confidentiality_error,
 )
 from defenseclaw.gateway import gateway_api_client_host
 from defenseclaw.inventory.plugin_identity import is_link_or_reparse
@@ -246,6 +252,7 @@ class _DoctorResult:
         "run_id",
         "mode",
         "passive",
+        "quiet",
     )
 
     def __init__(
@@ -254,6 +261,7 @@ class _DoctorResult:
         mode: str = "check",
         run_id: str | None = None,
         passive: bool = False,
+        quiet: bool = False,
     ) -> None:
         self.passed = 0
         self.failed = 0
@@ -266,6 +274,7 @@ class _DoctorResult:
         self.run_id = run_id or str(uuid.uuid4())
         self.mode = mode
         self.passive = passive
+        self.quiet = quiet
 
     def set_section(self, section: str) -> None:
         self.section = section.strip() or "general"
@@ -441,7 +450,7 @@ def _emit(
 ) -> None:
     if label and _label_suffix:
         label = f"{label} {_label_suffix}"
-    if not _json_mode:
+    if not _json_mode and not (r is not None and r.quiet):
         marker = _doctor_marker(tag)
         # Marker + label form the row's primary signal. We bold the
         # label only when color is on so plain-text output keeps its
@@ -1798,6 +1807,20 @@ def _check_gateway_auth(cfg, r: _DoctorResult) -> bool:
     return True
 
 
+def _strict_authenticated_runtime_pid(value: object) -> int | None:
+    """Parse the exact JSON PID representation emitted by gateway ``/status``.
+
+    The Go producer serializes ``os.Getpid()`` as a JSON number, which
+    ``json.loads`` decodes as ``int``. PID-file decimal-string compatibility
+    does not apply to this authenticated API contract, so strings, booleans,
+    floats, and containers are rejected without coercion.
+    """
+
+    if type(value) is not int or value <= 0:
+        return None
+    return value
+
+
 def _authenticated_runtime_matches(cfg, trusted_pid: int, body: str) -> tuple[bool, str]:
     """Require authenticated runtime metadata to match local process trust."""
     try:
@@ -1807,11 +1830,8 @@ def _authenticated_runtime_matches(cfg, trusted_pid: int, body: str) -> tuple[bo
         return False, "authenticated runtime metadata is malformed"
     if not isinstance(runtime, dict):
         return False, "authenticated runtime metadata is unavailable"
-    try:
-        runtime_pid = int(runtime.get("pid", 0) or 0)
-    except (TypeError, ValueError):
-        runtime_pid = 0
-    if runtime_pid <= 0:
+    runtime_pid = _strict_authenticated_runtime_pid(runtime.get("pid"))
+    if runtime_pid is None:
         return False, "authenticated runtime PID is unavailable"
     if runtime_pid != trusted_pid:
         return False, "authenticated runtime identity does not match the managed listener"
@@ -2621,11 +2641,7 @@ def _check_windows_gateway_diagnostics(
         except (json.JSONDecodeError, TypeError):
             runtime = {}
 
-    runtime_pid = runtime.get("pid", 0)
-    try:
-        runtime_pid = int(runtime_pid)
-    except (TypeError, ValueError):
-        runtime_pid = 0
+    runtime_pid = _strict_authenticated_runtime_pid(runtime.get("pid"))
 
     if listener.status == "missing":
         _emit("fail", "Gateway listener owner", "no listener on the configured API port", r=r)
@@ -2642,7 +2658,9 @@ def _check_windows_gateway_diagnostics(
         _emit("fail", "Gateway listener owner", "configured API port is owned by an unexpected process", r=r)
     elif not identity_ok:
         _emit("fail", "Gateway listener owner", "listener PID matches an unverified or stale PID record", r=r)
-    elif runtime_pid and runtime_pid != listener.pid:
+    elif status_code == 200 and runtime_pid is None:
+        _emit("fail", "Gateway listener owner", "authenticated runtime PID is unavailable", r=r)
+    elif runtime_pid is not None and runtime_pid != listener.pid:
         _emit("fail", "Gateway listener owner", "authenticated runtime identity does not match listener owner", r=r)
     else:
         _emit("pass", "Gateway listener owner", "configured API listener is owned by the managed gateway", r=r)
@@ -3319,7 +3337,17 @@ def _windows_native_hook_check(
         "pathext": os.environ.get("PATHEXT", "") if pathext is None else pathext,
     }
     if connector == "copilot":
-        return validator(**common, workspace_dir=_workspace_dir(cfg))
+        guardrail = getattr(cfg, "guardrail", None)
+        configured_mode = (
+            _doctor_effective_guardrail_mode(guardrail, connector)
+            if guardrail is not None
+            else ""
+        )
+        return validator(
+            **common,
+            workspace_dir=_workspace_dir(cfg),
+            configured_mode=configured_mode,
+        )
     return validator(
         connector=connector,
         **common,
@@ -3757,8 +3785,10 @@ def _opencode_load_heartbeat_status(cfg) -> tuple[str, str]:
 
     A current file digest cannot distinguish a normal OpenCode process from
     ``--pure`` or another external-plugin-disabled launch. The bridge emits a
-    scoped, secret-free heartbeat from its v1.18.10-v1.18.11 config hook; absence stays
-    a warning because Doctor cannot prove that OpenCode is currently running.
+    scoped, secret-free heartbeat from its v1.18.10-v1.18.11 config hook.
+    Consume it only through the authenticated, process/profile-bound status
+    document; missing or old evidence stays unverified and never guesses why
+    the client did not load the plugin.
     """
     gateway = getattr(cfg, "gateway", None)
     try:
@@ -3767,24 +3797,47 @@ def _opencode_load_heartbeat_status(cfg) -> tuple[str, str]:
         api_port = 0
     if not 1 <= api_port <= 65_535:
         return "warn", "runtime load unverified: sidecar API port is unavailable"
+
+    token, _token_env, _token_source = _daemon_effective_gateway_token(cfg)
+    if not token:
+        return "warn", "runtime load unverified: authenticated gateway token is unavailable"
+    trust = _trusted_gateway_listener(cfg)
+    if not trust.trusted:
+        return "warn", f"runtime load unverified: {trust.detail}"
+
     code, body = _http_probe(
-        f"http://127.0.0.1:{api_port}/health",
+        _gateway_api_url(cfg, "/status"),
+        headers={"Authorization": f"Bearer {token}"},
         timeout=3.0,
-        response_limit=_HEALTH_DOCUMENT_MAX_BYTES,
+        response_limit=64 * 1024,
         allow_truncation=False,
+        bypass_proxy=True,
     )
     if code != 200:
-        return "warn", "runtime load unverified: sidecar /health is unavailable"
-    row = _connector_health_row(body, "opencode")
-    if row is None:
-        return "warn", "runtime load unverified: sidecar has no OpenCode connector row"
-    heartbeat = str(row.get("load_heartbeat_at") or "").strip()
-    if not heartbeat:
-        return (
-            "warn",
-            "no load heartbeat; OpenCode may be stopped or running with --pure/external plugins disabled",
-        )
-    return "pass", f"managed bridge load heartbeat received at {heartbeat}"
+        detail = "gateway is unreachable" if code == 0 else f"authenticated status returned HTTP {code}"
+        return "warn", f"runtime load unverified: {detail}"
+    runtime_ok, runtime_detail = _authenticated_runtime_matches(cfg, trust.pid, body)
+    if not runtime_ok:
+        return "warn", f"runtime load unverified: {runtime_detail}"
+    try:
+        document = json.loads(body)
+        health = document.get("health") if isinstance(document, dict) else None
+    except (json.JSONDecodeError, TypeError):
+        health = None
+    if not isinstance(health, dict):
+        return "warn", "runtime load unverified: authenticated status health is malformed"
+
+    from defenseclaw.commands.cmd_status import (
+        _RUNTIME_HEALTHY_STATES,
+        _fetch_health_connectors,
+        _opencode_runtime_truth,
+    )
+
+    state, detail = _opencode_runtime_truth(
+        _fetch_health_connectors(health=health).get("opencode"),
+        gateway_started_at=health.get("started_at"),
+    )
+    return ("pass" if state in _RUNTIME_HEALTHY_STATES else "warn"), detail
 
 
 def _windows_system_powershell() -> tuple[str, str]:
@@ -4271,32 +4324,223 @@ def _hook_runtime_paths_from_lock(cfg, connector: str) -> list[str]:
     return [str(p) for p in (locations.get("hook_script_paths") or []) if p]
 
 
-def _omnigent_runtime_paths_from_backups(cfg) -> list[str]:
-    """Recover OmniGent runtime targets when the hook lock is absent."""
-    data_dir = getattr(cfg, "data_dir", "") or ""
-    if not data_dir:
+_OMNIGENT_METADATA_LIMIT = 64 * 1024
+_OMNIGENT_ARTIFACT_LIMIT = 2 * 1024 * 1024
+_OMNIGENT_PID_LIMIT = 256
+
+
+def _omnigent_acl_inspection_unavailable(problem: str) -> bool:
+    """Distinguish unprovable ACL inspection from a proven unsafe grant."""
+    return any(
+        marker in problem
+        for marker in (
+            "extended ACL could not be inspected",
+            "extended ACL could not be interpreted",
+            "cannot read Windows ACL (",
+            "current user SID could not be resolved",
+        )
+    )
+
+
+def _omnigent_path_ref(role: str, path: str) -> str:
+    """Render a bounded role plus path hash, never attacker-controlled path text."""
+    try:
+        normalized = canonical_path(path) or os.path.abspath(path)
+    except (OSError, ValueError):
+        normalized = "<invalid>"
+    digest = hashlib.sha256(os.fsencode(os.path.normcase(normalized))).hexdigest()[:16]
+    return f"{role}[path-sha256={digest}]"
+
+
+def _omnigent_path_is_contained(path: str, root: str) -> bool:
+    """Require lexical and canonical containment beneath a configured root."""
+    if not path or not root or not os.path.isabs(path) or not os.path.isabs(root):
+        return False
+    candidate = os.path.abspath(path)
+    boundary = os.path.abspath(root)
+    try:
+        lexical = os.path.normcase(os.path.commonpath((candidate, boundary)))
+        resolved = os.path.realpath(candidate)
+        resolved_boundary = os.path.realpath(boundary)
+        canonical = os.path.normcase(os.path.commonpath((resolved, resolved_boundary)))
+    except (OSError, ValueError):
+        return False
+    return lexical == os.path.normcase(boundary) and canonical == os.path.normcase(resolved_boundary)
+
+
+def _omnigent_custody_read(
+    path: str,
+    *,
+    role: str,
+    max_bytes: int,
+    root: str | None = None,
+    confidential: bool = False,
+) -> tuple[str, bytes | None, str]:
+    """Use the PID reader's full custody chain for bounded OmniGent evidence."""
+    reference = _omnigent_path_ref(role, path)
+    if not path or not os.path.isabs(path):
+        return "unsafe", None, f"{reference} path is not absolute"
+    if root is not None and not _omnigent_path_is_contained(path, root):
+        return "unsafe", None, f"{reference} escapes its trusted root"
+    try:
+        info = os.lstat(path)
+        if is_link_or_reparse(path) or not stat.S_ISREG(info.st_mode):
+            return "unsafe", None, f"{reference} is not a regular non-reparse file"
+        custody_status, custody_problem = _pid_record_integrity_error(path, info)
+        if custody_status == "denied":
+            if _omnigent_acl_inspection_unavailable(custody_problem):
+                return "unavailable", None, f"{reference} custody is unavailable"
+            return "unsafe", None, f"{reference} custody is unsafe"
+        if custody_status != "ok":
+            return "unavailable", None, f"{reference} custody is unavailable"
+        if confidential:
+            private_problem = ""
+            if os.name == "nt":
+                private_problem = windows_acl_confidentiality_error(path) or ""
+                if _omnigent_acl_inspection_unavailable(private_problem):
+                    return "unavailable", None, f"{reference} private custody is unavailable"
+            else:
+                if stat.S_IMODE(info.st_mode) & 0o077:
+                    return "unsafe", None, f"{reference} private custody is unsafe"
+                if sys.platform == "darwin":
+                    private_problem = darwin_acl_confidentiality_error(path) or ""
+                    if _omnigent_acl_inspection_unavailable(private_problem):
+                        return "unavailable", None, f"{reference} private custody is unavailable"
+            if private_problem:
+                return "unsafe", None, f"{reference} private custody is unsafe"
+        body = read_regular_file_no_follow(path, max_bytes=max_bytes, expected_stat=info)
+        if not os.path.samestat(info, os.lstat(path)):
+            return "unavailable", None, f"{reference} changed while inspected"
+    except FileNotFoundError:
+        return "missing", None, f"{reference} is missing"
+    except PermissionError:
+        return "unavailable", None, f"{reference} custody is unavailable"
+    except UnsafePathError as exc:
+        if exc.code == UNSAFE_PATH_EXCEEDS_LIMIT:
+            return "invalid", None, f"{reference} exceeds the {max_bytes}-byte limit"
+        if exc.code == UNSAFE_PATH_CHANGED:
+            return "unavailable", None, f"{reference} changed while inspected"
+        return "unsafe", None, f"{reference} is not a stable regular file under trusted custody"
+    except OSError:
+        return "unavailable", None, f"{reference} custody is unavailable"
+    return "ok", body, ""
+
+
+def _omnigent_custody_json(
+    path: str,
+    *,
+    role: str,
+    root: str,
+    confidential: bool = False,
+) -> tuple[str, dict | None, str]:
+    status, body, detail = _omnigent_custody_read(
+        path,
+        role=role,
+        max_bytes=_OMNIGENT_METADATA_LIMIT,
+        root=root,
+        confidential=confidential,
+    )
+    if status != "ok" or body is None:
+        return status, None, detail
+    try:
+        decoded = json.loads(body.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return "invalid", None, f"{_omnigent_path_ref(role, path)} is not valid UTF-8 JSON"
+    if not isinstance(decoded, dict):
+        return "invalid", None, f"{_omnigent_path_ref(role, path)} identity is invalid"
+    return "ok", decoded, ""
+
+
+def _omnigent_custody_text(path: str, *, role: str, root: str | None = None) -> tuple[str | None, str]:
+    status, body, detail = _omnigent_custody_read(
+        path,
+        role=role,
+        max_bytes=_OMNIGENT_ARTIFACT_LIMIT,
+        root=root,
+    )
+    if status != "ok" or body is None:
+        return None, detail
+    try:
+        return body.decode("utf-8"), ""
+    except UnicodeError:
+        return None, f"{_omnigent_path_ref(role, path)} is not valid UTF-8"
+
+
+def _omnigent_backup_record(cfg, logical: str) -> tuple[dict | None, str]:
+    data_dir = str(getattr(cfg, "data_dir", "") or "")
+    if not os.path.isabs(data_dir):
+        return None, f"managed-{logical}-backup custody is unavailable"
+    backup_path = os.path.join(data_dir, "connector_backups", "omnigent", f"{logical}.json")
+    status, record, detail = _omnigent_custody_json(
+        backup_path,
+        role=f"managed-{logical}-backup",
+        root=data_dir,
+        confidential=True,
+    )
+    if status != "ok" or record is None:
+        return None, detail
+    if record.get("version") != 1 or record.get("connector") != "omnigent" or record.get("logical_name") != logical:
+        return None, f"{_omnigent_path_ref(f'managed-{logical}-backup', backup_path)} identity is invalid"
+    target = record.get("path")
+    if (
+        not isinstance(target, str)
+        or not target
+        or "\x00" in target
+        or not os.path.isabs(target)
+        or os.pardir in Path(target).parts
+    ):
+        return None, f"managed-{logical}-artifact target identity is invalid"
+    if logical == "module" and not _omnigent_path_is_contained(target, data_dir):
+        return None, f"{_omnigent_path_ref('managed-module-artifact', target)} escapes DefenseClaw data custody"
+    expected_name = {"module": "defenseclaw_omnigent_policy.py", "pth": "defenseclaw_omnigent.pth"}.get(logical)
+    if expected_name and os.path.normcase(os.path.basename(target)) != os.path.normcase(expected_name):
+        return None, f"{_omnigent_path_ref(f'managed-{logical}-artifact', target)} identity is invalid"
+    digest = record.get("post_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        return None, f"managed-{logical}-backup digest is missing or invalid"
+    return record, ""
+
+
+def _omnigent_lock_locations(cfg) -> tuple[dict | None, str]:
+    data_dir = str(getattr(cfg, "data_dir", "") or "")
+    if not os.path.isabs(data_dir):
+        return None, "omnigent-lock custody is unavailable"
+    lock_path = os.path.join(data_dir, "hook_contract_lock.json")
+    status, lock, detail = _omnigent_custody_json(
+        lock_path,
+        role="omnigent-lock",
+        root=data_dir,
+    )
+    if status == "missing":
+        return None, ""
+    if status != "ok" or lock is None:
+        return None, detail
+    connectors = lock.get("connectors")
+    entry = connectors.get("omnigent") if isinstance(connectors, dict) else None
+    locations = entry.get("locations") if isinstance(entry, dict) else None
+    if not isinstance(locations, dict):
+        return None, f"{_omnigent_path_ref('omnigent-lock', lock_path)} identity is invalid"
+    return locations, ""
+
+
+def _omnigent_location_paths(locations: dict, key: str) -> list[str]:
+    raw = locations.get(key)
+    if not isinstance(raw, list):
         return []
+    return [path for path in raw if isinstance(path, str) and path and "\x00" not in path]
+
+
+def _omnigent_runtime_paths_from_backups(cfg) -> tuple[list[str], str]:
+    """Recover custody-checked runtime targets when the lock is absent."""
     paths: list[str] = []
     for logical in ("module", "pth"):
-        backup_path = os.path.join(
-            data_dir,
-            "connector_backups",
-            "omnigent",
-            f"{logical}.json",
-        )
-        try:
-            with open(backup_path, encoding="utf-8") as fh:
-                record = json.load(fh)
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        if record.get("connector") != "omnigent" or record.get("logical_name") != logical:
-            continue
-        target = str(record.get("path") or "").strip()
-        if target and target not in paths:
+        record, detail = _omnigent_backup_record(cfg, logical)
+        if record is None:
+            return [], detail
+        target = str(record["path"])
+        if target not in paths:
             paths.append(target)
-    return paths
+    return paths, ""
 
 
 def _omnigent_setup_repair_command(cfg) -> str:
@@ -4361,43 +4605,24 @@ def _omnigent_setup_repair_command(cfg) -> str:
 
 def _omnigent_managed_artifact_drift(cfg, logical: str, path: str) -> str:
     """Return an integrity/custody failure for one OmniGent-managed artifact."""
-    data_dir = str(getattr(cfg, "data_dir", "") or "")
-    backup_path = os.path.join(data_dir, "connector_backups", "omnigent", f"{logical}.json")
-    try:
-        if os.path.islink(backup_path):
-            return f"managed {logical} backup is a symbolic link: {backup_path}"
-        with open(backup_path, encoding="utf-8") as fh:
-            record = json.load(fh)
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return f"managed {logical} backup evidence is missing or unreadable: {backup_path}"
-    if not isinstance(record, dict):
-        return f"managed {logical} backup identity is invalid: {backup_path}"
-    if (
-        record.get("version") != 1
-        or record.get("connector") != "omnigent"
-        or record.get("logical_name") != logical
-    ):
-        return f"managed {logical} backup identity is invalid: {backup_path}"
-    recorded_path = str(record.get("path") or "")
-    if (
-        not recorded_path
-        or not os.path.isabs(recorded_path)
-        or os.path.normcase(os.path.abspath(recorded_path))
-        != os.path.normcase(os.path.abspath(path))
-    ):
-        return f"managed {logical} backup target does not match the active artifact: {backup_path}"
-    expected = str(record.get("post_sha256") or "")
-    if not re.fullmatch(r"[0-9a-f]{64}", expected):
-        return f"managed {logical} backup digest is missing or invalid: {backup_path}"
-    try:
-        if os.path.islink(path) or not os.path.isfile(path):
-            return f"managed {logical} artifact is not a regular file: {path}"
-        with open(path, "rb") as fh:
-            body = fh.read(2 * 1024 * 1024 + 1)
-    except OSError as exc:
-        return f"managed {logical} artifact cannot be read: {exc}"
-    if len(body) > 2 * 1024 * 1024:
-        return f"managed {logical} artifact exceeds the 2 MiB integrity limit: {path}"
+    record, detail = _omnigent_backup_record(cfg, logical)
+    if record is None:
+        return detail
+    recorded_path = str(record["path"])
+    lexical_match = os.path.normcase(os.path.abspath(recorded_path)) == os.path.normcase(os.path.abspath(path))
+    canonical_match = os.path.normcase(os.path.realpath(recorded_path)) == os.path.normcase(os.path.realpath(path))
+    if not lexical_match or not canonical_match:
+        return f"managed-{logical}-backup target does not match managed-{logical}-artifact"
+    root = str(getattr(cfg, "data_dir", "") or "") if logical == "module" else None
+    status, body, detail = _omnigent_custody_read(
+        path,
+        role=f"managed-{logical}-artifact",
+        max_bytes=_OMNIGENT_ARTIFACT_LIMIT,
+        root=root,
+    )
+    if status != "ok" or body is None:
+        return detail
+    expected = str(record["post_sha256"])
     if hashlib.sha256(body).hexdigest() != expected:
         repair = _omnigent_setup_repair_command(cfg)
         return (
@@ -4415,15 +4640,20 @@ def _omnigent_local_server_pid() -> tuple[int, str]:
     else:
         data_dir = os.path.join(os.path.abspath(str(Path.home())), ".omnigent")
     pid_path = os.path.join(data_dir, "local_server.pid")
+    status, body, detail = _omnigent_custody_read(
+        pid_path,
+        role="omnigent-server-record",
+        max_bytes=_OMNIGENT_PID_LIMIT,
+        root=data_dir,
+    )
+    if status == "missing":
+        return 0, f"no trustworthy OmniGent server record ({_omnigent_path_ref('omnigent-server-record', pid_path)})"
+    if status != "ok" or body is None:
+        return 0, detail
     try:
-        if os.path.islink(pid_path) or not os.path.isfile(pid_path):
-            return 0, f"no trustworthy OmniGent server record at {pid_path}"
-        with open(pid_path, encoding="utf-8") as fh:
-            raw = fh.read(257)
-    except (OSError, UnicodeError):
-        return 0, f"OmniGent server record is unreadable: {pid_path}"
-    if len(raw) > 256:
-        return 0, f"OmniGent server record is oversized: {pid_path}"
+        raw = body.decode("utf-8")
+    except UnicodeError:
+        return 0, f"{_omnigent_path_ref('omnigent-server-record', pid_path)} is not valid UTF-8"
     lines = raw.strip().splitlines()
     try:
         pid = int(lines[0]) if len(lines) >= 2 else 0
@@ -4432,11 +4662,11 @@ def _omnigent_local_server_pid() -> tuple[int, str]:
         pid = 0
         port = 0
     if pid <= 0 or port < 1 or port > 65535:
-        return 0, f"OmniGent server record is malformed: {pid_path}"
+        return 0, f"{_omnigent_path_ref('omnigent-server-record', pid_path)} is malformed"
     from defenseclaw.process_liveness import pid_alive
 
     if not pid_alive(pid):
-        return 0, f"OmniGent server record is stale: {pid_path}"
+        return 0, f"{_omnigent_path_ref('omnigent-server-record', pid_path)} is stale"
     return pid, f"recorded live OmniGent server pid={pid} port={port}"
 
 
@@ -4544,7 +4774,13 @@ def _omnigent_config_argument(argv: tuple[str, ...]) -> str:
 
 
 def _omnigent_live_config_evidence(config_path: str) -> tuple[str, str]:
-    """Bind a patched config to the recorded live official server."""
+    """Check live config selection without claiming a loaded policy identity.
+
+    OmniGent 0.7.0's PID, command line, signature, and health response do not
+    bind the loaded policy generation or module contents. A matching config
+    path is therefore useful negative/mismatch evidence, but never sufficient
+    evidence that an on-disk policy update is active in the recorded process.
+    """
     pid, record_detail = _omnigent_local_server_pid()
     if pid <= 0:
         return "warn", record_detail + "; effective policy config is unverified"
@@ -4576,24 +4812,78 @@ def _omnigent_live_config_evidence(config_path: str) -> tuple[str, str]:
     if canonical_path(configured_path) != canonical_path(config_path):
         return (
             "fail",
-            f"{record_detail}; live {source} selects {configured_path}, not managed {config_path}",
+            f"{record_detail}; live {source} selects {_omnigent_path_ref('live-config', configured_path)}, "
+            f"not {_omnigent_path_ref('managed-config-artifact', config_path)}",
         )
-    return "pass", f"{record_detail}; live effective config verified through {source}={config_path}"
+    return (
+        "warn",
+        f"{record_detail}; live {source} selects {_omnigent_path_ref('managed-config-artifact', config_path)}, "
+        "but OmniGent 0.7.0 "
+        "does not expose a loaded policy generation/module/config identity; policy registration "
+        "is configured but live action/fail-closed enforcement is unverified pending reload/restart",
+    )
+
+
+def _omnigent_runtime_readiness(cfg, *, config_path: str | None = None) -> tuple[str, str]:
+    """Report whether live OmniGent policy readiness can be verified.
+
+    This is deliberately narrower than the full Doctor artifact inspection so
+    informational callers such as ``status`` can avoid mistaking a healthy
+    gateway adapter or a matching config pathname for an active in-process
+    OmniGent policy generation.
+    """
+    if config_path is None:
+        locations, lock_detail = _omnigent_lock_locations(cfg)
+        if lock_detail:
+            return "warn", f"{lock_detail}; effective policy config is unverified"
+        config_paths = (
+            _omnigent_location_paths(locations, "hook_config_paths")
+            if locations is not None
+            else [omnigent_config_path()]
+        )
+        config_path = next((path for path in config_paths if os.path.lexists(path)), "")
+    if not config_path:
+        return "fail", "managed OmniGent policy config is unavailable"
+    _, custody_detail = _omnigent_custody_text(config_path, role="managed-config-artifact")
+    if custody_detail:
+        return "warn", f"{custody_detail}; effective policy config is unverified"
+    return _omnigent_live_config_evidence(config_path)
 
 
 def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
     """Verify managed artifacts and bind them to the live server config."""
-    config_paths = _hook_health_paths_from_lock(cfg, "omnigent") or [omnigent_config_path()]
-    config_path = next((p for p in config_paths if os.path.isfile(p)), "")
-    config_ok = bool(config_path) and all(
-        _file_references_marker(config_path, (marker,))
-        for marker in ("defenseclaw_omnigent_policy", "defenseclaw_guardrail")
+    locations, lock_detail = _omnigent_lock_locations(cfg)
+    if lock_detail:
+        _emit(
+            "fail",
+            "OmniGent policy",
+            f"hook contract lock cannot supply the policy module and .pth import shim ({lock_detail})",
+            r=r,
+        )
+        return
+    config_paths = (
+        _omnigent_location_paths(locations, "hook_config_paths") if locations is not None else [omnigent_config_path()]
     )
-    if not config_ok:
+    config_path = next((path for path in config_paths if os.path.lexists(path)), "")
+    if not config_path:
+        _emit("fail", "OmniGent policy", "config is missing the DefenseClaw policy registration", r=r)
+        return
+    config_text, config_detail = _omnigent_custody_text(config_path, role="managed-config-artifact")
+    if config_text is None:
+        _emit("fail", "OmniGent policy", f"managed config is unavailable ({config_detail})", r=r)
+        return
+    if not all(marker in config_text for marker in ("defenseclaw_omnigent_policy", "defenseclaw_guardrail")):
         _emit("fail", "OmniGent policy", "config is missing the DefenseClaw policy registration", r=r)
         return
 
-    runtime_paths = _hook_runtime_paths_from_lock(cfg, "omnigent") or _omnigent_runtime_paths_from_backups(cfg)
+    if locations is not None:
+        runtime_paths = _omnigent_location_paths(locations, "hook_script_paths")
+        backup_detail = ""
+    else:
+        runtime_paths, backup_detail = _omnigent_runtime_paths_from_backups(cfg)
+    if backup_detail:
+        _emit("fail", "OmniGent policy", backup_detail, r=r)
+        return
     module_path = next((p for p in runtime_paths if p.endswith(".py")), "")
     pth_path = next((p for p in runtime_paths if p.endswith(".pth")), "")
     if not module_path or not pth_path:
@@ -4604,28 +4894,56 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
             r=r,
         )
         return
-    if not os.path.isfile(module_path) or not all(
-        _file_references_marker(module_path, (marker,)) for marker in ("POLICY_REGISTRY", "defenseclaw_policy")
+    data_dir = str(getattr(cfg, "data_dir", "") or "")
+    if (
+        os.path.normcase(os.path.basename(module_path)) != "defenseclaw_omnigent_policy.py"
+        or not _omnigent_path_is_contained(module_path, data_dir)
+        or os.path.normcase(os.path.basename(pth_path)) != "defenseclaw_omnigent.pth"
     ):
-        _emit("fail", "OmniGent policy", f"policy module is missing or invalid: {module_path}", r=r)
+        _emit("fail", "OmniGent policy", "managed module or .pth target identity is invalid", r=r)
         return
+    module_text, module_detail = _omnigent_custody_text(
+        module_path,
+        role="managed-module-artifact",
+        root=data_dir,
+    )
+    if module_text is None:
+        _emit("fail", "OmniGent policy", f"policy module is unavailable ({module_detail})", r=r)
+        return
+    if not all(marker in module_text for marker in ("POLICY_REGISTRY", "defenseclaw_policy")):
+        _emit("fail", "OmniGent policy", "policy module is missing or invalid", r=r)
+        return
+    pth_text, pth_detail = _omnigent_custody_text(pth_path, role="managed-pth-artifact")
+    if pth_text is None:
+        _emit("fail", "OmniGent policy", f".pth import shim is unavailable ({pth_detail})", r=r)
+        return
+    import_path = pth_text.strip()
+    module_dir = os.path.dirname(module_path)
+    lexical_import_match = (
+        bool(import_path)
+        and os.path.isabs(import_path)
+        and os.pardir not in Path(import_path).parts
+        and os.path.normcase(os.path.abspath(import_path)) == os.path.normcase(os.path.abspath(module_dir))
+    )
     try:
-        with open(pth_path, encoding="utf-8") as fh:
-            import_path = fh.read().strip()
-    except (OSError, UnicodeError):
-        import_path = ""
-    if not import_path or os.path.realpath(import_path) != os.path.realpath(os.path.dirname(module_path)):
-        _emit("fail", "OmniGent policy", f".pth import shim is missing or points elsewhere: {pth_path}", r=r)
+        canonical_import_match = "\x00" not in import_path and os.path.normcase(
+            os.path.realpath(import_path)
+        ) == os.path.normcase(os.path.realpath(module_dir))
+    except (OSError, ValueError):
+        canonical_import_match = False
+    if not lexical_import_match or not canonical_import_match:
+        _emit("fail", "OmniGent policy", ".pth import shim is missing or points outside the managed module", r=r)
         return
     for logical, path in (("config", config_path), ("module", module_path), ("pth", pth_path)):
         if drift := _omnigent_managed_artifact_drift(cfg, logical, path):
             _emit("fail", "OmniGent policy", drift, r=r)
             return
-    live_status, live_detail = _omnigent_live_config_evidence(config_path)
+    live_status, live_detail = _omnigent_runtime_readiness(cfg, config_path=config_path)
     _emit(
         live_status,
         "OmniGent policy",
-        f"native-degraded; {live_detail}; module={module_path}; import={pth_path}",
+        f"native-degraded; {live_detail}; {_omnigent_path_ref('managed-module-artifact', module_path)}; "
+        f"{_omnigent_path_ref('managed-pth-artifact', pth_path)}",
         r=r,
     )
 
@@ -4837,6 +5155,121 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         _check_hook_health(cfg, connector, r)
         if connector == "amp":
             _check_amp_native_policy_surfaces(cfg, r)
+
+
+@dataclass(frozen=True)
+class ConnectorSetupReadiness:
+    ready: bool
+    connector: str
+    invariant: str
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ready
+
+
+_SETUP_READINESS_PRIMARY_LABELS = {
+    "codex": "Codex hooks",
+    "claudecode": "Claude Code hooks",
+    "cursor": "Cursor hooks",
+    "windsurf": "Legacy Cascade hooks",
+    "copilot": "Copilot hooks",
+    "antigravity": "Antigravity hooks",
+    "opencode": "OpenCode hooks",
+    "amp": "Amp policy plugin",
+    "hermes": "Hermes hooks (fail-open)",
+    "omnigent": "OmniGent policy",
+}
+
+
+def _setup_readiness_invariant(detail: str, *, default: str) -> str:
+    lowered = detail.casefold()
+    for invariant, markers in (
+        ("digest", ("digest", "sha-256")),
+        ("executable", ("launcher", "executable", "product name")),
+        ("live-runtime", ("pending-reload", "live=false", "runtime", "heartbeat")),
+        ("location", ("path", "profile", "install-root")),
+        ("contract", ("contract",)),
+        ("version", ("version",)),
+        ("fail-mode", ("fail-mode", "fail mode")),
+    ):
+        if any(marker in lowered for marker in markers):
+            return invariant
+    return default
+
+
+def connector_setup_readiness(cfg, connector: str) -> ConnectorSetupReadiness:
+    """Run the real passive Doctor path required before Setup reports ready."""
+
+    name = normalize(connector)
+    primary_label = _SETUP_READINESS_PRIMARY_LABELS.get(name)
+    if primary_label is None:
+        return ConnectorSetupReadiness(False, name, "roster", "unsupported readiness connector")
+
+    from defenseclaw.fail_mode import connector_fail_mode_report, connector_registration_lock_state
+
+    try:
+        lock_mode, lock_drift = connector_registration_lock_state(cfg, name)
+        fail_mode = connector_fail_mode_report(cfg, name, inspect_effective_policy=False)
+    except Exception as exc:  # noqa: BLE001 - convert passive validation failure to readiness evidence.
+        return ConnectorSetupReadiness(False, name, "validation", type(exc).__name__)
+    if lock_drift:
+        return ConnectorSetupReadiness(
+            False,
+            name,
+            _setup_readiness_invariant(lock_drift, default="registration"),
+            lock_drift,
+        )
+
+    configured_mode = str(fail_mode.get("configured") or "")
+    if name == "cursor":
+        configured_mode = "closed" if _doctor_effective_guardrail_mode(cfg.guardrail, "cursor") == "action" else "open"
+    if lock_mode != configured_mode:
+        effective = str(fail_mode.get("effective") or "unknown")
+        return ConnectorSetupReadiness(
+            False,
+            name,
+            "fail-mode",
+            f"lock={lock_mode or 'missing'} configured={configured_mode or 'missing'} effective={effective}",
+        )
+
+    result = _DoctorResult(passive=True, quiet=True)
+    try:
+        result.set_section("connectors")
+        _check_hook_contract_lock(cfg, name, result)
+        result.set_section("services")
+        _check_connector_hooks(cfg, name, result)
+        if name == "codex":
+            _check_codex_otel_alignment(cfg, result)
+    except Exception as exc:  # noqa: BLE001 - readiness must name a failed validator, not escape it.
+        return ConnectorSetupReadiness(False, name, "validation", type(exc).__name__)
+
+    required_labels = ["Hook contract", primary_label]
+    if name == "codex":
+        required_labels.extend(("Codex OTel environment", "Codex OTel runtime"))
+    for label in required_labels:
+        rows = [row for row in result.checks if row.get("label") == label]
+        if not rows:
+            return ConnectorSetupReadiness(False, name, "dispatch", f"Doctor emitted no {label!r} row")
+        for row in rows:
+            status = str(row.get("status") or "")
+            detail = str(row.get("detail") or "")
+            native_degraded = name == "omnigent" and label == primary_label and status == "warn"
+            if native_degraded and not detail.startswith("native-degraded;"):
+                native_degraded = False
+            if status != "pass" and not native_degraded:
+                return ConnectorSetupReadiness(
+                    False,
+                    name,
+                    _setup_readiness_invariant(detail, default="registration"),
+                    f"{label}: {status}: {detail}",
+                )
+    return ConnectorSetupReadiness(
+        True,
+        name,
+        "ready",
+        f"configured={configured_mode}; effective={fail_mode.get('effective') or 'unknown'}",
+    )
 
 
 def _workspace_dir(cfg) -> str:
@@ -5148,11 +5581,13 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
         if connectors[0] == "omnigent":
             if mode == "action":
                 return (
-                    "policy-enforced for omnigent (native-degraded; mode=action via ALLOW/ASK/DENY) "
+                    "policy path configured for omnigent (native-degraded; mode=action via "
+                    "ALLOW/ASK/DENY; live policy generation unverified) "
                     "— proxy port intentionally closed"
                 )
             return (
-                "policy-driven for omnigent (native-degraded; mode=observe) "
+                "policy path configured for omnigent (native-degraded; mode=observe; "
+                "live policy generation unverified) "
                 "— proxy port intentionally closed"
             )
         if connectors[0] == "amp":
@@ -5178,9 +5613,13 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
                 else "cursor (mode=observe)"
             )
         elif connector == "omnigent" and mode == "action":
-            parts.append("omnigent (native-degraded; mode=action via ALLOW/ASK/DENY)")
+            parts.append(
+                "omnigent (native-degraded; mode=action via ALLOW/ASK/DENY; live policy generation unverified)"
+            )
         elif connector == "omnigent":
-            parts.append("omnigent (native-degraded; mode=observe via custom policy API)")
+            parts.append(
+                "omnigent (native-degraded; mode=observe via custom policy API; live policy generation unverified)"
+            )
         elif connector == "amp" and mode == "action":
             parts.append("amp (mode=action via synchronous tool.call/tool.result)")
         elif connector == "amp":
@@ -5189,7 +5628,11 @@ def _guardrail_proxy_intentionally_closed(cfg) -> str:
             parts.append(f"{connector} (mode=action via PreToolUse deny)")
         else:
             parts.append(f"{connector} (mode=observe)")
-    prefix = "enforced" if all(mode == "action" for mode in modes.values()) else "native-driven"
+    prefix = (
+        "configured"
+        if "omnigent" in modes
+        else ("enforced" if all(mode == "action" for mode in modes.values()) else "native-driven")
+    )
     return f"{prefix} for {', '.join(parts)} — proxy port intentionally closed"
 
 
@@ -5973,9 +6416,13 @@ def _check_connector_export_custody(report, r: _DoctorResult) -> None:
             "no connector instance has emitted correlation evidence yet",
             r=r,
         )
+    from defenseclaw.observability.custody_status import summarize_native_delivery
+
+    delivery_rows = iter(summarize_native_delivery(report).connectors)
     for item in report.instances:
         suffix = "" if item.default else f"/{item.connector_instance_id[:8]}"
         label = f"Connector OTLP: {item.connector}{suffix}"
+        delivery = None if item.custody == "hook_only" else next(delivery_rows)
         if item.custody == "external":
             tag = "warn"
             conditions = [
@@ -5988,15 +6435,9 @@ def _check_connector_export_custody(report, r: _DoctorResult) -> None:
                 conditions.append(f"invalid credentials observed ({item.authentication_failures} recent failures)")
             elif item.credential_state == "recovered":
                 conditions.append(f"credentials recovered after {item.authentication_failures} recent failures")
-            if item.normalized_batches and item.drop_only_batches == item.normalized_batches:
+            if delivery.state == "all_drop_only":
                 tag = "fail"
-                conditions.append(
-                    f"drop-only native stream ({item.drop_only_batches}/{item.normalized_batches} batches)"
-                )
-            elif item.drop_only_batches:
-                conditions.append(
-                    f"partial drop-only evidence ({item.drop_only_batches}/{item.normalized_batches} batches)"
-                )
+            conditions.append(delivery.detail)
             _emit(
                 tag,
                 label,
@@ -6036,17 +6477,12 @@ def _check_connector_export_custody(report, r: _DoctorResult) -> None:
         else:
             conditions.append("credentials=no recent failure")
 
-        if item.normalized_batches and item.drop_only_batches == item.normalized_batches:
+        if delivery.state == "all_drop_only":
             tag = "fail"
-            conditions.append(f"drop-only native stream ({item.drop_only_batches}/{item.normalized_batches} batches)")
-        elif item.drop_only_batches:
+        elif delivery.state == "partial_drop_only":
             if tag == "pass":
                 tag = "warn"
-            conditions.append(
-                f"partial drop-only evidence ({item.drop_only_batches}/{item.normalized_batches} batches)"
-            )
-        else:
-            conditions.append(f"normalized_batches={item.normalized_batches}")
+        conditions.append(delivery.detail)
         _emit(
             tag,
             label,
@@ -8701,7 +9137,7 @@ def _check_hook_contract_lock(
     # to select the hook contract.  Automatic discovery can legitimately find a
     # different installation (for example an npm .CMD wrapper ahead of the
     # desktop app on PATH); it must not override that protected setup evidence.
-    protected_setup_agent = connector in {"codex", "hermes"} and all(
+    protected_setup_agent = connector in {"codex", "hermes", "omnigent", "amp"} and all(
         (
             str(entry.get("agent_executable") or "").strip(),
             str(entry.get("agent_executable_sha256") or "").strip(),

@@ -24,6 +24,10 @@ from defenseclaw.connector_paths import (
     hermes_home,
     windsurf_hook_config_path,
 )
+from defenseclaw.observability.custody_status import (
+    NativeDeliveryStatus,
+    NativeDeliverySummary,
+)
 from defenseclaw.observability.display import redact_endpoint_for_display
 from defenseclaw.observability.v8_status import (
     V8OperatorStatus,
@@ -37,6 +41,7 @@ NoticeLevel = Literal["info", "warn", "error"]
 STALENESS_WINDOW = timedelta(minutes=15)
 DOCTOR_CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 MAX_AI_DISCOVERY_OVERVIEW_ROWS = 8
+_CURSOR_PRIORITY_CONFLICT_DISCLOSURE = "priority-conflict-detection=unavailable (none inferred)"
 
 
 @dataclass(frozen=True)
@@ -51,8 +56,10 @@ class SubsystemHealth:
 class ConnectorHealth:
     name: str = ""
     state: str = ""
+    source: str = ""
     since: str = ""
     last_activity_at: str = ""
+    load_heartbeat_at: str = ""
     tool_inspection_mode: str = ""
     subprocess_policy: str = ""
     requests: int = 0
@@ -521,6 +528,7 @@ class OverviewPanelModel:
         self.skill_scanner_available = True
         self.observability_status: V8OperatorStatus | None = None
         self.observability_status_error = ""
+        self.native_delivery_summary: NativeDeliverySummary | None = None
 
     def set_cfg(self, cfg: OverviewConfig | None) -> None:
         """Hot-swap the cached config snapshot (e.g. after ``setup``).
@@ -580,6 +588,14 @@ class OverviewPanelModel:
 
         self.observability_status = status
         self.observability_status_error = error.strip()
+
+    def set_native_delivery_summary(
+        self,
+        summary: NativeDeliverySummary | None,
+    ) -> None:
+        """Install bounded native OTLP evidence without treating absence as failure."""
+
+        self.native_delivery_summary = summary
 
     def action_intent(self, key: str) -> OverviewCommandIntent | None:
         if key == "m":
@@ -895,7 +911,7 @@ class OverviewPanelModel:
                     return self._aggregate_connector_state()
                 if self.health.connector is None:
                     return "unknown"
-                return self.health.connector.state or "unknown"
+                return self._effective_connector_runtime(self.health.connector)[0]
             case "watcher":
                 return self.health.watcher.state
             case "guardrail":
@@ -1018,6 +1034,12 @@ class OverviewPanelModel:
             return ""
         return format_scanner_overrides_summary(self.cfg.scanner_overrides)
 
+    @staticmethod
+    def connector_priority_conflict_disclosure(connector: str) -> str:
+        if connector.strip().lower() == "cursor":
+            return _CURSOR_PRIORITY_CONFLICT_DISCLOSURE
+        return ""
+
     def multi_connector_rows(self) -> list[tuple[str, str]]:
         """Per-connector ``(label, detail)`` rows for the Overview.
 
@@ -1048,10 +1070,33 @@ class OverviewPanelModel:
             pack = (packs.get(connector) or "").strip()
             if pack:
                 detail += f", {pack}"
+            disclosure = self.connector_priority_conflict_disclosure(connector)
+            if disclosure:
+                detail += f", {disclosure}"
             rows.append(("", detail))
         return rows
 
     _RUNNING_STATES = frozenset({"running", "active", "enabled"})
+
+    def _effective_connector_runtime(self, connector: ConnectorHealth) -> tuple[str, str]:
+        state = (connector.state or "").strip().lower() or "unknown"
+        if connector.name.strip().lower() != "opencode":
+            return state, ""
+
+        from defenseclaw.commands.cmd_status import _opencode_runtime_truth
+
+        health = self.health
+        availability = self.gateway_availability().state.strip().lower()
+        return _opencode_runtime_truth(
+            {
+                "name": connector.name,
+                "state": connector.state,
+                "source": connector.source,
+                "load_heartbeat_at": connector.load_heartbeat_at,
+            },
+            gateway_started_at=health.started_at if health is not None else "",
+            gateway_available=availability == "running",
+        )
 
     def _is_multi_connector(self) -> bool:
         return self.cfg is not None and len([c for c, _m in self.cfg.connector_modes if c]) > 1
@@ -1072,7 +1117,9 @@ class OverviewPanelModel:
         ``unknown``). Mirrors how an operator reads the CONNECTORS table.
         """
 
-        states = [(conn.state or "").strip().lower() for conn in (self.health.connectors if self.health else ())]
+        states = [
+            self._effective_connector_runtime(conn)[0] for conn in (self.health.connectors if self.health else ())
+        ]
         if not states:
             # No live connectors. If every rostered connector is disabled,
             # say so explicitly instead of the generic "unknown".
@@ -1101,7 +1148,7 @@ class OverviewPanelModel:
             disabled_n = sum(1 for c, _m in self.cfg.connector_modes if c and self.cfg.connector_is_disabled(c))
             enabled_total = max(total - disabled_n, 0)
             live = self.health.connectors if self.health else ()
-            running = sum(1 for conn in live if (conn.state or "").strip().lower() in self._RUNNING_STATES)
+            running = sum(1 for conn in live if self._effective_connector_runtime(conn)[0] in self._RUNNING_STATES)
             if not disabled_n:
                 # No kill switches → original phrasing, unchanged.
                 if not live:
@@ -1119,9 +1166,17 @@ class OverviewPanelModel:
         if self.health is None or self.health.connector is None:
             if not configured:
                 return ""
-            return f"{friendly_connector_name(configured)} (configured, not connected)"
+            parts = [f"{friendly_connector_name(configured)} (configured, not connected)"]
+            if disclosure := self.connector_priority_conflict_disclosure(configured):
+                parts.append(disclosure)
+            return " - ".join(parts)
         connector = self.health.connector
         parts = [friendly_connector_name(connector.name)]
+        if disclosure := self.connector_priority_conflict_disclosure(connector.name):
+            parts.append(disclosure)
+        _runtime_state, runtime_detail = self._effective_connector_runtime(connector)
+        if runtime_detail:
+            parts.append(runtime_detail)
         if connector.tool_inspection_mode:
             parts.append(connector.tool_inspection_mode)
         if connector.requests:
@@ -1185,6 +1240,13 @@ class OverviewPanelModel:
         """Return the canonical v8 destination inventory."""
 
         return self._v8_observability_destination_rows()
+
+    def native_delivery_rows(self) -> tuple[NativeDeliveryStatus, ...]:
+        """Return redacted per-connector delivery truth for Overview."""
+
+        if self.native_delivery_summary is None:
+            return ()
+        return self.native_delivery_summary.connectors
 
     def _v8_observability_destination_rows(self) -> tuple[ObservabilityDestinationRow, ...]:
         """Merge canonical v8 policy with only positively observed live health."""

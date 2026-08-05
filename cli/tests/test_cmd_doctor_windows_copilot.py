@@ -82,13 +82,14 @@ def _fixture(
     return install, data, config
 
 
-def _validate(install: Path, data: Path, config: Path):
+def _validate(install: Path, data: Path, config: Path, *, configured_mode: str = ""):
     return validate_windows_copilot_hook_registration(
         config_path=str(config),
         data_dir=str(data),
         install_root=str(install),
         search_path=str(install),
         pathext=".EXE;.CMD",
+        configured_mode=configured_mode,
     )
 
 
@@ -111,6 +112,19 @@ def test_windows_copilot_doctor_accepts_bounded_v1_contract(tmp_path: Path) -> N
     assert check.state == "healthy", check.detail
     assert f"entries={len(_COPILOT_CONTRACT_EVENTS['copilot-hooks-v1'])}" in check.detail
     assert "contract=copilot-hooks-v1" in check.detail
+
+
+@pytest.mark.parametrize("configured_mode", ["action", "observe"])
+def test_windows_copilot_doctor_displays_configured_mode(
+    tmp_path: Path,
+    configured_mode: str,
+) -> None:
+    install, data, config = _fixture(tmp_path)
+
+    check = _validate(install, data, config, configured_mode=configured_mode)
+
+    assert check.state == "healthy", check.detail
+    assert f"configured mode={configured_mode}" in check.detail
 
 
 def test_windows_copilot_doctor_reports_effective_operator_disable(
@@ -293,3 +307,56 @@ def test_windows_copilot_doctor_classifies_tamper(
     assert not check.healthy
     assert expected in check.detail
     assert "setup copilot --yes --restart" in check.detail
+
+
+@pytest.mark.parametrize("configured_mode", ["action", "observe"])
+def test_windows_copilot_doctor_repair_preserves_configured_mode(
+    tmp_path: Path,
+    configured_mode: str,
+) -> None:
+    install, data, config = _fixture(tmp_path)
+    document = json.loads(config.read_text(encoding="utf-8"))
+    document["hooks"].pop("permissionRequest")
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    check = _validate(install, data, config, configured_mode=configured_mode)
+
+    assert not check.healthy
+    assert (
+        f"defenseclaw setup copilot --mode {configured_mode} --yes --restart"
+        in check.detail
+    )
+
+
+@pytest.mark.parametrize("configured_mode", ["action", "observe"])
+def test_windows_copilot_doctor_adapter_preserves_effective_mode(
+    tmp_path: Path,
+    configured_mode: str,
+) -> None:
+    install, data, config = _fixture(tmp_path)
+    document = json.loads(config.read_text(encoding="utf-8"))
+    document["hooks"].pop("permissionRequest")
+    config.write_text(json.dumps(document), encoding="utf-8")
+    cfg = SimpleNamespace(
+        data_dir=str(data),
+        claw=SimpleNamespace(workspace_dir=""),
+        guardrail=SimpleNamespace(
+            mode="observe",
+            effective_mode=lambda _connector: configured_mode,
+        ),
+    )
+
+    check = _windows_native_hook_check(
+        cfg,
+        "copilot",
+        config_path=str(config),
+        install_root=str(install),
+        search_path=str(install),
+        pathext=".EXE;.CMD",
+    )
+
+    assert not check.healthy
+    assert (
+        f"defenseclaw setup copilot --mode {configured_mode} --yes --restart"
+        in check.detail
+    )

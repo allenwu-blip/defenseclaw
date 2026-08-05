@@ -190,7 +190,7 @@ restoration, and teardown without WSL or a Unix shell.
 The prepared native driver is
 `scripts/live-connector-e2e/run-windows.ps1 -Connector copilot`. Its live layer
 uses the official `@github/copilot` Windows package (or an explicitly pinned
-official client for release validation), `copilot version`, the documented
+official client for release validation), `copilot --version`, the documented
 headless `copilot -p` surface, and the official token precedence. Its setup
 transitions use the same transaction-shaped and explicitly home-bound
 maintenance command as ordinary native Setup. The driver is not certification

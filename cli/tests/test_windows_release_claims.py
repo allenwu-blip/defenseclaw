@@ -240,6 +240,54 @@ def test_codex_compatibility_docs_bound_v1_through_v3() -> None:
     assert "v1 and v2 ranges have explicit upper bounds" not in text
 
 
+def test_claude_directoryadded_docs_match_packaged_v2_contract() -> None:
+    inventory = json.loads(
+        (ROOT / "cli/defenseclaw/inventory/hook_contracts.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    claude_contracts = {
+        contract["contract_id"]: contract
+        for contract in inventory["connectors"]["claudecode"]["contracts"]
+    }
+
+    assert claude_contracts["claudecode-hooks-v1"]["agent_version"] == {
+        "min_inclusive": "2.1.154",
+        "max_exclusive": "2.1.219",
+    }
+    assert len(claude_contracts["claudecode-hooks-v1"]["events"]) == 28
+    assert "DirectoryAdded" not in claude_contracts["claudecode-hooks-v1"]["events"]
+    assert claude_contracts["claudecode-hooks-v2"]["agent_version"] == {
+        "min_inclusive": "2.1.219",
+        "max_exclusive": "",
+    }
+    assert len(claude_contracts["claudecode-hooks-v2"]["events"]) == 29
+    assert "DirectoryAdded" in claude_contracts["claudecode-hooks-v2"]["events"]
+    v2_capabilities = claude_contracts["claudecode-hooks-v2"]["capabilities"]
+    assert "DirectoryAdded" not in v2_capabilities["block_events"]
+    assert "DirectoryAdded" not in v2_capabilities["ask_events"]
+
+    for relative_path in (
+        "docs/reference/CLAUDE-CODE-WINDOWS.md",
+        "docs-site/content/docs/connectors/claudecode.mdx",
+        "docs-site/content/docs/connectors/compatibility.mdx",
+        "docs-site/content/docs/get-started/windows/connectors-enforcement.mdx",
+        "docs-site/content/docs/get-started/windows/telemetry-security.mdx",
+        "docs-site/content/docs/stories/observe-claude-code.mdx",
+    ):
+        text = " ".join((ROOT / relative_path).read_text(encoding="utf-8").split())
+        assert "28" in text
+        assert "29" in text
+        assert "2.1.219" in text
+        assert "DirectoryAdded" in text
+        assert "28 current lifecycle/tool/configuration events" not in text
+        assert not re.search(
+            r"\b(?:the )?28 (?:registered|supported) (?:Claude )?lifecycle events\b",
+            text,
+            re.IGNORECASE,
+        )
+
+
 def test_codex_docs_keep_memories_and_history_separate() -> None:
     connector_page = (
         ROOT / "docs-site/content/docs/connectors/codex.mdx"
@@ -252,6 +300,32 @@ def test_codex_docs_keep_memories_and_history_separate() -> None:
     assert "`$CODEX_HOME/history.jsonl` is a separate" in connector_page
     assert "%CODEX_HOME%\\memories" in checklist
     assert "%CODEX_HOME%\\history.jsonl" in checklist
+
+
+def test_opencode_docs_exclude_unqualified_enforcement_media() -> None:
+    connector_page = (ROOT / "docs-site/content/docs/connectors/opencode.mdx").read_text(encoding="utf-8")
+    contracts = json.loads((ROOT / "cli/defenseclaw/inventory/hook_contracts.json").read_text(encoding="utf-8"))[
+        "connectors"
+    ]["opencode"]["contracts"]
+    validated = json.loads((ROOT / "cli/defenseclaw/inventory/validated_versions.json").read_text(encoding="utf-8"))[
+        "connectors"
+    ]["opencode"]
+
+    assert len(contracts) == 1
+    assert contracts[0]["agent_version"] == {
+        "min_inclusive": "1.18.10",
+        "max_exclusive": "1.18.12",
+    }
+    assert validated["live"] is False
+    assert validated["os"]["windows"] == {
+        "last_validated_version": "",
+        "last_validated_at": "",
+        "run_url": "",
+    }
+    # Enforcement media may return only with exact official-package 1.18.11
+    # SHA-256 provenance plus matching version/date/run acceptance metadata.
+    assert not re.search(r"<Video\b", connector_page)
+    assert "v1.17.3" not in connector_page
 
 
 def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
@@ -315,6 +389,50 @@ def test_antigravity_windows_claims_match_official_hook_boundary() -> None:
     assert "GEMINI_CONFIG_DIR" not in combined
 
 
+def test_hermes_latest_source_recheck_matches_the_pinned_contract() -> None:
+    connector_page = (
+        ROOT / "docs-site/content/docs/connectors/hermes.mdx"
+    ).read_text(encoding="utf-8")
+    research = (
+        ROOT / "docs/research/HERMES-NATIVE-WINDOWS.md"
+    ).read_text(encoding="utf-8")
+    acceptance = (
+        ROOT / "docs/research/NATIVE-WINDOWS-CONNECTOR-ACCEPTANCE.md"
+    ).read_text(encoding="utf-8")
+    contracts = json.loads(
+        (ROOT / "cli/defenseclaw/inventory/hook_contracts.json").read_text(
+            encoding="utf-8"
+        )
+    )["connectors"]["hermes"]["contracts"]
+    validated = json.loads(
+        (ROOT / "cli/defenseclaw/inventory/validated_versions.json").read_text(
+            encoding="utf-8"
+        )
+    )["connectors"]["hermes"]
+
+    assert len(contracts) == 1
+    assert contracts[0]["agent_version"] == {
+        "min_inclusive": "0.19.0",
+        "max_exclusive": "0.21.0",
+    }
+    assert validated["live"] is False
+    assert "v2026.8.3 (0.20.0)" in validated["notes"]
+
+    connector_text = " ".join(connector_page.split())
+    assert (
+        "latest official release rechecked on 2026-08-04 is "
+        "v0.20.0 (`v2026.8.3`)"
+    ) in connector_text
+    assert "v0.19.1 (`v2026.7.30`)" not in connector_page
+    assert "live: false" in connector_page
+    assert "source review is not packaged or real-client certification" in connector_text
+
+    assert "Last verified: **2026-08-04**" in research
+    assert "Hermes Agent v0.20.0, tag `v2026.8.3`" in research
+    assert "preview / not certified" in research
+    assert "latest rechecked tag [`v2026.8.3`]" in acceptance
+
+
 def test_windows_live_harness_avoids_automatic_variable_assignments() -> None:
     text = (ROOT / "scripts/live-connector-e2e/run-windows.ps1").read_text(encoding="utf-8").lower()
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8").lower()
@@ -330,6 +448,67 @@ def test_windows_live_harness_avoids_automatic_variable_assignments() -> None:
     assert "$profile =" not in workflow + native_workflow
     assert "windows-native-required:" in native_workflow
     assert "name: windows native required" in native_workflow
+
+
+def test_omnigent_required_ci_claims_remain_degraded_and_non_live() -> None:
+    live_workflow = (ROOT / ".github/workflows/connector-live-e2e.yml").read_text(encoding="utf-8")
+    native_workflow = yaml.safe_load((ROOT / ".github/workflows/windows-native.yml").read_text(encoding="utf-8"))
+    validated = json.loads((ROOT / "cli/defenseclaw/inventory/validated_versions.json").read_text(encoding="utf-8"))[
+        "connectors"
+    ]["omnigent"]
+    acceptance = (ROOT / "docs/research/NATIVE-WINDOWS-CONNECTOR-ACCEPTANCE.md").read_text(encoding="utf-8")
+    acceptance_row = next(
+        line for line in acceptance.splitlines() if line.startswith("| OmniGent |") and "scoped gateway calls" in line
+    )
+
+    jobs = native_workflow["jobs"]
+    generic_connectors = set(jobs["connector-contract"]["strategy"]["matrix"]["connector"])
+    required_connectors = generic_connectors | {"omnigent"}
+    assert required_connectors == {
+        "amp",
+        "antigravity",
+        "claudecode",
+        "codex",
+        "copilot",
+        "cursor",
+        "hermes",
+        "omnigent",
+        "opencode",
+        "windsurf",
+    }
+    assert required_connectors.isdisjoint({"geminicli", "openhands", "openclaw", "zeptoclaw"})
+    omnigent_job = jobs["omnigent-native-degraded"]
+    assert omnigent_job["name"] == "Windows x64 OmniGent native degraded"
+    assert "if" not in omnigent_job
+    assert "continue-on-error" not in omnigent_job
+    assert {
+        "connector-contract",
+        "omnigent-native-degraded",
+    }.issubset(set(jobs["windows-native-required"]["needs"]))
+
+    assert "separate required packaged native-degraded cell" in live_workflow
+    assert "remains outside green live certification" in live_workflow
+    assert "claims no authentication/HITL evidence" in live_workflow
+    assert "separate advisory packaged native-degraded cell" not in live_workflow
+
+    assert validated["live"] is False
+    assert validated["os"]["windows"] == {
+        "last_validated_version": "",
+        "last_validated_at": "",
+        "run_url": "",
+    }
+    assert "required CI remain native-degraded" in validated["notes"]
+    assert "live=false" in validated["notes"]
+    assert "authentication/HITL evidence remain pending and unclaimed" in validated["notes"]
+    assert "public Setup availability gate" in validated["notes"]
+    assert "advisory" not in validated["notes"]
+
+    assert "required packaged native-degraded CI is defined" in acceptance_row
+    assert "live=false" in acceptance_row
+    assert "authentication/HITL evidence remain pending and unclaimed" in acceptance_row
+    assert "neither certification nor a public Setup availability gate follows" in acceptance_row
+    assert "advisory" not in acceptance_row
+    assert "non-blocking upstream Windows CI" not in acceptance_row
 
 
 def test_windows_native_ci_concurrency_cannot_cross_cancel_push_and_manual_runs() -> None:

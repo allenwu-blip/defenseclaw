@@ -46,6 +46,7 @@ type claudeCodeHookRequest struct {
 	AgentType            string                 `json:"agent_type,omitempty"`
 	OldCWD               string                 `json:"old_cwd,omitempty"`
 	NewCWD               string                 `json:"new_cwd,omitempty"`
+	Directory            string                 `json:"directory,omitempty"`
 	WorktreePath         string                 `json:"worktree_path,omitempty"`
 	ToolName             string                 `json:"tool_name,omitempty"`
 	ToolUseID            string                 `json:"tool_use_id,omitempty"`
@@ -172,7 +173,7 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 		if verdict == nil {
 			verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "prompt", Connector: "claudecode"})
 		}
-	case "SubagentStart", "CwdChanged", "WorktreeRemove",
+	case "SubagentStart", "CwdChanged", "DirectoryAdded", "WorktreeRemove",
 		"TaskCreated", "TaskCompleted", "TeammateIdle",
 		"PreCompact", "PostCompact", "Elicitation", "ElicitationResult", "Notification":
 		verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeEventContent(req), Direction: "event_content", Connector: "claudecode"})
@@ -547,6 +548,7 @@ func claudeCodeEventContent(req claudeCodeHookRequest) string {
 		req.AgentType,
 		req.OldCWD,
 		req.NewCWD,
+		req.Directory,
 		req.WorktreePath,
 		req.LastAssistantMessage,
 		claudeCodePayloadString(req.Payload, "content"),

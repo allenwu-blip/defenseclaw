@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from defenseclaw import platform_support
 from defenseclaw.connector_paths import (
     amp_policy_plugin_path,
     connector_config_files,
@@ -113,6 +114,9 @@ class FirstRunOptions:
     """Structured input for the guided first-run backend."""
 
     connector: str = "codex"
+    # Complete ordered connector selection for this first-run transaction.
+    # ``None`` preserves single-connector callers by using ``connector``.
+    connector_settings: list[dict] | None = None
     profile: str = "observe"  # observe | action
     scanner_mode: str = "local"  # local | remote | both
     with_judge: bool = False
@@ -177,6 +181,14 @@ class FirstRunReport:
     readiness: list[StepResult] = field(default_factory=list)
     next_commands: list[str] = field(default_factory=list)
     connector_mode_warnings: list[dict] = field(default_factory=list)
+    # Concrete transaction-local selection result. This is deliberately
+    # omitted from ``to_dict``; mutation helpers revalidate its records against
+    # the exact protected receipt generation before using it.
+    _protected_selection: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def to_dict(self) -> dict:
         data = {
@@ -570,6 +582,42 @@ def bootstrap_env(cfg: Config, logger: Logger | None = None) -> BootstrapReport:
     return report
 
 
+def _restore_first_run_selection_transaction(app, setup_snapshot) -> str:
+    """Restore the pre-selection desired-state and authority snapshot."""
+
+    if setup_snapshot is None:
+        return ""
+    from defenseclaw.commands.cmd_setup import _restore_setup_config_snapshot
+
+    try:
+        _restore_setup_config_snapshot(app, setup_snapshot)
+    except Exception as exc:  # noqa: BLE001 — caller must surface incomplete custody restoration.
+        return str(exc)
+    return ""
+
+
+def _restore_first_run_selection_authority(cfg, setup_snapshot) -> str:
+    """Restore only receipt/lock files when selection itself is refused."""
+
+    if setup_snapshot is None:
+        return ""
+    from defenseclaw.commands.cmd_setup import (
+        _restore_setup_agent_selection_snapshot,
+        _restore_setup_hook_contract_lock_snapshot,
+    )
+
+    errors: list[str] = []
+    for label, restore in (
+        ("agent_selection.json", _restore_setup_agent_selection_snapshot),
+        ("hook_contract_lock.json", _restore_setup_hook_contract_lock_snapshot),
+    ):
+        try:
+            restore(cfg, setup_snapshot)
+        except Exception as exc:  # noqa: BLE001 — continue restoring independent authority files.
+            errors.append(f"{label}: {exc}")
+    return "; ".join(errors)
+
+
 def run_first_run(options: FirstRunOptions) -> FirstRunReport:
     """Run the canonical first-run setup flow without rendering UI.
 
@@ -652,10 +700,50 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         if new_config and getattr(cfg, "_source_config_version", 0) == 0:
             cfg_mod.prepare_fresh_v8_config(cfg)
 
-    try:
-        repaired_migration_state = repair_pending_first_run_config(cfg)
-    except FreshMigrationStateError as exc:
-        setup.append(StepResult("Migration State", "fail", str(exc), "defenseclaw init"))
+    transaction_app = AppContext()
+    transaction_app.cfg = cfg
+    setup_snapshot = None
+    selection_targets: tuple[str, ...] | None = None
+    if platform_support.host_os() == "windows":
+        from defenseclaw.agent_selection import setup_agent_selection_connectors
+        from defenseclaw.commands.cmd_setup import _capture_setup_config_snapshot
+
+        selection_targets = setup_agent_selection_connectors(_first_run_connector_roster(options, connector))
+        if selection_targets:
+            try:
+                setup_snapshot = _capture_setup_config_snapshot(cfg)
+            except OSError as exc:
+                setup.append(
+                    StepResult(
+                        "Agent Selection",
+                        "fail",
+                        f"could not establish the protected first-run rollback point: {exc}",
+                        "defenseclaw init",
+                    )
+                )
+                return FirstRunReport(
+                    status="needs_attention",
+                    config_file=str(cfg_mod.config_path()),
+                    data_dir=cfg.data_dir,
+                    connector=connector,
+                    profile=profile,
+                    setup=setup,
+                    next_commands=["defenseclaw init"],
+                    connector_mode_warnings=connector_mode_warnings,
+                )
+
+    protected_selection, selection_error = _preflight_first_run_agent_selections(
+        cfg.data_dir,
+        options,
+        connector,
+        setup_snapshot,
+        selected_connectors=selection_targets,
+    )
+    if selection_error:
+        setup.append(StepResult("Agent Selection", "fail", selection_error, "defenseclaw init"))
+        rollback_error = _restore_first_run_selection_authority(cfg, setup_snapshot)
+        if rollback_error:
+            setup.append(StepResult("First-run rollback", "fail", rollback_error, "defenseclaw init"))
         return FirstRunReport(
             status="needs_attention",
             config_file=str(cfg_mod.config_path()),
@@ -666,18 +754,82 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             next_commands=["defenseclaw init"],
             connector_mode_warnings=connector_mode_warnings,
         )
+
+    try:
+        repaired_migration_state = repair_pending_first_run_config(cfg)
+    except FreshMigrationStateError as exc:
+        setup.append(StepResult("Migration State", "fail", str(exc), "defenseclaw init"))
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            setup.append(StepResult("First-run rollback", "fail", rollback_error, "defenseclaw init"))
+        return FirstRunReport(
+            status="needs_attention",
+            config_file=str(cfg_mod.config_path()),
+            data_dir=cfg.data_dir,
+            connector=connector,
+            profile=profile,
+            setup=setup,
+            next_commands=["defenseclaw init"],
+            connector_mode_warnings=connector_mode_warnings,
+        )
+    except BaseException as exc:
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            raise OSError(
+                f"first-run migration repair failed ({exc}); rollback was incomplete: {rollback_error}"
+            ) from exc
+        raise
     if repaired_migration_state:
         setup.append(StepResult("Migration State", "pass", "recovered pending fresh cursor"))
 
-    cfg.environment = cfg_mod.detect_environment()
-    if connector != "none" and profile == "action":
-        mode_warning = _first_run_action_mode_warning(connector, getattr(cfg, "data_dir", ""))
-        if mode_warning:
-            connector_mode_warnings.append(mode_warning)
-            profile = "observe"
+    try:
+        if protected_selection is not None:
+            from defenseclaw.commands.cmd_setup import _revalidate_setup_agent_selections
 
-    if connector != "none":
-        _apply_first_run_choices(cfg, options, connector, profile, scanner_mode)
+            try:
+                protected_selection = _revalidate_setup_agent_selections(
+                    cfg.data_dir,
+                    protected_selection,
+                    transaction_snapshot=setup_snapshot,
+                )
+            except OSError:
+                protected_selection, selection_error = _preflight_first_run_agent_selections(
+                    cfg.data_dir,
+                    options,
+                    connector,
+                    setup_snapshot,
+                    selected_connectors=selection_targets,
+                )
+                if selection_error:
+                    raise OSError(selection_error)
+
+        cfg.environment = cfg_mod.detect_environment()
+        if connector != "none" and profile == "action":
+            exact_windows_opencode = (
+                connector == "opencode"
+                and platform_support.host_os() == "windows"
+                and protected_selection is not None
+                and protected_selection.record_for(connector) is not None
+            )
+            mode_warning = None
+            if not exact_windows_opencode:
+                mode_warning = _first_run_action_mode_warning(
+                    connector,
+                    getattr(cfg, "data_dir", ""),
+                )
+            if mode_warning:
+                connector_mode_warnings.append(mode_warning)
+                profile = "observe"
+
+        if connector != "none":
+            _apply_first_run_choices(cfg, options, connector, profile, scanner_mode)
+    except BaseException as exc:
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            raise OSError(
+                f"first-run choice application failed ({exc}); rollback was incomplete: {rollback_error}"
+            ) from exc
+        raise
 
     try:
         cfg.save()
@@ -690,8 +842,21 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         )
     except OSError as exc:
         setup.append(StepResult("Config", "fail", str(exc), "defenseclaw config validate"))
+    except BaseException as exc:
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            raise OSError(f"first-run config save failed ({exc}); rollback was incomplete: {rollback_error}") from exc
+        raise
 
-    store = Store(cfg.audit_db)
+    try:
+        store = Store(cfg.audit_db)
+    except BaseException as exc:
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            raise OSError(
+                f"first-run audit store creation failed ({exc}); rollback was incomplete: {rollback_error}"
+            ) from exc
+        raise
     logger = None
     try:
         try:
@@ -778,7 +943,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
 
         next_commands = _next_commands(setup, readiness, cfg, profile)
         status = _rollup_status(setup, readiness)
-        return FirstRunReport(
+        report = FirstRunReport(
             status=status,
             config_file=str(cfg_mod.config_path()),
             data_dir=cfg.data_dir,
@@ -788,13 +953,39 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             readiness=readiness,
             next_commands=next_commands,
             connector_mode_warnings=connector_mode_warnings,
+            _protected_selection=protected_selection,
         )
+    except BaseException as exc:
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        if rollback_error:
+            raise OSError(f"first-run failed ({exc}); rollback was incomplete: {rollback_error}") from exc
+        raise
     finally:
+        close_error: BaseException | None = None
         try:
             if logger is not None:
                 logger.close()
-        finally:
+        except BaseException as exc:
+            close_error = exc
+        try:
             store.close()
+        except BaseException as exc:
+            if close_error is None:
+                close_error = exc
+        if close_error is not None:
+            rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+            if rollback_error:
+                raise OSError(
+                    f"first-run resource close failed ({close_error}); rollback was incomplete: {rollback_error}"
+                ) from close_error
+            raise close_error
+
+    if report.status == "needs_attention":
+        rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
+        report._protected_selection = None
+        if rollback_error:
+            report.setup.append(StepResult("First-run rollback", "fail", rollback_error, "defenseclaw init"))
+    return report
 
 
 def targeted_readiness(cfg: Config, options: FirstRunOptions) -> list[StepResult]:
@@ -913,7 +1104,79 @@ def _normalize_profile(raw: str, connector: str) -> str:
     return "observe"
 
 
-def _first_run_action_mode_warning(connector: str, data_dir: str) -> dict | None:
+def _first_run_connector_roster(options: FirstRunOptions, connector: str) -> tuple[str, ...]:
+    """Return the complete ordered connector roster carried by first-run."""
+
+    raw_connectors: list[str] = []
+    if options.connector_settings is not None:
+        raw_connectors.extend(
+            str(item.get("connector", "")) for item in options.connector_settings if isinstance(item, dict)
+        )
+    if not raw_connectors:
+        raw_connectors.append(connector)
+    normalized = [_normalize_connector(raw) for raw in raw_connectors if raw]
+    primary = _normalize_connector(connector)
+    if primary and primary not in normalized:
+        normalized.insert(0, primary)
+    return tuple(dict.fromkeys(normalized))
+
+
+def _preflight_first_run_agent_selections(
+    data_dir: str,
+    options: FirstRunOptions,
+    connector: str,
+    setup_snapshot,
+    *,
+    selected_connectors: tuple[str, ...] | None = None,
+) -> tuple[object | None, str]:
+    """Record one complete protected roster before first-run state mutation."""
+
+    if platform_support.host_os() != "windows":
+        return None, ""
+
+    from defenseclaw.agent_selection import (
+        record_setup_agent_selections,
+        setup_agent_selection_connectors,
+    )
+
+    selected = (
+        selected_connectors
+        if selected_connectors is not None
+        else setup_agent_selection_connectors(_first_run_connector_roster(options, connector))
+    )
+    if not selected:
+        return None, ""
+    try:
+        selections, selection_errors = record_setup_agent_selections(data_dir, selected)
+    except OSError as exc:
+        return None, f"could not protect explicit agent executable selection: {exc}"
+    for name in selected:
+        if name not in selections and name not in selection_errors:
+            selection_errors[name] = "selection was not recorded"
+    if selection_errors:
+        details = "; ".join(f"{name}: {detail}" for name, detail in sorted(selection_errors.items()))
+        return (
+            None,
+            f"cannot configure native hooks without a freshly verified selected agent executable ({details})",
+        )
+    from defenseclaw.commands.cmd_setup import _validate_setup_agent_selection_receipt
+
+    try:
+        verified = _validate_setup_agent_selection_receipt(
+            data_dir,
+            selected,
+            selections,
+            prior_generation=setup_snapshot.agent_selection_generation,
+        )
+    except OSError as exc:
+        return None, f"could not bind selected agent executables to the protected receipt: {exc}"
+    return verified, ""
+
+
+def _first_run_action_mode_warning(
+    connector: str,
+    data_dir: str,
+) -> dict | None:
     """Return structured action-to-observe remediation for first-run flows."""
     from defenseclaw.commands.cmd_setup import _check_connector_version_supported_for_setup
 
@@ -1544,7 +1807,14 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
         except (OSError, UnicodeError):
             configured = False
         if configured:
-            return StepResult("Connector", "pass", f"OmniGent custom policy found at {path}")
+            return StepResult(
+                "Connector",
+                "warn",
+                f"OmniGent custom policy configured at {path}; OmniGent 0.7.0 does not expose "
+                "a loaded policy generation/module identity, so live action/fail-closed "
+                "enforcement is unverified pending OmniGent reload/restart",
+                "defenseclaw doctor",
+            )
         return StepResult(
             "Connector",
             "warn",

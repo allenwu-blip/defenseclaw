@@ -129,18 +129,21 @@ DefenseClaw manages its marked hook and native OTLP entries in
 `%CLAUDE_CONFIG_DIR%\settings.json`. The default Claude configuration directory
 is `%USERPROFILE%\.claude`.
 
-The current contract registers these 28 events:
+The selected contract registers 28 events for Claude Code
+`>=2.1.154,<2.1.219` and 29 events for `>=2.1.219`:
 
 | Category | Registered events |
 | --- | --- |
 | Session and prompt | `SessionStart`, `SessionEnd`, `InstructionsLoaded`, `UserPromptSubmit`, `UserPromptExpansion`, `MessageDisplay` |
 | Tool and permission | `PreToolUse`, `PermissionRequest`, `PermissionDenied`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch` |
 | Agent and task | `SubagentStart`, `SubagentStop`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `Stop`, `StopFailure` |
-| Configuration and workspace | `ConfigChange`, `CwdChanged`, `FileChanged`, `WorktreeRemove`, `PreCompact`, `PostCompact` |
+| Configuration and workspace | `ConfigChange`, `CwdChanged`, `DirectoryAdded` (2.1.219+ only), `FileChanged`, `WorktreeRemove`, `PreCompact`, `PostCompact` |
 | Interaction | `Notification`, `Elicitation`, `ElicitationResult` |
 
 `Setup` and `WorktreeCreate` are deliberately not owned by the generic security
-hook. `MessageDisplay` is asynchronous observation. `FileChanged` is narrowed
+hook. `MessageDisplay` is asynchronous observation. `DirectoryAdded` is a
+synchronous, matcherless, 30-second observation after the directory has
+already been added; it has no block, ask, or decision authority. `FileChanged` is narrowed
 to agent, project, dependency, environment-file, and MCP configuration names
 rather than every source edit.
 

@@ -338,6 +338,61 @@ func TestHandleAgentHook_OpenCodeLoadHeartbeat(t *testing.T) {
 	}
 }
 
+func TestHandleAgentHook_OpenCodeAmbiguousMCPIdentityUsesConnectorMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode           string
+		wantAction     string
+		wantWouldBlock bool
+		wantDecision   string
+	}{
+		{mode: "observe", wantAction: "allow", wantWouldBlock: true},
+		{mode: "action", wantAction: "block", wantWouldBlock: false, wantDecision: "deny"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Guardrail.Mode = tc.mode
+			cfg.Guardrail.Connector = "opencode"
+			api := &APIServer{scannerCfg: cfg, health: NewSidecarHealth()}
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/api/v1/opencode/hook",
+				strings.NewReader(`{
+					"hook_event_name":"tool.execute.before",
+					"tool_name":"alpha_beta_list",
+					"tool_input":{"value":"fixture input"},
+					"mcp_identity_status":"ambiguous"
+				}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			api.handleAgentHook("opencode").ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			var response struct {
+				Action     string `json:"action"`
+				Mode       string `json:"mode"`
+				WouldBlock bool   `json:"would_block"`
+				HookOutput struct {
+					Decision string `json:"decision"`
+				} `json:"hook_output"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("response not valid JSON: %v body=%s", err, recorder.Body.String())
+			}
+			if response.Action != tc.wantAction || response.Mode != tc.mode ||
+				response.WouldBlock != tc.wantWouldBlock || response.HookOutput.Decision != tc.wantDecision {
+				t.Fatalf(
+					"response=%+v, want action=%q mode=%q would_block=%v decision=%q body=%s",
+					response, tc.wantAction, tc.mode, tc.wantWouldBlock, tc.wantDecision, recorder.Body.String(),
+				)
+			}
+		})
+	}
+}
+
 func TestHandleAgentHook_AntigravityRequiresRegisteredEvent(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Guardrail.Mode = "action"
@@ -370,6 +425,52 @@ func TestHandleAgentHook_AntigravityRequiresRegisteredEvent(t *testing.T) {
 				t.Fatalf("status=%d body=%q, want 400 containing %q", recorder.Code, recorder.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestHandleAgentHook_AntigravityBlocksForcedSingleFileDeletion(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Guardrail.Mode = "action"
+	cfg.Guardrail.Connector = "antigravity"
+	api := &APIServer{scannerCfg: cfg, health: NewSidecarHealth()}
+	payload := map[string]interface{}{
+		"conversationId": "synthetic-antigravity-single-file-delete",
+		"stepIdx":        1,
+		"workspacePaths": []string{`D:\DefenseClaw-Synthetic`},
+		"toolCall": map[string]interface{}{
+			"name": "run_command",
+			"args": map[string]interface{}{
+				"Cwd":         `D:\DefenseClaw-Synthetic`,
+				"CommandLine": `Remove-Item -LiteralPath 'D:\DefenseClaw-Synthetic\blocked-target.txt' -Force`,
+			},
+		},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/antigravity/hook", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-DefenseClaw-Antigravity-Event", "PreToolUse")
+	w := httptest.NewRecorder()
+
+	api.handleAgentHook("antigravity").ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var parsed struct {
+		Action     string `json:"action"`
+		RawAction  string `json:"raw_action"`
+		HookOutput struct {
+			Decision string `json:"decision"`
+		} `json:"hook_output"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response not valid JSON: %v body=%s", err, w.Body.String())
+	}
+	if parsed.Action != "block" || parsed.RawAction != "block" || parsed.HookOutput.Decision != "deny" {
+		t.Fatalf("forced file deletion was not denied: %+v body=%s", parsed, w.Body.String())
 	}
 }
 

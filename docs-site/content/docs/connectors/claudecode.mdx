@@ -118,8 +118,9 @@ Auto-memory resolves file-based `autoMemoryDirectory` precedence or the shared
 repository/worktree default under `~/.claude/projects/<project>/memory`; it is
 marked unverified when session `--settings`, remote settings, or native policy
 could change the active path.
-Runtime `/add-dir` roots remain outside passive inventory until the
-release-only `DirectoryAdded` event has a published hook schema.
+Runtime `/add-dir` roots remain outside persistent passive inventory.
+Claude Code 2.1.219+ emits `DirectoryAdded`, so DefenseClaw records the added
+path and source without treating the observation as durable discovery authority.
 
 ## Hook capabilities
 
@@ -131,9 +132,11 @@ Claude Code is one of the few connectors that supports native PreToolUse ask. HI
 
 `Setup` is observation-only and is not registered. `WorktreeCreate` is not
 registered because a handler replaces Claude Code's default worktree creation
-and must return the new path. Anthropic's v2.1.219 release notes mention a
-`DirectoryAdded` event, but the current hooks reference does not yet publish
-its schema, ordering, or blocking behavior, so DefenseClaw does not register it.
+and must return the new path. The exact version-selected contract registers 28
+events for Claude Code `>=2.1.154,<2.1.219` and 29 for `>=2.1.219`.
+The added `DirectoryAdded` hook is synchronous, matcherless, bounded to 30
+seconds, and observation-only: it runs after the directory is added and has no
+block, ask, or decision authority.
 
 ## Telemetry channels at boot
 
@@ -143,7 +146,7 @@ its schema, ordering, or blocking behavior, so DefenseClaw does not register it.
   caption="Two telemetry channels: hooks for per-tool-call decisions and native OTel for model/token metrics plus privacy-gated events."
 >
   <Node id="cc" kind="agent">Claude Code</Node>
-  <Node id="hooks" kind="connector">{`Current 28-event\nhook contract`}</Node>
+  <Node id="hooks" kind="connector">{`Version-selected 28/29-event\nhook contract`}</Node>
   <Node id="otel" kind="connector">{`Native OTel exporter\n(env-driven)`}</Node>
   <Node id="gateway" kind="gateway">defenseclaw-gateway</Node>
   <Edge from="cc" to="hooks" />

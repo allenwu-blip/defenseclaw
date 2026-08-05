@@ -54,7 +54,7 @@ from defenseclaw import platform_support
 from defenseclaw.commands.cmd_setup import setup as setup_group
 from defenseclaw.file_permissions import atomic_write_private_bytes
 
-from tests.helpers import cleanup_app, make_app_context
+from tests.helpers import cleanup_app, make_app_context, record_test_setup_agent_selections
 
 HOOK_ALIAS_CONNECTORS = (
     "hermes",
@@ -213,9 +213,7 @@ class TestSetupCodexAlias(unittest.TestCase):
         def _refresh(data_dir, connectors):
             self.assertEqual(os.fspath(data_dir), self.app.cfg.data_dir)
             self.assertEqual(tuple(connectors), ("codex",))
-            with open(selection_path, "w", encoding="utf-8") as handle:
-                json.dump({"selections": {"codex": {"expires_at": "fresh"}}}, handle)
-            return {"codex": object()}, {}
+            return record_test_setup_agent_selections(data_dir, connectors)
 
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
@@ -229,7 +227,10 @@ class TestSetupCodexAlias(unittest.TestCase):
         self.assertEqual(result.exit_code, 0, msg=result.output)
         selection_mock.assert_called_once()
         with open(selection_path, encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle)["selections"]["codex"]["expires_at"], "fresh")
+            self.assertNotEqual(
+                json.load(handle)["selections"]["codex"]["expires_at"],
+                "2000-01-01T00:00:00Z",
+            )
         self.assertTrue(os.path.isfile(self.cfg_path))
 
     def test_config_save_failure_removes_fresh_agent_selection_receipt(self):
@@ -245,11 +246,7 @@ class TestSetupCodexAlias(unittest.TestCase):
 
         def _record(data_dir, connectors):
             self.assertEqual(tuple(connectors), ("codex",))
-            atomic_write_private_bytes(
-                os.path.join(os.fspath(data_dir), "agent_selection.json"),
-                b'{"selections":{"codex":{"expires_at":"fresh"}}}\n',
-            )
-            return {"codex": object()}, {}
+            return record_test_setup_agent_selections(data_dir, connectors)
 
         self.app.cfg.save = _save_fails_once  # type: ignore[assignment]
         with (
@@ -516,6 +513,35 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
                     _allow_prompt=False,
                 )
                 restart_mock.assert_not_called()
+
+    def test_omnigent_restart_reports_staged_policy_not_live_enforcement(self):
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_services",
+                return_value=None,
+            ) as restart_mock,
+            patch(
+                "defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack",
+                return_value=None,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+        ):
+            result = _invoke(["omnigent", "--yes", "--mode", "action"], self.app)
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        restart_mock.assert_called_once()
+        self.assertIn("OmniGent on-disk policy registration staged", result.output)
+        self.assertIn("loaded policy generation/module/config identity", result.output)
+        self.assertIn("action/fail-closed enforcement remains unverified", result.output)
+        self.assertIn(
+            "enforcement:           configured (custom policy API; live policy generation unverified)",
+            result.output,
+        )
+        self.assertNotIn("OmniGent connector setup complete", result.output)
+        self.assertNotIn("enforcement:           enabled", result.output)
 
     def test_hermes_selection_failure_preserves_prior_connector_roster_before_save(self):
         from defenseclaw.config import PerConnectorGuardrailConfig

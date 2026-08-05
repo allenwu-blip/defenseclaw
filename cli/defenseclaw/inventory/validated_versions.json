@@ -40,7 +40,7 @@
       }
     },
     "copilot": {
-      "version_probe": "copilot version",
+      "version_probe": "copilot --version",
       "live": false,
       "os": {
         "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
@@ -98,7 +98,7 @@
       "os": {
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       },
-      "notes": "contract-only; the supported native Windows server/SDK policy bridge remains degraded, its official-client job remains advisory, and live=false"
+      "notes": "contract-only; the supported native Windows server/SDK policy bridge and required CI remain native-degraded; live=false, authentic live and authentication/HITL evidence remain pending and unclaimed, and the CI gate does not add a public Setup availability gate"
     }
   }
 }

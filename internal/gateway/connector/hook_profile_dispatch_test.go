@@ -307,6 +307,7 @@ func TestClaudeCodeProfileMapVerdict(t *testing.T) {
 		{"action_block_enforceable", "block", "PreToolUse", "action", nil, "block", false},
 		{"action_block_unenforceable", "block", "SessionStart", "action", nil, "allow", true},
 		{"post_tool_use_is_advisory", "block", "PostToolUse", "action", nil, "allow", true},
+		{"directory_added_is_observation_only", "block", "DirectoryAdded", "action", nil, "allow", true},
 		{"post_tool_batch_stops_next_model_call", "block", "PostToolBatch", "action", nil, "block", false},
 		{"policy_config_change_is_advisory", "block", "ConfigChange", "action", map[string]interface{}{"source": "policy_settings"}, "allow", true},
 		{"user_config_change_is_enforceable", "block", "ConfigChange", "action", map[string]interface{}{"source": "user_settings"}, "block", false},
@@ -515,6 +516,15 @@ func TestClaudeCodeProfileRespond_Parity(t *testing.T) {
 			},
 		},
 		{
+			name:   "DirectoryAdded_advisory_has_no_decision_output",
+			event:  "DirectoryAdded",
+			action: "allow",
+			raw:    "block",
+			expected: map[string]interface{}{
+				"systemMessage": "advisory context",
+			},
+		},
+		{
 			name:   "SubagentStop_advisory_uses_additional_context",
 			event:  "SubagentStop",
 			action: "allow",
@@ -535,7 +545,7 @@ func TestClaudeCodeProfileRespond_Parity(t *testing.T) {
 				RawAction: tc.raw,
 				Reason:    tc.reason,
 				AdditionalContext: func() string {
-					if tc.event == "Notification" || tc.event == "SubagentStop" {
+					if tc.event == "Notification" || tc.event == "SubagentStop" || tc.event == "DirectoryAdded" {
 						return "advisory context"
 					}
 					return ""

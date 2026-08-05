@@ -8,6 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $harness = Join-Path $PSScriptRoot 'run-windows.ps1'
+$workflowRunPathHelper = Join-Path $PSScriptRoot 'workflow-run-path.ps1'
 $openCodeAssertion = Join-Path $PSScriptRoot 'assert-opencode-plugin.mjs'
 $nativeHarness = Join-Path $root 'scripts\windows-native-ci.ps1'
 $wizardHarness = Join-Path $root 'scripts\test-windows-setup-wizard.ps1'
@@ -82,6 +83,7 @@ function Assert-SyntheticProcessTree(
 try {
     foreach ($scriptPath in @(
         $harness,
+        $workflowRunPathHelper,
         $nativeHarness,
         $wizardHarness,
         $standardUserCI,
@@ -172,7 +174,42 @@ try {
         [void]$closeJob.Invoke($null, @($emptyJob))
     }
     . $harness -NoRun
+    . $workflowRunPathHelper
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
+
+    foreach ($acceptedWorkflowRunPath in @(
+        '.github/workflows/windows-native.yml',
+        '.github/workflows/windows-native.yml@main',
+        '.github/workflows/windows-native.yml@refs/heads/main',
+        '.github/workflows/windows-native.yml@feature/windows-package',
+        '.github/workflows/windows-native.yml@refs/heads/feature@beta',
+        '.github/workflows/windows-native.yml@main@other',
+        '.github/workflows/windows-native.yml@@main'
+    )) {
+        Assert-True (Test-CanonicalWindowsWorkflowRunPath $acceptedWorkflowRunPath) `
+            "canonical Windows workflow run path was rejected: $acceptedWorkflowRunPath"
+    }
+    foreach ($rejectedWorkflowRunPath in @(
+        '',
+        '@main',
+        '.github/workflows/windows-native.yml@',
+        '.github/workflows/windows-native.yml@@',
+        '.github/workflows/windows-native.yml@refs/heads/feature@{beta',
+        '.github/workflows/windows-native.yml.backup@main',
+        'prefix/.github/workflows/windows-native.yml@main',
+        '.github/workflows/windows.yml@main',
+        '.github/workflows/windows-native.yml@refs/heads//main',
+        '.github/workflows/windows-native.yml@refs/heads/../main',
+        '.github/workflows/windows-native.yml@refs/heads/.hidden',
+        '.github/workflows/windows-native.yml@refs/heads/main.lock',
+        '.github/workflows/windows-native.yml@refs/heads/main?query',
+        ".github/workflows/windows-native.yml@refs/heads/main`nother",
+        ('.github/workflows/windows-native.yml@refs/heads/' + ('a' * 256)),
+        ('.github/workflows/windows-native.yml@' + ('a' * 4097))
+    )) {
+        Assert-True (-not (Test-CanonicalWindowsWorkflowRunPath $rejectedWorkflowRunPath)) `
+            "malformed or ambiguous Windows workflow run path was accepted: $rejectedWorkflowRunPath"
+    }
 
     $cursorCompatibilityHome = Join-Path $temp 'cursor-compatibility\.codex'
     Assert-CursorCompatibilitySkillHomes @($cursorCompatibilityHome)
@@ -1274,9 +1311,49 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Add-WindowsNativeDiagnosticTail\b.*?(?=\r?\nfunction )'
     ).Value
-    Assert-True ($nativeWorkflowText -match '(?s)connector-contract:.*?connector: \[codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, opencode\].*?windows-native-required:') 'required Windows contract matrix contains every integrated native hook connector'
+    $connectorContractJob = [regex]::Match(
+        $nativeWorkflowText,
+        '(?ms)^  connector-contract:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
+    ).Value
+    $connectorMatrix = [regex]::Match(
+        $connectorContractJob,
+        '(?m)^\s+connector: \[([^\]]+)\]\s*$'
+    )
+    $requiredContractConnectors = @(
+        'amp', 'antigravity', 'claudecode', 'codex', 'copilot',
+        'cursor', 'hermes', 'omnigent', 'opencode', 'windsurf'
+    )
+    $excludedContractConnectors = @('geminicli', 'openhands', 'openclaw', 'zeptoclaw')
+    $genericContractConnectors = if ($connectorMatrix.Success) {
+        @($connectorMatrix.Groups[1].Value -split '\s*,\s*')
+    } else {
+        @()
+    }
+    $omniGentJob = [regex]::Match(
+        $nativeWorkflowText,
+        '(?ms)^  omnigent-native-degraded:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
+    ).Value
+    $actualContractConnectors = @($genericContractConnectors)
+    if (-not [string]::IsNullOrWhiteSpace($omniGentJob)) {
+        $actualContractConnectors += 'omnigent'
+    }
+    Assert-True (
+        $actualContractConnectors.Count -eq $requiredContractConnectors.Count -and
+        ($actualContractConnectors | Sort-Object) -join ',' -ceq
+            ($requiredContractConnectors | Sort-Object) -join ','
+    ) 'required Windows contract coverage is exactly the ten integrated native hook connectors'
+    Assert-True (@($excludedContractConnectors | Where-Object {
+        $actualContractConnectors -ccontains $_
+    }).Count -eq 0) 'required Windows contract coverage excludes exactly the four preview connectors'
+    $requiredFanInJob = [regex]::Match(
+        $nativeWorkflowText,
+        '(?ms)^  windows-native-required:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
+    ).Value
+    Assert-True ($requiredFanInJob -match '(?m)^\s{6}- connector-contract\s*$' -and
+        $requiredFanInJob -match '(?m)^\s{6}- omnigent-native-degraded\s*$') `
+        'required Windows aggregate depends on all ten connector contracts'
     Assert-True ($nativeWorkflowText -match '(?m)^\s+name: Windows Native Required\s*$') 'stable aggregate check name exists'
-    foreach ($job in @('windows-go', 'windows-python', 'powershell-static', 'package-artifact', 'packaged-acceptance', 'connector-contract')) {
+    foreach ($job in @('windows-go', 'windows-python', 'powershell-static', 'package-artifact', 'packaged-acceptance', 'connector-contract', 'omnigent-native-degraded')) {
         Assert-True ($nativeWorkflowText -match "(?m)^\s{6}- $([regex]::Escape($job))\s*$") "aggregate depends on $job"
         $requiredJob = [regex]::Match(
             $nativeWorkflowText,
@@ -1285,14 +1362,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True ($requiredJob -notmatch 'continue-on-error') "required Windows job $job is not advisory"
     }
     Assert-True ($nativeWorkflowText -match '(?s)windows-native-required:.*?if: \$\{\{ always\(\) \}\}.*?result -ne ''success''') 'aggregate fails skipped or failed dependencies'
-    $omniGentJob = [regex]::Match(
-        $nativeWorkflowText,
-        '(?ms)^  omnigent-native-degraded:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
-    ).Value
-    Assert-True ($omniGentJob -match "if: \$\{\{ github\.event_name == 'workflow_dispatch' \}\}" -and
-        $omniGentJob -match 'continue-on-error:\s*true' -and
-        $omniGentJob -notmatch '(?m)^\s{6}- windows-native-required\s*$') `
-        'OmniGent native-degraded support remains manual and advisory, outside the required aggregate'
+    Assert-True ($omniGentJob -notmatch '(?m)^\s{4}if:' -and
+        $omniGentJob -notmatch '(?m)^\s{4}continue-on-error:') `
+        'OmniGent native-degraded contract is unconditional and non-advisory'
     Assert-True ($nativeWorkflowText -notmatch 'shell:\s*bash') 'dedicated Windows workflow never selects Bash'
     Assert-True ($nativeWorkflowText -notmatch 'secrets\.') 'dedicated deterministic workflow consumes no secrets'
     Assert-True ([regex]::Matches(
@@ -2141,6 +2213,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     ).Value
     Assert-True ($dangerousHookContract -match "\`$telemetryMode = if \(\`$Mode -eq 'action'\)" -and
         $dangerousHookContract -match "\`$effectiveObserve = \`$Mode -eq 'observe'" -and
+        $dangerousHookContract -match 'Invoke-Tool \(Resolve-ContractHookTool\)' -and
         $dangerousHookContract -match "\`$decision\.raw_action -ne 'block'" -and
         $dangerousHookContract -match 'Test-BlockVerdict' -and
         $dangerousHookContract -match '\$decision\.rule_ids') `

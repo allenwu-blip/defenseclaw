@@ -544,7 +544,7 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertIn("proxy port intentionally closed", detail)
 
     @patch("defenseclaw.commands.cmd_doctor._http_probe")
-    def test_omnigent_action_reports_policy_enforcement_without_proxy_probe(self, mock_probe):
+    def test_omnigent_action_reports_configured_unverified_policy_without_proxy_probe(self, mock_probe):
         from defenseclaw.commands.cmd_doctor import _check_guardrail_proxy
 
         cfg = Config(
@@ -574,8 +574,9 @@ class DoctorGuardrailTests(unittest.TestCase):
         self.assertEqual(result.warned, 0, result.checks)
         self.assertEqual(result.passed, 1, result.checks)
         detail = result.checks[0]["detail"]
-        self.assertIn("policy-enforced for omnigent", detail)
+        self.assertIn("policy path configured for omnigent", detail)
         self.assertIn("mode=action via ALLOW/ASK/DENY", detail)
+        self.assertIn("live policy generation unverified", detail)
 
     def test_omnigent_without_judge_skips_llm_key_requirement(self):
         from defenseclaw.commands.cmd_doctor import _check_llm_api_key
@@ -2509,10 +2510,10 @@ class GuardrailProxyMultiConnectorTests(unittest.TestCase):
 
         detail = _guardrail_proxy_intentionally_closed(self._cfg(["codex", "omnigent"], mode="action"))
 
-        self.assertTrue(detail.startswith("enforced for"), detail)
+        self.assertTrue(detail.startswith("configured for"), detail)
         self.assertIn("codex (mode=action via PreToolUse deny)", detail)
         self.assertIn(
-            "omnigent (native-degraded; mode=action via ALLOW/ASK/DENY)",
+            "omnigent (native-degraded; mode=action via ALLOW/ASK/DENY; live policy generation unverified)",
             detail,
         )
         self.assertIn("proxy port intentionally closed", detail)
@@ -2528,6 +2529,8 @@ class GuardrailProxyMultiConnectorTests(unittest.TestCase):
 
         self.assertIn("native-degraded", detail)
         self.assertIn("mode=action via ALLOW/ASK/DENY", detail)
+        self.assertIn("live policy generation unverified", detail)
+        self.assertNotIn("policy-enforced", detail)
         self.assertIn("proxy port intentionally closed", detail)
 
     def test_proxy_peer_forces_real_probe(self):

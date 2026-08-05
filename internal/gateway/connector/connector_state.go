@@ -653,7 +653,7 @@ func LoadHookContractLockEntry(dataDir, connectorName string) HookContractLockEn
 	}
 	connectorName = normalizeConnectorName(connectorName)
 	entry := lock.Connectors[connectorName]
-	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes") {
+	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes" || connectorName == "opencode" || connectorName == "amp") {
 		if _, ok := supersedingProtectedSetupSelection(dataDir, connectorName, entry); ok {
 			// An explicit setup action selected and protected newer executable
 			// evidence. Treat the previous lock as absent for this one repair so
@@ -947,7 +947,7 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		},
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "hermes" || entry.Connector == "omnigent") {
+	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "hermes" || entry.Connector == "omnigent" || entry.Connector == "amp") {
 		executable, digest, ok := setupSelectedAgentExecutableEvidence(opts.AgentExecutable)
 		if ok {
 			entry.AgentExecutable = executable
@@ -1359,7 +1359,7 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent") {
+	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp") {
 		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
 			return selection.RawVersion
 		}
@@ -1399,7 +1399,7 @@ func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent") {
+	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp") {
 		// A fresh explicit setup/repair selection supersedes the sealed lock.
 		// After the short receipt expires, reconciliation keeps using the
 		// executable identity persisted in the protected contract lock.

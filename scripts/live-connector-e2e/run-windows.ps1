@@ -17,6 +17,7 @@ param(
     [ValidateSet('run', 'authorize', 'prepare', 'hold', 'resume', 'capture', 'cleanup')][string]$Operation = 'run',
     [switch]$AllowNativeDataRoot,
     [switch]$ReleaseCertification,
+    [switch]$PackageLiveEvidence,
     [switch]$AuthenticatedAntigravityRunner,
     [switch]$ProtectedAntigravityLocal,
     [switch]$ProtectedCopilotRunner,
@@ -54,6 +55,8 @@ $ErrorActionPreference = 'Stop'
 $script:WindowsLiveHarnessPath = [IO.Path]::GetFullPath($PSCommandPath)
 . (Join-Path $PSScriptRoot '..\windows-native-paths.ps1')
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
+$script:PackageLiveSetupExecutable = ''
+$script:PackageLiveOriginalPath = ''
 $script:CopilotConfiguredMode = ''
 $script:ProtectedCopilotPackageInstalled = $false
 $script:ProtectedCopilotPackageMaintained = $false
@@ -593,6 +596,26 @@ function Assert-ProtectedPackageArtifactRoot([string]$Root) {
     }
 }
 
+function New-ProtectedPackageArtifactRoot(
+    [Parameter(Mandatory)][string]$Path,
+    [switch]$RequireEmpty
+) {
+    $root = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ([IO.Path]::GetPathRoot($root) -cne 'D:\') {
+        throw "protected package/live state root must be on D: $root"
+    }
+    if (Test-Path -LiteralPath $root) {
+        Assert-ProtectedPackageArtifactRoot $root
+        if ($RequireEmpty -and @(Get-ChildItem -LiteralPath $root -Force).Count -ne 0) {
+            throw "protected package/live state root is not empty: $root"
+        }
+        return $root
+    }
+    Protect-TestDirectory $root
+    Assert-ProtectedPackageArtifactRoot $root
+    return $root
+}
+
 function Read-AuthenticatedAntigravityInstallState([pscustomobject]$Paths) {
     if (-not (Test-Path -LiteralPath $Paths.StatePath -PathType Leaf)) {
         throw "authenticated Antigravity package state is missing: $($Paths.StatePath)"
@@ -742,6 +765,244 @@ function Assert-ExactPackagedSetup(
         throw 'packaged Setup bytes/provenance do not match the exact workflow head'
     }
     return $setup
+}
+
+function Get-PackageLiveEvidencePaths {
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    $localAppData = Get-CurrentUserKnownFolderPath `
+        ([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091')
+    try {
+        $userPrograms = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5CD7AEE2-2219-4A67-B85D-6C9CE15660CB') 0x4000
+    } catch {
+        $userPrograms = Join-Path $localAppData 'Programs'
+    }
+    $installRoot = [IO.Path]::GetFullPath((Join-Path $userPrograms 'DefenseClaw')).TrimEnd('\')
+    $dataRoot = [IO.Path]::GetFullPath((Join-Path $profile '.defenseclaw')).TrimEnd('\')
+    $cacheRoot = [IO.Path]::GetFullPath((Join-Path $localAppData 'DefenseClaw')).TrimEnd('\')
+    return [pscustomobject]@{
+        Profile = $profile
+        LocalAppData = $localAppData
+        InstallRoot = $installRoot
+        StatePath = Join-Path $installRoot 'installer\install-state.json'
+        PayloadPath = Join-Path $installRoot 'installer\payload-manifest.json'
+        DataRoot = $dataRoot
+        CacheRoot = $cacheRoot
+        MaintenancePath = Join-Path $cacheRoot 'InstallerCache\DefenseClawSetup-x64.exe'
+        CommandDir = Join-Path $installRoot 'bin'
+        Runtime = Join-Path $installRoot 'runtime\python'
+    }
+}
+
+function Initialize-PackageLiveEvidenceAuthority {
+    foreach ($identity in @(
+        [pscustomobject]@{ Name = 'package run ID'; Value = $ExpectedPackageRunID },
+        [pscustomobject]@{ Name = 'package artifact ID'; Value = $ExpectedPackageArtifactID }
+    )) {
+        if ([string]$identity.Value -cnotmatch '^[1-9][0-9]*$') {
+            throw "package live evidence $($identity.Name) is invalid"
+        }
+    }
+    if ($ExpectedPackageArtifactDigest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'package live evidence artifact digest is invalid'
+    }
+    if ($ExpectedPackageSourceCommit -cnotmatch '^[0-9a-f]{40}$' -or
+        $ExpectedHarnessSourceCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'package live evidence source commits are invalid'
+    }
+    if ($ExpectedPackageSourceCommit -cne $ExpectedHarnessSourceCommit) {
+        throw 'package live evidence package and harness must use the same exact head'
+    }
+    if ($ExpectedWorkflowRepository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
+        [string]$env:GITHUB_REPOSITORY -cne $ExpectedWorkflowRepository -or
+        [string]$env:GITHUB_SHA -cne $ExpectedHarnessSourceCommit) {
+        throw 'package live evidence does not match the running workflow repository and head'
+    }
+
+    $state = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\')
+    $setup = [IO.Path]::GetFullPath($PackagedSetupPath)
+    $packageRoot = [IO.Path]::GetFullPath((Split-Path -Parent $setup)).TrimEnd('\')
+    if ([IO.Path]::GetPathRoot($state) -cne 'D:\' -or
+        [IO.Path]::GetPathRoot($packageRoot) -cne 'D:\') {
+        throw 'package live evidence state and immutable artifact must both be on D:'
+    }
+    $statePrefix = $state + '\'
+    $packagePrefix = $packageRoot + '\'
+    if ($state -ieq $packageRoot -or
+        $state.StartsWith($packagePrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        $packageRoot.StartsWith($statePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'package live evidence state and immutable artifact roots must be disjoint'
+    }
+    Assert-ProtectedPackageArtifactRoot $state
+    Assert-ProtectedPackageArtifactRoot $packageRoot
+
+    $checkout = [IO.Path]::GetFullPath($WorkspaceRoot).TrimEnd('\')
+    $harnessPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $workflowPath = [IO.Path]::GetFullPath(
+        (Join-Path $checkout '.github\workflows\connector-live-e2e.yml')
+    )
+    if (-not (Test-PathWithin $harnessPath $checkout) -or
+        -not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
+        throw 'package live evidence checkout lacks the reviewed harness/workflow files'
+    }
+    $git = (Get-Command 'git.exe' -CommandType Application -ErrorAction Stop).Source
+    $head = Invoke-NativeProcess -FilePath $git -ArgumentList @(
+        '-C', $checkout, 'rev-parse', 'HEAD'
+    ) -TimeoutSeconds 30
+    if ($head.StdOut.Trim() -cne $ExpectedHarnessSourceCommit) {
+        throw 'package live evidence checkout is not the exact harness/workflow head'
+    }
+    $dirty = Invoke-NativeProcess -FilePath $git -ArgumentList @(
+        '-C', $checkout, 'status', '--porcelain=v1', '--untracked-files=no'
+    ) -TimeoutSeconds 30
+    if (-not [string]::IsNullOrWhiteSpace($dirty.StdOut)) {
+        throw 'package live evidence checkout has modified tracked files'
+    }
+    $script:PackageLiveSetupExecutable = Assert-ExactPackagedSetup `
+        $setup $ExpectedPackageSourceCommit
+}
+
+function Assert-PackageLiveInstalledIdentity([pscustomobject]$Paths) {
+    $packageProvenance = Get-Content `
+        -LiteralPath "$($script:PackageLiveSetupExecutable).provenance.json" `
+        -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    foreach ($identityPath in @($Paths.StatePath, $Paths.PayloadPath)) {
+        if (-not (Test-Path -LiteralPath $identityPath -PathType Leaf)) {
+            throw "exact package install identity is missing: $identityPath"
+        }
+        try {
+            $identity = Get-Content -LiteralPath $identityPath -Raw -Encoding UTF8 |
+                ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "exact package install identity is invalid JSON: $identityPath"
+        }
+        if ([string]$identity.source_commit -cne $ExpectedPackageSourceCommit) {
+            throw "installed package source commit is not the authorized exact head: $identityPath"
+        }
+    }
+    $state = Get-Content -LiteralPath $Paths.StatePath -Raw -Encoding UTF8 |
+        ConvertFrom-Json -ErrorAction Stop
+    if ([string]$state.install_kind -cne 'native-windows-exe' -or
+        [string]$state.install_scope -cne 'user' -or
+        [string]$state.distribution_flavor -cne 'oss') {
+        throw 'package live evidence did not install the OSS per-user native Windows package'
+    }
+    Assert-ExactPath ([string]$state.install_root) $Paths.InstallRoot `
+        'package live evidence install root'
+    Assert-ExactPath ([string]$state.command_dir) $Paths.CommandDir `
+        'package live evidence command directory'
+    Assert-ExactPath ([string]$state.data_root) $Paths.DataRoot `
+        'package live evidence data root'
+    Assert-ExactPath ([string]$state.runtime) $Paths.Runtime `
+        'package live evidence Python runtime'
+    Assert-ExactPath ([string]$state.maintenance_path) $Paths.MaintenancePath `
+        'package live evidence maintenance Setup'
+
+    $setupHash = (Get-FileHash -LiteralPath $script:PackageLiveSetupExecutable `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    $maintenanceHash = (Get-FileHash -LiteralPath $Paths.MaintenancePath `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($maintenanceHash -cne $setupHash) {
+        throw 'installed maintenance Setup is not byte-identical to the authorized package'
+    }
+
+    $products = @(
+        [pscustomobject]@{ Command = 'defenseclaw.exe'; Path = Join-Path $Paths.CommandDir 'defenseclaw.exe'; Name = ''; Provenance = 'bin/defenseclaw.exe' },
+        [pscustomobject]@{ Command = 'defenseclaw-gateway.exe'; Path = Join-Path $Paths.CommandDir 'defenseclaw-gateway.exe'; Name = 'defenseclaw-gateway'; Provenance = 'bin/defenseclaw-gateway.exe' },
+        [pscustomobject]@{ Command = 'defenseclaw-hook.exe'; Path = Join-Path $Paths.CommandDir 'defenseclaw-hook.exe'; Name = 'defenseclaw-hook'; Provenance = 'bin/defenseclaw-hook.exe' }
+    )
+    foreach ($product in $products) {
+        $item = Get-Item -LiteralPath $product.Path -Force -ErrorAction Stop
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "installed package product is not a regular file: $($product.Path)"
+        }
+        $expectedHash = [string]$packageProvenance.authenticode.files.($product.Provenance).sha256
+        $actualHash = (Get-FileHash -LiteralPath $product.Path -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($expectedHash -cnotmatch '^[0-9a-f]{64}$' -or $actualHash -cne $expectedHash) {
+            throw "installed product digest differs from exact package provenance: $($product.Command)"
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($script:PackageLiveOriginalPath)) {
+        $script:PackageLiveOriginalPath = [string]$env:Path
+    }
+    $env:Path = "$($Paths.CommandDir);$($script:PackageLiveOriginalPath)"
+    $env:DEFENSECLAW_GATEWAY_BIN = Join-Path $Paths.CommandDir 'defenseclaw-gateway.exe'
+    foreach ($product in $products) {
+        $resolved = @(
+            Get-Command $product.Command -CommandType Application -ErrorAction Stop |
+                Select-Object -First 1
+        )
+        if ($resolved.Count -ne 1 -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath([string]$resolved[0].Source),
+                [IO.Path]::GetFullPath([string]$product.Path),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw "source-built or foreign binary substitution rejected: $($product.Command)"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($product.Name)) {
+            $version = Invoke-NativeProcess -FilePath $product.Path `
+                -ArgumentList @('--version-json') -TimeoutSeconds 30
+            try { $report = $version.StdOut | ConvertFrom-Json -ErrorAction Stop }
+            catch { throw "installed $($product.Name) version identity is invalid" }
+            if ([int]$report.schema_version -ne 1 -or
+                [string]$report.name -cne $product.Name -or
+                [string]$report.commit -cne $ExpectedPackageSourceCommit) {
+                throw "installed $($product.Name) does not identify the authorized exact package head"
+            }
+        }
+    }
+}
+
+function Initialize-PackageLiveEvidencePackage {
+    Initialize-PackageLiveEvidenceAuthority
+    $paths = Get-PackageLiveEvidencePaths
+    foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.CacheRoot)) {
+        if (Test-Path -LiteralPath $path) {
+            throw "package live evidence refuses pre-existing product state: $path"
+        }
+    }
+    Invoke-NativeProcess -FilePath $script:PackageLiveSetupExecutable -ArgumentList @(
+        '/quiet', '/norestart', 'INSTALLSCOPE=user', 'CONNECTOR=none',
+        'MODE=action', 'STARTGATEWAY=0'
+    ) -TimeoutSeconds 1200 | Out-Null
+    Assert-PackageLiveInstalledIdentity $paths
+    Write-Result 'package:provenance' pass `
+        "source=$ExpectedPackageSourceCommit run=$ExpectedPackageRunID artifact=$ExpectedPackageArtifactID digest=$ExpectedPackageArtifactDigest installed=exact"
+}
+
+function Invoke-PackageLiveEvidenceCleanup([switch]$RemoveRunInputs) {
+    Initialize-PackageLiveEvidenceAuthority
+    $paths = Get-PackageLiveEvidencePaths
+    if (Test-Path -LiteralPath $paths.StatePath -PathType Leaf) {
+        Assert-PackageLiveInstalledIdentity $paths
+        $gateway = Join-Path $paths.CommandDir 'defenseclaw-gateway.exe'
+        if (Test-Path -LiteralPath $gateway -PathType Leaf) {
+            Invoke-NativeProcess -FilePath $gateway -ArgumentList @('stop') `
+                -AllowedExitCodes @(0, 1) -TimeoutSeconds 60 | Out-Null
+        }
+        Invoke-NativeProcess -FilePath $script:PackageLiveSetupExecutable -ArgumentList @(
+            '/uninstall', '/quiet', '/norestart', 'DELETEUSERDATA=1'
+        ) -TimeoutSeconds 900 | Out-Null
+    } elseif ((Test-Path -LiteralPath $paths.InstallRoot) -or
+        (Test-Path -LiteralPath $paths.DataRoot) -or
+        (Test-Path -LiteralPath $paths.CacheRoot)) {
+        throw 'package live cleanup found product state without exact installed provenance'
+    }
+    foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.CacheRoot)) {
+        if (Test-Path -LiteralPath $path) {
+            throw "package live cleanup left managed product state: $path"
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:PackageLiveOriginalPath)) {
+        $env:Path = $script:PackageLiveOriginalPath
+    }
+    if ($RemoveRunInputs) {
+        $packageRoot = Split-Path -Parent $script:PackageLiveSetupExecutable
+        Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
+        Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+    }
 }
 
 function Initialize-AuthenticatedAntigravityRunIdentity {
@@ -4571,6 +4832,9 @@ function Set-IsolatedGatewayPort {
 
 function Invoke-Setup([string]$Mode) {
     $script:LastSetupMode = $Mode
+    if ($PackageLiveEvidence) {
+        Assert-PackageLiveInstalledIdentity (Get-PackageLiveEvidencePaths)
+    }
     if ($Connector -eq 'copilot' -and $ProtectedCopilotRunner) {
         if ($Mode -cne 'action') {
             throw 'protected Copilot package lane is restricted to the action live profile'
@@ -5429,7 +5693,7 @@ function Invoke-DangerousHook(
         } else {
             $Payload
         }
-        Invoke-Tool 'defenseclaw-hook' (Get-NativeHookArguments $eventName) @(0, 2) $hookInputPath
+        Invoke-Tool (Resolve-ContractHookTool) (Get-NativeHookArguments $eventName) @(0, 2) $hookInputPath
     }
 
     $decision = $null
@@ -7201,7 +7465,7 @@ function Install-Agent {
         if (-not $script:AgentPath.StartsWith($statePrefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw "protected/release client must be installed below the disposable certification state root: $script:AgentPath"
         }
-        $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
+        $versionArgs = @('--version')
         $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs `
             -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
         $script:AgentVersion = ($version.StdOut + $version.StdErr).Trim()
@@ -7326,7 +7590,7 @@ function Install-Agent {
         }
         $script:AgentPath = Join-Path $script:ToolRoot "node_modules\.bin\$command"
     }
-    $versionArgs = if ($Connector -eq 'copilot') { @('version') } else { @('--version') }
+    $versionArgs = @('--version')
     $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
     $script:AgentVersion = ($version.StdOut + $version.StdErr).Trim()
     if ($Connector -eq 'claudecode') {
@@ -7904,7 +8168,8 @@ function Invoke-ContractRun {
 function Invoke-LiveRun {
     Install-Agent
     Initialize-DefenseClawEnv
-    if (-not $ReleaseCertification -and $Connector -ne 'copilot' -and
+    if (-not $ReleaseCertification -and -not $PackageLiveEvidence -and
+        $Connector -ne 'copilot' -and
         -not ($Connector -eq 'antigravity' -and $AuthenticatedAntigravityRunner)) {
         Invoke-Tool 'defenseclaw' @('init') | Out-Null
     }
@@ -9295,8 +9560,9 @@ if (-not $NoRun) {
     if ($Operation -eq 'authorize' -and -not $ProtectedAntigravityLocal) {
         throw 'authorize is restricted to the protected local Antigravity lane'
     }
-    if ($ProtectedCopilotRunner -and $AuthenticatedAntigravityRunner) {
-        throw 'protected Copilot and authenticated Antigravity runner modes are mutually exclusive'
+    if (($ProtectedCopilotRunner -and $AuthenticatedAntigravityRunner) -or
+        ($PackageLiveEvidence -and ($ProtectedCopilotRunner -or $AuthenticatedAntigravityRunner))) {
+        throw 'shared package, protected Copilot, and authenticated Antigravity runner modes are mutually exclusive'
     }
     if ($LocalProtectedCopilotRunner -and -not $ProtectedCopilotRunner) {
         throw 'LocalProtectedCopilotRunner requires ProtectedCopilotRunner'
@@ -9308,7 +9574,31 @@ if (-not $NoRun) {
     $StateRoot = [IO.Path]::GetFullPath($StateRoot)
     if ($StateRoot -eq [IO.Path]::GetFullPath($env:USERPROFILE)) { throw 'StateRoot must not be the real user profile' }
     $useHomeDataRoot = -not [string]::IsNullOrWhiteSpace($HomeRoot)
-    if ($ProtectedCopilotRunner) {
+    if ($PackageLiveEvidence) {
+        if ($Layer -ne 'live' -or
+            $Connector -notin @('codex', 'claudecode', 'amp', 'cursor', 'opencode') -or
+            $Operation -notin @('run', 'capture', 'cleanup')) {
+            throw 'PackageLiveEvidence is restricted to shared Windows official-client live operations'
+        }
+        if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            throw 'PackageLiveEvidence may mutate only a disposable GitHub-hosted Windows runner user'
+        }
+        if ([IO.Path]::GetPathRoot($StateRoot) -cne 'D:\') {
+            throw 'PackageLiveEvidence StateRoot must be on D:'
+        }
+        if ([string]::IsNullOrWhiteSpace($PackagedSetupPath) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageSourceCommit) -or
+            [string]::IsNullOrWhiteSpace($ExpectedHarnessSourceCommit) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageRunID) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageArtifactID) -or
+            [string]::IsNullOrWhiteSpace($ExpectedPackageArtifactDigest) -or
+            [string]::IsNullOrWhiteSpace($ExpectedWorkflowRepository)) {
+            throw 'PackageLiveEvidence requires exact package/run/artifact/source/workflow identities'
+        }
+        $HomeRoot = Get-CurrentUserKnownFolderPath `
+            ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+        $useHomeDataRoot = $true
+    } elseif ($ProtectedCopilotRunner) {
         if ($Layer -ne 'live' -or $Connector -ne 'copilot' -or
             (-not $LocalProtectedCopilotRunner -and
              $env:DC_COPILOT_DEDICATED_RUNNER -ne '1')) {
@@ -9422,8 +9712,8 @@ if (-not $NoRun) {
         $AntigravityProfileCustodyMode -cne 'fresh') {
         throw 'packaged Setup or protected Antigravity custody inputs require a protected Copilot or authenticated Antigravity runner'
     }
-    if ($ReleaseCertification -and $ProtectedCopilotRunner) {
-        throw 'protected Copilot package custody and hosted release certification are mutually exclusive'
+    if ($ReleaseCertification -and ($ProtectedCopilotRunner -or $PackageLiveEvidence)) {
+        throw 'protected/shared package custody and hosted release certification are mutually exclusive'
     }
     if ($ReleaseCertification) {
         if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
@@ -9438,13 +9728,14 @@ if (-not $NoRun) {
         }
         $HomeRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
         $useHomeDataRoot = $true
-    } elseif (-not $AuthenticatedAntigravityRunner -and -not $ProtectedCopilotRunner) {
+    } elseif (-not $AuthenticatedAntigravityRunner -and -not $ProtectedCopilotRunner -and
+        -not $PackageLiveEvidence) {
         $HomeRoot = if ($HomeRoot) { [IO.Path]::GetFullPath($HomeRoot) } else { Join-Path $StateRoot 'home' }
         if (-not $HomeRoot.StartsWith($StateRoot.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw 'HomeRoot must be contained by StateRoot'
         }
     }
-    if (($AuthenticatedAntigravityRunner -or $ProtectedCopilotRunner) -and
+    if (($AuthenticatedAntigravityRunner -or $ProtectedCopilotRunner -or $PackageLiveEvidence) -and
         (Test-Path -LiteralPath $StateRoot)) {
         # A recovery process must authenticate existing custody, never repair a
         # foreign ACL before trusting its durable cleanup manifest.
@@ -9510,14 +9801,18 @@ if (-not $NoRun) {
     }
     # Never rewrite the DACL on the real dedicated-runner profile. Exact Setup
     # owns its managed roots; the Antigravity profile content remains external.
-    if (-not $ReleaseCertification -and -not $AuthenticatedAntigravityRunner -and
-        -not $ProtectedCopilotRunner) {
+    if (-not $ReleaseCertification -and -not $PackageLiveEvidence -and
+        -not $AuthenticatedAntigravityRunner -and -not $ProtectedCopilotRunner) {
         Protect-TestDirectory $env:USERPROFILE
     }
     $script:GatewayJsonl = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
     $script:AuditDb = Join-Path $env:DEFENSECLAW_HOME 'audit.db'
     if ($Operation -eq 'capture') { Stage-Diagnostics; return }
     if ($Operation -eq 'cleanup') {
+        if ($PackageLiveEvidence) {
+            Invoke-PackageLiveEvidenceCleanup -RemoveRunInputs
+            return
+        }
         if ($ProtectedCopilotRunner) {
             Invoke-ProtectedCopilotCleanup `
                 -PreserveRunInputs:$PreserveProtectedCopilotRunInputs
@@ -9579,7 +9874,9 @@ if (-not $NoRun) {
         return
     }
     try {
-        if ($ProtectedCopilotRunner) {
+        if ($PackageLiveEvidence) {
+            Initialize-PackageLiveEvidencePackage
+        } elseif ($ProtectedCopilotRunner) {
             Initialize-ProtectedCopilotPackage
         } elseif ($AuthenticatedAntigravityRunner) {
             Initialize-AuthenticatedAntigravityPackage
@@ -9590,7 +9887,24 @@ if (-not $NoRun) {
         throw
     } finally {
         $diagnosticsStaged = $false
-        if ($ProtectedCopilotRunner) {
+        if ($PackageLiveEvidence) {
+            try {
+                try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+                try {
+                    $gateway = Join-Path (Get-PackageLiveEvidencePaths).CommandDir `
+                        'defenseclaw-gateway.exe'
+                    if (Test-Path -LiteralPath $gateway -PathType Leaf) {
+                        Invoke-NativeProcess -FilePath $gateway -ArgumentList @('stop') `
+                            -AllowedExitCodes @(0, 1) -TimeoutSeconds 60 | Out-Null
+                    }
+                } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+                Stage-Diagnostics
+            } finally {
+                try { Stop-IsolatedProcessTree } finally {
+                    Invoke-PackageLiveEvidenceCleanup
+                }
+            }
+        } elseif ($ProtectedCopilotRunner) {
             try {
                 Stage-Diagnostics
             } finally {

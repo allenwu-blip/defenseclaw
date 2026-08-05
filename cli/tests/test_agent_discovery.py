@@ -68,6 +68,21 @@ def _pin_claude_home(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
+def test_copilot_packaged_inventory_uses_documented_version_probe() -> None:
+    inventory_dir = Path(ad.__file__).parent
+    probes = {
+        name: json.loads((inventory_dir / name).read_text(encoding="utf-8"))["connectors"]["copilot"][
+            "version_probe"
+        ]
+        for name in ("hook_contracts.json", "validated_versions.json")
+    }
+
+    assert probes == {
+        "hook_contracts.json": "copilot --version",
+        "validated_versions.json": "copilot --version",
+    }
+
+
 def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(monkeypatch) -> None:
     calls: list[tuple[str, bool]] = []
     monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
@@ -1464,6 +1479,69 @@ def test_windows_discovery_finds_known_binary_outside_path(
     resolved = ad._binary_path_for_agent(connector, ad._SPECS[connector])
 
     assert ad._path_key(resolved) == ad._path_key(str(binary))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows npm shim selection regression")
+def test_windows_copilot_npm_shims_select_cmd_and_use_documented_probe(
+    monkeypatch,
+    tmp_path,
+):
+    roaming = tmp_path / "roaming-app-data"
+    npm_bin = roaming / "npm"
+    extensionless = npm_bin / "copilot"
+    command_shim = npm_bin / "copilot.cmd"
+    npm_bin.mkdir(parents=True)
+    extensionless.write_text("#!/bin/sh\n", encoding="utf-8")
+    command_shim.write_text("@echo off\r\n", encoding="utf-8")
+    monkeypatch.setenv("APPDATA", str(roaming))
+    monkeypatch.setenv("PATH", str(npm_bin))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
+    monkeypatch.setattr(
+        ad,
+        "_is_trusted_binary_path",
+        lambda path, **_kwargs: ad._path_key(path) == ad._path_key(str(command_shim)),
+    )
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"copilot version 1.0.77\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(ad.subprocess, "run", run)
+
+    candidates = ad._binary_candidates_for_agent("copilot", ad._SPECS["copilot"])
+    signal = ad._scan_agent("copilot", require_trusted_binary_paths=True)
+
+    assert ad._path_key(ad._which("copilot")) == ad._path_key(str(command_shim))
+    assert tuple(map(ad._path_key, candidates)).count(ad._path_key(str(command_shim))) == 1
+    assert ad._path_key(str(extensionless)) not in tuple(map(ad._path_key, candidates))
+    assert signal.installed is True
+    assert ad._path_key(signal.binary_path) == ad._path_key(str(command_shim))
+    assert signal.version == "copilot version 1.0.77"
+    assert len(calls) == 1
+    assert ad._path_key(calls[0][0]) == ad._path_key(str(command_shim))
+    assert calls[0][1:] == ["--version"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows executable admission regression")
+def test_windows_trust_rejects_extensionless_npm_shim(monkeypatch, tmp_path):
+    shim = tmp_path / "npm" / "copilot"
+    shim.parent.mkdir()
+    shim.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(
+        ad,
+        "_trusted_bin_prefixes",
+        lambda _data_dir=None: (str(shim.parent),),
+    )
+    monkeypatch.setattr(ad, "_default_trusted_bin_prefixes", lambda: frozenset())
+
+    assert not ad._is_trusted_binary_path(str(shim))
 
 
 def test_windsurf_windows_discovery_finds_devin_desktop_without_optional_launcher(

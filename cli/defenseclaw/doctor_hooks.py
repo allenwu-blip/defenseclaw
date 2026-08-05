@@ -53,7 +53,7 @@ _EXPECTED_CONTRACTS = {
     "codex": frozenset(
         {"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
     ),
-    "claudecode": frozenset({"claudecode-hooks-v1"}),
+    "claudecode": frozenset({"claudecode-hooks-v1", "claudecode-hooks-v2"}),
     "copilot": frozenset({"copilot-hooks-v1", "copilot-hooks-v2"}),
     "windsurf": frozenset({"windsurf-hooks-v1"}),
     "antigravity": frozenset({"antigravity-hooks-v2"}),
@@ -182,6 +182,7 @@ _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
     "TeammateIdle": (None, 30),
     "ConfigChange": ("*", 30),
     "CwdChanged": (None, 30),
+    "DirectoryAdded": (None, 30),
     "FileChanged": (_CLAUDE_FILE_CHANGED_MATCHER, 30),
     "WorktreeRemove": (None, 30),
     "PreCompact": ("*", 30),
@@ -189,6 +190,13 @@ _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
     "SessionEnd": (None, 60),
     "Elicitation": ("*", 30),
     "ElicitationResult": ("*", 30),
+}
+
+_CLAUDE_CONTRACT_EVENTS = {
+    "claudecode-hooks-v1": tuple(
+        event for event in _CLAUDE_REQUIRED_HOOKS if event != "DirectoryAdded"
+    ),
+    "claudecode-hooks-v2": tuple(_CLAUDE_REQUIRED_HOOKS),
 }
 
 _COPILOT_CONTRACT_EVENTS = {
@@ -615,8 +623,11 @@ def _validate_codex_effective_policy(data_dir: str, config_path: str) -> str:
     return source
 
 
-def _repair_detail(connector: str, detail: str) -> str:
-    return f"{detail}; run `{_REPAIR[connector]}` to repair the native registration"
+def _repair_detail(connector: str, detail: str, *, configured_mode: str = "") -> str:
+    repair = _REPAIR[connector]
+    if connector == "copilot" and configured_mode in {"action", "observe"}:
+        repair = f"defenseclaw setup copilot --mode {configured_mode} --yes --restart"
+    return f"{detail}; run `{repair}` to repair the native registration"
 
 
 def _windows_extensions(pathext: str) -> tuple[str, ...]:
@@ -2568,16 +2579,26 @@ def _claude_native_handler_identity(
     )
 
 
-def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise: bool = False) -> int:
+def _validate_claude_hook_matrix(
+    document: dict[str, Any],
+    contract_id: str,
+    *,
+    managed_enterprise: bool = False,
+) -> int:
     hooks = document.get("hooks")
     if not isinstance(hooks, dict):
         raise _InspectionError("missing", "Claude Code hook registration has no hooks table")
+    expected_events = _CLAUDE_CONTRACT_EVENTS.get(contract_id)
+    if expected_events is None:
+        raise _InspectionError("stale", f"unsupported Claude Code hook contract {contract_id!r}")
     commands: set[str] = set()
     count = 0
-    for event, (expected_matcher, expected_timeout) in _CLAUDE_REQUIRED_HOOKS.items():
+    for event in expected_events:
+        expected_matcher, expected_timeout = _CLAUDE_REQUIRED_HOOKS[event]
         groups = hooks.get(event)
         if not isinstance(groups, list):
-            raise _InspectionError("missing", f"Claude Code DefenseClaw hook event {event} is missing")
+            state = "stale" if event == "DirectoryAdded" else "missing"
+            raise _InspectionError(state, f"Claude Code DefenseClaw hook event {event} is missing")
         owned: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for group in groups:
             if not isinstance(group, dict):
@@ -2635,6 +2656,21 @@ def _validate_claude_hook_matrix(document: dict[str, Any], *, managed_enterprise
             )
         )
         count += 1
+    for event, groups in hooks.items():
+        if event in expected_events or not isinstance(groups, list):
+            continue
+        owned = [
+            handler
+            for group in groups
+            if isinstance(group, dict)
+            for handler in (group.get("hooks") if isinstance(group.get("hooks"), list) else [])
+            if _handler_targets_defenseclaw(handler, "claudecode")
+        ]
+        if owned:
+            raise _InspectionError(
+                "stale",
+                f"unexpected Claude Code event {event} has {len(owned)} DefenseClaw handlers",
+            )
     if len(commands) != 1:
         raise _InspectionError("stale", "Claude Code DefenseClaw hook events use inconsistent commands")
     return count
@@ -3236,6 +3272,7 @@ def validate_windows_copilot_hook_registration(
     search_path: str,
     pathext: str,
     workspace_dir: str = "",
+    configured_mode: str = "",
 ) -> WindowsHookCheck:
     """Passively validate Copilot's native Windows PowerShell hook contract."""
     command = ""
@@ -3273,11 +3310,16 @@ def validate_windows_copilot_hook_registration(
         runtime_root = _windows_hook_runtime_root(resolved) or install_root
         if _stable_regular_file(resolved, runtime_root, read_limit=2) != b"MZ":
             raise _InspectionError("foreign", f"registered hook executable is not a Windows PE file: {resolved}")
+        mode_detail = (
+            f"configured mode={configured_mode}; "
+            if configured_mode in {"action", "observe"}
+            else ""
+        )
         return WindowsHookCheck(
             "healthy",
             f"healthy Windows-native Copilot PowerShell registration; entries={matrix_entries}; "
-            f"target={resolved}; local settings verified; enterprise/managed policy unverified; "
-            f"{evidence}",
+            f"{mode_detail}target={resolved}; local settings verified; "
+            f"enterprise/managed policy unverified; {evidence}",
             command,
             resolved,
             raw_target,
@@ -3285,7 +3327,7 @@ def validate_windows_copilot_hook_registration(
     except _InspectionError as exc:
         return WindowsHookCheck(
             exc.state,
-            _repair_detail("copilot", exc.detail),
+            _repair_detail("copilot", exc.detail, configured_mode=configured_mode),
             command,
             target,
             raw_target,
@@ -3356,7 +3398,16 @@ def validate_windows_hook_registration(
                 expected_command=windsurf_expected_command,
             )
         elif connector == "claudecode":
-            matrix_entries = _validate_claude_hook_matrix(document, managed_enterprise=managed_enterprise)
+            evidence, expected_runtime_version, contract_id = _contract_evidence(
+                data_dir,
+                connector,
+                config_path,
+            )
+            matrix_entries = _validate_claude_hook_matrix(
+                document,
+                contract_id,
+                managed_enterprise=managed_enterprise,
+            )
         elif connector == "antigravity":
             pass
         elif connector == "hermes":
@@ -3375,7 +3426,12 @@ def validate_windows_hook_registration(
             raise _InspectionError("missing", f"registered hook target cannot be resolved with PATHEXT: {raw_target}")
         target = resolved
         basename = ntpath.basename(resolved).casefold()
-        evidence, expected_runtime_version, contract_id = _contract_evidence(data_dir, connector, config_path)
+        if connector != "claudecode":
+            evidence, expected_runtime_version, contract_id = _contract_evidence(
+                data_dir,
+                connector,
+                config_path,
+            )
         antigravity_runtime_evidence = ""
         if connector == "antigravity":
             if basename != "defenseclaw-hook.exe":

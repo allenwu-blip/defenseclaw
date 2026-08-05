@@ -615,6 +615,15 @@ func legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary string) strin
 	return "& " + powershellQuoteLiteral(hookBinary) + " " + nativeHookFlag + "copilot"
 }
 
+// legacyWindowsCopilotPowerShellHookCommandForEvent reconstructs the
+// event-bound call-operator form emitted before Copilot registrations moved to
+// the synchronous Start-Process launcher. Keep the event finite and built-in:
+// this is an ownership identity for migration/teardown, never a generator.
+func legacyWindowsCopilotPowerShellHookCommandForEvent(event, hookBinary string) string {
+	return legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary) +
+		" --event " + powershellQuoteLiteral(event)
+}
+
 func legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary string) string {
 	return "& " + legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary)
 }
@@ -738,6 +747,9 @@ func isNativeHookCommand(cmd string) bool {
 		}
 		for _, event := range copilotCurrentHookEvents {
 			if cmd == windowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
+				return true
+			}
+			if cmd == legacyWindowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
 				return true
 			}
 		}

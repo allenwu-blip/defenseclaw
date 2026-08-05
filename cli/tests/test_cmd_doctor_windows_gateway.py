@@ -82,7 +82,7 @@ def make_cfg(data_dir: str, token: str, *, token_env: str = ""):
     return SimpleNamespace(data_dir=data_dir, gateway=gateway)
 
 
-def status_response(data_dir: str, *, pid: int = 4242):
+def status_response(data_dir: str, *, pid: object = 4242):
     return 200, json.dumps({"runtime": {"pid": pid, "data_dir": data_dir}})
 
 
@@ -120,6 +120,28 @@ class WindowsGatewayDoctorTests(unittest.TestCase):
             [row["label"] for row in result.checks],
             ["Gateway PID identity", "Gateway listener owner", "Gateway token drift", "Gateway home"],
         )
+
+    def test_authenticated_listener_owner_rejects_noncanonical_runtime_pid(self):
+        for runtime_pid in (
+            4242.9,
+            4242.0,
+            True,
+            None,
+            {},
+            [],
+            "not-a-pid",
+            0,
+            -1,
+            "4242",
+            "004242",
+            "+4242",
+            " 4242 ",
+        ):
+            with self.subTest(runtime_pid=runtime_pid):
+                result = self.run_check(response=status_response(self.home, pid=runtime_pid))
+                row = next(row for row in result.checks if row["label"] == "Gateway listener owner")
+                self.assertEqual(row["status"], "fail")
+                self.assertIn("runtime PID is unavailable", row["detail"])
 
     def test_missing_process_is_stale_and_listener_cannot_mask_it(self):
         evidence = FakeEvidence(process=ProcessEvidence("missing", pid=4242))

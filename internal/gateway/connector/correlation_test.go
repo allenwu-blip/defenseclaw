@@ -175,6 +175,25 @@ func TestCodexCorrelationProfileSupportsExactReviewedHookContracts(t *testing.T)
 	}
 }
 
+func TestClaudeCorrelationProfileSupportsExactReviewedHookContracts(t *testing.T) {
+	for _, contractID := range []string{"claudecode-hooks-v1", "claudecode-hooks-v2"} {
+		spec, ok := CorrelationSpecForConnector("claudecode", contractID)
+		if !ok {
+			t.Fatalf("reviewed Claude Code contract %q rejected", contractID)
+		}
+		if spec.HookContractID != contractID {
+			t.Fatalf("correlation contract=%q want %q", spec.HookContractID, contractID)
+		}
+		if err := spec.Validate(); err != nil {
+			t.Fatalf("Validate %q: %v", contractID, err)
+		}
+	}
+
+	if _, ok := CorrelationSpecForConnector("claudecode", "claudecode-hooks-v999"); ok {
+		t.Fatal("unreviewed future Claude Code contract accepted")
+	}
+}
+
 func TestUnknownCorrelationProfileDoesNotGuessVendorAliases(t *testing.T) {
 	spec := ExplicitCanonicalCorrelationSpec("plugin-example")
 	if !spec.AllowsReceiptTarget(CorrelationTargetSourceEvent) {

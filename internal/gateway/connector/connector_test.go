@@ -1727,6 +1727,152 @@ func claudeCodeFirstTestHookHandler(
 	return group["hooks"].([]interface{})[0].(map[string]interface{})
 }
 
+func TestClaudeCodeVersionedDirectoryAddedMigrationPreservesPristineAndForeignHooks(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	settingsDir := filepath.Join(root, "claude")
+	if err := os.MkdirAll(filepath.Join(dataDir, "hooks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	pristine := []byte(`{"hooks":{"Notification":[{"matcher":"foreign","hooks":[{"type":"command","command":"vendor-hook"}]}]},"foreign":{"keep":true}}`)
+	if err := os.WriteFile(settingsPath, pristine, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := ClaudeCodeSettingsPathOverride
+	ClaudeCodeSettingsPathOverride = settingsPath
+	t.Cleanup(func() { ClaudeCodeSettingsPathOverride = previous })
+
+	connector := NewClaudeCodeConnector()
+	hookScript := filepath.Join(dataDir, "hooks", "claude-code-hook.sh")
+	v1 := SetupOpts{
+		DataDir:        dataDir,
+		AgentVersion:   "Claude Code 2.1.218",
+		HookContractID: "claudecode-hooks-v1",
+	}
+	if err := connector.patchClaudeCodeHooks(v1, hookScript); err != nil {
+		t.Fatalf("patch v1: %v", err)
+	}
+	readHooks := func() (map[string]interface{}, []byte) {
+		t.Helper()
+		body, err := os.ReadFile(settingsPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		settings := map[string]interface{}{}
+		if err := json.Unmarshal(body, &settings); err != nil {
+			t.Fatal(err)
+		}
+		return settings["hooks"].(map[string]interface{}), body
+	}
+	assertForeign := func(hooks map[string]interface{}) {
+		t.Helper()
+		found := false
+		for _, rawGroup := range hooks["Notification"].([]interface{}) {
+			group := rawGroup.(map[string]interface{})
+			for _, rawHandler := range group["hooks"].([]interface{}) {
+				handler := rawHandler.(map[string]interface{})
+				found = found || handler["command"] == "vendor-hook"
+			}
+		}
+		if !found {
+			t.Fatal("foreign Notification hook was not preserved")
+		}
+	}
+
+	v1Hooks, _ := readHooks()
+	if len(v1Hooks) != 28 {
+		t.Fatalf("v1 events=%d, want 28", len(v1Hooks))
+	}
+	if _, exists := v1Hooks["DirectoryAdded"]; exists {
+		t.Fatal("v1 unexpectedly registered DirectoryAdded")
+	}
+	assertForeign(v1Hooks)
+	v1Source := &claudeCodeSettingsSource{
+		name:     "v1 fixture",
+		settings: map[string]interface{}{"hooks": v1Hooks},
+	}
+	if present, err := claudeCodeSourceHasHookContract(v1Source, v1, true); err != nil || !present {
+		t.Fatalf("v1 effective-policy guardian=(%v,%v), want present", present, err)
+	}
+
+	v2 := v1
+	v2.AgentVersion = "Claude Code 2.1.219"
+	v2.HookContractID = "claudecode-hooks-v2"
+	if err := connector.patchClaudeCodeHooks(v2, hookScript); err != nil {
+		t.Fatalf("migrate v1 to v2: %v", err)
+	}
+	v2Hooks, firstV2 := readHooks()
+	if len(v2Hooks) != 29 {
+		t.Fatalf("v2 events=%d, want 29", len(v2Hooks))
+	}
+	directoryGroup := claudeCodeFirstTestHookGroup(v2Hooks, "DirectoryAdded")
+	if _, exists := directoryGroup["matcher"]; exists {
+		t.Fatalf("DirectoryAdded matcher=%#v, want omitted", directoryGroup["matcher"])
+	}
+	directoryHandler := claudeCodeFirstTestHookHandler(v2Hooks, "DirectoryAdded")
+	if directoryHandler["timeout"] != float64(30) {
+		t.Fatalf("DirectoryAdded timeout=%#v, want 30", directoryHandler["timeout"])
+	}
+	if asynchronous, err := claudeCodeHandlerAsync(directoryHandler); err != nil || asynchronous {
+		t.Fatalf("DirectoryAdded asynchronous=%v err=%v, want synchronous", asynchronous, err)
+	}
+	assertForeign(v2Hooks)
+	v2Source := &claudeCodeSettingsSource{
+		name:     "v2 fixture",
+		settings: map[string]interface{}{"hooks": v2Hooks},
+	}
+	if present, err := claudeCodeSourceHasHookContract(v2Source, v2, true); err != nil || !present {
+		t.Fatalf("v2 effective-policy guardian=(%v,%v), want present", present, err)
+	}
+	if present, err := claudeCodeSourceHasHookContract(v2Source, v1, true); present || err == nil || !strings.Contains(err.Error(), "unexpected DefenseClaw DirectoryAdded") {
+		t.Fatalf("v1 guardian over v2 matrix=(%v,%v), want unexpected DirectoryAdded", present, err)
+	}
+
+	hookCommand, hookArgs := claudeCodeHookInvocation(v2, hookScript)
+	if err := verifyClaudeCodeHookMatrixForSetup(v2Hooks, hookCommand, hookArgs, filepath.Join(dataDir, "hooks"), v2); err != nil {
+		t.Fatalf("verify v2: %v", err)
+	}
+	if err := verifyClaudeCodeHookMatrixForSetup(v2Hooks, hookCommand, hookArgs, filepath.Join(dataDir, "hooks"), v1); err == nil || !strings.Contains(err.Error(), "unexpected event DirectoryAdded") {
+		t.Fatalf("v1 verifier error=%v, want unexpected DirectoryAdded", err)
+	}
+
+	missingHooks := make(map[string]interface{}, len(v2Hooks)-1)
+	for eventType, entries := range v2Hooks {
+		if eventType != "DirectoryAdded" {
+			missingHooks[eventType] = entries
+		}
+	}
+	missingSource := &claudeCodeSettingsSource{
+		name:     "v2 missing DirectoryAdded fixture",
+		settings: map[string]interface{}{"hooks": missingHooks},
+	}
+	if present, err := claudeCodeSourceHasHookContract(missingSource, v2, true); present || err == nil || !strings.Contains(err.Error(), "DirectoryAdded") {
+		t.Fatalf("v2 guardian without DirectoryAdded=(%v,%v), want missing DirectoryAdded", present, err)
+	}
+
+	if err := connector.patchClaudeCodeHooks(v2, hookScript); err != nil {
+		t.Fatalf("repeat v2 patch: %v", err)
+	}
+	_, secondV2 := readHooks()
+	if !bytes.Equal(firstV2, secondV2) {
+		t.Fatal("repeated v2 patch was not byte-idempotent")
+	}
+	if err := connector.restoreClaudeCodeHooks(v2); err != nil {
+		t.Fatalf("restore pristine settings: %v", err)
+	}
+	restored, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(restored, pristine) {
+		t.Fatalf("restored settings differ from pristine\n got: %s\nwant: %s", restored, pristine)
+	}
+}
+
 func TestInferPreTrackedClaudeCodeManagedCommandsRequiresExactWindowsExecMatrix(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("pre-tracking native exec migration is Windows-specific")

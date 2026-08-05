@@ -44,7 +44,7 @@ executable, so Git Bash is not in the enforcement path.
 | [v2.1.152](https://github.com/anthropics/claude-code/releases/tag/v2.1.152) | 2026-05-27 | introduced `MessageDisplay` |
 | [v2.1.154](https://github.com/anthropics/claude-code/releases/tag/v2.1.154) | 2026-05-28 | added plugin `defaultEnabled`; DefenseClaw's current minimum contract version |
 | [v2.1.214](https://github.com/anthropics/claude-code/releases/tag/v2.1.214) | 2026-07-18 | fixed exit-code 2 blocking when stdout JSON fails schema validation |
-| [v2.1.219](https://github.com/anthropics/claude-code/releases/tag/v2.1.219) | 2026-07-24 | release notes mention `DirectoryAdded`; current hooks reference has no published schema |
+| [v2.1.219](https://github.com/anthropics/claude-code/releases/tag/v2.1.219) | 2026-07-24 | introduced `DirectoryAdded`; the current hooks reference defines its input and confirms it cannot block |
 | [v2.1.220](https://github.com/anthropics/claude-code/releases/tag/v2.1.220) | 2026-07-25 | latest official non-prerelease observed during this audit |
 
 The audit host had the native binary at
@@ -183,21 +183,24 @@ The current hooks reference documents:
 `PostToolUseFailure`, `PostToolBatch`, `Notification`, `MessageDisplay`,
 `SubagentStart`, `SubagentStop`, `TaskCreated`, `TaskCompleted`, `Stop`,
 `StopFailure`, `TeammateIdle`, `InstructionsLoaded`, `ConfigChange`,
-`CwdChanged`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`,
+`CwdChanged`, `DirectoryAdded`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`,
 `PreCompact`, `PostCompact`, `Elicitation`, `ElicitationResult`, and
 `SessionEnd`.
 
-DefenseClaw registers 28 of those events. It intentionally excludes:
+DefenseClaw registers an exact version-selected subset: 28 events for
+`claudecode-hooks-v1 >=2.1.154,<2.1.219`, and 29 events for
+`claudecode-hooks-v2 >=2.1.219`. The v2 addition is `DirectoryAdded`.
+Both contracts intentionally exclude:
 
 - `Setup`, which is observation-only and runs only for explicit
   initialization/maintenance invocations; and
 - `WorktreeCreate`, because registering it replaces Claude Code's default Git
   behavior and the handler must create and return a worktree path.
 
-Claude Code v2.1.219 release notes also mention `DirectoryAdded`, but the
-current hooks reference does not list the event or define its input, ordering,
-matcher, output, or blocking behavior. It remains unregistered until Anthropic
-publishes that contract.
+`DirectoryAdded` runs after `/add-dir` or SDK `register_repo_root` has already
+registered the directory. Its input adds absolute `directory` and `source`
+fields. DefenseClaw registers it synchronously with no matcher and a 30-second
+timeout, but gives it no block, ask, or decision authority.
 
 ### Wait, stdout, and exit behavior
 
@@ -220,7 +223,8 @@ DefenseClaw deliberately marks `MessageDisplay` async because it is
 observational; its output therefore cannot affect the current action. It keeps
 the remaining registered handlers in synchronous command form so every
 decision-capable event waits for the gateway verdict; host-defined
-non-blocking events remain observational.
+non-blocking events remain observational. This includes the synchronous
+`DirectoryAdded` observation in v2.
 
 Anthropic's default command timeout is 600 seconds, with shorter event
 defaults for `UserPromptSubmit` (30 seconds), `MessageDisplay` (10 seconds),
@@ -307,7 +311,7 @@ The following differences must remain explicit:
 | Native hook schema | nested settings events with command `args` exec form | Codex-specific hook configuration and trust introspection |
 | Decision output | event-specific `hookSpecificOutput`, top-level decisions, exit 2 | Codex-specific response envelope and event behavior |
 | Native ask | `PreToolUse` supports `permissionDecision="ask"` | current DefenseClaw Codex contract has no native ask surface |
-| Event set | 28 registered Claude lifecycle events | a smaller, independently versioned Codex event matrix |
+| Event set | version-selected 28 or 29 registered Claude lifecycle events; v2 adds observational `DirectoryAdded` for >=2.1.219 | a smaller, independently versioned Codex event matrix |
 | MCP state | `~/.claude.json` plus project `.mcp.json` | `$CODEX_HOME/config.toml` plus trusted project `.codex/config.toml` layers |
 | Managed policy | Windows registry and `C:\Program Files\ClaudeCode` policy chain | Codex-specific managed configuration |
 | Worktree hooks | `WorktreeCreate` replaces default behavior and is excluded | different host semantics; no equivalence assumed |
@@ -320,8 +324,8 @@ blocking rules, trust behavior, or configuration paths between hosts.
 
 ## Known limitations and revalidation triggers
 
-- `DirectoryAdded` remains release-only and unregistered until the official
-  hooks reference documents its complete contract.
+- `DirectoryAdded` observes a newly added root in v2 but does not turn that
+  session-only root into a persistent passive-inventory scope.
 - `Setup`, `InstructionsLoaded`, `MessageDisplay`, and post-result events are
   observational or otherwise non-blocking according to host semantics.
 - Native ask exists only where Anthropic documents it; DefenseClaw does not

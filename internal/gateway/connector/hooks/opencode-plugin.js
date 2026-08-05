@@ -237,9 +237,6 @@ export const DefenseClaw = async ({ directory, worktree }) => {
     // error never turns into an accidental block.
     "tool.execute.before": async (input, output) => {
       const mcpIdentity = defenseclawResolveMCPServer(input && input.tool);
-      if (mcpIdentity.status === "ambiguous") {
-        throw new Error("DefenseClaw refused an OpenCode tool with ambiguous MCP server identity.");
-      }
       const verdict = await defenseclawPost(
         "tool.execute.before",
         input && input.tool,
@@ -250,6 +247,9 @@ export const DefenseClaw = async ({ directory, worktree }) => {
         mcpIdentity,
       );
       if (verdict && verdict.reason) throw new Error(verdict.reason);
+      if (verdict && verdict.mode === "action" && mcpIdentity.status === "ambiguous") {
+        throw new Error("DefenseClaw refused an OpenCode tool with ambiguous MCP server identity.");
+      }
       if (verdict && verdict.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE) {
         throw new Error(
           "DefenseClaw refused an OpenCode action because later plugin argument mutations are not observable.",

@@ -526,6 +526,9 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 		// synchronous {"action":"continue"} response to reach the responder.
 		profile.MapVerdict = hermesProfileMapVerdict
 	}
+	if c.name == "opencode" {
+		profile.MapVerdict = openCodeProfileMapVerdict
+	}
 	if c.name == "geminicli" {
 		profile.NativeOTLP = geminiCLINativeOTLPSpec(opts)
 	}
@@ -4532,6 +4535,9 @@ func isCopilotNativeHookCommand(command string) bool {
 		}
 		for _, event := range copilotCurrentHookEvents {
 			if command == windowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
+				return true
+			}
+			if command == legacyWindowsCopilotPowerShellHookCommandForEvent(event, hookBinary) {
 				return true
 			}
 		}

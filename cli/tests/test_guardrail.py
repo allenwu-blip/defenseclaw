@@ -2108,10 +2108,12 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             )
 
     @patch("defenseclaw.commands.cmd_setup.ux.subhead")
+    @patch("defenseclaw.commands.cmd_setup._wait_for_connector_runtime", return_value=True)
     @patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True)
-    def test_multi_connector_omnigent_hint_uses_neutral_surface_wording(
+    def test_multi_connector_omnigent_hint_reports_gateway_ready_policy_unverified(
         self,
         _mock_restart,
+        _mock_wait,
         mock_subhead,
     ):
         from defenseclaw.commands.cmd_setup import _restart_services
@@ -2121,12 +2123,31 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 tmpdir,
                 connector=None,
                 connectors=["codex", "omnigent"],
+                wait_for_connector_ready=True,
             )
 
         messages = [call.args[0] for call in mock_subhead.call_args_list]
-        self.assertTrue(any("native lifecycle surfaces" in message for message in messages))
-        self.assertTrue(all("via the hook bus" not in message for message in messages))
-        self.assertTrue(all("custom policy API" not in message for message in messages))
+        self.assertTrue(any("DefenseClaw gateway registration is ready" in message for message in messages))
+        self.assertTrue(any("loaded policy generation" in message for message in messages))
+        self.assertTrue(any("unverified pending reload/restart" in message for message in messages))
+        self.assertTrue(all("enforcement via" not in message for message in messages))
+
+    @patch("defenseclaw.commands.cmd_setup.ux.subhead")
+    @patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True)
+    def test_omnigent_hint_without_readiness_gate_does_not_claim_gateway_ready(
+        self,
+        _mock_restart,
+        mock_subhead,
+    ):
+        from defenseclaw.commands.cmd_setup import _restart_services
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _restart_services(tmpdir, connector="omnigent")
+
+        messages = [call.args[0] for call in mock_subhead.call_args_list]
+        self.assertTrue(any("gateway registration is not verified" in message for message in messages))
+        self.assertTrue(all("gateway registration is ready" not in message for message in messages))
+        self.assertTrue(all("enforcement via" not in message for message in messages))
 
     @patch("defenseclaw.commands.cmd_setup._wait_for_connector_runtime", return_value=True)
     @patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True)
@@ -2142,7 +2163,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             None,
             None,
             previous_lock_publications={},
-            gateway_generation=None,
+            require_gateway_health=True,
         )
 
     @patch("defenseclaw.commands.cmd_setup._wait_for_connector_runtime", return_value=False)
@@ -2275,15 +2296,15 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                             return_value=False,
                         ),
                     ):
-                        _restart_services(
-                            tmpdir,
-                            connector="cursor",
-                            connectors=requested,
-                            wait_for_connector_ready=True,
-                        )
+                        with self.assertRaises(click.ClickException):
+                            _restart_services(
+                                tmpdir,
+                                connector="cursor",
+                                connectors=requested,
+                                wait_for_connector_ready=True,
+                            )
 
-                    self.assertGreater(clock.now, 60.0)
-                    self.assertLessEqual(clock.now, 250.0)
+                    self.assertEqual(clock.now, 60.0)
                     restart.assert_called_once()
 
     def test_malformed_or_mismatched_lock_churn_never_advances_readiness(self):
@@ -2336,7 +2357,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 self.assertEqual(clock.now, 60.0)
                 self.assertGreaterEqual(reads["lock"], 2)  # Includes the final exact boundary read.
 
-    def test_readiness_deadline_performs_one_final_exact_snapshot_read(self):
+    def test_readiness_deadline_does_not_run_a_final_snapshot_validation(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 
         clock = SimpleNamespace(now=0.0)
@@ -2367,7 +2388,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 return_value=False,
             ),
         ):
-            self.assertTrue(
+            self.assertFalse(
                 _wait_for_connector_runtime(
                     "unused",
                     ["codex"],
@@ -2377,7 +2398,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                     previous_lock_publications={"codex": "old"},
                 )
             )
-        self.assertEqual(reads["state"], 2)
+        self.assertEqual(reads["state"], 1)
 
     def test_validated_progress_cannot_extend_past_the_strict_absolute_cap(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
@@ -2461,7 +2482,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                     previous_lock_publications=baseline,
                 )
             )
-        self.assertEqual(clock.now, 300.0)
+        self.assertEqual(clock.now, 60.0)
 
     def test_new_generation_terminal_health_fails_but_running_health_never_satisfies(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
@@ -2552,7 +2573,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 _wait_for_connector_runtime(tmpdir, ["codex"], state_marker - 1, lock_marker, timeout=0.01)
             )
 
-            self.assertTrue(
+            self.assertFalse(
                 _wait_for_connector_runtime(tmpdir, ["codex"], state_marker - 1, lock_marker - 1, timeout=0.01)
             )
 
@@ -2593,7 +2614,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 )
             )
 
-    def test_wait_for_connector_runtime_accepts_only_v3_tombstoned_lock_extras(self):
+    def test_wait_for_connector_runtime_rejects_shallow_v3_tombstoned_lock_extras(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2617,9 +2638,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             }
             with open(state_path, "w", encoding="utf-8") as state_file:
                 json.dump(state, state_file)
-            self.assertTrue(
-                _wait_for_connector_runtime(tmpdir, ["claudecode"], None, None, timeout=0.02)
-            )
+            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["claudecode"], None, None, timeout=0.02))
 
             state.pop("inactive_names")
             with open(state_path, "w", encoding="utf-8") as state_file:
@@ -2668,7 +2687,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                         )
                     )
 
-    def test_wait_for_connector_runtime_keeps_v2_and_legacy_exact_lock_behavior(self):
+    def test_wait_for_connector_runtime_rejects_shallow_v2_and_legacy_lock_entries(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2688,7 +2707,7 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 with self.subTest(state=state):
                     with open(state_path, "w", encoding="utf-8") as state_file:
                         json.dump(state, state_file)
-                    self.assertTrue(
+                    self.assertFalse(
                         _wait_for_connector_runtime(
                             tmpdir,
                             ["claudecode"],
@@ -2744,10 +2763,15 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 "connectors": {
                     "cursor": {
                         "connector": "cursor",
+                        "raw_agent_version": "",
+                        "normalized_agent_version": "",
                         "contract_id": "cursor-hooks-v1",
-                        "compatibility_status": "known",
+                        "compatibility_status": "unversioned",
                         "hook_script_version": "v8",
                         "hook_fail_mode": "open",
+                        "hook_script_digests": {
+                            runtime_name: "sha256:" + hashlib.sha256(Path(runtime_path).read_bytes()).hexdigest(),
+                        },
                         "locations": {
                             "hook_config_paths": [hooks_path],
                             "hook_script_paths": [runtime_path],
@@ -2759,25 +2783,38 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             with open(lock_path, "w", encoding="utf-8") as lock_file:
                 json.dump(lock, lock_file)
 
-            self.assertTrue(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=0.02))
+            guardrail = SimpleNamespace(
+                connectors={},
+                hook_fail_mode="open",
+                effective_mode=lambda _name: "observe",
+                effective_hook_fail_mode=lambda _name: "open",
+                effective_hilt=lambda _name: SimpleNamespace(enabled=False),
+            )
+            cfg = SimpleNamespace(
+                data_dir=tmpdir,
+                guardrail=guardrail,
+                connector_workspace_dir=lambda: "",
+            )
+            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+                self.assertTrue(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=1.0))
             hooks["preToolUse"][0]["timeout"] = 30000
             with open(hooks_path, "w", encoding="utf-8") as hooks_file:
                 json.dump({"version": 1, "hooks": hooks}, hooks_file)
-            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=0.02))
+            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+                self.assertFalse(_wait_for_connector_runtime(tmpdir, ["cursor"], None, None, timeout=1.0))
 
-    @patch("defenseclaw.commands.cmd_setup.connector_paths.connector_config_files")
-    def test_wait_for_opencode_runtime_requires_plugin_and_matching_lock(self, config_files):
+    def test_wait_for_opencode_runtime_requires_plugin_and_matching_lock(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 
         with tempfile.TemporaryDirectory() as tmpdir:
             plugin_path = os.path.join(tmpdir, "defenseclaw.js")
             plugin_body = (
                 b"// defenseclaw-managed-plugin v7\n"
+                b'const DC_FAIL_MODE = "open";\n'
                 b'const route = "/api/v1/opencode/hook";\n'
             )
             with open(plugin_path, "wb") as plugin_file:
                 plugin_file.write(plugin_body)
-            config_files.return_value = [plugin_path]
             with open(os.path.join(tmpdir, "active_connector.json"), "w", encoding="utf-8") as state_file:
                 json.dump({"version": 2, "name": "opencode", "names": ["opencode"]}, state_file)
             lock = {
@@ -2785,10 +2822,16 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 "connectors": {
                     "opencode": {
                         "connector": "opencode",
+                        "raw_agent_version": "1.18.10",
+                        "normalized_agent_version": "1.18.10",
                         "contract_id": "opencode-hooks-v1",
                         "compatibility_status": "known",
                         "hook_script_version": "v7",
-                        "locations": {"hook_config_paths": [plugin_path]},
+                        "hook_fail_mode": "open",
+                        "locations": {
+                            "hook_config_paths": [plugin_path],
+                            "hook_script_paths": [plugin_path],
+                        },
                         "hook_script_digests": {
                             "defenseclaw.js": "sha256:" + hashlib.sha256(plugin_body).hexdigest()
                         },
@@ -2799,20 +2842,52 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             with open(lock_path, "w", encoding="utf-8") as lock_file:
                 json.dump(lock, lock_file)
 
-            self.assertTrue(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
-
-            config_files.return_value = [os.path.join(tmpdir, "other", "defenseclaw.js")]
-            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
-            config_files.return_value = [plugin_path]
+            backup_dir = Path(tmpdir) / "connector_backups" / "opencode"
+            backup_dir.mkdir(parents=True)
+            (backup_dir / "config.json").write_text(
+                json.dumps(
+                    {
+                        "connector": "opencode",
+                        "logical_name": "config",
+                        "path": plugin_path,
+                        "post_sha256": hashlib.sha256(plugin_body).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            guardrail = SimpleNamespace(
+                connectors={},
+                hook_fail_mode="open",
+                effective_mode=lambda _name: "observe",
+                effective_hook_fail_mode=lambda _name: "open",
+                effective_hilt=lambda _name: SimpleNamespace(enabled=False),
+            )
+            cfg = SimpleNamespace(
+                data_dir=tmpdir,
+                guardrail=guardrail,
+                gateway=SimpleNamespace(api_port=18970),
+                connector_workspace_dir=lambda: "",
+            )
+            with (
+                patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._opencode_load_heartbeat_status",
+                    return_value=("pass", "loaded"),
+                ),
+            ):
+                self.assertTrue(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
             os.remove(plugin_path)
-            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+                self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
             with open(plugin_path, "wb") as plugin_file:
                 plugin_file.write(plugin_body + b"// tampered\n")
-            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+                self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
             os.remove(lock_path)
-            self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=0.02))
+            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+                self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
 
 class TestCheckOpenclawGateway(unittest.TestCase):

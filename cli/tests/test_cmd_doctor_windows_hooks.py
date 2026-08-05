@@ -486,6 +486,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v3": "0.133.0",
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.154",
+            "claudecode-hooks-v2": "2.1.219",
             "windsurf-hooks-v1": "1.12.41",
             "hermes-hooks-v1": "0.19.0",
             "antigravity-hooks-v2": "1.1.8",
@@ -549,6 +550,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
         codex_features: bool = True,
         codex_managed: bool = False,
         codex_contract: str = "codex-hooks-v1",
+        claude_contract: str = "claudecode-hooks-v1",
     ) -> Path:
         if connector == "codex":
             path = self.profile / ".codex" / ("managed_config.toml" if codex_managed else "config.toml")
@@ -663,7 +665,8 @@ class WindowsHookDoctorTests(unittest.TestCase):
             if exec_form and command_basename.startswith("defenseclaw-hook") and not handler_args:
                 handler_args = ["hook", "--connector", "claudecode"]
             events: dict[str, object] = {}
-            for event, (matcher, timeout) in _CLAUDE_REQUIRED_HOOKS.items():
+            for event in doctor_hooks._CLAUDE_CONTRACT_EVENTS[claude_contract]:
+                matcher, timeout = _CLAUDE_REQUIRED_HOOKS[event]
                 handler: dict[str, object] = {
                     "type": "command",
                     "command": handler_command,
@@ -686,7 +689,11 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self._lock(
             connector,
             path,
-            contract=codex_contract if connector == "codex" else None,
+            contract=(
+                codex_contract
+                if connector == "codex"
+                else claude_contract if connector == "claudecode" else None
+            ),
             version="v6",
         )
         return path
@@ -1792,6 +1799,55 @@ class WindowsHookDoctorTests(unittest.TestCase):
         check = self._validate("claudecode", config)
 
         self.assertEqual(check.state, "healthy", check.detail)
+
+    def test_claude_versioned_directory_added_contracts_are_exact(self) -> None:
+        runtime = self._runtime()
+        command = f'"{runtime}" hook --connector claudecode'
+
+        v1_config = self._config(
+            "claudecode",
+            command,
+            claude_contract="claudecode-hooks-v1",
+        )
+        v1_document = json.loads(v1_config.read_text(encoding="utf-8"))
+        self.assertEqual(len(v1_document["hooks"]), 28)
+        self.assertNotIn("DirectoryAdded", v1_document["hooks"])
+        v1_check = self._validate("claudecode", v1_config)
+        self.assertEqual(v1_check.state, "healthy", v1_check.detail)
+
+        v2_config = self._config(
+            "claudecode",
+            command,
+            claude_contract="claudecode-hooks-v2",
+        )
+        v2_document = json.loads(v2_config.read_text(encoding="utf-8"))
+        self.assertEqual(len(v2_document["hooks"]), 29)
+        directory_group = v2_document["hooks"]["DirectoryAdded"][0]
+        self.assertNotIn("matcher", directory_group)
+        directory_handler = directory_group["hooks"][0]
+        self.assertEqual(directory_handler["timeout"], 30)
+        self.assertNotIn("async", directory_handler)
+        v2_check = self._validate("claudecode", v2_config)
+        self.assertEqual(v2_check.state, "healthy", v2_check.detail)
+        self.assertIn("entries=29", v2_check.detail)
+
+        v2_document["hooks"].pop("DirectoryAdded")
+        v2_config.write_text(json.dumps(v2_document), encoding="utf-8")
+        missing = self._validate("claudecode", v2_config)
+        self.assertEqual(missing.state, "stale", missing.detail)
+        self.assertIn("DirectoryAdded", missing.detail)
+
+        v1_config = self._config(
+            "claudecode",
+            command,
+            claude_contract="claudecode-hooks-v1",
+        )
+        v1_document = json.loads(v1_config.read_text(encoding="utf-8"))
+        v1_document["hooks"]["DirectoryAdded"] = [directory_group]
+        v1_config.write_text(json.dumps(v1_document), encoding="utf-8")
+        unexpected = self._validate("claudecode", v1_config)
+        self.assertEqual(unexpected.state, "stale", unexpected.detail)
+        self.assertIn("unexpected Claude Code event DirectoryAdded", unexpected.detail)
 
     def test_claude_requires_complete_broad_hook_contract_with_exact_execution_modes(self) -> None:
         runtime = self._runtime()

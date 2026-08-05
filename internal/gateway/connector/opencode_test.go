@@ -22,12 +22,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
@@ -273,6 +275,7 @@ func TestOpenCodeBridgePinsPluginOrderMCPIdentityAndHeartbeat(t *testing.T) {
 		`mcp[name].enabled !== false`,
 		`return { status: "ambiguous", name: "" }`,
 		"payload.mcp_server_name = mcpIdentity.name",
+		`verdict.mode === "action" && mcpIdentity.status === "ambiguous"`,
 		`verdict.mode === "action" && !DC_ARGUMENTS_AUTHORITATIVE`,
 		`hook_event_name: "defenseclaw.plugin.loaded"`,
 		`load_heartbeat: true`,
@@ -283,6 +286,94 @@ func TestOpenCodeBridgePinsPluginOrderMCPIdentityAndHeartbeat(t *testing.T) {
 	}
 	if strings.Contains(text, "mcp__") || strings.Contains(text, "mcp:") {
 		t.Fatal("OpenCode bridge must not fall back to another connector's MCP naming grammar")
+	}
+}
+
+func TestOpenCodeProfileMapsAmbiguousMCPIdentityByMode(t *testing.T) {
+	profile := NewOpenCodeConnector().HookProfile(SetupOpts{})
+	for _, tc := range []struct {
+		name           string
+		mode           string
+		status         string
+		wantAction     string
+		wantWouldBlock bool
+	}{
+		{name: "ambiguous observe", mode: "observe", status: "ambiguous", wantAction: "allow", wantWouldBlock: true},
+		{name: "ambiguous action", mode: "action", status: "ambiguous", wantAction: "block", wantWouldBlock: false},
+		{name: "authoritative action", mode: "action", status: "authoritative", wantAction: "allow", wantWouldBlock: false},
+		{name: "non-MCP action", mode: "action", status: "not_mcp", wantAction: "allow", wantWouldBlock: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := profile.MapVerdict(HookVerdictInput{
+				RawAction: "allow",
+				Event:     "tool.execute.before",
+				Mode:      tc.mode,
+				Caps:      profile.Capabilities,
+				Payload:   map[string]interface{}{"mcp_identity_status": tc.status},
+			})
+			if out.Action != tc.wantAction || out.WouldBlock != tc.wantWouldBlock {
+				t.Fatalf("verdict = %+v, want action=%q would_block=%v", out, tc.wantAction, tc.wantWouldBlock)
+			}
+			response := profile.Respond(HookRespondInput{
+				Req: HookProfileRequest{
+					ConnectorName: "opencode",
+					HookEventName: "tool.execute.before",
+					ToolName:      "alpha_beta_list",
+				},
+				Action: out.Action,
+				Caps:   profile.Capabilities,
+			})
+			if tc.wantAction == "block" {
+				if response.Output["decision"] != "deny" {
+					t.Fatalf("action ambiguity response = %#v, want synchronous deny", response.Output)
+				}
+			} else if response.Output != nil {
+				t.Fatalf("non-blocking ambiguity response = %#v, want no OpenCode mutation", response.Output)
+			}
+		})
+	}
+}
+
+func TestOpenCodeBridgeExecutableMCPIdentityAndFailurePosture(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required for the executable OpenCode plugin contract")
+	}
+	body, err := hookFS.ReadFile("hooks/opencode-plugin.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	render := func(failMode string) []byte {
+		t.Helper()
+		text := strings.NewReplacer(
+			"{{.APIAddr}}", "127.0.0.1:18970",
+			"{{.APIToken}}", "provided by test runtime",
+			"{{.FailMode}}", failMode,
+		).Replace(string(body))
+		if strings.Contains(text, "{{.") {
+			t.Fatalf("rendered %s plugin retains a template placeholder", failMode)
+		}
+		return []byte(text)
+	}
+	dir := t.TempDir()
+	openPlugin := filepath.Join(dir, "opencode-open.mjs")
+	closedPlugin := filepath.Join(dir, "opencode-closed.mjs")
+	if err := os.WriteFile(openPlugin, render("open"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(closedPlugin, render("closed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	harness := filepath.Join("testdata", "opencode-plugin-contract.mjs")
+	output, err := exec.CommandContext(ctx, node, harness, openPlugin, closedPlugin).CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("executable OpenCode plugin contract timed out: %v\n%s", ctx.Err(), output)
+	}
+	if err != nil {
+		t.Fatalf("executable OpenCode plugin contract: %v\n%s", err, output)
 	}
 }
 

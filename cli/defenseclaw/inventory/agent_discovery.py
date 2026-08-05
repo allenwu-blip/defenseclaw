@@ -842,7 +842,7 @@ _SPECS: dict[str, _AgentSpec] = {
             ".mcp.json",
         ),
         "copilot",
-        ("version",),
+        ("--version",),
     ),
     "openhands": _AgentSpec(
         (

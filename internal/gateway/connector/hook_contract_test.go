@@ -95,6 +95,9 @@ func TestHookContractResolution(t *testing.T) {
 		{"codex_unknown_before_stable", "codex", "codex 0.123.0", HookCompatibilityUnknown, "", "0.123.0"},
 		{"claude_before_message_display", "claude-code", "Claude Code v2.1.151", HookCompatibilityUnknown, "", "2.1.151"},
 		{"claude_alias_known", "claude-code", "Claude Code v2.1.154", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.154"},
+		{"claude_v1_upper_boundary", "claude-code", "Claude Code v2.1.218", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.218"},
+		{"claude_directory_added_minimum", "claude-code", "Claude Code v2.1.219", HookCompatibilityKnown, "claudecode-hooks-v2", "2.1.219"},
+		{"claude_directory_added_current", "claude-code", "Claude Code v2.1.220", HookCompatibilityKnown, "claudecode-hooks-v2", "2.1.220"},
 		{"openhands_alias_known", "open-hands", "OpenHands 1.0.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.0.0"},
 		{"cursor_exact_agent_preview_pin", "cursor", "2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
@@ -124,6 +127,51 @@ func TestHookContractResolution(t *testing.T) {
 			}
 			if got.NormalizedVersion != tc.wantNorm {
 				t.Fatalf("NormalizedVersion=%q want %q", got.NormalizedVersion, tc.wantNorm)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeHookContractDirectoryAddedIsObservationOnly(t *testing.T) {
+	tests := []struct {
+		version       string
+		wantID        string
+		wantEvents    int
+		wantDirectory bool
+	}{
+		{"Claude Code 2.1.218", "claudecode-hooks-v1", 28, false},
+		{"Claude Code 2.1.219", "claudecode-hooks-v2", 29, true},
+		{"Claude Code 2.1.220", "claudecode-hooks-v2", 29, true},
+	}
+	for _, test := range tests {
+		t.Run(test.version, func(t *testing.T) {
+			contract := ResolveHookContract("claudecode", test.version).Contract
+			if contract.ContractID != test.wantID || len(contract.Events) != test.wantEvents {
+				t.Fatalf("contract=%s events=%d, want %s/%d", contract.ContractID, len(contract.Events), test.wantID, test.wantEvents)
+			}
+			hasDirectory := false
+			for _, event := range contract.Events {
+				hasDirectory = hasDirectory || event == "DirectoryAdded"
+			}
+			if hasDirectory != test.wantDirectory {
+				t.Fatalf("DirectoryAdded present=%v, want %v", hasDirectory, test.wantDirectory)
+			}
+			for _, event := range append(append([]string{}, contract.Capabilities.BlockEvents...), contract.Capabilities.AskEvents...) {
+				if event == "DirectoryAdded" {
+					t.Fatal("DirectoryAdded must not have block or ask authority")
+				}
+			}
+			groups, err := claudeCodeHookGroupsForSetup(SetupOpts{AgentVersion: test.version})
+			if err != nil {
+				t.Fatalf("version-selected registration groups: %v", err)
+			}
+			if len(groups) != test.wantEvents {
+				t.Fatalf("registration groups=%d, want %d", len(groups), test.wantEvents)
+			}
+			for _, group := range groups {
+				if group.eventType == "DirectoryAdded" && (group.matcher != "" || group.async || group.timeout != 30) {
+					t.Fatalf("DirectoryAdded registration=%+v, want matcherless synchronous 30-second hook", group)
+				}
 			}
 		})
 	}
@@ -1246,7 +1294,7 @@ func TestCodexSetupSelectionReceiptIsBoundAndSealed(t *testing.T) {
 	}
 }
 
-func TestSetupSelectionReceiptCarriesCodexAndHermesForGatewayConsumption(t *testing.T) {
+func TestSetupSelectionReceiptCarriesProtectedAgentsForGatewayConsumption(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	receipt := agentSelectionReceipt{
@@ -1273,6 +1321,26 @@ func TestSetupSelectionReceiptCarriesCodexAndHermesForGatewayConsumption(t *test
 				SelectedAt:        now.Format(time.RFC3339),
 				ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
 			},
+			"opencode": {
+				Connector:         "opencode",
+				Source:            "setup-selected",
+				Executable:        filepath.Join(dir, "opencode.exe"),
+				RawVersion:        "opencode 1.18.11",
+				NormalizedVersion: "1.18.11",
+				SHA256:            strings.Repeat("c", 64),
+				SelectedAt:        now.Format(time.RFC3339),
+				ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+			},
+			"amp": {
+				Connector:         "amp",
+				Source:            "setup-selected",
+				Executable:        filepath.Join(dir, "amp.exe"),
+				RawVersion:        "0.0.1785875347-gbc402f",
+				NormalizedVersion: "0.0.1785875347",
+				SHA256:            strings.Repeat("d", 64),
+				SelectedAt:        now.Format(time.RFC3339),
+				ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+			},
 		},
 	}
 	body, err := json.Marshal(receipt)
@@ -1290,6 +1358,276 @@ func TestSetupSelectionReceiptCarriesCodexAndHermesForGatewayConsumption(t *test
 	hermesSelection, ok := loadSetupAgentSelection(dir, "hermes")
 	if !ok || hermesSelection.Executable != filepath.Join(dir, "hermes.exe") {
 		t.Fatalf("Hermes selection = %+v, %t", hermesSelection, ok)
+	}
+	opencodeSelection, ok := loadSetupAgentSelection(dir, "opencode")
+	if !ok || opencodeSelection.Executable != filepath.Join(dir, "opencode.exe") {
+		t.Fatalf("OpenCode selection = %+v, %t", opencodeSelection, ok)
+	}
+	if got := LoadCachedAgentVersion(dir, "opencode"); got != "opencode 1.18.11" {
+		t.Fatalf("OpenCode selected version = %q", got)
+	}
+	if got := LoadCachedAgentExecutable(dir, "opencode"); got != filepath.Join(dir, "opencode.exe") {
+		t.Fatalf("OpenCode selected executable = %q", got)
+	}
+	ampSelection, ok := loadSetupAgentSelection(dir, "amp")
+	if !ok || ampSelection.Executable != filepath.Join(dir, "amp.exe") {
+		t.Fatalf("Amp selection = %+v, %t", ampSelection, ok)
+	}
+	if got := LoadCachedAgentVersion(dir, "amp"); got != "0.0.1785875347-gbc402f" {
+		t.Fatalf("Amp selected version = %q", got)
+	}
+	if got := LoadCachedAgentExecutable(dir, "amp"); got != filepath.Join(dir, "amp.exe") {
+		t.Fatalf("Amp selected executable = %q", got)
+	}
+}
+
+func writeAmpSetupSelectionForTest(
+	t *testing.T,
+	dir string,
+	executable string,
+	rawVersion string,
+	normalizedVersion string,
+	selectedAt time.Time,
+	expiresAt time.Time,
+) agentSelectionEvidence {
+	t.Helper()
+	_, digest, ok := setupSelectedAgentExecutableEvidence(executable)
+	if !ok {
+		t.Fatal("could not hash fixture Amp executable")
+	}
+	selection := agentSelectionEvidence{
+		Connector:         "amp",
+		Source:            "setup-selected",
+		Executable:        executable,
+		RawVersion:        rawVersion,
+		NormalizedVersion: normalizedVersion,
+		SHA256:            digest,
+		SelectedAt:        selectedAt.Format(time.RFC3339),
+		ExpiresAt:         expiresAt.Format(time.RFC3339),
+	}
+	receipt := agentSelectionReceipt{
+		SchemaVersion: agentSelectionSchemaVersion,
+		UpdatedAt:     selectedAt.Format(time.RFC3339),
+		Selections:    map[string]agentSelectionEvidence{"amp": selection},
+	}
+	body, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(dir, agentSelectionFile), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return selection
+}
+
+func writeAmpContractLockForTest(t *testing.T, dir string, entry HookContractLockEntry, updatedAt time.Time) {
+	t.Helper()
+	entry.UpdatedAt = updatedAt.Format(time.RFC3339)
+	lock := hookContractLock{
+		Version:    hookContractLockVersion,
+		UpdatedAt:  updatedAt.Format(time.RFC3339),
+		Connectors: map[string]HookContractLockEntry{"amp": entry},
+	}
+	body, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(dir, hookContractLockFile), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAmpSetupSelectionRejectsUnsupportedOrForeignEvidence(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Amp setup selections are native-Windows authority")
+	}
+	for _, test := range []struct {
+		name       string
+		raw        string
+		normalized string
+	}{
+		{name: "fake", raw: "not-an-amp-version", normalized: "0.0.1785875347"},
+		{name: "unsupported", raw: "amp 0.0.1", normalized: "0.0.1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := testenv.PrivateTempDir(t)
+			executable := filepath.Join(dir, "amp.exe")
+			if err := atomicWriteFile(executable, []byte("fixture Amp"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC().Truncate(time.Second)
+			writeAmpSetupSelectionForTest(
+				t, dir, executable, test.raw, test.normalized, now, now.Add(agentSelectionMaxLifetime),
+			)
+			if resolution := ResolveHookContract("amp", test.raw); resolution.Status == HookCompatibilityKnown {
+				t.Fatalf("test version unexpectedly resolved known: %+v", resolution)
+			}
+			if selection, ok := loadSetupAgentSelection(dir, "amp"); ok {
+				t.Fatalf("unsupported Amp evidence loaded: %+v", selection)
+			}
+		})
+	}
+}
+
+func TestAmpExpiredOrOlderMatchingReceiptCannotSupersedeSealedLock(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Amp setup selections are native-Windows authority")
+	}
+	for _, test := range []struct {
+		name       string
+		selectedAt func(time.Time) time.Time
+		expiresAt  func(time.Time) time.Time
+	}{
+		{
+			name:       "expired",
+			selectedAt: func(now time.Time) time.Time { return now.Add(-20 * time.Minute) },
+			expiresAt:  func(now time.Time) time.Time { return now.Add(-5 * time.Minute) },
+		},
+		{
+			name:       "older-matching",
+			selectedAt: func(now time.Time) time.Time { return now.Add(-2 * time.Minute) },
+			expiresAt:  func(now time.Time) time.Time { return now.Add(5 * time.Minute) },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := testenv.PrivateTempDir(t)
+			executable := filepath.Join(dir, "amp.exe")
+			if err := atomicWriteFile(executable, []byte("sealed Amp"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Now().UTC().Truncate(time.Second)
+			locked := NewHookContractLockEntry(
+				SetupOpts{DataDir: dir, AgentVersion: "0.0.1785875347-gbc402f", AgentExecutable: executable},
+				NewAMPConnector(),
+				"test-build",
+			)
+			if !validSetupSelectedAgentExecutableEvidence(locked, "amp") {
+				t.Fatalf("Amp lock lacks sealed executable evidence: %+v", locked)
+			}
+			writeAmpContractLockForTest(t, dir, locked, now.Add(-time.Minute))
+			writeAmpSetupSelectionForTest(
+				t,
+				dir,
+				executable,
+				locked.RawAgentVersion,
+				locked.NormalizedAgentVersion,
+				test.selectedAt(now),
+				test.expiresAt(now),
+			)
+
+			if selection, supersedes := supersedingProtectedSetupSelection(dir, "amp", locked); supersedes {
+				t.Fatalf("%s Amp receipt superseded sealed lock: %+v", test.name, selection)
+			}
+			if got := LoadHookContractLockEntry(dir, "amp"); !validSetupSelectedAgentExecutableEvidence(got, "amp") {
+				t.Fatalf("%s Amp receipt hid sealed lock: %+v", test.name, got)
+			}
+		})
+	}
+}
+
+func TestNewerDifferentAmpReceiptSupersedesThenFreshSealRegainsAuthority(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Amp setup selections are native-Windows authority")
+	}
+	dir := testenv.PrivateTempDir(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	oldExecutable := filepath.Join(dir, "old", "amp.exe")
+	if err := os.MkdirAll(filepath.Dir(oldExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(oldExecutable, []byte("old Amp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldEntry := NewHookContractLockEntry(
+		SetupOpts{DataDir: dir, AgentVersion: "0.0.1785875347-gbc402f", AgentExecutable: oldExecutable},
+		NewAMPConnector(),
+		"old-build",
+	)
+	writeAmpContractLockForTest(t, dir, oldEntry, now.Add(-2*time.Minute))
+
+	newExecutable := filepath.Join(dir, "current", "amp.exe")
+	if err := os.MkdirAll(filepath.Dir(newExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(newExecutable, []byte("current Amp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	selection := writeAmpSetupSelectionForTest(
+		t,
+		dir,
+		newExecutable,
+		"0.0.1785875347-gbc402f",
+		"0.0.1785875347",
+		now,
+		now.Add(agentSelectionMaxLifetime),
+	)
+	if previous := LoadHookContractLockEntry(dir, "amp"); previous.Connector != "" {
+		t.Fatalf("newer different Amp receipt did not supersede old lock: %+v", previous)
+	}
+	if got := LoadCachedAgentExecutable(dir, "amp"); !strings.EqualFold(got, newExecutable) {
+		t.Fatalf("Amp repair executable = %q, want %q", got, newExecutable)
+	}
+
+	newEntry := NewHookContractLockEntry(
+		SetupOpts{DataDir: dir, AgentVersion: selection.RawVersion, AgentExecutable: newExecutable},
+		NewAMPConnector(),
+		"new-build",
+	)
+	if err := SaveFreshHookContractLockEntry(dir, newEntry); err != nil {
+		t.Fatalf("persist repaired Amp lock: %v", err)
+	}
+	sealed := LoadHookContractLockEntry(dir, "amp")
+	if !validSetupSelectedAgentExecutableEvidence(sealed, "amp") ||
+		!protectedSelectionMatchesLock(selection, sealed) {
+		t.Fatalf("fresh Amp seal did not regain authority: %+v", sealed)
+	}
+	if receipt, supersedes := supersedingProtectedSetupSelection(dir, "amp", sealed); supersedes {
+		t.Fatalf("matching receipt displaced fresh Amp seal: %+v", receipt)
+	}
+}
+
+func TestAmpAuthorityNeverFallsBackToAnotherConnectorCacheOrReceipt(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Amp setup selections are native-Windows authority")
+	}
+	dir := testenv.PrivateTempDir(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	foreignExecutable := filepath.Join(dir, "opencode.exe")
+	if err := atomicWriteFile(foreignExecutable, []byte("foreign connector"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, digest, ok := setupSelectedAgentExecutableEvidence(foreignExecutable)
+	if !ok {
+		t.Fatal("could not hash foreign connector fixture")
+	}
+	receipt := agentSelectionReceipt{
+		SchemaVersion: agentSelectionSchemaVersion,
+		UpdatedAt:     now.Format(time.RFC3339),
+		Selections: map[string]agentSelectionEvidence{
+			"opencode": {
+				Connector: "opencode", Source: "setup-selected", Executable: foreignExecutable,
+				RawVersion: "opencode 1.18.11", NormalizedVersion: "1.18.11", SHA256: digest,
+				SelectedAt: now.Format(time.RFC3339), ExpiresAt: now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+			},
+		},
+	}
+	receiptBody, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(dir, agentSelectionFile), receiptBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cacheBody := []byte(`{"agents":{"copilot":{"version":"1.0.78","binary_path":"C:\\stale\\copilot.exe"}}}`)
+	if err := atomicWriteFile(filepath.Join(dir, "agent_discovery.json"), cacheBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := LoadCachedAgentVersion(dir, "amp"); got != "" {
+		t.Fatalf("Amp consumed foreign cached version %q", got)
+	}
+	if got := LoadCachedAgentExecutable(dir, "amp"); got != "" {
+		t.Fatalf("Amp consumed foreign cached executable %q", got)
 	}
 }
 

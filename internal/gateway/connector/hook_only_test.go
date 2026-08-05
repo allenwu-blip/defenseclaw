@@ -2661,6 +2661,7 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 	current := windowsCopilotPowerShellHookCommandForBinary(hookBinary)
 	legacy := legacyWindowsCopilotPowerShellHookCommandForBinary(hookBinary)
 	duplicated := legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(hookBinary)
+	legacyEvent := legacyWindowsCopilotPowerShellHookCommandForEvent("preToolUse", hookBinary)
 	historic := legacyWindowsCopilotDoubleCallOperatorHookCommandForBinary(
 		filepath.Join(userHomeDir(), ".local", "bin", windowsHookBinaryName),
 	)
@@ -2670,6 +2671,7 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 		"version": 1,
 		"hooks": map[string]interface{}{
 			"preToolUse": []interface{}{
+				map[string]interface{}{"type": "command", "powershell": legacyEvent, "timeoutSec": 30},
 				map[string]interface{}{"type": "command", "powershell": duplicated, "timeoutSec": 30},
 				map[string]interface{}{"type": "command", "powershell": legacy, "timeoutSec": 30},
 				map[string]interface{}{"type": "command", "powershell": historic, "timeoutSec": 30},
@@ -2706,7 +2708,7 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 					t.Errorf("%s canonical entry drifted: %#v", event, entry)
 				}
 			}
-			if command == legacy || command == duplicated || command == historic {
+			if command == legacy || command == duplicated || command == historic || command == legacyEvent {
 				t.Errorf("%s retained legacy Copilot command %q", event, command)
 			}
 		}
@@ -2721,6 +2723,16 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 	if !strings.Contains(string(repairedData), foreign) {
 		t.Fatal("repair removed the operator-owned hook")
 	}
+	if err := patchCopilotHooks(path, current); err != nil {
+		t.Fatalf("idempotent patchCopilotHooks: %v", err)
+	}
+	idempotentData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read idempotent config: %v", err)
+	}
+	if !bytes.Equal(idempotentData, repairedData) {
+		t.Fatal("second Copilot migration changed the converged registration")
+	}
 
 	if err := removeJSONHookReferences(path, current); err != nil {
 		t.Fatalf("removeJSONHookReferences: %v", err)
@@ -2730,7 +2742,7 @@ func TestCopilotWindowsHooksRepairAndTeardown(t *testing.T) {
 		t.Fatalf("read config after teardown: %v", err)
 	}
 	after := string(afterData)
-	ownedCommands := []string{current, legacy, duplicated, historic}
+	ownedCommands := []string{current, legacy, duplicated, historic, legacyEvent}
 	for _, event := range copilotCurrentHookEvents {
 		ownedCommands = append(ownedCommands, windowsCopilotPowerShellHookCommandForEvent(event, hookBinary))
 	}

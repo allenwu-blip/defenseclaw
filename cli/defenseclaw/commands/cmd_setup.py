@@ -26,15 +26,18 @@ import hashlib
 import http.client
 import json as _json
 import os
+import queue
 import secrets
 import shutil
 import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -82,11 +85,11 @@ from defenseclaw.connector_contracts import (
     STATUS_UNKNOWN,
     STATUS_UNVERSIONED,
     compare_agent_versions,
+    connector_lock_contract_invariant,
     normalize_connector,
     resolve_connector_contract,
 )
 from defenseclaw.context import AppContext, pass_ctx
-from defenseclaw.cursor_contract import validate_cursor_registration
 from defenseclaw.file_permissions import (
     MAX_DOTENV_BYTES,
     atomic_write_private_bytes,
@@ -130,6 +133,19 @@ _SETUP_BATCH_READINESS_KEY = "defenseclaw._setup_batch_readiness_connectors"
 _SETUP_BATCH_ROLLBACK_KEY = "defenseclaw._setup_batch_rollback_snapshot"
 _CONNECTOR_RUNTIME_READY_TIMEOUT_SECONDS = 60.0
 _CONNECTOR_RUNTIME_READY_ABSOLUTE_CAP_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class _ConnectorRuntimeReadiness:
+    ready: bool
+    connector: str = ""
+    invariant: str = ""
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ready
+
+
 _GATEWAY_API_READY_TIMEOUT_SECONDS = 45.0
 _DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS = 60
 _DEFENSE_GATEWAY_STATUS_TIMEOUT_SECONDS = 10
@@ -1717,7 +1733,13 @@ def _configure_cisco_ai_defense(aid, data_dir: str) -> None:
     aid.api_key_env = "CISCO_AI_DEFENSE_API_KEY"
 
 
-def _prompt_and_save_secret(env_name: str, current: str, data_dir: str) -> None:
+def _prompt_and_save_secret(
+    env_name: str,
+    current: str,
+    data_dir: str,
+    *,
+    _pending_secrets: list[_PendingGuardrailSecret] | None = None,
+) -> None:
     """Prompt for a secret, save it to ~/.defenseclaw/.env, and set it in os.environ.
 
     The value is never returned — callers should store only the *env var name*
@@ -1731,10 +1753,25 @@ def _prompt_and_save_secret(env_name: str, current: str, data_dir: str) -> None:
         hint = _mask(effective)
     else:
         hint = "(not set)"
-    val = click.prompt(f"  {env_name} [{hint}]", default="", show_default=False)
+    val = click.prompt(
+        f"  {env_name} [{hint}]",
+        default="",
+        show_default=False,
+        hide_input=True,
+    )
     secret = val or effective
     if secret:
-        _save_secret_to_dotenv(env_name, secret, data_dir)
+        if _pending_secrets is None:
+            _save_secret_to_dotenv(env_name, secret, data_dir)
+        else:
+            if not dotenv_key_is_valid(env_name):
+                raise DotenvValueError(f"invalid dotenv key: {env_name!r}")
+            sanitize_dotenv_value(secret, key=env_name)
+            for pending in _pending_secrets:
+                if pending.env_name == env_name:
+                    pending.clear()
+            _pending_secrets[:] = [pending for pending in _pending_secrets if pending.env_name != env_name]
+            _pending_secrets.append(_PendingGuardrailSecret(env_name, secret))
 
 
 def _mask(key: str) -> str:
@@ -2371,11 +2408,352 @@ def _rotate_token_dotenv_path(app: AppContext) -> str:
     return os.path.join(data_dir, ".env")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class _RotateTokenDotenvSnapshot:
     existed: bool
     body: bytes
     mode: int | None
+
+
+@dataclass(repr=False)
+class _PendingGuardrailSecret:
+    """One local-only judge secret awaiting the guardrail commit boundary."""
+
+    env_name: str
+    value: str
+
+    def clear(self) -> None:
+        self.value = ""
+
+
+@dataclass(repr=False)
+class _GuardrailSecretKeyTransaction:
+    """Exact, local-only custody for one transaction-owned secret key."""
+
+    env_name: str
+    dotenv_before_existed: bool
+    dotenv_before_value: bytes | None
+    dotenv_published_value: bytes
+    dotenv_changed: bool
+    process_before_existed: bool = False
+    process_before_value: str | None = None
+    process_published_value: str = ""
+    process_changed: bool = False
+
+    def clear(self) -> None:
+        self.dotenv_before_value = None
+        self.dotenv_published_value = b""
+        self.process_before_value = None
+        self.process_published_value = ""
+
+
+@dataclass(repr=False)
+class _GuardrailSecretTransaction:
+    """Secret-safe exact rollback state for one guardrail publication."""
+
+    dotenv_path: str
+    dotenv_before: _RotateTokenDotenvSnapshot
+    dotenv_after: _RotateTokenDotenvSnapshot
+    dotenv_after_sha256: str
+    dotenv_after_authoritative: bool
+    keys: tuple[_GuardrailSecretKeyTransaction, ...]
+
+    def clear(self) -> None:
+        for key in self.keys:
+            key.clear()
+        self.dotenv_before = _RotateTokenDotenvSnapshot(False, b"", None)
+        self.dotenv_after = _RotateTokenDotenvSnapshot(False, b"", None)
+        self.dotenv_after_sha256 = ""
+        self.dotenv_after_authoritative = False
+
+
+@dataclass(frozen=True, repr=False)
+class _GuardrailSecretRollbackStatus:
+    """Bounded, secret-free result of a compare-before-restore rollback."""
+
+    codes: tuple[str, ...] = ()
+
+    @property
+    def complete(self) -> bool:
+        return not self.codes
+
+
+class _GuardrailSecretFailure(click.ClickException):
+    """Public-safe sentinel with no retained secret-bearing exception."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(f"guardrail secret transaction failed safely ({code})")
+
+
+def _clear_pending_guardrail_secrets(pending_secrets: list[_PendingGuardrailSecret]) -> None:
+    for pending in pending_secrets:
+        pending.clear()
+    pending_secrets.clear()
+
+
+def _guardrail_secret_rollback_status(*codes: str) -> _GuardrailSecretRollbackStatus:
+    return _GuardrailSecretRollbackStatus(tuple(dict.fromkeys(code for code in codes if code)))
+
+
+def _guardrail_dotenv_snapshot_sha256(snapshot: _RotateTokenDotenvSnapshot) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"1" if snapshot.existed else b"0")
+    digest.update(b"\0")
+    digest.update(str(snapshot.mode if snapshot.mode is not None else -1).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(snapshot.body)
+    return digest.hexdigest()
+
+
+def _guardrail_dotenv_snapshot_matches(
+    current: _RotateTokenDotenvSnapshot,
+    expected: _RotateTokenDotenvSnapshot,
+    expected_sha256: str,
+) -> bool:
+    return current == expected and _guardrail_dotenv_snapshot_sha256(current) == expected_sha256
+
+
+def _dotenv_snapshot_raw_key_state(
+    snapshot: _RotateTokenDotenvSnapshot,
+    key: str,
+) -> tuple[bool, bytes | None]:
+    """Return the last exact raw value for *key* without exposing it."""
+
+    key_bytes = key.encode("ascii")
+    requested_key = key_bytes.upper() if os.name == "nt" else key_bytes
+    found = False
+    value: bytes | None = None
+    for line in snapshot.body.splitlines():
+        candidate = line.strip()
+        existing_key, separator, existing_value = candidate.partition(b"=")
+        compared_key = existing_key.strip()
+        if os.name == "nt":
+            compared_key = compared_key.upper()
+        if separator and compared_key == requested_key:
+            found = True
+            value = existing_value
+    return found, value
+
+
+def _dotenv_restore_raw_key_render(
+    snapshot: _RotateTokenDotenvSnapshot,
+    key: str,
+    existed: bool,
+    value: bytes | None,
+) -> bytes:
+    """Restore one owned key while retaining every unrelated current byte."""
+
+    key_bytes = key.encode("ascii")
+    requested_key = key_bytes.upper() if os.name == "nt" else key_bytes
+    restored = False
+    lines: list[bytes] = []
+    for line in snapshot.body.splitlines(keepends=True):
+        candidate = line.rstrip(b"\r\n").strip()
+        existing_key, separator, _existing_value = candidate.partition(b"=")
+        compared_key = existing_key.strip()
+        if os.name == "nt":
+            compared_key = compared_key.upper()
+        if not separator or compared_key != requested_key:
+            lines.append(line)
+            continue
+        if existed and not restored:
+            terminator = line[len(line.rstrip(b"\r\n")) :]
+            lines.append(key_bytes + b"=" + (value or b"") + terminator)
+            restored = True
+    body = b"".join(lines)
+    if existed and not restored:
+        newline = b"\r\n" if b"\r\n" in snapshot.body else b"\n"
+        if body and not body.endswith((b"\r", b"\n")):
+            body += newline
+        body += key_bytes + b"=" + (value or b"") + newline
+    return body
+
+
+def _set_guardrail_secret_process_value(env_name: str, value: str) -> None:
+    os.environ[env_name] = value
+
+
+def _restore_guardrail_secret_transaction(
+    transaction: _GuardrailSecretTransaction,
+) -> _GuardrailSecretRollbackStatus:
+    """Compare-before-restore only state still owned by this transaction."""
+
+    status_codes: list[str] = []
+    try:
+        with locked_file_update(transaction.dotenv_path):
+            current = _rotate_token_snapshot_locked(transaction.dotenv_path)
+            if transaction.dotenv_after_authoritative and _guardrail_dotenv_snapshot_matches(
+                current,
+                transaction.dotenv_after,
+                transaction.dotenv_after_sha256,
+            ):
+                _rotate_token_restore_locked(
+                    transaction.dotenv_path,
+                    transaction.dotenv_before,
+                )
+            else:
+                restored = current
+                for key in transaction.keys:
+                    if not key.dotenv_changed:
+                        continue
+                    current_existed, current_value = _dotenv_snapshot_raw_key_state(
+                        restored,
+                        key.env_name,
+                    )
+                    if not current_existed or current_value != key.dotenv_published_value:
+                        status_codes.append("dotenv-owned-key-conflict")
+                        continue
+                    restored = _RotateTokenDotenvSnapshot(
+                        existed=True,
+                        body=_dotenv_restore_raw_key_render(
+                            restored,
+                            key.env_name,
+                            key.dotenv_before_existed,
+                            key.dotenv_before_value,
+                        ),
+                        mode=restored.mode,
+                    )
+                if restored.body != current.body:
+                    atomic_write_private_bytes(transaction.dotenv_path, restored.body)
+                    if os.name != "nt" and current.mode is not None:
+                        os.chmod(transaction.dotenv_path, current.mode)
+    except BaseException:  # Restore process keys even when file custody fails.
+        status_codes.append("dotenv-rollback-error")
+    for key in transaction.keys:
+        if not key.process_changed:
+            continue
+        try:
+            current_existed = key.env_name in os.environ
+            current_value = os.environ.get(key.env_name)
+            if not current_existed or current_value != key.process_published_value:
+                status_codes.append("process-owned-key-conflict")
+                continue
+            if key.process_before_existed and key.process_before_value is not None:
+                os.environ[key.env_name] = key.process_before_value
+            else:
+                os.environ.pop(key.env_name, None)
+        except BaseException:  # Restore every changed key independently.
+            status_codes.append("process-rollback-error")
+    transaction.clear()
+    return _guardrail_secret_rollback_status(*status_codes)
+
+
+def _publish_pending_guardrail_secrets(
+    pending_secrets: list[_PendingGuardrailSecret],
+    data_dir: str,
+) -> _GuardrailSecretTransaction | None:
+    """Atomically publish deferred judge secrets and return rollback custody."""
+
+    if not pending_secrets:
+        return None
+    dotenv_path = os.path.join(data_dir, ".env")
+    updates: tuple[tuple[str, str], ...] = ()
+    dotenv_before: _RotateTokenDotenvSnapshot | None = None
+    dotenv_after: _RotateTokenDotenvSnapshot | None = None
+    dotenv_after_authoritative = False
+    key_transactions: list[_GuardrailSecretKeyTransaction] = []
+    publication_failed = False
+    try:
+        updates = tuple(
+            (
+                pending.env_name,
+                sanitize_dotenv_value(pending.value, key=pending.env_name),
+            )
+            for pending in pending_secrets
+        )
+        with locked_file_update(dotenv_path):
+            dotenv_before = _rotate_token_snapshot_locked(dotenv_path)
+            for env_name, value in updates:
+                before_existed, before_value = _dotenv_snapshot_raw_key_state(
+                    dotenv_before,
+                    env_name,
+                )
+                published_value = value.encode("utf-8")
+                key_transactions.append(
+                    _GuardrailSecretKeyTransaction(
+                        env_name=env_name,
+                        dotenv_before_existed=before_existed,
+                        dotenv_before_value=before_value,
+                        dotenv_published_value=published_value,
+                        dotenv_changed=(not before_existed or before_value != published_value),
+                        process_published_value=value,
+                    )
+                )
+            try:
+                _save_secrets_to_dotenv_locked(
+                    dotenv_path,
+                    dotenv_before,
+                    updates,
+                )
+            except BaseException:
+                publication_failed = True
+            try:
+                dotenv_after = _rotate_token_snapshot_locked(dotenv_path)
+                dotenv_after_authoritative = True
+            except BaseException:
+                publication_failed = True
+    except BaseException:
+        publication_failed = True
+    if publication_failed and dotenv_before is not None and dotenv_after is None:
+        try:
+            with locked_file_update(dotenv_path):
+                dotenv_after = _rotate_token_snapshot_locked(dotenv_path)
+        except BaseException:
+            dotenv_after = None
+    transaction: _GuardrailSecretTransaction | None = None
+    if dotenv_before is not None and dotenv_after is not None:
+        if publication_failed:
+            for key in key_transactions:
+                after_existed, after_value = _dotenv_snapshot_raw_key_state(
+                    dotenv_after,
+                    key.env_name,
+                )
+                key.dotenv_changed = bool(
+                    key.dotenv_changed and after_existed and after_value == key.dotenv_published_value
+                )
+        transaction = _GuardrailSecretTransaction(
+            dotenv_path=dotenv_path,
+            dotenv_before=dotenv_before,
+            dotenv_after=dotenv_after,
+            dotenv_after_sha256=_guardrail_dotenv_snapshot_sha256(dotenv_after),
+            dotenv_after_authoritative=dotenv_after_authoritative,
+            keys=tuple(key_transactions),
+        )
+    if not publication_failed and transaction is not None:
+        for key in transaction.keys:
+            key.process_before_existed = key.env_name in os.environ
+            key.process_before_value = os.environ.get(key.env_name)
+            if key.process_before_existed and key.process_before_value == key.process_published_value:
+                continue
+            process_update_failed = False
+            try:
+                _set_guardrail_secret_process_value(
+                    key.env_name,
+                    key.process_published_value,
+                )
+            except BaseException:
+                process_update_failed = True
+            key.process_changed = bool(
+                key.env_name in os.environ and os.environ.get(key.env_name) == key.process_published_value
+            )
+            if process_update_failed:
+                publication_failed = True
+                break
+    if publication_failed or transaction is None:
+        rollback_status = _guardrail_secret_rollback_status("publication-custody-unavailable")
+        if transaction is not None:
+            try:
+                rollback_status = _restore_guardrail_secret_transaction(transaction)
+            except BaseException:
+                rollback_status = _guardrail_secret_rollback_status("publication-rollback-error")
+        _clear_pending_guardrail_secrets(pending_secrets)
+        failure_code = (
+            "publication-failed-restored" if rollback_status.complete else "publication-failed-rollback-incomplete"
+        )
+        raise _GuardrailSecretFailure(failure_code) from None
+    _clear_pending_guardrail_secrets(pending_secrets)
+    return transaction
 
 
 def _rotate_token_snapshot_locked(dotenv_path: str) -> _RotateTokenDotenvSnapshot:
@@ -2445,6 +2823,24 @@ def _dotenv_upsert_render(
             body += newline
         body += key_bytes + b"=" + safe_value + newline
     return body
+
+
+def _save_secrets_to_dotenv_locked(
+    dotenv_path: str,
+    snapshot: _RotateTokenDotenvSnapshot,
+    updates: tuple[tuple[str, str], ...],
+) -> None:
+    """Publish a validated dotenv batch once while the caller owns its lock."""
+
+    rendered = snapshot
+    for key, value in updates:
+        rendered = _RotateTokenDotenvSnapshot(
+            existed=True,
+            body=_dotenv_upsert_render(rendered, key, value),
+            mode=rendered.mode,
+        )
+    if not snapshot.existed or rendered.body != snapshot.body:
+        atomic_write_private_bytes(dotenv_path, rendered.body)
 
 
 def _rotate_token_render(snapshot: _RotateTokenDotenvSnapshot, new_token: str) -> bytes:
@@ -3383,7 +3779,6 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "Legacy Cascade only: ~/.codeium/windsurf/hooks.json hooks",
         "Bound-user MCP plus non-enterprise Cascade rules/skills are discovered read-only",
         "Devin Local/default-agent, cloud, ACP, and managed/ProgramData layers remain unsupported",
-        "~/.defenseclaw/hooks/windsurf-hook.sh",
     ),
     "geminicli": (
         "~/.gemini/settings.json hooks (continuing enterprise/Google Cloud/paid API-key product only)",
@@ -3469,7 +3864,15 @@ def _print_connector_mutation_notice(connector: str, *, switching_from: str | No
         old = _CONNECTOR_META.get(switching_from, {}).get("label", switching_from)
         prefix = f"  Switching from {old} first tears down its DefenseClaw integration, then updates {label}"
     click.echo(prefix + ":")
-    for surface in _CONNECTOR_CHANGE_SURFACES.get(connector, ()):
+    surfaces = _CONNECTOR_CHANGE_SURFACES.get(connector, ())
+    if connector == "windsurf":
+        hook_surface = (
+            "~/.defenseclaw/hooks/windsurf-hook.ps1 on Windows"
+            if platform_support.host_os() == "windows"
+            else "~/.defenseclaw/hooks/windsurf-hook.sh on non-Windows"
+        )
+        surfaces = (*surfaces, hook_surface)
+    for surface in surfaces:
         click.echo(f"    - {surface}")
     click.echo(
         "  A hash-checked backup is stored before edits; teardown restores or surgically removes only "
@@ -3700,15 +4103,16 @@ def _check_connector_version_supported_for_setup(
             use_cache=False,
             refresh=True,
             data_dir=data_dir,
-            # Native Windows OmniGent setup immediately records a protected,
+            # Native Windows OmniGent/OpenCode/Amp setup immediately records a protected,
             # connector-scoped executable selection below.  Its admission scan
             # therefore does not need to republish the process-wide discovery
             # cache.  Leaving that cache untouched prevents an unrelated
-            # connector whose CLI is temporarily undiscoverable (Cursor in the
-            # observed repair sequence) from losing already-sealed version and
-            # contract status when the gateway restarts every active connector.
+            # connector whose CLI is temporarily undiscoverable from losing
+            # already-sealed version and contract status when the gateway
+            # restarts every active connector.
             persist_cache=not (
-                connector == "omnigent" and platform_support.host_os() == "windows"
+                connector in {"omnigent", "opencode", "amp"}
+                and platform_support.host_os() == "windows"
             ),
         )
         signal = disc.agents.get(connector)
@@ -3879,14 +4283,22 @@ def _check_connector_version_supported_for_setup(
     return True
 
 
+def _windows_opencode_requires_exact_selection(connector: str) -> bool:
+    """Return whether generic discovery is forbidden as setup authority."""
+
+    return normalize_connector(connector) == "opencode" and platform_support.host_os() == "windows"
+
+
 def _record_windows_setup_agent_selections(
     data_dir: str | os.PathLike[str] | None,
     connectors: list[str] | tuple[str, ...],
-) -> None:
+    *,
+    _prior_snapshot: _SetupConfigSnapshot | None = None,
+) -> _VerifiedSetupAgentSelections | None:
     """Refresh protected executable authority for native runtime inspection."""
 
     if platform_support.host_os() != "windows":
-        return
+        return None
     from defenseclaw.agent_selection import (
         record_setup_agent_selections,
         setup_agent_selection_connectors,
@@ -3894,7 +4306,7 @@ def _record_windows_setup_agent_selections(
 
     selected = setup_agent_selection_connectors(connectors)
     if not selected:
-        return
+        return None
 
     target_dir = data_dir or os.path.expanduser("~/.defenseclaw")
     try:
@@ -3910,6 +4322,17 @@ def _record_windows_setup_agent_selections(
         raise click.ClickException(
             f"cannot configure native hooks without a freshly verified selected agent executable ({details})"
         )
+    try:
+        return _validate_setup_agent_selection_receipt(
+            target_dir,
+            selected,
+            selections,
+            prior_generation=(_prior_snapshot.agent_selection_generation if _prior_snapshot is not None else None),
+        )
+    except OSError as exc:
+        raise click.ClickException(
+            f"could not bind selected agent executables to the protected receipt: {exc}"
+        ) from exc
 
 
 def _guardrail_setup_check_targets(app: AppContext, gc, explicit_connector: str | None) -> list[str]:
@@ -3947,11 +4370,23 @@ def _check_guardrail_setup_connector_versions(
     *,
     explicit_connector: str | None,
     allow_prompt: bool,
+    _prior_snapshot: _SetupConfigSnapshot | None = None,
+    _protected_selection: _VerifiedSetupAgentSelections | None = None,
+    _transaction_targets: tuple[str, ...] | None = None,
 ) -> bool:
     """Verify every connector affected by a guardrail setup run."""
     trusted_prompt_cache: dict[str, bool] | None = {} if allow_prompt else None
-    targets = _guardrail_setup_check_targets(app, gc, explicit_connector)
+    targets = (
+        list(_transaction_targets)
+        if _transaction_targets is not None
+        else _guardrail_setup_check_targets(app, gc, explicit_connector)
+    )
+    setup_snapshot = _prior_snapshot or _capture_setup_config_snapshot(app.cfg)
+    exact_windows_opencode = any(_windows_opencode_requires_exact_selection(name) for name in targets)
+
     for connector in targets:
+        if _windows_opencode_requires_exact_selection(connector):
+            continue
         mode = gc.effective_mode(connector) if hasattr(gc, "effective_mode") else (getattr(gc, "mode", "") or "observe")
         version_check_kwargs = {
             "mode": mode or "observe",
@@ -3964,8 +4399,36 @@ def _check_guardrail_setup_connector_versions(
             if (mode or "").strip().lower() == "action":
                 _downgrade_guardrail_setup_action_connector(gc, connector)
                 continue
+            _restore_setup_config_snapshot(app, setup_snapshot)
             return False
-    _record_windows_setup_agent_selections(getattr(app.cfg, "data_dir", None), tuple(targets))
+    if exact_windows_opencode:
+        try:
+            if _protected_selection is None:
+                raise OSError("exact OpenCode selection was not recorded")
+            from defenseclaw.agent_selection import setup_agent_selection_connectors
+
+            if _protected_selection.connectors != setup_agent_selection_connectors(tuple(targets)):
+                raise OSError("exact OpenCode selection does not cover this guardrail transaction")
+            _revalidate_setup_agent_selections(
+                app.cfg.data_dir,
+                _protected_selection,
+                transaction_snapshot=setup_snapshot,
+            )
+        except OSError as exc:
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve proof and rollback failures.
+                raise click.ClickException(
+                    f"guardrail executable selection proof was invalid ({exc}); "
+                    f"prior state restoration failed: {rollback_exc}"
+                ) from exc
+            raise click.ClickException(f"guardrail executable selection changed before mutation: {exc}") from exc
+    else:
+        _record_windows_setup_agent_selections(
+            getattr(app.cfg, "data_dir", None),
+            tuple(targets),
+            _prior_snapshot=setup_snapshot,
+        )
     # Version validation can refuse a requested action mode and persist an
     # observe fallback. Reconcile the hook-lane judge gate after every target
     # has reached its final mode so a refused connector cannot remain judged
@@ -4578,6 +5041,110 @@ def setup_guardrail(
     if explicit_connector:
         _ensure_connector_available(explicit_connector)
 
+    try:
+        setup_snapshot = _capture_setup_config_snapshot(app.cfg, capture_runtime=_windows_runtime_rollback(restart))
+    except OSError as exc:
+        raise click.ClickException(f"cannot establish guardrail setup rollback point: {exc}") from exc
+
+    protected_selection: _VerifiedSetupAgentSelections | None = None
+    selection_attempted = False
+    transaction_targets: tuple[str, ...] | None = None
+    pending_guardrail_secrets: list[_PendingGuardrailSecret] = []
+    guardrail_secret_transaction: _GuardrailSecretTransaction | None = None
+
+    def preselect_guardrail_targets(targets: list[str] | tuple[str, ...]) -> None:
+        """Select exact OpenCode authority once, before guardrail mutation."""
+
+        nonlocal protected_selection, selection_attempted, transaction_targets
+        normalized_targets = tuple(dict.fromkeys(normalize_connector(name) for name in targets if name))
+        if not any(_windows_opencode_requires_exact_selection(name) for name in normalized_targets):
+            return
+        if transaction_targets is not None and transaction_targets != normalized_targets:
+            raise click.ClickException("guardrail transaction targets changed after selection")
+        transaction_targets = normalized_targets
+        if selection_attempted:
+            raise click.ClickException("guardrail executable selection was attempted more than once")
+        selection_attempted = True
+        try:
+            protected_selection = _record_windows_setup_agent_selections(
+                getattr(app.cfg, "data_dir", None),
+                normalized_targets,
+                _prior_snapshot=setup_snapshot,
+            )
+            if protected_selection is None or protected_selection.record_for("opencode") is None:
+                raise click.ClickException("native-Windows OpenCode guardrail setup has no concrete exact selection")
+        except Exception as exc:
+            rollback_errors: list[str] = []
+            for label, restore in (
+                ("agent_selection.json", _restore_setup_agent_selection_snapshot),
+                ("hook_contract_lock.json", _restore_setup_hook_contract_lock_snapshot),
+            ):
+                try:
+                    restore(app.cfg, setup_snapshot)
+                except Exception as rollback_exc:  # noqa: BLE001 — restore independent authority files.
+                    rollback_errors.append(f"{label}: {rollback_exc}")
+            if rollback_errors:
+                raise click.ClickException(
+                    f"guardrail executable selection failed ({exc}); "
+                    f"authority rollback was incomplete: {'; '.join(rollback_errors)}"
+                ) from exc
+            raise
+
+    def restore_precommit_guardrail_selection() -> None:
+        """Restore transaction-owned exact authority after an interactive no-op."""
+
+        if protected_selection is None:
+            return
+        rollback_errors: list[str] = []
+        for label, restore in (
+            (
+                "in-memory config",
+                lambda: _restore_setup_config_in_memory(app, setup_snapshot),
+            ),
+            (
+                "agent_selection.json",
+                lambda: _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot),
+            ),
+            (
+                "hook_contract_lock.json",
+                lambda: _restore_setup_hook_contract_lock_snapshot(app.cfg, setup_snapshot),
+            ),
+        ):
+            try:
+                restore()
+            except Exception as exc:  # noqa: BLE001 — restore independent transaction state.
+                rollback_errors.append(f"{label}: {exc}")
+        if rollback_errors:
+            raise click.ClickException(
+                "guardrail cancellation authority rollback was incomplete: " + "; ".join(rollback_errors)
+            )
+
+    def restore_guardrail_secret_publication() -> _GuardrailSecretRollbackStatus:
+        """Restore a published judge secret and release its rollback snapshot."""
+
+        nonlocal guardrail_secret_transaction
+        if guardrail_secret_transaction is None:
+            return _guardrail_secret_rollback_status()
+        transaction = guardrail_secret_transaction
+        try:
+            status = _restore_guardrail_secret_transaction(transaction)
+        except BaseException:
+            transaction.clear()
+            status = _guardrail_secret_rollback_status("secret-rollback-error")
+        guardrail_secret_transaction = None
+        return status
+
+    def restore_guardrail_setup_after_secret_publication() -> _GuardrailSecretRollbackStatus:
+        """Restore desired setup state and independently restore secret custody."""
+
+        status_codes: list[str] = []
+        try:
+            _restore_setup_config_snapshot(app, setup_snapshot)
+        except BaseException:  # Secret restoration must still run.
+            status_codes.append("setup-rollback-error")
+        status_codes.extend(restore_guardrail_secret_publication().codes)
+        return _guardrail_secret_rollback_status(*status_codes)
+
     aid = app.cfg.cisco_ai_defense
 
     if non_interactive:
@@ -4599,19 +5166,37 @@ def setup_guardrail(
         # back during scripted installs. Filesystem detection is only
         # used in the interactive picker where the operator can see and
         # confirm the suggested default.
-        target_connector = agent_name or ""
-        if agent_name:
-            target_connector = normalize_connector(agent_name)
-            if not (getattr(gc, "connectors", None) and target_connector in gc.connectors):
-                gc.connector = target_connector
+        target_connector = explicit_connector or ""
+        if explicit_connector:
+            target_connector = explicit_connector
         elif not gc.connector or gc.connector == "openclaw":
             picked = _read_picked_connector(getattr(app.cfg, "data_dir", None))
             if picked:
-                _ensure_connector_available(normalize_connector(picked))
-                gc.connector = picked
+                target_connector = normalize_connector(picked)
+            else:
+                target_connector = gc.connector
+        else:
+            target_connector = gc.connector
         target_connector = target_connector or gc.connector
         if target_connector:
             _ensure_connector_available(normalize_connector(target_connector))
+            configured_connectors = getattr(gc, "connectors", None)
+            if (
+                explicit_connector
+                or not configured_connectors
+                or not any(_windows_opencode_requires_exact_selection(name) for name in configured_connectors)
+            ):
+                target_connectors = (target_connector,)
+            else:
+                target_connectors = tuple(_guardrail_setup_check_targets(app, gc, None))
+            preselect_guardrail_targets(target_connectors)
+
+        if explicit_connector:
+            if not (getattr(gc, "connectors", None) and target_connector in gc.connectors):
+                gc.connector = target_connector
+        elif not gc.connector or gc.connector == "openclaw":
+            if target_connector:
+                gc.connector = target_connector
         per_connector_target = bool(
             explicit_connector
             and target_connector
@@ -4820,31 +5405,156 @@ def setup_guardrail(
                 gc.scanner_mode = "local"
                 click.echo("  ℹ Cisco AI Defense credentials not configured — using local scanner only")
     else:
-        _interactive_guardrail_setup(app, gc, agent_name=agent_name)
-        _apply_guardrail_extra_options(
-            app,
-            gc,
-            rule_pack=rule_pack,
-            rule_pack_dir=rule_pack_dir,
-            connector=explicit_connector,
-            human_approval=human_approval,
-            hilt_min_severity=hilt_min_severity,
+        secret_collection_failure_code: str | None = None
+        try:
+            interactive_completed = _interactive_guardrail_setup(
+                app,
+                gc,
+                agent_name=agent_name,
+                _pre_mutation_selection=preselect_guardrail_targets,
+                _pending_secrets=pending_guardrail_secrets,
+            )
+            if not interactive_completed:
+                _clear_pending_guardrail_secrets(pending_guardrail_secrets)
+                restore_precommit_guardrail_selection()
+                click.echo("  Guardrail not enabled. Run again without declining to configure.")
+                return
+            _apply_guardrail_extra_options(
+                app,
+                gc,
+                rule_pack=rule_pack,
+                rule_pack_dir=rule_pack_dir,
+                connector=explicit_connector,
+                human_approval=human_approval,
+                hilt_min_severity=hilt_min_severity,
+            )
+        except click.Abort:
+            secret_was_collected = bool(pending_guardrail_secrets)
+            _clear_pending_guardrail_secrets(pending_guardrail_secrets)
+            selection_rollback_failed = False
+            try:
+                restore_precommit_guardrail_selection()
+            except BaseException:
+                selection_rollback_failed = True
+            if not secret_was_collected:
+                if selection_rollback_failed:
+                    raise click.ClickException(
+                        "guardrail setup was aborted; prior selection authority restoration failed"
+                    ) from None
+                raise
+            secret_collection_failure_code = (
+                "collection-aborted-rollback-incomplete" if selection_rollback_failed else "collection-aborted-restored"
+            )
+        except BaseException:
+            if not pending_guardrail_secrets:
+                raise
+            _clear_pending_guardrail_secrets(pending_guardrail_secrets)
+            selection_rollback_failed = False
+            try:
+                restore_precommit_guardrail_selection()
+            except BaseException:
+                selection_rollback_failed = True
+            secret_collection_failure_code = (
+                "collection-failed-rollback-incomplete" if selection_rollback_failed else "collection-failed-restored"
+            )
+        if secret_collection_failure_code is not None:
+            raise _GuardrailSecretFailure(secret_collection_failure_code) from None
+
+    secret_publication_expected = bool(pending_guardrail_secrets)
+    secret_publication_failed = False
+    secret_publication_rollback_incomplete = False
+    try:
+        guardrail_secret_transaction = _publish_pending_guardrail_secrets(
+            pending_guardrail_secrets,
+            app.cfg.data_dir,
         )
+    except _GuardrailSecretFailure as publication_failure:
+        if not secret_publication_expected:
+            raise
+        secret_publication_rollback_incomplete = publication_failure.code == "publication-failed-rollback-incomplete"
+        secret_publication_failed = True
+    except BaseException:
+        if not secret_publication_expected:
+            raise
+        secret_publication_failed = True
+    if secret_publication_failed:
+        setup_rollback_failed = False
+        try:
+            _restore_setup_config_snapshot(app, setup_snapshot)
+        except BaseException:
+            setup_rollback_failed = True
+        if setup_rollback_failed and secret_publication_rollback_incomplete:
+            failure_code = "publication-failed-setup-and-secret-rollback-incomplete"
+        elif secret_publication_rollback_incomplete:
+            failure_code = "publication-failed-secret-rollback-incomplete"
+        elif setup_rollback_failed:
+            failure_code = "publication-failed-setup-rollback-incomplete"
+        else:
+            failure_code = "publication-failed-setup-restored"
+        raise _GuardrailSecretFailure(failure_code) from None
 
     if not gc.enabled:
+        if guardrail_secret_transaction is not None:
+            rollback_status = restore_guardrail_setup_after_secret_publication()
+            if not rollback_status.complete:
+                raise _GuardrailSecretFailure("not-enabled-rollback-incomplete") from None
         click.echo("  Guardrail not enabled. Run again without declining to configure.")
         return
 
-    if not _check_guardrail_setup_connector_versions(
-        app,
-        gc,
-        explicit_connector=(target_connector if non_interactive else explicit_connector),
-        allow_prompt=not non_interactive,
-    ):
+    validation_failed_with_secret = False
+    try:
+        versions_supported = _check_guardrail_setup_connector_versions(
+            app,
+            gc,
+            explicit_connector=(target_connector if non_interactive else explicit_connector),
+            allow_prompt=not non_interactive,
+            _prior_snapshot=setup_snapshot,
+            _protected_selection=protected_selection,
+            _transaction_targets=transaction_targets,
+        )
+    except BaseException:
+        if guardrail_secret_transaction is None:
+            raise
+        validation_failed_with_secret = True
+    if validation_failed_with_secret:
+        rollback_status = restore_guardrail_setup_after_secret_publication()
+        failure_code = (
+            "validation-failed-restored" if rollback_status.complete else "validation-failed-rollback-incomplete"
+        )
+        raise _GuardrailSecretFailure(failure_code) from None
+    if not versions_supported:
+        rollback_status = restore_guardrail_secret_publication()
+        if not rollback_status.complete:
+            raise _GuardrailSecretFailure("validation-refused-rollback-incomplete") from None
         return
 
-    ok, warnings = execute_guardrail_setup(app, save_config=True, workspace_dir=workspace_dir)
+    setup_failed_with_secret = False
+    try:
+        ok, warnings = execute_guardrail_setup(app, save_config=True, workspace_dir=workspace_dir)
+    except BaseException as exc:
+        if guardrail_secret_transaction is not None:
+            setup_failed_with_secret = True
+        else:
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve the original setup failure.
+                raise click.ClickException(
+                    f"guardrail setup failed ({exc}); prior state restoration failed: {rollback_exc}"
+                ) from exc
+            raise
+    if setup_failed_with_secret:
+        rollback_status = restore_guardrail_setup_after_secret_publication()
+        failure_code = "setup-failed-restored" if rollback_status.complete else "setup-failed-rollback-incomplete"
+        raise _GuardrailSecretFailure(failure_code) from None
     if not ok:
+        rollback_status = restore_guardrail_setup_after_secret_publication()
+        if not rollback_status.complete:
+            raise _GuardrailSecretFailure("setup-refused-rollback-incomplete") from None
+        return
+    if any(warning.startswith("Config not saved") for warning in warnings):
+        rollback_status = restore_guardrail_setup_after_secret_publication()
+        if not rollback_status.complete:
+            raise _GuardrailSecretFailure("config-save-rollback-incomplete") from None
         return
 
     aid = app.cfg.cisco_ai_defense
@@ -4950,13 +5660,37 @@ def setup_guardrail(
         click.echo()
 
     if restart:
-        _restart_services(
-            app.cfg.data_dir,
-            app.cfg.gateway.host,
-            app.cfg.gateway.port,
-            connector=gc.connector or "openclaw",
-            connectors=app.cfg.active_connectors(),
-        )
+        readiness_failed_with_secret = False
+        try:
+            _restart_services(
+                app.cfg.data_dir,
+                app.cfg.gateway.host,
+                app.cfg.gateway.port,
+                connector=gc.connector or "openclaw",
+                connectors=app.cfg.active_connectors(),
+            )
+        except BaseException as exc:
+            if guardrail_secret_transaction is None:
+                _rollback_failed_connector_application(app, setup_snapshot, exc)
+            readiness_failed_with_secret = True
+        if readiness_failed_with_secret:
+            secret_rollback_status = restore_guardrail_secret_publication()
+            safe_cause = _GuardrailSecretFailure("readiness-failed")
+            unexpected_rollback_failure = False
+            try:
+                _rollback_failed_connector_application(
+                    app,
+                    setup_snapshot,
+                    safe_cause,
+                    _secret_safe=True,
+                    _secret_rollback_complete=secret_rollback_status.complete,
+                )
+            except _GuardrailSecretFailure:
+                raise
+            except BaseException:
+                unexpected_rollback_failure = True
+            if unexpected_rollback_failure:
+                raise _GuardrailSecretFailure("readiness-rollback-error") from None
     else:
         ctx = click.get_current_context(silent=True)
         if ctx is not None:
@@ -4976,6 +5710,9 @@ def setup_guardrail(
         f"mode={gc.mode} scanner_mode={gc.scanner_mode} port={gc.port} model={gc.model} hilt={bool(gc.hilt.enabled)!s}",
         allow_offline=not restart,
     )
+    if guardrail_secret_transaction is not None:
+        guardrail_secret_transaction.clear()
+    guardrail_secret_transaction = None
 
 
 # ---------------------------------------------------------------------------
@@ -5019,8 +5756,43 @@ def setup_guardrail(
 # alias commands here updates the hint just like the installer would.
 _PICKED_CONNECTOR_FILENAME = "picked_connector"
 _AGENT_SELECTION_FILENAME = "agent_selection.json"
+_HOOK_CONTRACT_LOCK_FILENAME = "hook_contract_lock.json"
 _AGENT_SELECTION_MAX_BYTES = 64 << 10
+_HOOK_CONTRACT_LOCK_MAX_BYTES = 16 << 20
 _SETUP_CONFIG_MAX_BYTES = 16 << 20
+_ACTIVE_CONNECTOR_STATE_MAX_BYTES = 64 << 10
+_SETUP_RUNTIME_ARTIFACT_MAX_BYTES = 16 << 20
+_SETUP_RUNTIME_RECEIPT_MAX_FILES = 128
+_SETUP_RUNTIME_REGISTRATION_MAX_FILES = 128
+_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS = 3
+_SETUP_ROLLBACK_MAX_FAILURES = 64
+_WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x400
+
+
+def _windows_runtime_rollback(restart: bool) -> bool:
+    return restart and platform_support.host_os() == "windows"
+
+
+_SETUP_SELECTION_PROOF_SEAL = object()
+
+
+@dataclass(frozen=True)
+class _VerifiedSetupAgentSelections:
+    """Concrete, receipt-bound executable selections for one transaction."""
+
+    connectors: tuple[str, ...]
+    records: tuple[Any, ...]
+    receipt_sha256: str
+    receipt_generation: tuple[int, int, int, int]
+    prior_receipt_generation: tuple[int, int, int, int] | None
+    _seal: object = field(repr=False, compare=False)
+
+    def record_for(self, connector: str):
+        wanted = normalize_connector(connector)
+        return next(
+            (record for record in self.records if normalize_connector(record.connector) == wanted),
+            None,
+        )
 
 
 def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
@@ -5063,34 +5835,64 @@ class _SetupConfigSnapshot:
     config: Any
     config_existed: bool
     config_bytes: bytes
+    config_generation: tuple[int, int, int, int] | None
     picked_connector_existed: bool
     picked_connector_bytes: bytes
+    picked_connector_generation: tuple[int, int, int, int] | None
     agent_selection_existed: bool
     agent_selection_bytes: bytes
+    agent_selection_generation: tuple[int, int, int, int] | None
+    hook_contract_lock_existed: bool
+    hook_contract_lock_bytes: bytes
+    hook_contract_lock_generation: tuple[int, int, int, int] | None
+    applied_runtime: _SetupAppliedRuntimeEvidence | None
 
 
-def _capture_protected_setup_file(path: str, maximum: int, label: str) -> tuple[bool, bytes]:
+@dataclass(frozen=True)
+class _SetupRegistrationLocationEvidence:
+    connector: str
+    role: str
+    identity: str
+    fingerprint: str
+    path: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class _SetupAppliedRuntimeEvidence:
+    lifecycle: str
+    generation: str | None
+    invariants: tuple[tuple[str, str, str, str], ...]
+    registration_locations: tuple[_SetupRegistrationLocationEvidence, ...] = ()
+
+
+def _capture_protected_setup_file(
+    path: str,
+    maximum: int,
+    label: str,
+) -> tuple[bool, bytes, tuple[int, int, int, int] | None]:
     """Read one bounded private regular file without following path redirects."""
 
     try:
         fd = open_regular_file_no_follow(path)
     except FileNotFoundError:
-        return False, b""
+        return False, b"", None
+    except OSError:
+        raise OSError(f"{label} rollback source is unavailable") from None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
-            raise OSError(f"{label} rollback source is not a regular file: {path}")
+            raise OSError(f"{label} rollback source is not a regular file")
         if info.st_size > maximum:
-            raise OSError(f"{label} rollback source is unexpectedly large: {path}")
+            raise OSError(f"{label} rollback source is unexpectedly large")
         if os.name == "nt":
             acl_error = windows_acl_write_error(path)
             if acl_error is not None:
-                raise OSError(f"{label} rollback source is not protected: {acl_error}")
+                raise OSError(f"{label} rollback source is not protected")
         else:
             if hasattr(os, "geteuid") and info.st_uid != os.geteuid():
-                raise OSError(f"{label} rollback source is not owned by the current user: {path}")
+                raise OSError(f"{label} rollback source is not owned by the current user")
             if stat.S_IMODE(info.st_mode) & 0o077:
-                raise OSError(f"{label} rollback source is not private: {path}")
+                raise OSError(f"{label} rollback source is not private")
         body = bytearray()
         while len(body) <= maximum:
             chunk = os.read(fd, min(64 << 10, maximum + 1 - len(body)))
@@ -5098,63 +5900,602 @@ def _capture_protected_setup_file(path: str, maximum: int, label: str) -> tuple[
                 break
             body.extend(chunk)
         if len(body) > maximum:
-            raise OSError(f"{label} rollback source grew while reading: {path}")
+            raise OSError(f"{label} rollback source grew while reading")
         after = os.fstat(fd)
         if after.st_size != len(body) or not os.path.samestat(info, after):
-            raise OSError(f"{label} rollback source changed while reading: {path}")
-        path_after = os.stat(path, follow_symlinks=False)
+            raise OSError(f"{label} rollback source changed while reading")
+        try:
+            path_after = os.stat(path, follow_symlinks=False)
+        except OSError:
+            raise OSError(f"{label} rollback source path is unavailable") from None
         if not stat.S_ISREG(path_after.st_mode) or not os.path.samestat(info, path_after):
-            raise OSError(f"{label} rollback source path changed while reading: {path}")
-        return True, bytes(body)
+            raise OSError(f"{label} rollback source path changed while reading")
+        generation = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        return True, bytes(body), generation
     finally:
         os.close(fd)
 
 
-def _capture_setup_config_snapshot(cfg) -> _SetupConfigSnapshot:
+def _setup_runtime_digest(value: Any) -> str:
+    body = _json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(body).hexdigest()
+
+
+def _setup_runtime_ref(value: object) -> str:
+    return hashlib.sha256(str(value).encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _setup_runtime_subject(name: object) -> str:
+    raw = str(name).strip()
+    normalized = normalize_connector(raw) if raw else ""
+    if normalized in _CONNECTOR_NAMES_FALLBACK:
+        return normalized
+    return f"id-{_setup_runtime_ref(raw)}"
+
+
+def _capture_setup_runtime_location(path: object, role: str) -> tuple[str, str, str]:
+    raw = os.fspath(path) if isinstance(path, (str, os.PathLike)) else ""
+    if not raw or not os.path.isabs(raw) or "\x00" in raw:
+        raise OSError(f"{role} evidence {_setup_runtime_ref(raw)} has an invalid identity")
+    normalized = os.path.normcase(os.path.normpath(os.path.abspath(raw)))
+    identity = hashlib.sha256(normalized.encode("utf-8", errors="replace")).hexdigest()
+    try:
+        existed, body, _generation = _capture_protected_setup_file(
+            normalized,
+            _SETUP_RUNTIME_ARTIFACT_MAX_BYTES,
+            role,
+        )
+    except Exception:
+        raise OSError(f"{role} evidence {identity[:12]} is unavailable") from None
+    if not existed:
+        return normalized, identity, "missing"
+    return normalized, identity, f"present:{len(body)}:{hashlib.sha256(body).hexdigest()}"
+
+
+def _capture_setup_runtime_file(path: object, role: str) -> tuple[str, str]:
+    _normalized, identity, fingerprint = _capture_setup_runtime_location(path, role)
+    return identity[:12], fingerprint
+
+
+def _capture_setup_receipt_fingerprint(data_dir: str, connector: str) -> str:
+    subject = _setup_runtime_subject(connector)
+    if connector not in _CONNECTOR_NAMES_FALLBACK:
+        raise OSError(f"connector {subject}: receipt ownership is unavailable")
+    root = os.path.join(data_dir, "connector_backups", connector)
+    try:
+        info = os.lstat(root)
+    except FileNotFoundError:
+        return "missing"
+    if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & _WINDOWS_REPARSE_POINT_ATTRIBUTE:
+        raise OSError(f"connector {subject}: receipt root is unsafe")
+    try:
+        with os.scandir(root) as iterator:
+            entries = sorted(iterator, key=lambda item: os.path.normcase(item.name))
+    except OSError:
+        raise OSError(f"connector {subject}: receipts are unavailable") from None
+    if len(entries) > _SETUP_RUNTIME_RECEIPT_MAX_FILES:
+        raise OSError(f"connector {subject}: receipt set exceeds the bounded limit")
+    fingerprints: dict[str, str] = {}
+    for entry in entries:
+        reference, fingerprint = _capture_setup_runtime_file(entry.path, "owned receipt")
+        fingerprints[reference] = fingerprint
+    return f"present:{_setup_runtime_digest(fingerprints)}"
+
+
+def _capture_setup_registration_locations(
+    connector: str,
+    lock_entry: dict[str, Any],
+    *,
+    remaining: int = _SETUP_RUNTIME_REGISTRATION_MAX_FILES,
+) -> tuple[_SetupRegistrationLocationEvidence, ...]:
+    locations = lock_entry.get("locations", {})
+    subject = _setup_runtime_subject(connector)
+    if not isinstance(locations, dict):
+        raise OSError(f"connector {subject}: registration locations are malformed")
+    requested: list[tuple[str, object]] = []
+    for field_name, role in (
+        ("hook_config_paths", "hook registration"),
+        ("hook_script_paths", "hook runtime"),
+        ("telemetry_config_paths", "telemetry registration"),
+    ):
+        paths = locations.get(field_name, [])
+        if not isinstance(paths, list):
+            raise OSError(f"connector {subject}: {role} set is malformed")
+        for path in paths:
+            requested.append((role, path))
+    if len(requested) > remaining:
+        raise OSError(f"connector {subject}: registration set exceeds the bounded limit")
+
+    evidence: dict[tuple[str, str, str], _SetupRegistrationLocationEvidence] = {}
+    for role, path in requested:
+        normalized, identity, fingerprint = _capture_setup_runtime_location(path, role)
+        key = (subject, role, identity)
+        current = _SetupRegistrationLocationEvidence(
+            connector=subject,
+            role=role,
+            identity=identity,
+            fingerprint=fingerprint,
+            path=normalized,
+        )
+        if key in evidence:
+            raise OSError(f"connector {subject}: registration identity is duplicated")
+        evidence[key] = current
+    return tuple(evidence[key] for key in sorted(evidence))
+
+
+def _setup_registration_fingerprint(locations: tuple[_SetupRegistrationLocationEvidence, ...]) -> str:
+    mapped = _setup_registration_location_map(locations)
+    return _setup_runtime_digest(
+        {
+            f"{connector}:{role}:{identity}": location.fingerprint
+            for (connector, role, identity), location in mapped.items()
+        }
+    )
+
+
+def _setup_registration_location_key(
+    location: _SetupRegistrationLocationEvidence,
+) -> tuple[str, str, str]:
+    if (
+        location.role not in {"hook registration", "hook runtime", "telemetry registration"}
+        or len(location.identity) != 64
+        or any(character not in "0123456789abcdef" for character in location.identity)
+    ):
+        raise OSError("registration location evidence has an invalid identity")
+    return location.connector, location.role, location.identity
+
+
+def _setup_registration_location_map(
+    locations: tuple[_SetupRegistrationLocationEvidence, ...],
+) -> dict[tuple[str, str, str], _SetupRegistrationLocationEvidence]:
+    mapped: dict[tuple[str, str, str], _SetupRegistrationLocationEvidence] = {}
+    fingerprints: dict[str, str] = {}
+    paths: dict[str, str] = {}
+    for location in locations:
+        key = _setup_registration_location_key(location)
+        if key in mapped:
+            raise OSError("registration location evidence contains a duplicate full identity")
+        prior_fingerprint = fingerprints.get(location.identity)
+        if prior_fingerprint is not None and prior_fingerprint != location.fingerprint:
+            raise OSError("registration location evidence contains conflicting full identities")
+        prior_path = paths.get(location.identity)
+        if prior_path is not None and prior_path != location.path:
+            raise OSError("registration location evidence contains conflicting exact paths")
+        fingerprints[location.identity] = location.fingerprint
+        paths[location.identity] = location.path
+        mapped[key] = location
+    return mapped
+
+
+def _decode_setup_hook_contract_lock(body: bytes) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    try:
+        document = _json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        raise OSError("hook contract evidence is malformed") from None
+    if not isinstance(document, dict):
+        raise OSError("hook contract evidence has an unsupported schema")
+    version = document.get("version")
+    raw_entries = document.get("connectors")
+    if type(version) is not int or not 1 <= version <= 2 or not isinstance(raw_entries, dict):
+        raise OSError("hook contract evidence has an unsupported schema")
+    entries: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_entry in raw_entries.items():
+        if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_entry, dict):
+            raise OSError("hook contract connector evidence is malformed")
+        name = normalize_connector(raw_name)
+        if not name or name in entries:
+            raise OSError(f"connector {_setup_runtime_subject(name)}: hook contract identity is duplicated")
+        entries[name] = raw_entry
+    return document, entries
+
+
+def _capture_setup_lock_registration_locations_once(cfg) -> tuple[_SetupRegistrationLocationEvidence, ...]:
+    lock_path = os.path.join(os.path.abspath(os.fspath(cfg.data_dir)), _HOOK_CONTRACT_LOCK_FILENAME)
+    existed, body, generation = _capture_protected_setup_file(
+        lock_path,
+        _HOOK_CONTRACT_LOCK_MAX_BYTES,
+        "hook contract lock",
+    )
+    if not existed:
+        existed_after, _body_after, _generation_after = _capture_protected_setup_file(
+            lock_path,
+            _HOOK_CONTRACT_LOCK_MAX_BYTES,
+            "hook contract lock",
+        )
+        if existed_after:
+            raise OSError("hook contract changed while registration evidence was captured")
+        return ()
+    _document, entries = _decode_setup_hook_contract_lock(body)
+    locations: list[_SetupRegistrationLocationEvidence] = []
+    for name in sorted(entries):
+        captured = _capture_setup_registration_locations(
+            name,
+            entries[name],
+            remaining=_SETUP_RUNTIME_REGISTRATION_MAX_FILES - len(locations),
+        )
+        locations.extend(captured)
+    existed_after, body_after, generation_after = _capture_protected_setup_file(
+        lock_path,
+        _HOOK_CONTRACT_LOCK_MAX_BYTES,
+        "hook contract lock",
+    )
+    if not existed_after or generation_after != generation or body_after != body:
+        raise OSError("hook contract changed while registration evidence was captured")
+    return tuple(sorted(locations, key=lambda item: (item.connector, item.role, item.identity)))
+
+
+def _capture_failed_setup_registration_locations(cfg) -> tuple[_SetupRegistrationLocationEvidence, ...]:
+    previous: tuple[_SetupRegistrationLocationEvidence, ...] | None = None
+    last_error: Exception | None = None
+    for _attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
+        try:
+            current = _capture_setup_lock_registration_locations_once(cfg)
+        except Exception as exc:  # noqa: BLE001 - retry a bounded failed-publication race.
+            previous = None
+            last_error = exc
+            continue
+        if previous == current:
+            return current
+        previous = current
+    reference = _setup_runtime_ref(type(last_error).__name__) if last_error is not None else "unstable"
+    raise OSError(f"failed-generation registration evidence did not stabilize [{reference}]") from None
+
+
+def _capture_setup_gateway_boundary(cfg) -> tuple[str, dict[str, Any] | None, str | None]:
+    from defenseclaw.commands.cmd_doctor import _trusted_gateway_listener
+    from defenseclaw.commands.cmd_status import _fetch_runtime_bound_health
+    from defenseclaw.gateway import OrchestratorClient, gateway_api_client_host
+
+    trust = _trusted_gateway_listener(cfg, platform_name="win32")
+    if trust.code in {"missing", "missing_process"}:
+        return "stopped", None, None
+    if not trust.trusted:
+        raise OSError(f"gateway lifecycle evidence is unavailable [{_setup_runtime_ref(trust.code)}]")
+    try:
+        client = OrchestratorClient(
+            host=gateway_api_client_host(cfg),
+            port=int(cfg.gateway.api_port),
+            token=cfg.gateway.resolved_token(),
+        )
+        health = _fetch_runtime_bound_health(client, cfg)
+    except Exception:
+        health = None
+    generation = health.get("started_at") if isinstance(health, dict) else None
+    if (
+        not isinstance(generation, str)
+        or not generation.strip()
+        or len(generation) > 256
+        or any(character in generation for character in "\x00\r\n")
+    ):
+        raise OSError("authenticated gateway generation evidence is unavailable")
+    return "running", health, generation.strip()
+
+
+def _capture_setup_watchdog_fingerprint(cfg) -> str:
+    from defenseclaw.commands.cmd_doctor import _inspect_windows_watchdog_runtime
+    from defenseclaw.doctor_gateway import GatewayEvidence, canonical_path
+
+    evidence = GatewayEvidence(platform_name="win32")
+    posture, _detail, health = _inspect_windows_watchdog_runtime(cfg, evidence)
+    if posture in {"foreign", "invalid", "uninspectable", "unowned", "unsafe"}:
+        raise OSError(f"watchdog custody evidence is unavailable [{_setup_runtime_ref(posture)}]")
+    data_dir = os.path.abspath(os.fspath(cfg.data_dir))
+    pid_path = os.path.join(data_dir, "watchdog.pid")
+    ownership_path = os.path.join(data_dir, ".watchdog.lock")
+    record = evidence.watchdog_pid_record(pid_path)
+    ownership = evidence.watchdog_ownership(ownership_path, pid_path)
+    executable = canonical_path(record.executable) if record.executable else ""
+    return _setup_runtime_digest(
+        {
+            "enabled": str(bool(getattr(getattr(cfg.gateway, "watchdog", None), "enabled", True))).lower(),
+            "posture": posture,
+            "ownership": ownership.status,
+            "ownership-source": ownership.source,
+            "executable": _setup_runtime_ref(executable) if executable else "missing",
+            "health-status": str(getattr(health, "status", "missing")) if health is not None else "missing",
+            "health-state": str(getattr(health, "state", "missing")) if health is not None else "missing",
+        }
+    )
+
+
+def _capture_setup_applied_runtime_once(
+    cfg,
+    required_registration_locations: tuple[_SetupRegistrationLocationEvidence, ...] = (),
+) -> _SetupAppliedRuntimeEvidence:
+    from defenseclaw.commands.cmd_status import _fetch_health_connectors
+
+    lifecycle, health, generation = _capture_setup_gateway_boundary(cfg)
+    invariants: dict[tuple[str, str, str], str] = {}
+
+    def put(key: tuple[str, str, str], value: object) -> None:
+        normalized = str(value)
+        if key in invariants and invariants[key] != normalized:
+            raise OSError(f"{key[0]} {_setup_runtime_subject(key[1])}: duplicate evidence")
+        invariants[key] = normalized
+
+    data_dir = os.path.abspath(os.fspath(cfg.data_dir))
+    active_existed, active_body, _active_generation = _capture_protected_setup_file(
+        os.path.join(data_dir, "active_connector.json"),
+        _ACTIVE_CONNECTOR_STATE_MAX_BYTES,
+        "active connector state",
+    )
+    active: set[str] = set()
+    inactive: set[str] = set()
+    put(("runtime", "gateway", "active-state-presence"), "present" if active_existed else "missing")
+    if active_existed:
+        try:
+            active_document = _json.loads(active_body)
+        except (UnicodeDecodeError, ValueError):
+            raise OSError("active connector evidence is malformed") from None
+        runtime_sets = _connector_runtime_state_sets(active_document)
+        if runtime_sets is None:
+            raise OSError("active connector evidence has an unsupported schema")
+        active, raw_inactive = runtime_sets
+        inactive = raw_inactive or set()
+        version = active_document.get("version") if isinstance(active_document, dict) else None
+        put(("runtime", "gateway", "active-state-version"), version)
+
+    lock_existed, lock_body, _lock_generation = _capture_protected_setup_file(
+        os.path.join(data_dir, _HOOK_CONTRACT_LOCK_FILENAME),
+        _HOOK_CONTRACT_LOCK_MAX_BYTES,
+        "hook contract lock",
+    )
+    put(("runtime", "gateway", "lock-presence"), "present" if lock_existed else "missing")
+    lock_entries: dict[str, dict[str, Any]] = {}
+    if lock_existed:
+        lock_document, lock_entries = _decode_setup_hook_contract_lock(lock_body)
+        version = lock_document.get("version")
+        shared_digests = lock_document.get("shared_hook_script_digests", {})
+        if not isinstance(shared_digests, dict):
+            raise OSError("hook contract shared digest evidence is malformed")
+        put(("runtime", "gateway", "lock-version"), version)
+        put(("runtime", "gateway", "shared-lock-digests"), _setup_runtime_digest(shared_digests))
+        for name, raw_entry in lock_entries.items():
+            subject = _setup_runtime_subject(name)
+            stable_entry = copy.deepcopy(raw_entry)
+            stable_entry.pop("updated_at", None)
+            put(("connector", subject, "lock-identity"), _setup_runtime_digest(stable_entry))
+            fail_mode = raw_entry.get("hook_fail_mode")
+            posture = raw_entry.get("registration_posture")
+            mode = posture.get("guardrail_mode") if isinstance(posture, dict) else None
+            put(("connector", subject, "hook-fail-mode"), fail_mode)
+            put(("connector", subject, "guardrail-mode"), mode)
+        expected_hook_connectors = active & _HOOK_ENFORCED_CONNECTORS
+        lock_covers = _hook_contract_lock_covers(lock_document, expected_hook_connectors, inactive)
+        put(("runtime", "gateway", "lock-covers-active-roster"), str(lock_covers).lower())
+        publications = _validated_hook_contract_lock_publications(lock_document, expected_hook_connectors)
+        for name in sorted(expected_hook_connectors):
+            put(
+                ("connector", _setup_runtime_subject(name), "lock-publication-presence"),
+                "present" if name in publications else "missing",
+            )
+
+    health_connectors = _fetch_health_connectors(health=health)
+    health_records: dict[str, dict[str, str]] = {}
+    for raw_name, record in health_connectors.items():
+        name = normalize_connector(raw_name)
+        subject = _setup_runtime_subject(name)
+        if not name or name in health_records or not isinstance(record, dict):
+            raise OSError(f"connector {subject}: authenticated health identity is malformed")
+        health_records[name] = {
+            attribute: value if isinstance(value := record.get(attribute), str) and value else "missing"
+            for attribute in ("state", "source", "tool_inspection_mode", "subprocess_policy")
+        }
+    health_modes: dict[str, str] = {}
+    if isinstance(health, dict):
+        subsystem_states = {}
+        for subsystem in ("gateway", "guardrail", "watcher"):
+            subsystem_record = health.get(subsystem)
+            state = subsystem_record.get("state") if isinstance(subsystem_record, dict) else None
+            subsystem_states[subsystem] = state if isinstance(state, str) and state else "missing"
+        put(("runtime", "gateway", "health"), _setup_runtime_digest(subsystem_states))
+        guardrail = health.get("guardrail")
+        details = guardrail.get("details") if isinstance(guardrail, dict) else None
+        raw_modes = details.get("connector_modes") if isinstance(details, dict) else None
+        if raw_modes is not None:
+            if not isinstance(raw_modes, dict):
+                raise OSError("authenticated connector mode evidence is malformed")
+            for raw_name, raw_mode in raw_modes.items():
+                name = normalize_connector(raw_name) if isinstance(raw_name, str) else ""
+                subject = _setup_runtime_subject(raw_name)
+                if not name or name in health_modes or not isinstance(raw_mode, str):
+                    raise OSError(f"connector {subject}: authenticated mode evidence is malformed")
+                health_modes[name] = raw_mode
+
+    configured_names = {normalize_connector(name) for name in cfg.active_connectors() if name}
+    connector_names = configured_names | active | inactive | set(lock_entries) | set(health_records) | set(health_modes)
+    registration_locations: list[_SetupRegistrationLocationEvidence] = []
+    for name in sorted(connector_names):
+        subject = _setup_runtime_subject(name)
+        if name in active:
+            put(("connector", subject, "roster-active"), "present")
+        if name in inactive:
+            put(("connector", subject, "roster-inactive"), "present")
+        put(("connector", subject, "health-presence"), "present" if name in health_records else "missing")
+        put(
+            ("connector", subject, "health-identity"),
+            _setup_runtime_digest(health_records[name]) if name in health_records else "missing",
+        )
+        put(("connector", subject, "health-guardrail-mode"), health_modes.get(name, "missing"))
+        put(
+            ("connector", subject, "lock-entry-presence"),
+            "present" if name in lock_entries else "missing",
+        )
+        put(
+            ("connector", subject, "owned-receipts"),
+            _capture_setup_receipt_fingerprint(data_dir, name),
+        )
+        entry = lock_entries.get(name)
+        captured_locations = ()
+        if entry is not None:
+            captured_locations = _capture_setup_registration_locations(
+                name,
+                entry,
+                remaining=_SETUP_RUNTIME_REGISTRATION_MAX_FILES - len(registration_locations),
+            )
+            registration_locations.extend(captured_locations)
+        put(
+            ("connector", subject, "registrations"),
+            _setup_registration_fingerprint(captured_locations) if entry is not None else "missing",
+        )
+
+    registration_map = _setup_registration_location_map(tuple(registration_locations))
+    by_identity = {location.identity: location for location in registration_map.values()}
+    for required in required_registration_locations:
+        key = _setup_registration_location_key(required)
+        current = registration_map.get(key)
+        if current is not None:
+            if current.path != required.path:
+                raise OSError("registration location evidence has a conflicting exact path")
+            continue
+        if len(registration_map) >= _SETUP_RUNTIME_REGISTRATION_MAX_FILES:
+            raise OSError("registration location union exceeds the bounded limit")
+        identity_match = by_identity.get(required.identity)
+        if identity_match is not None:
+            if identity_match.path != required.path:
+                raise OSError("registration location evidence has a conflicting exact path")
+            current = _SetupRegistrationLocationEvidence(
+                connector=required.connector,
+                role=required.role,
+                identity=required.identity,
+                fingerprint=identity_match.fingerprint,
+                path=required.path,
+            )
+        else:
+            normalized, identity, fingerprint = _capture_setup_runtime_location(required.path, required.role)
+            if identity != required.identity:
+                raise OSError("registration location evidence changed exact identity")
+            current = _SetupRegistrationLocationEvidence(
+                connector=required.connector,
+                role=required.role,
+                identity=identity,
+                fingerprint=fingerprint,
+                path=normalized,
+            )
+        registration_map[key] = current
+        by_identity[current.identity] = current
+    normalized_locations = tuple(registration_map[key] for key in sorted(registration_map))
+    _setup_registration_location_map(normalized_locations)
+
+    put(("watchdog", "runtime", "custody-health"), _capture_setup_watchdog_fingerprint(cfg))
+    end_lifecycle, _end_health, end_generation = _capture_setup_gateway_boundary(cfg)
+    if (lifecycle, generation) != (end_lifecycle, end_generation):
+        raise OSError("gateway generation changed while applied runtime evidence was captured")
+    normalized = tuple((*key, value) for key, value in sorted(invariants.items()))
+    return _SetupAppliedRuntimeEvidence(
+        lifecycle=lifecycle,
+        generation=generation,
+        invariants=normalized,
+        registration_locations=normalized_locations,
+    )
+
+
+def _capture_setup_applied_runtime(
+    cfg,
+    required_registration_locations: tuple[_SetupRegistrationLocationEvidence, ...] = (),
+) -> _SetupAppliedRuntimeEvidence:
+    previous: _SetupAppliedRuntimeEvidence | None = None
+    last_error: Exception | None = None
+    for _attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
+        try:
+            current = _capture_setup_applied_runtime_once(cfg, required_registration_locations)
+        except Exception as exc:  # noqa: BLE001 - retry one bounded evidence race.
+            previous = None
+            last_error = exc
+            continue
+        if previous == current:
+            return current
+        previous = current
+    reference = _setup_runtime_ref(type(last_error).__name__) if last_error is not None else "unstable"
+    raise OSError(f"applied runtime evidence did not stabilize [{reference}]") from None
+
+
+def _capture_setup_desired_snapshot_once(cfg) -> _SetupConfigSnapshot:
     data_dir = getattr(cfg, "data_dir", None)
     config_existed = False
     config_body = b""
+    config_generation = None
     if data_dir:
-        config_existed, config_body = _capture_protected_setup_file(
+        config_existed, config_body, config_generation = _capture_protected_setup_file(
             os.path.abspath(os.fspath(config_path_for_data_dir(data_dir))),
             _SETUP_CONFIG_MAX_BYTES,
             "config.yaml",
         )
     existed = False
     body = b""
+    picked_generation = None
     if data_dir:
-        path = os.path.join(data_dir, _PICKED_CONNECTOR_FILENAME)
-        try:
-            info = os.lstat(path)
-        except FileNotFoundError:
-            pass
-        else:
-            if not stat.S_ISREG(info.st_mode):
-                raise OSError(f"picked_connector rollback source is not a regular file: {path}")
-            if info.st_size > 4096:
-                raise OSError(f"picked_connector rollback source is unexpectedly large: {path}")
-            with open(path, "rb") as fh:
-                body = fh.read(4097)
-            if len(body) > 4096:
-                raise OSError(f"picked_connector rollback source grew while reading: {path}")
-            existed = True
+        existed, body, picked_generation = _capture_protected_setup_file(
+            os.path.join(os.path.abspath(os.fspath(data_dir)), _PICKED_CONNECTOR_FILENAME),
+            4096,
+            "picked_connector",
+        )
     selection_existed = False
     selection_body = b""
+    selection_generation = None
+    lock_existed = False
+    lock_body = b""
+    lock_generation = None
     if data_dir:
-        selection_existed, selection_body = _capture_protected_setup_file(
+        selection_existed, selection_body, selection_generation = _capture_protected_setup_file(
             os.path.join(os.path.abspath(os.fspath(data_dir)), _AGENT_SELECTION_FILENAME),
             _AGENT_SELECTION_MAX_BYTES,
             "agent_selection.json",
+        )
+        lock_existed, lock_body, lock_generation = _capture_protected_setup_file(
+            os.path.join(os.path.abspath(os.fspath(data_dir)), _HOOK_CONTRACT_LOCK_FILENAME),
+            _HOOK_CONTRACT_LOCK_MAX_BYTES,
+            "hook_contract_lock.json",
         )
     return _SetupConfigSnapshot(
         config=copy.deepcopy(cfg),
         config_existed=config_existed,
         config_bytes=config_body,
+        config_generation=config_generation,
         picked_connector_existed=existed,
         picked_connector_bytes=body,
+        picked_connector_generation=picked_generation,
         agent_selection_existed=selection_existed,
         agent_selection_bytes=selection_body,
+        agent_selection_generation=selection_generation,
+        hook_contract_lock_existed=lock_existed,
+        hook_contract_lock_bytes=lock_body,
+        hook_contract_lock_generation=lock_generation,
+        applied_runtime=None,
     )
+
+
+def _setup_snapshot_authority_fence(snapshot: _SetupConfigSnapshot) -> tuple[Any, ...]:
+    return (
+        snapshot.config_existed,
+        snapshot.config_generation,
+        hashlib.sha256(snapshot.config_bytes).digest(),
+        snapshot.picked_connector_existed,
+        snapshot.picked_connector_generation,
+        hashlib.sha256(snapshot.picked_connector_bytes).digest(),
+        snapshot.agent_selection_existed,
+        snapshot.agent_selection_generation,
+        hashlib.sha256(snapshot.agent_selection_bytes).digest(),
+        snapshot.hook_contract_lock_existed,
+        snapshot.hook_contract_lock_generation,
+        hashlib.sha256(snapshot.hook_contract_lock_bytes).digest(),
+    )
+
+
+def _capture_setup_config_snapshot(
+    cfg,
+    *,
+    capture_runtime: bool = False,
+) -> _SetupConfigSnapshot:
+    if not capture_runtime:
+        return _capture_setup_desired_snapshot_once(cfg)
+    for _attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
+        before = _capture_setup_desired_snapshot_once(cfg)
+        runtime = _capture_setup_applied_runtime(cfg)
+        after = _capture_setup_desired_snapshot_once(cfg)
+        if _setup_snapshot_authority_fence(before) == _setup_snapshot_authority_fence(after):
+            return replace(after, applied_runtime=runtime)
+    raise OSError("setup rollback authority changed while runtime evidence was captured")
 
 
 def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapshot) -> None:
@@ -5165,11 +6506,11 @@ def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapsh
     try:
         _restore_setup_config_file_snapshot(cfg, snapshot)
     except Exception as exc:  # noqa: BLE001 — still restore independent protected receipts.
-        restore_errors.append(f"config: {exc}")
+        restore_errors.append(f"config [{_setup_runtime_ref(type(exc).__name__)}]")
     try:
         _sync_guardrail_hilt_to_opa(cfg.policy_dir, cfg.guardrail)
     except Exception as exc:  # noqa: BLE001 — receipt restoration must still run.
-        restore_errors.append(f"HILT policy: {exc}")
+        restore_errors.append(f"HILT policy [{_setup_runtime_ref(type(exc).__name__)}]")
 
     if cfg.data_dir:
         hint_path = os.path.join(cfg.data_dir, _PICKED_CONNECTOR_FILENAME)
@@ -5179,11 +6520,15 @@ def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapsh
             elif os.path.lexists(hint_path):
                 delete_file_durable(hint_path)
         except Exception as exc:  # noqa: BLE001 — continue to the authority receipt.
-            restore_errors.append(f"picked_connector: {exc}")
+            restore_errors.append(f"picked_connector [{_setup_runtime_ref(type(exc).__name__)}]")
         try:
             _restore_setup_agent_selection_snapshot(cfg, snapshot)
         except Exception as exc:  # noqa: BLE001 — report exact protected-receipt failure.
-            restore_errors.append(f"agent_selection.json: {exc}")
+            restore_errors.append(f"agent_selection.json [{_setup_runtime_ref(type(exc).__name__)}]")
+        try:
+            _restore_setup_hook_contract_lock_snapshot(cfg, snapshot)
+        except Exception as exc:  # noqa: BLE001 — report exact sealed-authority failure.
+            restore_errors.append(f"hook_contract_lock.json [{_setup_runtime_ref(type(exc).__name__)}]")
     if restore_errors:
         raise OSError("setup rollback was incomplete: " + "; ".join(restore_errors))
 
@@ -5224,6 +6569,350 @@ def _restore_setup_agent_selection_snapshot(cfg, snapshot: _SetupConfigSnapshot)
         delete_file_durable(selection_path)
 
 
+def _restore_setup_hook_contract_lock_snapshot(cfg, snapshot: _SetupConfigSnapshot) -> None:
+    """Restore exact pre-setup sealed executable authority."""
+
+    if not cfg.data_dir:
+        return
+    lock_path = os.path.join(
+        os.path.abspath(os.fspath(cfg.data_dir)),
+        _HOOK_CONTRACT_LOCK_FILENAME,
+    )
+    if snapshot.hook_contract_lock_existed:
+        atomic_write_private_bytes(lock_path, snapshot.hook_contract_lock_bytes)
+    elif os.path.lexists(lock_path):
+        delete_file_durable(lock_path)
+
+
+def _parse_setup_selection_time(raw: Any, label: str) -> datetime:
+    if not isinstance(raw, str) or not raw.strip():
+        raise OSError(f"agent_selection.json has no valid {label}")
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise OSError(f"agent_selection.json has invalid {label}") from exc
+    if parsed.tzinfo is None:
+        raise OSError(f"agent_selection.json {label} is not timezone-bound")
+    return parsed.astimezone(timezone.utc)
+
+
+def _validate_setup_agent_selection_receipt(
+    data_dir: str | os.PathLike[str],
+    connectors: tuple[str, ...],
+    records: dict[str, Any],
+    *,
+    expected_receipt_sha256: str | None = None,
+    expected_generation: tuple[int, int, int, int] | None = None,
+    prior_generation: tuple[int, int, int, int] | None = None,
+) -> _VerifiedSetupAgentSelections:
+    """Bind concrete selection records to the current fresh protected receipt."""
+
+    from defenseclaw.agent_selection import (
+        SELECTION_LIFETIME,
+        SetupAgentSelection,
+        setup_agent_selection_connectors,
+    )
+
+    expected = setup_agent_selection_connectors(connectors)
+    if not expected:
+        raise OSError("no protected executable selections were requested")
+    if set(records) != set(expected) or any(not isinstance(record, SetupAgentSelection) for record in records.values()):
+        raise OSError("selection records do not cover the complete protected connector roster")
+
+    receipt_path = os.path.join(
+        os.path.abspath(os.fspath(data_dir)),
+        _AGENT_SELECTION_FILENAME,
+    )
+    existed, body, generation = _capture_protected_setup_file(
+        receipt_path,
+        _AGENT_SELECTION_MAX_BYTES,
+        "agent_selection.json",
+    )
+    if not existed or generation is None:
+        raise OSError("fresh agent_selection.json is missing")
+    if expected_generation is not None and generation != expected_generation:
+        raise OSError("agent_selection.json generation changed after protected selection")
+    if prior_generation is not None and generation == prior_generation:
+        raise OSError("agent_selection.json was not freshly published for this transaction")
+
+    digest = hashlib.sha256(body).hexdigest()
+    if expected_receipt_sha256 is not None and digest != expected_receipt_sha256:
+        raise OSError("agent_selection.json bytes changed after protected selection")
+    try:
+        payload = _json.loads(body)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OSError("agent_selection.json is not valid JSON") from exc
+    if not isinstance(payload, dict):
+        raise OSError("agent_selection.json has an unsupported schema")
+    entries = payload.get("selections")
+    if payload.get("schema_version") != 1 or not isinstance(entries, dict):
+        raise OSError("agent_selection.json has an unsupported schema")
+    if set(entries) != set(expected):
+        raise OSError("agent_selection.json does not contain the complete protected connector roster")
+
+    updated_at = _parse_setup_selection_time(payload.get("updated_at"), "updated_at")
+    now = datetime.now(timezone.utc)
+    if updated_at > now or now - updated_at > SELECTION_LIFETIME:
+        raise OSError("agent_selection.json is not fresh for this transaction")
+
+    ordered_records: list[SetupAgentSelection] = []
+    for connector in expected:
+        record = records[connector]
+        entry = entries.get(connector)
+        if not isinstance(entry, dict):
+            raise OSError(f"agent_selection.json has no record for {connector}")
+        selected_at = _parse_setup_selection_time(entry.get("selected_at"), f"{connector}.selected_at")
+        expires_at = _parse_setup_selection_time(entry.get("expires_at"), f"{connector}.expires_at")
+        if selected_at != updated_at or expires_at - selected_at != SELECTION_LIFETIME:
+            raise OSError(f"agent_selection.json has invalid freshness bounds for {connector}")
+        if expires_at <= now or selected_at > now:
+            raise OSError(f"agent_selection.json record for {connector} is stale or future-dated")
+        expected_fields = {
+            "connector": record.connector,
+            "source": "setup-selected",
+            "executable": record.executable,
+            "raw_version": record.raw_version,
+            "normalized_version": record.normalized_version,
+            "sha256": record.sha256,
+        }
+        if any(entry.get(key) != value for key, value in expected_fields.items()):
+            raise OSError(f"agent_selection.json does not match the selected {connector} executable")
+        ordered_records.append(record)
+
+    return _VerifiedSetupAgentSelections(
+        connectors=expected,
+        records=tuple(ordered_records),
+        receipt_sha256=digest,
+        receipt_generation=generation,
+        prior_receipt_generation=prior_generation,
+        _seal=_SETUP_SELECTION_PROOF_SEAL,
+    )
+
+
+def _revalidate_setup_agent_selections(
+    data_dir: str | os.PathLike[str],
+    verified: _VerifiedSetupAgentSelections,
+    *,
+    transaction_snapshot: _SetupConfigSnapshot | None = None,
+) -> _VerifiedSetupAgentSelections:
+    """Re-read and validate a transaction-owned selection result before mutation."""
+
+    if not isinstance(verified, _VerifiedSetupAgentSelections) or verified._seal is not _SETUP_SELECTION_PROOF_SEAL:
+        raise OSError("protected executable selection proof was not created by this transaction")
+    if (
+        transaction_snapshot is not None
+        and verified.prior_receipt_generation != transaction_snapshot.agent_selection_generation
+    ):
+        raise OSError("protected executable selection proof belongs to a different setup transaction")
+    records = {record.connector: record for record in verified.records}
+    return _validate_setup_agent_selection_receipt(
+        data_dir,
+        verified.connectors,
+        records,
+        expected_receipt_sha256=verified.receipt_sha256,
+        expected_generation=verified.receipt_generation,
+    )
+
+
+def _verify_restored_setup_persistence(
+    cfg,
+    snapshot: _SetupConfigSnapshot,
+    *,
+    include_lock: bool,
+) -> list[str]:
+    data_dir = getattr(cfg, "data_dir", None)
+    if not data_dir:
+        return ["desired authority data directory is unavailable"]
+    root = os.path.abspath(os.fspath(data_dir))
+    checks: list[tuple[str, str, int, bool, bytes]] = [
+        (
+            "config.yaml",
+            os.path.abspath(os.fspath(config_path_for_data_dir(root))),
+            _SETUP_CONFIG_MAX_BYTES,
+            snapshot.config_existed,
+            snapshot.config_bytes,
+        ),
+        (
+            "picked_connector",
+            os.path.join(root, _PICKED_CONNECTOR_FILENAME),
+            4096,
+            snapshot.picked_connector_existed,
+            snapshot.picked_connector_bytes,
+        ),
+        (
+            "agent_selection.json",
+            os.path.join(root, _AGENT_SELECTION_FILENAME),
+            _AGENT_SELECTION_MAX_BYTES,
+            snapshot.agent_selection_existed,
+            snapshot.agent_selection_bytes,
+        ),
+    ]
+    if include_lock:
+        checks.append(
+            (
+                "hook_contract_lock.json",
+                os.path.join(root, _HOOK_CONTRACT_LOCK_FILENAME),
+                _HOOK_CONTRACT_LOCK_MAX_BYTES,
+                snapshot.hook_contract_lock_existed,
+                snapshot.hook_contract_lock_bytes,
+            )
+        )
+
+    failures: list[str] = []
+    for label, path, maximum, expected_existed, expected_body in checks:
+        try:
+            existed, body, _generation = _capture_protected_setup_file(path, maximum, label)
+        except Exception as exc:  # noqa: BLE001 - continue every independent check.
+            failures.append(f"{label} verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]")
+            continue
+        if (existed, body) != (expected_existed, expected_body):
+            failures.append(f"{label} differs from the rollback point")
+    return failures
+
+
+def _setup_runtime_manifest_mismatches(
+    expected: _SetupAppliedRuntimeEvidence,
+    actual: _SetupAppliedRuntimeEvidence,
+    *,
+    failed_location_keys: set[tuple[str, str, str]] | None = None,
+) -> list[str]:
+    failures: list[str] = []
+    omitted = False
+
+    def add(message: str) -> bool:
+        nonlocal omitted
+        if len(failures) >= _SETUP_ROLLBACK_MAX_FAILURES:
+            omitted = True
+            return False
+        failures.append(message)
+        return True
+
+    if expected.lifecycle != actual.lifecycle:
+        add(f"gateway lifecycle changed ({expected.lifecycle} -> {actual.lifecycle})")
+    if expected.generation is None:
+        if actual.generation is not None:
+            add("gateway generation was unexpectedly present")
+    elif actual.generation is None:
+        add("prior running gateway generation is missing")
+    elif actual.generation == expected.generation:
+        add("restored gateway generation did not advance")
+
+    expected_map = {(scope, subject, attribute): value for scope, subject, attribute, value in expected.invariants}
+    actual_map = {(scope, subject, attribute): value for scope, subject, attribute, value in actual.invariants}
+    keys = sorted(set(expected_map) | set(actual_map))
+    for scope, subject, attribute in keys:
+        label = attribute.replace("-", " ")
+        if scope == "connector":
+            prefix = f"connector {subject}: "
+        elif scope == "watchdog":
+            prefix = "watchdog: "
+        else:
+            prefix = f"runtime {subject}: "
+        key = (scope, subject, attribute)
+        if key not in actual_map:
+            add(prefix + label + " is missing")
+        elif key not in expected_map:
+            add(prefix + "unexpected " + label + " is present")
+        elif expected_map[key] != actual_map[key]:
+            add(prefix + label + " changed")
+
+    try:
+        expected_locations = _setup_registration_location_map(expected.registration_locations)
+        actual_locations = _setup_registration_location_map(actual.registration_locations)
+    except Exception as exc:  # noqa: BLE001 - malformed evidence must fail closed without details.
+        add(f"registration location evidence is inconsistent [{_setup_runtime_ref(type(exc).__name__)}]")
+    else:
+        for key in sorted(set(expected_locations) | set(actual_locations)):
+            connector, role, identity = key
+            display_role = f"failed {role}" if key in (failed_location_keys or set()) else role
+            label = f"connector {connector}: {display_role} {identity[:12]}"
+            if key not in actual_locations:
+                add(label + " is missing")
+            elif key not in expected_locations:
+                add(label + " is unexpectedly present")
+            elif expected_locations[key].fingerprint != actual_locations[key].fingerprint:
+                add(label + " changed")
+    if omitted:
+        failures[-1] = "additional runtime mismatches were omitted at the bounded reporting limit"
+    return failures
+
+
+def _expected_setup_registration_locations(
+    snapshot: _SetupConfigSnapshot,
+    failed_locations: tuple[_SetupRegistrationLocationEvidence, ...],
+) -> tuple[_SetupRegistrationLocationEvidence, ...]:
+    expected = snapshot.applied_runtime
+    if expected is None:
+        return ()
+    prior = _setup_registration_location_map(expected.registration_locations)
+    failed = _setup_registration_location_map(failed_locations)
+    if len(prior) > _SETUP_RUNTIME_REGISTRATION_MAX_FILES:
+        raise OSError("registration location union exceeds the bounded limit")
+    prior_by_identity = {location.identity: location for location in prior.values()}
+    union = dict(prior)
+    for key, location in failed.items():
+        prior_location = prior_by_identity.get(location.identity)
+        fingerprint = prior_location.fingerprint if prior_location is not None else "missing"
+        current = union.get(key)
+        if current is not None:
+            if current.path != location.path or current.fingerprint != fingerprint:
+                raise OSError("registration location union contains conflicting exact authority")
+            continue
+        if prior_location is not None and prior_location.path != location.path:
+            raise OSError("registration location union contains conflicting exact authority")
+        if len(union) >= _SETUP_RUNTIME_REGISTRATION_MAX_FILES:
+            raise OSError("registration location union exceeds the bounded limit")
+        union[key] = _SetupRegistrationLocationEvidence(
+            connector=location.connector,
+            role=location.role,
+            identity=location.identity,
+            fingerprint=fingerprint,
+            path=location.path,
+        )
+    normalized = tuple(union[key] for key in sorted(union))
+    _setup_registration_location_map(normalized)
+    return normalized
+
+
+def _verify_restored_setup_runtime(
+    cfg,
+    snapshot: _SetupConfigSnapshot,
+    failed_locations: tuple[_SetupRegistrationLocationEvidence, ...] = (),
+) -> list[str]:
+    expected = snapshot.applied_runtime
+    if expected is None:
+        return []
+    try:
+        expected_locations = _expected_setup_registration_locations(snapshot, failed_locations)
+        actual = _capture_setup_applied_runtime(cfg, failed_locations)
+    except Exception as exc:  # noqa: BLE001 - persistence verification still completed.
+        return [f"applied runtime verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]"]
+    return _setup_runtime_manifest_mismatches(
+        replace(expected, registration_locations=expected_locations),
+        actual,
+        failed_location_keys={_setup_registration_location_key(item) for item in failed_locations},
+    )
+
+
+def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapshot) -> None:
+    expected = snapshot.applied_runtime
+    if expected is None:
+        return
+    if expected.lifecycle == "running":
+        _restart_restored_connector_runtime(app)
+        return
+
+    from defenseclaw.commands.cmd_doctor import _trusted_gateway_listener
+
+    trust = _trusted_gateway_listener(app.cfg, platform_name="win32")
+    if trust.trusted:
+        if not _stop_defense_gateway_native(app.cfg.data_dir):
+            raise OSError("gateway created by the failed setup did not stop")
+        return
+    if trust.code not in {"missing", "missing_process"}:
+        raise OSError(f"prior stopped gateway lifecycle is unavailable [{_setup_runtime_ref(trust.code)}]")
+
+
 def _restore_setup_config_in_memory(app: AppContext, snapshot: _SetupConfigSnapshot):
     cfg = app.cfg
     cfg.__dict__.clear()
@@ -5241,9 +6930,7 @@ def _restart_restored_connector_runtime(app: AppContext) -> None:
         cfg.gateway.port,
         connector=primary or "openclaw",
         connectors=restored,
-        wait_for_connector_ready=bool(
-            {normalize_connector(name) for name in restored} & _HOOK_ENFORCED_CONNECTORS
-        ),
+        wait_for_connector_ready=bool({normalize_connector(name) for name in restored} & _HOOK_ENFORCED_CONNECTORS),
         start_if_stopped=True,
     )
 
@@ -5252,28 +6939,118 @@ def _rollback_failed_connector_application(
     app: AppContext,
     snapshot: _SetupConfigSnapshot,
     cause: BaseException,
+    *,
+    _secret_safe: bool = False,
+    _secret_rollback_complete: bool = True,
 ) -> None:
-    """Restore desired and applied connector state, then raise a truthful error."""
+    """Restore, reconcile, and verify every feasible rollback phase."""
 
+    exact_runtime = snapshot.applied_runtime is not None
     rollback_errors: list[str] = []
+    secret_rollback_failed = False
+    failed_registration_locations: tuple[_SetupRegistrationLocationEvidence, ...] | None = None
+    if exact_runtime:
+        try:
+            failed_registration_locations = _capture_failed_setup_registration_locations(app.cfg)
+        except BaseException as exc:  # Capture must precede restoration of the failed lock.
+            if not isinstance(exc, Exception) and not _secret_safe:
+                raise
+            rollback_errors.append(
+                f"failed-generation registration evidence unavailable [{_setup_runtime_ref(type(exc).__name__)}]"
+            )
+    restore_complete = True
     try:
         _restore_setup_config_snapshot(app, snapshot)
-    except Exception as exc:  # noqa: BLE001 — preserve the original readiness failure too.
-        rollback_errors.append(f"restore prior desired config: {exc}")
-    else:
-        try:
-            _restart_restored_connector_runtime(app)
-        except Exception as exc:  # noqa: BLE001 — report both transaction failures.
-            rollback_errors.append(f"re-apply prior connector runtime: {exc}")
+    except BaseException as exc:  # Preserve the original non-secret readiness failure too.
+        if _secret_safe:
+            secret_rollback_failed = True
+        elif not isinstance(exc, Exception):
+            raise
+        restore_complete = False
+        if not _secret_safe:
+            detail = (
+                f"restore prior desired authority [{_setup_runtime_ref(type(exc).__name__)}]"
+                if exact_runtime
+                else f"restore prior desired config: {exc}"
+            )
+            rollback_errors.append(detail)
 
-    if rollback_errors:
-        raise click.ClickException(
-            f"connector setup did not converge ({cause}); rollback was incomplete: "
-            + "; ".join(rollback_errors)
-        ) from cause
-    raise click.ClickException(
-        f"connector setup did not converge ({cause}); restored the prior connector configuration and runtime"
-    ) from cause
+    pre_verification_complete = True
+    pre_reconcile_failures: list[str] = []
+    if exact_runtime:
+        try:
+            pre_reconcile_failures = _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=True)
+        except BaseException as exc:  # Continue to every other independently feasible phase.
+            if not isinstance(exc, Exception) and not _secret_safe:
+                raise
+            pre_verification_complete = False
+            pre_reconcile_failures.append(
+                f"pre-reconciliation persistence verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]"
+            )
+    rollback_errors.extend(pre_reconcile_failures)
+    authority_safe = restore_complete and pre_verification_complete and not pre_reconcile_failures
+    if authority_safe:
+        try:
+            if exact_runtime:
+                _restore_prior_setup_lifecycle(app, snapshot)
+            else:
+                _restart_restored_connector_runtime(app)
+        except BaseException as exc:  # Report both non-secret transaction failures.
+            if _secret_safe:
+                secret_rollback_failed = True
+            elif not isinstance(exc, Exception):
+                raise
+            if not _secret_safe:
+                detail = (
+                    f"restore prior gateway lifecycle [{_setup_runtime_ref(type(exc).__name__)}]"
+                    if exact_runtime
+                    else f"re-apply prior connector runtime: {exc}"
+                )
+                rollback_errors.append(detail)
+    elif exact_runtime:
+        rollback_errors.append("runtime reconciliation was skipped because restored authority was not exact")
+
+    if exact_runtime:
+        final_registration_locations = failed_registration_locations or ()
+        verification_checks: list[tuple[str, Any]] = [
+            (
+                "post-reconciliation persistence",
+                lambda: _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=False),
+            ),
+            (
+                "applied runtime",
+                lambda: _verify_restored_setup_runtime(app.cfg, snapshot, final_registration_locations),
+            ),
+        ]
+        for label, check in verification_checks:
+            try:
+                rollback_errors.extend(check())
+            except BaseException as exc:  # Continue every independent verification.
+                if not isinstance(exc, Exception) and not _secret_safe:
+                    raise
+                rollback_errors.append(f"{label} verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]")
+    if len(rollback_errors) > _SETUP_ROLLBACK_MAX_FAILURES:
+        rollback_errors = rollback_errors[: _SETUP_ROLLBACK_MAX_FAILURES - 1]
+        rollback_errors.append("additional rollback failures were omitted at the bounded reporting limit")
+
+    if _secret_safe:
+        failure_code = (
+            "readiness-failed-rollback-incomplete"
+            if secret_rollback_failed or rollback_errors or not _secret_rollback_complete
+            else "readiness-failed-restored"
+        )
+        raise _GuardrailSecretFailure(failure_code) from None
+
+    cause_text = f"[ref {_setup_runtime_ref(type(cause).__name__)}]" if exact_runtime else f"({cause})"
+    outcome = (
+        "rollback was incomplete: " + "; ".join(rollback_errors)
+        if rollback_errors
+        else "restored the prior connector configuration and runtime"
+    )
+    failure = click.ClickException(f"connector setup did not converge {cause_text}; {outcome}")
+    if exact_runtime:
+        raise failure from None
+    raise failure from cause
 
 
 def _resolve_connector_workspace(workspace_dir: str | None) -> str:
@@ -5513,7 +7290,8 @@ def _apply_hook_connector_setup(
     trusted_prompt_cache: dict[str, bool] | None = None,
     _downgrade_refused_action: bool = False,
     _version_preflighted: bool = False,
-    _selection_preflighted: bool = False,
+    _protected_selection: _VerifiedSetupAgentSelections | None = None,
+    _selection_transaction_snapshot: _SetupConfigSnapshot | None = None,
 ) -> bool:
     """Pin DefenseClaw to *connector* in hook-driven mode.
 
@@ -5563,7 +7341,13 @@ def _apply_hook_connector_setup(
     desired_mode = (mode or "").strip().lower()
     if desired_mode not in ("observe", "action"):
         desired_mode = "observe"
-    if not _version_preflighted:
+
+    exact_windows_opencode = _windows_opencode_requires_exact_selection(connector)
+    # Preserve the predecessor's ordering for every non-OpenCode connector:
+    # generic version admission still precedes rule-pack validation and the
+    # setup snapshot. Only native-Windows OpenCode takes the exact-selection
+    # branch below.
+    if not _version_preflighted and not exact_windows_opencode:
         version_check_kwargs = {
             "mode": desired_mode,
             "data_dir": getattr(app.cfg, "data_dir", None),
@@ -5587,19 +7371,37 @@ def _apply_hook_connector_setup(
 
     cfg = app.cfg
     gc = cfg.guardrail
-
-    # R1: resolve the rule-pack selection up front so an invalid combination
-    # (--rule-pack + --rule-pack-dir are mutually exclusive) fails fast via a
-    # UsageError BEFORE _write_connector_identity mutates any in-memory state.
     pack_dir = _resolve_rule_pack_dir(app, rule_pack=rule_pack, rule_pack_dir=rule_pack_dir)
     try:
-        setup_snapshot = _capture_setup_config_snapshot(app.cfg)
+        setup_snapshot = _capture_setup_config_snapshot(app.cfg, capture_runtime=_windows_runtime_rollback(restart))
     except OSError as exc:
         click.echo(f"  ✗ Cannot establish connector setup rollback point: {exc}", err=True)
         return False
-    if not _selection_preflighted:
+
+    verified = _protected_selection
+    selection_roster = (connector,)
+    if (
+        isinstance(verified, _VerifiedSetupAgentSelections)
+        and verified._seal is _SETUP_SELECTION_PROOF_SEAL
+        and connector in verified.connectors
+    ):
+        selection_roster = verified.connectors
+    if verified is not None:
         try:
-            _record_windows_setup_agent_selections(getattr(app.cfg, "data_dir", None), (connector,))
+            verified = _revalidate_setup_agent_selections(
+                cfg.data_dir,
+                verified,
+                transaction_snapshot=_selection_transaction_snapshot or setup_snapshot,
+            )
+        except OSError:
+            verified = None
+    if verified is None or verified.record_for(connector) is None:
+        try:
+            verified = _record_windows_setup_agent_selections(
+                getattr(app.cfg, "data_dir", None),
+                selection_roster,
+                _prior_snapshot=setup_snapshot,
+            )
         except Exception as exc:
             try:
                 _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
@@ -5609,6 +7411,8 @@ def _apply_hook_connector_setup(
                     f"agent_selection.json rollback was incomplete: {rollback_exc}"
                 ) from exc
             raise
+    if exact_windows_opencode and (verified is None or verified.record_for(connector) is None):
+        raise click.ClickException("native-Windows OpenCode setup has no concrete receipt-bound exact SST selection")
 
     workspace = _configure_connector_workspace(cfg, workspace_dir)
     # WU7: honor the resolved write mode — "replace" pins this as the sole
@@ -5818,6 +7622,13 @@ def _apply_hook_connector_setup(
                 "Hermes callbacks are not live-verified: reload or restart every running "
                 "Hermes CLI, TUI, gateway, desktop, and service host before relying on registration changes."
             )
+        elif connector == "omnigent":
+            click.echo("  ✓ OmniGent on-disk policy registration staged")
+            ux.warn(
+                "OmniGent 0.7.0 does not expose a loaded policy generation/module/config identity. "
+                "Reload or restart every running OmniGent server; action/fail-closed enforcement "
+                "remains unverified until then."
+            )
         else:
             click.echo(f"  ✓ {_CONNECTOR_META[connector]['label']} connector setup complete")
     else:
@@ -5960,6 +7771,11 @@ def _print_connector_next_steps(connector: str, *, os_name: str | None = None) -
             "    • Reload/restart every running Hermes CLI, TUI, gateway, desktop, and service host; "
             "DefenseClaw does not manage Hermes PortableGit terminal behavior"
         )
+    elif connector == "omnigent":
+        click.echo(
+            "    • Reload/restart every running OmniGent server; OmniGent 0.7.0 does not expose "
+            "loaded policy generation/module/config identity for live verification"
+        )
     if os_name == "nt":
         click.echo("    • Watch decisions live: defenseclaw tui")
         click.echo(f"    • Recent alerts for this connector: defenseclaw alerts --limit 25 --connector {connector}")
@@ -5989,7 +7805,11 @@ def _print_observability_summary(
             else "disabled (observe-only)"
         )
     elif connector == "omnigent":
-        enforcement_label = "enabled (custom policy API)" if mode == "action" else "disabled (observe-only)"
+        enforcement_label = (
+            "configured (custom policy API; live policy generation unverified)"
+            if mode == "action"
+            else "configured (observe-only; live policy generation unverified)"
+        )
     elif connector == "hermes":
         enforcement_label = (
             "pre_tool deny; pre_verify continue; failures open; no ask"
@@ -6044,7 +7864,16 @@ def _print_observability_summary(
         ("ai_discovery", f"enabled ({cfg.ai_discovery.mode})" if cfg else "enabled"),
     ]
     if connector == "omnigent":
-        rows.append(("native OTel", "optional; inactive until OTEL_* is exported for OmniGent"))
+        rows.extend(
+            [
+                ("native OTel", "optional; inactive until OTEL_* is exported for OmniGent"),
+                ("running OmniGent hosts", "unverified; reload/restart required"),
+                (
+                    "validation evidence",
+                    "on-disk registration only; loaded policy identity unavailable in OmniGent 0.7.0",
+                ),
+            ]
+        )
     elif connector == "hermes":
         rows.extend(
             [
@@ -6765,6 +8594,8 @@ def _prompt_batch_trusted_prefixes(
         return cache
 
     for connector in connector_modes:
+        if _windows_opencode_requires_exact_selection(connector):
+            continue
         signal = disc.agents.get(connector)
         if (
             signal is None
@@ -6815,6 +8646,7 @@ def _apply_setup_batch(
     allow_trusted_path_prompt: bool = True,
     trusted_prompt_cache: dict[str, bool] | None = None,
     _prior_snapshot: _SetupConfigSnapshot | None = None,
+    _protected_selection: _VerifiedSetupAgentSelections | None = None,
 ) -> None:
     """Configure each connector in *connectors* as a multi-connector batch (SU-11).
 
@@ -6825,18 +8657,67 @@ def _apply_setup_batch(
     rather than per connector.
     """
     default_mode = "action" if (mode or "").strip().lower() == "action" else "observe"
-    setup_snapshot = _prior_snapshot or _capture_setup_config_snapshot(app.cfg)
+    setup_snapshot = _prior_snapshot or _capture_setup_config_snapshot(
+        app.cfg,
+        capture_runtime=_windows_runtime_rollback(restart),
+    )
 
     resolved_connector_modes = {
         connector_name: (connector_modes or {}).get(connector_name, default_mode)
         for connector_name in connectors
     }
 
+    # Exact protected selection is the first compatibility authority in the
+    # batch. Windows OpenCode must succeed here before generic discovery can
+    # prompt for or persist any unrelated trusted prefix.
+    exact_windows_opencode = any(_windows_opencode_requires_exact_selection(name) for name in connectors)
+    protected_selection = _protected_selection
+    if protected_selection is not None:
+        try:
+            protected_selection = _revalidate_setup_agent_selections(
+                app.cfg.data_dir,
+                protected_selection,
+                transaction_snapshot=setup_snapshot,
+            )
+        except OSError:
+            protected_selection = None
+    if exact_windows_opencode and (protected_selection is None or protected_selection.record_for("opencode") is None):
+        try:
+            protected_selection = _record_windows_setup_agent_selections(
+                getattr(app.cfg, "data_dir", None),
+                tuple(connectors),
+                _prior_snapshot=setup_snapshot,
+            )
+        except Exception as exc:
+            _restore_setup_config_in_memory(app, setup_snapshot)
+            try:
+                _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
+                raise click.ClickException(
+                    f"batch executable selection failed ({exc}); "
+                    f"agent_selection.json rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
+
+    if allow_trusted_path_prompt and exact_windows_opencode:
+        try:
+            trusted_prompt_cache = _prompt_batch_trusted_prefixes(app, resolved_connector_modes)
+        except Exception as exc:
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both transaction failures.
+                raise click.ClickException(
+                    f"batch setup prompt failed ({exc}); rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
+
     # Resolve every contract before replacing the desired roster. A selected
     # connector that cannot be set up must leave the exact prior roster intact,
     # rather than becoming desired state that the gateway can never apply.
     for connector_name in connectors:
         connector_mode = resolved_connector_modes[connector_name]
+        if _windows_opencode_requires_exact_selection(connector_name):
+            continue
         preflight_kwargs = {
             "mode": connector_mode,
             "emit": True,
@@ -6851,29 +8732,36 @@ def _apply_setup_batch(
                 ux.warn(f"{label}: requested action mode was refused; configuring observe mode instead.")
                 resolved_connector_modes[connector_name] = "observe"
                 continue
-            _restore_setup_config_in_memory(app, setup_snapshot)
+            _restore_setup_config_snapshot(app, setup_snapshot)
             raise click.ClickException(
                 f"connector {connector_name!r} did not pass setup preflight; prior roster was not changed"
             )
 
-    # Select every executable-authority connector in one protected write.
-    # record_setup_agent_selections intentionally replaces stale/unrequested
-    # entries, so invoking it once per connector would let the final connector
-    # erase an earlier peer before the gateway consumes the batch receipt.
-    try:
-        _record_windows_setup_agent_selections(
-            getattr(app.cfg, "data_dir", None),
-            tuple(connectors),
-        )
-    except Exception as exc:
+    if protected_selection is not None:
         try:
-            _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
-        except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
-            raise click.ClickException(
-                f"batch executable selection failed ({exc}); "
-                f"agent_selection.json rollback was incomplete: {rollback_exc}"
-            ) from exc
-        raise
+            protected_selection = _revalidate_setup_agent_selections(
+                app.cfg.data_dir,
+                protected_selection,
+                transaction_snapshot=setup_snapshot,
+            )
+        except OSError:
+            protected_selection = None
+    if protected_selection is None:
+        try:
+            protected_selection = _record_windows_setup_agent_selections(
+                getattr(app.cfg, "data_dir", None),
+                tuple(connectors),
+                _prior_snapshot=setup_snapshot,
+            )
+        except Exception as exc:
+            try:
+                _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
+                raise click.ClickException(
+                    f"batch executable selection failed ({exc}); "
+                    f"agent_selection.json rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
 
     _reconcile_batch_active_connectors(app.cfg, connectors)
     gc = app.cfg.guardrail
@@ -6906,7 +8794,8 @@ def _apply_setup_batch(
                 trusted_prompt_cache=trusted_prompt_cache,
                 _downgrade_refused_action=True,
                 _version_preflighted=True,
-                _selection_preflighted=True,
+                _protected_selection=protected_selection,
+                _selection_transaction_snapshot=setup_snapshot,
             )
         except Exception as exc:
             try:
@@ -7011,29 +8900,66 @@ def _dispatch_bare_setup(
             click.echo("  Aborted — no connectors selected.")
             return
 
-    setup_snapshot = _capture_setup_config_snapshot(app.cfg)
+    setup_snapshot = _capture_setup_config_snapshot(app.cfg, capture_runtime=_windows_runtime_rollback(restart))
+    exact_windows_opencode = any(_windows_opencode_requires_exact_selection(name) for name in targets)
+    protected_selection: _VerifiedSetupAgentSelections | None = None
+    if exact_windows_opencode:
+        try:
+            protected_selection = _record_windows_setup_agent_selections(
+                getattr(app.cfg, "data_dir", None),
+                tuple(targets),
+                _prior_snapshot=setup_snapshot,
+            )
+        except Exception as exc:
+            _restore_setup_config_in_memory(app, setup_snapshot)
+            try:
+                _restore_setup_agent_selection_snapshot(app.cfg, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both authority failures.
+                raise click.ClickException(
+                    f"batch executable selection failed ({exc}); "
+                    f"agent_selection.json rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
 
     prompt_batch = (not yes) and _is_interactive()
     connector_modes: dict[str, str] | None = None
     judge_connectors: set[str] | None = None
     trusted_prompt_cache: dict[str, bool] | None = None
     if prompt_batch:
-        gc = app.cfg.guardrail
-        connector_modes = _prompt_batch_connector_modes(targets, gc, default_mode=mode)
-        trusted_prompt_cache = _prompt_batch_trusted_prefixes(app, connector_modes)
-        judge_targets = [c for c in targets if (connector_modes.get(c, "observe") or "").strip().lower() == "action"]
-        if judge_targets:
-            judge_connectors = _prompt_batch_judge_connectors(judge_targets, gc)
-        else:
-            judge_connectors = set()
-            click.echo("  " + ux.dim("LLM judge: skipped because no selected connector is in action mode."))
-        if judge_connectors:
-            configure_model = click.confirm(
-                "  Configure LLM judge provider/model/API settings now?",
-                default=_judge_llm_needs_configuration(app),
-            )
-            if configure_model:
-                _prompt_judge_model_config(app, gc)
+        try:
+            gc = app.cfg.guardrail
+            connector_modes = _prompt_batch_connector_modes(targets, gc, default_mode=mode)
+            if exact_windows_opencode:
+                # Trusted-path remediation runs inside _apply_setup_batch only
+                # after this exact protected selection has succeeded.
+                trusted_prompt_cache = {}
+            else:
+                trusted_prompt_cache = _prompt_batch_trusted_prefixes(app, connector_modes)
+            judge_targets = [
+                c for c in targets if (connector_modes.get(c, "observe") or "").strip().lower() == "action"
+            ]
+            if judge_targets:
+                judge_connectors = _prompt_batch_judge_connectors(judge_targets, gc)
+            else:
+                judge_connectors = set()
+                click.echo("  " + ux.dim("LLM judge: skipped because no selected connector is in action mode."))
+            if judge_connectors:
+                configure_model = click.confirm(
+                    "  Configure LLM judge provider/model/API settings now?",
+                    default=_judge_llm_needs_configuration(app),
+                )
+                if configure_model:
+                    _prompt_judge_model_config(app, gc)
+        except Exception as exc:
+            if not exact_windows_opencode:
+                raise
+            try:
+                _restore_setup_config_snapshot(app, setup_snapshot)
+            except Exception as rollback_exc:  # noqa: BLE001 — preserve both transaction failures.
+                raise click.ClickException(
+                    f"batch setup prompt failed ({exc}); rollback was incomplete: {rollback_exc}"
+                ) from exc
+            raise
 
     _apply_setup_batch(
         ctx,
@@ -7046,6 +8972,7 @@ def _dispatch_bare_setup(
         allow_trusted_path_prompt=prompt_batch,
         trusted_prompt_cache=trusted_prompt_cache,
         _prior_snapshot=setup_snapshot,
+        _protected_selection=protected_selection,
     )
     if prompt_batch:
         _prune_judge_gate_to_action_scope(app.cfg.guardrail, targets)
@@ -7388,9 +9315,9 @@ def setup_claude_code(
     Wires two telemetry channels at gateway boot:
 
     \b
-      • Hooks — the supported Claude Code 2.1.154+ contract's 28
-                lifecycle, prompt, tool, subagent, task, compact,
-                elicitation, configuration, and notification events
+      • Hooks — the exact version-selected Claude Code contract: 28
+                events for >=2.1.154,<2.1.219 or 29 events for
+                >=2.1.219, including observational DirectoryAdded
       • OTel  — native Claude Code OTel exporter (env-driven) pointing
                 at the gateway's /v1/logs and /v1/metrics
 
@@ -7506,6 +9433,18 @@ def _remove_connector(
         click.echo("  Aborted; no changes made.")
         return True
 
+    setup_snapshot: _SetupConfigSnapshot | None = None
+    runtime_rollback = _windows_runtime_rollback(restart)
+    if runtime_rollback:
+        try:
+            setup_snapshot = _capture_setup_config_snapshot(cfg, capture_runtime=True)
+        except OSError as exc:
+            click.echo(
+                f"  ✗ Cannot establish connector removal rollback point [ref {_setup_runtime_ref(type(exc).__name__)}]",
+                err=True,
+            )
+            return False
+
     # Drop from the multi-connector map (case-insensitive key match).
     if getattr(gc, "connectors", None):
         for key in [k for k in gc.connectors if k.lower() == match.lower()]:
@@ -7530,7 +9469,9 @@ def _remove_connector(
     try:
         cfg.save()
     except OSError as exc:
-        click.echo(f"  ✗ Failed to save config: {exc}", err=True)
+        if setup_snapshot is not None:
+            _rollback_failed_connector_application(app, setup_snapshot, exc)
+        click.echo(f"  ✗ Failed to save config [ref {_setup_runtime_ref(type(exc).__name__)}]", err=True)
         return False
 
     click.echo(f"  ✓ Removed connector {match!r}")
@@ -7547,7 +9488,16 @@ def _remove_connector(
         # precise primitive here. _restart_defense_gateway also marks the
         # restart as handled so the group result callback won't bounce
         # again.
-        _restart_defense_gateway(cfg.data_dir)
+        if not runtime_rollback:
+            _restart_defense_gateway(cfg.data_dir)
+        else:
+            try:
+                if not _restart_defense_gateway(cfg.data_dir):
+                    raise OSError("gateway restart failed during connector removal")
+            except Exception as exc:  # noqa: BLE001 - removal shares the Setup transaction boundary.
+                if setup_snapshot is None:
+                    raise click.ClickException("connector removal restart failed without rollback authority") from None
+                _rollback_failed_connector_application(app, setup_snapshot, exc)
     else:
         # Suppress the group's auto-restart result callback so --no-restart
         # is honored; warn that teardown is deferred until the next boot.
@@ -8594,7 +10544,12 @@ def _apply_judge_runtime_defaults(gc) -> None:
         gc.detection_strategy_completion = "regex_only"
 
 
-def _prompt_judge_model_config(app: AppContext, gc) -> None:
+def _prompt_judge_model_config(
+    app: AppContext,
+    gc,
+    *,
+    _pending_secrets: list[_PendingGuardrailSecret] | None = None,
+) -> None:
     """Prompt for judge LLM details using the same model UX across setup flows."""
     ux.subhead("These LLM settings are shared by all connectors with judge enabled.")
 
@@ -8657,7 +10612,12 @@ def _prompt_judge_model_config(app: AppContext, gc) -> None:
         # var that is not already satisfied by the unified key.
         unified_env = top_llm.api_key_env or DEFENSECLAW_LLM_KEY_ENV
         if gc.judge.api_key_env != unified_env or not env_val:
-            _prompt_and_save_secret(gc.judge.api_key_env, "", app.cfg.data_dir)
+            _prompt_and_save_secret(
+                gc.judge.api_key_env,
+                "",
+                app.cfg.data_dir,
+                _pending_secrets=_pending_secrets,
+            )
 
     click.echo()
     if click.confirm("  Configure fallback models?", default=bool(gc.judge.fallbacks)):
@@ -8693,7 +10653,9 @@ def _interactive_guardrail_setup(
     gc,
     *,
     agent_name: str | None = None,
-) -> None:
+    _pre_mutation_selection=None,
+    _pending_secrets: list[_PendingGuardrailSecret] | None = None,
+) -> bool:
     # Snapshot the entry-point ``gc.enabled`` BEFORE any prompt mutates
     # it. The wizard flips ``gc.enabled = True`` after the operator
     # confirms enabling, which means by the time we reach the fail-mode
@@ -8739,11 +10701,15 @@ def _interactive_guardrail_setup(
     active_connectors = [] if was_initial_setup else configured
     is_multi = len(active_connectors) >= 2
     if agent_name and agent_name in _CONNECTOR_META:
+        if _pre_mutation_selection is not None:
+            _pre_mutation_selection((agent_name,))
         gc.connector = agent_name
         click.echo()
         _print_connector_info(gc.connector)
         click.echo()
     elif active_connectors:
+        if _pre_mutation_selection is not None:
+            _pre_mutation_selection(tuple(active_connectors))
         # Global-policy edit across the existing fleet — skip the picker
         # and leave the current primary pointer untouched.
         names = ", ".join(active_connectors)
@@ -8766,10 +10732,13 @@ def _interactive_guardrail_setup(
             )
         click.echo()
     else:
-        gc.connector = _select_connector_interactive(
+        selected_connector = _select_connector_interactive(
             gc.connector or "openclaw",
             data_dir=getattr(app.cfg, "data_dir", None),
         )
+        if _pre_mutation_selection is not None:
+            _pre_mutation_selection((selected_connector,))
+        gc.connector = selected_connector
         click.echo()
         _print_connector_info(gc.connector)
         click.echo()
@@ -8803,7 +10772,7 @@ def _interactive_guardrail_setup(
 
     if not click.confirm("  Enable guardrail?", default=True):
         gc.enabled = False
-        return
+        return False
 
     gc.enabled = True
 
@@ -9019,7 +10988,11 @@ def _interactive_guardrail_setup(
 
         _apply_judge_runtime_defaults(gc)
         click.echo()
-        _prompt_judge_model_config(app, gc)
+        _prompt_judge_model_config(
+            app,
+            gc,
+            _pending_secrets=_pending_secrets,
+        )
 
     if bool(gc.judge.enabled):
         click.echo()
@@ -9044,6 +11017,8 @@ def _interactive_guardrail_setup(
         # advanced. Operators who want to revisit HILT specifically
         # can re-run ``defenseclaw setup guardrail`` (no flag
         # needed) and walk through to the action-mode block.
+
+    return True
 
 
 def _disable_guardrail(app: AppContext, gc, *, restart: bool = False) -> None:
@@ -9284,32 +11259,57 @@ def _restart_services(
     if not gateway_restarted:
         failed.append("defenseclaw-gateway")
 
+    connector_registration_verified = False
     if wait_for_connector_ready and hook_targets and gateway_restarted:
-        gateway_generation = _gateway_health_generation(data_dir)
-        click.echo("  connector runtime: waiting for verified setup...", nl=False)
-        if _wait_for_connector_runtime(
+        readiness_label = "DefenseClaw gateway registration" if "omnigent" in hook_targets else "connector runtime"
+        click.echo(f"  {readiness_label}: waiting for verified setup...", nl=False)
+        readiness = _wait_for_connector_runtime(
             data_dir,
             hook_targets,
             connector_state_before,
             hook_contract_lock_before,
             previous_lock_publications=hook_contract_publications_before,
-            gateway_generation=gateway_generation,
-        ):
+            require_gateway_health=True,
+        )
+        if readiness:
             click.echo(" ✓")
+            connector_registration_verified = True
         else:
-            click.echo(" ✗")
-            failed.append("connector runtime readiness")
+            diagnostic = ": ".join(
+                value
+                for value in (
+                    getattr(readiness, "connector", ""),
+                    getattr(readiness, "invariant", ""),
+                    getattr(readiness, "detail", ""),
+                )
+                if value
+            )
+            click.echo(f" ✗{f' ({diagnostic})' if diagnostic else ''}")
+            failed.append(f"{readiness_label} readiness")
 
     # Multi-connector global change: every active hook connector is affected
     # by the gateway bounce, so enumerate them rather than naming the primary.
     hook_multi = [c for c in (connectors or []) if c in _HOOK_ENFORCED_CONNECTORS]
     if connector != "openclaw" and len(hook_multi) > 1:
         names = ", ".join(sorted(hook_multi))
-        ux.subhead(
-            f"{len(hook_multi)} hook connectors ({names}): enforcement via native "
-            f"lifecycle surfaces on the sidecar API port. No proxy listener — each talks directly "
-            f"to its native upstream."
-        )
+        if "omnigent" in hook_multi:
+            registration_state = (
+                "DefenseClaw gateway registration is ready"
+                if connector_registration_verified
+                else "DefenseClaw gateway registration is not verified"
+            )
+            ux.subhead(
+                f"{len(hook_multi)} hook/policy connectors ({names}): {registration_state} "
+                "on the sidecar API port; OmniGent loaded policy generation "
+                "remains unverified pending reload/restart. No proxy listener — each talks directly "
+                "to its native upstream."
+            )
+        else:
+            ux.subhead(
+                f"{len(hook_multi)} hook connectors ({names}): enforcement via native "
+                f"lifecycle surfaces on the sidecar API port. No proxy listener — each talks directly "
+                f"to its native upstream."
+            )
         click.echo()
         _fail_if_restart_failed(failed)
         return
@@ -9327,15 +11327,23 @@ def _restart_services(
         # No proxy listener binds for hook-only connectors — the agent
         # talks directly to its native upstream and DefenseClaw
         # observes/enforces via the hook bus on the sidecar API port.
-        surface = (
-            "synchronous policy plugin"
-            if connector == "amp"
-            else ("custom policy API" if connector == "omnigent" else "hook bus")
-        )
-        ux.subhead(
-            f"{connector} connector: enforcement via {surface} on the sidecar API port. "
-            f"No proxy listener — {connector} talks directly to its native upstream."
-        )
+        if connector == "omnigent":
+            registration_state = (
+                "DefenseClaw gateway registration is ready"
+                if connector_registration_verified
+                else "DefenseClaw gateway registration is not verified"
+            )
+            ux.subhead(
+                f"omnigent connector: {registration_state} on the sidecar API port; loaded policy "
+                "generation remains unverified pending OmniGent reload/restart. "
+                "No proxy listener — omnigent talks directly to its native upstream."
+            )
+        else:
+            surface = "synchronous policy plugin" if connector == "amp" else "hook bus"
+            ux.subhead(
+                f"{connector} connector: enforcement via {surface} on the sidecar API port. "
+                f"No proxy listener — {connector} talks directly to its native upstream."
+            )
 
     click.echo()
     _fail_if_restart_failed(failed)
@@ -9434,41 +11442,7 @@ def _hook_contract_lock_covers(
 
 
 def _hook_contract_lock_entry_covers(name: str, entry: Any) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    connector_name = entry.get("connector")
-    if not isinstance(connector_name, str) or normalize_connector(connector_name) != name:
-        return False
-    if name == "cursor":
-        if entry.get("contract_id") != "cursor-hooks-v1":
-            return False
-        if entry.get("compatibility_status") not in {"known", "unversioned"}:
-            return False
-        if entry.get("hook_script_version") != "v8" or entry.get("hook_fail_mode") not in {"open", "closed"}:
-            return False
-        locations = entry.get("locations")
-        if not isinstance(locations, dict):
-            return False
-        hook_paths = locations.get("hook_config_paths")
-        runtime_paths = locations.get("hook_script_paths")
-        if not isinstance(hook_paths, list) or len(hook_paths) != 1:
-            return False
-        if not isinstance(runtime_paths, list) or not runtime_paths:
-            return False
-    if name == "opencode":
-        if entry.get("contract_id") != "opencode-hooks-v1":
-            return False
-        if entry.get("compatibility_status") != "known":
-            return False
-        if entry.get("hook_script_version") != "v7":
-            return False
-        locations = entry.get("locations")
-        if not isinstance(locations, dict):
-            return False
-        hook_paths = locations.get("hook_config_paths")
-        if not isinstance(hook_paths, list) or len(hook_paths) != 1:
-            return False
-    return True
+    return not connector_lock_contract_invariant(name, entry)
 
 
 def _validated_hook_contract_lock_publications(lock: Any, expected: set[str]) -> dict[str, str]:
@@ -9571,72 +11545,6 @@ def _connector_runtime_state_sets(state: Any) -> tuple[set[str], set[str] | None
     return active, None
 
 
-def _cursor_registration_from_lock(lock: Any) -> bool:
-    if not isinstance(lock, dict):
-        return False
-    entries = lock.get("connectors")
-    entry = entries.get("cursor") if isinstance(entries, dict) else None
-    locations = entry.get("locations") if isinstance(entry, dict) else None
-    if not isinstance(locations, dict):
-        return False
-    config_paths = locations.get("hook_config_paths")
-    runtime_paths = locations.get("hook_script_paths")
-    if not isinstance(config_paths, list) or len(config_paths) != 1 or not isinstance(runtime_paths, list):
-        return False
-    result = validate_cursor_registration(
-        str(config_paths[0]),
-        expected_runtime_paths=(str(path) for path in runtime_paths if path),
-        expected_fail_closed=entry.get("hook_fail_mode") == "closed",
-    )
-    return result.ok
-
-
-def _opencode_registration_from_lock(lock: Any) -> bool:
-    if not isinstance(lock, dict):
-        return False
-    entries = lock.get("connectors")
-    entry = entries.get("opencode") if isinstance(entries, dict) else None
-    locations = entry.get("locations") if isinstance(entry, dict) else None
-    if not isinstance(locations, dict):
-        return False
-    paths = locations.get("hook_config_paths")
-    digests = entry.get("hook_script_digests") if isinstance(entry, dict) else None
-    if not isinstance(paths, list) or len(paths) != 1 or not isinstance(digests, dict):
-        return False
-    plugin_path = str(paths[0])
-    expected_paths = connector_paths.connector_config_files("opencode")
-    if len(expected_paths) != 1 or os.path.normcase(os.path.abspath(plugin_path)) != os.path.normcase(
-        os.path.abspath(expected_paths[0])
-    ):
-        return False
-    try:
-        info = os.lstat(plugin_path)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 2 * 1024 * 1024:
-            return False
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        fd = os.open(plugin_path, flags)
-        try:
-            opened = os.fstat(fd)
-            if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(info, opened):
-                return False
-            with os.fdopen(fd, "rb") as fh:
-                fd = -1
-                body = fh.read(2 * 1024 * 1024 + 1)
-        finally:
-            if fd >= 0:
-                os.close(fd)
-    except OSError:
-        return False
-    if len(body) > 2 * 1024 * 1024:
-        return False
-    if b"// defenseclaw-managed-plugin v7" not in body or b"/api/v1/opencode/hook" not in body:
-        return False
-    expected = digests.get(os.path.basename(plugin_path))
-    actual = "sha256:" + hashlib.sha256(body).hexdigest()
-    return isinstance(expected, str) and expected == actual
-
-
 def _connector_runtime_snapshot_ready(
     state: Any,
     state_marker: int,
@@ -9658,33 +11566,49 @@ def _connector_runtime_snapshot_ready(
         and state_fresh
         and lock_fresh
         and _hook_contract_lock_covers(lock, expected, inactive)
-        and ("cursor" not in expected or _cursor_registration_from_lock(lock))
-        and ("opencode" not in expected or _opencode_registration_from_lock(lock))
     )
 
 
-def _connector_runtime_ready_once(
-    state_path: str,
-    lock_path: str,
+def _connector_runtime_snapshot_failure(
+    state: Any,
+    state_marker: int,
+    lock: Any,
+    lock_marker: int,
     *,
     expected: set[str],
     previous_state_marker: int | None,
     previous_lock_marker: int | None,
-) -> bool:
-    try:
-        state, state_marker = _read_stable_regular_json(state_path)
-        lock, lock_marker = _read_stable_regular_json(lock_path)
-    except (OSError, ValueError):
-        return False
-    return _connector_runtime_snapshot_ready(
-        state,
-        state_marker,
-        lock,
-        lock_marker,
-        expected=expected,
-        previous_state_marker=previous_state_marker,
-        previous_lock_marker=previous_lock_marker,
-    )
+) -> _ConnectorRuntimeReadiness:
+    runtime_sets = _connector_runtime_state_sets(state)
+    if runtime_sets is None:
+        return _ConnectorRuntimeReadiness(False, invariant="roster", detail="active connector state is malformed")
+    active, inactive = runtime_sets
+    if active != expected:
+        peer = next(iter(sorted(active ^ expected)), "")
+        return _ConnectorRuntimeReadiness(
+            False,
+            peer,
+            "roster",
+            f"active={','.join(sorted(active))}; expected={','.join(sorted(expected))}",
+        )
+    if previous_state_marker is not None and state_marker == previous_state_marker:
+        return _ConnectorRuntimeReadiness(False, invariant="freshness", detail="active connector state is stale")
+    if previous_lock_marker is not None and lock_marker == previous_lock_marker:
+        return _ConnectorRuntimeReadiness(False, invariant="freshness", detail="contract lock is stale")
+    entries = lock.get("connectors") if isinstance(lock, dict) else None
+    if not isinstance(entries, dict):
+        return _ConnectorRuntimeReadiness(False, invariant="contract", detail="contract lock is malformed")
+    for name in sorted(expected):
+        if invariant := connector_lock_contract_invariant(name, entries.get(name)):
+            return _ConnectorRuntimeReadiness(False, name, invariant, f"protected lock {invariant} is invalid")
+    extra = {normalize_connector(name) for name in entries if isinstance(name, str)} - expected
+    if inactive is None and extra:
+        peer = next(iter(sorted(extra)))
+        return _ConnectorRuntimeReadiness(False, peer, "roster", "contract lock contains an unexpected connector")
+    if inactive is not None and not extra.issubset(inactive):
+        peer = next(iter(sorted(extra - inactive)), "")
+        return _ConnectorRuntimeReadiness(False, peer, "roster", "contract lock peer is not inactive")
+    return _ConnectorRuntimeReadiness(False, invariant="snapshot", detail="runtime snapshot is not ready")
 
 
 def _read_gateway_health(data_dir: str, *, timeout: float = 1.0) -> dict[str, Any] | None:
@@ -9751,10 +11675,12 @@ def _wait_for_connector_runtime(
     *,
     previous_lock_publications: dict[str, str] | None = None,
     gateway_generation: str | None = None,
-) -> bool:
-    expected = {normalize_connector(name) for name in connectors if name}
+    require_gateway_health: bool = False,
+) -> _ConnectorRuntimeReadiness:
+    ordered = tuple(dict.fromkeys(normalize_connector(name) for name in connectors if name))
+    expected = set(ordered)
     if not expected:
-        return True
+        return _ConnectorRuntimeReadiness(True)
     state_path = os.path.join(data_dir, "active_connector.json")
     lock_path = os.path.join(data_dir, "hook_contract_lock.json")
     per_connector_budget = max(0.0, timeout)
@@ -9767,22 +11693,119 @@ def _wait_for_connector_runtime(
     absolute_deadline = started_at + absolute_budget
     baseline_publications = dict(previous_lock_publications or {})
     observed_fresh_publications: set[str] = set()
+    last_failure = _ConnectorRuntimeReadiness(False, invariant="snapshot", detail="runtime files are not ready")
+
+    def gateway_ready(deadline: float) -> tuple[bool, str | None, _ConnectorRuntimeReadiness]:
+        nonlocal gateway_generation
+        if not require_gateway_health and gateway_generation is None:
+            return True, gateway_generation, _ConnectorRuntimeReadiness(True)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return (
+                False,
+                gateway_generation,
+                _ConnectorRuntimeReadiness(
+                    False,
+                    invariant="deadline",
+                    detail="readiness deadline expired",
+                ),
+            )
+        health = _read_gateway_health(data_dir, timeout=min(0.2, remaining))
+        started_at = health.get("started_at") if isinstance(health, dict) else None
+        if not isinstance(started_at, str) or not started_at.strip():
+            return (
+                False,
+                gateway_generation,
+                _ConnectorRuntimeReadiness(
+                    False,
+                    invariant="gateway-health",
+                    detail="restarted gateway health is unavailable",
+                ),
+            )
+        started_at = started_at.strip()
+        if gateway_generation is None:
+            gateway_generation = started_at
+        if started_at != gateway_generation:
+            return (
+                False,
+                gateway_generation,
+                _ConnectorRuntimeReadiness(
+                    False,
+                    invariant="gateway-generation",
+                    detail="gateway generation changed during readiness",
+                ),
+            )
+        guardrail = health.get("guardrail")
+        state = guardrail.get("state") if isinstance(guardrail, dict) else None
+        if isinstance(state, str) and state.strip().lower() in {"error", "stopped"}:
+            return (
+                False,
+                gateway_generation,
+                _ConnectorRuntimeReadiness(
+                    False,
+                    invariant="gateway-state",
+                    detail=f"restarted gateway guardrail is {state.strip().lower()}",
+                ),
+            )
+        return True, gateway_generation, _ConnectorRuntimeReadiness(True)
+
+    def validate_transaction(deadline: float) -> _ConnectorRuntimeReadiness:
+        from defenseclaw.commands.cmd_doctor import connector_setup_readiness
+
+        results: queue.Queue[_ConnectorRuntimeReadiness] = queue.Queue(maxsize=1)
+        cancelled = threading.Event()
+        current = [ordered[0]]
+
+        def worker() -> None:
+            try:
+                cfg = load_config(data_dir=data_dir)
+                for name in ordered:
+                    current[0] = name
+                    if cancelled.is_set() or time.monotonic() >= deadline:
+                        return
+                    readiness = connector_setup_readiness(cfg, name)
+                    if cancelled.is_set() or time.monotonic() >= deadline:
+                        return
+                    if not readiness:
+                        results.put_nowait(
+                            _ConnectorRuntimeReadiness(
+                                False,
+                                readiness.connector,
+                                readiness.invariant,
+                                readiness.detail,
+                            )
+                        )
+                        return
+                if not cancelled.is_set() and time.monotonic() < deadline:
+                    results.put_nowait(_ConnectorRuntimeReadiness(True))
+            except Exception as exc:  # noqa: BLE001 - worker failures are bounded readiness evidence.
+                if not cancelled.is_set() and time.monotonic() < deadline:
+                    results.put_nowait(_ConnectorRuntimeReadiness(False, current[0], "validation", type(exc).__name__))
+
+        thread = threading.Thread(target=worker, name="defenseclaw-setup-readiness", daemon=True)
+        thread.start()
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            return results.get(timeout=remaining)
+        except queue.Empty:
+            cancelled.set()
+            return _ConnectorRuntimeReadiness(
+                False,
+                current[0],
+                "deadline",
+                "connector validation exceeded the readiness deadline",
+            )
 
     while True:
         now = time.monotonic()
         if now >= no_progress_deadline or now >= absolute_deadline:
-            # One final same-handle/stable JSON read closes the boundary race:
-            # a transaction committing exactly as its bounded wait expires is
-            # accepted only if every original readiness predicate is now true.
-            if _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
-                return False
-            return _connector_runtime_ready_once(
-                state_path,
-                lock_path,
-                expected=expected,
-                previous_state_marker=previous_state_marker,
-                previous_lock_marker=previous_lock_marker,
-            )
+            return last_failure
+        if require_gateway_health or gateway_generation is not None:
+            health_ok, _, health_failure = gateway_ready(min(no_progress_deadline, absolute_deadline))
+            if not health_ok:
+                last_failure = health_failure
+                if health_failure.invariant == "gateway-state":
+                    return health_failure
         try:
             state, state_marker = _read_stable_regular_json(state_path)
             lock, lock_marker = _read_stable_regular_json(lock_path)
@@ -9798,18 +11821,64 @@ def _wait_for_connector_runtime(
                 previous_state_marker=previous_state_marker,
                 previous_lock_marker=previous_lock_marker,
             )
-            if _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
-                return False
+            if not snapshot_ready:
+                last_failure = _connector_runtime_snapshot_failure(
+                    state,
+                    state_marker,
+                    lock,
+                    lock_marker,
+                    expected=expected,
+                    previous_state_marker=previous_state_marker,
+                    previous_lock_marker=previous_lock_marker,
+                )
             if snapshot_ready:
-                return True
+                deadline = min(no_progress_deadline, absolute_deadline)
+                health_ok, _, health_failure = gateway_ready(deadline)
+                if not health_ok:
+                    last_failure = health_failure
+                    if health_failure.invariant == "gateway-state":
+                        return health_failure
+                else:
+                    validation = validate_transaction(deadline)
+                    if validation:
+                        if time.monotonic() >= deadline:
+                            return _ConnectorRuntimeReadiness(
+                                False,
+                                invariant="deadline",
+                                detail="validation completed after the readiness deadline",
+                            )
+                        health_ok, _, health_failure = gateway_ready(deadline)
+                        snapshot_still_ready = False
+                        if health_ok and time.monotonic() < deadline:
+                            snapshot_still_ready = (
+                                _regular_file_marker(state_path) == state_marker
+                                and _regular_file_marker(lock_path) == lock_marker
+                            )
+                        if health_ok and snapshot_still_ready and time.monotonic() < deadline:
+                            return validation
+                        last_failure = (
+                            health_failure
+                            if not health_ok
+                            else _ConnectorRuntimeReadiness(
+                                False,
+                                invariant="snapshot",
+                                detail="runtime files changed during validation",
+                            )
+                        )
+                    else:
+                        last_failure = validation
+                        if validation.invariant not in {
+                            "deadline",
+                            "gateway-health",
+                            "live-runtime",
+                        }:
+                            return validation
 
             lock_fresh = previous_lock_marker is None or lock_marker != previous_lock_marker
             if lock_fresh:
                 publications = _validated_hook_contract_lock_publications(lock, expected)
                 freshly_published = {
-                    name
-                    for name, token in publications.items()
-                    if token != baseline_publications.get(name)
+                    name for name, token in publications.items() if token != baseline_publications.get(name)
                 }
                 new_progress = freshly_published - observed_fresh_publications
                 if new_progress:
@@ -9817,10 +11886,6 @@ def _wait_for_connector_runtime(
                     progress_at = time.monotonic()
                     no_progress_deadline = min(absolute_deadline, progress_at + per_connector_budget)
 
-        if state is None and _new_gateway_health_is_terminal_failure(data_dir, gateway_generation):
-            # Health is only a negative terminal signal for the exact restarted
-            # generation. It can never replace the file/lock/registration gate.
-            return False
         sleep_for = min(0.2, max(0.0, min(no_progress_deadline, absolute_deadline) - time.monotonic()))
         if sleep_for:
             time.sleep(sleep_for)
@@ -10374,7 +12439,10 @@ def _auto_restart_sidecar_after_setup(ctx: click.Context, *_args, **_kwargs) -> 
     data_dir = app.cfg.data_dir
     if batch_targets:
         click.echo("")
-        click.echo("  Starting/restarting defenseclaw-gateway and verifying connector readiness…")
+        if "omnigent" in batch_targets:
+            click.echo("  Starting/restarting defenseclaw-gateway and verifying connector registration…")
+        else:
+            click.echo("  Starting/restarting defenseclaw-gateway and verifying connector readiness…")
         primary = (
             normalize_connector(app.cfg.active_connector())
             if hasattr(app.cfg, "active_connector") and normalize_connector(app.cfg.active_connector()) in batch_targets
@@ -10395,10 +12463,19 @@ def _auto_restart_sidecar_after_setup(ctx: click.Context, *_args, **_kwargs) -> 
             if isinstance(snapshot, _SetupConfigSnapshot):
                 _rollback_failed_connector_application(app, snapshot, exc)
             raise
-        click.echo(
-            f"  ✓ Configured {len(batch_targets)} connector(s); runtime roster and "
-            "hook-contract evidence are ready"
-        )
+        if "omnigent" in batch_targets:
+            click.echo(
+                f"  ✓ Configured {len(batch_targets)} connector(s); DefenseClaw gateway roster and "
+                "hook-contract evidence are ready"
+            )
+            ux.warn(
+                "OmniGent loaded policy generation remains unverified; reload/restart every running "
+                "OmniGent server before relying on action/fail-closed enforcement."
+            )
+        else:
+            click.echo(
+                f"  ✓ Configured {len(batch_targets)} connector(s); runtime roster and hook-contract evidence are ready"
+            )
         return
 
     pid_file = os.path.join(data_dir, "gateway.pid")
@@ -12350,8 +14427,11 @@ def _save_secret_to_dotenv(key: str, value: str, data_dir: str) -> None:
     dotenv_path = os.path.join(data_dir, ".env")
     with locked_file_update(dotenv_path):
         snapshot = _rotate_token_snapshot_locked(dotenv_path)
-        body = _dotenv_upsert_render(snapshot, key, value)
-        atomic_write_private_bytes(dotenv_path, body)
+        _save_secrets_to_dotenv_locked(
+            dotenv_path,
+            snapshot,
+            ((key, value),),
+        )
     os.environ[key] = value
 
 

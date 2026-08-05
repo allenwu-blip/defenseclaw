@@ -40,16 +40,20 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from defenseclaw import doctor_gateway
 from defenseclaw.commands.cmd_doctor import (
     _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS,
     _CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS,
@@ -73,15 +77,25 @@ from defenseclaw.commands.cmd_doctor import (
     _doctor_label_suffix,
     _DoctorResult,
     _fix_plugin_registry_required,
+    _hook_health_paths_from_lock,
+    _omnigent_custody_read,
     _omnigent_live_config_evidence,
+    _omnigent_local_server_pid,
     _omnigent_managed_artifact_drift,
+    _omnigent_runtime_readiness,
     _omnigent_setup_repair_command,
+    _opencode_load_heartbeat_status,
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
     _run_cursor_windows_runtime_process,
     _windows_native_hook_check,
 )
 from defenseclaw.doctor_hooks import WindowsHookCheck
+from defenseclaw.file_permissions import (
+    UNSAFE_PATH_CHANGED,
+    UNSAFE_PATH_SYMLINK_OR_REPARSE,
+    UnsafePathError,
+)
 
 
 class TestCodexOtelAlignment(unittest.TestCase):
@@ -1458,10 +1472,31 @@ class TestCheckHookHealth(unittest.TestCase):
     format-agnostic (YAML for hermes, flat ``.js`` for opencode).
     """
 
+    def setUp(self) -> None:
+        # D:-rooted Windows CI workspaces commonly inherit an Authenticated
+        # Users write ACE above TemporaryDirectory. Existing connector tests
+        # isolate content behavior; custody-specific cases below override this
+        # seam explicitly with safe, denied, unavailable, and Darwin verdicts.
+        custody = patch(
+            "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+            return_value=("ok", ""),
+        )
+        custody.start()
+        self.addCleanup(custody.stop)
+        private_custody = patch(
+            "defenseclaw.commands.cmd_doctor.windows_acl_confidentiality_error",
+            return_value=None,
+        )
+        private_custody.start()
+        self.addCleanup(private_custody.stop)
+
     def _cfg(self, data_dir: str, connector: str, paths: list[str]) -> MagicMock:
         cfg = MagicMock()
         cfg.data_dir = data_dir
         cfg.gateway.api_port = 18970
+        cfg.gateway.api_bind = "127.0.0.1"
+        cfg.gateway.token_env = ""
+        cfg.gateway.resolved_token.return_value = "opencode-runtime-fixture-token"
         with open(os.path.join(data_dir, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
             json.dump(
                 {"connectors": {connector: {"locations": {"hook_config_paths": paths}}}},
@@ -1469,12 +1504,26 @@ class TestCheckHookHealth(unittest.TestCase):
             )
         return cfg
 
+    def _opencode_status(self, data_dir: str, row: dict, *, runtime_pid: object = 4242) -> str:
+        now = datetime.now(timezone.utc)
+        health = {
+            "started_at": (now - timedelta(hours=1)).isoformat(),
+            "connectors": [row],
+        }
+        return json.dumps(
+            {
+                "runtime": {"pid": runtime_pid, "data_dir": data_dir},
+                "health": health,
+            }
+        )
+
     def _write_omnigent_backup(self, data_dir: str, logical: str, path: str) -> None:
         backup_dir = os.path.join(data_dir, "connector_backups", "omnigent")
         os.makedirs(backup_dir, exist_ok=True)
         with open(path, "rb") as fh:
             digest = hashlib.sha256(fh.read()).hexdigest()
-        with open(os.path.join(backup_dir, f"{logical}.json"), "w", encoding="utf-8") as fh:
+        backup_path = os.path.join(backup_dir, f"{logical}.json")
+        with open(backup_path, "w", encoding="utf-8") as fh:
             json.dump(
                 {
                     "version": 1,
@@ -1485,6 +1534,7 @@ class TestCheckHookHealth(unittest.TestCase):
                 },
                 fh,
             )
+        os.chmod(backup_path, 0o600)
 
     def test_lock_path_with_marker_requires_hermes_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1555,21 +1605,34 @@ class TestCheckHookHealth(unittest.TestCase):
                 encoding="utf-8",
             )
             r = _DoctorResult()
-            health = json.dumps(
-                {"connectors": [{"name": "opencode", "load_heartbeat_at": "2026-07-31T12:00:00Z"}]},
+            cfg = self._cfg(tmp, "opencode", [hook])
+            status = self._opencode_status(
+                tmp,
+                {
+                    "name": "opencode",
+                    "state": "running",
+                    "source": "manual",
+                    "load_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
-            with patch(
-                "defenseclaw.commands.cmd_doctor._http_probe",
-                return_value=(200, health),
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                    return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._http_probe",
+                    return_value=(200, status),
+                ),
             ):
-                _check_hook_health(self._cfg(tmp, "opencode", [hook]), "opencode", r)
+                _check_hook_health(cfg, "opencode", r)
         self.assertEqual(r.checks[-1]["status"], "pass")
         self.assertEqual(r.checks[-1]["label"], "OpenCode hooks")
         self.assertIn("does not revalidate the Windows DACL", r.checks[-1]["detail"])
         self.assertIn("not tamper-proof", r.checks[-1]["detail"])
-        self.assertIn("load heartbeat received", r.checks[-1]["detail"])
+        self.assertIn("authenticated load heartbeat is fresh", r.checks[-1]["detail"])
 
-    def test_opencode_missing_load_heartbeat_warns_about_pure_mode(self) -> None:
+    def test_opencode_missing_load_heartbeat_is_unverified_without_guessing_pure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             hook = Path(tmp) / "defenseclaw.js"
             body = b"// defenseclaw managed plugin\n"
@@ -1589,15 +1652,186 @@ class TestCheckHookHealth(unittest.TestCase):
                 encoding="utf-8",
             )
             r = _DoctorResult()
-            health = json.dumps({"connectors": [{"name": "opencode", "requests": 0}]})
-            with patch(
-                "defenseclaw.commands.cmd_doctor._http_probe",
-                return_value=(200, health),
+            cfg = self._cfg(tmp, "opencode", [str(hook)])
+            status = self._opencode_status(
+                tmp,
+                {
+                    "name": "opencode",
+                    "state": "running",
+                    "source": "manual",
+                    "requests": 0,
+                },
+            )
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                    return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._http_probe",
+                    return_value=(200, status),
+                ),
             ):
-                _check_hook_health(self._cfg(tmp, "opencode", [str(hook)]), "opencode", r)
+                _check_hook_health(cfg, "opencode", r)
 
         self.assertEqual(r.checks[-1]["status"], "warn")
-        self.assertIn("--pure", r.checks[-1]["detail"])
+        self.assertIn("no authenticated load heartbeat", r.checks[-1]["detail"])
+        self.assertNotIn("--pure", r.checks[-1]["detail"])
+
+    def test_opencode_runtime_status_rejects_stale_and_malformed_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "opencode", [])
+            for heartbeat, reason in (
+                ((datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat(), "stale"),
+                ("not-a-timestamp", "malformed"),
+            ):
+                status = self._opencode_status(
+                    tmp,
+                    {
+                        "name": "opencode",
+                        "state": "running",
+                        "source": "manual",
+                        "load_heartbeat_at": heartbeat,
+                    },
+                )
+                with (
+                    self.subTest(heartbeat=heartbeat),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                        return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                    ),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._http_probe",
+                        return_value=(200, status),
+                    ),
+                ):
+                    outcome, detail = _opencode_load_heartbeat_status(cfg)
+
+                self.assertEqual(outcome, "warn")
+                self.assertIn(reason, detail)
+                self.assertNotIn("pure", detail.lower())
+
+    def test_opencode_runtime_status_keeps_stopped_distinct_and_gateway_unavailable_unverified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "opencode", [])
+            stopped_status = self._opencode_status(
+                tmp,
+                {"name": "opencode", "state": "stopped"},
+            )
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                    return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._http_probe",
+                    return_value=(200, stopped_status),
+                ),
+            ):
+                outcome, detail = _opencode_load_heartbeat_status(cfg)
+
+            self.assertEqual(outcome, "warn")
+            self.assertIn("reports stopped", detail)
+            self.assertNotIn("pure", detail.lower())
+            self.assertNotIn("drift", detail.lower())
+
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                    return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._http_probe",
+                    return_value=(0, ""),
+                ),
+            ):
+                outcome, detail = _opencode_load_heartbeat_status(cfg)
+
+            self.assertEqual(outcome, "warn")
+            self.assertIn("gateway is unreachable", detail)
+
+    def test_opencode_runtime_requires_real_registration_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "opencode", [])
+            for source, expected in (
+                ("manual", "pass"),
+                ("automatic", "pass"),
+                ("", "warn"),
+                ("discovered", "warn"),
+                ("MANUAL", "warn"),
+                ("Automatic", "warn"),
+                (" manual", "warn"),
+                ("automatic ", "warn"),
+                (7, "warn"),
+            ):
+                status = self._opencode_status(
+                    tmp,
+                    {
+                        "name": "opencode",
+                        "state": "running",
+                        "source": source,
+                        "load_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                    },
+                )
+                with (
+                    self.subTest(source=source),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                        return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                    ),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._http_probe",
+                        return_value=(200, status),
+                    ),
+                ):
+                    outcome, detail = _opencode_load_heartbeat_status(cfg)
+
+                self.assertEqual(outcome, expected)
+                if expected == "warn":
+                    self.assertIn("manual or automatic OpenCode registration", detail)
+
+    def test_opencode_runtime_rejects_unbound_authenticated_runtime_pid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "opencode", [])
+            row = {
+                "name": "opencode",
+                "state": "running",
+                "source": "manual",
+                "load_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+            }
+            for runtime_pid in (
+                4242.9,
+                4242.0,
+                True,
+                None,
+                {},
+                [],
+                "not-a-pid",
+                0,
+                -1,
+                "4242",
+                "004242",
+                "+4242",
+                " 4242 ",
+                4241,
+                9999,
+            ):
+                status = self._opencode_status(tmp, row, runtime_pid=runtime_pid)
+                with (
+                    self.subTest(runtime_pid=runtime_pid),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                        return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                    ),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._http_probe",
+                        return_value=(200, status),
+                    ),
+                ):
+                    outcome, detail = _opencode_load_heartbeat_status(cfg)
+
+                self.assertEqual(outcome, "warn")
+                self.assertIn("runtime", detail.lower())
 
     def test_opencode_tamper_fails_digest_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1649,13 +1883,29 @@ class TestCheckHookHealth(unittest.TestCase):
             cfg = MagicMock()
             cfg.data_dir = str(data_dir)
             cfg.gateway.api_port = 18970
+            cfg.gateway.api_bind = "127.0.0.1"
+            cfg.gateway.token_env = ""
+            cfg.gateway.resolved_token.return_value = "opencode-runtime-fixture-token"
             r = _DoctorResult()
-            health = json.dumps(
-                {"connectors": [{"name": "opencode", "load_heartbeat_at": "2026-07-31T12:00:00Z"}]},
+            status = self._opencode_status(
+                str(data_dir),
+                {
+                    "name": "opencode",
+                    "state": "running",
+                    "source": "manual",
+                    "load_heartbeat_at": datetime.now(timezone.utc).isoformat(),
+                },
             )
-            with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(config_home)}), patch(
-                "defenseclaw.commands.cmd_doctor._http_probe",
-                return_value=(200, health),
+            with (
+                patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": str(config_home)}),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._trusted_gateway_listener",
+                    return_value=MagicMock(trusted=True, pid=4242, detail=""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._http_probe",
+                    return_value=(200, status),
+                ),
             ):
                 _check_hook_health(cfg, "opencode", r)
 
@@ -1726,6 +1976,455 @@ class TestCheckHookHealth(unittest.TestCase):
         r = _DoctorResult()
         _check_hook_health(MagicMock(), "totallymadeupclaw", r)
         self.assertEqual(r.checks, [])
+
+    def test_omnigent_custody_reader_accepts_safe_chain_and_same_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "evidence.json")
+            Path(evidence).write_bytes(b'{"safe":true}')
+            with patch(
+                "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                return_value=("ok", ""),
+            ) as custody:
+                status, body, detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-test-evidence",
+                    max_bytes=64,
+                    root=tmp,
+                )
+            current_stat = os.stat(evidence)
+
+        self.assertEqual((status, body, detail), ("ok", b'{"safe":true}', ""))
+        inspected_path, inspected_stat = custody.call_args.args
+        self.assertEqual(inspected_path, evidence)
+        self.assertTrue(os.path.samestat(inspected_stat, current_stat))
+
+    def test_omnigent_custody_reader_refuses_unsafe_windows_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "private-evidence.json")
+            Path(evidence).write_bytes(b"{}")
+            with patch(
+                "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                return_value=(
+                    "denied",
+                    "PID file ancestor directory has unsafe ACLs (ACL grants write access to untrusted SID S-1-5-11)",
+                ),
+            ):
+                status, body, detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-lock",
+                    max_bytes=64,
+                    root=tmp,
+                )
+
+        self.assertEqual(status, "unsafe")
+        self.assertIsNone(body)
+        self.assertIn("custody is unsafe", detail)
+        self.assertIn("path-sha256=", detail)
+        self.assertNotIn("private-evidence", detail)
+        self.assertNotIn("S-1-5-11", detail)
+
+    def test_omnigent_windows_acl_query_error_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "private-query-error.json")
+            Path(evidence).write_bytes(b"must not be returned")
+            with (
+                patch("defenseclaw.commands.cmd_doctor.os.name", "nt"),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                    side_effect=doctor_gateway._pid_record_integrity_error,
+                ),
+                patch(
+                    "defenseclaw.file_permissions._windows_acl_snapshot",
+                    side_effect=OSError("synthetic ACL query failure"),
+                ),
+            ):
+                status, body, detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-windows-record",
+                    max_bytes=64,
+                )
+
+        self.assertEqual(status, "unavailable")
+        self.assertIsNone(body)
+        self.assertIn("path-sha256=", detail)
+        self.assertNotIn("private-query-error", detail)
+        self.assertNotIn("synthetic ACL query failure", detail)
+
+    def test_omnigent_windows_unresolved_current_sid_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "private-sid-error.json")
+            Path(evidence).write_bytes(b"must not be returned")
+            with (
+                patch("defenseclaw.commands.cmd_doctor.os.name", "nt"),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                    side_effect=doctor_gateway._pid_record_integrity_error,
+                ),
+                patch(
+                    "defenseclaw.file_permissions._windows_acl_snapshot",
+                    return_value=("S-1-5-21-current", False, []),
+                ),
+                patch(
+                    "defenseclaw.file_permissions._windows_current_user_sid",
+                    return_value="",
+                ),
+            ):
+                status, body, detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-windows-record",
+                    max_bytes=64,
+                )
+
+        self.assertEqual(status, "unavailable")
+        self.assertIsNone(body)
+        self.assertIn("path-sha256=", detail)
+        self.assertNotIn("private-sid-error", detail)
+        self.assertNotIn("SID", detail)
+
+    def test_omnigent_windows_wrapped_acl_inspection_failures_are_unavailable(self) -> None:
+        problems = (
+            "PID file ancestor directory has unsafe ACLs (cannot read Windows ACL (synthetic ancestor query failure))",
+            "PID file ancestor directory has unsafe ACLs (current user SID could not be resolved)",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "private-ancestor-error.json")
+            Path(evidence).write_bytes(b"must not be returned")
+            for problem in problems:
+                with (
+                    self.subTest(problem=problem),
+                    patch("defenseclaw.commands.cmd_doctor.os.name", "nt"),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                        return_value=("denied", problem),
+                    ),
+                ):
+                    status, body, detail = _omnigent_custody_read(
+                        evidence,
+                        role="omnigent-windows-record",
+                        max_bytes=64,
+                    )
+
+                self.assertEqual(status, "unavailable")
+                self.assertIsNone(body)
+                self.assertIn("path-sha256=", detail)
+                self.assertNotIn("private-ancestor-error", detail)
+                self.assertNotIn("SID", detail)
+                self.assertNotIn("synthetic ancestor", detail)
+
+    def test_omnigent_custody_reader_keeps_unavailable_ancestor_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "evidence.json")
+            Path(evidence).write_bytes(b"{}")
+            with patch(
+                "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                return_value=("unavailable", "synthetic UID-mapped ancestor"),
+            ):
+                status, body, detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-posix-evidence",
+                    max_bytes=64,
+                    root=tmp,
+                )
+
+        self.assertEqual(status, "unavailable")
+        self.assertIsNone(body)
+        self.assertIn("custody is unavailable", detail)
+        self.assertNotIn("malformed", detail)
+
+    def test_omnigent_backup_requires_private_windows_acl_but_artifact_is_integrity_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+            module = os.path.join(data_dir, "defenseclaw_omnigent_policy.py")
+            Path(module).write_bytes(b"POLICY_REGISTRY = []\ndefenseclaw_policy = None\n")
+            self._write_omnigent_backup(data_dir, "module", module)
+            backup_path = os.path.join(data_dir, "connector_backups", "omnigent", "module.json")
+            record = json.loads(Path(backup_path).read_text(encoding="utf-8"))
+            record["pristine_bytes"] = "private backup fixture bytes"
+            Path(backup_path).write_text(json.dumps(record), encoding="utf-8")
+            os.chmod(backup_path, 0o600)
+            read_only_ace = "ACL grants read access to untrusted SID S-1-5-11"
+
+            with (
+                patch("defenseclaw.commands.cmd_doctor.os.name", "nt"),
+                patch(
+                    "defenseclaw.commands.cmd_doctor.windows_acl_confidentiality_error",
+                    return_value=read_only_ace,
+                ) as private_acl,
+            ):
+                backup_detail = _omnigent_managed_artifact_drift(
+                    MagicMock(data_dir=data_dir),
+                    "module",
+                    module,
+                )
+                artifact_status, artifact_body, artifact_detail = _omnigent_custody_read(
+                    module,
+                    role="managed-module-artifact",
+                    max_bytes=1024,
+                    root=data_dir,
+                )
+
+        self.assertIn("private custody is unsafe", backup_detail)
+        self.assertIn("path-sha256=", backup_detail)
+        self.assertNotIn("module.json", backup_detail)
+        self.assertEqual(artifact_status, "ok")
+        self.assertEqual(artifact_body, b"POLICY_REGISTRY = []\ndefenseclaw_policy = None\n")
+        self.assertEqual(artifact_detail, "")
+        private_acl.assert_called_once_with(backup_path)
+
+    def test_omnigent_darwin_acl_clean_write_grant_and_inspection_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "private-darwin-evidence.json")
+            Path(evidence).write_bytes(b"safe")
+            cases = (
+                (("ok", ""), "ok", b"safe"),
+                (("denied", "extended ACL grants additional write access"), "unsafe", None),
+                (("denied", "extended ACL could not be inspected"), "unavailable", None),
+                (
+                    (
+                        "denied",
+                        "PID file ancestor directory has unsafe ACLs (extended ACL could not be interpreted)",
+                    ),
+                    "unavailable",
+                    None,
+                ),
+            )
+            for custody_result, expected_status, expected_body in cases:
+                with (
+                    self.subTest(custody_result=custody_result),
+                    patch("defenseclaw.commands.cmd_doctor.sys.platform", "darwin"),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                        return_value=custody_result,
+                    ),
+                ):
+                    status, body, detail = _omnigent_custody_read(
+                        evidence,
+                        role="omnigent-darwin-record",
+                        max_bytes=64,
+                    )
+
+                self.assertEqual(status, expected_status)
+                self.assertEqual(body, expected_body)
+                if expected_status != "ok":
+                    self.assertIn(f"custody is {expected_status}", detail)
+                    self.assertNotIn("private-darwin", detail)
+
+    def test_omnigent_custody_reader_rejects_darwin_acl_on_leaf_and_ancestor(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            evidence = os.path.join(tmp, "evidence.json")
+            Path(evidence).write_bytes(b"safe")
+            actual_info = os.lstat(evidence)
+            leaf_info = SimpleNamespace(
+                st_mode=stat.S_IFREG | 0o600,
+                st_uid=getattr(actual_info, "st_uid", 0),
+            )
+            directory_info = SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o700,
+                st_uid=leaf_info.st_uid,
+            )
+
+            def fake_lstat(path, *args, **kwargs):
+                del args, kwargs
+                return (
+                    leaf_info
+                    if os.path.normcase(os.path.abspath(path)) == os.path.normcase(evidence)
+                    else directory_info
+                )
+
+            for unsafe_index in (0, 1):
+                checked: list[str] = []
+
+                def acl_problem(path):
+                    checked.append(os.fspath(path))
+                    return "extended ACL grants write access" if len(checked) - 1 == unsafe_index else None
+
+                with (
+                    self.subTest(unsafe_index=unsafe_index),
+                    patch(
+                        "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                        side_effect=doctor_gateway._pid_record_integrity_error,
+                    ),
+                    patch.object(doctor_gateway.os, "name", "posix"),
+                    patch.object(doctor_gateway.sys, "platform", "darwin"),
+                    patch.object(doctor_gateway.os, "lstat", side_effect=fake_lstat),
+                    patch("defenseclaw.file_permissions.darwin_acl_write_error", side_effect=acl_problem),
+                ):
+                    status, body, detail = _omnigent_custody_read(
+                        evidence,
+                        role="omnigent-darwin-evidence",
+                        max_bytes=64,
+                    )
+
+                self.assertEqual(status, "unsafe")
+                self.assertIsNone(body)
+                self.assertIn("custody is unsafe", detail)
+                self.assertEqual(len(checked), unsafe_index + 1)
+
+    def test_omnigent_custody_reader_rejects_reparse_race_oversize_and_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "trusted")
+            os.makedirs(root)
+            evidence = os.path.join(root, "private-evidence.json")
+            Path(evidence).write_bytes(b"12345")
+            outside = os.path.join(tmp, "private-outside.json")
+            Path(outside).write_bytes(b"{}")
+
+            with patch("defenseclaw.commands.cmd_doctor.is_link_or_reparse", return_value=True):
+                leaf_reparse, _, _ = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-evidence",
+                    max_bytes=64,
+                    root=root,
+                )
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                    return_value=("ok", ""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor.read_regular_file_no_follow",
+                    side_effect=UnsafePathError(
+                        "synthetic ancestor reparse",
+                        code=UNSAFE_PATH_SYMLINK_OR_REPARSE,
+                    ),
+                ),
+            ):
+                ancestor_reparse, _, ancestor_detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-evidence",
+                    max_bytes=64,
+                    root=root,
+                )
+            with patch(
+                "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                return_value=("ok", ""),
+            ):
+                oversized, _, oversized_detail = _omnigent_custody_read(
+                    evidence,
+                    role="omnigent-evidence",
+                    max_bytes=4,
+                    root=root,
+                )
+                with patch(
+                    "defenseclaw.commands.cmd_doctor.read_regular_file_no_follow",
+                    side_effect=UnsafePathError(
+                        "synthetic read-time replacement",
+                        code=UNSAFE_PATH_CHANGED,
+                    ),
+                ):
+                    replaced, _, replaced_detail = _omnigent_custody_read(
+                        evidence,
+                        role="omnigent-evidence",
+                        max_bytes=64,
+                        root=root,
+                    )
+            escaped, _, escaped_detail = _omnigent_custody_read(
+                outside,
+                role="omnigent-evidence",
+                max_bytes=64,
+                root=root,
+            )
+
+        self.assertEqual(
+            (leaf_reparse, ancestor_reparse, oversized, replaced, escaped),
+            ("unsafe", "unsafe", "invalid", "unavailable", "unsafe"),
+        )
+        self.assertIn("stable regular file", ancestor_detail)
+        self.assertIn("byte limit", oversized_detail)
+        self.assertIn("changed while", replaced_detail)
+        self.assertIn("trusted root", escaped_detail)
+        for detail in (ancestor_detail, oversized_detail, replaced_detail, escaped_detail):
+            self.assertNotIn("private-", detail)
+
+    def test_omnigent_local_server_pid_uses_custody_reader(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "local_server.pid").write_text("4242\n18970\n", encoding="utf-8")
+            with (
+                patch.dict(os.environ, {"OMNIGENT_DATA_DIR": tmp}),
+                patch("defenseclaw.process_liveness.pid_alive", return_value=True),
+            ):
+                pid, detail = _omnigent_local_server_pid()
+
+        self.assertEqual(pid, 4242)
+        self.assertIn("port=18970", detail)
+
+    def test_omnigent_unsafe_lock_does_not_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "omnigent", [])
+            with patch(
+                "defenseclaw.commands.cmd_doctor._pid_record_integrity_error",
+                return_value=("denied", "synthetic unsafe lock DACL"),
+            ):
+                r = _DoctorResult()
+                _check_omnigent_policy_health(cfg, r)
+
+        self.assertEqual(r.checks[-1]["status"], "fail")
+        self.assertIn("omnigent-lock[path-sha256=", r.checks[-1]["detail"])
+        self.assertIn("custody is unsafe", r.checks[-1]["detail"])
+
+    def test_omnigent_target_escapes_are_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = os.path.join(tmp, "data")
+            os.makedirs(data_dir)
+            outside = os.path.join(tmp, "private-outside-module.py")
+            Path(outside).write_text("POLICY_REGISTRY = []\ndefenseclaw_policy = None\n", encoding="utf-8")
+            self._write_omnigent_backup(data_dir, "module", outside)
+            detail = _omnigent_managed_artifact_drift(MagicMock(data_dir=data_dir), "module", outside)
+
+        self.assertIn("escapes DefenseClaw data custody", detail)
+        self.assertIn("path-sha256=", detail)
+        self.assertNotIn("private-outside-module", detail)
+
+    def test_omnigent_pth_import_escape_is_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = os.path.join(tmp, "config.yaml")
+            module = os.path.join(tmp, "defenseclaw_omnigent_policy.py")
+            pth = os.path.join(tmp, "defenseclaw_omnigent.pth")
+            Path(config).write_text(
+                "policy_modules: [defenseclaw_omnigent_policy]\npolicies: {defenseclaw_guardrail: {}}\n",
+                encoding="utf-8",
+            )
+            Path(module).write_text("POLICY_REGISTRY = []\ndefenseclaw_policy = None\n", encoding="utf-8")
+            Path(pth).write_text(os.path.join(tmp, "private-import-target") + "\n", encoding="utf-8")
+            for logical, path in (("config", config), ("module", module), ("pth", pth)):
+                self._write_omnigent_backup(tmp, logical, path)
+            cfg = self._cfg(tmp, "omnigent", [config])
+            Path(tmp, "hook_contract_lock.json").write_text(
+                json.dumps(
+                    {
+                        "connectors": {
+                            "omnigent": {
+                                "locations": {
+                                    "hook_config_paths": [config],
+                                    "hook_script_paths": [module, pth],
+                                }
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            r = _DoctorResult()
+
+            _check_omnigent_policy_health(cfg, r)
+
+        self.assertEqual(r.checks[-1]["status"], "fail")
+        self.assertIn("points outside the managed module", r.checks[-1]["detail"])
+        self.assertNotIn("private-import-target", r.checks[-1]["detail"])
+
+    def test_non_omnigent_lock_reader_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            hook = os.path.join(tmp, "config.yaml")
+            Path(hook).write_text("hooks: []\n", encoding="utf-8")
+            cfg = self._cfg(tmp, "hermes", [hook])
+            with patch(
+                "defenseclaw.commands.cmd_doctor._omnigent_lock_locations",
+                side_effect=AssertionError("OmniGent reader must stay connector-scoped"),
+            ):
+                paths = _hook_health_paths_from_lock(cfg, "hermes")
+
+        self.assertEqual(paths, [hook])
 
     def test_omnigent_requires_config_module_and_import_shim(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1969,8 +2668,10 @@ class TestCheckHookHealth(unittest.TestCase):
         ):
             status, detail = _omnigent_live_config_evidence(config)
 
-        self.assertEqual(status, "pass")
+        self.assertEqual(status, "warn")
         self.assertIn("--config", detail)
+        self.assertIn("loaded policy generation/module/config identity", detail)
+        self.assertIn("action/fail-closed enforcement is unverified", detail)
 
     def test_omnigent_live_config_evidence_fails_on_mismatch(self) -> None:
         managed = os.path.abspath("managed-omnigent-config.yaml")
@@ -2004,8 +2705,9 @@ class TestCheckHookHealth(unittest.TestCase):
         ):
             status, detail = _omnigent_live_config_evidence(managed)
 
-        self.assertEqual(status, "pass")
+        self.assertEqual(status, "warn")
         self.assertIn("--config", detail)
+        self.assertIn("pending reload/restart", detail)
 
     def test_omnigent_live_config_evidence_warns_without_source(self) -> None:
         managed = os.path.abspath("managed-omnigent-config.yaml")
@@ -2043,6 +2745,28 @@ class TestCheckHookHealth(unittest.TestCase):
         self.assertIn("command line is unreadable", detail)
         self.assertIn("effective policy config is unverified", detail)
 
+    def test_omnigent_runtime_readiness_preserves_stale_record_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config = os.path.join(tmp, "config.yaml")
+            with open(config, "w", encoding="utf-8") as fh:
+                fh.write("policies: {}\n")
+            cfg = MagicMock()
+            with (
+                patch(
+                    "defenseclaw.commands.cmd_doctor._omnigent_lock_locations",
+                    return_value=({"hook_config_paths": [config]}, ""),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_doctor._omnigent_local_server_pid",
+                    return_value=(0, "OmniGent server record is stale: synthetic-local_server.pid"),
+                ),
+            ):
+                status, detail = _omnigent_runtime_readiness(cfg)
+
+        self.assertEqual(status, "warn")
+        self.assertIn("server record is stale", detail)
+        self.assertIn("effective policy config is unverified", detail)
+
     def test_omnigent_live_config_evidence_accepts_process_environment(self) -> None:
         managed = os.path.abspath("managed-omnigent-config.yaml")
         with (
@@ -2059,8 +2783,9 @@ class TestCheckHookHealth(unittest.TestCase):
         ):
             status, detail = _omnigent_live_config_evidence(managed)
 
-        self.assertEqual(status, "pass")
+        self.assertEqual(status, "warn")
         self.assertIn("OMNIGENT_CONFIG", detail)
+        self.assertIn("loaded policy generation/module/config identity", detail)
 
     def test_omnigent_live_config_evidence_warns_for_relative_source(self) -> None:
         managed = os.path.abspath("managed-omnigent-config.yaml")

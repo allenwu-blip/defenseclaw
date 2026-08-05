@@ -645,6 +645,26 @@ def test_windows_resolver_reports_effective_mixed_modes(monkeypatch: pytest.Monk
     assert codex.current and codex.runtime == "open"
 
 
+def test_windows_resolver_accepts_sealed_claude_v2_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg, home = _runtime_cfg(monkeypatch, tmp_path, {"claudecode": "closed"})
+    _write_current_runtime(cfg, home, {"claudecode": "closed"})
+    lock_path = Path(cfg.data_dir) / "hook_contract_lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["connectors"]["claudecode"]["contract_id"] = "claudecode-hooks-v2"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    with (
+        patch("defenseclaw.fail_mode._is_windows", return_value=True),
+        patch("defenseclaw.fail_mode.Path.home", return_value=home),
+    ):
+        state = resolve_connector_fail_mode(cfg, "claudecode")
+
+    assert state.current
+    assert "registration-contract-stale" not in state.drift
+
+
 def test_windows_resolver_initial_open_open_and_reverse_mixed_mode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

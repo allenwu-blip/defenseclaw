@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from defenseclaw.observability.custody_status import (
+    NativeDeliveryStatus,
+    NativeDeliverySummary,
+)
 from defenseclaw.observability.v8_status import (
     V8BucketStatus,
     V8DestinationStatus,
@@ -64,6 +68,73 @@ def test_gateway_health_is_broken_and_string_detail() -> None:
     assert string_detail(None, "summary") == ""
     assert string_detail({"summary": 42}, "summary") == ""
     assert string_detail({"summary": "  hello  "}, "summary") == "hello"
+
+
+def test_overview_keeps_runtime_health_separate_from_native_delivery_truth() -> None:
+    model = _model()
+    model.set_health(HealthSnapshot(telemetry=SubsystemHealth(state="running")))
+    model.set_native_delivery_summary(
+        NativeDeliverySummary(
+            state="available",
+            reason="",
+            observation_window_hours=24,
+            connectors=(
+                NativeDeliveryStatus(
+                    connector="codex",
+                    default=True,
+                    state="all_drop_only",
+                    normalized_batches=2,
+                    drop_only_batches=2,
+                    detail="drop-only native stream (2/2 batches); no accepted native delivery observed",
+                ),
+                NativeDeliveryStatus(
+                    connector="claudecode",
+                    default=True,
+                    state="partial_drop_only",
+                    normalized_batches=3,
+                    drop_only_batches=1,
+                    detail="partial drop-only evidence (1/3 batches); accepted native delivery observed in remaining batches",
+                ),
+                NativeDeliveryStatus(
+                    connector="opencode",
+                    default=True,
+                    state="accepted",
+                    normalized_batches=3,
+                    drop_only_batches=0,
+                    detail="accepted native delivery observed (3 batches)",
+                ),
+                NativeDeliveryStatus(
+                    connector="copilot",
+                    default=True,
+                    state="no_evidence",
+                    normalized_batches=0,
+                    drop_only_batches=0,
+                    detail="no recent native delivery evidence",
+                ),
+            ),
+            event_rows_truncated=True,
+        )
+    )
+
+    assert model.subsystem_state("telemetry") == "running"
+    rows = model.native_delivery_rows()
+    assert [(row.connector, row.state) for row in rows] == [
+        ("codex", "all_drop_only"),
+        ("claudecode", "partial_drop_only"),
+        ("opencode", "accepted"),
+        ("copilot", "no_evidence"),
+    ]
+    assert model.native_delivery_summary is not None
+    assert model.native_delivery_summary.evidence_scope == "truncated"
+
+    from defenseclaw.tui.app import DefenseClawTUI
+
+    view = type("OverviewView", (), {"overview_model": model})()
+    rendered = DefenseClawTUI._overview_observability_text(view)
+    assert "collector/runtime health does not prove accepted delivery" in rendered
+    assert "bounded 24h, truncated; counts partial" in rendered
+    for label in ("all-drop-only", "partial-drop-only", "accepted", "no-evidence"):
+        assert label in rendered
 
 
 def test_overview_standalone_hint_and_notices() -> None:
@@ -292,6 +363,106 @@ def test_agent_detail_rolls_up_connectors_in_multi_connector() -> None:
     # Older gateway without a connectors[] array -> configured count fallback.
     multi.set_health(HealthSnapshot(connector=ConnectorHealth(name="codex", state="running")))
     assert multi.agent_detail() == "2 connectors configured"
+
+
+def test_cursor_agent_detail_has_enabled_disabled_parity_and_preserves_codex() -> None:
+    disclosure = "priority-conflict-detection=unavailable (none inferred)"
+
+    enabled = OverviewPanelModel(OverviewConfig(claw_mode="cursor"), version="test")
+    enabled.set_health(HealthSnapshot(connector=ConnectorHealth(name="cursor", state="running")))
+    assert enabled.agent_detail() == f"Cursor - {disclosure}"
+
+    disabled = OverviewPanelModel(
+        OverviewConfig(
+            claw_mode="cursor",
+            connector_modes=(("cursor", "observe"),),
+            connector_disabled=("cursor",),
+        ),
+        version="test",
+    )
+    assert disabled.agent_detail() == f"Cursor (configured, not connected) - {disclosure}"
+
+    codex = OverviewPanelModel(OverviewConfig(claw_mode="codex"), version="test")
+    codex.set_health(HealthSnapshot(connector=ConnectorHealth(name="codex", state="running")))
+    assert codex.agent_detail() == "Codex"
+
+
+def test_opencode_agent_state_requires_fresh_authenticated_heartbeat() -> None:
+    now = datetime.now(timezone.utc)
+    model = OverviewPanelModel(
+        OverviewConfig(claw_mode="opencode", guardrail_connector="opencode"),
+        version="test",
+    )
+
+    def snapshot(
+        *,
+        heartbeat: str = "",
+        state: str = "running",
+        source: object = "manual",
+    ) -> HealthSnapshot:
+        connector = ConnectorHealth(
+            name="opencode",
+            state=state,
+            source=source,
+            load_heartbeat_at=heartbeat,
+        )
+        return HealthSnapshot(
+            started_at=(now - timedelta(hours=1)).isoformat(),
+            gateway=SubsystemHealth(state="running"),
+            api=SubsystemHealth(state="running"),
+            connector=connector,
+            connectors=(connector,),
+        )
+
+    model.set_health(snapshot(heartbeat=(now - timedelta(minutes=1)).isoformat()))
+    assert model.subsystem_state("agent") == "running"
+    assert "authenticated load heartbeat is fresh" in model.agent_detail()
+
+    model.set_health(
+        snapshot(
+            heartbeat=(now - timedelta(minutes=1)).isoformat(),
+            source="automatic",
+        )
+    )
+    assert model.subsystem_state("agent") == "running"
+
+    for source in (
+        "",
+        "discovered",
+        "MANUAL",
+        "Automatic",
+        " manual",
+        "automatic ",
+        7,
+    ):
+        model.set_health(
+            snapshot(
+                heartbeat=(now - timedelta(minutes=1)).isoformat(),
+                source=source,
+            )
+        )
+        assert model.subsystem_state("agent") == "degraded"
+        assert "manual or automatic OpenCode registration" in model.agent_detail()
+
+    model.set_health(snapshot())
+    assert model.subsystem_state("agent") == "degraded"
+    assert "stopped or idle" in model.agent_detail()
+    assert "pure" not in model.agent_detail().lower()
+
+    model.set_health(snapshot(heartbeat=(now - timedelta(minutes=16)).isoformat()))
+    assert model.subsystem_state("agent") == "degraded"
+    assert "stale" in model.agent_detail()
+
+    for terminal in ("stopped", "offline", "down", "disabled"):
+        model.set_health(snapshot(state=terminal, source=""))
+        assert model.subsystem_state("agent") == terminal
+        assert f"reports {terminal}" in model.agent_detail()
+        assert "pure" not in model.agent_detail().lower()
+
+    model.set_health(snapshot(heartbeat=(now - timedelta(minutes=1)).isoformat()))
+    model.set_gateway_probe("offline", "sidecar API is unreachable")
+    assert model.subsystem_state("agent") == "degraded"
+    assert "gateway status is unavailable" in model.agent_detail()
 
 
 def test_agent_detail_reports_disabled_connectors_separately() -> None:
@@ -819,7 +990,7 @@ def test_multi_connector_rows_lists_each_connector_with_mode() -> None:
     rows = model.multi_connector_rows()
     assert [value for _, value in rows] == [
         "Codex (codex) — mode=observe",
-        "Cursor (cursor) — mode=action",
+        "Cursor (cursor) — mode=action, priority-conflict-detection=unavailable (none inferred)",
     ]
     # Indented sub-lines: blank label so the key:<16 formatting nests
     # them under the single "Agent" line.
@@ -861,8 +1032,20 @@ def test_multi_connector_rows_append_effective_rule_pack() -> None:
     )
     assert partial.multi_connector_rows() == [
         ("", "Codex (codex) — mode=action, strict"),
-        ("", "Cursor (cursor) — mode=observe"),
+        (
+            "",
+            "Cursor (cursor) — mode=observe, priority-conflict-detection=unavailable (none inferred)",
+        ),
     ]
+
+    disabled = OverviewPanelModel(
+        OverviewConfig(
+            connector_modes=(("codex", "action"), ("cursor", "observe")),
+            connector_disabled=("cursor",),
+        ),
+        version="test",
+    )
+    assert disabled.multi_connector_rows()[1] == partial.multi_connector_rows()[1]
 
 
 def test_multi_connector_rows_noop_for_single_connector() -> None:

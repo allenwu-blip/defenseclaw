@@ -45,6 +45,22 @@ func hookOnlyProfileMapVerdict(in HookVerdictInput) HookVerdictOutput {
 	}
 }
 
+func openCodeProfileMapVerdict(in HookVerdictInput) HookVerdictOutput {
+	status, _ := in.Payload["mcp_identity_status"].(string)
+	if canonicalHookEvent(in.Event) != "toolexecutebefore" ||
+		!strings.EqualFold(strings.TrimSpace(status), "ambiguous") {
+		return hookOnlyProfileMapVerdict(in)
+	}
+	// The bridge deliberately withholds mcp_server_name when OpenCode's
+	// sanitizer maps multiple configured servers to the same tool prefix.
+	// Reuse the normal connector mode mapping without guessing an identity:
+	// observe records a would-block, while the synchronous action hook denies.
+	if in.Mode == "action" && in.Caps.CanBlock && eventInProfile(in.Event, in.Caps.BlockEvents) {
+		return HookVerdictOutput{Action: "block", WouldBlock: false}
+	}
+	return HookVerdictOutput{Action: "allow", WouldBlock: true}
+}
+
 func hermesProfileMapVerdict(in HookVerdictInput) HookVerdictOutput {
 	raw := normalizedGuardrailAction(in.RawAction)
 	if in.Mode == "action" && raw == "block" &&

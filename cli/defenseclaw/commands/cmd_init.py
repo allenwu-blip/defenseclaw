@@ -737,40 +737,6 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
 
     primary = connector_settings[0]
     extras = connector_settings[1:]
-    # The short-lived executable receipt authorizes only Windows flows that
-    # later refuse ambient executable discovery: Codex's app-server policy
-    # probe, Hermes' updater-managed venv, and OmniGent's selected uv-tool
-    # process. It is not part of the macOS/Linux lifecycle, and Claude Code
-    # never consumes this authority.
-    selected_agent_connectors = [
-        item["connector"]
-        for item in connector_settings
-        if platform_support.host_os() == "windows"
-        and connector_paths.normalize(item["connector"]) in {"codex", "hermes", "omnigent"}
-    ]
-    if selected_agent_connectors:
-        from defenseclaw.agent_selection import record_setup_agent_selections
-
-        try:
-            selections, selection_errors = record_setup_agent_selections(
-                data_dir,
-                selected_agent_connectors,
-            )
-        except OSError as exc:
-            raise click.ClickException(
-                f"could not protect explicit agent executable selection: {exc}"
-            ) from exc
-        for connector in selected_agent_connectors:
-            if connector not in selections and connector not in selection_errors:
-                selection_errors[connector] = "selection was not recorded"
-        if selection_errors:
-            details = "; ".join(
-                f"{name}: {detail}" for name, detail in sorted(selection_errors.items())
-            )
-            raise click.ClickException(
-                "cannot configure native hooks without a freshly verified selected agent executable "
-                f"({details})"
-            )
     # When extra connectors will be merged in after the primary bootstrap,
     # defer the gateway start to a single reconcile at the end so its
     # set-difference setup wires hooks for EVERY connector in one pass
@@ -779,6 +745,7 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
 
     opts = FirstRunOptions(
         connector=primary["connector"],
+        connector_settings=connector_settings,
         profile=primary["profile"] or "observe",
         scanner_mode=scanner_mode,
         with_judge=with_judge,
@@ -824,14 +791,24 @@ def _run_first_run_cmd(  # noqa: PLR0913 - mirrors click options.
         _render_first_run_report(report, CLIRenderer())
         raise SystemExit(1)
 
-    activated = [] if primary["connector"] == "none" else [primary["connector"]]
-    if extras:
+    selection_failed = any(step.name == "Agent Selection" and step.status == "fail" for step in report.setup)
+    if selection_failed:
+        if json_summary:
+            click.echo(json.dumps(report.to_dict(), indent=2))
+        else:
+            _render_first_run_report(report, CLIRenderer())
+        raise SystemExit(1)
+
+    first_run_failed = report.status == "needs_attention"
+    activated = [] if primary["connector"] == "none" or first_run_failed else [primary["connector"]]
+    if extras and not first_run_failed:
         activated, sidecar_step = _activate_additional_connectors(
             primary,
             extras,
             start_gateway=bool(start_gateway),
             quiet=json_summary,
             allow_trusted_path_prompt=interactive_wizard,
+            protected_selection=report._protected_selection,
         )
         # When the gateway start was deferred (multi-connector + start_gateway),
         # run_first_run recorded a stale "Sidecar not started (--no-start-gateway)"
@@ -945,6 +922,10 @@ def _untrusted_discovery_prefixes(
     for name in order:
         if wanted and connector_paths.normalize(name) not in wanted:
             continue
+        if platform_support.host_os() == "windows" and connector_paths.normalize(name) == "opencode":
+            # Windows OpenCode setup authority is the exact SST package image,
+            # so a generic/PATH signal must never trigger prefix persistence.
+            continue
         signal = disc.agents.get(name)
         if signal is None or signal.error != agent_discovery.UNTRUSTED_PREFIX_ERROR or not signal.binary_path:
             continue
@@ -1038,6 +1019,13 @@ def _prompt_connector_selection(
     if connector:
         names = _parse_connector_list(connector)
         if names:
+            if platform_support.host_os() == "windows" and "opencode" in {
+                connector_paths.normalize(name) for name in names
+            }:
+                # An explicit native-Windows OpenCode roster is gated by the
+                # exact SST image in run_first_run. Do not publish or trust a
+                # generic discovery result before that transaction begins.
+                return names
             disc = agent_discovery.discover_agents(refresh=rescan_agents, data_dir=data_dir)
             _prompt_trust_discovery_prefixes(
                 disc,
@@ -1230,6 +1218,12 @@ def _supported_action_connectors(
     failed: list[str] = []
     for name in candidates:
         key = connector_paths.normalize(name)
+        if platform_support.host_os() == "windows" and key == "opencode":
+            # Carry the requested mode provisionally. run_first_run performs
+            # the exact SST selection/version gate before any state mutation;
+            # generic discovery cannot downgrade or authorize this connector.
+            out.append(key)
+            continue
         if _check_connector_version_supported_for_setup(
             key,
             mode="action",
@@ -1691,6 +1685,7 @@ def _activate_additional_connectors(
     start_gateway: bool,
     quiet: bool = False,
     allow_trusted_path_prompt: bool = False,
+    protected_selection: object | None = None,
 ) -> tuple[list[str], StepResult | None]:
     """Merge the extra first-run connectors into ``guardrail.connectors``.
 
@@ -1729,6 +1724,55 @@ def _activate_additional_connectors(
         key = connector_paths.normalize(s["connector"])
         if key not in selected_keys:
             selected_keys.append(key)
+
+    verified_selection = protected_selection
+    if platform_support.host_os() == "windows" and "opencode" in selected_keys:
+        from defenseclaw.agent_selection import setup_agent_selection_connectors
+        from defenseclaw.commands.cmd_setup import (
+            _capture_setup_config_snapshot,
+            _record_windows_setup_agent_selections,
+            _restore_setup_agent_selection_snapshot,
+            _restore_setup_hook_contract_lock_snapshot,
+            _revalidate_setup_agent_selections,
+        )
+
+        expected_selection = setup_agent_selection_connectors(selected_keys)
+        try:
+            verified_selection = _revalidate_setup_agent_selections(
+                cfg.data_dir,
+                verified_selection,
+            )
+            if verified_selection.connectors != expected_selection:
+                raise OSError("selection proof does not cover the complete first-run roster")
+        except (AttributeError, OSError, TypeError):
+            setup_snapshot = _capture_setup_config_snapshot(cfg)
+            try:
+                verified_selection = _record_windows_setup_agent_selections(
+                    cfg.data_dir,
+                    tuple(selected_keys),
+                    _prior_snapshot=setup_snapshot,
+                )
+            except Exception as exc:
+                rollback_errors: list[str] = []
+                for label, restore in (
+                    ("agent_selection.json", _restore_setup_agent_selection_snapshot),
+                    ("hook_contract_lock.json", _restore_setup_hook_contract_lock_snapshot),
+                ):
+                    try:
+                        restore(cfg, setup_snapshot)
+                    except Exception as rollback_exc:  # noqa: BLE001 — restore independent authority files.
+                        rollback_errors.append(f"{label}: {rollback_exc}")
+                if rollback_errors:
+                    raise click.ClickException(
+                        f"first-run extra executable selection failed ({exc}); "
+                        f"authority rollback was incomplete: {'; '.join(rollback_errors)}"
+                    ) from exc
+                raise
+        if verified_selection is None or verified_selection.record_for("opencode") is None:
+            raise click.ClickException(
+                "native-Windows OpenCode extras require a fresh receipt-bound exact SST selection"
+            )
+
     # Rebuild the multi map from the connector selection made in this init
     # run. Reusing the old map would keep unchecked/stale connectors active in
     # `guardrail status`.
@@ -1754,7 +1798,17 @@ def _activate_additional_connectors(
         }
         if trusted_prompt_cache is not None:
             version_check_kwargs["_trusted_prompt_cache"] = trusted_prompt_cache
-        if mode == "action" and not _check_connector_version_supported_for_setup(key, **version_check_kwargs):
+        exact_windows_opencode = (
+            key == "opencode"
+            and platform_support.host_os() == "windows"
+            and verified_selection is not None
+            and verified_selection.record_for(key) is not None
+        )
+        if (
+            mode == "action"
+            and not exact_windows_opencode
+            and not _check_connector_version_supported_for_setup(key, **version_check_kwargs)
+        ):
             warning = _fresh_action_downgrade_record(
                 key,
                 data_dir=getattr(cfg, "data_dir", None),

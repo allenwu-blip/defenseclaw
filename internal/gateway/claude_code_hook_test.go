@@ -768,6 +768,7 @@ func TestEvaluateClaudeCodeHook_OwnedMetadataEventsInspectEventContent(t *testin
 	tests := []claudeCodeHookRequest{
 		{HookEventName: "SubagentStart", AgentType: "jailbreak ai"},
 		{HookEventName: "CwdChanged", NewCWD: "jailbreak ai"},
+		{HookEventName: "DirectoryAdded", Directory: "jailbreak ai", Source: "slash_command"},
 		{HookEventName: "WorktreeRemove", WorktreePath: "jailbreak ai"},
 	}
 	for _, request := range tests {

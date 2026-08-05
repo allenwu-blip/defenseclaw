@@ -226,6 +226,31 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(compat.contract.hook_script_version, "v7")
         self.assertIn("event_content", compat.contract.aid_surfaces)
 
+    def test_claude_directory_added_contract_boundary_is_exact(self) -> None:
+        cases = (
+            ("Claude Code 2.1.218", "claudecode-hooks-v1", 28, False),
+            ("Claude Code 2.1.219", "claudecode-hooks-v2", 29, True),
+            ("Claude Code 2.1.220", "claudecode-hooks-v2", 29, True),
+        )
+        for version, contract_id, event_count, has_directory_added in cases:
+            with self.subTest(version=version):
+                compat = resolve_connector_contract("claudecode", version)
+                self.assertEqual(compat.status, STATUS_KNOWN)
+                self.assertEqual(compat.contract.contract_id, contract_id)
+                self.assertEqual(len(compat.contract.events), event_count)
+                self.assertEqual(
+                    "DirectoryAdded" in compat.contract.events,
+                    has_directory_added,
+                )
+                self.assertNotIn(
+                    "DirectoryAdded",
+                    compat.contract.capabilities["block_events"],
+                )
+                self.assertNotIn(
+                    "DirectoryAdded",
+                    compat.contract.capabilities["ask_events"],
+                )
+
     def test_copilot_contract_does_not_claim_native_otlp(self) -> None:
         compat = resolve_connector_contract("copilot", "")
 
@@ -465,10 +490,17 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         self.assertEqual(resolved.status, STATUS_KNOWN)
         self.assertEqual(resolved.contract.contract_id, "opencode-hooks-v1")
 
-        with patch(
-            "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
-            return_value=_discovery("opencode", installed=True, version="opencode 1.18.11"),
-        ), patch("defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"):
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+                return_value=_discovery("opencode", installed=True, version="opencode 1.18.11"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup.platform_support.host_os",
+                return_value="linux",
+            ),
+            patch("defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections"),
+        ):
             ok = _apply_hook_connector_setup(
                 self.app,
                 connector="opencode",
@@ -490,10 +522,17 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         self.assertIn("newer than DefenseClaw's validated range", current)
 
     def test_opencode_11812_is_refused_before_save_and_roster_mutation(self) -> None:
-        with patch(
-            "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
-            return_value=_discovery("opencode", installed=True, version="opencode 1.18.12"),
-        ), patch.dict(os.environ, {"DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "0"}):
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
+                return_value=_discovery("opencode", installed=True, version="opencode 1.18.12"),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup.platform_support.host_os",
+                return_value="linux",
+            ),
+            patch.dict(os.environ, {"DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT": "0"}),
+        ):
             ok = _apply_hook_connector_setup(
                 self.app,
                 connector="opencode",

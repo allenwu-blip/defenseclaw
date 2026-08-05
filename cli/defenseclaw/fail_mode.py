@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from defenseclaw import config as config_module
+from defenseclaw.connector_contracts import HOOK_CONTRACTS, connector_lock_contract_invariant
 from defenseclaw.connector_paths import (
     amp_policy_plugin_path,
     codex_home,
@@ -35,7 +36,7 @@ _OPENCODE_FAIL_MODE_PATTERN = re.compile(r'const\s+DC_FAIL_MODE\s*=\s*"(open|clo
 _AMP_FAIL_MODE_PATTERN = re.compile(r'\bconst\s+DC_FAIL_MODE:\s*string\s*=\s*"(open|closed)"')
 _EXPECTED_CONTRACTS = {
     "amp": frozenset({"amp-plugin-v1"}),
-    "claudecode": frozenset({"claudecode-hooks-v1"}),
+    "claudecode": frozenset({"claudecode-hooks-v1", "claudecode-hooks-v2"}),
     "codex": frozenset(
         {"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
     ),
@@ -406,7 +407,12 @@ def _codex_registration_current(workspace: str = "") -> bool:
     return "[hooks]" in data and "defenseclaw" in data.lower()
 
 
-def _registration_lock_state(cfg: Any, connector: str) -> tuple[str | None, str | None]:
+def _registration_lock_state(
+    cfg: Any,
+    connector: str,
+    *,
+    readiness: bool = False,
+) -> tuple[str | None, str | None]:
     data = _read_small_file(Path(cfg.data_dir) / "hook_contract_lock.json")
     if data is None:
         return None, "registration-lock-missing"
@@ -422,6 +428,15 @@ def _registration_lock_state(cfg: Any, connector: str) -> tuple[str | None, str 
     raw = str(value or "").strip().lower()
     mode = raw if raw in _VALID_MODES else None
     expected_contracts = _EXPECTED_CONTRACTS.get(connector)
+    if readiness:
+        expected_contracts = frozenset(contract.contract_id for contract in HOOK_CONTRACTS.get(connector, ()))
+        if invariant := connector_lock_contract_invariant(connector, entry):
+            return mode, f"registration-{invariant}-stale"
+    if readiness and _is_windows():
+        from defenseclaw.agent_selection import setup_agent_lock_executable_invariant
+
+        if invariant := setup_agent_lock_executable_invariant(str(cfg.data_dir), connector, entry):
+            return mode, f"registration-{invariant}-stale"
     if expected_contracts and str(entry.get("contract_id") or "") not in expected_contracts:
         return mode, "registration-contract-stale"
     if expected_contracts and not str(entry.get("hook_script_version") or "").strip():
@@ -507,6 +522,12 @@ def _registration_lock_state(cfg: Any, connector: str) -> tuple[str | None, str 
             if actual != str(expected or ""):
                 return mode, "registration-digest-stale"
     return mode, None
+
+
+def connector_registration_lock_state(cfg: Any, connector: str) -> tuple[str | None, str | None]:
+    """Expose the existing passive lock/digest validator to readiness callers."""
+
+    return _registration_lock_state(cfg, normalize(connector), readiness=True)
 
 
 def _windows_registration_freshness(
