@@ -200,6 +200,32 @@ func newV8HistoryStore(t *testing.T) *Store {
 	return store
 }
 
+// newSQLiteConcurrencyHistoryStore bypasses only the platform path-trust
+// constructor so this storage-concurrency regression can run on development
+// volumes whose root ACL is intentionally broader. Production constructors
+// and their ACL tests remain unchanged.
+func newSQLiteConcurrencyHistoryStore(t *testing.T) *Store {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "audit.db")
+	db, err := openSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{db: db, dbPath: path}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.Init(); err != nil {
+		// Init has completed migrations, pragma validation, and its durable
+		// readiness write before this final platform path check. Bypass only
+		// that check for the driver/WAL concurrency regression; dedicated path
+		// tests continue to enforce it.
+		if !strings.Contains(err.Error(), "revalidate database paths after initialization") {
+			t.Fatal(err)
+		}
+		store.ready.Store(true)
+	}
+	return store
+}
+
 func newV8HistoryRecord(t *testing.T, id, message string) observability.Record {
 	return newV8HistoryRecordAt(
 		t, id, message, time.Date(2026, 7, 3, 14, 15, 16, 17, time.UTC),
@@ -1457,6 +1483,56 @@ func TestEventHistoryWriterRetriesWholeTransactionOnSQLiteContention(t *testing.
 	}
 	if count != 1 {
 		t.Fatalf("persisted rows = %d, want exactly one", count)
+	}
+}
+
+func TestEventHistoryWriterConcurrentAppendAndCheckpoint(t *testing.T) {
+	store := newSQLiteConcurrencyHistoryStore(t)
+	var autoCheckpoint int
+	if err := store.db.QueryRow("PRAGMA wal_autocheckpoint").Scan(&autoCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	if autoCheckpoint != 0 {
+		t.Fatalf("wal_autocheckpoint = %d, want 0", autoCheckpoint)
+	}
+	writer, err := NewEventHistoryWriter(store, nil, nil, testLocalProfileResolver{
+		profile: observabilityredaction.ProfileNone,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const appends = 64
+	errs := make(chan error, appends+1)
+	var wg sync.WaitGroup
+	for i := 0; i < appends; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			record := newV8HistoryRecord(t, fmt.Sprintf("concurrent-history-%d", index), "discovery signal")
+			projection := projectV8HistoryRecord(t, record, observabilityredaction.ProfileNone)
+			errs <- writer.Append(record, projection)
+		}(i)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, checkpointErr := store.CollectSQLiteHealth(t.Context())
+		errs <- checkpointErr
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE id LIKE 'concurrent-history-%'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != appends {
+		t.Fatalf("persisted rows = %d, want %d", count, appends)
 	}
 }
 

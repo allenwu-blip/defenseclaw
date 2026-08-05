@@ -260,6 +260,11 @@ func (s *Store) sqliteBusyObservabilityV8() SQLiteBusyObservabilityV8 {
 //   - busy_timeout=5000         SQLite waits up to 5 seconds before
 //     returning SQLITE_BUSY, absorbing the
 //     vast majority of write contention.
+//   - wal_autocheckpoint=0      disables SQLite's connection-local commit
+//     hook. DefenseClaw checkpoints through the serialized Store connection
+//     in health and retention maintenance; running a second checkpoint from
+//     inside a commit can race a retiring sidecar process over the shared WAL
+//     mapping and terminate the gateway with SIGBUS.
 //   - synchronous=NORMAL        the sweet spot for WAL: durable
 //     across crashes (loses only the last
 //     transaction on power loss) while ~3x
@@ -284,6 +289,7 @@ type auditIntegerPragma struct {
 
 var auditMandatoryIntegerPragmas = [...]auditIntegerPragma{
 	{name: "busy_timeout", dsnValue: "5000", want: 5000},
+	{name: "wal_autocheckpoint", dsnValue: "0", want: 0},
 	{name: "synchronous", dsnValue: "NORMAL", want: 1},
 	{name: "cache_size", dsnValue: "-20000", want: -20000},
 	{name: "temp_store", dsnValue: "MEMORY", want: 2},
