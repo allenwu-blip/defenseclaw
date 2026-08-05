@@ -2981,6 +2981,14 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
     cfg: dict = {"notifications": {"enabled": True}}
     setup = SetupPanelModel(cfg)
     app = DefenseClawTUI(config=cfg, setup_model=setup)
+    status_updates: list[str] = []
+    set_status = app._set_status  # noqa: SLF001 - observe the exact callback outcome.
+
+    def capture_status(message: str) -> None:
+        status_updates.append(message)
+        set_status(message)
+
+    app._set_status = capture_status  # type: ignore[method-assign]  # noqa: SLF001
 
     async with app.run_test(size=(150, 40)) as pilot:
         await pilot.press("0")
@@ -3017,13 +3025,13 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
             lambda: (
                 cfg["notifications"]["enabled"] is False
                 and setup.restart_queue.pending
-                and "Config changes saved" in app.status_text
+                and any("Config changes saved" in update for update in status_updates)
             )
         )
 
         assert cfg["notifications"]["enabled"] is False
         assert setup.restart_queue.pending is True
-        assert "Config changes saved" in app.status_text
+        assert any("Config changes saved" in update for update in status_updates)
 
         await pilot.press("C")
         await pilot.pause()
