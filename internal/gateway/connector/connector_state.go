@@ -1359,17 +1359,19 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp") {
+	if normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp" {
 		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
 			return selection.RawVersion
 		}
-		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
-			if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
-				return strings.TrimSpace(entry.RawAgentVersion)
+		if runtime.GOOS == "windows" {
+			if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
+				if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
+					return strings.TrimSpace(entry.RawAgentVersion)
+				}
+				return ""
 			}
 			return ""
 		}
-		return ""
 	}
 	signal, ok := loadCachedAgentSignal(dataDir, connectorName)
 	if !ok {
@@ -1399,20 +1401,22 @@ func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 		}
 		return ""
 	}
-	if runtime.GOOS == "windows" && (normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp") {
+	if normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp" {
 		// A fresh explicit setup/repair selection supersedes the sealed lock.
 		// After the short receipt expires, reconciliation keeps using the
 		// executable identity persisted in the protected contract lock.
 		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
 			return selection.Executable
 		}
-		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
-			if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
-				return strings.TrimSpace(entry.AgentExecutable)
+		if runtime.GOOS == "windows" {
+			if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
+				if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
+					return strings.TrimSpace(entry.AgentExecutable)
+				}
+				return ""
 			}
 			return ""
 		}
-		return ""
 	}
 	signal, ok := loadCachedAgentSignal(dataDir, connectorName)
 	if !ok {

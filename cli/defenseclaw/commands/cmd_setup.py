@@ -5798,8 +5798,9 @@ class _VerifiedSetupAgentSelections:
 def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
     """Persist *connector* as the install-time picked-connector hint.
 
-    Writes ``<data_dir>/picked_connector`` atomically (tmp file +
-    ``os.replace``). Failures are non-fatal and surface as a warning —
+    Writes ``<data_dir>/picked_connector`` with the same private atomic writer
+    required when setup later captures it as rollback evidence. Failures are
+    non-fatal and surface as a warning —
     a stale hint never blocks setup, it only affects the *default*
     selected by future ``defenseclaw setup guardrail`` invocations.
 
@@ -5817,10 +5818,7 @@ def _write_picked_connector_hint(data_dir: str | None, connector: str) -> None:
     try:
         os.makedirs(data_dir, exist_ok=True)
         path = os.path.join(data_dir, _PICKED_CONNECTOR_FILENAME)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(connector + "\n")
-        os.replace(tmp, path)
+        atomic_write_private_bytes(path, (connector + "\n").encode("utf-8"))
     except OSError as exc:
         click.echo(
             f"  ⚠ Failed to update picked_connector hint: {exc}",

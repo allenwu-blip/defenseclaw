@@ -86,7 +86,10 @@ if [ -f "${cfg}" ]; then
 else
   rm -f "${cfg_baseline}"
 fi
-if ! dc_setup_connector "${DC_E2E_CONNECTOR}" action; then
+# Layer A has no upstream agent/version by design. The payload assertions below
+# are its verification surface; setup readiness cannot validate an absent
+# vendor executable and would reject the intentionally unversioned lock.
+if ! dc_setup_connector "${DC_E2E_CONNECTOR}" action --no-verify; then
   rm -f "${cfg_baseline}"
   exit 1
 fi

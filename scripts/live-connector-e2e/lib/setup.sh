@@ -73,14 +73,21 @@ dc_init_defenseclaw() {
   fi
 }
 
-# dc_setup_connector <connector> <mode> — install DefenseClaw into the
+# dc_setup_connector <connector> <mode> [--no-verify] — install DefenseClaw into the
 # connector via its setup subcommand and wait for the gateway to come back
 # healthy. mode is observe|action. --restart wires hook scripts + OTel block.
 dc_setup_connector() {
-  local connector="$1" mode="${2:-action}" sub
+  local connector="$1" mode="${2:-action}" verify_flag="${3:-}" sub
+  case "${verify_flag}" in
+    ""|--no-verify) ;;
+    *) dc_err "unsupported setup verification flag: ${verify_flag}"; return 2 ;;
+  esac
   sub="$(dc_setup_subcommand "${connector}")"
-  dc_log "defenseclaw setup ${sub} --mode ${mode} --restart"
-  defenseclaw setup "${sub}" --yes --mode "${mode}" --restart
+  dc_log "defenseclaw setup ${sub} --mode ${mode} --replace --restart ${verify_flag}"
+  # Contract cells validate exactly one connector. `init` starts with the
+  # legacy OpenClaw proxy selected, while non-interactive setup is additive;
+  # replacing that bootstrap selection prevents an unrelated OpenClaw restart.
+  defenseclaw setup "${sub}" --yes --replace --mode "${mode}" --restart ${verify_flag:+"${verify_flag}"}
   dc_wait_for_gateway 30
 }
 

@@ -1995,7 +1995,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($antigravityLiveJob -match 'GH_TOKEN: \$\{\{ github\.token \}\}' -and
         $antigravityLiveJob -match 'actions/workflows/windows-native\.yml' -and
         $antigravityLiveJob -match '\$run\.workflow_id.*?\$workflow\.id' -and
-        $antigravityLiveJob -match '\$run\.path.*?\.github/workflows/windows-native\.yml' -and
+        $antigravityLiveJob -match 'Test-CanonicalWindowsWorkflowRunPath \(\[string\]\$run\.path\)' -and
         $antigravityLiveJob -match '\$run\.repository\.full_name.*?GITHUB_REPOSITORY' -and
         $antigravityLiveJob -match '\$run\.conclusion.*?success' -and
         $antigravityLiveJob -match '\$run\.head_sha.*?EXPECTED_HEAD_SHA' -and

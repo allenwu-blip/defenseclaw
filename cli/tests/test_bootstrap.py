@@ -39,6 +39,7 @@ from defenseclaw.config import (
     OpenShellConfig,
     PerConnectorGuardrailConfig,
 )
+from defenseclaw.file_permissions import atomic_write_private_bytes
 
 from tests.helpers import record_test_setup_agent_selections
 
@@ -286,7 +287,7 @@ class FirstRunProtectedSelectionTests(unittest.TestCase):
         }
         for name, payload in sentinels.items():
             if name != "config.yaml":
-                Path(data_dir, name).write_bytes(payload)
+                atomic_write_private_bytes(Path(data_dir, name), payload)
         return data_dir, sentinels
 
     def test_opencode_selection_failure_preserves_state_before_every_first_run_mutation(self):
