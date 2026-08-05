@@ -224,7 +224,7 @@ def test_connector_matrix_delegates_current_support_to_the_website() -> None:
         assert f'<ConnectorLabel id="{connector_id}" />' in compatibility
 
 
-def test_codex_compatibility_docs_bound_v1_through_v3() -> None:
+def test_codex_compatibility_docs_list_current_versioned_contracts() -> None:
     compatibility = (
         ROOT / "docs-site/content/docs/connectors/compatibility.mdx"
     ).read_text(encoding="utf-8")
@@ -233,11 +233,13 @@ def test_codex_compatibility_docs_bound_v1_through_v3() -> None:
     for version_range in (
         ">=0.124.0, <0.129.0",
         ">=0.129.0, <0.133.0",
-        ">=0.133.0, <0.145.0",
+        ">=0.133.0, <0.135.0",
+        ">=0.135.0, <0.145.0",
+        ">=0.145.0",
     ):
         assert f"`{version_range}`" in compatibility
-    assert "v1, v2, and v3 ranges have explicit upper bounds" in text
-    assert "v1 and v2 ranges have explicit upper bounds" not in text
+    assert "`>=0.133.0, <0.145.0`" not in compatibility
+    assert "selective to generic local-function tool payloads" in text
 
 
 def test_claude_directoryadded_docs_match_packaged_v2_contract() -> None:

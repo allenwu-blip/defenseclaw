@@ -3116,6 +3116,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText.Contains('"registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
         'Doctor connector contract rejects connector-specific tampered hook commands with exit 1'
+    Assert-True ($doctorContract.Contains('"setup $repairSubcommand --mode $($script:CopilotConfiguredMode) --yes --restart"') -and
+        $doctorContract.Contains('[regex]::Escape($repairGuidance)')) `
+        'Copilot Doctor tamper validation requires the exact configured-mode native Setup repair command'
     Assert-True ($harnessText -match 'WriteAllBytes\(\$configPath, \$originalConfig\)' -and $harnessText -match 'doctor:windows-hook-recovery') 'Doctor connector contract restores the registration byte-for-byte and validates recovery'
     Assert-True ($nativeHarnessText -match '-StateRoot \$contractProfileRoot -HomeRoot \$contractHome' -and
         $harnessText -match 'HomeRoot must be contained by StateRoot') `

@@ -175,7 +175,7 @@ def test_copilot_contract_normalizes_fixture_event_to_native_registration() -> N
             encoding="utf-8"
         )
     )
-    assert fixture["hook_event_name"] == "PreToolUse"
+    assert fixture["hook_event_name"] == "preToolUse"
 
     common = (ROOT / "scripts/live-connector-e2e/lib/common.sh").read_text(encoding="utf-8")
     assert 'copilot:PreToolUse) bound_event="preToolUse" ;;' in common

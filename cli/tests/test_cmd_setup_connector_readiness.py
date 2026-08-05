@@ -460,6 +460,7 @@ def test_copilot_stale_launcher_returns_executable_invariant(monkeypatch, tmp_pa
     cfg = _config(tmp_path)
     entry = _entry("copilot", tmp_path)
     _patch_registration_ready(monkeypatch, entry)
+    monkeypatch.setattr(cmd_doctor.os, "name", "nt")
     (tmp_path / "hook_contract_lock.json").write_text(
         json.dumps({"version": 2, "connectors": {"copilot": entry}}),
         encoding="utf-8",

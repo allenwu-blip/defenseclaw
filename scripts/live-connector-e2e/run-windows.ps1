@@ -6189,7 +6189,11 @@ function Assert-DoctorWindowsHookRegistration {
         }
         if ($Connector -ne 'amp') {
             $repairSubcommand = Get-ConnectorRepairSubcommand
-            if ($tamperedCheck.detail -notmatch "setup $repairSubcommand --yes --restart") {
+            $repairGuidance = "setup $repairSubcommand --yes --restart"
+            if ($Connector -eq 'copilot') {
+                $repairGuidance = "setup $repairSubcommand --mode $($script:CopilotConfiguredMode) --yes --restart"
+            }
+            if ($tamperedCheck.detail -notmatch [regex]::Escape($repairGuidance)) {
                 throw "Doctor tamper result omitted native setup repair guidance: $($tamperedCheck.detail)"
             }
         }
