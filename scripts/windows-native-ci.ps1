@@ -3009,7 +3009,8 @@ function Test-SetupAcceptanceHealthSamplerContract([string]$Root) {
     $dataRoot = Join-Path $fixtureRoot 'data'
     $installRoot = Join-Path $fixtureRoot 'installed'
     $readyPath = Join-Path $fixtureRoot 'health-server.ready'
-    $outcomePath = Join-Path $fixtureRoot 'setup-seeded-health.jsonl'
+    $diagnosticOutcomePath = Join-Path $fixtureRoot 'setup-health-diagnostic.jsonl'
+    $sampleOutcomePath = Join-Path $fixtureRoot 'setup-health-sample.jsonl'
     [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
     [IO.Directory]::CreateDirectory($installRoot) | Out-Null
 
@@ -3127,12 +3128,12 @@ try {
 
         # Start before publishing gateway.pid to prove a bounded, enumerated
         # failure record is emitted instead of a schema-only ledger.
-        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $outcomePath $dataRoot $apiPort `
+        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $diagnosticOutcomePath $dataRoot $apiPort `
             ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
         $deadline = [DateTime]::UtcNow.AddSeconds(10)
         $diagnostic = $null
         while ($null -eq $diagnostic) {
-            foreach ($line in @(Get-Content -LiteralPath $outcomePath -Encoding UTF8)) {
+            foreach ($line in @(Get-Content -LiteralPath $diagnosticOutcomePath -Encoding UTF8)) {
                 if ($line -eq 'schema=1') { continue }
                 try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
                 if ([string]$candidate.kind -ceq 'sample_error') { $diagnostic = $candidate; break }
@@ -3144,6 +3145,12 @@ try {
             [string]$diagnostic.category -cne 'unavailable_or_invalid') {
             throw 'Setup health sampler emitted an unexpected initial diagnostic category'
         }
+
+        # End the absent-PID phase before publishing the valid identity. A
+        # fresh sampler then initializes its listener/CIM observation against
+        # that exact state instead of racing an in-flight diagnostic iteration.
+        Stop-SetupAcceptanceHealthSampler $sampler
+        $sampler = $null
 
         $identity = [ordered]@{
             pid = $server.Id
@@ -3158,10 +3165,13 @@ try {
         )
         Move-Item -LiteralPath $pidTemporary -Destination (Join-Path $dataRoot 'gateway.pid')
 
+        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath $dataRoot $apiPort `
+            ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
+
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         $sample = $null
         while ($null -eq $sample) {
-            foreach ($line in @(Get-Content -LiteralPath $outcomePath -Encoding UTF8)) {
+            foreach ($line in @(Get-Content -LiteralPath $sampleOutcomePath -Encoding UTF8)) {
                 if ($line -eq 'schema=1') { continue }
                 try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
                 if ($null -eq $candidate.PSObject.Properties['kind']) { $sample = $candidate }

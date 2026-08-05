@@ -2982,10 +2982,13 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
     setup = SetupPanelModel(cfg)
     app = DefenseClawTUI(config=cfg, setup_model=setup)
     status_updates: list[str] = []
+    config_saved = asyncio.Event()
     set_status = app._set_status  # noqa: SLF001 - observe the exact callback outcome.
 
     def capture_status(message: str) -> None:
         status_updates.append(message)
+        if "Config changes saved" in message:
+            config_saved.set()
         set_status(message)
 
     app._set_status = capture_status  # type: ignore[method-assign]  # noqa: SLF001
@@ -3018,14 +3021,7 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
         # delivery deterministic even while a loaded shard is rendering other
         # panels; pointer and keyboard activation have dedicated screen tests.
         app.screen.query_one("#config-diff-save", Button).press()
-        await pilot.pause()
-        await _wait_for_background(
-            lambda: (
-                cfg["notifications"]["enabled"] is False
-                and setup.restart_queue.pending
-                and any("Config changes saved" in update for update in status_updates)
-            )
-        )
+        await config_saved.wait()
 
         assert cfg["notifications"]["enabled"] is False
         assert setup.restart_queue.pending is True
