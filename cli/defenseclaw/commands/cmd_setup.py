@@ -6902,13 +6902,48 @@ def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapsh
 
     from defenseclaw.commands.cmd_doctor import _trusted_gateway_listener
 
-    trust = _trusted_gateway_listener(app.cfg, platform_name="win32")
-    if trust.trusted:
-        if not _stop_defense_gateway_native(app.cfg.data_dir):
-            raise OSError("gateway created by the failed setup did not stop")
-        return
-    if trust.code not in {"missing", "missing_process"}:
-        raise OSError(f"prior stopped gateway lifecycle is unavailable [{_setup_runtime_ref(trust.code)}]")
+    # A failed start has already let the gateway publish connector-owned host
+    # registrations, receipts, active-roster state, and watchdog custody. A
+    # plain stop cannot undo those writes. Reboot once under the already
+    # restored and verified desired authority so the existing gateway
+    # teardown/reconciliation transaction removes the failed generation, then
+    # return the lifecycle to its proven stopped state. No untrusted path or
+    # wildcard cleanup is introduced: the gateway consumes only the restored
+    # config plus the protected failed-generation roster/lock evidence.
+    restart_error: Exception | None = None
+    try:
+        _restart_restored_connector_runtime(app)
+    except Exception as exc:  # Cleanup must run even when readiness fails after process start.
+        restart_error = exc
+
+    cleanup_error: OSError | None = None
+    try:
+        trust = _trusted_gateway_listener(app.cfg, platform_name="win32")
+    except Exception as exc:  # noqa: BLE001 - bounded below; preserve restart failure as cause.
+        cleanup_error = OSError(
+            f"restored gateway cleanup inspection failed [{_setup_runtime_ref(type(exc).__name__)}]"
+        )
+    else:
+        if trust.trusted:
+            try:
+                stopped = _stop_defense_gateway_native(app.cfg.data_dir)
+            except Exception as exc:  # noqa: BLE001 - bounded below; preserve restart failure as cause.
+                cleanup_error = OSError(f"reconciled gateway cleanup failed [{_setup_runtime_ref(type(exc).__name__)}]")
+            else:
+                if not stopped:
+                    cleanup_error = OSError("reconciled gateway created by the failed setup did not stop")
+        elif restart_error is None or trust.code not in {"missing", "missing_process"}:
+            cleanup_error = OSError(f"restored gateway cleanup is unavailable [{_setup_runtime_ref(trust.code)}]")
+
+    if restart_error is not None:
+        if cleanup_error is not None:
+            raise OSError(
+                "restored gateway restart failed "
+                f"[{_setup_runtime_ref(type(restart_error).__name__)}]; cleanup incomplete: {cleanup_error}"
+            ) from restart_error
+        raise restart_error
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 def _restore_setup_config_in_memory(app: AppContext, snapshot: _SetupConfigSnapshot):

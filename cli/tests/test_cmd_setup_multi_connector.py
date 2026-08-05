@@ -2137,18 +2137,101 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         ):
             cmd_setup._capture_setup_lock_registration_locations_once(self.app.cfg)
 
-    def test_restore_prior_stopped_lifecycle_stops_failed_setup_gateway(self):
+    def test_restore_prior_stopped_lifecycle_reconciles_then_stops_failed_setup_gateway(self):
         snapshot = replace(
             cmd_setup._capture_setup_config_snapshot(self.app.cfg),
             applied_runtime=self._evidence(lifecycle="stopped", generation=None),
         )
         trust = MagicMock(trusted=True)
         with (
+            patch("defenseclaw.commands.cmd_setup._restart_restored_connector_runtime") as reconcile,
             patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
             patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True) as stop,
         ):
             cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
 
+        reconcile.assert_called_once_with(self.app)
+        stop.assert_called_once_with(self.app.cfg.data_dir)
+
+    def test_restore_prior_stopped_lifecycle_requires_trusted_reconciled_gateway(self):
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+        )
+        trust = MagicMock(trusted=False, code="foreign_process")
+        with (
+            patch("defenseclaw.commands.cmd_setup._restart_restored_connector_runtime") as reconcile,
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native") as stop,
+            self.assertRaisesRegex(OSError, "restored gateway cleanup is unavailable"),
+        ):
+            cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        reconcile.assert_called_once_with(self.app)
+        stop.assert_not_called()
+
+    def test_restore_prior_stopped_lifecycle_stops_after_readiness_failure(self):
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+        )
+        readiness_error = RuntimeError("readiness failed after process start")
+        trust = MagicMock(trusted=True)
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_restored_connector_runtime",
+                side_effect=readiness_error,
+            ),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True) as stop,
+            self.assertRaises(RuntimeError) as raised,
+        ):
+            cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        self.assertIs(raised.exception, readiness_error)
+        stop.assert_called_once_with(self.app.cfg.data_dir)
+
+    def test_restore_prior_stopped_lifecycle_reports_untrusted_cleanup_after_readiness_failure(self):
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+        )
+        readiness_error = RuntimeError("readiness failed after process start")
+        trust = MagicMock(trusted=False, code="foreign_process")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_restored_connector_runtime",
+                side_effect=readiness_error,
+            ),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native") as stop,
+            self.assertRaisesRegex(OSError, "restart failed.*cleanup incomplete") as raised,
+        ):
+            cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        self.assertIs(raised.exception.__cause__, readiness_error)
+        self.assertIn(cmd_setup._setup_runtime_ref("foreign_process"), str(raised.exception))
+        stop.assert_not_called()
+
+    def test_restore_prior_stopped_lifecycle_aggregates_stop_failure_after_readiness_failure(self):
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+        )
+        readiness_error = RuntimeError("readiness failed after process start")
+        trust = MagicMock(trusted=True)
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_restored_connector_runtime",
+                side_effect=readiness_error,
+            ),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=False) as stop,
+            self.assertRaisesRegex(OSError, "restart failed.*did not stop") as raised,
+        ):
+            cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        self.assertIs(raised.exception.__cause__, readiness_error)
         stop.assert_called_once_with(self.app.cfg.data_dir)
 
     def test_successful_rollback_reports_exact_restoration(self):

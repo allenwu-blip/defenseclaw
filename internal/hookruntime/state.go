@@ -484,7 +484,7 @@ func disableAt(paths Paths, transactionID string) error {
 	}
 	previous, _, _ := readTrustedAt(paths, paths.Launcher)
 	if _, err := os.Lstat(paths.Launcher); err == nil {
-		if err := safefile.ProtectFile(paths.Launcher); err != nil {
+		if err := safefile.ProtectFileWhileInUse(paths.Launcher); err != nil {
 			return fmt.Errorf("protect stable hook launcher before disable: %w", err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
