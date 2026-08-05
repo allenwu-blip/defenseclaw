@@ -93,6 +93,22 @@ def test_contract_lock_accepts_exact_ten(connector: str, tmp_path: Path) -> None
     assert connector_lock_contract_invariant(connector, _entry(connector, tmp_path)) == ""
 
 
+@pytest.mark.parametrize("connector", ("antigravity", "windsurf"))
+def test_contract_lock_accepts_go_omitted_unversioned_fields(connector: str, tmp_path: Path) -> None:
+    entry = _entry(connector, tmp_path)
+    entry.pop("raw_agent_version")
+    entry.pop("normalized_agent_version")
+
+    assert connector_lock_contract_invariant(connector, entry) == ""
+
+
+def test_contract_lock_rejects_explicit_null_agent_version(tmp_path: Path) -> None:
+    entry = _entry("antigravity", tmp_path)
+    entry["raw_agent_version"] = None
+
+    assert connector_lock_contract_invariant("antigravity", entry) == "version"
+
+
 @pytest.mark.parametrize(
     ("field", "value", "invariant"),
     (
@@ -314,6 +330,74 @@ def test_hermes_pending_reload_is_not_setup_ready(monkeypatch, tmp_path: Path) -
     assert readiness.invariant == "live-runtime"
 
 
+def test_setup_wait_commits_truthful_hermes_pending_reload(monkeypatch, tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    entry = _entry("hermes", tmp_path)
+    (tmp_path / "hook_contract_lock.json").write_text(
+        json.dumps({"version": 2, "connectors": {"hermes": entry}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "active_connector.json").write_text(
+        json.dumps({"version": 3, "names": ["hermes"], "inactive_names": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cmd_setup, "load_config", lambda **_kwargs: cfg)
+    monkeypatch.setattr(
+        cmd_doctor,
+        "connector_setup_readiness",
+        lambda *_args: cmd_doctor.ConnectorSetupReadiness(
+            False,
+            "hermes",
+            "executable",
+            "Hook contract: fail: on-disk Windows-native executable registration is valid; "
+            "runtime_state=pending-reload; running Hermes hosts are unverified; live=false",
+        ),
+    )
+
+    readiness = cmd_setup._wait_for_connector_runtime(
+        str(tmp_path),
+        ["hermes"],
+        None,
+        None,
+        timeout=0.5,
+    )
+
+    assert readiness
+    assert (readiness.connector, readiness.invariant) == ("hermes", "pending-reload")
+    assert "live=false" in readiness.detail
+
+
+def test_restart_services_labels_hermes_pending_reload_without_live_claim(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    hints: list[str] = []
+    monkeypatch.setattr(cmd_setup, "_restart_defense_gateway", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        cmd_setup,
+        "_wait_for_connector_runtime",
+        lambda *_args, **_kwargs: cmd_setup._ConnectorRuntimeReadiness(
+            True,
+            "hermes",
+            "pending-reload",
+            "running Hermes hosts are unverified; live=false",
+        ),
+    )
+    monkeypatch.setattr(cmd_setup.ux, "subhead", hints.append)
+
+    cmd_setup._restart_services(
+        str(tmp_path),
+        connector="hermes",
+        wait_for_connector_ready=True,
+    )
+
+    output = capsys.readouterr().out
+    assert "hermes: pending-reload" in output
+    assert "connector runtime: waiting for verified setup... ✓" not in output
+    assert any("runtime_state=pending-reload" in hint and "live=false" in hint for hint in hints)
+
+
 def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     cfg.guardrail = _guardrail(fail_mode="closed")
@@ -330,6 +414,16 @@ def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, t
         cmd_doctor,
         "_windows_native_hook_check",
         lambda *_args, **_kwargs: WindowsHookCheck("healthy", "registered"),
+    )
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_check_hermes_hooks",
+        lambda _cfg, result: cmd_doctor._emit(
+            "pass",
+            "Hermes hooks (fail-open)",
+            "healthy: registered",
+            r=result,
+        ),
     )
     readiness = cmd_doctor.connector_setup_readiness(cfg, "hermes")
     assert readiness

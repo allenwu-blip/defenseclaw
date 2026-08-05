@@ -243,9 +243,16 @@ def connector_lock_contract_invariant(connector: str, entry: Any) -> str:
     recorded_connector = entry.get("connector") if isinstance(entry, dict) else None
     if not isinstance(recorded_connector, str) or normalize_connector(recorded_connector) != name:
         return "contract"
-    raw_version = entry.get("raw_agent_version")
-    if not isinstance(raw_version, str):
-        return "version"
+    # The Go lock writer uses ``omitempty`` for version strings, so an
+    # unversioned selection is canonically serialized without either version
+    # field.  Preserve strict rejection for an explicitly malformed value,
+    # while treating field absence as the empty version that Go resolved.
+    if "raw_agent_version" in entry:
+        raw_version = entry.get("raw_agent_version")
+        if not isinstance(raw_version, str):
+            return "version"
+    else:
+        raw_version = ""
     compatibility = resolve_connector_contract(name, raw_version)
     contract = compatibility.contract
     if contract is None or not compatibility.supported:

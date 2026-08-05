@@ -11296,6 +11296,7 @@ def _restart_services(
         failed.append("defenseclaw-gateway")
 
     connector_registration_verified = False
+    connector_runtime_pending_reload = False
     if wait_for_connector_ready and hook_targets and gateway_restarted:
         readiness_label = "DefenseClaw gateway registration" if "omnigent" in hook_targets else "connector runtime"
         click.echo(f"  {readiness_label}: waiting for verified setup...", nl=False)
@@ -11307,19 +11308,22 @@ def _restart_services(
             previous_lock_publications=hook_contract_publications_before,
             require_gateway_health=True,
         )
-        if readiness:
+        diagnostic = ": ".join(
+            value
+            for value in (
+                getattr(readiness, "connector", ""),
+                getattr(readiness, "invariant", ""),
+                getattr(readiness, "detail", ""),
+            )
+            if value
+        )
+        if readiness and getattr(readiness, "invariant", "") == "pending-reload":
+            connector_runtime_pending_reload = True
+            click.echo(f" !{f' ({diagnostic})' if diagnostic else ''}")
+        elif readiness:
             click.echo(" ✓")
             connector_registration_verified = True
         else:
-            diagnostic = ": ".join(
-                value
-                for value in (
-                    getattr(readiness, "connector", ""),
-                    getattr(readiness, "invariant", ""),
-                    getattr(readiness, "detail", ""),
-                )
-                if value
-            )
             click.echo(f" ✗{f' ({diagnostic})' if diagnostic else ''}")
             failed.append(f"{readiness_label} readiness")
 
@@ -11339,6 +11343,13 @@ def _restart_services(
                 "on the sidecar API port; OmniGent loaded policy generation "
                 "remains unverified pending reload/restart. No proxy listener — each talks directly "
                 "to its native upstream."
+            )
+        elif connector_runtime_pending_reload:
+            ux.subhead(
+                f"{len(hook_multi)} hook connectors ({names}): protected registrations are current "
+                "on the sidecar API port; Hermes remains live=false/pending-reload until every "
+                "affected Hermes host is reloaded or restarted. No proxy listener — each talks "
+                "directly to its native upstream."
             )
         else:
             ux.subhead(
@@ -11373,6 +11384,12 @@ def _restart_services(
                 f"omnigent connector: {registration_state} on the sidecar API port; loaded policy "
                 "generation remains unverified pending OmniGent reload/restart. "
                 "No proxy listener — omnigent talks directly to its native upstream."
+            )
+        elif connector == "hermes" and connector_runtime_pending_reload:
+            ux.subhead(
+                "hermes connector: protected on-disk registration is current on the sidecar API port; "
+                "runtime_state=pending-reload and live=false until every affected Hermes host is "
+                "reloaded or restarted. No proxy listener — hermes talks directly to its native upstream."
             )
         else:
             surface = "synchronous policy plugin" if connector == "amp" else "hook bus"
@@ -11795,6 +11812,7 @@ def _wait_for_connector_runtime(
         def worker() -> None:
             try:
                 cfg = load_config(data_dir=data_dir)
+                pending_reload: _ConnectorRuntimeReadiness | None = None
                 for name in ordered:
                     current[0] = name
                     if cancelled.is_set() or time.monotonic() >= deadline:
@@ -11803,17 +11821,40 @@ def _wait_for_connector_runtime(
                     if cancelled.is_set() or time.monotonic() >= deadline:
                         return
                     if not readiness:
-                        results.put_nowait(
-                            _ConnectorRuntimeReadiness(
-                                False,
-                                readiness.connector,
-                                readiness.invariant,
-                                readiness.detail,
-                            )
+                        failure = _ConnectorRuntimeReadiness(
+                            False,
+                            readiness.connector,
+                            readiness.invariant,
+                            readiness.detail,
                         )
+                        detail = failure.detail.casefold()
+                        if (
+                            failure.connector == "hermes"
+                            # The exact Windows detail names its protected
+                            # executable before the explicit pending-reload
+                            # state, so the generic classifier may report
+                            # either invariant. The required detail below is
+                            # the narrow deferred-state authority.
+                            and failure.invariant in {"live-runtime", "executable"}
+                            and "running hermes" in detail
+                            and "live=false" in detail
+                            and ("pending-reload" in detail or "unverified" in detail)
+                        ):
+                            # Hermes hosts cache callbacks. A fresh protected
+                            # lock plus exact on-disk registration is a valid
+                            # committed Setup outcome, but it must remain
+                            # explicitly non-live until upstream hosts reload.
+                            pending_reload = _ConnectorRuntimeReadiness(
+                                True,
+                                "hermes",
+                                "pending-reload",
+                                failure.detail,
+                            )
+                            continue
+                        results.put_nowait(failure)
                         return
                 if not cancelled.is_set() and time.monotonic() < deadline:
-                    results.put_nowait(_ConnectorRuntimeReadiness(True))
+                    results.put_nowait(pending_reload or _ConnectorRuntimeReadiness(True))
             except Exception as exc:  # noqa: BLE001 - worker failures are bounded readiness evidence.
                 if not cancelled.is_set() and time.monotonic() < deadline:
                     results.put_nowait(_ConnectorRuntimeReadiness(False, current[0], "validation", type(exc).__name__))
