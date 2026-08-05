@@ -484,6 +484,13 @@ func (prepared *preparedAuditDatabasePath) validateWhileSQLiteOpen() error {
 	if err := validatePinnedAuditDBLeaf(prepared.path, prepared.pinned); err != nil {
 		return err
 	}
+	info, err := prepared.pinned.Stat()
+	if err != nil {
+		return fmt.Errorf("audit: inspect database file after open: %w", err)
+	}
+	if !auditDBModeMatches(info, prepared.securedMode) {
+		return errors.New("audit: database file permissions changed during secure open")
+	}
 	for _, suffix := range auditDBSQLiteSidecarSuffixes {
 		path := prepared.path + suffix
 		info, err := os.Lstat(path)
