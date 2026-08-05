@@ -17,7 +17,9 @@ const (
 	connectorReconciliationSchemaVersion = 1
 	connectorReconciliationFileName      = "connector-reconciliation.json"
 	maxConnectorReconciliationFailures   = 16
-	maxConnectorReconciliationMessage    = 2048
+	// Retain enough bounded child output for private CI diagnostics. The public
+	// Setup summary remains independently bounded by the setup-log writer.
+	maxConnectorReconciliationMessage = 16384
 )
 
 type connectorReconciliationAttempt struct {

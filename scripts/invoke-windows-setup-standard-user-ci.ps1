@@ -256,6 +256,46 @@ function Copy-DisposableNativeSetupLog {
     )
 }
 
+function Copy-DisposableConnectorReconciliationDiagnostic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$DiagnosticsRoot,
+        [Parameter(Mandatory)][string]$SandboxRoot
+    )
+
+    $localAppData = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::LocalApplicationData
+    )
+    if ([string]::IsNullOrWhiteSpace($localAppData)) { return }
+    $source = Join-Path $localAppData 'DefenseClaw\InstallerState\connector-reconciliation.json'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { return }
+    $source = Assert-DisposableNoReparseAncestors -Path $source `
+        -AllowedRoot $localAppData -RequireExists
+    $sourceItem = Get-Item -LiteralPath $source -Force -ErrorAction Stop
+    if ($sourceItem.Length -gt 65536) {
+        throw 'connector reconciliation diagnostic exceeds the 64 KiB capture bound'
+    }
+    $payload = [IO.File]::ReadAllText($source, [Text.Encoding]::UTF8)
+    foreach ($name in @(
+        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN',
+        'DEFENSECLAW_GATEWAY_TOKEN', 'OPENCLAW_GATEWAY_TOKEN'
+    )) {
+        $secret = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($secret)) {
+            $payload = $payload.Replace($secret, '***REDACTED***')
+        }
+    }
+    $payload = $payload -replace `
+        '(?i)(api[_-]?key|access[_-]?token|secret[_-]?key|authorization)(\s*[=:]\s*)[^\s"'',;]+', `
+        '$1$2***REDACTED***'
+    $destinationRoot = Assert-DisposableNoReparseAncestors `
+        -Path $DiagnosticsRoot -AllowedRoot $SandboxRoot -RequireExists
+    $destination = Join-Path $destinationRoot 'connector-reconciliation.json'
+    $null = Assert-DisposableNoReparseAncestors -Path $destination `
+        -AllowedRoot $destinationRoot
+    [IO.File]::WriteAllText($destination, $payload, [Text.UTF8Encoding]::new($false))
+}
+
 function Invoke-ChildMode {
     $result = [IO.Path]::GetFullPath($ResultPath)
     $state = [IO.Path]::GetFullPath($StateRoot)
@@ -424,6 +464,21 @@ function Invoke-ChildMode {
                         $failure.Exception
                     ),
                     'DisposableNativeSetupLogPreservationFailed',
+                    [Management.Automation.ErrorCategory]::OperationStopped,
+                    $state
+                )
+            }
+            try {
+                Copy-DisposableConnectorReconciliationDiagnostic `
+                    -DiagnosticsRoot ([IO.Path]::GetFullPath($DiagnosticsRoot)) `
+                    -SandboxRoot $sandboxRoot
+            } catch {
+                $failure = [Management.Automation.ErrorRecord]::new(
+                    [InvalidOperationException]::new(
+                        "$($failure.Exception.Message); connector reconciliation diagnostic preservation failed: $($_.Exception.Message)",
+                        $failure.Exception
+                    ),
+                    'DisposableConnectorReconciliationDiagnosticPreservationFailed',
                     [Management.Automation.ErrorCategory]::OperationStopped,
                     $state
                 )
