@@ -2232,8 +2232,7 @@ class TestPerConnectorModeAndPreserve(unittest.TestCase):
             b'"cursor":{"compatibility_status":"known"},'
             b'"omnigent":{"compatibility_status":"known"}}}\n'
         )
-        with open(lock_path, "wb") as lock_file:
-            lock_file.write(lock_body)
+        atomic_write_private_bytes(lock_path, lock_body)
 
         command = _omnigent_setup_repair_command(self.app.cfg)
         argv = shlex.split(command, posix=True)

@@ -40,6 +40,7 @@ from defenseclaw.config import (
     GuardrailConfig,
     default_config,
 )
+from defenseclaw.file_permissions import atomic_write_private_bytes
 from defenseclaw.guardrail import (
     _backup,
     _derive_master_key,
@@ -1024,8 +1025,7 @@ class TestSetupGuardrailCommand(unittest.TestCase):
         # Simulate scripts/install.sh --connector codex having recorded
         # the operator's choice. The CLI should pick it up without
         # requiring --connector / --agent on every subsequent setup call.
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w") as f:
-            f.write("codex\n")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex\n")
         self.app.cfg.guardrail.model = "anthropic/claude-opus-4-5"
         self.app.cfg.claw.home_dir = self.tmp_dir
         result = self.runner.invoke(
@@ -1040,8 +1040,7 @@ class TestSetupGuardrailCommand(unittest.TestCase):
         """--connector wins over the install-time picked_connector hint."""
         from defenseclaw.commands.cmd_setup import setup
 
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w") as f:
-            f.write("codex\n")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex\n")
         self.app.cfg.guardrail.model = "anthropic/claude-opus-4-5"
         self.app.cfg.claw.home_dir = self.tmp_dir
         result = self.runner.invoke(
@@ -1164,8 +1163,7 @@ class TestSetupGuardrailCommand(unittest.TestCase):
         """Garbage in picked_connector falls back to openclaw, not a crash."""
         from defenseclaw.commands.cmd_setup import setup
 
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w") as f:
-            f.write("not-a-connector\n")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"not-a-connector\n")
         self.app.cfg.guardrail.model = "anthropic/claude-opus-4-5"
         self.app.cfg.claw.home_dir = self.tmp_dir
         result = self.runner.invoke(
@@ -1180,8 +1178,7 @@ class TestSetupGuardrailCommand(unittest.TestCase):
         """If gc.connector is already a non-default value, the hint must not flip it."""
         from defenseclaw.commands.cmd_setup import setup
 
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w") as f:
-            f.write("codex\n")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex\n")
         # Operator previously ran `setup guardrail --connector claudecode`
         # and saved it. The picked_connector hint must not silently
         # downgrade their explicit choice on the next bare re-run.

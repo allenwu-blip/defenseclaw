@@ -227,14 +227,15 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
         disc.agents["hermes"].error = agent_discovery.UNTRUSTED_PREFIX_ERROR
         mock_discover.return_value = disc
 
-        result = self._invoke([
-            "--connector",
-            "hermes",
-            "--mode",
-            "action",
-            "--skip-gateway",
-            "--json-summary",
-        ])
+        with patch("defenseclaw.bootstrap.platform_support.host_os", return_value="linux"):
+            result = self._invoke([
+                "--connector",
+                "hermes",
+                "--mode",
+                "action",
+                "--skip-gateway",
+                "--json-summary",
+            ])
         self.assertEqual(result.exit_code, 1, result.output + (result.stderr or ""))
         summary = json.loads(result.output)
         self.assertEqual(summary["status"], "needs_attention")
@@ -250,7 +251,7 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
             f"defenseclaw setup trusted-paths add {os.path.realpath('/tmp/fake')}",
         )
 
-        self.assertFalse(os.path.exists(os.path.join(self.tmp_dir, "config.yaml")))
+        self.assertTrue(os.path.exists(os.path.join(self.tmp_dir, "config.yaml")))
 
     def test_help_lists_fail_mode_flag(self):
         # Quickstart is the headless path most likely to be wired

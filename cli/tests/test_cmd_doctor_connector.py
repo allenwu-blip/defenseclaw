@@ -2144,9 +2144,11 @@ class TestCheckHookHealth(unittest.TestCase):
             Path(backup_path).write_text(json.dumps(record), encoding="utf-8")
             os.chmod(backup_path, 0o600)
             read_only_ace = "ACL grants read access to untrusted SID S-1-5-11"
+            windows_os = MagicMock(wraps=os)
+            windows_os.name = "nt"
 
             with (
-                patch("defenseclaw.commands.cmd_doctor.os.name", "nt"),
+                patch("defenseclaw.commands.cmd_doctor.os", windows_os),
                 patch(
                     "defenseclaw.commands.cmd_doctor.windows_acl_confidentiality_error",
                     return_value=read_only_ace,
