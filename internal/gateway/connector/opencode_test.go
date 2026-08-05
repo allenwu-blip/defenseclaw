@@ -63,11 +63,14 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	}
 	body := string(raw)
 	for _, want := range []string{
-		"127.0.0.1:18970",         // APIAddr substituted
-		"tok-opencode-123",        // APIToken embedded
-		`DC_FAIL_MODE = "closed"`, // fail mode honored (SupportsFailClosed=true)
-		"/api/v1/opencode/hook",   // gateway endpoint
-		"tool.execute.before",     // block hook wired
+		"127.0.0.1:18970",             // APIAddr substituted
+		"tok-opencode-123",            // APIToken embedded
+		`DC_FAIL_MODE = "closed"`,     // fail mode honored (SupportsFailClosed=true)
+		"/api/v1/opencode/hook",       // gateway endpoint
+		"tool.execute.before",         // block hook wired
+		"input && input.args",         // after-hook preserves exact executed args
+		"tool_response: toolResponse", // after-hook forwards the result
+		"await defenseclawPost(",      // success is persisted before the next call
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("plugin missing %q\n%s", want, body)
@@ -227,8 +230,11 @@ func TestOpenCodeBridgeDistinguishesBlockingAndObserveOnlyHooks(t *testing.T) {
 	if afterEnd < 0 {
 		t.Fatal("tool.execute.after body terminator is missing")
 	}
-	if strings.Contains(afterBody[:afterEnd], "await defenseclawPost") {
-		t.Fatal("tool.execute.after must remain best-effort and observe-only")
+	if !strings.Contains(afterBody[:afterEnd], "await defenseclawPost") {
+		t.Fatal("tool.execute.after must await delivery so the result is attributed to the exact call")
+	}
+	if strings.Contains(afterBody[:afterEnd], "const verdict") || strings.Contains(afterBody[:afterEnd], "throw new Error") {
+		t.Fatal("tool.execute.after must ignore the advisory verdict and remain observe-only")
 	}
 	for _, field := range []string{"output.title", "output.output", "output.metadata"} {
 		if !strings.Contains(afterBody[:afterEnd], field) {

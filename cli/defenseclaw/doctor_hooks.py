@@ -51,7 +51,13 @@ _HOOK_RUNTIME_EXECUTABLE_MAX_BYTES = 256 << 20
 _MANAGED_MARKER = re.compile(r"(?im)^\s*(?:#|rem\s+)\s*defenseclaw-managed-hook\s+v(\d+)\b")
 _EXPECTED_CONTRACTS = {
     "codex": frozenset(
-        {"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
+        {
+            "codex-hooks-v1",
+            "codex-hooks-v2",
+            "codex-hooks-v3",
+            "codex-hooks-v3-generic",
+            "codex-hooks-v4",
+        }
     ),
     "claudecode": frozenset({"claudecode-hooks-v1", "claudecode-hooks-v2"}),
     "copilot": frozenset({"copilot-hooks-v1", "copilot-hooks-v2"}),
@@ -103,6 +109,18 @@ _CODEX_CONTRACT_EVENTS = {
         "PostCompact",
         "Stop",
     ),
+    "codex-hooks-v3-generic": (
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+        "PostToolUse",
+        "SubagentStart",
+        "SubagentStop",
+        "PreCompact",
+        "PostCompact",
+        "Stop",
+    ),
     "codex-hooks-v4": (
         "SessionStart",
         "UserPromptSubmit",
@@ -121,6 +139,7 @@ _CODEX_SESSION_START_MATCHERS = {
     "codex-hooks-v1": "startup|resume|clear",
     "codex-hooks-v2": "startup|resume|clear",
     "codex-hooks-v3": "startup|resume|clear|compact",
+    "codex-hooks-v3-generic": "startup|resume|clear|compact",
     "codex-hooks-v4": "startup|resume|clear|compact",
 }
 _CODEX_BOUND_HOOK_PAIRS = frozenset(
@@ -130,7 +149,7 @@ _CODEX_BOUND_HOOK_PAIRS = frozenset(
 )
 _CODEX_KNOWN_HOOK_EVENTS = frozenset(event for event, _contract_id in _CODEX_BOUND_HOOK_PAIRS)
 _CODEX_TRUSTED_CONTRACTS = frozenset(
-    {"codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
+    {"codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v3-generic", "codex-hooks-v4"}
 )
 _CODEX_POLICY_TIMEOUT_SECONDS = 20.0
 _CODEX_POLICY_MESSAGE_LIMIT = 2 * 1024 * 1024
@@ -1538,9 +1557,7 @@ def _claude_managed_sources(
         remote_path = remote_settings_path or _default_claude_remote_settings_path(config_path)
         remote_doc = _read_optional_claude_policy(remote_path)
         remote = (
-            _ClaudeSettingsSource("remote/server-managed settings", remote_path, remote_doc)
-            if remote_doc
-            else None
+            _ClaudeSettingsSource("remote/server-managed settings", remote_path, remote_doc) if remote_doc else None
         )
         hklm_doc = _read_claude_registry_policy("HKEY_LOCAL_MACHINE")
         hklm = (
@@ -1581,9 +1598,7 @@ def _claude_managed_sources(
         )
     file_doc, loaded_file_paths = _merge_claude_file_policies(managed_settings_paths)
     file_source = (
-        _ClaudeSettingsSource("explicit managed settings", ", ".join(loaded_file_paths), file_doc)
-        if file_doc
-        else None
+        _ClaudeSettingsSource("explicit managed settings", ", ".join(loaded_file_paths), file_doc) if file_doc else None
     )
     return remote, None, file_source, None
 
@@ -1863,10 +1878,11 @@ def _malformed_owned_hook_target(command: str, connector: str) -> str:
         owned_target = ""
         if "-encodedcommand" in lowered:
             encoded_index = lowered.index("-encodedcommand")
-            if (
-                encoded_index + 2 == len(parts)
-                and lowered[1:encoded_index] == ["-nologo", "-noprofile", "-noninteractive"]
-            ):
+            if encoded_index + 2 == len(parts) and lowered[1:encoded_index] == [
+                "-nologo",
+                "-noprofile",
+                "-noninteractive",
+            ]:
                 try:
                     encoded = base64.b64decode(parts[encoded_index + 1], validate=True)
                     if len(encoded) <= 16 * 1024 and len(encoded) % 2 == 0:

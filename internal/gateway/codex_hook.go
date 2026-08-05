@@ -32,6 +32,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/defenseclaw/defenseclaw/internal/actionfacts"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/notifier"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
@@ -188,12 +189,26 @@ func (a *APIServer) evaluateCodexHookForProfile(
 			})
 		}
 	case "PreToolUse", "PermissionRequest":
-		verdict = a.inspectToolPolicyCtx(ctx, &ToolInspectRequest{
-			Tool:          codexToolName(req),
-			Args:          codexToolArgs(req),
+		toolName := codexToolName(req)
+		toolArgs := codexToolArgs(req)
+		toolRequest := &ToolInspectRequest{
+			Tool:          toolName,
+			Args:          toolArgs,
 			Direction:     "tool_call",
 			Connector:     "codex",
 			MCPServerName: firstNonEmpty(req.MCPServerName, payloadString(req.Payload, "mcp_server_name")),
+		}
+		verdict = a.inspectTrustedToolPolicyCtx(ctx, toolRequest, trustedActionRequest{
+			Input: actionfacts.Input{
+				Tool:       toolName,
+				Args:       toolArgs,
+				CWD:        req.CWD,
+				ActiveHome: trustedSameHostHome(),
+			},
+			LegacyText:         string(toolArgs),
+			Connector:          "codex",
+			EnforcementCapable: true,
+			record:             toolChainRecorderFromContext(ctx),
 		})
 		if decision, matched := a.codexMCPAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "mcp", decision: decision})

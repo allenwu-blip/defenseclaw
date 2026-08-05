@@ -484,6 +484,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v1": "0.124.0",
             "codex-hooks-v2": "0.129.0",
             "codex-hooks-v3": "0.133.0",
+            "codex-hooks-v3-generic": "0.135.0",
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.154",
             "claudecode-hooks-v2": "2.1.219",
@@ -984,10 +985,9 @@ class WindowsHookDoctorTests(unittest.TestCase):
     def test_codex_current_contract_requires_exact_native_trust_matrix(self) -> None:
         runtime = self._runtime()
         command = f'"{runtime}" hook --connector codex'
-        config = self._config("codex", command, codex_contract="codex-hooks-v3")
+        config = self._config("codex", command, codex_contract="codex-hooks-v4")
         document = tomllib.loads(config.read_text(encoding="utf-8"))
         state = document["hooks"]["state"]
-        self._lock("codex", config, contract="codex-hooks-v3")
 
         check = self._validate("codex", config)
         self.assertEqual(check.state, "healthy", check.detail)
@@ -1001,6 +1001,20 @@ class WindowsHookDoctorTests(unittest.TestCase):
         check = self._validate("codex", config)
         self.assertEqual(check.state, "stale", check.detail)
         self.assertIn("not trusted", check.detail)
+
+    def test_codex_generic_contract_uses_trusted_ten_event_matrix(self) -> None:
+        runtime = self._runtime()
+        config = self._config(
+            "codex",
+            f'"{runtime}" hook --connector codex',
+            codex_contract="codex-hooks-v3-generic",
+        )
+        document = tomllib.loads(config.read_text(encoding="utf-8"))
+
+        self.assertIn("SubagentStart", document["hooks"])
+        self.assertNotIn("SessionEnd", document["hooks"])
+        check = self._validate("codex", config)
+        self.assertEqual(check.state, "healthy", check.detail)
 
     def test_codex_obsolete_gateway_precedes_current_contract_trust_mismatch(self) -> None:
         runtime = self._runtime()
@@ -1241,7 +1255,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "version": 2,
             "connectors": {
                 "codex": {
-                    "contract_id": "codex-hooks-v3",
+                    "contract_id": "codex-hooks-v3-generic",
                     "compatibility_status": "known",
                     "raw_agent_version": "codex-cli 0.144.3",
                     "normalized_agent_version": "0.144.3",
@@ -1269,7 +1283,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "version": 2,
             "connectors": {
                 "codex": {
-                    "contract_id": "codex-hooks-v3",
+                    "contract_id": "codex-hooks-v3-generic",
                     "compatibility_status": "known",
                     "raw_agent_version": "codex-cli 0.144.3",
                     "normalized_agent_version": "0.144.3",

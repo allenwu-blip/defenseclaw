@@ -29,6 +29,10 @@ func (c *CodexConnector) patchCodexManagedHooks(opts SetupOpts, hookScript strin
 	path := codexManagedConfigPath()
 	hooksDir := filepath.Join(opts.DataDir, "hooks")
 	hookScript = filepath.ToSlash(hookScript)
+	hookGroups, err := codexHookGroupsForOptions(opts)
+	if err != nil {
+		return err
+	}
 	if err := ensureCodexConfigDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create Codex managed config directory: %w", err)
 	}
@@ -59,7 +63,10 @@ func (c *CodexConnector) patchCodexManagedHooks(opts SetupOpts, hookScript strin
 		if !exists {
 			hooks = map[string]interface{}{}
 		}
-		if err := mergeOwnedCodexHooks(hooks, path, hookScript, hooksDir, opts, false); err != nil {
+		if err := mergeOwnedCodexHooks(
+			hooks, path, hookScript, hooksDir, opts, false,
+			hookGroups,
+		); err != nil {
 			return err
 		}
 		cfg["hooks"] = hooks

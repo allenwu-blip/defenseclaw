@@ -38,7 +38,13 @@ _EXPECTED_CONTRACTS = {
     "amp": frozenset({"amp-plugin-v1"}),
     "claudecode": frozenset({"claudecode-hooks-v1", "claudecode-hooks-v2"}),
     "codex": frozenset(
-        {"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3", "codex-hooks-v4"}
+        {
+            "codex-hooks-v1",
+            "codex-hooks-v2",
+            "codex-hooks-v3",
+            "codex-hooks-v3-generic",
+            "codex-hooks-v4",
+        }
     ),
     "windsurf": frozenset({"windsurf-hooks-v1"}),
 }

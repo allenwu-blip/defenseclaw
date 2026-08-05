@@ -914,13 +914,8 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 	if conn != nil {
 		name = conn.Name()
 	}
-	resolution := ResolveHookContract(name, opts.AgentVersion)
+	resolution := resolveHookContractForOptions(name, opts)
 	contract := resolution.Contract
-	if opts.HookContractID != "" {
-		if pinned, ok := hookContractByID(name, opts.HookContractID); ok {
-			contract = pinned
-		}
-	}
 	entry := HookContractLockEntry{
 		Connector:              normalizeConnectorName(name),
 		RawAgentVersion:        resolution.RawVersion,
@@ -954,9 +949,6 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 			entry.AgentExecutableSource = "setup-selected"
 			entry.AgentExecutableSHA256 = digest
 		}
-	}
-	if opts.HookContractID != "" {
-		entry.ContractID = opts.HookContractID
 	}
 	return entry
 }

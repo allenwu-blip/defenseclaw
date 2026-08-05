@@ -14,7 +14,8 @@
 // detects digest drift and Setup reconciles it. The file is never executable.
 // DefenseClaw's Teardown removes it (managed-file backup heal).
 //
-// Wire contract: POST {hook_event_name, tool_name, tool_input, cwd} to
+// Wire contract: POST {hook_event_name, tool_name, tool_input,
+// tool_response, cwd} to
 // /api/v1/opencode/hook; the response carries hook_output={decision,
 // reason}; decision "deny"/"block" aborts the tool.
 
@@ -119,7 +120,10 @@ async function defenseclawPost(event, toolName, toolInput, cwd, context, toolRes
     if (mcpIdentity && mcpIdentity.status === "authoritative") {
       payload.mcp_server_name = mcpIdentity.name;
     }
-    if (toolResult !== undefined) payload.tool_result = toolResult;
+    if (toolResult !== undefined) {
+      payload.tool_response = toolResult;
+      payload.tool_result = toolResult;
+    }
     const res = await fetch("http://" + DC_API_ADDR + "/api/v1/opencode/hook", {
       method: "POST",
       headers,
@@ -256,15 +260,16 @@ export const DefenseClaw = async ({ directory, worktree }) => {
         );
       }
     },
-    // tool.execute.after is observe-only telemetry: it does not await the
-    // gateway response and cannot turn telemetry failure into a tool block.
+    // tool.execute.after is observe-only telemetry. Await delivery so the
+    // gateway can attribute this outcome to the exact call before a later tool
+    // starts; transport and fail-mode results remain advisory and are ignored.
     "tool.execute.after": async (input, output) => {
       const result = output && {
         title: output.title,
         output: output.output,
         metadata: output.metadata,
       };
-      defenseclawPost(
+      await defenseclawPost(
         "tool.execute.after",
         input && input.tool,
         input && input.args,
@@ -272,7 +277,7 @@ export const DefenseClaw = async ({ directory, worktree }) => {
         input,
         result,
         defenseclawResolveMCPServer(input && input.tool),
-      ).catch(() => {});
+      );
     },
   };
 };

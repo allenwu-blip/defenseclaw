@@ -1120,6 +1120,10 @@ func codexHookConfigPath() string {
 // guardian repair cannot mistake a partial, moved, disabled, asynchronous, or
 // untrusted matrix for active protection.
 func (c *CodexConnector) ownedHookContractPresent(opts SetupOpts) (bool, error) {
+	resolution := resolveHookContractForOptions("codex", opts)
+	if resolution.Contract.ContractID == "" {
+		return false, nil
+	}
 	userConfigPath := codexConfigPath()
 	data, err := os.ReadFile(userConfigPath)
 	if err != nil {
@@ -1307,7 +1311,9 @@ func codexHookGroupsForSetup(opts SetupOpts) ([]codexHookGroup, error) {
 			)
 		}
 		if eventType == "SessionStart" &&
-			(contract.ContractID == "codex-hooks-v3" || contract.ContractID == "codex-hooks-v4") {
+			(contract.ContractID == "codex-hooks-v3" ||
+				contract.ContractID == "codex-hooks-v3-generic" ||
+				contract.ContractID == "codex-hooks-v4") {
 			// The compact SessionStart matcher is certified only for the
 			// 0.133+ v3/v4 contracts. Do not backfill it into legacy tiers.
 			group.matcher = "startup|resume|clear|compact"
@@ -1315,6 +1321,10 @@ func codexHookGroupsForSetup(opts SetupOpts) ([]codexHookGroup, error) {
 		groups = append(groups, group)
 	}
 	return groups, nil
+}
+
+func codexHookGroupsForOptions(opts SetupOpts) ([]codexHookGroup, error) {
+	return codexHookGroupsForSetup(opts)
 }
 
 // isDefenseClawCodexProxyRedirect reports whether v is the loopback
@@ -1356,6 +1366,10 @@ func (c *CodexConnector) patchCodexConfig(opts SetupOpts, hookScript string) err
 	backupPath := filepath.Join(opts.DataDir, "codex_config_backup.json")
 	backupExists := false
 	hooksDir := filepath.Join(opts.DataDir, "hooks")
+	hookGroups, err := codexHookGroupsForOptions(opts)
+	if err != nil {
+		return err
+	}
 
 	var transformed []byte
 	var backupToSave codexConfigBackup
@@ -1446,7 +1460,10 @@ func (c *CodexConnector) patchCodexConfig(opts SetupOpts, hookScript string) err
 			if !hooksExist {
 				hooks = map[string]interface{}{}
 			}
-			if err := mergeOwnedCodexHooks(hooks, configPath, hookScript, hooksDir, opts, true); err != nil {
+			if err := mergeOwnedCodexHooks(
+				hooks, configPath, hookScript, hooksDir, opts, true,
+				hookGroups,
+			); err != nil {
 				return err
 			}
 			cfg["hooks"] = hooks
@@ -2592,6 +2609,7 @@ func mergeOwnedCodexHooks(
 	configPath, hookScript, hooksDir string,
 	opts SetupOpts,
 	writeTrustState bool,
+	_ ...[]codexHookGroup,
 ) error {
 	if _, err := removeOwnedCodexHookState(hooks, configPath, hooksDir); err != nil {
 		return fmt.Errorf("inspect existing DefenseClaw Codex hook trust: %w", err)
