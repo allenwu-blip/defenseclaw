@@ -197,13 +197,14 @@ foreach ($path in @($config, $module, $pth)) {
     $originalHashes[$path] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
 }
 
-$install = Join-Path $PSScriptRoot 'install.ps1'
-$pwsh = (Get-Process -Id $PID).Path
-Invoke-NativeChecked $pwsh @(
-    '-NoLogo', '-NoProfile', '-File', $install,
-    '-Local', $artifacts, '-Connector', 'omnigent', '-Yes',
-    '-Quickstart', '-QuickstartMode', 'action'
-)
+$setupPackage = Join-Path $artifacts 'DefenseClawSetup-x64.exe'
+if (-not (Test-Path -LiteralPath $setupPackage -PathType Leaf)) {
+    throw "packaged DefenseClaw Setup is missing: $setupPackage"
+}
+Invoke-NativeChecked $setupPackage @(
+    '/quiet', '/norestart', 'INSTALLSCOPE=user', 'CONNECTOR=omnigent',
+    'MODE=action', 'STARTGATEWAY=1'
+) -TimeoutSeconds 600
 
 $defenseclaw = Join-Path $nativeInstallRoot 'bin\defenseclaw.exe'
 $gateway = Join-Path $nativeInstallRoot 'bin\defenseclaw-gateway.exe'
