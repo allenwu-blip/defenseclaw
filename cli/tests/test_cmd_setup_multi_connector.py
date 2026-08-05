@@ -1627,6 +1627,27 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         ):
             cmd_setup._capture_setup_applied_runtime_once(self.app.cfg)
 
+    def test_watchdog_fingerprint_accepts_repairable_invalid_stopped_record(self):
+        evidence = MagicMock()
+        evidence.watchdog_pid_record.return_value = MagicMock(
+            status="malformed", reason="private malformed record detail", executable=""
+        )
+        evidence.watchdog_ownership.return_value = MagicMock(status="missing", source="stable")
+        with patch("defenseclaw.doctor_gateway.GatewayEvidence", return_value=evidence):
+            fingerprint = cmd_setup._capture_setup_watchdog_fingerprint(self.app.cfg)
+
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+
+    def test_watchdog_fingerprint_rejects_unsafe_custody(self):
+        with patch(
+            "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
+            return_value=("unsafe", "private custody detail", None),
+        ):
+            with self.assertRaisesRegex(OSError, "watchdog custody evidence is unavailable") as raised:
+                cmd_setup._capture_setup_watchdog_fingerprint(self.app.cfg)
+
+        self.assertNotIn("private custody detail", str(raised.exception))
+
     def test_final_success_proves_complete_registration_union_in_both_fenced_samples(self):
         prior_path = os.path.abspath(os.path.join(self.tmp_dir, "registrations", "prior-a.json"))
         failed_path = os.path.abspath(os.path.join(self.tmp_dir, "registrations", "failed-b.json"))

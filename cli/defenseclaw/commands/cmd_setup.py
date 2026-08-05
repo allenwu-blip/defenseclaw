@@ -6176,7 +6176,7 @@ def _capture_setup_watchdog_fingerprint(cfg) -> str:
 
     evidence = GatewayEvidence(platform_name="win32")
     posture, _detail, health = _inspect_windows_watchdog_runtime(cfg, evidence)
-    if posture in {"foreign", "invalid", "uninspectable", "unowned", "unsafe"}:
+    if posture in {"foreign", "uninspectable", "unowned", "unsafe"}:
         raise OSError(f"watchdog custody evidence is unavailable [{_setup_runtime_ref(posture)}]")
     data_dir = os.path.abspath(os.fspath(cfg.data_dir))
     pid_path = os.path.join(data_dir, "watchdog.pid")
