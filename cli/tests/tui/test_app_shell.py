@@ -3006,8 +3006,13 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
 
         assert app.screen_stack[-1].__class__.__name__ == "ConfigDiffScreen"
         await pilot.press("enter")
-        await pilot.pause()
-        await pilot.pause()
+        await _wait_for_background(
+            lambda: (
+                cfg["notifications"]["enabled"] is False
+                and setup.restart_queue.pending
+                and "Config changes saved" in app.status_text
+            )
+        )
 
         assert cfg["notifications"]["enabled"] is False
         assert setup.restart_queue.pending is True
