@@ -296,6 +296,11 @@ func main() {
 	}
 
 	code, err := run(opts)
+	if opts.Quiet && err != nil && opts.Action != "help" && opts.Action != "verify" {
+		if _, logErr := writeQuietSetupLog(opts.Action, code, err); logErr != nil {
+			fmt.Fprintf(os.Stderr, "DefenseClaw setup log failed: %v\n", logErr)
+		}
+	}
 	if err != nil {
 		// Silent mode suppresses interactive UI, not diagnostics. Automation and
 		// enterprise deployment tools need the concrete failure on their captured

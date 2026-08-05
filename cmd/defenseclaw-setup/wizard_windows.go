@@ -884,6 +884,10 @@ func writeWizardLog(action string, code int, resultErr error) (string, error) {
 	return path, nil
 }
 
+func writeQuietSetupLog(action string, code int, resultErr error) (string, error) {
+	return writeWizardLog(action, code, resultErr)
+}
+
 func wizardFailureDescription(code int, resultErr error, logPath string, logErr error) string {
 	state := "Any committed file transition is recorded in the durable setup journal and will be recovered automatically when Setup runs again."
 	if strings.Contains(resultErr.Error(), "core installation completed") || strings.Contains(resultErr.Error(), "core uninstall completed") {

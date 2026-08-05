@@ -306,6 +306,64 @@ func assertConnectorReconcileStderr(t *testing.T, name, stderr string) {
 	}
 }
 
+func TestConnectorReconcileCompatibilityDriftLeavesClaudeSettingsByteExact(t *testing.T) {
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	settingsPath := filepath.Join(home, "settings.json")
+	before := []byte(`{"operator":{"sentinel":"private-fixture"},"hooks":{"Stop":[]}}`)
+	if err := os.WriteFile(settingsPath, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	originalPath := connector.ClaudeCodeSettingsPathOverride
+	connector.ClaudeCodeSettingsPathOverride = settingsPath
+	t.Cleanup(func() { connector.ClaudeCodeSettingsPathOverride = originalPath })
+
+	lock := testHookContractLock{
+		Version: 1,
+		Connectors: map[string]connector.HookContractLockEntry{
+			"claudecode": {
+				Connector:              "claudecode",
+				RawAgentVersion:        "Claude Code 2.1.218",
+				NormalizedAgentVersion: "2.1.218",
+				ContractID:             "claudecode-hooks-v1",
+			},
+		},
+	}
+	lockBody, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "hook_contract_lock.json"), lockBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	discovery := []byte(`{"agents":{"claudecode":{"version":"Claude Code 2.1.219"}}}`)
+	if err := os.WriteFile(filepath.Join(dataDir, "agent_discovery.json"), discovery, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	defer withConnectorState(t, dataDir, "claudecode")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.Mode = "action"
+	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"claudecode": {Mode: "action"},
+	}
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "claudecode", "--data-dir", dataDir, "--config-home", home)
+	if !strings.Contains(stderr, "hook contract compatibility drift") {
+		t.Fatalf("reconcile stderr = %q, want compatibility drift", stderr)
+	}
+	after, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeHash := sha256.Sum256(before)
+	afterHash := sha256.Sum256(after)
+	if beforeHash != afterHash || !bytes.Equal(before, after) {
+		t.Fatalf("failed reconcile changed protected fixture: before=%x after=%x", beforeHash, afterHash)
+	}
+}
+
 func TestConnectorReconcileRefreshesOnlySelectedRegistration(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	seedCodexSelectionForTest(t, dataDir)
