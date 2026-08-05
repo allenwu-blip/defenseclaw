@@ -16,7 +16,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$ArtifactRoot,
-    [Parameter(Mandatory)][string]$StateRoot
+    [Parameter(Mandatory)][string]$StateRoot,
+    [string]$UvPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -155,7 +156,11 @@ function Invoke-LoopbackJson {
     }
 }
 
-$uv = (Get-Command uv.exe -CommandType Application -ErrorAction Stop).Source
+$uv = if ([string]::IsNullOrWhiteSpace($UvPath)) {
+    (Get-Command uv.exe -CommandType Application -ErrorAction Stop).Source
+} else {
+    (Get-Item -LiteralPath $UvPath -ErrorAction Stop).FullName
+}
 Invoke-NativeChecked $uv @(
     'tool', 'install', '--python', '3.12', '--force', 'omnigent==0.7.0'
 ) -TimeoutSeconds 600

@@ -17,7 +17,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract')]
+    [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract', 'omnigent-native-degraded')]
     [string]$Mode,
     [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [Parameter(Mandatory)][string]$ArtifactRoot,
@@ -399,6 +399,10 @@ function Invoke-ChildMode {
                 -WorkspaceRoot (Split-Path -Parent $PSScriptRoot) `
                 -StateRoot $state -ArtifactRoot $artifacts `
                 -AllowCurrentUserSetupAcceptance
+        } elseif ($Mode -eq 'omnigent-native-degraded') {
+            & (Join-Path $PSScriptRoot 'test-omnigent-windows-native.ps1') `
+                -StateRoot $state -ArtifactRoot $artifacts `
+                -UvPath (Join-Path $PSScriptRoot 'uv.exe')
         } else {
             $setup = Join-Path $artifacts 'DefenseClawSetup-x64.exe'
             & (Join-Path $PSScriptRoot 'test-windows-setup-wizard.ps1') `
@@ -1020,6 +1024,8 @@ try {
         $harnessFiles += @(
             'test-fresh-install-release-windows.ps1'
         )
+    } elseif ($Mode -eq 'omnigent-native-degraded') {
+        $harnessFiles += 'test-omnigent-windows-native.ps1'
     }
     foreach ($file in $harnessFiles) {
         $source = Join-Path $PSScriptRoot $file
@@ -1030,6 +1036,20 @@ try {
             -AllowedRoot $scripts
         [IO.Directory]::CreateDirectory((Split-Path -Parent $destination)) | Out-Null
         [IO.File]::Copy($source, $destination, $false)
+    }
+    if ($Mode -eq 'omnigent-native-degraded') {
+        $uvSource = (Get-Command uv.exe -CommandType Application -ErrorAction Stop).Source
+        $uvSourceItem = Get-Item -LiteralPath $uvSource -Force -ErrorAction Stop
+        if ($uvSourceItem.PSIsContainer -or
+            ($uvSourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $uvSourceItem.Length -gt 268435456) {
+            throw 'pinned OmniGent uv input must be a bounded regular file'
+        }
+        [void][DefenseClaw.DisposableFileGuard]::CopyBoundedRegularFile(
+            $uvSource,
+            (Join-Path $scripts 'uv.exe'),
+            268435456
+        )
     }
     foreach ($resourceInputName in $resourceVerifierInputs) {
         $source = Join-Path $artifactSource $resourceInputName

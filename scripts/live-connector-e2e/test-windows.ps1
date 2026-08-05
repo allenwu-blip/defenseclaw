@@ -1656,6 +1656,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeWorkflowText -match '(?s)Required setup, allow/block, audit, telemetry, timeout, and teardown contract.*?invoke-windows-setup-standard-user-ci\.ps1.*?-Mode contract.*?-Connector \$env:CONNECTOR.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $nativeWorkflowText -notmatch '\./scripts/windows-native-ci\.ps1 -Operation contract') `
         'hosted connector contracts run as disposable real standard users and preserve the matrix connector'
+    Assert-True ($omniGentJob -match '(?s)invoke-windows-setup-standard-user-ci\.ps1.*?-Mode omnigent-native-degraded.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
+        $standardUserCIText -match "'omnigent-native-degraded'" -and
+        $standardUserCIText -match 'test-omnigent-windows-native\.ps1') `
+        'hosted OmniGent packaged lifecycle runs as a disposable real standard user'
     Assert-True ($nativeWorkflowText -notmatch '-Operation acceptance\b' -and
         $nativeHarnessText -notmatch "'acceptance' \{ Invoke-Acceptance \}" -and
         $nativeWorkflowText -match 'invoke-windows-setup-standard-user-ci\.ps1' -and
