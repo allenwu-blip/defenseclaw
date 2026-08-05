@@ -63,14 +63,14 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	}
 	body := string(raw)
 	for _, want := range []string{
-		"127.0.0.1:18970",             // APIAddr substituted
-		"tok-opencode-123",            // APIToken embedded
-		`DC_FAIL_MODE = "closed"`,     // fail mode honored (SupportsFailClosed=true)
-		"/api/v1/opencode/hook",       // gateway endpoint
-		"tool.execute.before",         // block hook wired
-		"input && input.args",         // after-hook preserves exact executed args
-		"tool_response: toolResponse", // after-hook forwards the result
-		"await defenseclawPost(",      // success is persisted before the next call
+		"127.0.0.1:18970",                  // APIAddr substituted
+		"tok-opencode-123",                 // APIToken embedded
+		`DC_FAIL_MODE = "closed"`,          // fail mode honored (SupportsFailClosed=true)
+		"/api/v1/opencode/hook",            // gateway endpoint
+		"tool.execute.before",              // block hook wired
+		"input && input.args",              // after-hook preserves exact executed args
+		"payload.tool_result = toolResult", // after-hook forwards the result
+		"await defenseclawPost(",           // success is persisted before the next call
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("plugin missing %q\n%s", want, body)

@@ -1660,7 +1660,7 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         with (
             patch(
                 "defenseclaw.commands.cmd_setup._capture_setup_desired_snapshot_once",
-                side_effect=[baseline, changed] * 3,
+                side_effect=[baseline, changed] * cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS,
             ) as desired,
             patch(
                 "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime",
@@ -1670,8 +1670,8 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         ):
             cmd_setup._capture_setup_config_snapshot(self.app.cfg, capture_runtime=True)
 
-        self.assertEqual(desired.call_count, 6)
-        self.assertEqual(applied.call_count, 3)
+        self.assertEqual(desired.call_count, 2 * cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS)
+        self.assertEqual(applied.call_count, cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS)
 
     def test_rollback_aggregates_restore_persistence_and_runtime_failures(self):
         snapshot = replace(
@@ -1963,9 +1963,9 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         def capture_final(_cfg, required):
             nonlocal samples
             samples += 1
-            if samples == 2:
+            if samples % 2:
                 atomic_write_private_bytes(failed_path, b"oscillating-b\n")
-            elif samples == 3:
+            else:
                 os.remove(failed_path)
             return self._post_runtime(snapshot, required)
 
