@@ -1530,14 +1530,33 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
     def test_runtime_capture_retries_until_two_consecutive_manifests_match(self):
         first = self._evidence(generation="first")
         stable = self._evidence(generation="stable")
-        with patch(
-            "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
-            side_effect=[first, stable, stable],
-        ) as capture:
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
+                side_effect=[first, stable, stable],
+            ) as capture,
+            patch("defenseclaw.commands.cmd_setup.time.sleep"),
+        ):
             result = cmd_setup._capture_setup_applied_runtime(self.app.cfg)
 
         self.assertEqual(result, stable)
         self.assertEqual(capture.call_count, 3)
+
+    def test_runtime_capture_waits_for_post_teardown_evidence_to_stabilize(self):
+        stable = self._evidence(generation="stable")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
+                side_effect=[OSError("private transient"), OSError("private transient"), stable, stable],
+            ) as capture,
+            patch("defenseclaw.commands.cmd_setup.time.sleep") as pause,
+        ):
+            result = cmd_setup._capture_setup_applied_runtime(self.app.cfg)
+
+        self.assertEqual(result, stable)
+        self.assertEqual(capture.call_count, 4)
+        self.assertEqual(pause.call_count, 3)
+        pause.assert_called_with(cmd_setup._SETUP_RUNTIME_SNAPSHOT_RETRY_SECONDS)
 
     def test_runtime_capture_rejects_generation_race_without_leaking_details(self):
         private_detail = os.path.join(self.tmp_dir, "secret-profile", "gateway.json")

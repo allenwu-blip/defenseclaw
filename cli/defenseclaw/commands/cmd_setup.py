@@ -5764,7 +5764,8 @@ _ACTIVE_CONNECTOR_STATE_MAX_BYTES = 64 << 10
 _SETUP_RUNTIME_ARTIFACT_MAX_BYTES = 16 << 20
 _SETUP_RUNTIME_RECEIPT_MAX_FILES = 128
 _SETUP_RUNTIME_REGISTRATION_MAX_FILES = 128
-_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS = 3
+_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS = 6
+_SETUP_RUNTIME_SNAPSHOT_RETRY_SECONDS = 0.2
 _SETUP_ROLLBACK_MAX_FAILURES = 64
 _WINDOWS_REPARSE_POINT_ATTRIBUTE = 0x400
 
@@ -6394,16 +6395,18 @@ def _capture_setup_applied_runtime(
 ) -> _SetupAppliedRuntimeEvidence:
     previous: _SetupAppliedRuntimeEvidence | None = None
     last_error: Exception | None = None
-    for _attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
+    for attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
         try:
             current = _capture_setup_applied_runtime_once(cfg, required_registration_locations)
         except Exception as exc:  # noqa: BLE001 - retry one bounded evidence race.
             previous = None
             last_error = exc
-            continue
-        if previous == current:
-            return current
-        previous = current
+        else:
+            if previous == current:
+                return current
+            previous = current
+        if attempt + 1 < _SETUP_RUNTIME_SNAPSHOT_ATTEMPTS:
+            time.sleep(_SETUP_RUNTIME_SNAPSHOT_RETRY_SECONDS)
     reference = _setup_runtime_ref(type(last_error).__name__) if last_error is not None else "unstable"
     raise OSError(f"applied runtime evidence did not stabilize [{reference}]") from None
 

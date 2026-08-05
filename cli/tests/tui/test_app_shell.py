@@ -3005,7 +3005,14 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
         await pilot.pause()
 
         assert app.screen_stack[-1].__class__.__name__ == "ConfigDiffScreen"
-        await pilot.press("enter")
+        # The modal enters the screen stack before its focused save button is
+        # guaranteed to have completed layout.  Under a loaded Windows shard,
+        # an immediate synthetic Enter can therefore land on the prior frame
+        # and become a no-op.  Keyboard-save behavior is covered directly by
+        # test_config_diff_enter_returns_save_result; use the established
+        # hit-test synchronization here so this integration test exercises the
+        # Setup save callback rather than racing modal mount.
+        await _click_when_ready(pilot, "#config-diff-save")
         await _wait_for_background(
             lambda: (
                 cfg["notifications"]["enabled"] is False
