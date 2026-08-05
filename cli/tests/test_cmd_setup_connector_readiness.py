@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from defenseclaw import agent_selection
+from defenseclaw import agent_selection, fail_mode
 from defenseclaw.commands import cmd_doctor, cmd_setup
 from defenseclaw.connector_contracts import (
     connector_lock_contract_invariant,
@@ -18,6 +18,7 @@ from defenseclaw.connector_contracts import (
 from defenseclaw.cursor_contract import CursorRegistrationValidation
 from defenseclaw.doctor_hooks import WindowsHookCheck
 from defenseclaw.fail_mode import connector_registration_lock_state
+from defenseclaw.file_permissions import atomic_write_private_bytes
 
 TEN_CONNECTORS = (
     "codex",
@@ -79,6 +80,14 @@ def _entry(connector: str, root: Path) -> dict[str, object]:
     }
 
 
+def _patch_registration_ready(monkeypatch, entry: dict[str, object]) -> None:
+    monkeypatch.setattr(
+        fail_mode,
+        "connector_registration_lock_state",
+        lambda _cfg, _connector: (str(entry["hook_fail_mode"]), None),
+    )
+
+
 @pytest.mark.parametrize("connector", TEN_CONNECTORS)
 def test_contract_lock_accepts_exact_ten(connector: str, tmp_path: Path) -> None:
     assert connector_lock_contract_invariant(connector, _entry(connector, tmp_path)) == ""
@@ -121,6 +130,7 @@ def test_protected_executable_reports_identity_location_and_digest(monkeypatch, 
         "agent_executable": str(executable),
         "agent_executable_sha256": digest,
     }
+    monkeypatch.setattr(agent_selection.os, "name", "nt")
     monkeypatch.setattr(agent_selection, "is_setup_trusted_binary", lambda *_args: True)
     assert agent_selection.setup_agent_lock_executable_invariant(str(tmp_path), "amp", entry) == ""
 
@@ -196,7 +206,12 @@ def test_real_doctor_dispatch_exercises_exact_ten(monkeypatch, tmp_path: Path) -
         observed_labels.update(row["label"] for row in result.checks if row["label"] in expected_labels)
 
     assert observed_labels == expected_labels
-    assert native_calls == ["codex", "claudecode", "windsurf", "copilot", "antigravity", "hermes"]
+    expected_native_calls = (
+        ["codex", "claudecode", "windsurf", "copilot", "antigravity", "hermes"]
+        if agent_selection.os.name == "nt"
+        else []
+    )
+    assert native_calls == expected_native_calls
 
 
 def _write_amp_runtime(tmp_path: Path) -> tuple[SimpleNamespace, dict[str, object]]:
@@ -304,6 +319,7 @@ def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, t
     cfg.guardrail = _guardrail(fail_mode="closed")
     entry = _entry("hermes", tmp_path)
     entry["hook_fail_mode"] = "closed"
+    _patch_registration_ready(monkeypatch, entry)
     (tmp_path / "hook_contract_lock.json").write_text(
         json.dumps({"version": 2, "connectors": {"hermes": entry}}),
         encoding="utf-8",
@@ -329,27 +345,38 @@ def test_omnigent_native_degraded_is_accepted_but_failure_is_not(
 ) -> None:
     cfg = _config(tmp_path)
     entry = _entry("omnigent", tmp_path)
+    _patch_registration_ready(monkeypatch, entry)
     config_path = Path(entry["locations"]["hook_config_paths"][0])
-    config_path.write_text("defenseclaw_omnigent_policy defenseclaw_guardrail", encoding="utf-8")
+    atomic_write_private_bytes(config_path, b"defenseclaw_omnigent_policy defenseclaw_guardrail")
     module_path = tmp_path / "defenseclaw_omnigent_policy.py"
-    pth_path = tmp_path / "defenseclaw_omnigent_policy.pth"
-    module_path.write_text("POLICY_REGISTRY = {'defenseclaw_policy': True}\n", encoding="utf-8")
-    pth_path.write_text(str(tmp_path), encoding="utf-8")
+    pth_path = tmp_path / "defenseclaw_omnigent.pth"
+    atomic_write_private_bytes(module_path, b"POLICY_REGISTRY = {'defenseclaw_policy': True}\n")
+    atomic_write_private_bytes(pth_path, str(tmp_path).encode())
     entry["locations"]["hook_script_paths"] = [str(module_path), str(pth_path)]
     entry["hook_script_digests"] = {
         path.name: "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() for path in (module_path, pth_path)
     }
-    (tmp_path / "hook_contract_lock.json").write_text(
-        json.dumps({"version": 2, "connectors": {"omnigent": entry}}),
-        encoding="utf-8",
+    atomic_write_private_bytes(
+        tmp_path / "hook_contract_lock.json",
+        json.dumps({"version": 2, "connectors": {"omnigent": entry}}).encode(),
     )
     monkeypatch.setattr(agent_selection, "setup_agent_lock_executable_invariant", lambda *_args: "")
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_omnigent_custody_json",
+        lambda path, **_kwargs: ("ok", json.loads(Path(path).read_text(encoding="utf-8")), ""),
+    )
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_omnigent_custody_text",
+        lambda path, **_kwargs: (Path(path).read_text(encoding="utf-8"), ""),
+    )
     monkeypatch.setattr(cmd_doctor, "_file_references_marker", lambda *_args: True)
     monkeypatch.setattr(cmd_doctor, "_omnigent_managed_artifact_drift", lambda *_args: "")
     monkeypatch.setattr(
         cmd_doctor,
         "_omnigent_runtime_readiness",
-        lambda _cfg: (runtime_status, "loaded policy generation remains unverified"),
+        lambda *_args, **_kwargs: (runtime_status, "loaded policy generation remains unverified"),
     )
     readiness = cmd_doctor.connector_setup_readiness(cfg, "omnigent")
     assert bool(readiness) is ready
@@ -360,6 +387,7 @@ def test_omnigent_native_degraded_is_accepted_but_failure_is_not(
 def test_copilot_stale_launcher_returns_executable_invariant(monkeypatch, tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     entry = _entry("copilot", tmp_path)
+    _patch_registration_ready(monkeypatch, entry)
     (tmp_path / "hook_contract_lock.json").write_text(
         json.dumps({"version": 2, "connectors": {"copilot": entry}}),
         encoding="utf-8",

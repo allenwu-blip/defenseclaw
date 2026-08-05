@@ -51,6 +51,7 @@ from click.testing import CliRunner
 
 pytestmark = pytest.mark.supported_connector_host
 from defenseclaw import platform_support
+from defenseclaw.commands import cmd_setup
 from defenseclaw.commands.cmd_setup import setup as setup_group
 from defenseclaw.file_permissions import atomic_write_private_bytes
 
@@ -283,6 +284,10 @@ class TestSetupCodexAlias(unittest.TestCase):
 
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime",
+                return_value=cmd_setup._SetupAppliedRuntimeEvidence("stopped", "", ()),
+            ),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
                 side_effect=_partially_record_then_fail,
@@ -654,8 +659,7 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         prior_roster = tuple(self.app.cfg.active_connectors())
         hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
         os.makedirs(self.app.cfg.data_dir, exist_ok=True)
-        with open(hint_path, "wb") as fh:
-            fh.write(b"codex\n")
+        atomic_write_private_bytes(hint_path, b"codex\n")
 
         with (
             patch(
@@ -743,8 +747,7 @@ class TestSetupNewConnectorAliases(unittest.TestCase):
         prior_roster = tuple(self.app.cfg.active_connectors())
         hint_path = os.path.join(self.app.cfg.data_dir, "picked_connector")
         os.makedirs(self.app.cfg.data_dir, exist_ok=True)
-        with open(hint_path, "wb") as fh:
-            fh.write(b"codex\n")
+        atomic_write_private_bytes(hint_path, b"codex\n")
 
         with (
             patch("defenseclaw.commands.cmd_setup._restart_services") as restart_mock,
