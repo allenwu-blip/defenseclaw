@@ -3624,6 +3624,14 @@ function New-WizardAgentFixtures([string]$Root) {
     if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
         throw "Windows .NET Framework compiler is unavailable: $compiler"
     }
+    $useNativeOpenCodeFixture = $env:CONNECTOR -ceq 'opencode'
+    $goCompiler = if ($useNativeOpenCodeFixture) { @(
+            Get-Command go.exe -CommandType Application -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+        ) } else { @() }
+    if ($useNativeOpenCodeFixture -and $goCompiler.Count -ne 1) {
+        throw 'the OpenCode contract requires the workflow-pinned native Go compiler'
+    }
     $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
     $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
     $codexTrustedRoot = Join-Path $localAppData 'OpenAI\Codex\bin'
@@ -3736,7 +3744,17 @@ public static class HermesVersionFixture {
         [pscustomobject]@{
             Path = $openCodePath
             ClassName = 'OpenCodeVersionFixture'
-            Source = @"
+            NativeGo = $useNativeOpenCodeFixture
+            Source = if ($useNativeOpenCodeFixture) { @"
+package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("opencode 1.18.11")
+}
+"@
+            } else { @"
 using System;
 public static class OpenCodeVersionFixture {
     public static int Main(string[] arguments) {
@@ -3744,16 +3762,31 @@ public static class OpenCodeVersionFixture {
         return 0;
     }
 }
-"@
+"@ }
         }
         )
         foreach ($fixture in $fixtures) {
-            $sourcePath = Join-Path $sourceBin ($fixture.ClassName + '.cs')
+            $isNativeGo = [bool]($fixture.PSObject.Properties['NativeGo'] -and $fixture.NativeGo)
+            $sourcePath = Join-Path $sourceBin ($fixture.ClassName + $(if ($isNativeGo) { '.go' } else { '.cs' }))
             Write-BoundedText $sourcePath $fixture.Source
             try {
-                Invoke-WindowsNativeProcess $compiler @(
-                    '/nologo', '/target:exe', "/out:$($fixture.Path)", $sourcePath
-                ) -TimeoutSeconds 60 | Out-Null
+                if ($isNativeGo) {
+                    $previousCGO = $env:CGO_ENABLED
+                    try {
+                        $env:CGO_ENABLED = '0'
+                        Invoke-WindowsNativeProcess ([string]$goCompiler[0].Source) @(
+                            'build', '-trimpath', '-buildvcs=false', '-ldflags=-s -w',
+                            '-o', $fixture.Path, $sourcePath
+                        ) -TimeoutSeconds 120 | Out-Null
+                    } finally {
+                        if ($null -eq $previousCGO) { Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue }
+                        else { $env:CGO_ENABLED = $previousCGO }
+                    }
+                } else {
+                    Invoke-WindowsNativeProcess $compiler @(
+                        '/nologo', '/target:exe', "/out:$($fixture.Path)", $sourcePath
+                    ) -TimeoutSeconds 60 | Out-Null
+                }
             } finally {
                 Remove-Item -LiteralPath $sourcePath -Force -ErrorAction SilentlyContinue
             }
