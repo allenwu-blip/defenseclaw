@@ -336,6 +336,78 @@ def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, t
     assert readiness.detail == "configured=closed; effective=open"
 
 
+@pytest.mark.parametrize("connector", ("codex", "claudecode", "windsurf", "amp", "opencode"))
+def test_observe_readiness_compares_lock_to_mode_aware_desired_fail_mode(
+    monkeypatch,
+    tmp_path: Path,
+    connector: str,
+) -> None:
+    cfg = _config(tmp_path)
+    cfg.guardrail = _guardrail(mode="observe", fail_mode="closed")
+    primary_label = cmd_doctor._SETUP_READINESS_PRIMARY_LABELS[connector]
+
+    monkeypatch.setattr(
+        "defenseclaw.fail_mode.connector_registration_lock_state",
+        lambda *_args: ("open", ""),
+    )
+    monkeypatch.setattr(
+        "defenseclaw.fail_mode.connector_fail_mode_report",
+        lambda *_args, **_kwargs: {
+            "configured": "closed",
+            "desired": "open",
+            "effective": "open",
+        },
+    )
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_check_hook_contract_lock",
+        lambda _cfg, _name, result: result.record("pass", "Hook contract", "current"),
+    )
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_check_connector_hooks",
+        lambda _cfg, _name, result: result.record("pass", primary_label, "current"),
+    )
+    monkeypatch.setattr(
+        cmd_doctor,
+        "_check_codex_otel_alignment",
+        lambda _cfg, result: (
+            result.record("pass", "Codex OTel environment", "current"),
+            result.record("pass", "Codex OTel runtime", "current"),
+        ),
+    )
+
+    readiness = cmd_doctor.connector_setup_readiness(cfg, connector)
+
+    assert readiness
+    assert readiness.detail == "configured=closed; effective=open"
+
+
+def test_readiness_rejects_lock_that_disagrees_with_mode_aware_desired_fail_mode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _config(tmp_path)
+    monkeypatch.setattr(
+        "defenseclaw.fail_mode.connector_registration_lock_state",
+        lambda *_args: ("open", ""),
+    )
+    monkeypatch.setattr(
+        "defenseclaw.fail_mode.connector_fail_mode_report",
+        lambda *_args, **_kwargs: {
+            "configured": "closed",
+            "desired": "closed",
+            "effective": "open",
+        },
+    )
+
+    readiness = cmd_doctor.connector_setup_readiness(cfg, "codex")
+
+    assert not readiness
+    assert readiness.invariant == "fail-mode"
+    assert readiness.detail == "lock=open configured=closed effective=open"
+
+
 @pytest.mark.parametrize(("runtime_status", "ready"), (("warn", True), ("fail", False)))
 def test_omnigent_native_degraded_is_accepted_but_failure_is_not(
     monkeypatch,
