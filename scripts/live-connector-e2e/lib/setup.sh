@@ -83,11 +83,21 @@ dc_setup_connector() {
     *) dc_err "unsupported setup verification flag: ${verify_flag}"; return 2 ;;
   esac
   sub="$(dc_setup_subcommand "${connector}")"
-  dc_log "defenseclaw setup ${sub} --mode ${mode} --replace --restart ${verify_flag}"
   # Contract cells validate exactly one connector. `init` starts with the
   # legacy OpenClaw proxy selected, while non-interactive setup is additive;
   # replacing that bootstrap selection prevents an unrelated OpenClaw restart.
-  defenseclaw setup "${sub}" --yes --replace --mode "${mode}" --restart ${verify_flag:+"${verify_flag}"}
+  if [ "${verify_flag}" = "--no-verify" ]; then
+    # Hook-connector setup commands intentionally have no readiness bypass.
+    # Layer A has no vendor CLI to verify, so stage the connector offline and
+    # restart explicitly; the golden hook/event assertions below are its
+    # deterministic verification surface.
+    dc_log "defenseclaw setup ${sub} --mode ${mode} --replace --no-restart"
+    defenseclaw setup "${sub}" --yes --replace --mode "${mode}" --no-restart
+    defenseclaw-gateway restart
+  else
+    dc_log "defenseclaw setup ${sub} --mode ${mode} --replace --restart"
+    defenseclaw setup "${sub}" --yes --replace --mode "${mode}" --restart
+  fi
   dc_wait_for_gateway 30
 }
 
