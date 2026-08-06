@@ -330,6 +330,50 @@ def test_hermes_pending_reload_is_not_setup_ready(monkeypatch, tmp_path: Path) -
     assert readiness.invariant == "live-runtime"
 
 
+def test_transient_runtime_detail_wins_over_digest_context() -> None:
+    detail = (
+        "digest: OpenCode hooks: warn: managed plugin digest current; "
+        "runtime load unverified: no authenticated load heartbeat"
+    )
+
+    assert cmd_doctor._setup_readiness_invariant(detail, default="registration") == "live-runtime"
+    assert cmd_doctor._setup_readiness_invariant("managed plugin digest mismatch", default="registration") == "digest"
+
+
+def test_setup_wait_retries_transient_opencode_heartbeat(monkeypatch, tmp_path: Path) -> None:
+    cfg = _config(tmp_path)
+    entry = _entry("opencode", tmp_path)
+    (tmp_path / "hook_contract_lock.json").write_text(
+        json.dumps({"version": 2, "connectors": {"opencode": entry}}),
+        encoding="utf-8",
+    )
+    (tmp_path / "active_connector.json").write_text(
+        json.dumps({"version": 3, "names": ["opencode"], "inactive_names": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cmd_setup, "load_config", lambda **_kwargs: cfg)
+    attempts = 0
+
+    def readiness(*_args) -> cmd_doctor.ConnectorSetupReadiness:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return cmd_doctor.ConnectorSetupReadiness(
+                False,
+                "opencode",
+                "live-runtime",
+                "digest current; runtime load unverified: no authenticated load heartbeat",
+            )
+        return cmd_doctor.ConnectorSetupReadiness(True, "opencode", "ready")
+
+    monkeypatch.setattr(cmd_doctor, "connector_setup_readiness", readiness)
+
+    result = cmd_setup._wait_for_connector_runtime(str(tmp_path), ["opencode"], None, None, timeout=0.5)
+
+    assert result
+    assert attempts == 2
+
+
 def test_setup_wait_commits_truthful_hermes_pending_reload(monkeypatch, tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     entry = _entry("hermes", tmp_path)

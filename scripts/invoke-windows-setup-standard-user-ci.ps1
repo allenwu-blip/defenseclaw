@@ -443,6 +443,11 @@ function Invoke-ChildMode {
             $uvSource = Join-Path $PSScriptRoot 'uv.exe'
             $uvRoot = Join-Path $state 'uv-input'
             [IO.Directory]::CreateDirectory($uvRoot) | Out-Null
+            Set-DisposableProtectedDirectoryAcl $uvRoot $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) -InheritChildRights
+            Assert-DisposableChildAcl $uvRoot $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -ExpectInheritance -AllowOwnershipBootstrap
             $uvPath = Join-Path $uvRoot 'uv.exe'
             [IO.File]::Copy($uvSource, $uvPath, $false)
             if ((Get-FileHash -LiteralPath $uvPath -Algorithm SHA256).Hash -cne

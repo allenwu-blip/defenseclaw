@@ -5185,9 +5185,9 @@ _SETUP_READINESS_PRIMARY_LABELS = {
 def _setup_readiness_invariant(detail: str, *, default: str) -> str:
     lowered = detail.casefold()
     for invariant, markers in (
+        ("live-runtime", ("pending-reload", "live=false", "runtime", "heartbeat")),
         ("digest", ("digest", "sha-256")),
         ("executable", ("launcher", "executable", "product name")),
-        ("live-runtime", ("pending-reload", "live=false", "runtime", "heartbeat")),
         ("location", ("path", "profile", "install-root")),
         ("contract", ("contract",)),
         ("version", ("version",)),
