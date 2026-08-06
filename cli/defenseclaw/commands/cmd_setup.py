@@ -6175,7 +6175,7 @@ def _capture_setup_watchdog_fingerprint(cfg) -> str:
     from defenseclaw.doctor_gateway import GatewayEvidence
 
     evidence = GatewayEvidence(platform_name="win32")
-    posture, _detail, health = _inspect_windows_watchdog_runtime(cfg, evidence)
+    posture, _detail, _health = _inspect_windows_watchdog_runtime(cfg, evidence)
     if posture in {"foreign", "uninspectable", "unowned", "unsafe"}:
         raise OSError(f"watchdog custody evidence is unavailable [{_setup_runtime_ref(posture)}]")
     # The inspection above already binds the PID publication, executable/start
@@ -6187,8 +6187,6 @@ def _capture_setup_watchdog_fingerprint(cfg) -> str:
         {
             "enabled": str(bool(getattr(getattr(cfg.gateway, "watchdog", None), "enabled", True))).lower(),
             "posture": posture,
-            "health-status": str(getattr(health, "status", "missing")) if health is not None else "missing",
-            "health-state": str(getattr(health, "state", "missing")) if health is not None else "missing",
         }
     )
 

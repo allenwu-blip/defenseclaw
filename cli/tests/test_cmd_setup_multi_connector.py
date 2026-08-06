@@ -1656,6 +1656,23 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         evidence.watchdog_pid_record.assert_not_called()
         evidence.watchdog_ownership.assert_not_called()
 
+    def test_watchdog_fingerprint_excludes_atomically_republished_health_hint(self):
+        evidence = MagicMock()
+        health_samples = (
+            MagicMock(status="unavailable", state=""),
+            MagicMock(status="ok", state="healthy"),
+        )
+        with (
+            patch("defenseclaw.doctor_gateway.GatewayEvidence", return_value=evidence),
+            patch(
+                "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
+                side_effect=[("running", "validated exact runtime", health) for health in health_samples],
+            ),
+        ):
+            fingerprints = tuple(cmd_setup._capture_setup_watchdog_fingerprint(self.app.cfg) for _ in health_samples)
+
+        self.assertEqual(fingerprints[0], fingerprints[1])
+
     def test_watchdog_fingerprint_rejects_unsafe_custody(self):
         with patch(
             "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
