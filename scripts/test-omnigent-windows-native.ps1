@@ -161,6 +161,8 @@ $uv = if ([string]::IsNullOrWhiteSpace($UvPath)) {
 } else {
     (Get-Item -LiteralPath $UvPath -ErrorAction Stop).FullName
 }
+$uvDirectory = Split-Path -Parent $uv
+$env:PATH = $uvDirectory + ';' + $env:PATH
 Invoke-NativeChecked $uv @(
     'tool', 'install', '--python', '3.12', '--force', 'omnigent==0.7.0'
 ) -TimeoutSeconds 600
