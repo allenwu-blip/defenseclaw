@@ -1676,7 +1676,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($omniGentJob -match '(?s)invoke-windows-setup-standard-user-ci\.ps1.*?-Mode omnigent-native-degraded.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $standardUserCIText -match "'omnigent-native-degraded'" -and
         $standardUserCIText -match 'test-omnigent-windows-native\.ps1' -and
-        $standardUserCIText -match "Join-Path \$state 'uv-input'" -and
+        $standardUserCIText -match 'Join-Path \$state ''uv-input''' -and
         $standardUserCIText -match 'standard-user OmniGent uv copy does not match its authenticated input' -and
         $standardUserCIText -match '-UvPath \$uvPath') `
         'hosted OmniGent packaged lifecycle runs as a disposable real standard user'
