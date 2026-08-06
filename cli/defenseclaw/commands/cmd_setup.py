@@ -6178,15 +6178,16 @@ def _capture_setup_watchdog_fingerprint(cfg) -> str:
     posture, _detail, _health = _inspect_windows_watchdog_runtime(cfg, evidence)
     if posture in {"foreign", "uninspectable", "unowned", "unsafe"}:
         raise OSError(f"watchdog custody evidence is unavailable [{_setup_runtime_ref(posture)}]")
-    # The inspection above already binds the PID publication, executable/start
-    # identity, and held ownership lease into one fail-closed posture. Do not
-    # independently reread those atomically published files: a mixed-generation
-    # second read can never strengthen that proof and destabilizes rollback
-    # capture while the watchdog republishes its runtime evidence.
+    # The inspection above fail-closes every contradictory custody posture.
+    # Safe lifecycle postures are not durable rollback identity: during hosted
+    # teardown the same owned watchdog can move through running, stale/invalid,
+    # and stopped while its atomically published files are retired. Binding
+    # that liveness hint prevents two otherwise identical snapshots from ever
+    # converging. The gateway boundary and durable connector publications below
+    # remain authoritative for rollback comparison.
     return _setup_runtime_digest(
         {
             "enabled": str(bool(getattr(getattr(cfg.gateway, "watchdog", None), "enabled", True))).lower(),
-            "posture": posture,
         }
     )
 

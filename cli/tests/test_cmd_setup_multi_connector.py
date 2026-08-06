@@ -1673,6 +1673,25 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
 
         self.assertEqual(fingerprints[0], fingerprints[1])
 
+    def test_watchdog_fingerprint_excludes_safe_teardown_liveness_posture(self):
+        evidence = MagicMock()
+        safe_samples = (
+            ("running", "validated owned runtime", MagicMock(status="ok", state="healthy")),
+            ("stale", "owned process exited", None),
+            ("invalid", "retiring canonical publication", None),
+            ("stopped", "owned teardown complete", None),
+        )
+        with (
+            patch("defenseclaw.doctor_gateway.GatewayEvidence", return_value=evidence),
+            patch(
+                "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
+                side_effect=safe_samples,
+            ),
+        ):
+            fingerprints = tuple(cmd_setup._capture_setup_watchdog_fingerprint(self.app.cfg) for _ in safe_samples)
+
+        self.assertEqual(len(set(fingerprints)), 1)
+
     def test_watchdog_fingerprint_rejects_unsafe_custody(self):
         with patch(
             "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
