@@ -703,35 +703,34 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
 
     transaction_app = AppContext()
     transaction_app.cfg = cfg
-    setup_snapshot = None
+    from defenseclaw.commands.cmd_setup import _capture_setup_config_snapshot
+
+    try:
+        setup_snapshot = _capture_setup_config_snapshot(cfg)
+    except OSError as exc:
+        setup.append(
+            StepResult(
+                "First-run transaction",
+                "fail",
+                f"could not establish the protected first-run rollback point: {exc}",
+                "defenseclaw init",
+            )
+        )
+        return FirstRunReport(
+            status="needs_attention",
+            config_file=str(cfg_mod.config_path()),
+            data_dir=cfg.data_dir,
+            connector=connector,
+            profile=profile,
+            setup=setup,
+            next_commands=["defenseclaw init"],
+            connector_mode_warnings=connector_mode_warnings,
+        )
     selection_targets: tuple[str, ...] | None = None
     if platform_support.host_os() == "windows":
         from defenseclaw.agent_selection import setup_agent_selection_connectors
-        from defenseclaw.commands.cmd_setup import _capture_setup_config_snapshot
 
         selection_targets = setup_agent_selection_connectors(_first_run_connector_roster(options, connector))
-        if selection_targets:
-            try:
-                setup_snapshot = _capture_setup_config_snapshot(cfg)
-            except OSError as exc:
-                setup.append(
-                    StepResult(
-                        "Agent Selection",
-                        "fail",
-                        f"could not establish the protected first-run rollback point: {exc}",
-                        "defenseclaw init",
-                    )
-                )
-                return FirstRunReport(
-                    status="needs_attention",
-                    config_file=str(cfg_mod.config_path()),
-                    data_dir=cfg.data_dir,
-                    connector=connector,
-                    profile=profile,
-                    setup=setup,
-                    next_commands=["defenseclaw init"],
-                    connector_mode_warnings=connector_mode_warnings,
-                )
 
     protected_selection, selection_error = _preflight_first_run_agent_selections(
         cfg.data_dir,

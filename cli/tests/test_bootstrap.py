@@ -754,23 +754,30 @@ class FreshMigrationCursorTests(unittest.TestCase):
         from defenseclaw import migration_state
         from defenseclaw.config import Config
 
-        data_dir = os.path.join(self._tmp.name, "save-failure")
-        original_save = Config.save
-        save_calls = 0
+        for host_os in ("linux", "windows"):
+            with self.subTest(host_os=host_os):
+                data_dir = os.path.join(self._tmp.name, f"save-failure-{host_os}")
+                original_save = Config.save
+                save_calls = 0
 
-        def fail_final_save(cfg):
-            nonlocal save_calls
-            save_calls += 1
-            if save_calls == 1:
-                return original_save(cfg)
-            raise OSError("injected final config save failure")
+                def fail_final_save(cfg):
+                    nonlocal save_calls
+                    save_calls += 1
+                    if save_calls == 1:
+                        return original_save(cfg)
+                    raise OSError("injected final config save failure")
 
-        with patch.object(Config, "save", new=fail_final_save):
-            report = self._run_first_run(data_dir)
+                with (
+                    patch.object(Config, "save", new=fail_final_save),
+                    patch("defenseclaw.bootstrap.platform_support.host_os", return_value=host_os),
+                ):
+                    report = self._run_first_run(data_dir)
 
-        self.assertFalse(os.path.lexists(os.path.join(data_dir, "config.yaml")))
-        self.assertFalse(os.path.lexists(migration_state.state_path(data_dir)))
-        self.assertTrue(any(step.name == "Config Save" and step.status == "fail" for step in report.setup))
+                self.assertFalse(os.path.lexists(os.path.join(data_dir, "config.yaml")))
+                self.assertFalse(os.path.lexists(migration_state.state_path(data_dir)))
+                self.assertTrue(
+                    any(step.name == "Config Save" and step.status == "fail" for step in report.setup)
+                )
 
     def test_unmarked_existing_v8_config_never_infers_a_fresh_cursor(self):
         from defenseclaw import migration_state
