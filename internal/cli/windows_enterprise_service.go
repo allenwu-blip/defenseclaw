@@ -214,8 +214,12 @@ func runWindowsEnterpriseLifecycle(
 	if opts.noStart && action != "install" && action != "upgrade" && action != "repair" {
 		return failPreflight(errors.New("--no-start is valid only with install, upgrade, or repair"))
 	}
-	if opts.allowUnsigned && action != "install" && action != "upgrade" && action != "repair" {
-		return failPreflight(errors.New("--allow-unsigned is valid only with install, upgrade, or repair"))
+	// Uninstall is permitted so an unsigned deployment stays removable by its
+	// own installer; the certification-scope checks still confine what it
+	// can touch.
+	if opts.allowUnsigned && action != "install" && action != "upgrade" &&
+		action != "repair" && action != "uninstall" {
+		return failPreflight(errors.New("--allow-unsigned is valid only with install, upgrade, repair, or uninstall"))
 	}
 	if err := validateWindowsEnterpriseLifecycleSecurityOptions(cmd, action, opts); err != nil {
 		return failPreflight(err)

@@ -1191,8 +1191,8 @@ function Assert-DefenseClawUnsignedCertificationScope {
         [string]$CertificationCodexHome
     )
     $prefix = '-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope'
-    if ($Action -notin @('Install', 'Upgrade', 'Repair')) {
-        throw "$prefix; action must be Install, Upgrade, or Repair"
+    if ($Action -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
+        throw "$prefix; action must be Install, Upgrade, Repair, or Uninstall"
     }
     if ($GatewayServiceName -cnotmatch '^DefenseClawCertGateway_([a-f0-9]{10})$') {
         throw "$prefix; gateway service name is outside the certification namespace"
@@ -7083,10 +7083,12 @@ function Assert-DefenseClawEnterpriseDeployment {
         throw 'deployment metadata is missing the installed CLI artifact hash'
     }
     foreach ($property in $metadata.hashes.PSObject.Properties) {
+        # Must cover every key the hash writer emits, codex_launcher included.
         $path = switch ($property.Name) {
             'gateway' { $Layout.GatewayPath }
             'hook' { $Layout.HookPath }
             'cli' { $Layout.CLIPath }
+            'codex_launcher' { $Layout.CodexTrustedHookLauncherPath }
             'installer' { $Layout.InstallerPath }
             'module' { $Layout.ModulePath }
             default { $null }
@@ -10730,8 +10732,10 @@ function Invoke-DefenseClawEnterpriseLifecycle {
     if ($NoStart -and $Action -notin @('Install', 'Upgrade', 'Repair')) {
         throw '-NoStart is valid only with Install, Upgrade, or Repair'
     }
-    if ($AllowUnsigned -and $Action -notin @('Install', 'Upgrade', 'Repair')) {
-        throw '-AllowUnsigned is valid only with Install, Upgrade, or Repair'
+    # Uninstall is permitted so an unsigned deployment stays removable by its
+    # own installer; certification-scope checks still confine what it can touch.
+    if ($AllowUnsigned -and $Action -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
+        throw '-AllowUnsigned is valid only with Install, Upgrade, Repair, or Uninstall'
     }
     if ($CoreHardeningCertification -and
         $Action -notin @('Install', 'Upgrade', 'Repair')) {

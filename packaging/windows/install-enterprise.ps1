@@ -323,8 +323,11 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
         [string]$RequestedCertificationCodexHome
     )
     $prefix = '-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope'
-    if ($LifecycleAction -notin @('Install', 'Upgrade', 'Repair')) {
-        throw "$prefix; action must be Install, Upgrade, or Repair"
+    # Uninstall is permitted so an unsigned deployment stays removable by its
+    # own installer. The scope checks below still confine it to the disposable
+    # certification namespace.
+    if ($LifecycleAction -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
+        throw "$prefix; action must be Install, Upgrade, Repair, or Uninstall"
     }
     if ($RequestedGatewayServiceName -cnotmatch '^DefenseClawCertGateway_([a-f0-9]{10})$') {
         throw "$prefix; gateway service name is outside the certification namespace"
@@ -1333,7 +1336,7 @@ try {
         # in certification builds. The lifecycle module accepts that
         # relaxation only while installing/replacing artifacts.
         AllowUnsigned = [bool](
-            $AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair')
+            $AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair', 'Uninstall')
         )
         InstallerSource = $PSCommandPath
         ModuleSource = $modulePath
