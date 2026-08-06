@@ -1603,7 +1603,33 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
 
         message = str(raised.exception)
         self.assertIn("did not stabilize", message)
+        self.assertIn("[diff=generation]", message)
         self.assertNotIn(private_detail, message)
+        self.assertNotIn("secret-profile", message)
+
+    def test_runtime_capture_reports_changed_invariant_name_without_values(self):
+        private_first = os.path.join(self.tmp_dir, "secret-profile", "first")
+        private_second = os.path.join(self.tmp_dir, "secret-profile", "second")
+        first = self._evidence(
+            invariants=(("watchdog", "runtime", "custody-health", private_first),),
+        )
+        second = self._evidence(
+            invariants=(("watchdog", "runtime", "custody-health", private_second),),
+        )
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime_once",
+                side_effect=[first, second, first],
+            ),
+            patch("defenseclaw.commands.cmd_setup.time.sleep"),
+            self.assertRaises(OSError) as raised,
+        ):
+            cmd_setup._capture_setup_applied_runtime(self.app.cfg)
+
+        message = str(raised.exception)
+        self.assertIn("[diff=watchdog.runtime.custody-health]", message)
+        self.assertNotIn(private_first, message)
+        self.assertNotIn(private_second, message)
         self.assertNotIn("secret-profile", message)
 
     def test_runtime_capture_has_start_end_generation_fence(self):

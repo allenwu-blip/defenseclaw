@@ -6390,6 +6390,7 @@ def _capture_setup_applied_runtime(
 ) -> _SetupAppliedRuntimeEvidence:
     previous: _SetupAppliedRuntimeEvidence | None = None
     last_error: Exception | None = None
+    last_difference: str | None = None
     for attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
         try:
             current = _capture_setup_applied_runtime_once(cfg, required_registration_locations)
@@ -6403,11 +6404,37 @@ def _capture_setup_applied_runtime(
         else:
             if previous == current:
                 return current
+            if previous is not None:
+                last_difference = _setup_applied_runtime_difference(previous, current)
             previous = current
         if attempt + 1 < _SETUP_RUNTIME_SNAPSHOT_ATTEMPTS:
             time.sleep(_SETUP_RUNTIME_SNAPSHOT_RETRY_SECONDS)
-    reference = _setup_runtime_ref(type(last_error).__name__) if last_error is not None else "unstable"
+    if last_difference is not None:
+        reference = f"diff={last_difference}"
+    elif last_error is not None:
+        reference = _setup_runtime_ref(type(last_error).__name__)
+    else:
+        reference = "unstable"
     raise OSError(f"applied runtime evidence did not stabilize [{reference}]") from None
+
+
+def _setup_applied_runtime_difference(
+    previous: _SetupAppliedRuntimeEvidence,
+    current: _SetupAppliedRuntimeEvidence,
+) -> str:
+    """Name the first changed evidence field without exposing its value."""
+    if previous.lifecycle != current.lifecycle:
+        return "lifecycle"
+    if previous.generation != current.generation:
+        return "generation"
+    previous_invariants = {item[:3]: item[3] for item in previous.invariants}
+    current_invariants = {item[:3]: item[3] for item in current.invariants}
+    for key in sorted(previous_invariants.keys() | current_invariants.keys()):
+        if previous_invariants.get(key) != current_invariants.get(key):
+            return ".".join(key)
+    if previous.registration_locations != current.registration_locations:
+        return "registration-locations"
+    return "unknown"
 
 
 def _capture_setup_desired_snapshot_once(cfg) -> _SetupConfigSnapshot:
