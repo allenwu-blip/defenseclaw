@@ -5921,10 +5921,12 @@ function Assert-OpenCodePluginContract {
     # The gateway is intentionally stopped above so its self-healer cannot
     # race the tamper assertion. A byte-for-byte restored OpenCode plugin is
     # therefore digest-current but runtime-unverified until the restart below.
+    $expectedStoppedRuntime =
+        'runtime load unverified: (sidecar /health is unavailable|managed gateway PID file is missing)'
     if ($recoveredChecks.Count -ne 1 -or
         $recoveredChecks[0].status -ne 'warn' -or
         $recoveredChecks[0].detail -notmatch 'managed plugin digest current' -or
-        $recoveredChecks[0].detail -notmatch 'runtime load unverified: sidecar /health is unavailable') {
+        $recoveredChecks[0].detail -notmatch $expectedStoppedRuntime) {
         throw 'Doctor did not recover after restoring the OpenCode plugin byte-for-byte'
     }
     Write-Result 'doctor:windows-hook-recovery' pass 'original plugin restored byte-for-byte and digest validated'

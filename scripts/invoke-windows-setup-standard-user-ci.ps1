@@ -441,10 +441,21 @@ function Invoke-ChildMode {
                 -AllowCurrentUserSetupAcceptance
         } elseif ($Mode -eq 'omnigent-native-degraded') {
             $uvSource = Join-Path $PSScriptRoot 'uv.exe'
+            # OmniGent validates every uv/token ancestor against the actual
+            # standard-user identity. Transfer this writable state root to
+            # that identity while retaining cleanup only through the trusted
+            # built-in Administrators principal used by the hosted parent.
+            Set-DisposableProtectedDirectoryAcl $state $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -InheritChildRights -UseAdministratorsForCleanup
+            Assert-DisposableChildAcl $state $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -ExpectInheritance -AllowOwnershipBootstrap
             $uvRoot = Join-Path $state 'uv-input'
             [IO.Directory]::CreateDirectory($uvRoot) | Out-Null
             Set-DisposableProtectedDirectoryAcl $uvRoot $identity.User `
-                ([Security.AccessControl.FileSystemRights]::FullControl) -InheritChildRights
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -InheritChildRights -UseAdministratorsForCleanup
             Assert-DisposableChildAcl $uvRoot $identity.User `
                 ([Security.AccessControl.FileSystemRights]::FullControl) `
                 -ExpectInheritance -AllowOwnershipBootstrap
