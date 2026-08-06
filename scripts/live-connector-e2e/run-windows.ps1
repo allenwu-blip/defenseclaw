@@ -4940,8 +4940,8 @@ function Invoke-Setup([string]$Mode) {
             $lastError = 'managed OpenCode plugin was not published'
             for ($attempt = 1; -not $SetupProcess.HasExited -and [DateTime]::UtcNow -lt $deadline; $attempt++) {
                 try {
-                    $null = Invoke-OpenCodePluginProbe allow `
-                        'Write-Output dc-setup-readiness' "setup-readiness-$attempt"
+                    $null = Invoke-OpenCodePluginProbe load `
+                        'dc-setup-load' "setup-readiness-$attempt"
                 } catch {
                     $lastError = Protect-LogText $_.Exception.Message
                 }
@@ -5830,7 +5830,7 @@ function Get-TreeFingerprint([string]$Root) {
 }
 
 function Invoke-OpenCodePluginProbe(
-    [ValidateSet('allow', 'block', 'lifecycle')][string]$Expected,
+    [ValidateSet('allow', 'block', 'lifecycle', 'load')][string]$Expected,
     [string]$Command,
     [string]$Label
 ) {

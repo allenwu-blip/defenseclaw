@@ -9,11 +9,11 @@ const [pluginPath, scratchPath, expected, command] = process.argv.slice(2);
 if (
   !pluginPath ||
   !scratchPath ||
-  !["allow", "block", "lifecycle"].includes(expected) ||
+  !["allow", "block", "lifecycle", "load"].includes(expected) ||
   !command
 ) {
   throw new Error(
-    "usage: node assert-opencode-plugin.mjs <plugin.js> <scratch.mjs> <allow|block|lifecycle> <command-or-event>",
+    "usage: node assert-opencode-plugin.mjs <plugin.js> <scratch.mjs> <allow|block|lifecycle|load> <command-or-event>",
   );
 }
 
@@ -64,7 +64,10 @@ try {
     mcp: {},
   });
 
-  if (expected === "lifecycle") {
+  if (expected === "load") {
+    // Setup convergence only needs the authenticated config-load heartbeat.
+    // Avoid spending its bounded readiness window on unrelated tool hooks.
+  } else if (expected === "lifecycle") {
     await hooks.event({
       event: {
         type: command,

@@ -3013,6 +3013,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Windsurf contract uses the scoped Legacy Cascade Doctor label'
     Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `
         'OpenCode contract runs the official config hook before tool hooks'
+    Assert-True ($openCodeAssertionText -match '\["allow", "block", "lifecycle", "load"\]' -and
+        $openCodeAssertionText -match '(?s)await hooks\.config.*?if \(expected === "load"\).*?else if \(expected === "lifecycle"\)') `
+        'OpenCode setup load probe stops after the authenticated config hook'
     $synchronousCodexHookContract = [regex]::Match(
         $harnessText,
         '(?s)function Assert-CodexSynchronousWindowsHookCommand\b.*?\n\}'
@@ -3080,7 +3083,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     ).Value
     Assert-True ($nativeProcessContract -match '\[scriptblock\]\$WhileRunning' -and
         $nativeProcessContract -match '(?s)& \$WhileRunning \$process.*?\$process\.Kill\(\$true\)' -and
-        $setupContract -match 'Invoke-OpenCodePluginProbe allow' -and
+        $setupContract -match 'Invoke-OpenCodePluginProbe load' -and
         $setupContract -match 'setup-readiness-\$attempt' -and
         $setupContract -match '-not \$SetupProcess\.HasExited' -and
         $setupContract -match '-WhileRunning \$setupRuntimeProbe') `
