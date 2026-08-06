@@ -4009,7 +4009,8 @@ function Invoke-NativeProcess {
         [int]$TimeoutSeconds = 180,
         [int[]]$AllowedExitCodes = @(0),
         [string]$LogPath = '',
-        [switch]$CaptureDescendants
+        [switch]$CaptureDescendants,
+        [scriptblock]$WhileRunning = $null
     )
     $inputText = $null
     if (-not [string]::IsNullOrWhiteSpace($InputPath)) {
@@ -4053,6 +4054,17 @@ function Invoke-NativeProcess {
         Write-NativeProcessPhase $FilePath $process.Id 'started'
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        if ($null -ne $WhileRunning) {
+            try {
+                & $WhileRunning
+            } catch {
+                if (-not $process.HasExited) {
+                    try { $process.Kill($true) } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+                    $null = $process.WaitForExit(1000)
+                }
+                throw
+            }
+        }
         if ($null -ne $inputText) {
             $inputWriteTask = $process.StandardInput.WriteAsync($inputText)
             $inputWriteComplete = Wait-RedirectedOutputTask $inputWriteTask $deadline
@@ -4458,10 +4470,17 @@ function Write-Result([string]$EventName, [string]$Status, [string]$Detail = '')
     Write-Host "[$($Status.ToUpperInvariant())] $Connector/windows/$EventName $($record.detail)"
 }
 
-function Invoke-Tool([string]$Name, [string[]]$Arguments, [int[]]$Allowed = @(0), [string]$InputPath = '', [int]$Timeout = $CommandTimeoutSeconds) {
+function Invoke-Tool(
+    [string]$Name,
+    [string[]]$Arguments,
+    [int[]]$Allowed = @(0),
+    [string]$InputPath = '',
+    [int]$Timeout = $CommandTimeoutSeconds,
+    [scriptblock]$WhileRunning = $null
+) {
     $file = (Get-Command $Name -ErrorAction Stop).Source
     $log = Join-Path $script:LogRoot (("{0:D3}-{1}.log" -f (++$script:CommandIndex), ($Name -replace '[^A-Za-z0-9.-]', '_')))
-    return Invoke-NativeProcess -FilePath $file -ArgumentList $Arguments -InputPath $InputPath -TimeoutSeconds $Timeout -AllowedExitCodes $Allowed -LogPath $log
+    return Invoke-NativeProcess -FilePath $file -ArgumentList $Arguments -InputPath $InputPath -TimeoutSeconds $Timeout -AllowedExitCodes $Allowed -LogPath $log -WhileRunning $WhileRunning
 }
 
 function Get-RegisteredHookEvent([string]$EventName, [string]$PayloadPath) {
@@ -4914,7 +4933,26 @@ function Invoke-Setup([string]$Mode) {
         'antigravity' { 'antigravity' }
         'opencode' { 'opencode' }
     }
-    Invoke-Tool 'defenseclaw' @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') | Out-Null
+    $setupRuntimeProbe = if ($Connector -ceq 'opencode') {
+        {
+            $deadline = [DateTime]::UtcNow.AddSeconds(90)
+            $lastError = 'managed OpenCode plugin was not published'
+            for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
+                try {
+                    $null = Invoke-OpenCodePluginProbe allow `
+                        'Write-Output dc-setup-readiness' "setup-readiness-$attempt"
+                    return
+                } catch {
+                    $lastError = Protect-LogText $_.Exception.Message
+                }
+                Start-Sleep -Milliseconds 100
+            }
+            throw "OpenCode plugin did not authenticate its setup load within 90s: $lastError"
+        }
+    } else { $null }
+    Invoke-Tool 'defenseclaw' `
+        @('setup', $subcommand, '--yes', '--mode', $Mode, '--restart') `
+        -WhileRunning $setupRuntimeProbe | Out-Null
     Wait-Gateway
 }
 

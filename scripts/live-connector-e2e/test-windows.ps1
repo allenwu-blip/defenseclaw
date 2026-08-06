@@ -946,6 +946,16 @@ private-secret-name = "DefenseClaw must remain redacted"
     $stdin = Invoke-Tool 'pwsh' @('-NoProfile', '-File', $mock, '-Action', 'stdin') @(0) -InputPath $payloadPath
     Assert-True ($stdin.StdOut.Trim() -eq $payload) 'Invoke-Tool forwards the payload file to native stdin'
 
+    $whileRunningMarker = Join-Path $temp 'while-running.marker'
+    $whileRunning = {
+        [IO.File]::WriteAllText($whileRunningMarker, 'callback-ran')
+    }
+    Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
+        '-NoProfile', '-Command', 'Start-Sleep -Milliseconds 250'
+    ) -TimeoutSeconds 5 -WhileRunning $whileRunning | Out-Null
+    Assert-True ([IO.File]::ReadAllText($whileRunningMarker) -ceq 'callback-ran') `
+        'native process invokes its bounded concurrent readiness callback while the child runs'
+
     [Environment]::SetEnvironmentVariable('DC_E2E_TEST_SECRET', ('unit-test-' + 'sensitive-value'))
     $secret = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @('-NoProfile', '-File', $mock, '-Action', 'secret') -TimeoutSeconds 5
     Assert-True ($secret.StdOut -notmatch 'unit-test-sensitive-value' -and $secret.StdOut -match 'REDACTED') 'secret redaction'
@@ -3053,6 +3063,20 @@ private-secret-name = "DefenseClaw must remain redacted"
         $readinessTool -ge 0 -and
         $readinessToolDecision -gt $readinessTool) `
         'gateway restart readiness exercises each connector-specific native pre-tool path'
+    $nativeProcessContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-NativeProcess\b.*?(?=\r?\nfunction Get-EventLines)'
+    ).Value
+    $setupContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-Setup\b.*?(?=\r?\nfunction Get-ConnectorHookLabel)'
+    ).Value
+    Assert-True ($nativeProcessContract -match '\[scriptblock\]\$WhileRunning' -and
+        $nativeProcessContract -match '(?s)& \$WhileRunning.*?\$process\.Kill\(\$true\)' -and
+        $setupContract -match 'Invoke-OpenCodePluginProbe allow' -and
+        $setupContract -match 'setup-readiness-\$attempt' -and
+        $setupContract -match '-WhileRunning \$setupRuntimeProbe') `
+        'OpenCode setup loads the managed plugin while convergence is waiting and cleans up a failed setup child'
     Assert-True ($gatewayHookReadiness -match "'--connector', 'hermes', '--event', 'pre_tool_call'" -and
         $gatewayHookReadiness -match '\$probeID ''pre_tool_call''' -and
         $gatewayHookReadiness -match 'canonical fail-open allow decision') `
