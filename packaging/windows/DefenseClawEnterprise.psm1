@@ -7083,7 +7083,7 @@ function Assert-DefenseClawEnterpriseDeployment {
         throw 'deployment metadata is missing the installed CLI artifact hash'
     }
     foreach ($property in $metadata.hashes.PSObject.Properties) {
-        # Must cover every key the hash writer emits, codex_launcher included.
+        # Must cover every key the hash writer emits.
         $path = switch ($property.Name) {
             'gateway' { $Layout.GatewayPath }
             'hook' { $Layout.HookPath }
@@ -10732,8 +10732,6 @@ function Invoke-DefenseClawEnterpriseLifecycle {
     if ($NoStart -and $Action -notin @('Install', 'Upgrade', 'Repair')) {
         throw '-NoStart is valid only with Install, Upgrade, or Repair'
     }
-    # Uninstall is permitted so an unsigned deployment stays removable by its
-    # own installer; certification-scope checks still confine what it can touch.
     if ($AllowUnsigned -and $Action -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
         throw '-AllowUnsigned is valid only with Install, Upgrade, Repair, or Uninstall'
     }

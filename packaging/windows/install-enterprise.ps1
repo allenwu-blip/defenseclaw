@@ -323,9 +323,6 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
         [string]$RequestedCertificationCodexHome
     )
     $prefix = '-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope'
-    # Uninstall is permitted so an unsigned deployment stays removable by its
-    # own installer. The scope checks below still confine it to the disposable
-    # certification namespace.
     if ($LifecycleAction -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
         throw "$prefix; action must be Install, Upgrade, Repair, or Uninstall"
     }

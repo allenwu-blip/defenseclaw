@@ -104,8 +104,6 @@ func rootPersistentPreRunE(cmd *cobra.Command, _ []string) error {
 	var err error
 	cfg, activeObservabilityV8Startup, err = loadGatewayConfigV8(config.ConfigPath())
 	if err != nil {
-		// Only a version mismatch is an upgrade problem, and that error carries
-		// its own guidance. Parse and semantic failures must surface verbatim.
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	version.SetBinaryVersion(appVersion)
@@ -174,8 +172,6 @@ func loadGatewayCommandConfigOnly() error {
 	var err error
 	cfg, activeObservabilityV8Startup, err = loadGatewayConfigV8(config.ConfigPath())
 	if err != nil {
-		// Only a version mismatch is an upgrade problem, and that error carries
-		// its own guidance. Parse and semantic failures must surface verbatim.
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 	version.SetBinaryVersion(appVersion)
