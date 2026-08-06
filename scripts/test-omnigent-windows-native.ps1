@@ -196,7 +196,7 @@ foreach ($parent in @(
     [IO.Directory]::CreateDirectory($parent) | Out-Null
 }
 $utf8 = [Text.UTF8Encoding]::new($false)
-[IO.File]::WriteAllText($config, "policy_modules: []`npolicies: []`n", $utf8)
+[IO.File]::WriteAllText($config, "policy_modules: []`npolicies: {}`n", $utf8)
 [IO.File]::WriteAllText($module, "# operator-owned preexisting module`n", $utf8)
 [IO.File]::WriteAllText($pth, "C:\operator-owned-python-path`n", $utf8)
 $originalHashes = @{}
