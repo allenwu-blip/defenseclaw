@@ -184,6 +184,28 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
         "$AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair', 'Uninstall')"
         in installer
     )
+    # The config directory carries a gateway-service read ACE, so the verifier
+    # must assert it against the gateway reader set. Listing it as
+    # administrator-only rejects the ACE the installer just wrote.
+    assert "-RequiredRights $configDirectoryRights" in module
+    assert (
+        "        -Path $Layout.ConfigDirectory `\n"
+        "        -AllowedWriterSIDs $adminWriters `\n"
+        "        -AllowedReaderSIDs $gatewayReaders `\n"
+        "        -RequiredRights $configDirectoryRights `\n"
+        "        -RejectUntrustedRead" in module
+    )
+    assert (
+        "    foreach ($path in @(\n"
+        "        $Layout.GuardianDirectory,\n"
+        "        $Layout.InstallStateDirectory,\n"
+        "        $Layout.ManifestPath,\n"
+        "        $Layout.LogDirectory,\n"
+        "        $Layout.GuardianLogDirectory,\n"
+        "        $Layout.MetadataPath,\n"
+        "        $Layout.CodexTrustedShellAttestationPath\n"
+        "    )) {" in module
+    )
     assert "Initialize-DefenseClawCodexMachinePolicyParent" in module
     assert "Invoke-DefenseClawCodexRequirementsCommand" in module
     assert "codex-requirements-ownership.json" in module

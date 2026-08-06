@@ -6602,7 +6602,7 @@ function Assert-DefenseClawManagedServiceConfigurations {
 function New-DefenseClawRequiredRights {
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('Admin', 'Install', 'ServiceInstall', 'State', 'Config', 'MachinePolicy', 'AuthorizationDirectory', 'AuthorizationFile', 'Runtime')]
+        [ValidateSet('Admin', 'Install', 'ServiceInstall', 'State', 'ConfigDirectory', 'Config', 'MachinePolicy', 'AuthorizationDirectory', 'AuthorizationFile', 'Runtime')]
         [string]$Kind,
         [string]$GatewayServiceSID
     )
@@ -6618,6 +6618,9 @@ function New-DefenseClawRequiredRights {
             $required[$GatewayServiceSID] = [Security.AccessControl.FileSystemRights]::ReadAndExecute
         }
         'State' {
+            $required[$GatewayServiceSID] = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+        }
+        'ConfigDirectory' {
             $required[$GatewayServiceSID] = [Security.AccessControl.FileSystemRights]::ReadAndExecute
         }
         'Config' {
@@ -6954,6 +6957,9 @@ function Assert-DefenseClawEnterpriseDeployment {
         -Kind ServiceInstall `
         -GatewayServiceSID $gatewaySID
     $stateRights = New-DefenseClawRequiredRights -Kind State -GatewayServiceSID $gatewaySID
+    $configDirectoryRights = New-DefenseClawRequiredRights `
+        -Kind ConfigDirectory `
+        -GatewayServiceSID $gatewaySID
     $configRights = New-DefenseClawRequiredRights -Kind Config -GatewayServiceSID $gatewaySID
     $authorizationDirectoryRights = New-DefenseClawRequiredRights `
         -Kind AuthorizationDirectory `
@@ -7008,7 +7014,6 @@ function Assert-DefenseClawEnterpriseDeployment {
     }
     $adminOnlyPaths = [Collections.Generic.List[string]]::new()
     foreach ($path in @(
-        $Layout.ConfigDirectory,
         $Layout.GuardianDirectory,
         $Layout.InstallStateDirectory,
         $Layout.ManifestPath,
@@ -7046,6 +7051,12 @@ function Assert-DefenseClawEnterpriseDeployment {
         -AllowedWriterSIDs $adminWriters `
         -AllowedReaderSIDs $gatewayReaders `
         -RequiredRights $stateRights `
+        -RejectUntrustedRead
+    Assert-DefenseClawPathAcl `
+        -Path $Layout.ConfigDirectory `
+        -AllowedWriterSIDs $adminWriters `
+        -AllowedReaderSIDs $gatewayReaders `
+        -RequiredRights $configDirectoryRights `
         -RejectUntrustedRead
     Assert-DefenseClawPathAcl `
         -Path $Layout.ConfigPath `

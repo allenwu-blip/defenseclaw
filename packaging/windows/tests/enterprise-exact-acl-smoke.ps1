@@ -115,6 +115,83 @@ foreach ($row in $adminRows) {
     }
 }
 
+# The installer writes canonical ACLs from one table and the deployment
+# verifier re-asserts them from another. They are only correct together, so
+# every pairing must agree on what the gateway service is granted.
+$pairings = [ordered]@{
+    InstallDirectory = 'Install'
+    InstallFile = 'Install'
+    ServiceInstallDirectory = 'ServiceInstall'
+    ServiceInstallFile = 'ServiceInstall'
+    StateDirectory = 'State'
+    AdminDirectory = 'Admin'
+    AdminFile = 'Admin'
+    ConfigDirectory = 'ConfigDirectory'
+    ConfigFile = 'Config'
+    MachinePolicyFile = 'MachinePolicy'
+    RuntimeDirectory = 'Runtime'
+    RuntimeFile = 'Runtime'
+    AuthorizationDirectory = 'AuthorizationDirectory'
+    AuthorizationFile = 'AuthorizationFile'
+    LogDirectory = 'Admin'
+    GatewayLogDirectory = 'Runtime'
+}
+if ($pairings.Count -ne $expected.Count) {
+    throw 'installer/verifier pairing table does not cover every managed path kind'
+}
+$pairingsChecked = & $module {
+    param($Pairings, $Directories, $GatewaySID)
+    $checked = 0
+    foreach ($entry in $Pairings.GetEnumerator()) {
+        $aclKind = [string]$entry.Key
+        $rightsKind = [string]$entry.Value
+        $security = New-DefenseClawCanonicalPathAcl `
+            -IsDirectory ($aclKind -in $Directories) `
+            -Kind $aclKind `
+            -GatewayServiceSID $GatewaySID
+        $granted = [Security.AccessControl.FileSystemRights]0
+        foreach ($rule in $security.GetAccessRules(
+            $true,
+            $false,
+            [Security.Principal.SecurityIdentifier]
+        )) {
+            if ([string]$rule.IdentityReference.Value -eq $GatewaySID -and
+                $rule.AccessControlType -eq
+                    [Security.AccessControl.AccessControlType]::Allow) {
+                $granted = $granted -bor $rule.FileSystemRights
+            }
+        }
+        $required = New-DefenseClawRequiredRights `
+            -Kind $rightsKind `
+            -GatewayServiceSID $GatewaySID
+        $expectedRights = if ($required.ContainsKey($GatewaySID)) {
+            [Security.AccessControl.FileSystemRights]$required[$GatewaySID]
+        }
+        else {
+            [Security.AccessControl.FileSystemRights]0
+        }
+        if (($granted -band $expectedRights) -ne $expectedRights) {
+            throw (
+                "installer ACL kind {0} grants the gateway service {1}, " +
+                "short of the {2} required by verifier rights kind {3}"
+            ) -f $aclKind, $granted, $expectedRights, $rightsKind
+        }
+        # The reverse direction: a grant the verifier does not model is read by
+        # its administrator-only reader allow-list as an untrusted principal.
+        if ($expectedRights -eq 0 -and $granted -ne 0) {
+            throw (
+                "installer ACL kind {0} grants the gateway service {1}, " +
+                "but verifier rights kind {2} is administrator-only"
+            ) -f $aclKind, $granted, $rightsKind
+        }
+        $checked++
+    }
+    return $checked
+} $pairings $directoryKinds $serviceSID
+if ($pairingsChecked -ne $pairings.Count) {
+    throw 'installer/verifier pairing check did not exercise every pairing'
+}
+
 $comparisonCases = & $module {
     $expectedRaw = [Security.AccessControl.RawSecurityDescriptor]::new(
         'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)'
