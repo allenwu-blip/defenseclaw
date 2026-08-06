@@ -474,8 +474,20 @@ function Invoke-ChildMode {
                 (Get-FileHash -LiteralPath $uvSource -Algorithm SHA256).Hash) {
                 throw 'standard-user OmniGent uv copy does not match its authenticated input'
             }
+            # OmniGent creates its hook API token below StateRoot. Keep that
+            # mutable product state beneath the same token-bound trusted
+            # profile ancestry as uv; the parent-owned harness sandbox remains
+            # limited to immutable inputs, diagnostics, and result handoff.
+            $omnigentState = Join-Path $localAppData 'DefenseClaw-CI\omnigent-native-degraded'
+            [IO.Directory]::CreateDirectory($omnigentState) | Out-Null
+            Set-DisposableProtectedDirectoryAcl $omnigentState $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -InheritChildRights -UseAdministratorsForCleanup
+            Assert-DisposableChildAcl $omnigentState $identity.User `
+                ([Security.AccessControl.FileSystemRights]::FullControl) `
+                -ExpectInheritance -AllowOwnershipBootstrap
             & (Join-Path $PSScriptRoot 'test-omnigent-windows-native.ps1') `
-                -StateRoot $state -ArtifactRoot $artifacts `
+                -StateRoot $omnigentState -ArtifactRoot $artifacts `
                 -UvPath $uvPath
         } else {
             $setup = Join-Path $artifacts 'DefenseClawSetup-x64.exe'

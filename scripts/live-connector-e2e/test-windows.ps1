@@ -1678,12 +1678,15 @@ private-secret-name = "DefenseClaw must remain redacted"
         $standardUserCIText -match 'test-omnigent-windows-native\.ps1' -and
         $standardUserCIText -match 'SpecialFolder\]::LocalApplicationData' -and
         $standardUserCIText -match 'Join-Path \$localAppData ''DefenseClaw-CI\\uv-input''' -and
+        $standardUserCIText -match 'Join-Path \$localAppData ''DefenseClaw-CI\\omnigent-native-degraded''' -and
         $standardUserCIText -match 'Set-DisposableProtectedDirectoryAcl \$state \$identity\.User' -and
         $standardUserCIText -match '(?s)Set-DisposableProtectedDirectoryAcl \$state \$identity\.User.*?-UseAdministratorsForCleanup' -and
         $standardUserCIText -match '(?s)Set-DisposableProtectedDirectoryAcl \$uvRoot \$identity\.User.*?-UseAdministratorsForCleanup' -and
         $standardUserCIText -match 'Assert-DisposableChildAcl \$uvRoot \$identity\.User' -and
+        $standardUserCIText -match '(?s)Set-DisposableProtectedDirectoryAcl \$omnigentState \$identity\.User.*?-UseAdministratorsForCleanup' -and
+        $standardUserCIText -match 'Assert-DisposableChildAcl \$omnigentState \$identity\.User' -and
         $standardUserCIText -match 'standard-user OmniGent uv copy does not match its authenticated input' -and
-        $standardUserCIText -match '-UvPath \$uvPath') `
+        $standardUserCIText -match '(?s)-StateRoot \$omnigentState -ArtifactRoot \$artifacts.*?-UvPath \$uvPath') `
         'hosted OmniGent packaged lifecycle runs as a disposable real standard user'
     Assert-True ($nativeWorkflowText -notmatch '-Operation acceptance\b' -and
         $nativeHarnessText -notmatch "'acceptance' \{ Invoke-Acceptance \}" -and

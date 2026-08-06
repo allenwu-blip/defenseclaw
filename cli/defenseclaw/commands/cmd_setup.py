@@ -7458,12 +7458,32 @@ def _apply_hook_connector_setup(
 
     verified = _protected_selection
     selection_roster = (connector,)
+    if write_mode == "add":
+        # A protected selection receipt is transaction-scoped and replacing
+        # it removes entries that are not named by the new receipt.  Carry the
+        # complete additive roster so a sequence of ``--no-restart`` setup
+        # calls cannot erase an earlier peer's still-unpublished executable
+        # authority before the gateway gets its first chance to seal it in the
+        # contract lock.
+        selection_roster = tuple(
+            dict.fromkeys(
+                (
+                    *(normalize_connector(name) for name in cfg.active_connectors() if name),
+                    connector,
+                )
+            )
+        )
     if (
         isinstance(verified, _VerifiedSetupAgentSelections)
         and verified._seal is _SETUP_SELECTION_PROOF_SEAL
         and connector in verified.connectors
     ):
-        selection_roster = verified.connectors
+        from defenseclaw.agent_selection import setup_agent_selection_connectors
+
+        if verified.connectors == setup_agent_selection_connectors(selection_roster):
+            selection_roster = verified.connectors
+        else:
+            verified = None
     if verified is not None:
         try:
             verified = _revalidate_setup_agent_selections(

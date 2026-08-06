@@ -433,6 +433,37 @@ class TestPerConnectorWriteSurface(_BaseSetup):
         select_exact.assert_called_once()
         self.assertEqual(receipt.read_bytes(), prior_receipt)
 
+    def test_additive_setup_selects_complete_roster_before_first_gateway_start(self):
+        self._seed_map("amp", "claudecode", "codex", "cursor")
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup.platform_support.host_os",
+                return_value="windows",
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._check_connector_version_supported_for_setup",
+                return_value=True,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
+                side_effect=click.ClickException("selection captured"),
+            ) as selected,
+            self.assertRaisesRegex(click.ClickException, "selection captured"),
+        ):
+            cmd_setup._apply_hook_connector_setup(
+                self.app,
+                connector="codex",
+                restart=True,
+                write_mode="add",
+            )
+
+        selected.assert_called_once()
+        self.assertEqual(
+            selected.call_args.args[1],
+            ("amp", "claudecode", "codex", "cursor"),
+        )
+
     def test_stale_concrete_opencode_receipt_is_not_transaction_proof(self):
         with patch(
             "defenseclaw.commands.cmd_setup.platform_support.host_os",
