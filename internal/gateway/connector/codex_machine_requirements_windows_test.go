@@ -137,9 +137,8 @@ func TestResolveWindowsCodexManagedRuntimeRegistryWaitsForMachinePolicyLock(t *t
 	}
 }
 
-// ProgramData must never be handed to the leaf trust check. Stock Windows grants
-// BUILTIN\Users mask 0x116 there, which the leaf rule rejects and the ancestor
-// rule allows, so a leaf check fails on every default install.
+// ProgramData is only valid as an ancestor: stock Windows grants BUILTIN\Users
+// mask 0x116 there, which the leaf rule rejects.
 func TestValidateWindowsCodexMachineLayoutChecksProgramDataOnlyAsAncestor(t *testing.T) {
 	programData := t.TempDir()
 	stateRoot := t.TempDir()
@@ -172,8 +171,8 @@ func TestValidateWindowsCodexMachineLayoutChecksProgramDataOnlyAsAncestor(t *tes
 		return nil
 	}
 
-	// The hook binary read after the loop is out of scope here; only the paths
-	// reaching the leaf check matter, so any later error is ignored.
+	// Only the paths reaching the leaf check are asserted; the hook binary read
+	// that follows the loop is out of scope.
 	_ = validateWindowsCodexMachineLayout(WindowsCodexMachineRequirementsOptions{
 		RequirementsPath:   filepath.Join(policyDir, "requirements.toml"),
 		ManagedStatePath:   filepath.Join(policyDir, windowsCodexManagedStateFile),

@@ -1363,10 +1363,8 @@ func validateWindowsCodexMachineLayout(opts WindowsCodexMachineRequirementsOptio
 		!strings.EqualFold(filepath.Base(filepath.Dir(opts.OwnershipPath)), "install") {
 		return fmt.Errorf("refusing noncanonical Codex requirements ownership path %s", opts.OwnershipPath)
 	}
-	// Every entry here is checked as a leaf. programData is an ancestor, not a
-	// leaf: stock Windows grants Users add-file and write-EA/attributes on it,
-	// which the leaf rule rejects. All three checks below already reach it by
-	// walking up from the Codex directory, where it is judged as an ancestor.
+	// Leaf-checked paths only. ProgramData is reached as an ancestor by the walk
+	// up from the Codex directory, which is the rule that applies to it.
 	for _, path := range []string{
 		filepath.Dir(opts.RequirementsPath),
 		opts.ManagedDir,
