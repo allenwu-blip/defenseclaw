@@ -1487,7 +1487,7 @@ function New-DefenseClawCanonicalPathAcl {
     param(
         [Parameter(Mandatory)][bool]$IsDirectory,
         [Parameter(Mandatory)]
-        [ValidateSet('InstallDirectory', 'InstallFile', 'ServiceInstallDirectory', 'ServiceInstallFile', 'StateDirectory', 'AdminDirectory', 'AdminFile', 'ConfigFile', 'MachinePolicyFile', 'RuntimeDirectory', 'RuntimeFile', 'AuthorizationDirectory', 'AuthorizationFile', 'LogDirectory', 'GatewayLogDirectory')]
+        [ValidateSet('InstallDirectory', 'InstallFile', 'ServiceInstallDirectory', 'ServiceInstallFile', 'StateDirectory', 'AdminDirectory', 'AdminFile', 'ConfigDirectory', 'ConfigFile', 'MachinePolicyFile', 'RuntimeDirectory', 'RuntimeFile', 'AuthorizationDirectory', 'AuthorizationFile', 'LogDirectory', 'GatewayLogDirectory')]
         [string]$Kind,
         [Parameter(Mandatory)][string]$GatewayServiceSID
     )
@@ -1497,6 +1497,7 @@ function New-DefenseClawCanonicalPathAcl {
         'ServiceInstallDirectory',
         'StateDirectory',
         'AdminDirectory',
+        'ConfigDirectory',
         'RuntimeDirectory',
         'AuthorizationDirectory',
         'LogDirectory',
@@ -1565,6 +1566,13 @@ function New-DefenseClawCanonicalPathAcl {
             })
         }
         'StateDirectory' {
+            $entries.Add([pscustomobject]@{
+                sid = $GatewayServiceSID
+                rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+            })
+        }
+        'ConfigDirectory' {
+            # Traverse only; the service cannot open ConfigFile without it.
             $entries.Add([pscustomobject]@{
                 sid = $GatewayServiceSID
                 rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute
@@ -1735,7 +1743,7 @@ function Set-DefenseClawPathAcl {
     param(
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)]
-        [ValidateSet('InstallDirectory', 'InstallFile', 'ServiceInstallDirectory', 'ServiceInstallFile', 'StateDirectory', 'AdminDirectory', 'AdminFile', 'ConfigFile', 'MachinePolicyFile', 'RuntimeDirectory', 'RuntimeFile', 'AuthorizationDirectory', 'AuthorizationFile', 'LogDirectory', 'GatewayLogDirectory')]
+        [ValidateSet('InstallDirectory', 'InstallFile', 'ServiceInstallDirectory', 'ServiceInstallFile', 'StateDirectory', 'AdminDirectory', 'AdminFile', 'ConfigDirectory', 'ConfigFile', 'MachinePolicyFile', 'RuntimeDirectory', 'RuntimeFile', 'AuthorizationDirectory', 'AuthorizationFile', 'LogDirectory', 'GatewayLogDirectory')]
         [string]$Kind,
         [Parameter(Mandatory)][string]$GatewayServiceSID
     )
@@ -2963,7 +2971,7 @@ function Set-DefenseClawManagedAcls {
     }
 
     Set-DefenseClawPathAcl -Path $Layout.StateRoot -Kind StateDirectory -GatewayServiceSID $gatewaySID
-    Set-DefenseClawPathAcl -Path $Layout.ConfigDirectory -Kind AdminDirectory -GatewayServiceSID $gatewaySID
+    Set-DefenseClawPathAcl -Path $Layout.ConfigDirectory -Kind ConfigDirectory -GatewayServiceSID $gatewaySID
     Set-DefenseClawPathAcl -Path $Layout.GuardianDirectory -Kind AdminDirectory -GatewayServiceSID $gatewaySID
     Set-DefenseClawPathAcl -Path $Layout.InstallStateDirectory -Kind AdminDirectory -GatewayServiceSID $gatewaySID
     Set-DefenseClawPathAcl -Path $Layout.ConfigPath -Kind ConfigFile -GatewayServiceSID $gatewaySID

@@ -29,6 +29,7 @@ $expected = [ordered]@{
     StateDirectory = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;$serviceSID)"
     AdminDirectory = 'O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
     AdminFile = 'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)'
+    ConfigDirectory = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;$serviceSID)"
     ConfigFile = "O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;$serviceSID)"
     MachinePolicyFile = 'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)'
     RuntimeDirectory = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;$serviceSID)"
@@ -43,6 +44,7 @@ $directoryKinds = @(
     'ServiceInstallDirectory',
     'StateDirectory',
     'AdminDirectory',
+    'ConfigDirectory',
     'RuntimeDirectory',
     'AuthorizationDirectory',
     'LogDirectory',
