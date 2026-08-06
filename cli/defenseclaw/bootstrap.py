@@ -905,6 +905,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             setup.append(StepResult("Guardrail", "skip", "no connector requested"))
         else:
             setup.append(_quiet_guardrail_setup(app, connector, verbose=options.verbose))
+        rollback_first_run_transaction = any(step.status == "fail" for step in setup)
         setup.extend(_connector_mode_warning_steps(connector_mode_warnings))
 
         if options.sandbox:
@@ -918,7 +919,10 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             )
 
         if options.start_gateway:
-            setup.append(_start_gateway_structured(cfg))
+            gateway_step = _start_gateway_structured(cfg)
+            setup.append(gateway_step)
+            if gateway_step.status == "fail":
+                rollback_first_run_transaction = True
         else:
             setup.append(
                 StepResult(
@@ -945,6 +949,8 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             if options.verify
             else [StepResult("Readiness", "skip", "--no-verify", "defenseclaw doctor")]
         )
+        if any(step.status == "fail" for step in readiness):
+            rollback_first_run_transaction = True
 
         next_commands = _next_commands(setup, readiness, cfg, profile)
         status = _rollup_status(setup, readiness)
