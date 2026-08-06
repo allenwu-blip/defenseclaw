@@ -120,11 +120,12 @@ def test_every_managed_path_kind_has_an_exact_descriptor(engine: str) -> None:
     assert payload == {
         "ok": True,
         "schema_version": 1,
-        "descriptors_checked": 15,
+        "descriptors_checked": 16,
         "stale_explicit_aces_retained": False,
         "object_type_mismatches_rejected": True,
         "auto_inherited_control_flag_accepted": True,
         "ace_mismatches_rejected": True,
         "native_raw_acl_query_checked": True,
         "split_explicit_aces_rejected": True,
+        "installer_verifier_pairings_checked": 16,
     }

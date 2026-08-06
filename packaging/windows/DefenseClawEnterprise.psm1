@@ -3236,6 +3236,7 @@ function Get-DefenseClawLayout {
         CodexMachinePolicyPath = (Microsoft.PowerShell.Management\Join-Path $codexMachinePolicyDirectory 'requirements.toml')
         CodexManagedHooksDirectory = $bin
         CodexManagedHooksStatePath = (Microsoft.PowerShell.Management\Join-Path $codexMachinePolicyDirectory '.defenseclaw-managed-hooks.state')
+        CodexManagedHooksLockPath = (Microsoft.PowerShell.Management\Join-Path $codexMachinePolicyDirectory '.defenseclaw-managed-hooks.lock')
         CodexRequirementsOwnershipPath = (Microsoft.PowerShell.Management\Join-Path $installState 'codex-requirements-ownership.json')
         CodexRequirementsAclBackupPath = (Microsoft.PowerShell.Management\Join-Path $installState 'codex-requirements-acl-backup.json')
         CodexTrustedShellAttestationPath = (Microsoft.PowerShell.Management\Join-Path $installState 'agent-application-control-attestation.json')
@@ -4912,6 +4913,50 @@ function Initialize-DefenseClawCodexMachinePolicyParent {
     }
 }
 
+# The Codex policy serialization lock outlives the policy files it guards, so
+# the emptiness check below would read DefenseClaw's own bookkeeping as foreign
+# content and strand a directory this transaction created. Only the exact lock
+# path is removed, and only as a protected regular file in the directory being
+# cleared; anything else still fails closed.
+function Remove-DefenseClawCodexPolicySerializationLock {
+    param(
+        [Parameter(Mandatory)][string]$Directory,
+        [Parameter(Mandatory)][hashtable]$Layout
+    )
+    if (-not $Layout.ContainsKey('CodexManagedHooksLockPath')) {
+        return
+    }
+    $lockPath = [string]$Layout.CodexManagedHooksLockPath
+    if ([string]::IsNullOrWhiteSpace($lockPath)) {
+        return
+    }
+    $lockPath = [IO.Path]::GetFullPath($lockPath)
+    if (-not [string]::Equals(
+            [IO.Path]::GetDirectoryName($lockPath).TrimEnd('\'),
+            $Directory,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        return
+    }
+    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $lockPath)) {
+        return
+    }
+    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Codex policy serialization lock is not a regular file: $lockPath"
+    }
+    Assert-DefenseClawNoReparsePath -Path $lockPath
+    Assert-DefenseClawPathAcl `
+        -Path $lockPath `
+        -AllowedWriterSIDs @(
+            $script:SystemSID,
+            $script:AdministratorsSID,
+            $script:TrustedInstallerSID
+        ) `
+        -AllowUsersRead `
+        -AllowInheritance
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $lockPath -Force
+}
+
 function Remove-DefenseClawTransactionCreatedSharedDirectories {
     param(
         [Parameter(Mandatory)]$Snapshot,
@@ -4934,6 +4979,9 @@ function Remove-DefenseClawTransactionCreatedSharedDirectories {
             throw "refusing rollback through a replaced Codex machine-policy directory: $directory"
         }
         Assert-DefenseClawCodexMachinePolicyDirectory -Path $directory
+        Remove-DefenseClawCodexPolicySerializationLock `
+            -Directory $directory `
+            -Layout $Layout
         $child = Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $directory -Force | Microsoft.PowerShell.Utility\Select-Object -First 1
         if ($null -ne $child) {
             throw "refusing to remove non-empty transaction-created shared directory: $directory"

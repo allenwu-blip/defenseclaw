@@ -781,6 +781,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "recovery_cases",
                 "quiescing_cases",
                 "uninstall_cases",
+                "shared_directory_cases",
             ),
         ),
         (
@@ -892,6 +893,16 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
         assert report["recovery_cases"]
         assert report["quiescing_cases"]
         assert report["uninstall_cases"]
+        shared_directory_cases = {
+            case["name"]: case for case in report["shared_directory_cases"]
+        }
+        # Rollback must clear a directory holding only the transaction's own
+        # serialization lock, and must still refuse one holding anything else.
+        assert shared_directory_cases["empty"]["removed"] is True
+        assert shared_directory_cases["serialization-lock-only"]["removed"] is True
+        retained = shared_directory_cases["foreign-content-retained"]
+        assert retained["removed"] is False
+        assert "non-empty transaction-created shared directory" in retained["failure"]
     if script == BOOTSTRAP_SMOKE:
         assert report["raw_dos_device_medium_user"] is True
         assert [case["name"] for case in report["raw_dos_device_cases"]] == [

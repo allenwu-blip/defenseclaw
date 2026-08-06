@@ -246,4 +246,5 @@ if ($null -eq $nativeDescriptor.DiscretionaryAcl) {
     ace_mismatches_rejected = $true
     native_raw_acl_query_checked = $true
     split_explicit_aces_rejected = $true
+    installer_verifier_pairings_checked = $pairingsChecked
 } | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
