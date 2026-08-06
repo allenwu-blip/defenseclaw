@@ -4056,7 +4056,7 @@ function Invoke-NativeProcess {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if ($null -ne $WhileRunning) {
             try {
-                & $WhileRunning
+                & $WhileRunning $process
             } catch {
                 if (-not $process.HasExited) {
                     try { $process.Kill($true) } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
@@ -4935,18 +4935,19 @@ function Invoke-Setup([string]$Mode) {
     }
     $setupRuntimeProbe = if ($Connector -ceq 'opencode') {
         {
+            param([Diagnostics.Process]$SetupProcess)
             $deadline = [DateTime]::UtcNow.AddSeconds(90)
             $lastError = 'managed OpenCode plugin was not published'
-            for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
+            for ($attempt = 1; -not $SetupProcess.HasExited -and [DateTime]::UtcNow -lt $deadline; $attempt++) {
                 try {
                     $null = Invoke-OpenCodePluginProbe allow `
                         'Write-Output dc-setup-readiness' "setup-readiness-$attempt"
-                    return
                 } catch {
                     $lastError = Protect-LogText $_.Exception.Message
                 }
-                Start-Sleep -Milliseconds 100
+                Start-Sleep -Milliseconds 250
             }
+            if ($SetupProcess.HasExited) { return }
             throw "OpenCode plugin did not authenticate its setup load within 90s: $lastError"
         }
     } else { $null }

@@ -948,13 +948,20 @@ private-secret-name = "DefenseClaw must remain redacted"
 
     $whileRunningMarker = Join-Path $temp 'while-running.marker'
     $whileRunning = {
-        [IO.File]::WriteAllText($whileRunningMarker, 'callback-ran')
+        param([Diagnostics.Process]$ChildProcess)
+        if ($ChildProcess.HasExited) { throw 'callback did not observe the running child' }
+        $observations = 0
+        while (-not $ChildProcess.HasExited) {
+            $observations++
+            Start-Sleep -Milliseconds 25
+        }
+        [IO.File]::WriteAllText($whileRunningMarker, [string]$observations)
     }
     Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
         '-NoProfile', '-Command', 'Start-Sleep -Milliseconds 250'
     ) -TimeoutSeconds 5 -WhileRunning $whileRunning | Out-Null
-    Assert-True ([IO.File]::ReadAllText($whileRunningMarker) -ceq 'callback-ran') `
-        'native process invokes its bounded concurrent readiness callback while the child runs'
+    Assert-True ([int][IO.File]::ReadAllText($whileRunningMarker) -gt 1) `
+        'native process keeps its bounded concurrent readiness callback attached until the child exits'
 
     [Environment]::SetEnvironmentVariable('DC_E2E_TEST_SECRET', ('unit-test-' + 'sensitive-value'))
     $secret = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @('-NoProfile', '-File', $mock, '-Action', 'secret') -TimeoutSeconds 5
@@ -3072,9 +3079,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         '(?s)function Invoke-Setup\b.*?(?=\r?\nfunction Get-ConnectorHookLabel)'
     ).Value
     Assert-True ($nativeProcessContract -match '\[scriptblock\]\$WhileRunning' -and
-        $nativeProcessContract -match '(?s)& \$WhileRunning.*?\$process\.Kill\(\$true\)' -and
+        $nativeProcessContract -match '(?s)& \$WhileRunning \$process.*?\$process\.Kill\(\$true\)' -and
         $setupContract -match 'Invoke-OpenCodePluginProbe allow' -and
         $setupContract -match 'setup-readiness-\$attempt' -and
+        $setupContract -match '-not \$SetupProcess\.HasExited' -and
         $setupContract -match '-WhileRunning \$setupRuntimeProbe') `
         'OpenCode setup loads the managed plugin while convergence is waiting and cleans up a failed setup child'
     Assert-True ($gatewayHookReadiness -match "'--connector', 'hermes', '--event', 'pre_tool_call'" -and
