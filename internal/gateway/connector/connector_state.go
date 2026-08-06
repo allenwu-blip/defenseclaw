@@ -809,6 +809,10 @@ func saveHookContractLockEntry(dataDir string, entry HookContractLockEntry, forc
 		}
 		if launcherDigest := entry.HookScriptDigests[windowsHookBinaryName]; launcherDigest != "" {
 			for name, peer := range lock.Connectors {
+				peerName := normalizeConnectorName(peer.Connector)
+				if peerName != "claudecode" && peerName != "codex" {
+					continue
+				}
 				if peer.HookScriptDigests == nil {
 					peer.HookScriptDigests = map[string]string{}
 				}

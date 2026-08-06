@@ -1424,6 +1424,7 @@ func TestHookContractLockNormalizesSharedLauncherDigestAcrossPeers(t *testing.T)
 		Connectors: map[string]HookContractLockEntry{
 			"claudecode": {Connector: "claudecode", HookScriptDigests: map[string]string{windowsHookBinaryName: "sha256:old-claude"}},
 			"codex":      {Connector: "codex", HookScriptDigests: map[string]string{windowsHookBinaryName: "sha256:old-codex"}},
+			"amp":        {Connector: "amp", HookScriptDigests: map[string]string{"defenseclaw.ts": "sha256:amp-plugin"}},
 		},
 	}
 	body, err := json.Marshal(legacy)
@@ -1443,6 +1444,10 @@ func TestHookContractLockNormalizesSharedLauncherDigestAcrossPeers(t *testing.T)
 		if got := entry.HookScriptDigests[windowsHookBinaryName]; got != "sha256:current-launcher" {
 			t.Fatalf("%s launcher digest=%q", name, got)
 		}
+	}
+	amp := LoadHookContractLockEntry(dir, "amp")
+	if got := amp.HookScriptDigests[windowsHookBinaryName]; got != "" {
+		t.Fatalf("amp inherited unrelated launcher digest %q", got)
 	}
 }
 
