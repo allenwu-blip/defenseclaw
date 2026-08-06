@@ -1474,9 +1474,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeWorkflowText -match 'Validate registered Windows Codex and Claude hook commands') 'native Windows workflow has a required Doctor hook-command step'
     Assert-True ($nativeWorkflowText -match "'pytest', 'cli/tests/test_cmd_doctor_windows_hooks\.py', '-q'") 'Doctor validates registered Windows hook commands explicitly'
     Assert-True ($nativeWorkflowText -match "Get-ChildItem cli/tests -Recurse -File -Filter 'test_\*\.py'") 'complete Python suite discovers every test file'
-    Assert-True ($nativeWorkflowText -match 'shard: \[1, 2, 3, 4\]' -and
-        $nativeWorkflowText -match '\(\$index % 4\) -eq \$shardIndex') `
-        'complete Python suite assigns every test file to one of four deterministic shards'
+    Assert-True ($nativeWorkflowText -match 'shard: \[1, 2, 3, 4, 5, 6, 7, 8\]' -and
+        $nativeWorkflowText -match '\(\$index % 8\) -eq \$shardIndex') `
+        'complete Python suite assigns every test file to one of eight deterministic shards'
     foreach ($node in @(
         'test_existing_openclaw_integration_requires_pin',
         'test_f0162_refuses_swapped_symlink',
