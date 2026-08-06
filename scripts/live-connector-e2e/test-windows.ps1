@@ -1480,8 +1480,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeWorkflowText -match "Collected no test_app_shell\.py nodes" -and
         $nativeWorkflowText -match '\$appShellNodes\[\$index\]' -and
         $nativeWorkflowText -match '\(\$index % 8\) -eq \$shardIndex' -and
-        $nativeWorkflowText -match '\$shardFiles \+ \$shardAppShellNodes') `
-        'complete Python suite file-shards ordinary tests and node-shards the large TUI shell file across eight deterministic jobs'
+        $nativeWorkflowText -match '\$appShellPytestArgs.*?\$shardAppShellNodes' -and
+        $nativeWorkflowText -match '\$ordinaryPytestArgs.*?\$shardFiles' -and
+        $nativeWorkflowText -match 'pytest-shard-\{0\}-app-shell\.log' -and
+        $nativeWorkflowText -match 'pytest-shard-\{0\}-ordinary\.log') `
+        'complete Python suite file-shards ordinary tests, node-shards the large TUI shell file, and isolates them in fresh pytest processes'
     foreach ($node in @(
         'test_existing_openclaw_integration_requires_pin',
         'test_f0162_refuses_swapped_symlink',
