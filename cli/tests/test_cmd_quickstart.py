@@ -31,11 +31,14 @@ from defenseclaw.inventory import agent_discovery
 from defenseclaw.inventory.agent_discovery import AgentDiscovery, AgentSignal
 
 from tests.helpers import record_test_setup_agent_selections
+from tests.permissions import set_known_windows_directory_acl
 
 
 class QuickstartProfileDefaultsTests(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-quickstart-")
+        if os.name == "nt":
+            set_known_windows_directory_acl(self.tmp_dir)
         self.home_dir = os.path.join(self.tmp_dir, "home")
         self.empty_path = os.path.join(self.tmp_dir, "empty-bin")
         os.makedirs(self.home_dir, exist_ok=True)

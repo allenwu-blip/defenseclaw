@@ -4941,7 +4941,8 @@ function Invoke-Setup([string]$Mode) {
             for ($attempt = 1; -not $SetupProcess.HasExited -and [DateTime]::UtcNow -lt $deadline; $attempt++) {
                 try {
                     $null = Invoke-OpenCodePluginProbe load `
-                        'dc-setup-load' "setup-readiness-$attempt"
+                        'dc-setup-load' "setup-readiness-$attempt" `
+                        -TimeoutSeconds 3
                 } catch {
                     $lastError = Protect-LogText $_.Exception.Message
                 }
@@ -5832,7 +5833,8 @@ function Get-TreeFingerprint([string]$Root) {
 function Invoke-OpenCodePluginProbe(
     [ValidateSet('allow', 'block', 'lifecycle', 'load')][string]$Expected,
     [string]$Command,
-    [string]$Label
+    [string]$Label,
+    [ValidateRange(1, 30)][int]$TimeoutSeconds = 30
 ) {
     $pluginPath = Get-EffectiveConnectorConfigPath 'opencode'
     if (-not (Test-Path -LiteralPath $pluginPath -PathType Leaf)) {
@@ -5850,7 +5852,7 @@ function Invoke-OpenCodePluginProbe(
         $scratch,
         $Expected,
         $Command
-    ) -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot "opencode-plugin-$safeLabel.log")
+    ) -TimeoutSeconds $TimeoutSeconds -LogPath (Join-Path $script:LogRoot "opencode-plugin-$safeLabel.log")
     $result | Add-Member -NotePropertyName SessionID -NotePropertyValue $probeSessionID
     return $result
 }

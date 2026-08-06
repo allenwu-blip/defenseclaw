@@ -440,9 +440,18 @@ function Invoke-ChildMode {
                 -StateRoot $state -ArtifactRoot $artifacts `
                 -AllowCurrentUserSetupAcceptance
         } elseif ($Mode -eq 'omnigent-native-degraded') {
+            $uvSource = Join-Path $PSScriptRoot 'uv.exe'
+            $uvRoot = Join-Path $state 'uv-input'
+            [IO.Directory]::CreateDirectory($uvRoot) | Out-Null
+            $uvPath = Join-Path $uvRoot 'uv.exe'
+            [IO.File]::Copy($uvSource, $uvPath, $false)
+            if ((Get-FileHash -LiteralPath $uvPath -Algorithm SHA256).Hash -cne
+                (Get-FileHash -LiteralPath $uvSource -Algorithm SHA256).Hash) {
+                throw 'standard-user OmniGent uv copy does not match its authenticated input'
+            }
             & (Join-Path $PSScriptRoot 'test-omnigent-windows-native.ps1') `
                 -StateRoot $state -ArtifactRoot $artifacts `
-                -UvPath (Join-Path $PSScriptRoot 'uv.exe')
+                -UvPath $uvPath
         } else {
             $setup = Join-Path $artifacts 'DefenseClawSetup-x64.exe'
             & (Join-Path $PSScriptRoot 'test-windows-setup-wizard.ps1') `

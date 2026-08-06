@@ -617,3 +617,12 @@ def test_snapshot_accepts_exact_ten_roster(tmp_path: Path) -> None:
         previous_state_marker=1,
         previous_lock_marker=1,
     )
+
+
+def test_runtime_state_accepts_omitted_empty_active_roster() -> None:
+    assert cmd_setup._connector_runtime_state_sets(
+        {"version": 3, "inactive_names": ["cursor"]}
+    ) == (set(), {"cursor"})
+    assert cmd_setup._connector_runtime_state_sets(
+        {"version": 3, "names": None, "inactive_names": ["cursor"]}
+    ) is None

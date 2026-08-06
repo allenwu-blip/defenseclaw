@@ -633,6 +633,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
     from defenseclaw.logger import Logger
 
     setup: list[StepResult] = []
+    retain_pending_migration_transaction = False
     connector = _normalize_connector(options.connector)
     profile = _normalize_profile(options.profile, connector)
     scanner_mode = _normalize_scanner_mode(options.scanner_mode)
@@ -932,6 +933,9 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             finalize_first_run_config(cfg, was_config_absent=was_config_absent)
         except FreshMigrationStateError as exc:
             setup.append(StepResult("Migration State", "fail", str(exc), "defenseclaw init"))
+            retain_pending_migration_transaction = os.path.isfile(
+                fresh_migration_pending_path(cfg.data_dir)
+            ) and os.path.isfile(cfg_mod.config_path())
         except OSError as exc:
             setup.append(StepResult("Config Save", "fail", str(exc), "defenseclaw config validate"))
 
@@ -980,7 +984,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
                 ) from close_error
             raise close_error
 
-    if report.status == "needs_attention":
+    if report.status == "needs_attention" and not retain_pending_migration_transaction:
         rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
         report._protected_selection = None
         if rollback_error:

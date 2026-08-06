@@ -1786,9 +1786,9 @@ func TestWindowsNativeConfigMatrix(t *testing.T) {
 				}
 				for _, marker := range []string{
 					fmt.Sprintf("$timeoutMs = %d", cursorWindowsHookAdapterTimeoutMS),
-					"WaitForExit($timeoutMs)",
-					"$process.Kill()",
-					fmt.Sprintf("[void]$process.WaitForExit(%d)", cursorWindowsHookCleanupBudgetMS),
+					"WaitForExit($waitBudgetMs)",
+					"$process.TerminateTreeAndDrain($cleanupBudgetMs)",
+					"GetActiveJobProcessCount(job)",
 					`{"continue":true}`,
 					"could not remove temporary Cursor payload",
 				} {

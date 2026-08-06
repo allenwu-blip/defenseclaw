@@ -565,10 +565,7 @@ class FreshMigrationCursorTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self._selection_patcher = patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
-            return_value=(
-                {name: object() for name in ("amp", "claudecode", "codex", "hermes", "omnigent", "opencode")},
-                {},
-            ),
+            side_effect=record_test_setup_agent_selections,
         )
         self._selection_patcher.start()
         self.addCleanup(self._selection_patcher.stop)
@@ -771,7 +768,7 @@ class FreshMigrationCursorTests(unittest.TestCase):
         with patch.object(Config, "save", new=fail_final_save):
             report = self._run_first_run(data_dir)
 
-        self.assertTrue(os.path.isfile(os.path.join(data_dir, "config.yaml")))
+        self.assertFalse(os.path.lexists(os.path.join(data_dir, "config.yaml")))
         self.assertFalse(os.path.lexists(migration_state.state_path(data_dir)))
         self.assertTrue(any(step.name == "Config Save" and step.status == "fail" for step in report.setup))
 

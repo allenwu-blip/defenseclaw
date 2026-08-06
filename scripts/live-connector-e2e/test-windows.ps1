@@ -1675,7 +1675,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         'hosted connector contracts run as disposable real standard users and preserve the matrix connector'
     Assert-True ($omniGentJob -match '(?s)invoke-windows-setup-standard-user-ci\.ps1.*?-Mode omnigent-native-degraded.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $standardUserCIText -match "'omnigent-native-degraded'" -and
-        $standardUserCIText -match 'test-omnigent-windows-native\.ps1') `
+        $standardUserCIText -match 'test-omnigent-windows-native\.ps1' -and
+        $standardUserCIText -match "Join-Path \$state 'uv-input'" -and
+        $standardUserCIText -match 'standard-user OmniGent uv copy does not match its authenticated input' -and
+        $standardUserCIText -match '-UvPath \$uvPath') `
         'hosted OmniGent packaged lifecycle runs as a disposable real standard user'
     Assert-True ($nativeWorkflowText -notmatch '-Operation acceptance\b' -and
         $nativeHarnessText -notmatch "'acceptance' \{ Invoke-Acceptance \}" -and
@@ -3085,6 +3088,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeProcessContract -match '(?s)& \$WhileRunning \$process.*?\$process\.Kill\(\$true\)' -and
         $setupContract -match 'Invoke-OpenCodePluginProbe load' -and
         $setupContract -match 'setup-readiness-\$attempt' -and
+        $setupContract -match '-TimeoutSeconds 3' -and
         $setupContract -match '-not \$SetupProcess\.HasExited' -and
         $setupContract -match '-WhileRunning \$setupRuntimeProbe') `
         'OpenCode setup loads the managed plugin while convergence is waiting and cleans up a failed setup child'

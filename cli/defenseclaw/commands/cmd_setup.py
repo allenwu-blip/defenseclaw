@@ -11605,7 +11605,10 @@ def _connector_runtime_state_sets(state: Any) -> tuple[set[str], set[str] | None
     if version == 3:
         if type(version) is not int:
             return None
-        raw_names = state.get("names")
+        # Go omits an empty active roster from the v3 JSON document.  That is
+        # distinct from an explicitly null/malformed roster and is valid when
+        # the document contains only inactive connector tombstones.
+        raw_names = state.get("names", [])
         raw_inactive = state.get("inactive_names", [])
         if not isinstance(raw_names, list) or not isinstance(raw_inactive, list):
             return None
