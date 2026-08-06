@@ -1638,6 +1638,24 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
 
         self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
 
+    def test_watchdog_fingerprint_does_not_reread_validated_runtime_publications(self):
+        evidence = MagicMock()
+        evidence.watchdog_pid_record.side_effect = OSError("private concurrent PID publication")
+        evidence.watchdog_ownership.side_effect = OSError("private concurrent ownership publication")
+        health = MagicMock(status="fresh", state="healthy")
+        with (
+            patch("defenseclaw.doctor_gateway.GatewayEvidence", return_value=evidence),
+            patch(
+                "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",
+                return_value=("running", "validated exact runtime", health),
+            ),
+        ):
+            fingerprint = cmd_setup._capture_setup_watchdog_fingerprint(self.app.cfg)
+
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+        evidence.watchdog_pid_record.assert_not_called()
+        evidence.watchdog_ownership.assert_not_called()
+
     def test_watchdog_fingerprint_rejects_unsafe_custody(self):
         with patch(
             "defenseclaw.commands.cmd_doctor._inspect_windows_watchdog_runtime",

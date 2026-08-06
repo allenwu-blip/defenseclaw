@@ -6172,25 +6172,21 @@ def _capture_setup_gateway_boundary(cfg) -> tuple[str, dict[str, Any] | None, st
 
 def _capture_setup_watchdog_fingerprint(cfg) -> str:
     from defenseclaw.commands.cmd_doctor import _inspect_windows_watchdog_runtime
-    from defenseclaw.doctor_gateway import GatewayEvidence, canonical_path
+    from defenseclaw.doctor_gateway import GatewayEvidence
 
     evidence = GatewayEvidence(platform_name="win32")
     posture, _detail, health = _inspect_windows_watchdog_runtime(cfg, evidence)
     if posture in {"foreign", "uninspectable", "unowned", "unsafe"}:
         raise OSError(f"watchdog custody evidence is unavailable [{_setup_runtime_ref(posture)}]")
-    data_dir = os.path.abspath(os.fspath(cfg.data_dir))
-    pid_path = os.path.join(data_dir, "watchdog.pid")
-    ownership_path = os.path.join(data_dir, ".watchdog.lock")
-    record = evidence.watchdog_pid_record(pid_path)
-    ownership = evidence.watchdog_ownership(ownership_path, pid_path)
-    executable = canonical_path(record.executable) if record.executable else ""
+    # The inspection above already binds the PID publication, executable/start
+    # identity, and held ownership lease into one fail-closed posture. Do not
+    # independently reread those atomically published files: a mixed-generation
+    # second read can never strengthen that proof and destabilizes rollback
+    # capture while the watchdog republishes its runtime evidence.
     return _setup_runtime_digest(
         {
             "enabled": str(bool(getattr(getattr(cfg.gateway, "watchdog", None), "enabled", True))).lower(),
             "posture": posture,
-            "ownership": ownership.status,
-            "ownership-source": ownership.source,
-            "executable": _setup_runtime_ref(executable) if executable else "missing",
             "health-status": str(getattr(health, "status", "missing")) if health is not None else "missing",
             "health-state": str(getattr(health, "state", "missing")) if health is not None else "missing",
         }
