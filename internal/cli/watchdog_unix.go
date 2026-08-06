@@ -123,11 +123,16 @@ func acquireWatchdogPIDFile(path string, info watchdogPIDInfo) (*os.File, error)
 	return f, nil
 }
 
-// Unix retains its existing canonical-flock readiness probe. The passive
-// publication handshake fixes the separate stable-lock race in the Windows
-// lifecycle without changing Unix ownership semantics.
-func watchdogStartPublicationReady(_ string, _ int) (bool, error) {
-	return true, nil
+// On Unix, do not inspect the flock until the child has finished publishing
+// its canonical record. Otherwise the readiness observer can acquire the
+// newly-created, still-empty file between open and flock and make the child
+// lose its one-shot ownership acquisition.
+func watchdogStartPublicationReady(path string, expectedPID int) (bool, error) {
+	info, err := readWatchdogPIDInfo(path)
+	if err != nil {
+		return false, err
+	}
+	return info.PID == expectedPID, nil
 }
 
 // inspectWatchdogPIDOwnership reports whether the PID-file flock is currently held by
