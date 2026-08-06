@@ -140,6 +140,9 @@ func hookAPIRejectUntrustedWindowsWriteACEs(path string, dacl *windows.ACL, want
 		if inheritOnly && hookAPIWindowsCreatorOwnerTemplate(sid) {
 			continue
 		}
+		if !protectChildren && hookAPIWindowsStockAncestorGrant(ace.Mask, sid) {
+			continue
+		}
 		if !hookAPIWindowsTrustedPrincipal(sid) {
 			return fmt.Errorf("untrusted Windows principal %s has write-like access mask 0x%x on %s", hookAPIWindowsSIDString(sid), uint32(ace.Mask), path)
 		}
@@ -155,12 +158,7 @@ func hookAPIWindowsOwnerRightsPrincipal(sid *windows.SID) bool {
 	return sid != nil && sid.IsWellKnown(windows.WinCreatorOwnerRightsSid)
 }
 
-// hookAPIWindowsWriteLikeAccess reports whether mask can subvert the token path.
-// protectChildren is true for the token directory, false for its ancestors.
 func hookAPIWindowsWriteLikeAccess(mask windows.ACCESS_MASK, protectChildren bool) bool {
-	if !protectChildren {
-		return managed.WindowsAncestorReplaceAccess(mask)
-	}
 	const fileDeleteChild windows.ACCESS_MASK = 0x00000040
 	unsafe := windows.ACCESS_MASK(
 		windows.GENERIC_ALL |
@@ -169,11 +167,30 @@ func hookAPIWindowsWriteLikeAccess(mask windows.ACCESS_MASK, protectChildren boo
 			windows.WRITE_DAC |
 			windows.WRITE_OWNER |
 			windows.FILE_WRITE_EA |
-			windows.FILE_WRITE_ATTRIBUTES |
-			windows.FILE_WRITE_DATA |
-			windows.FILE_APPEND_DATA,
+			windows.FILE_WRITE_ATTRIBUTES,
 	)
+	if protectChildren {
+		// On an ancestor directory, FILE_WRITE_DATA and FILE_APPEND_DATA
+		// mean add-file and add-subdirectory. Windows drive roots commonly
+		// grant add-subdirectory to Authenticated Users; without DELETE_CHILD
+		// that does not permit replacing the already protected token path.
+		// The immediate data/hooks directory must reject those child-creation
+		// rights too. Rights that mutate the ancestor object itself remain
+		// unsafe above regardless of protectChildren.
+		unsafe |= windows.FILE_WRITE_DATA | windows.FILE_APPEND_DATA
+	}
 	return mask&(unsafe|fileDeleteChild) != 0
+}
+
+// hookAPIWindowsStockAncestorGrant reports whether mask is the grant Windows
+// makes to BUILTIN\Users on roots like C:\ProgramData: add-file and
+// write-EA/attributes, none of which can replace an existing child. Limited to
+// that principal so an ancestor opened up to Everyone is still rejected.
+func hookAPIWindowsStockAncestorGrant(mask windows.ACCESS_MASK, sid *windows.SID) bool {
+	if sid == nil || !sid.IsWellKnown(windows.WinBuiltinUsersSid) {
+		return false
+	}
+	return !managed.WindowsAncestorReplaceAccess(mask)
 }
 
 func hookAPIWindowsTrustedPrincipal(sid *windows.SID) bool {
