@@ -180,7 +180,10 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
     assert "Assert-DefenseClawBootstrapModuleTrust" in installer
     assert "DefenseClaw enterprise installer rejected its module before import" in installer
     assert "AllowUnsigned = [bool](" in installer
-    assert "$AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair')" in installer
+    assert (
+        "$AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair', 'Uninstall')"
+        in installer
+    )
     assert "Initialize-DefenseClawCodexMachinePolicyParent" in module
     assert "Invoke-DefenseClawCodexRequirementsCommand" in module
     assert "codex-requirements-ownership.json" in module
