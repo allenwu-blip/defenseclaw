@@ -3909,7 +3909,7 @@ def _windows_system_powershell() -> tuple[str, str]:
 
 
 _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS = 30.0
-_CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS = 5.0
+_CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS = 20.0
 _CURSOR_WINDOWS_RUNTIME_PROBE_TIMEOUT_SECONDS = (
     _CURSOR_NATIVE_HOOK_TIMEOUT_SECONDS + _CURSOR_WINDOWS_RUNTIME_PROCESS_OVERHEAD_SECONDS
 )
@@ -4104,9 +4104,11 @@ def _probe_cursor_windows_runtime(cfg, adapter_path: str) -> tuple[bool, str]:
             encoded,
         ]
         # The registered Cursor command contract permits 30 seconds. Doctor
-        # allows only the adapter's bounded five-second child-drain interval on
-        # top of that contract. A contained timeout may be retried once, but the
-        # first process tree is fully reaped and live sidecar state is read again
+        # allows the adapter's bounded five-second child-drain interval plus
+        # Windows PowerShell host startup and cold Add-Type compilation on top
+        # of that contract. The native hook's own 30-second deadline is not
+        # extended. A contained timeout may be retried once, but the first
+        # process tree is fully reaped and live sidecar state is read again
         # before a second native event is allowed to start.
         for attempt in range(_CURSOR_WINDOWS_RUNTIME_PROBE_ATTEMPTS):
             before_code, before_body = _http_probe(
