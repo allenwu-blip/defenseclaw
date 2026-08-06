@@ -1632,6 +1632,26 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertNotIn(private_second, message)
         self.assertNotIn("secret-profile", message)
 
+    def test_runtime_capture_reports_redacted_local_error_site(self):
+        private_detail = os.path.join(self.tmp_dir, "secret-profile", "gateway-boundary")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._capture_setup_gateway_boundary",
+                side_effect=OSError(private_detail),
+            ),
+            patch("defenseclaw.commands.cmd_setup.time.sleep"),
+            self.assertRaises(OSError) as raised,
+        ):
+            cmd_setup._capture_setup_applied_runtime(self.app.cfg)
+
+        message = str(raised.exception)
+        self.assertRegex(
+            message,
+            r"\[site=_capture_setup_applied_runtime_once:\d+;error=[0-9a-f]{12}\]",
+        )
+        self.assertNotIn(private_detail, message)
+        self.assertNotIn("secret-profile", message)
+
     def test_runtime_capture_has_start_end_generation_fence(self):
         with (
             patch(

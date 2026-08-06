@@ -6390,6 +6390,7 @@ def _capture_setup_applied_runtime(
 ) -> _SetupAppliedRuntimeEvidence:
     previous: _SetupAppliedRuntimeEvidence | None = None
     last_error: Exception | None = None
+    last_error_site: str | None = None
     last_difference: str | None = None
     for attempt in range(_SETUP_RUNTIME_SNAPSHOT_ATTEMPTS):
         try:
@@ -6401,6 +6402,7 @@ def _capture_setup_applied_runtime(
             # A later different sample still replaces it below, and the
             # bounded loop still fails closed without two equal successes.
             last_error = exc
+            last_error_site = _setup_runtime_error_site(exc)
         else:
             if previous == current:
                 return current
@@ -6412,10 +6414,24 @@ def _capture_setup_applied_runtime(
     if last_difference is not None:
         reference = f"diff={last_difference}"
     elif last_error is not None:
-        reference = _setup_runtime_ref(type(last_error).__name__)
+        error_ref = _setup_runtime_ref(type(last_error).__name__)
+        reference = f"site={last_error_site};error={error_ref}" if last_error_site else error_ref
     else:
         reference = "unstable"
     raise OSError(f"applied runtime evidence did not stabilize [{reference}]") from None
+
+
+def _setup_runtime_error_site(exc: Exception) -> str | None:
+    """Return the deepest local capture site without exposing exception data."""
+    site: str | None = None
+    traceback = exc.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        function = frame.f_code.co_name
+        if frame.f_globals.get("__name__") == __name__ and function != "_capture_setup_applied_runtime":
+            site = f"{function}:{traceback.tb_lineno}"
+        traceback = traceback.tb_next
+    return site
 
 
 def _setup_applied_runtime_difference(
