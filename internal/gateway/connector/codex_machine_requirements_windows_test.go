@@ -136,3 +136,69 @@ func TestResolveWindowsCodexManagedRuntimeRegistryWaitsForMachinePolicyLock(t *t
 		t.Fatal("resolver did not continue after the machine policy lock was released")
 	}
 }
+
+// ProgramData must never be handed to the leaf trust check. Stock Windows grants
+// BUILTIN\Users mask 0x116 there, which the leaf rule rejects and the ancestor
+// rule allows, so a leaf check fails on every default install.
+func TestValidateWindowsCodexMachineLayoutChecksProgramDataOnlyAsAncestor(t *testing.T) {
+	programData := t.TempDir()
+	stateRoot := t.TempDir()
+	policyDir := filepath.Join(programData, "OpenAI", "Codex")
+	managedDir := filepath.Join(stateRoot, "bin")
+	installDir := filepath.Join(stateRoot, "install")
+	for _, dir := range []string{policyDir, managedDir, installDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	originalProgramData := windowsCodexMachineProgramData
+	originalTrustedDirCheck := windowsCodexMachineTrustedDirCheck
+	originalTrustedFileCheck := windowsCodexMachineTrustedFileCheck
+	originalVolumeCheck := windowsCodexMachineVolumeCheck
+	t.Cleanup(func() {
+		windowsCodexMachineProgramData = originalProgramData
+		windowsCodexMachineTrustedDirCheck = originalTrustedDirCheck
+		windowsCodexMachineTrustedFileCheck = originalTrustedFileCheck
+		windowsCodexMachineVolumeCheck = originalVolumeCheck
+	})
+
+	var checkedDirs []string
+	windowsCodexMachineProgramData = func() (string, error) { return programData, nil }
+	windowsCodexMachineVolumeCheck = func(string) error { return nil }
+	windowsCodexMachineTrustedFileCheck = func(string, string) error { return nil }
+	windowsCodexMachineTrustedDirCheck = func(path, _ string) error {
+		checkedDirs = append(checkedDirs, path)
+		return nil
+	}
+
+	// The hook binary read after the loop is out of scope here; only the paths
+	// reaching the leaf check matter, so any later error is ignored.
+	_ = validateWindowsCodexMachineLayout(WindowsCodexMachineRequirementsOptions{
+		RequirementsPath:   filepath.Join(policyDir, "requirements.toml"),
+		ManagedStatePath:   filepath.Join(policyDir, windowsCodexManagedStateFile),
+		ManagedDir:         managedDir,
+		HookBinary:         filepath.Join(managedDir, "defenseclaw-hook.exe"),
+		OwnershipPath:      filepath.Join(installDir, "codex-requirements-ownership.json"),
+		GatewayAddr:        "127.0.0.1:18000",
+		GatewayServiceName: "DefenseClawGateway",
+	})
+
+	for _, dir := range checkedDirs {
+		if strings.EqualFold(dir, programData) {
+			t.Fatalf("ProgramData was leaf-checked; this rejects every stock Windows host: %v", checkedDirs)
+		}
+	}
+	for _, want := range []string{policyDir, managedDir, installDir} {
+		found := false
+		for _, dir := range checkedDirs {
+			if strings.EqualFold(dir, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("leaf check lost coverage of %s: %v", want, checkedDirs)
+		}
+	}
+}
