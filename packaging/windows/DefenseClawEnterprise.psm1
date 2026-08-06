@@ -986,6 +986,11 @@ function Test-DefenseClawReplacementRights {
 
 function Assert-DefenseClawTrustedAncestor {
     param([Parameter(Mandatory)][string]$Path)
+    # 'C:' is drive-relative and resolves to the current directory on that drive.
+    # Callers trim the trailing separator, so restore it before touching disk.
+    if ($Path -match '^[A-Za-z]:$') {
+        $Path = $Path + '\'
+    }
     Assert-DefenseClawNoReparsePath -Path $Path
     $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
     $accessSDDL = $acl.GetSecurityDescriptorSddlForm(
@@ -2255,7 +2260,26 @@ function Set-DefenseClawServiceRegistryAcl {
             [Security.AccessControl.AccessControlSections]::Access
         )
     )
-    Microsoft.PowerShell.Security\Set-Acl -LiteralPath $serviceKey -AclObject $security
+    # The registry provider mishandles -LiteralPath (Get-Acl on 5.1, Set-Acl on
+    # 7). Key names cannot contain wildcards, so -Path is safe here.
+    Microsoft.PowerShell.Security\Set-Acl -Path $serviceKey -AclObject $security
+    Reset-DefenseClawServiceSecuritySubkeyInheritance -Path "$serviceKey\Security"
+}
+
+function Reset-DefenseClawServiceSecuritySubkeyInheritance {
+    # sc.exe sdset leaves the Security subkey with a protected DACL and explicit
+    # ACEs. Restore inheritance so the subkey derives its rights from the managed
+    # parent key. The Security value itself is left alone.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Microsoft.PowerShell.Management\Test-Path -Path $Path)) {
+        return
+    }
+    $acl = Microsoft.PowerShell.Security\Get-Acl -Path $Path
+    foreach ($rule in @($acl.Access | Microsoft.PowerShell.Core\Where-Object { -not $_.IsInherited })) {
+        [void]$acl.RemoveAccessRuleSpecific($rule)
+    }
+    $acl.SetAccessRuleProtection($false, $false)
+    Microsoft.PowerShell.Security\Set-Acl -Path $Path -AclObject $acl
 }
 
 function Assert-DefenseClawServiceSecurityRegistrySubkey {
@@ -2307,7 +2331,7 @@ function Assert-DefenseClawServiceSecurityRegistrySubkey {
         throw "service $Name SCM Security registry value is not a valid security descriptor: $($_.Exception.Message)"
     }
 
-    $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
+    $acl = Microsoft.PowerShell.Security\Get-Acl -Path $Path
     $accessSDDL = $acl.GetSecurityDescriptorSddlForm(
         [Security.AccessControl.AccessControlSections]::Access
     )
@@ -2432,7 +2456,7 @@ function Assert-DefenseClawServiceRegistryAcl {
             -Path ([string]$securitySubkeys[0].PSPath)
     }
 
-    $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $serviceKey
+    $acl = Microsoft.PowerShell.Security\Get-Acl -Path $serviceKey
     $accessSDDL = $acl.GetSecurityDescriptorSddlForm(
         [Security.AccessControl.AccessControlSections]::Access
     )
@@ -2684,6 +2708,29 @@ function ConvertFrom-DefenseClawServiceQuiescenceTimestamp {
         throw "service quiescence timestamp is unexpectedly in the future: $Value"
     }
     return $timestamp
+}
+
+function Get-DefenseClawGuardianGeneration {
+    # Returns state.updated_at, or $null when the report carries no state.
+    # StrictMode throws on a missing property, so absence is probed on the
+    # property set. PowerShell 7 materializes the ISO string as a DateTime, whose
+    # [string] form is local-culture and drops the UTC designator.
+    param($Report)
+    if ($null -eq $Report -or $null -eq $Report.PSObject.Properties['state']) {
+        return $null
+    }
+    $state = $Report.state
+    if ($null -eq $state -or $null -eq $state.PSObject.Properties['updated_at']) {
+        return $null
+    }
+    $value = $state.updated_at
+    if ($null -eq $value) {
+        return $null
+    }
+    if ($value -is [DateTime]) {
+        return ([DateTime]$value).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    }
+    return [string]$value
 }
 
 function Wait-DefenseClawServiceFailureRestartQuiescence {
@@ -3698,7 +3745,7 @@ function New-DefenseClawTransaction {
                         [StringComparison]::OrdinalIgnoreCase
                     )
                 } |
-                Microsoft.PowerShell.Core\Select-Object -First 1
+                Microsoft.PowerShell.Utility\Select-Object -First 1
             if ($null -ne $service -and [bool]$service.existed) {
                 Set-DefenseClawServiceStartMode -Name $name -StartMode 4
             }
@@ -3912,7 +3959,7 @@ function New-DefenseClawTransaction {
                                 [StringComparison]::OrdinalIgnoreCase
                             )
                         } |
-                        Microsoft.PowerShell.Core\Select-Object -First 1
+                        Microsoft.PowerShell.Utility\Select-Object -First 1
                     if ($null -ne $service -and [bool]$service.existed) {
                         Set-DefenseClawServiceStartMode `
                             -Name $name `
@@ -4733,11 +4780,19 @@ function Get-DefenseClawCodexTrustedShellAttestation {
         throw 'agent application-control attestation contains an invalid administrator SID'
     }
     try {
-        $attestedAt = [DateTime]::Parse(
-            [string]$attestation.attested_at,
-            [Globalization.CultureInfo]::InvariantCulture,
-            [Globalization.DateTimeStyles]::RoundtripKind
-        )
+        # PowerShell 7 materializes this as a DateTime, whose [string] form is
+        # local-culture and drops the UTC designator.
+        $attestedAtValue = $attestation.attested_at
+        $attestedAt = if ($attestedAtValue -is [DateTime]) {
+            [DateTime]$attestedAtValue
+        }
+        else {
+            [DateTime]::Parse(
+                [string]$attestedAtValue,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            )
+        }
         if ($attestedAt.Kind -eq [DateTimeKind]::Unspecified) {
             throw 'timestamp has no timezone'
         }
@@ -6446,8 +6501,12 @@ function Assert-DefenseClawServiceConfiguration {
         throw "service $Name has no readable SCM security descriptor"
     }
     $actualSDDL = ([string]$sddlLine).Trim()
-    if (-not [string]::Equals($actualSDDL, $script:ServiceSDDL, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "service $Name DACL drift: $actualSDDL"
+    # sdshow returns the whole descriptor including the SCM-maintained audit
+    # section. ServiceSDDL is a DACL, so only the DACL portion is comparable.
+    $saclIndex = $actualSDDL.IndexOf('S:', [StringComparison]::OrdinalIgnoreCase)
+    $actualDACL = if ($saclIndex -ge 0) { $actualSDDL.Substring(0, $saclIndex) } else { $actualSDDL }
+    if (-not [string]::Equals($actualDACL, $script:ServiceSDDL, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "service $Name DACL drift: $actualDACL"
     }
 }
 
@@ -7369,9 +7428,7 @@ function Get-DefenseClawLifecycleStatus {
             $guardianReport = Get-DefenseClawGuardianStatusReport `
                 -Layout $Layout `
                 -GatewayServiceName $GatewayServiceName
-            if ($null -ne $guardianReport -and $null -ne $guardianReport.state) {
-                $generation = [string]$guardianReport.state.updated_at
-            }
+            $generation = Get-DefenseClawGuardianGeneration -Report $guardianReport
         }
         catch {
             $errors.Add($_.Exception.Message)
@@ -7484,12 +7541,7 @@ function Wait-DefenseClawFreshGuardianReconcile {
     $priorReport = Get-DefenseClawGuardianStatusReport `
         -Layout $Layout `
         -GatewayServiceName $GatewayServiceName
-    $priorGeneration = if ($null -ne $priorReport -and $null -ne $priorReport.state) {
-        [string]$priorReport.state.updated_at
-    }
-    else {
-        ''
-    }
+    $priorGeneration = [string](Get-DefenseClawGuardianGeneration -Report $priorReport)
     # Guardian generation timestamps have one-second precision. Avoid
     # restarting in the same encoded second, which would make a genuinely new
     # LocalSystem reconcile look stale.
@@ -7509,8 +7561,11 @@ function Wait-DefenseClawFreshGuardianReconcile {
         $report = Get-DefenseClawGuardianStatusReport `
             -Layout $Layout `
             -GatewayServiceName $GatewayServiceName
-        if ($null -ne $report -and [bool]$report.ok -and $null -ne $report.state) {
-            $generation = [string]$report.state.updated_at
+        $reportOK = $null -ne $report -and
+            $null -ne $report.PSObject.Properties['ok'] -and
+            [bool]$report.ok
+        $generation = if ($reportOK) { Get-DefenseClawGuardianGeneration -Report $report } else { $null }
+        if ($null -ne $generation) {
             try {
                 $generationTime = [DateTime]::Parse(
                     $generation,
