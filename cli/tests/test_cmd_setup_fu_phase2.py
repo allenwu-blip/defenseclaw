@@ -446,6 +446,10 @@ class TestPerConnectorWriteSurface(_BaseSetup):
                 return_value=True,
             ),
             patch(
+                "defenseclaw.commands.cmd_setup._windows_runtime_rollback",
+                return_value=False,
+            ),
+            patch(
                 "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
                 side_effect=click.ClickException("selection captured"),
             ) as selected,
