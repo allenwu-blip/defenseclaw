@@ -490,8 +490,7 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
     def test_picked_hint_does_not_mask_ambiguous_detection(self):
         # The installer's picked_connector hint is advisory; it must not hide
         # that a bare quickstart would be choosing among several connectors.
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w", encoding="utf-8") as fh:
-            fh.write("codex")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex")
         with patch(
             "defenseclaw.commands.cmd_setup._detect_installed_connectors",
             return_value=["claudecode", "codex"],
@@ -504,8 +503,7 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
         self.assertNotIn('"connector": "codex"', result.output)
 
     def test_picked_hint_without_detection_is_reported_in_json(self):
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w", encoding="utf-8") as fh:
-            fh.write("codex")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex")
         with patch(
             "defenseclaw.commands.cmd_setup._detect_installed_connectors",
             return_value=[],
@@ -540,8 +538,7 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
                 "    hermes:\n"
                 "      mode: observe\n"
             )
-        with open(os.path.join(self.tmp_dir, "picked_connector"), "w", encoding="utf-8") as fh:
-            fh.write("codex")
+        atomic_write_private_bytes(os.path.join(self.tmp_dir, "picked_connector"), b"codex")
         with patch(
             "defenseclaw.commands.cmd_setup._detect_installed_connectors",
             return_value=[],

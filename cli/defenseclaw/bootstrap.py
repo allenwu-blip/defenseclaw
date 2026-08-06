@@ -634,6 +634,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
 
     setup: list[StepResult] = []
     retain_pending_migration_transaction = False
+    rollback_first_run_transaction = False
     connector = _normalize_connector(options.connector)
     profile = _normalize_profile(options.profile, connector)
     scanner_mode = _normalize_scanner_mode(options.scanner_mode)
@@ -937,6 +938,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             ) and os.path.isfile(cfg_mod.config_path())
         except OSError as exc:
             setup.append(StepResult("Config Save", "fail", str(exc), "defenseclaw config validate"))
+            rollback_first_run_transaction = True
 
         readiness = (
             targeted_readiness(cfg, options)
@@ -983,7 +985,7 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
                 ) from close_error
             raise close_error
 
-    if report.status == "needs_attention" and not retain_pending_migration_transaction:
+    if rollback_first_run_transaction and not retain_pending_migration_transaction:
         rollback_error = _restore_first_run_selection_transaction(transaction_app, setup_snapshot)
         report._protected_selection = None
         if rollback_error:
