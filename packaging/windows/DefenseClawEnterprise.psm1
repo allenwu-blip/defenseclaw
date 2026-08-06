@@ -6441,7 +6441,7 @@ function Assert-DefenseClawServiceConfiguration {
         [Parameter(Mandatory)][string[]]$ExpectedPrivileges,
         [Parameter(Mandatory)][string[]]$ExpectedEnvironment,
         [ValidateSet(2, 3, 4)]
-        [int]$ExpectedStartMode = 2
+        [int[]]$ExpectedStartMode = @(2)
     )
     if (-not (Test-DefenseClawServiceExists -Name $Name)) {
         throw "required Windows service is missing: $Name"
@@ -6463,8 +6463,8 @@ function Assert-DefenseClawServiceConfiguration {
     if ([int]$properties.Type -ne 0x10) {
         throw "service $Name is not a Win32 own-process service: Type=$($properties.Type)"
     }
-    if ([int]$properties.Start -ne $ExpectedStartMode) {
-        throw "service $Name startup mode drift: $($properties.Start), expected $ExpectedStartMode"
+    if ([int]$properties.Start -notin $ExpectedStartMode) {
+        throw "service $Name startup mode drift: $($properties.Start), expected $($ExpectedStartMode -join ' or ')"
     }
     if ([int]$properties.ErrorControl -ne 1) {
         throw "service $Name ErrorControl drift: $($properties.ErrorControl)"
@@ -6524,19 +6524,30 @@ function Assert-DefenseClawManagedServiceConfigurations {
         [Parameter(Mandatory)][string]$GatewayServiceName,
         [Parameter(Mandatory)][string]$GuardianServiceName,
         [switch]$PendingTransaction,
-        [switch]$ServicingTransaction
+        [switch]$ServicingTransaction,
+        [switch]$AnyStartMode
     )
     if ($PendingTransaction -and $ServicingTransaction) {
         throw 'service configuration assertion cannot be both pending-live and servicing'
     }
+    if ($AnyStartMode -and ($PendingTransaction -or $ServicingTransaction)) {
+        throw 'service configuration assertion cannot accept any start mode inside a transaction'
+    }
+    # Boot policy is not part of the authorization contract; ImagePath, account,
+    # SID type, privileges, environment, and the ACL surfaces are. Teardown
+    # accepts any supported mode so a disabled or manually started deployment
+    # stays removable.
     $expectedStartMode = if ($ServicingTransaction) {
-        4
+        @(4)
     }
     elseif ($PendingTransaction) {
-        3
+        @(3)
+    }
+    elseif ($AnyStartMode) {
+        @(2, 3, 4)
     }
     else {
-        2
+        @(2)
     }
     $gatewayEnvironment = [string[]]@(
         Get-DefenseClawServiceEnvironmentValues `
@@ -10335,7 +10346,8 @@ function Invoke-DefenseClawUninstallLifecycle {
     Assert-DefenseClawManagedServiceConfigurations `
         -Layout $Layout `
         -GatewayServiceName $GatewayServiceName `
-        -GuardianServiceName $GuardianServiceName
+        -GuardianServiceName $GuardianServiceName `
+        -AnyStartMode
     Assert-DefenseClawManagedInstallTree -Layout $Layout
     Assert-DefenseClawRecordedArtifactHashes `
         -Metadata $metadata `
