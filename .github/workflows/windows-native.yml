@@ -245,16 +245,17 @@ jobs:
           $uv = (Get-Command uv.exe -ErrorAction Stop).Source
           $testFiles = @(Get-ChildItem cli/tests -Recurse -File -Filter 'test_*.py' | Sort-Object FullName)
           $shardIndex = [int]$env:PYTHON_SHARD - 1
+          $appShellFile = @($testFiles | Where-Object { $_.Name -eq 'test_app_shell.py' })
+          if ($appShellFile.Count -ne 1) {
+            throw "Expected exactly one test_app_shell.py file, found $($appShellFile.Count)"
+          }
           $shardFiles = @(
             for ($index = 0; $index -lt $testFiles.Count; $index++) {
-              if (($index % 8) -eq $shardIndex) {
+              if (($index % 8) -eq $shardIndex -and $testFiles[$index].FullName -ne $appShellFile[0].FullName) {
                 $testFiles[$index].FullName
               }
             }
           )
-          if (-not $shardFiles) {
-            throw "Python test shard $($shardIndex + 1) selected no files"
-          }
           # These assertions exercise the POSIX-only OpenShell ownership path
           # (pwd, root-owned mkdir/chown, and Linux sandbox users). Symlink
           # capability alone is not enough to make that product path native to
@@ -268,7 +269,27 @@ jobs:
             # remains covered by the Linux suite.
             '--deselect=cli/tests/test_migrations.py::TestMigrate050PurgeLegacyFlatPolicyBundle::test_symlinked_flat_data_json_is_left_alone'
           )
-          $pytestArgs = @('run', '--frozen', 'python', '-m', 'pytest') + $shardFiles + $windowsInapplicableTests + @('-q')
+          $appShellCollectionLog = Join-Path $env:DC_STATE_ROOT 'pytest-app-shell-collection.log'
+          $appShellCollectionArgs = @('run', '--frozen', 'python', '-m', 'pytest', $appShellFile[0].FullName, '--collect-only', '-q', '--color=no')
+          Invoke-WindowsNativeProcess $uv $appShellCollectionArgs -TimeoutSeconds 300 -LogPath $appShellCollectionLog | Out-Null
+          $appShellNodes = @(
+            Get-Content -LiteralPath $appShellCollectionLog |
+              Where-Object { $_ -match '^cli[/\\]tests[/\\]tui[/\\]test_app_shell\.py::' }
+          )
+          if (-not $appShellNodes) {
+            throw 'Collected no test_app_shell.py nodes'
+          }
+          $shardAppShellNodes = @(
+            for ($index = 0; $index -lt $appShellNodes.Count; $index++) {
+              if (($index % 8) -eq $shardIndex) {
+                $appShellNodes[$index]
+              }
+            }
+          )
+          if (-not $shardFiles -and -not $shardAppShellNodes) {
+            throw "Python test shard $($shardIndex + 1) selected no tests"
+          }
+          $pytestArgs = @('run', '--frozen', 'python', '-m', 'pytest') + $shardFiles + $shardAppShellNodes + $windowsInapplicableTests + @('-q')
           Invoke-WindowsNativeProcess $uv $pytestArgs -TimeoutSeconds 4200 -LogPath (Join-Path $env:DC_STATE_ROOT ('pytest-shard-{0}.log' -f $env:PYTHON_SHARD)) | Out-Null
       - name: Capture bounded diagnostics
         if: ${{ failure() || cancelled() }}
