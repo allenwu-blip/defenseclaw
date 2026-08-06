@@ -3010,7 +3010,6 @@ function Test-SetupAcceptanceHealthSamplerContract([string]$Root) {
     $installRoot = Join-Path $fixtureRoot 'installed'
     $readyPath = Join-Path $fixtureRoot 'health-server.ready'
     $diagnosticOutcomePath = Join-Path $fixtureRoot 'setup-health-diagnostic.jsonl'
-    $sampleOutcomePath = Join-Path $fixtureRoot 'setup-health-sample.jsonl'
     [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
     [IO.Directory]::CreateDirectory($installRoot) | Out-Null
 
@@ -3165,19 +3164,38 @@ try {
         )
         Move-Item -LiteralPath $pidTemporary -Destination (Join-Path $dataRoot 'gateway.pid')
 
-        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath $dataRoot $apiPort `
-            ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
-
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         $sample = $null
-        while ($null -eq $sample) {
-            foreach ($line in @(Get-Content -LiteralPath $sampleOutcomePath -Encoding UTF8)) {
-                if ($line -eq 'schema=1') { continue }
-                try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
-                if ($null -eq $candidate.PSObject.Properties['kind']) { $sample = $candidate }
+        $lastDiagnostic = $null
+        foreach ($attempt in 1..2) {
+            $sampleOutcomePath = Join-Path $fixtureRoot "setup-health-sample-$attempt.jsonl"
+            $sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath $dataRoot $apiPort `
+                ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
+            $attemptDeadline = if ($attempt -eq 1) {
+                [DateTime]::UtcNow.AddSeconds(3)
+            } else {
+                $deadline
             }
-            if ([DateTime]::UtcNow -ge $deadline) { throw 'Setup health sampler did not emit a correlated health sample' }
-            Start-Sleep -Milliseconds 50
+            while ($null -eq $sample -and [DateTime]::UtcNow -lt $attemptDeadline) {
+                foreach ($line in @(Get-Content -LiteralPath $sampleOutcomePath -Encoding UTF8)) {
+                    if ($line -eq 'schema=1') { continue }
+                    try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                    if ($null -eq $candidate.PSObject.Properties['kind']) {
+                        $sample = $candidate
+                        break
+                    }
+                    if ([string]$candidate.kind -ceq 'sample_error') { $lastDiagnostic = $candidate }
+                }
+                if ($null -eq $sample) { Start-Sleep -Milliseconds 50 }
+            }
+            if ($null -ne $sample) { break }
+            Stop-SetupAcceptanceHealthSampler $sampler
+            $sampler = $null
+        }
+        if ($null -eq $sample) {
+            $stage = if ($null -eq $lastDiagnostic) { 'none' } else { [string]$lastDiagnostic.stage }
+            $category = if ($null -eq $lastDiagnostic) { 'none' } else { [string]$lastDiagnostic.category }
+            throw "Setup health sampler did not emit a correlated health sample (stage=$stage category=$category)"
         }
         if ([int]$sample.gateway_pid -ne $server.Id -or
             [string]$sample.gateway_start_identity -cne $startIdentity -or
