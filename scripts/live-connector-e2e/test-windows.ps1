@@ -3051,7 +3051,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     $openCodeDoctorContract = [regex]::Match($harnessText, '(?s)function Assert-OpenCodePluginContract\b.*?\n\}').Value
     Assert-True ($openCodeDoctorContract -match "recoveredChecks\[0\]\.status -ne 'warn'" -and
         $openCodeDoctorContract -match 'managed plugin digest current' -and
-        $openCodeDoctorContract -match 'runtime load unverified: sidecar /health is unavailable') `
+        $openCodeDoctorContract -match '\$expectedStoppedRuntime' -and
+        $openCodeDoctorContract -match 'sidecar /health is unavailable' -and
+        $openCodeDoctorContract -match 'managed gateway PID file is missing') `
         'OpenCode recovery distinguishes a restored digest from runtime readiness while the isolated gateway is stopped'
     Assert-True ($harnessText -match 'obsolete shell-hook guidance for native Windows') 'Doctor connector contract rejects obsolete shell guidance'
     $gatewayWait = [regex]::Match($harnessText, '(?s)function Wait-Gateway\b.*?\n\}').Value
