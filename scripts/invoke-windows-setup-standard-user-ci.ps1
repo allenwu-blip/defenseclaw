@@ -451,7 +451,16 @@ function Invoke-ChildMode {
             Assert-DisposableChildAcl $state $identity.User `
                 ([Security.AccessControl.FileSystemRights]::FullControl) `
                 -ExpectInheritance -AllowOwnershipBootstrap
-            $uvRoot = Join-Path $state 'uv-input'
+            $localAppData = [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::LocalApplicationData
+            )
+            if ([string]::IsNullOrWhiteSpace($localAppData)) {
+                throw 'disposable OmniGent user has no LocalApplicationData known folder'
+            }
+            # Keep the authenticated executable beneath the disposable user's
+            # own trusted profile ancestry. The private harness sandbox stays
+            # parent-owned so the child cannot rewrite its immutable inputs.
+            $uvRoot = Join-Path $localAppData 'DefenseClaw-CI\uv-input'
             [IO.Directory]::CreateDirectory($uvRoot) | Out-Null
             Set-DisposableProtectedDirectoryAcl $uvRoot $identity.User `
                 ([Security.AccessControl.FileSystemRights]::FullControl) `

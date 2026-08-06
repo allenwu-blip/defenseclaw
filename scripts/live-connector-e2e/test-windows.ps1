@@ -1676,7 +1676,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($omniGentJob -match '(?s)invoke-windows-setup-standard-user-ci\.ps1.*?-Mode omnigent-native-degraded.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $standardUserCIText -match "'omnigent-native-degraded'" -and
         $standardUserCIText -match 'test-omnigent-windows-native\.ps1' -and
-        $standardUserCIText -match 'Join-Path \$state ''uv-input''' -and
+        $standardUserCIText -match 'SpecialFolder\]::LocalApplicationData' -and
+        $standardUserCIText -match 'Join-Path \$localAppData ''DefenseClaw-CI\\uv-input''' -and
         $standardUserCIText -match 'Set-DisposableProtectedDirectoryAcl \$state \$identity\.User' -and
         $standardUserCIText -match '(?s)Set-DisposableProtectedDirectoryAcl \$state \$identity\.User.*?-UseAdministratorsForCleanup' -and
         $standardUserCIText -match '(?s)Set-DisposableProtectedDirectoryAcl \$uvRoot \$identity\.User.*?-UseAdministratorsForCleanup' -and
