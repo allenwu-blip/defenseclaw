@@ -419,7 +419,7 @@ def test_windows_opencode_locked_probe_refuses_version_and_hash_identity_races(
     open_flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     monkeypatch.setattr(
         agent_selection.windows_acl,
-        "open_regular_mutation_fd",
+        "open_regular_execution_fd",
         lambda path: os.open(path, open_flags),
     )
     monkeypatch.setattr(agent_selection, "is_link_or_reparse", lambda _path: False)

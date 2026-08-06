@@ -772,7 +772,7 @@ def _stable_windows_executable_version_and_sha256(
             raise OSError(f"selected agent executable is not a regular non-reparse file: {path}")
         if before.st_size <= 0 or before.st_size > _MAX_AGENT_EXECUTABLE_BYTES:
             raise OSError(f"selected agent executable has an invalid size: {path}")
-        descriptor = windows_acl.open_regular_mutation_fd(path)
+        descriptor = windows_acl.open_regular_execution_fd(path)
         opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or not os.path.samestat(before, opened):
             raise OSError(f"selected agent executable changed while opening: {path}")
