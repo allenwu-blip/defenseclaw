@@ -494,21 +494,93 @@ int grpo_tokenizer_encode(const GrpoTokenizer *tok, const char *text, int text_l
 
 /* ─── BPE Decode ─── */
 
+/* GPT-2 byte decoder: converts unicode codepoints back to raw bytes.
+ * Ġ (U+0120) → space, Ċ (U+010A) → newline, etc. */
+static int gpt2_byte_decode(const char *input, int input_len, char *output, int output_size) {
+    int out_pos = 0;
+    int i = 0;
+    while (i < input_len && out_pos < output_size - 1) {
+        unsigned char c = (unsigned char)input[i];
+        uint32_t codepoint;
+        int char_len;
+
+        /* Decode UTF-8 to codepoint */
+        if (c < 0x80) {
+            codepoint = c; char_len = 1;
+        } else if ((c & 0xE0) == 0xC0) {
+            if (i + 1 >= input_len) break;
+            codepoint = ((c & 0x1F) << 6) | (input[i+1] & 0x3F); char_len = 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            if (i + 2 >= input_len) break;
+            codepoint = ((c & 0x0F) << 12) | ((input[i+1] & 0x3F) << 6) | (input[i+2] & 0x3F); char_len = 3;
+        } else {
+            if (i + 3 >= input_len) break;
+            codepoint = ((c & 0x07) << 18) | ((input[i+1] & 0x3F) << 12) | ((input[i+2] & 0x3F) << 6) | (input[i+3] & 0x3F); char_len = 4;
+        }
+        i += char_len;
+
+        /* Map GPT-2 codepoint back to byte value */
+        uint8_t byte_val;
+        if (codepoint >= 0x21 && codepoint <= 0x7E) {
+            byte_val = (uint8_t)codepoint; /* printable ASCII maps to itself */
+        } else if (codepoint >= 0xA1 && codepoint <= 0xAC) {
+            byte_val = (uint8_t)codepoint;
+        } else if (codepoint >= 0xAE && codepoint <= 0xFF) {
+            byte_val = (uint8_t)codepoint;
+        } else if (codepoint >= 0x100 && codepoint <= 0x100 + 32) {
+            /* Mapped bytes: 0x00-0x20 → U+0100-U+0120 */
+            byte_val = (uint8_t)(codepoint - 0x100);
+        } else if (codepoint >= 0x121 && codepoint <= 0x144) {
+            /* Mapped bytes: remaining non-printable */
+            /* 0x7F→U+0121, 0x80→U+0122, ..., 0xA0→U+0142, 0xAD→U+0143, 0x100+→... */
+            /* Simplified: build reverse map for the remaining bytes */
+            /* The GPT-2 mapping for non-printable/non-Latin1 bytes:
+             * byte 0x7F → U+0121, 0x80→U+0122, ..., 0x9F→U+0141,
+             * 0xA0→U+0142, 0xAD→U+0143 */
+            static const uint8_t remap[] = {
+                0x7F, 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88,
+                0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F, 0x90, 0x91, 0x92,
+                0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B, 0x9C,
+                0x9D, 0x9E, 0x9F, 0xA0, 0xAD
+            };
+            int idx = (int)(codepoint - 0x121);
+            byte_val = (idx >= 0 && idx < 35) ? remap[idx] : '?';
+        } else {
+            /* Unknown — write as UTF-8 directly */
+            for (int k = 0; k < char_len && out_pos < output_size - 1; k++)
+                output[out_pos++] = input[i - char_len + k];
+            continue;
+        }
+        output[out_pos++] = (char)byte_val;
+    }
+    output[out_pos] = '\0';
+    return out_pos;
+}
+
 int grpo_tokenizer_decode(const GrpoTokenizer *tok, const int *ids, int n_ids,
                           char *output_buf, int buf_size) {
     if (!tok || !ids || n_ids <= 0) return 0;
+
+    /* First pass: concatenate raw BPE token strings */
+    int raw_size = buf_size * 2;
+    char *raw = (char *)malloc((size_t)raw_size);
+    if (!raw) return 0;
 
     int pos = 0;
     for (int i = 0; i < n_ids; i++) {
         int id = ids[i];
         if (id < 0 || id >= tok->vocab_size || !tok->vocab[id]) continue;
         int len = tok->vocab_len[id];
-        if (pos + len >= buf_size) break;
-        memcpy(output_buf + pos, tok->vocab[id], (size_t)len);
+        if (pos + len >= raw_size) break;
+        memcpy(raw + pos, tok->vocab[id], (size_t)len);
         pos += len;
     }
-    if (pos < buf_size) output_buf[pos] = '\0';
-    return pos;
+    raw[pos] = '\0';
+
+    /* Second pass: convert GPT-2 byte encoding to actual UTF-8 */
+    int result = gpt2_byte_decode(raw, pos, output_buf, buf_size);
+    free(raw);
+    return result;
 }
 
 /* ─── Load Tokenizer from GGUF Metadata ─── */
