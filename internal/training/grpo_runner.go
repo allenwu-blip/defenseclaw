@@ -22,6 +22,13 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		return nil, fmt.Errorf("grpo-local engine not available")
 	}
 
+	// Pre-flight dataset validation (fail fast before loading model)
+	if cfg.DatasetPath != "" {
+		if err := preflightDatasetCheck(cfg.DatasetPath); err != nil {
+			return nil, err
+		}
+	}
+
 	// Set defaults
 	if cfg.GroupSize == 0 {
 		cfg.GroupSize = 4
@@ -368,5 +375,77 @@ func appendMetricsLog(outputDir, msg string) {
 	f.WriteString(msg)
 	f.Sync()
 	f.Close()
+}
+
+// preflightDatasetCheck validates the dataset before loading the model.
+// Catches errors early so users don't wait 30+ seconds for model load
+// only to discover their dataset is malformed.
+func preflightDatasetCheck(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("dataset error: cannot open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+
+	lineNum := 0
+	validCount := 0
+	var firstError string
+
+	for scanner.Scan() {
+		lineNum++
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var entry struct {
+			Prompt       string `json:"prompt"`
+			PromptTokens []int  `json:"prompt_tokens"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			if firstError == "" {
+				firstError = fmt.Sprintf("line %d: invalid JSON: %v", lineNum, err)
+			}
+			continue
+		}
+
+		if len(entry.PromptTokens) == 0 && entry.Prompt == "" {
+			if firstError == "" {
+				firstError = fmt.Sprintf("line %d: missing both 'prompt' and 'prompt_tokens'", lineNum)
+			}
+			continue
+		}
+
+		if len(entry.PromptTokens) == 0 {
+			if firstError == "" {
+				firstError = fmt.Sprintf("line %d: 'prompt_tokens' is empty (run: defenseclaw dataset create --model <model> --input prompts.txt)", lineNum)
+			}
+			continue
+		}
+
+		validCount++
+	}
+
+	if validCount == 0 {
+		errMsg := "dataset error: no valid entries found"
+		if firstError != "" {
+			errMsg += "\n  First issue: " + firstError
+		}
+		errMsg += "\n\n  Expected format (JSONL, one per line):\n"
+		errMsg += "    {\"prompt\": \"Write a sort function\", \"prompt_tokens\": [151644, 872, ...]}\n\n"
+		errMsg += "  Create a dataset with:\n"
+		errMsg += "    defenseclaw dataset create --model qwen3:8b --input prompts.txt"
+		return fmt.Errorf(errMsg)
+	}
+
+	if firstError != "" && validCount < lineNum/2 {
+		fmt.Fprintf(os.Stderr, "⚠  Dataset warning: %d/%d lines have issues (%s)\n", lineNum-validCount, lineNum, firstError)
+	}
+
+	fmt.Fprintf(os.Stderr, "✓  Dataset: %d valid prompts from %s\n", validCount, filepath.Base(path))
+	return nil
 }
 
