@@ -170,3 +170,166 @@ int llama_engine_logprobs(const int *tokens, int len, float *logprobs_out) {
 int llama_engine_vocab_size(void) {
     return g_llama ? g_llama->n_vocab : 0;
 }
+
+/* ─── LoRA Adapter Support ─── */
+
+static struct llama_adapter_lora *g_lora_adapter = NULL;
+
+/* Write LoRA weights to a GGUF file that llama.cpp can load.
+ * adapters: array of {A, B} pairs for each layer × target.
+ * Layout: adapters[layer * 7 + target] = {A[in_dim*rank], B[rank*out_dim]} */
+int llama_engine_export_lora_gguf(const char *output_path,
+                                   const float *const *A_ptrs,
+                                   const float *const *B_ptrs,
+                                   int n_layers, int rank, float alpha,
+                                   int hidden_dim, int intermediate_dim,
+                                   int n_heads, int n_kv_heads, int head_dim) {
+    FILE *f = fopen(output_path, "wb");
+    if (!f) return -1;
+
+    /* GGUF header */
+    uint32_t magic = 0x46554747; /* GGUF */
+    uint32_t version = 3;
+    int n_targets = 7; /* q,k,v,o,gate,up,down */
+    uint64_t n_tensors = (uint64_t)n_layers * n_targets * 2; /* A and B per target */
+    uint64_t n_kv = 4; /* metadata entries */
+
+    fwrite(&magic, 4, 1, f);
+    fwrite(&version, 4, 1, f);
+    fwrite(&n_tensors, 8, 1, f);
+    fwrite(&n_kv, 8, 1, f);
+
+    /* Metadata */
+    /* helper to write a string KV */
+    #define WRITE_STR_KV(key, val) { \
+        uint64_t kl = strlen(key); fwrite(&kl, 8, 1, f); fwrite(key, kl, 1, f); \
+        uint32_t vt = 8; fwrite(&vt, 4, 1, f); \
+        uint64_t vl = strlen(val); fwrite(&vl, 8, 1, f); fwrite(val, vl, 1, f); }
+    #define WRITE_F32_KV(key, val) { \
+        uint64_t kl = strlen(key); fwrite(&kl, 8, 1, f); fwrite(key, kl, 1, f); \
+        uint32_t vt = 6; fwrite(&vt, 4, 1, f); fwrite(&val, 4, 1, f); }
+
+    WRITE_STR_KV("general.type", "adapter");
+    WRITE_STR_KV("general.architecture", "qwen3");
+    WRITE_STR_KV("adapter.type", "lora");
+    WRITE_F32_KV("adapter.lora.alpha", alpha);
+
+    /* Tensor info */
+    const char *target_names[] = {"attn_q", "attn_k", "attn_v", "attn_output",
+                                  "ffn_gate", "ffn_up", "ffn_down"};
+    int in_dims[] = {hidden_dim, hidden_dim, hidden_dim, hidden_dim,
+                     hidden_dim, hidden_dim, intermediate_dim};
+    int out_dims[] = {n_heads*head_dim, n_kv_heads*head_dim, n_kv_heads*head_dim, hidden_dim,
+                      intermediate_dim, intermediate_dim, hidden_dim};
+
+    uint64_t data_offset = 0;
+    for (int l = 0; l < n_layers; l++) {
+        for (int t = 0; t < n_targets; t++) {
+            char name_a[128], name_b[128];
+            snprintf(name_a, sizeof(name_a), "blk.%d.%s.weight.lora_a", l, target_names[t]);
+            snprintf(name_b, sizeof(name_b), "blk.%d.%s.weight.lora_b", l, target_names[t]);
+
+            /* lora_a: [rank, in_dim] → ne[0]=rank, ne[1]=in_dim */
+            uint64_t nl = strlen(name_a); fwrite(&nl, 8, 1, f); fwrite(name_a, nl, 1, f);
+            uint32_t nd = 2; fwrite(&nd, 4, 1, f);
+            uint64_t ne0 = rank, ne1 = in_dims[t];
+            fwrite(&ne0, 8, 1, f); fwrite(&ne1, 8, 1, f);
+            uint32_t dtype = 0; /* F32 */ fwrite(&dtype, 4, 1, f);
+            fwrite(&data_offset, 8, 1, f);
+            data_offset += (uint64_t)rank * in_dims[t] * 4;
+
+            /* lora_b: [out_dim, rank] → ne[0]=out_dim, ne[1]=rank */
+            nl = strlen(name_b); fwrite(&nl, 8, 1, f); fwrite(name_b, nl, 1, f);
+            nd = 2; fwrite(&nd, 4, 1, f);
+            ne0 = out_dims[t]; ne1 = rank;
+            fwrite(&ne0, 8, 1, f); fwrite(&ne1, 8, 1, f);
+            dtype = 0; fwrite(&dtype, 4, 1, f);
+            fwrite(&data_offset, 8, 1, f);
+            data_offset += (uint64_t)rank * out_dims[t] * 4;
+        }
+    }
+
+    /* Align to 32 bytes */
+    long pos = ftell(f);
+    long aligned = (pos + 31) & ~31L;
+    while (pos < aligned) { uint8_t z = 0; fwrite(&z, 1, 1, f); pos++; }
+
+    /* Tensor data */
+    for (int l = 0; l < n_layers; l++) {
+        for (int t = 0; t < n_targets; t++) {
+            int idx = l * n_targets + t;
+            /* Write A: [rank × in_dim] stored column-major in our engine
+             * llama.cpp expects row-major [rank rows of in_dim elements] */
+            if (A_ptrs[idx]) {
+                fwrite(A_ptrs[idx], sizeof(float), (size_t)rank * in_dims[t], f);
+            } else {
+                /* Write zeros */
+                float zero = 0;
+                for (int i = 0; i < rank * in_dims[t]; i++) fwrite(&zero, 4, 1, f);
+            }
+            /* Write B */
+            if (B_ptrs[idx]) {
+                fwrite(B_ptrs[idx], sizeof(float), (size_t)rank * out_dims[t], f);
+            } else {
+                float zero = 0;
+                for (int i = 0; i < rank * out_dims[t]; i++) fwrite(&zero, 4, 1, f);
+            }
+        }
+    }
+
+    fclose(f);
+    #undef WRITE_STR_KV
+    #undef WRITE_F32_KV
+    return 0;
+}
+
+/* Apply LoRA adapter to the llama context. Writes temp GGUF and loads it. */
+int llama_engine_apply_lora(const float *const *A_ptrs, const float *const *B_ptrs,
+                            int n_layers, int rank, float alpha,
+                            int hidden_dim, int intermediate_dim,
+                            int n_heads, int n_kv_heads, int head_dim) {
+    if (!g_llama) return -1;
+
+    const char *tmp_path = "/tmp/grpo-lora-active.gguf";
+
+    /* Export current LoRA weights to GGUF */
+    if (llama_engine_export_lora_gguf(tmp_path, A_ptrs, B_ptrs,
+                                       n_layers, rank, alpha,
+                                       hidden_dim, intermediate_dim,
+                                       n_heads, n_kv_heads, head_dim) != 0) {
+        return -1;
+    }
+
+    /* Remove old adapter if any */
+    if (g_lora_adapter) {
+        llama_adapter_lora_free(g_lora_adapter);
+        g_lora_adapter = NULL;
+    }
+
+    /* Load new adapter */
+    g_lora_adapter = llama_adapter_lora_init(g_llama->model, tmp_path);
+    if (!g_lora_adapter) {
+        fprintf(stderr, "llama_engine: failed to load LoRA adapter\n");
+        return -1;
+    }
+
+    /* Apply to context with scale 1.0 */
+    float scale = 1.0f;
+    if (llama_set_adapters_lora(g_llama->ctx, &g_lora_adapter, 1, &scale) != 0) {
+        fprintf(stderr, "llama_engine: failed to set LoRA adapter\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+/* Remove LoRA adapter (revert to base model) */
+int llama_engine_remove_lora(void) {
+    if (!g_llama) return -1;
+    llama_set_adapters_lora(g_llama->ctx, NULL, 0, NULL);
+    if (g_lora_adapter) {
+        llama_adapter_lora_free(g_lora_adapter);
+        g_lora_adapter = NULL;
+    }
+    return 0;
+}

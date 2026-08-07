@@ -22,6 +22,11 @@ extern int  llama_engine_generate(const int *prompt, int prompt_len,
                                   int *output, int max_len, float *logprobs_out,
                                   float temp, float top_p, unsigned int *rng_state);
 extern int  llama_engine_logprobs(const int *tokens, int len, float *logprobs_out);
+extern int  llama_engine_apply_lora(const float *const *A_ptrs, const float *const *B_ptrs,
+                                    int n_layers, int rank, float alpha,
+                                    int hidden_dim, int intermediate_dim,
+                                    int n_heads, int n_kv_heads, int head_dim);
+extern int  llama_engine_remove_lora(void);
 
 /* Forward declarations for internal engine types and functions.
  * These are defined in policy.c, stream.c, lora.c but not in grpo.h
@@ -265,14 +270,29 @@ int grpo_policy_logprobs(GrpoCtx *ctx, const int *tokens, int len, float *logpro
     if (!ctx || !tokens || !logprobs_out) return -1;
 
     if (ctx->use_llama) {
-        /* Use llama.cpp for correct logprobs.
-         * Note: LoRA injection is not yet supported through llama.cpp.
-         * For now, logprobs come from the base model (same as old_logprobs).
-         * TODO: inject LoRA via llama.cpp adapter API. */
-        return llama_engine_logprobs(tokens, len, logprobs_out);
+        /* Apply LoRA adapter to llama.cpp context, compute logprobs, then remove.
+         * This gives us correct logprobs WITH LoRA applied. */
+        int n_adapters = ctx->n_layers * 7; /* 7 targets per layer */
+        const float **A_ptrs = (const float **)malloc((size_t)n_adapters * sizeof(float*));
+        const float **B_ptrs = (const float **)malloc((size_t)n_adapters * sizeof(float*));
+        for (int l = 0; l < ctx->n_layers; l++) {
+            for (int t = 0; t < 7; t++) {
+                A_ptrs[l*7+t] = ctx->lora.layers[l].adapters[t].A;
+                B_ptrs[l*7+t] = ctx->lora.layers[l].adapters[t].B;
+            }
+        }
+        llama_engine_apply_lora(A_ptrs, B_ptrs, ctx->n_layers, ctx->lora.rank,
+                                (float)ctx->lora.alpha, ctx->hidden_dim, ctx->intermediate_dim,
+                                ctx->n_heads, ctx->n_kv_heads, ctx->head_dim);
+        free(A_ptrs); free(B_ptrs);
+
+        int ret = llama_engine_logprobs(tokens, len, logprobs_out);
+
+        llama_engine_remove_lora();
+        return ret;
     }
 
-    /* Custom policy engine with LoRA injection */
+    /* Fallback: custom policy engine with LoRA injection */
     policy_set_active_lora((void *)&ctx->lora);
     int ret = grpo_policy_logprobs_internal(ctx->policy, tokens, len, logprobs_out);
     policy_set_active_lora(NULL);
