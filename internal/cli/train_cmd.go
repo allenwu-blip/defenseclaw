@@ -115,18 +115,35 @@ func init() {
 	generateCmd.MarkFlagRequired("model")
 	generateCmd.MarkFlagRequired("prompt")
 
+	setupCmd := &cobra.Command{
+		Use:   "setup training",
+		Short: "Install training dependencies (llama.cpp, build engine)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println(training.SetupInfo())
+			return training.EnsureSetup()
+		},
+	}
+
 	rootCmd.AddCommand(trainCmd)
 	rootCmd.AddCommand(generateCmd)
 	rootCmd.AddCommand(dashboardCmd)
+	rootCmd.AddCommand(setupCmd)
 }
 
 func runTrain(cmd *cobra.Command, args []string) error {
-	// Validate files exist
-	if _, err := os.Stat(trainModel); err != nil {
-		return fmt.Errorf("model not found: %s", trainModel)
+	// Auto-setup: install dependencies if needed
+	if err := training.EnsureSetup(); err != nil {
+		return err
 	}
+
+	// Find or download model
+	modelPath, err := training.EnsureModel(trainModel)
+	if err != nil {
+		return fmt.Errorf("model error: %w\n\nSupported models:\n  defenseclaw train --model qwen3:8b  (auto-downloads via ollama)\n  defenseclaw train --model /path/to/model.gguf", err)
+	}
+	trainModel = modelPath
 	if _, err := os.Stat(trainDataset); err != nil {
-		return fmt.Errorf("dataset not found: %s", trainDataset)
+		return fmt.Errorf("dataset not found: %s\n\nDataset format (JSONL, one per line):\n  {\"prompt\": \"...\", \"prompt_tokens\": [151644, 872, ...], \"metadata\": {}}", trainDataset)
 	}
 
 	os.MkdirAll(trainOutput, 0755)
