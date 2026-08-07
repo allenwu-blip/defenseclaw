@@ -101,13 +101,27 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		prompt := prompts[step%len(prompts)]
 		meta := metadata[step%len(prompts)]
 
-		// Step 1: Prefill + generate G completions in parallel threads
-		completionTokens, oldLogprobs, err := engine.GenerateParallel(prompt,
-			cfg.GroupSize, cfg.MaxGenLength,
-			float32(cfg.Temperature), float32(cfg.TopP))
-		if err != nil {
+		// Step 1: Prefill once, then generate G completions sequentially
+		if err := engine.Prefill(prompt); err != nil {
 			continue
 		}
+		engine.SaveKVSnapshot()
+
+		var completionTokens [][]int
+		var oldLogprobs [][]float32
+		for g := 0; g < cfg.GroupSize; g++ {
+			if g > 0 {
+				engine.RestoreKVSnapshot()
+			}
+			tokens, lp, err := engine.GenerateContinue(cfg.MaxGenLength,
+				float32(cfg.Temperature), float32(cfg.TopP))
+			if err != nil {
+				continue
+			}
+			completionTokens = append(completionTokens, tokens)
+			oldLogprobs = append(oldLogprobs, lp)
+		}
+		engine.FreeKVSnapshot()
 
 		if len(completionTokens) == 0 {
 			continue
@@ -208,15 +222,19 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		if (step+1)%5 == 0 {
 			stats := engine.Stats()
 			meanReward := mean(rewards)
-			fmt.Fprintf(os.Stderr, "[grpo] step %d/%d, reward=%.3f, loss=%.4f, adv=[%.2f,%.2f]\n",
+			msg := fmt.Sprintf("[grpo] step %d/%d, reward=%.3f, loss=%.4f, adv=[%.2f,%.2f]\n",
 				step+1, totalSteps, meanReward, stats.LastLoss,
 				advantages[0], advantages[len(advantages)-1])
+			fmt.Fprint(os.Stderr, msg)
+			appendMetricsLog(cfg.OutputDir, msg)
 		}
 
 		// Checkpoint
 		if (step+1)%cfg.CheckpointEvery == 0 {
 			engine.SaveLoRA(checkpointPath)
-			fmt.Fprintf(os.Stderr, "[grpo] checkpoint saved at step %d\n", step+1)
+			msg := fmt.Sprintf("[grpo] checkpoint saved at step %d\n", step+1)
+			fmt.Fprint(os.Stderr, msg)
+			appendMetricsLog(cfg.OutputDir, msg)
 		}
 	}
 
@@ -342,5 +360,19 @@ func tokenDiversityReward(tokens []int, groupIdx int) float64 {
 	score += float64(groupIdx) * 0.001
 
 	return score
+}
+
+func appendMetricsLog(outputDir, msg string) {
+	if outputDir == "" {
+		outputDir = "/tmp"
+	}
+	os.MkdirAll(outputDir, 0755)
+	f, err := os.OpenFile("/tmp/grpo-metrics.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	f.WriteString(msg)
+	f.Sync()
+	f.Close()
 }
 
