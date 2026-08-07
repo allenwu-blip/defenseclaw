@@ -503,7 +503,7 @@ void grpo_matmul_q6_k(float *out, const float *x, const void *W_packed,
     for (int r = 0; r < rows; r++) {
         const uint8_t *row_data = W + (size_t)r * blocks_per_row * Q6_K_BLOCK_BYTES;
 
-#ifdef __ARM_NEON
+#if 0 /* Q6K NEON DISABLED — has dequant bug */
         /* NEON path: process 16 elements per sub-block */
         float32x4_t acc0 = vdupq_n_f32(0), acc1 = vdupq_n_f32(0);
         float32x4_t acc2 = vdupq_n_f32(0), acc3 = vdupq_n_f32(0);

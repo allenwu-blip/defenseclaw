@@ -662,7 +662,6 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
         }
     }
 
-    if (pos == 0) { double es=0,er=0; for(int i=0;i<hidden_dim;i++){es+=pe->hidden[i];er+=pe->hidden[i]*pe->hidden[i];} er=sqrt(er/hidden_dim); fprintf(stderr,"policy: embed_check sum=%.6f rms=%.6f [256]=%.6f [4000]=%.6f\n",es,er,pe->hidden[256],pe->hidden[4000]); }
     /* Run through transformer layers */
     for (int l = 0; l < pe->gf.n_layers; l++) {
         PolicyLayer *layer = &pe->layers[l];
@@ -752,7 +751,6 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
             pe->hidden[i] = residual[i] + pe->ffn_out[i];
 
         if (l == 0 && pos == 0) {
-            fprintf(stderr, "policy: after_layer0[0..3]=%.6f,%.6f,%.6f,%.6f\n",
                     pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
         }
         free(residual);
@@ -760,12 +758,10 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
 
     /* Final norm + output projection */
     if (pos == 0) {
-        fprintf(stderr, "policy: EMBEDSUM[0..3]=%.6f,%.6f,%.6f,%.6f\n",
                 pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
     }
     rmsnorm_any(pe->hidden, pe->hidden, pe->output_norm, 0 /* output_norm is always F32 */, hidden_dim, pe->gf.rms_eps);
     if (pos == 0) {
-        fprintf(stderr, "policy: post_norm[0..3]=%.6f,%.6f,%.6f,%.6f\n",
                 pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
     }
 
@@ -777,7 +773,6 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
         float max_val = -1e30f; int max_idx = 0;
         for (int i = 0; i < vocab_size; i++)
             if (pe->logits[i] > max_val) { max_val = pe->logits[i]; max_idx = i; }
-        fprintf(stderr, "policy: logits argmax=%d (%.4f), logit[151667]=%.4f, logit[872]=%.4f, logit[83448]=%.4f\n",
                 max_idx, max_val, pe->logits[151667], pe->logits[872], pe->logits[8948]);
     }
 }
