@@ -101,19 +101,11 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		prompt := prompts[step%len(prompts)]
 		meta := metadata[step%len(prompts)]
 
-		// Step 1: Prefill once, then generate G completions sequentially
-		if err := engine.Prefill(prompt); err != nil {
-			continue
-		}
-		engine.SaveKVSnapshot()
-
+		// Step 1: Generate G completions (each via full Generate call with llama.cpp)
 		var completionTokens [][]int
 		var oldLogprobs [][]float32
 		for g := 0; g < cfg.GroupSize; g++ {
-			if g > 0 {
-				engine.RestoreKVSnapshot()
-			}
-			tokens, lp, err := engine.GenerateContinue(cfg.MaxGenLength,
+			tokens, lp, err := engine.Generate(prompt, cfg.MaxGenLength,
 				float32(cfg.Temperature), float32(cfg.TopP))
 			if err != nil {
 				continue
@@ -121,7 +113,6 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 			completionTokens = append(completionTokens, tokens)
 			oldLogprobs = append(oldLogprobs, lp)
 		}
-		engine.FreeKVSnapshot()
 
 		if len(completionTokens) == 0 {
 			continue
