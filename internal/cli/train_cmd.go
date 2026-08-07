@@ -124,10 +124,74 @@ func init() {
 		},
 	}
 
+	datasetCmd := &cobra.Command{
+		Use:   "dataset",
+		Short: "Create and validate training datasets",
+	}
+
+	var dsModel, dsInput, dsOutput string
+	datasetCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a tokenized dataset from plain-text prompts",
+		Long: `Reads a text file (one prompt per line) and produces a tokenized JSONL
+dataset ready for training. Automatically applies the model's chat template.
+
+Input format (prompts.txt):
+  Write a function to reverse a linked list
+  Implement binary search in Python
+  Check if a string is palindrome
+
+Output format (training_data.jsonl):
+  {"prompt":"Write a...","prompt_tokens":[151644,872,...],"metadata":{}}`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dsModel == "" || dsInput == "" {
+				return fmt.Errorf("--model and --input are required")
+			}
+			if dsOutput == "" {
+				dsOutput = "training_data.jsonl"
+			}
+			modelPath, err := training.EnsureModel(dsModel)
+			if err != nil {
+				return err
+			}
+			return training.CreateDataset(dsInput, dsOutput, modelPath)
+		},
+	}
+	datasetCreateCmd.Flags().StringVar(&dsModel, "model", "", "Model name or path (for tokenization)")
+	datasetCreateCmd.Flags().StringVar(&dsInput, "input", "", "Input text file (one prompt per line)")
+	datasetCreateCmd.Flags().StringVar(&dsOutput, "output", "training_data.jsonl", "Output JSONL path")
+
+	var dsValModel, dsValDataset string
+	datasetValidateCmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate a training dataset",
+		Long:  `Checks token IDs, prompt counts, and compatibility with the target model.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if dsValDataset == "" {
+				return fmt.Errorf("--dataset is required")
+			}
+			if dsValModel == "" {
+				dsValModel = "qwen3:8b"
+			}
+			stats, err := training.ValidateDataset(dsValDataset, dsValModel)
+			if err != nil {
+				return err
+			}
+			fmt.Print(training.FormatValidationReport(stats))
+			return nil
+		},
+	}
+	datasetValidateCmd.Flags().StringVar(&dsValModel, "model", "qwen3:8b", "Model name (for vocab validation)")
+	datasetValidateCmd.Flags().StringVar(&dsValDataset, "dataset", "", "Dataset JSONL to validate")
+
+	datasetCmd.AddCommand(datasetCreateCmd)
+	datasetCmd.AddCommand(datasetValidateCmd)
+
 	rootCmd.AddCommand(trainCmd)
 	rootCmd.AddCommand(generateCmd)
 	rootCmd.AddCommand(dashboardCmd)
 	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(datasetCmd)
 }
 
 func runTrain(cmd *cobra.Command, args []string) error {
