@@ -57,6 +57,9 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		cfg.GradAccumSteps = 1
 	}
 
+	// Start metrics dashboard
+	StartDashboard()
+
 	// Initialize engine
 	engine, err := NewGrpoEngine(cfg)
 	if err != nil {
