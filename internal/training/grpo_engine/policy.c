@@ -153,6 +153,8 @@ typedef struct {
     const void *down_weight;
     const void *attn_norm; /* f32 or f16 norm weights */
     const void *ffn_norm;
+    const float *q_norm;   /* per-head Q norm [head_dim], Qwen3-specific */
+    const float *k_norm;   /* per-head K norm [head_dim], Qwen3-specific */
     int attn_norm_dtype, ffn_norm_dtype;
     /* Dtypes for dynamic dispatch */
     int q_dtype, k_dtype, v_dtype, o_dtype;
@@ -345,6 +347,13 @@ static PolicyEngine *policy_init(const char *gguf_path, int max_seq_len) {
         snprintf(name, sizeof(name), "blk.%d.ffn_norm.weight", l);
         pe->layers[l].ffn_norm = resolve_tensor_ptr(&pe->gf, pe->mmap_base,
                                                     name, GGUF_TYPE_F32, &pe->layers[l].ffn_norm_dtype);
+
+        snprintf(name, sizeof(name), "blk.%d.attn_q_norm.weight", l);
+        pe->layers[l].q_norm = (const float *)resolve_tensor_ptr(&pe->gf, pe->mmap_base,
+                                                                   name, GGUF_TYPE_F32, NULL);
+        snprintf(name, sizeof(name), "blk.%d.attn_k_norm.weight", l);
+        pe->layers[l].k_norm = (const float *)resolve_tensor_ptr(&pe->gf, pe->mmap_base,
+                                                                   name, GGUF_TYPE_F32, NULL);
 
         if (!pe->layers[l].q_weight) fprintf(stderr, "policy: layer %d missing attn_q\n", l);
         if (!pe->layers[l].k_weight) fprintf(stderr, "policy: layer %d missing attn_k\n", l);
@@ -683,6 +692,18 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
 
         grpo_matmul_any(pe->v_buf, pe->hidden, layer->v_weight, n_kv_heads * head_dim, hidden_dim, layer->v_dtype);
         inject_lora(pe->v_buf, pe->hidden, l, 2, n_kv_heads * head_dim, hidden_dim);
+
+        /* Per-head QK norm (Qwen3-specific) */
+        if (layer->q_norm) {
+            for (int h = 0; h < n_heads; h++)
+                grpo_rmsnorm(pe->q_buf + h*head_dim, pe->q_buf + h*head_dim,
+                            layer->q_norm, head_dim, pe->gf.rms_eps);
+        }
+        if (layer->k_norm) {
+            for (int h = 0; h < n_kv_heads; h++)
+                grpo_rmsnorm(pe->k_buf + h*head_dim, pe->k_buf + h*head_dim,
+                            layer->k_norm, head_dim, pe->gf.rms_eps);
+        }
 
         /* RoPE on Q and K */
         grpo_rope(pe->q_buf, NULL, pos, n_heads, head_dim, pe->gf.rope_theta);
