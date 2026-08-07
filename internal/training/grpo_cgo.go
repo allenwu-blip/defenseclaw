@@ -7,7 +7,7 @@ package training
 #cgo CFLAGS: -I${SRCDIR}/grpo_engine -O3
 #cgo linux CFLAGS: -fopenmp
 #cgo linux LDFLAGS: -L${SRCDIR}/grpo_engine -lgrpo_stream -lm -lgomp
-#cgo darwin LDFLAGS: -L${SRCDIR}/grpo_engine -lgrpo_stream -lm -L/opt/homebrew/opt/libomp/lib -lomp
+#cgo darwin LDFLAGS: -L${SRCDIR}/grpo_engine -lgrpo_stream -lm -L/opt/homebrew/opt/libomp/lib -lomp -L/opt/homebrew/lib -lllama
 #include "grpo.h"
 #include <stdlib.h>
 */

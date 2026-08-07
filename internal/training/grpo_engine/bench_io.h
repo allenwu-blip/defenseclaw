@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/bench_io.h */
+/* grpo_engine */
 #ifndef GRPO_BENCH_IO_H
 #define GRPO_BENCH_IO_H
 

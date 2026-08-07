@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/uring.c */
+/* grpo_engine */
 #ifdef GRPO_HAS_URING
 
 #include "uring.h"

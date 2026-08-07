@@ -1,6 +1,6 @@
 # internal/training/grpo_engine/Makefile
 CC       ?= cc
-CFLAGS   = -O3 -std=c99 -ffp-contract=off -fPIC -Wall -Wextra
+CFLAGS   = -O3 -std=c11 -ffp-contract=off -fPIC -Wall -Wextra
 LDFLAGS  = -lm
 
 # Platform detection
@@ -29,7 +29,14 @@ ifeq ($(AVX2_OK),1)
   CFLAGS += -mavx2 -mfma
 endif
 
-SRCS = gguf.c kernels.c policy.c stream.c lora.c grpo.c tokenizer.c bench_io.c
+SRCS = gguf.c kernels.c policy.c stream.c lora.c grpo.c tokenizer.c bench_io.c 
+
+# llama.cpp support
+LLAMA_PREFIX := $(shell brew --prefix llama.cpp 2>/dev/null)
+ifneq ($(LLAMA_PREFIX),)
+  CFLAGS += -I$(LLAMA_PREFIX)/include -I/opt/homebrew/include
+  LDFLAGS += -L$(LLAMA_PREFIX)/lib -L/opt/homebrew/lib -lllama
+endif
 
 # io_uring detection (Linux only)
 ifeq ($(UNAME_S),Linux)
@@ -49,6 +56,7 @@ all: libgrpo_stream.a
 
 libgrpo_stream.a: $(OBJS)
 	ar rcs $@ $^
+	rm -f $(OBJS)
 
 %.o: %.c grpo.h
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -71,8 +79,8 @@ test_tokenizer: libgrpo_stream.a test_tokenizer.c
 bench_io: libgrpo_stream.a test_bench_io.c
 	$(CC) $(CFLAGS) -I. test_bench_io.c -L. -lgrpo_stream $(LDFLAGS) -o bench_io
 
-grpo-trainer: libgrpo_stream.a trainer_main.c
-	$(CC) $(CFLAGS) -I. trainer_main.c -L. -lgrpo_stream $(LDFLAGS) -o grpo-trainer
+grpo-trainer: libgrpo_stream.a
+	$(CC) $(CFLAGS) -I. -L. -lgrpo_stream $(LDFLAGS) -o grpo-trainer
 
 clean:
 	rm -f *.o *.a test_runner test_tokenizer bench_io grpo-trainer

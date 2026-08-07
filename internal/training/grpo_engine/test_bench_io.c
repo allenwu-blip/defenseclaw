@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/test_bench_io.c */
+/* grpo_engine */
 #include "bench_io.h"
 #include <stdio.h>
 

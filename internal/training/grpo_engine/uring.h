@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/uring.h */
+/* grpo_engine */
 #ifndef GRPO_URING_H
 #define GRPO_URING_H
 

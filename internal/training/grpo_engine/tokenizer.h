@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/tokenizer.h */
+/* grpo_engine */
 #ifndef GRPO_TOKENIZER_H
 #define GRPO_TOKENIZER_H
 

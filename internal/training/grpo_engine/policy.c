@@ -723,8 +723,10 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
         inject_lora(pe->hidden, pe->attn_out, l, 3, hidden_dim, hidden_dim);
 
         /* Residual connection */
+        if (l == 0 && pos == 0)
         for (int i = 0; i < hidden_dim; i++)
             pe->hidden[i] += residual[i];
+        if (l == 0 && pos == 0)
 
         /* FFN */
         memcpy(residual, pe->hidden, (size_t)hidden_dim * sizeof(float));
@@ -747,34 +749,18 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
         inject_lora(pe->ffn_out, pe->ffn_gate, l, 6, hidden_dim, intermediate_dim);
 
         /* Residual */
+        if (l == 0 && pos == 0)
         for (int i = 0; i < hidden_dim; i++)
             pe->hidden[i] = residual[i] + pe->ffn_out[i];
+        if (l == 0 && pos == 0)
 
-        if (l == 0 && pos == 0) {
-                    pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
-        }
         free(residual);
     }
 
     /* Final norm + output projection */
-    if (pos == 0) {
-                pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
-    }
     rmsnorm_any(pe->hidden, pe->hidden, pe->output_norm, 0 /* output_norm is always F32 */, hidden_dim, pe->gf.rms_eps);
-    if (pos == 0) {
-                pe->hidden[0], pe->hidden[1], pe->hidden[2], pe->hidden[3]);
-    }
-
     /* Output projection using dynamic dispatcher */
     grpo_matmul_any(pe->logits, pe->hidden, pe->output_weight, vocab_size, hidden_dim, pe->output_dtype);
-
-    if (pos == 0) {
-        /* Print top-5 logits and specific tokens of interest */
-        float max_val = -1e30f; int max_idx = 0;
-        for (int i = 0; i < vocab_size; i++)
-            if (pe->logits[i] > max_val) { max_val = pe->logits[i]; max_idx = i; }
-                max_idx, max_val, pe->logits[151667], pe->logits[872], pe->logits[8948]);
-    }
 }
 
 /* ─── KV Cache Snapshot for Multi-Completion Sharing ─── */

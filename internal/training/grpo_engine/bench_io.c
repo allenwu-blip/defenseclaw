@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/bench_io.c */
+/* grpo_engine */
 #ifndef __APPLE__
 #define _POSIX_C_SOURCE 200809L
 #endif

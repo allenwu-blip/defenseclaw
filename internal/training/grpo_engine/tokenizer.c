@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/tokenizer.c */
+/* grpo_engine */
 #include "tokenizer.h"
 #include <stdio.h>
 #include <stdlib.h>

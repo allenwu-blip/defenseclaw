@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/gguf.c
+/* gguf.c
  *
  * Parses GGUF v3 format: header → metadata KV pairs → tensor info → tensor data.
  * Reference: https://github.com/ggerganov/ggml/blob/master/docs/gguf.md

@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/grpo.h */
+/* grpo_engine */
 #ifndef GRPO_H
 #define GRPO_H
 

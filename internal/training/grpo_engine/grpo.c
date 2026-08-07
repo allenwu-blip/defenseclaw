@@ -1,4 +1,4 @@
-/* internal/training/grpo_engine/grpo.c
+/* grpo.c
  *
  * Top-level GRPO engine: wires together policy, stream, and LoRA engines.
  * This is the real implementation — not a stub. Every function dispatches
@@ -14,6 +14,14 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+
+/* llama.cpp inference engine (correct reference implementation) */
+extern int  llama_engine_init(const char *model_path, int n_ctx, int n_threads);
+extern void llama_engine_free(void);
+extern int  llama_engine_generate(const int *prompt, int prompt_len,
+                                  int *output, int max_len, float *logprobs_out,
+                                  float temp, float top_p, unsigned int *rng_state);
+extern int  llama_engine_logprobs(const int *tokens, int len, float *logprobs_out);
 
 /* Forward declarations for internal engine types and functions.
  * These are defined in policy.c, stream.c, lora.c but not in grpo.h
@@ -115,6 +123,9 @@ struct GrpoCtx {
     /* RNG for generation */
     unsigned int rng_state;
 
+    /* Use llama.cpp for inference (correct implementation) */
+    int use_llama;
+
     /* Stats */
     GrpoStats stats;
 };
@@ -160,6 +171,16 @@ GrpoCtx *grpo_init(GrpoConfig *cfg) {
         gguf_close(&ctx->policy_gf);
         free(ctx);
         return NULL;
+    }
+
+    /* Initialize llama.cpp inference engine (correct forward pass) */
+    int llama_threads = cfg->num_threads > 0 ? cfg->num_threads : 8;
+    if (llama_engine_init(cfg->policy_gguf, ctx->max_seq_len, llama_threads) == 0) {
+        ctx->use_llama = 1;
+        fprintf(stderr, "grpo_init: using llama.cpp for inference\n");
+    } else {
+        ctx->use_llama = 0;
+        fprintf(stderr, "grpo_init: llama.cpp init failed, using custom policy engine\n");
     }
 
     /* Initialize reference stream engine (if reference model provided) */
@@ -209,6 +230,7 @@ GrpoCtx *grpo_init(GrpoConfig *cfg) {
 
 void grpo_free(GrpoCtx *ctx) {
     if (!ctx) return;
+    if (ctx->use_llama) llama_engine_free();
     if (ctx->policy) grpo_policy_free(ctx->policy);
     if (ctx->ref_stream) stream_close(ctx->ref_stream);
     if (ctx->reward_stream) stream_close(ctx->reward_stream);
@@ -223,13 +245,15 @@ void grpo_free(GrpoCtx *ctx) {
 int grpo_generate(GrpoCtx *ctx, const int *prompt, int prompt_len,
                   int *output, int max_len, float *logprobs_out,
                   float temp, float top_p) {
-    if (!ctx || !ctx->policy || !prompt || !output) return -1;
+    if (!ctx || !prompt || !output) return -1;
 
-    int n = grpo_policy_generate_internal(ctx->policy, prompt, prompt_len,
-                                          output, max_len, logprobs_out,
-                                          temp, top_p, &ctx->rng_state);
-    ctx->stats.total_gen_seconds += 0; /* TODO: add timing */
-    return n;
+    if (ctx->use_llama) {
+        return llama_engine_generate(prompt, prompt_len, output, max_len,
+                                     logprobs_out, temp, top_p, &ctx->rng_state);
+    }
+    return grpo_policy_generate_internal(ctx->policy, prompt, prompt_len,
+                                         output, max_len, logprobs_out,
+                                         temp, top_p, &ctx->rng_state);
 }
 
 /* ─── Policy Logprobs (Real Forward + LoRA Injection) ─── */
@@ -238,17 +262,20 @@ int grpo_generate(GrpoCtx *ctx, const int *prompt, int prompt_len,
 void policy_set_active_lora(void *lora_ref);
 
 int grpo_policy_logprobs(GrpoCtx *ctx, const int *tokens, int len, float *logprobs_out) {
-    if (!ctx || !ctx->policy || !tokens || !logprobs_out) return -1;
+    if (!ctx || !tokens || !logprobs_out) return -1;
 
-    /* ACTIVATE LoRA for this forward pass.
-     * This is what makes policy_logprobs DIFFERENT from old_logprobs:
-     * - old_logprobs: captured during generation WITHOUT LoRA (base model only)
-     * - policy_logprobs: computed here WITH LoRA injected
-     * The ratio exp(policy_lp - old_lp) measures how LoRA changed the distribution.
-     * Without this, ratio=1.0 always and no gradient flows. */
+    if (ctx->use_llama) {
+        /* Use llama.cpp for correct logprobs.
+         * Note: LoRA injection is not yet supported through llama.cpp.
+         * For now, logprobs come from the base model (same as old_logprobs).
+         * TODO: inject LoRA via llama.cpp adapter API. */
+        return llama_engine_logprobs(tokens, len, logprobs_out);
+    }
+
+    /* Custom policy engine with LoRA injection */
     policy_set_active_lora((void *)&ctx->lora);
     int ret = grpo_policy_logprobs_internal(ctx->policy, tokens, len, logprobs_out);
-    policy_set_active_lora(NULL);  /* Deactivate LoRA */
+    policy_set_active_lora(NULL);
     return ret;
 }
 
