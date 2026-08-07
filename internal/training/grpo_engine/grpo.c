@@ -496,3 +496,143 @@ int grpo_detokenize(GrpoCtx *ctx, const int *ids, int n_ids, char *buf, int buf_
     if (!ctx || !ctx->tokenizer) return -1;
     return grpo_tokenizer_decode(ctx->tokenizer, ids, n_ids, buf, buf_size);
 }
+
+/* ─── Single-Call Training Step (all parallelism in C) ─── */
+
+static float diversity_reward(const int *tokens, int len, int g) {
+    if (len <= 0) return 0.0f;
+    int unique = 0;
+    for (int i = 0; i < len; i++) {
+        int found = 0;
+        for (int j = 0; j < i; j++) {
+            if (tokens[j] == tokens[i]) { found = 1; break; }
+        }
+        if (!found) unique++;
+    }
+    float ratio = (float)unique / (float)len;
+    float length_score = (float)len / 64.0f;
+    if (length_score > 1.0f) length_score = 1.0f;
+    return 0.7f * ratio + 0.3f * length_score + (float)g * 0.001f;
+}
+
+int grpo_generate_step(GrpoCtx *ctx, const int *prompt, int prompt_len,
+                       int G, int max_gen_len, float temp, float top_p,
+                       int *flat_tokens_out, int *lengths_out) {
+    if (!ctx || !ctx->policy || !prompt) return -1;
+
+    /* Prefill */
+    grpo_policy_prefill_internal(ctx->policy, prompt, prompt_len);
+
+    /* Generate G completions sequentially (safe path) */
+    grpo_policy_save_kv_internal(ctx->policy);
+    for (int g = 0; g < G; g++) {
+        if (g > 0) grpo_policy_restore_kv_internal(ctx->policy);
+        int *out = flat_tokens_out + g * max_gen_len;
+        float lp_buf[1]; /* dummy — not needed here */
+        int n = grpo_policy_generate_continue_internal(ctx->policy, out, max_gen_len,
+                                                       NULL, temp, top_p, &ctx->rng_state);
+        lengths_out[g] = n;
+        ctx->rng_state = ctx->rng_state * 1664525u + 1013904223u;
+    }
+    grpo_policy_free_kv_snapshot_internal();
+    return 0;
+}
+
+int grpo_train_step(GrpoCtx *ctx, const int *prompt, int prompt_len,
+                    int G, int max_gen_len, float temp, float top_p,
+                    float clip_eps, float kl_coef, float lr,
+                    const float *rewards, int step_num,
+                    GrpoStepResult *result) {
+    if (!ctx || !ctx->policy || !prompt || !result) return -1;
+
+    /* Step 1: Generate G completions */
+    int *flat_tokens = (int *)calloc((size_t)G * (size_t)max_gen_len, sizeof(int));
+    int *lengths = (int *)calloc((size_t)G, sizeof(int));
+    float *old_lp = (float *)calloc((size_t)G * (size_t)max_gen_len, sizeof(float));
+    if (!flat_tokens || !lengths || !old_lp) goto fail;
+
+    /* Prefill + sequential generate (parallel crashes under Go's signal handler) */
+    grpo_policy_prefill_internal(ctx->policy, prompt, prompt_len);
+    grpo_policy_save_kv_internal(ctx->policy);
+    for (int g = 0; g < G; g++) {
+        if (g > 0) grpo_policy_restore_kv_internal(ctx->policy);
+        int n = grpo_policy_generate_continue_internal(ctx->policy,
+            flat_tokens + g * max_gen_len, max_gen_len,
+            old_lp + g * max_gen_len, temp, top_p, &ctx->rng_state);
+        lengths[g] = n;
+        ctx->rng_state = ctx->rng_state * 1664525u + 1013904223u;
+    }
+    grpo_policy_free_kv_snapshot_internal();
+
+    /* Step 2: Compute rewards */
+    float *rews = (float *)malloc((size_t)G * sizeof(float));
+    if (!rews) goto fail;
+    if (rewards) {
+        memcpy(rews, rewards, (size_t)G * sizeof(float));
+    } else {
+        for (int g = 0; g < G; g++)
+            rews[g] = diversity_reward(flat_tokens + g * max_gen_len, lengths[g], g);
+    }
+
+    /* Step 3: Advantages */
+    float mean_r = 0, std_r = 0;
+    for (int g = 0; g < G; g++) mean_r += rews[g];
+    mean_r /= (float)G;
+    for (int g = 0; g < G; g++) std_r += (rews[g] - mean_r) * (rews[g] - mean_r);
+    std_r = sqrtf(std_r / (float)G);
+    if (std_r < 1e-8f) std_r = 1e-8f;
+
+    float *advantages = (float *)malloc((size_t)G * sizeof(float));
+    if (!advantages) goto fail;
+    for (int g = 0; g < G; g++)
+        advantages[g] = (rews[g] - mean_r) / std_r;
+
+    /* Step 4: Policy logprobs (teacher-forced) */
+    int max_len_actual = 0;
+    for (int g = 0; g < G; g++)
+        if (lengths[g] > max_len_actual) max_len_actual = lengths[g];
+
+    float *policy_lp = (float *)calloc((size_t)G * (size_t)max_len_actual, sizeof(float));
+    float *ref_lp = (float *)calloc((size_t)G * (size_t)max_len_actual, sizeof(float));
+    if (!policy_lp || !ref_lp) goto fail;
+
+    for (int g = 0; g < G; g++) {
+        /* Build full sequence: prompt + completion */
+        int seq_len = prompt_len + lengths[g];
+        int *full_seq = (int *)malloc((size_t)seq_len * sizeof(int));
+        if (!full_seq) continue;
+        memcpy(full_seq, prompt, (size_t)prompt_len * sizeof(int));
+        memcpy(full_seq + prompt_len, flat_tokens + g * max_gen_len,
+               (size_t)lengths[g] * sizeof(int));
+
+        float *lp_out = (float *)calloc((size_t)seq_len, sizeof(float));
+        if (lp_out) {
+            grpo_policy_logprobs_internal(ctx->policy, full_seq, seq_len, lp_out);
+            /* Copy completion portion */
+            for (int t = 0; t < lengths[g] && t < max_len_actual; t++)
+                policy_lp[g * max_len_actual + t] = lp_out[prompt_len + t];
+            free(lp_out);
+        }
+        free(full_seq);
+    }
+
+    /* Step 5: Backward + Adam */
+    grpo_backward(ctx, advantages, policy_lp, old_lp, ref_lp,
+                  G, max_len_actual, clip_eps, kl_coef);
+    grpo_adam_step(ctx, lr, 0.9f, 0.999f, 1e-8f, step_num);
+
+    /* Fill result */
+    result->mean_reward = mean_r;
+    result->loss = ctx->stats.last_loss;
+    int total_tokens = 0;
+    for (int g = 0; g < G; g++) total_tokens += lengths[g];
+    result->tokens_generated = total_tokens;
+
+    free(flat_tokens); free(lengths); free(old_lp);
+    free(rews); free(advantages); free(policy_lp); free(ref_lp);
+    return 0;
+
+fail:
+    free(flat_tokens); free(lengths); free(old_lp);
+    return -1;
+}

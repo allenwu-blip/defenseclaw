@@ -281,42 +281,113 @@ func (e *GrpoEngine) GenerateParallel(prompt []int, G, maxGenLen int, temp, topP
 		promptC[i] = C.int(t)
 	}
 
-	// Allocate result buffers
-	type cCompletion struct {
-		tokens   []C.int
-		logprobs []C.float
-	}
-	completions := make([]cCompletion, G)
-	cResults := make([]C.GrpoCompletion, G)
+	// Allocate C-side buffers (avoids Go pointer to Go pointer violation)
+	tokBufs := make([]unsafe.Pointer, G)
+	lpBufs := make([]unsafe.Pointer, G)
+	cResults := (*C.GrpoCompletion)(C.calloc(C.size_t(G), C.size_t(unsafe.Sizeof(C.GrpoCompletion{}))))
+	defer C.free(unsafe.Pointer(cResults))
+
+	results := unsafe.Slice(cResults, G)
 	for g := 0; g < G; g++ {
-		completions[g].tokens = make([]C.int, maxGenLen)
-		completions[g].logprobs = make([]C.float, maxGenLen)
-		cResults[g].tokens = &completions[g].tokens[0]
-		cResults[g].logprobs = &completions[g].logprobs[0]
-		cResults[g].len = 0
+		tokBufs[g] = C.malloc(C.size_t(maxGenLen) * C.size_t(unsafe.Sizeof(C.int(0))))
+		lpBufs[g] = C.malloc(C.size_t(maxGenLen) * C.size_t(unsafe.Sizeof(C.float(0))))
+		results[g].tokens = (*C.int)(tokBufs[g])
+		results[g].logprobs = (*C.float)(lpBufs[g])
+		results[g].len = 0
 	}
+	defer func() {
+		for g := 0; g < G; g++ {
+			C.free(tokBufs[g])
+			C.free(lpBufs[g])
+		}
+	}()
 
 	ret := C.grpo_generate_parallel(e.ctx, &promptC[0], C.int(len(prompt)),
 		C.int(G), C.int(maxGenLen),
 		C.float(temp), C.float(topP),
-		&cResults[0])
+		cResults)
 	if ret != 0 {
 		return nil, nil, fmt.Errorf("parallel generation failed")
 	}
 
-	// Convert results
+	// Convert C results to Go slices
 	allTokens := make([][]int, G)
 	allLogprobs := make([][]float32, G)
 	for g := 0; g < G; g++ {
-		n := int(cResults[g].len)
+		n := int(results[g].len)
+		tokSlice := unsafe.Slice((*C.int)(tokBufs[g]), maxGenLen)
+		lpSlice := unsafe.Slice((*C.float)(lpBufs[g]), maxGenLen)
 		allTokens[g] = make([]int, n)
 		allLogprobs[g] = make([]float32, n)
 		for i := 0; i < n; i++ {
-			allTokens[g][i] = int(completions[g].tokens[i])
-			allLogprobs[g][i] = float32(completions[g].logprobs[i])
+			allTokens[g][i] = int(tokSlice[i])
+			allLogprobs[g][i] = float32(lpSlice[i])
 		}
 	}
 	return allTokens, allLogprobs, nil
+}
+
+// TrainStep runs one full GRPO step entirely in C (prefill → generate → logprobs → backward → adam).
+// If rewards is nil, uses built-in diversity reward.
+func (e *GrpoEngine) TrainStep(prompt []int, G, maxGenLen int, temp, topP, clipEps, klCoef, lr float32, rewards []float64, stepNum int) (loss, meanReward float32, err error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	promptC := make([]C.int, len(prompt))
+	for i, t := range prompt {
+		promptC[i] = C.int(t)
+	}
+
+	var rewardsC *C.float
+	if rewards != nil {
+		rBuf := make([]C.float, len(rewards))
+		for i, r := range rewards {
+			rBuf[i] = C.float(r)
+		}
+		rewardsC = &rBuf[0]
+	}
+
+	var result C.GrpoStepResult
+	ret := C.grpo_train_step(e.ctx, &promptC[0], C.int(len(prompt)),
+		C.int(G), C.int(maxGenLen), C.float(temp), C.float(topP),
+		C.float(clipEps), C.float(klCoef), C.float(lr),
+		rewardsC, C.int(stepNum), &result)
+	if ret != 0 {
+		return 0, 0, fmt.Errorf("train step failed")
+	}
+	return float32(result.loss), float32(result.mean_reward), nil
+}
+
+// GenerateStep runs generation only (for external reward evaluation).
+// Returns G completions as token IDs.
+func (e *GrpoEngine) GenerateStep(prompt []int, G, maxGenLen int, temp, topP float32) ([][]int, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+
+	promptC := make([]C.int, len(prompt))
+	for i, t := range prompt {
+		promptC[i] = C.int(t)
+	}
+
+	flatTokens := make([]C.int, G*maxGenLen)
+	lengths := make([]C.int, G)
+
+	ret := C.grpo_generate_step(e.ctx, &promptC[0], C.int(len(prompt)),
+		C.int(G), C.int(maxGenLen), C.float(temp), C.float(topP),
+		&flatTokens[0], &lengths[0])
+	if ret != 0 {
+		return nil, fmt.Errorf("generate step failed")
+	}
+
+	result := make([][]int, G)
+	for g := 0; g < G; g++ {
+		n := int(lengths[g])
+		result[g] = make([]int, n)
+		for i := 0; i < n; i++ {
+			result[g][i] = int(flatTokens[g*maxGenLen+i])
+		}
+	}
+	return result, nil
 }
 
 // Detokenize converts token IDs to UTF-8 text using the loaded tokenizer

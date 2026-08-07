@@ -71,5 +71,8 @@ test_tokenizer: libgrpo_stream.a test_tokenizer.c
 bench_io: libgrpo_stream.a test_bench_io.c
 	$(CC) $(CFLAGS) -I. test_bench_io.c -L. -lgrpo_stream $(LDFLAGS) -o bench_io
 
+grpo-trainer: libgrpo_stream.a trainer_main.c
+	$(CC) $(CFLAGS) -I. trainer_main.c -L. -lgrpo_stream $(LDFLAGS) -o grpo-trainer
+
 clean:
-	rm -f *.o *.a test_runner test_tokenizer bench_io
+	rm -f *.o *.a test_runner test_tokenizer bench_io grpo-trainer

@@ -685,7 +685,8 @@ static void policy_forward_token(PolicyEngine *pe, int token, int pos) {
         inject_lora(pe->v_buf, pe->hidden, l, 2, n_kv_heads * head_dim, hidden_dim);
 
         /* RoPE on Q and K */
-        grpo_rope(pe->q_buf, pe->k_buf, pos, n_heads, head_dim, pe->gf.rope_theta);
+        grpo_rope(pe->q_buf, NULL, pos, n_heads, head_dim, pe->gf.rope_theta);
+        grpo_rope(pe->k_buf, NULL, pos, n_kv_heads, head_dim, pe->gf.rope_theta);
 
         /* Store K, V in cache */
         size_t kv_offset = (size_t)pos * (size_t)n_kv_heads * (size_t)head_dim;
@@ -854,31 +855,132 @@ static int policy_generate(PolicyEngine *pe, const int *prompt, int prompt_len,
     return policy_generate_continue(pe, output, max_len, logprobs_out, temp, top_p, rng);
 }
 
-/* ─── Teacher-Forced Logprobs ─── */
+/* ─── Teacher-Forced Logprobs (Batch Matmul) ─── */
+/* Uses grpo_matmul_any_batch to process all sequence positions per layer in
+ * one call. Dequantizes each weight row once, dots against S vectors.
+ * Attention is still per-position (causal), but projections are batched. */
 static int policy_logprobs(PolicyEngine *pe, const int *tokens, int len, float *logprobs_out) {
-    pe->seq_pos = 0;
+    const int hd = (int)pe->gf.hidden_dim;
+    const int id = (int)pe->gf.intermediate_dim;
+    const int nh = (int)pe->gf.n_heads;
+    const int nkv = (int)pe->gf.n_kv_heads;
+    const int hdim = (int)pe->gf.head_dim;
+    const int vs = (int)pe->gf.vocab_size;
+    const int S = len;
 
-    for (int i = 0; i < len; i++) {
-        policy_forward_token(pe, tokens[i], pe->seq_pos);
-        pe->seq_pos++;
+    /* Allocate batched buffers */
+    float *hidden = (float *)calloc((size_t)S * hd, sizeof(float));
+    float *res    = (float *)malloc((size_t)S * hd * sizeof(float));
+    float *q_all  = (float *)malloc((size_t)S * nh * hdim * sizeof(float));
+    float *k_all  = (float *)malloc((size_t)S * nkv * hdim * sizeof(float));
+    float *v_all  = (float *)malloc((size_t)S * nkv * hdim * sizeof(float));
+    float *o_out  = (float *)malloc((size_t)S * hd * sizeof(float));
+    float *fg     = (float *)malloc((size_t)S * id * sizeof(float));
+    float *fu     = (float *)malloc((size_t)S * id * sizeof(float));
+    float *fd     = (float *)malloc((size_t)S * hd * sizeof(float));
+    if (!hidden||!res||!q_all||!k_all||!v_all||!o_out||!fg||!fu||!fd) goto fail;
 
-        /* Compute softmax probabilities */
-        float *probs = (float *)malloc((size_t)pe->gf.vocab_size * sizeof(float));
-        if (!probs) return -1;
-
-        memcpy(probs, pe->logits, (size_t)pe->gf.vocab_size * sizeof(float));
-        grpo_softmax(probs, (int)pe->gf.vocab_size);
-
-        /* Get logprob of next token (if not last) */
-        if (i + 1 < len) {
-            int next_token = tokens[i + 1];
-            logprobs_out[i] = logf(probs[next_token] + 1e-10f);
+    /* Embed all tokens */
+    for (int i = 0; i < S; i++) {
+        float *h = hidden + (size_t)i * hd;
+        int tok = tokens[i];
+        if (tok < 0 || tok >= vs) continue;
+        if (pe->embed_dtype == 0) {
+            memcpy(h, (const float*)pe->embed + (size_t)tok*hd, (size_t)hd*sizeof(float));
+        } else if (pe->embed_dtype == 12) {
+            int bpr = hd/256;
+            const uint8_t *row = (const uint8_t*)pe->embed + (size_t)tok*bpr*144;
+            for (int b = 0; b < bpr; b++) {
+                const uint8_t *blk = row + (size_t)b*144;
+                uint16_t db,dmb; memcpy(&db,blk,2); memcpy(&dmb,blk+2,2);
+                float dl=fp16_to_fp32(db), dm=fp16_to_fp32(dmb);
+                const uint8_t *sc=blk+4, *qs=blk+16;
+                for (int g=0;g<4;g++) {
+                    uint8_t s0,m0,s1,m1; int j0=2*g,j1=2*g+1;
+                    if(j0<4){s0=sc[j0]&63;m0=sc[j0+4]&63;}else{s0=(sc[j0+4]&0xF)|((sc[j0-4]>>6)<<4);m0=(sc[j0+4]>>4)|((sc[j0]>>6)<<4);}
+                    if(j1<4){s1=sc[j1]&63;m1=sc[j1+4]&63;}else{s1=(sc[j1+4]&0xF)|((sc[j1-4]>>6)<<4);m1=(sc[j1+4]>>4)|((sc[j1]>>6)<<4);}
+                    float d1=dl*(float)s0,nm1=dm*(float)m0,d2=dl*(float)s1,nm2=dm*(float)m1;
+                    for (int l=0;l<32;l++) {
+                        h[b*256+g*64+l]=d1*(float)(qs[g*32+l]&0xF)-nm1;
+                        h[b*256+g*64+l+32]=d2*(float)(qs[g*32+l]>>4)-nm2;
+                    }
+                }
+            }
         }
-
-        free(probs);
     }
 
+    /* Transformer layers */
+    for (int l = 0; l < pe->gf.n_layers; l++) {
+        const PolicyLayer *layer = &pe->layers[l];
+
+        memcpy(res, hidden, (size_t)S * hd * sizeof(float));
+        for (int i = 0; i < S; i++)
+            rmsnorm_any(hidden+i*hd, res+i*hd, layer->attn_norm, layer->attn_norm_dtype, hd, pe->gf.rms_eps);
+
+        /* BATCH Q/K/V projections: [S × hd] @ W → [S × out_dim] */
+        grpo_matmul_any_batch(q_all, hidden, layer->q_weight, S, nh*hdim, hd, layer->q_dtype);
+        grpo_matmul_any_batch(k_all, hidden, layer->k_weight, S, nkv*hdim, hd, layer->k_dtype);
+        grpo_matmul_any_batch(v_all, hidden, layer->v_weight, S, nkv*hdim, hd, layer->v_dtype);
+
+        /* RoPE per position */
+        for (int i = 0; i < S; i++) {
+            grpo_rope(q_all+i*nh*hdim, NULL, i, nh, hdim, pe->gf.rope_theta);
+            grpo_rope(k_all+i*nkv*hdim, NULL, i, nkv, hdim, pe->gf.rope_theta);
+        }
+
+        /* Causal attention per position */
+        for (int i = 0; i < S; i++)
+            grpo_gqa_attention(o_out+i*hd, q_all+i*nh*hdim, k_all, v_all, nh, nkv, hdim, i);
+
+        /* BATCH O projection */
+        grpo_matmul_any_batch(hidden, o_out, layer->o_weight, S, hd, hd, layer->o_dtype);
+
+        /* Residual */
+        for (int i = 0; i < S*hd; i++) hidden[i] += res[i];
+
+        /* FFN */
+        memcpy(res, hidden, (size_t)S * hd * sizeof(float));
+        for (int i = 0; i < S; i++)
+            rmsnorm_any(hidden+i*hd, res+i*hd, layer->ffn_norm, layer->ffn_norm_dtype, hd, pe->gf.rms_eps);
+
+        /* BATCH gate/up */
+        grpo_matmul_any_batch(fg, hidden, layer->gate_weight, S, id, hd, layer->gate_dtype);
+        grpo_matmul_any_batch(fu, hidden, layer->up_weight, S, id, hd, layer->up_dtype);
+
+        /* SiLU + elementwise multiply */
+        for (int i = 0; i < S*id; i++) {
+            fg[i] = fg[i] / (1.0f + expf(-fg[i])); /* silu */
+            fg[i] *= fu[i];
+        }
+
+        /* BATCH down projection */
+        grpo_matmul_any_batch(fd, fg, layer->down_weight, S, hd, id, layer->down_dtype);
+
+        for (int i = 0; i < S*hd; i++) hidden[i] = res[i] + fd[i];
+    }
+
+    /* Final norm */
+    for (int i = 0; i < S; i++)
+        rmsnorm_any(hidden+i*hd, hidden+i*hd, pe->output_norm, 0, hd, pe->gf.rms_eps);
+
+    /* Output logits + logprob extraction (per position to save memory) */
+    float *logits = (float *)malloc((size_t)vs * sizeof(float));
+    if (logits) {
+        for (int i = 0; i < S - 1; i++) {
+            grpo_matmul_any(logits, hidden+i*hd, pe->output_weight, vs, hd, pe->output_dtype);
+            grpo_softmax(logits, vs);
+            logprobs_out[i] = logf(logits[tokens[i+1]] + 1e-10f);
+        }
+        free(logits);
+    }
+
+    free(hidden); free(res); free(q_all); free(k_all); free(v_all);
+    free(o_out); free(fg); free(fu); free(fd);
     return 0;
+fail:
+    free(hidden); free(res); free(q_all); free(k_all); free(v_all);
+    free(o_out); free(fg); free(fu); free(fd);
+    return -1;
 }
 
 /* ─── Public Interface (will be called by grpo_init/grpo_generate) ─── */
@@ -1038,7 +1140,8 @@ static void thread_forward_token(const PolicyEngine *pe, GenThreadCtx *tc, int t
         grpo_matmul_any(tc->k_buf, tc->hidden, layer->k_weight, n_kv_heads * head_dim, hidden_dim, layer->k_dtype);
         grpo_matmul_any(tc->v_buf, tc->hidden, layer->v_weight, n_kv_heads * head_dim, hidden_dim, layer->v_dtype);
 
-        grpo_rope(tc->q_buf, tc->k_buf, pos, n_heads, head_dim, pe->gf.rope_theta);
+        grpo_rope(tc->q_buf, NULL, pos, n_heads, head_dim, pe->gf.rope_theta);
+        grpo_rope(tc->k_buf, NULL, pos, n_kv_heads, head_dim, pe->gf.rope_theta);
 
         size_t kv_offset = (size_t)pos * (size_t)n_kv_heads * (size_t)head_dim;
         memcpy(tc->k_cache + kv_offset, tc->k_buf, (size_t)n_kv_heads * (size_t)head_dim * sizeof(float));

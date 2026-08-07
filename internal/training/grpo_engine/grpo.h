@@ -120,6 +120,31 @@ int grpo_generate_parallel(GrpoCtx *ctx, const int *prompt, int prompt_len,
                            float temp, float top_p,
                            GrpoCompletion *results);
 
+/* Single-call training step. All parallelism stays inside C.
+ * Performs: prefill → parallel generate → policy logprobs → backward → adam.
+ * Caller provides rewards (computed externally from decoded text).
+ * If rewards is NULL, uses built-in diversity reward.
+ * Returns 0 on success, fills step_result. */
+typedef struct {
+    float loss;
+    float mean_reward;
+    int   tokens_generated;  /* total across all G completions */
+} GrpoStepResult;
+
+int grpo_train_step(GrpoCtx *ctx, const int *prompt, int prompt_len,
+                    int G, int max_gen_len, float temp, float top_p,
+                    float clip_eps, float kl_coef, float lr,
+                    const float *rewards,  /* NULL = use diversity reward */
+                    int step_num,
+                    GrpoStepResult *result);
+
+/* Generate completions only (for external reward evaluation).
+ * Returns token IDs in flat buffer: completions[G][max_gen_len].
+ * lengths[G] filled with actual length per completion. */
+int grpo_generate_step(GrpoCtx *ctx, const int *prompt, int prompt_len,
+                       int G, int max_gen_len, float temp, float top_p,
+                       int *flat_tokens_out, int *lengths_out);
+
 /* Tokenizer API */
 int         grpo_detokenize(GrpoCtx *ctx, const int *ids, int n_ids, char *buf, int buf_size);
 
@@ -131,6 +156,15 @@ void grpo_matmul_q8_0(float *out, const float *x, const void *W_packed, int rows
 void grpo_matmul_q5_0(float *out, const float *x, const void *W_packed, int rows, int in_dim);
 void grpo_matmul_q6_k(float *out, const float *x, const void *W_packed, int rows, int in_dim);
 int  grpo_matmul_any(float *out, const float *x, const void *W_packed, int rows, int in_dim, int dtype);
+int  grpo_matmul_any_st(float *out, const float *x, const void *W_packed, int rows, int in_dim, int dtype);
+
+/* Batch matmul: out[batch × rows] = X[batch × in_dim] @ W[rows × in_dim]
+ * Dequantizes each weight row once, then computes dot products against all batch vectors.
+ * ~Nx fewer dequant operations when batch=N. */
+int  grpo_matmul_q4_batch(float *out, const float *X, const void *W_packed,
+                          int batch, int rows, int in_dim);
+int  grpo_matmul_any_batch(float *out, const float *X, const void *W_packed,
+                           int batch, int rows, int in_dim, int dtype);
 void grpo_silu(float *x, int n);
 void grpo_rope(float *q, float *k, int pos, int n_heads, int head_dim, float theta);
 void grpo_softmax(float *x, int n);

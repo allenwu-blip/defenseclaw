@@ -698,6 +698,259 @@ int grpo_matmul_any(float *out, const float *x, const void *W_packed,
     }
 }
 
+/* ─── Batch Q4_K Matmul ─── */
+/* out[batch × rows] = X[batch × in_dim] @ W[rows × in_dim]
+ * For each weight row: dequant once → dot against all batch vectors.
+ * Saves N× dequant work compared to N separate matmul calls. */
+int grpo_matmul_q4_batch(float *out, const float *X, const void *W_packed,
+                         int batch, int rows, int in_dim) {
+    const int blocks_per_row = in_dim / Q4K_BLOCK_SIZE;
+    const size_t row_bytes = (size_t)blocks_per_row * Q4K_BLOCK_BYTES;
+    const uint8_t *W = (const uint8_t *)W_packed;
+
+    /* Temporary dequantized row buffer */
+    #pragma omp parallel
+    {
+        float *dequant_row = (float *)aligned_alloc(64, (size_t)in_dim * sizeof(float));
+        uint8_t *row_buf = (uint8_t *)aligned_alloc(64, row_bytes);
+
+        #pragma omp for
+        for (int r = 0; r < rows; r++) {
+            /* Dequantize weight row ONCE */
+            memcpy(row_buf, W + (size_t)r * row_bytes, row_bytes);
+
+            for (int b = 0; b < blocks_per_row; b++) {
+                const uint8_t *block = row_buf + (size_t)b * Q4K_BLOCK_BYTES;
+                uint16_t d_bits, dmin_bits;
+                memcpy(&d_bits, block, 2);
+                memcpy(&dmin_bits, block + 2, 2);
+                float dall = fp16_to_fp32(d_bits);
+                float dmin = fp16_to_fp32(dmin_bits);
+                const uint8_t *scales = block + 4;
+                const uint8_t *qs = block + 16;
+                int base = b * Q4K_BLOCK_SIZE;
+
+                for (int j = 0; j < 4; j++) {
+                    uint8_t sc0, m0, sc1, m1;
+                    get_scale_min_k4(2*j, scales, &sc0, &m0);
+                    get_scale_min_k4(2*j+1, scales, &sc1, &m1);
+                    float d1 = dall*(float)sc0, neg_m1 = dmin*(float)m0;
+                    float d2 = dall*(float)sc1, neg_m2 = dmin*(float)m1;
+                    for (int l = 0; l < 32; l++) {
+                        dequant_row[base + j*64 + l]      = d1*(float)(qs[j*32+l]&0xF) - neg_m1;
+                        dequant_row[base + j*64 + l + 32] = d2*(float)(qs[j*32+l]>>4) - neg_m2;
+                    }
+                }
+            }
+
+            /* Dot product against all batch vectors using NEON */
+            for (int n = 0; n < batch; n++) {
+                const float *xn = X + (size_t)n * in_dim;
+#ifdef __ARM_NEON
+                float32x4_t acc0 = vdupq_n_f32(0), acc1 = vdupq_n_f32(0);
+                float32x4_t acc2 = vdupq_n_f32(0), acc3 = vdupq_n_f32(0);
+                int c = 0;
+                for (; c + 15 < in_dim; c += 16) {
+                    acc0 = vfmaq_f32(acc0, vld1q_f32(xn+c), vld1q_f32(dequant_row+c));
+                    acc1 = vfmaq_f32(acc1, vld1q_f32(xn+c+4), vld1q_f32(dequant_row+c+4));
+                    acc2 = vfmaq_f32(acc2, vld1q_f32(xn+c+8), vld1q_f32(dequant_row+c+8));
+                    acc3 = vfmaq_f32(acc3, vld1q_f32(xn+c+12), vld1q_f32(dequant_row+c+12));
+                }
+                float result = vaddvq_f32(vaddq_f32(vaddq_f32(acc0,acc1), vaddq_f32(acc2,acc3)));
+                for (; c < in_dim; c++) result += xn[c] * dequant_row[c];
+                out[(size_t)n * rows + r] = result;
+#else
+                double acc = 0.0;
+                for (int c = 0; c < in_dim; c++)
+                    acc += (double)xn[c] * (double)dequant_row[c];
+                out[(size_t)n * rows + r] = (float)acc;
+#endif
+            }
+        }
+
+        free(dequant_row);
+        free(row_buf);
+    }
+    return 0;
+}
+
+/* Batch dispatcher */
+int grpo_matmul_any_batch(float *out, const float *X, const void *W_packed,
+                          int batch, int rows, int in_dim, int dtype) {
+    if (batch == 1) {
+        /* Single vector — use standard fast path */
+        return grpo_matmul_any(out, X, W_packed, rows, in_dim, dtype);
+    }
+    if (dtype == 12 || dtype == 2) {
+        return grpo_matmul_q4_batch(out, X, W_packed, batch, rows, in_dim);
+    }
+    /* Fallback: call per-vector for non-Q4_K types */
+    for (int n = 0; n < batch; n++) {
+        int rc = grpo_matmul_any(out + (size_t)n * rows, X + (size_t)n * in_dim,
+                                 W_packed, rows, in_dim, dtype);
+        if (rc != 0) return rc;
+    }
+    return 0;
+}
+
+/* ─── Single-Threaded Dispatcher (no OMP, safe for GCD/pthread workers) ─── */
+int grpo_matmul_any_st(float *out, const float *x, const void *W_packed,
+                       int rows, int in_dim, int dtype) {
+    /* Q4_K single-threaded: same algorithm, no #pragma omp */
+    if (dtype == 12 || dtype == 2) {
+        const int blocks_per_row = in_dim / Q4K_BLOCK_SIZE;
+        const size_t row_bytes = (size_t)blocks_per_row * Q4K_BLOCK_BYTES;
+        const uint8_t *W = (const uint8_t *)W_packed;
+
+#ifdef __ARM_NEON
+        uint8_t *row_buf = (uint8_t *)aligned_alloc(64, row_bytes);
+        for (int r = 0; r < rows; r++) {
+            memcpy(row_buf, W + (size_t)r * row_bytes, row_bytes);
+
+            float32x4_t vacc0 = vdupq_n_f32(0), vacc1 = vdupq_n_f32(0);
+            float32x4_t vacc2 = vdupq_n_f32(0), vacc3 = vdupq_n_f32(0);
+
+            for (int b = 0; b < blocks_per_row; b++) {
+                const uint8_t *block = row_buf + (size_t)b * Q4K_BLOCK_BYTES;
+                uint16_t d_bits, dmin_bits;
+                memcpy(&d_bits, block, 2);
+                memcpy(&dmin_bits, block + 2, 2);
+                float dall = fp16_to_fp32(d_bits);
+                float dmin = fp16_to_fp32(dmin_bits);
+                const uint8_t *scales = block + 4;
+                const uint8_t *qs = block + 16;
+                int base = b * Q4K_BLOCK_SIZE;
+
+                for (int j = 0; j < 4; j++) {
+                    uint8_t sc0, m0, sc1, m1;
+                    get_scale_min_k4(2*j, scales, &sc0, &m0);
+                    get_scale_min_k4(2*j+1, scales, &sc1, &m1);
+                    float d1 = dall * (float)sc0, neg_m1 = -(dmin * (float)m0);
+                    float d2 = dall * (float)sc1, neg_m2 = -(dmin * (float)m1);
+                    float32x4_t vd1 = vdupq_n_f32(d1), vm1 = vdupq_n_f32(neg_m1);
+                    float32x4_t vd2 = vdupq_n_f32(d2), vm2 = vdupq_n_f32(neg_m2);
+                    const uint8_t *qptr = qs + j * 32;
+                    int idx_lo = base + j * 64, idx_hi = idx_lo + 32;
+
+                    for (int k = 0; k < 32; k += 8) {
+                        uint8x8_t raw = vld1_u8(qptr + k);
+                        uint8x8_t lo = vand_u8(raw, vdup_n_u8(0x0F));
+                        uint8x8_t hi = vshr_n_u8(raw, 4);
+                        uint16x8_t lo16 = vmovl_u8(lo);
+                        uint16x8_t hi16 = vmovl_u8(hi);
+                        float32x4_t f0 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo16)));
+                        float32x4_t f1 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(lo16)));
+                        float32x4_t f2 = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi16)));
+                        float32x4_t f3 = vcvtq_f32_u32(vmovl_u16(vget_high_u16(hi16)));
+                        vacc0 = vfmaq_f32(vacc0, vld1q_f32(x+idx_lo+k), vfmaq_f32(vm1, f0, vd1));
+                        vacc1 = vfmaq_f32(vacc1, vld1q_f32(x+idx_lo+k+4), vfmaq_f32(vm1, f1, vd1));
+                        vacc2 = vfmaq_f32(vacc2, vld1q_f32(x+idx_hi+k), vfmaq_f32(vm2, f2, vd2));
+                        vacc3 = vfmaq_f32(vacc3, vld1q_f32(x+idx_hi+k+4), vfmaq_f32(vm2, f3, vd2));
+                    }
+                }
+            }
+            out[r] = vaddvq_f32(vaddq_f32(vaddq_f32(vacc0,vacc1), vaddq_f32(vacc2,vacc3)));
+        }
+        free(row_buf);
+#else
+        for (int r = 0; r < rows; r++) {
+            const uint8_t *row_data = W + (size_t)r * row_bytes;
+            double acc = 0.0;
+            for (int b = 0; b < blocks_per_row; b++) {
+                const uint8_t *block = row_data + (size_t)b * Q4K_BLOCK_BYTES;
+                uint16_t d_bits, dmin_bits;
+                memcpy(&d_bits, block, 2); memcpy(&dmin_bits, block+2, 2);
+                float dall = fp16_to_fp32(d_bits), dmin = fp16_to_fp32(dmin_bits);
+                const uint8_t *scales = block+4, *qs = block+16;
+                int base = b * Q4K_BLOCK_SIZE;
+                for (int j = 0; j < 4; j++) {
+                    uint8_t sc0,m0,sc1,m1;
+                    get_scale_min_k4(2*j, scales, &sc0, &m0);
+                    get_scale_min_k4(2*j+1, scales, &sc1, &m1);
+                    float d1=dall*(float)sc0, neg_m1=dmin*(float)m0;
+                    float d2=dall*(float)sc1, neg_m2=dmin*(float)m1;
+                    for (int l = 0; l < 32; l++) {
+                        acc += (double)x[base+j*64+l] * (double)(d1*(float)(qs[j*32+l]&0xF) - neg_m1);
+                        acc += (double)x[base+j*64+l+32] * (double)(d2*(float)(qs[j*32+l]>>4) - neg_m2);
+                    }
+                }
+            }
+            out[r] = (float)acc;
+        }
+#endif
+        return 0;
+    }
+    /* Scalar fallback for non-Q4_K dtypes (no OMP, safe from any thread) */
+    if (dtype == 14) { /* Q6_K — scalar single-threaded */
+        const int bpr = in_dim / Q6_K_BLOCK_SIZE;
+        const uint8_t *W = (const uint8_t *)W_packed;
+        size_t rb = (size_t)bpr * Q6_K_BLOCK_BYTES;
+        for (int r = 0; r < rows; r++) {
+            const uint8_t *row_data = W + (size_t)r * rb;
+            double acc = 0.0;
+            for (int b = 0; b < bpr; b++) {
+                const uint8_t *block = row_data + b * Q6_K_BLOCK_BYTES;
+                uint16_t d_bits; memcpy(&d_bits, block + 208, 2);
+                float d = fp16_to_fp32(d_bits);
+                const int8_t *scales = (const int8_t *)(block + 192);
+                const uint8_t *ql = block, *qh = block + 128;
+                for (int sb = 0; sb < 16; sb++) {
+                    float scale = (float)scales[sb] * d;
+                    for (int j = 0; j < 16; j++) {
+                        int idx = sb*16+j;
+                        uint8_t low4 = (idx%2==0) ? (ql[idx/2]&0xF) : (ql[idx/2]>>4);
+                        uint8_t high2 = (qh[idx/4] >> ((idx%4)*2)) & 0x03;
+                        uint8_t q6 = low4 | (high2<<4);
+                        float w = ((float)q6 - 32.0f) * scale;
+                        acc += (double)x[b*Q6_K_BLOCK_SIZE+idx] * (double)w;
+                    }
+                }
+            }
+            out[r] = (float)acc;
+        }
+        return 0;
+    }
+    if (dtype == 8) { /* Q8_0 — scalar single-threaded */
+        const int bpr = in_dim / Q8_0_BLOCK_SIZE;
+        const uint8_t *W = (const uint8_t *)W_packed;
+        for (int r = 0; r < rows; r++) {
+            const uint8_t *row_data = W + (size_t)r * bpr * Q8_0_BLOCK_BYTES;
+            double acc = 0.0;
+            for (int b = 0; b < bpr; b++) {
+                const uint8_t *block = row_data + b * Q8_0_BLOCK_BYTES;
+                uint16_t d_bits; memcpy(&d_bits, block, 2);
+                float d = fp16_to_fp32(d_bits);
+                const int8_t *qs = (const int8_t *)(block + 2);
+                for (int j = 0; j < Q8_0_BLOCK_SIZE; j++)
+                    acc += (double)x[b*Q8_0_BLOCK_SIZE+j] * (double)((float)qs[j] * d);
+            }
+            out[r] = (float)acc;
+        }
+        return 0;
+    }
+    if (dtype == 0) { /* F32 — scalar */
+        const float *W = (const float *)W_packed;
+        for (int r = 0; r < rows; r++) {
+            double acc = 0.0;
+            for (int c = 0; c < in_dim; c++)
+                acc += (double)x[c] * (double)W[r*in_dim+c];
+            out[r] = (float)acc;
+        }
+        return 0;
+    }
+    if (dtype == 1) { /* F16 — scalar */
+        const uint16_t *W = (const uint16_t *)W_packed;
+        for (int r = 0; r < rows; r++) {
+            double acc = 0.0;
+            for (int c = 0; c < in_dim; c++)
+                acc += (double)x[c] * (double)fp16_to_fp32(W[r*in_dim+c]);
+            out[r] = (float)acc;
+        }
+        return 0;
+    }
+    return -1;
+}
+
 /* ─── Activation Functions ─── */
 static inline float sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
 
@@ -708,6 +961,7 @@ void grpo_silu(float *x, int n) {
 
 /* ─── RoPE (Rotary Position Embedding) ─── */
 void grpo_rope(float *q, float *k, int pos, int n_heads, int head_dim, float theta) {
+    /* Apply RoPE to Q (n_heads heads) */
     for (int h = 0; h < n_heads; h++) {
         for (int i = 0; i < head_dim; i += 2) {
             float freq = 1.0f / powf(theta, (float)i / (float)head_dim);
@@ -717,11 +971,6 @@ void grpo_rope(float *q, float *k, int pos, int n_heads, int head_dim, float the
             float q0 = q[idx], q1 = q[idx + 1];
             q[idx]     = q0 * cos_a - q1 * sin_a;
             q[idx + 1] = q0 * sin_a + q1 * cos_a;
-            if (k) {
-                float k0 = k[idx], k1 = k[idx + 1];
-                k[idx]     = k0 * cos_a - k1 * sin_a;
-                k[idx + 1] = k0 * sin_a + k1 * cos_a;
-            }
         }
     }
 }
