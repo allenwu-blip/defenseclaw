@@ -11,12 +11,18 @@ import (
 	"strings"
 )
 
-// SupportedModels lists known models that work with GRPO training.
+// SupportedModels lists known models that work with GRPO/SFT training.
 var SupportedModels = []ModelInfo{
-	{Name: "qwen3:8b", Size: "4.9 GB", Params: "8B", Quant: "Q4_K_M", Recommended: true},
-	{Name: "qwen3:4b", Size: "2.6 GB", Params: "4B", Quant: "Q4_K_M", Recommended: false},
-	{Name: "qwen3:1.7b", Size: "1.1 GB", Params: "1.7B", Quant: "Q4_K_M", Recommended: false},
-	{Name: "llama3.2:3b", Size: "2.0 GB", Params: "3B", Quant: "Q4_K_M", Recommended: false},
+	{Name: "qwen3:8b", Size: "4.9 GB", Params: "8B", Quant: "Q4_K_M", RAM: "16 GB", GRPO: true, SFT: true, Recommended: true, Notes: "Reasoning model, best for code GRPO"},
+	{Name: "qwen3:4b", Size: "2.6 GB", Params: "4B", Quant: "Q4_K_M", RAM: "8 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Smaller, faster, still reasons"},
+	{Name: "qwen3:1.7b", Size: "1.1 GB", Params: "1.7B", Quant: "Q4_K_M", RAM: "4 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Fits on 8GB laptop"},
+	{Name: "qwen2.5:7b", Size: "4.7 GB", Params: "7B", Quant: "Q4_K_M", RAM: "16 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Non-reasoning, good for SFT"},
+	{Name: "llama3.2:3b", Size: "2.0 GB", Params: "3B", Quant: "Q4_K_M", RAM: "8 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Meta Llama, good baseline"},
+	{Name: "llama3.1:8b", Size: "4.7 GB", Params: "8B", Quant: "Q4_K_M", RAM: "16 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Meta Llama 3.1"},
+	{Name: "gemma2:9b", Size: "5.4 GB", Params: "9B", Quant: "Q4_K_M", RAM: "16 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Google Gemma 2"},
+	{Name: "phi4:14b", Size: "8.4 GB", Params: "14B", Quant: "Q4_K_M", RAM: "24 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Microsoft Phi-4, strong reasoning"},
+	{Name: "mistral:7b", Size: "4.1 GB", Params: "7B", Quant: "Q4_K_M", RAM: "12 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Mistral v0.3"},
+	{Name: "codellama:7b", Size: "3.8 GB", Params: "7B", Quant: "Q4_0", RAM: "12 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Code-specialized"},
 }
 
 type ModelInfo struct {
@@ -24,7 +30,32 @@ type ModelInfo struct {
 	Size        string
 	Params      string
 	Quant       string
+	RAM         string
+	GRPO        bool
+	SFT         bool
 	Recommended bool
+	Notes       string
+}
+
+// FormatModelList returns a formatted table of supported models.
+func FormatModelList() string {
+	var sb strings.Builder
+	sb.WriteString("Supported Models for Training\n")
+	sb.WriteString("═════════════════════════════════════════════════════════════════\n\n")
+	sb.WriteString(fmt.Sprintf("  %-18s %-6s %-8s %-7s %-5s %s\n", "MODEL", "SIZE", "QUANT", "RAM", "GRPO", "NOTES"))
+	sb.WriteString(fmt.Sprintf("  %-18s %-6s %-8s %-7s %-5s %s\n", "─────", "────", "─────", "───", "────", "─────"))
+	for _, m := range SupportedModels {
+		grpo := "✓"
+		rec := ""
+		if m.Recommended {
+			rec = " ★"
+		}
+		sb.WriteString(fmt.Sprintf("  %-18s %-6s %-8s %-7s %-5s %s%s\n",
+			m.Name, m.Size, m.Quant, m.RAM, grpo, m.Notes, rec))
+	}
+	sb.WriteString("\n  ★ = Recommended. Any GGUF model from ollama or HuggingFace also works.\n")
+	sb.WriteString("  Download: defenseclaw train --model <name> (auto-downloads via ollama)\n")
+	return sb.String()
 }
 
 // ModelStatus describes a model's availability

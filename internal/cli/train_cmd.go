@@ -68,6 +68,7 @@ independently to monitor an ongoing training session.`,
 
 // Train flags
 var (
+	trainMethod    string
 	trainModel     string
 	trainDataset   string
 	trainReward    string
@@ -79,6 +80,8 @@ var (
 	trainOutput    string
 	trainTemp      float64
 	trainTopP      float64
+	trainEpochs    int
+	trainBatchSize int
 )
 
 // Generate flags
@@ -92,17 +95,20 @@ var (
 
 func init() {
 	// Train flags
-	trainCmd.Flags().StringVar(&trainModel, "model", "", "Path to GGUF model file (required)")
+	trainCmd.Flags().StringVar(&trainMethod, "method", "grpo", "Training method: grpo, sft")
+	trainCmd.Flags().StringVar(&trainModel, "model", "", "Model name or GGUF path (required)")
 	trainCmd.Flags().StringVar(&trainDataset, "dataset", "", "Path to JSONL dataset (required)")
-	trainCmd.Flags().StringVar(&trainReward, "reward", "diversity", "Reward type: exec, diversity, regex, format, length")
-	trainCmd.Flags().IntVar(&trainSteps, "steps", 100, "Number of training steps")
-	trainCmd.Flags().IntVar(&trainGroupSize, "group-size", 2, "Completions per prompt (G)")
-	trainCmd.Flags().IntVar(&trainGenLength, "gen-length", 32, "Max tokens to generate per completion")
-	trainCmd.Flags().Float64Var(&trainLR, "lr", 1e-4, "Learning rate")
+	trainCmd.Flags().StringVar(&trainReward, "reward", "diversity", "Reward type: exec, diversity, regex, format, length (GRPO only)")
+	trainCmd.Flags().IntVar(&trainSteps, "steps", 0, "Max training steps (0 = auto)")
+	trainCmd.Flags().IntVar(&trainGroupSize, "group-size", 2, "Completions per prompt (GRPO only)")
+	trainCmd.Flags().IntVar(&trainGenLength, "gen-length", 32, "Max tokens per completion (GRPO only)")
+	trainCmd.Flags().Float64Var(&trainLR, "lr", 0, "Learning rate (0 = method default)")
 	trainCmd.Flags().IntVar(&trainLoraRank, "lora-rank", 8, "LoRA adapter rank")
-	trainCmd.Flags().StringVar(&trainOutput, "output", "./grpo-output", "Output directory for checkpoints")
-	trainCmd.Flags().Float64Var(&trainTemp, "temperature", 0.8, "Sampling temperature")
-	trainCmd.Flags().Float64Var(&trainTopP, "top-p", 0.9, "Top-p sampling threshold")
+	trainCmd.Flags().StringVar(&trainOutput, "output", "./training-output", "Output directory")
+	trainCmd.Flags().Float64Var(&trainTemp, "temperature", 0.8, "Sampling temperature (GRPO only)")
+	trainCmd.Flags().Float64Var(&trainTopP, "top-p", 0.9, "Top-p sampling (GRPO only)")
+	trainCmd.Flags().IntVar(&trainEpochs, "epochs", 3, "Training epochs (SFT only)")
+	trainCmd.Flags().IntVar(&trainBatchSize, "batch-size", 4, "Gradient accumulation steps (SFT only)")
 	trainCmd.MarkFlagRequired("model")
 	trainCmd.MarkFlagRequired("dataset")
 
@@ -187,11 +193,21 @@ Output format (training_data.jsonl):
 	datasetCmd.AddCommand(datasetCreateCmd)
 	datasetCmd.AddCommand(datasetValidateCmd)
 
+	modelsCmd := &cobra.Command{
+		Use:   "models",
+		Short: "List supported models for training",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Print(training.FormatModelList())
+			return nil
+		},
+	}
+
 	rootCmd.AddCommand(trainCmd)
 	rootCmd.AddCommand(generateCmd)
 	rootCmd.AddCommand(dashboardCmd)
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(datasetCmd)
+	rootCmd.AddCommand(modelsCmd)
 }
 
 func runTrain(cmd *cobra.Command, args []string) error {
@@ -253,6 +269,11 @@ func runTrain(cmd *cobra.Command, args []string) error {
 		OutputDir:       trainOutput,
 	}
 
+	// Route by method
+	if trainMethod == "sft" {
+		return runSFT(trainModel)
+	}
+
 	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")
 	fmt.Printf("║           StreamGRPO Training                             ║\n")
 	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
@@ -283,6 +304,62 @@ func runTrain(cmd *cobra.Command, args []string) error {
 		fmt.Printf("✓ Merged model: %s\n", result.GGUFPath)
 	}
 	fmt.Printf("✓ Checkpoints:  %s/checkpoint.dclora\n", trainOutput)
+	return nil
+}
+
+func runSFT(modelPath string) error {
+	lr := trainLR
+	if lr == 0 {
+		lr = 2e-5 // SFT default
+	}
+	steps := trainSteps
+	if steps == 0 {
+		steps = 0 // use epochs
+	}
+
+	cfg := training.SFTConfig{
+		PolicyGGUF:      modelPath,
+		DatasetPath:     trainDataset,
+		OutputDir:       trainOutput,
+		Epochs:          trainEpochs,
+		MaxSteps:        steps,
+		LearningRate:    lr,
+		LoRARank:        trainLoraRank,
+		LoRAAlpha:       trainLoraRank,
+		LoRATargets:     "q,k,v,o,gate,up,down",
+		BatchSize:       trainBatchSize,
+		CheckpointEvery: 50,
+		MemoryMode:      "comfort",
+	}
+
+	fmt.Printf("╔═══════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║           Supervised Fine-Tuning (On-Device)              ║\n")
+	fmt.Printf("╠═══════════════════════════════════════════════════════════╣\n")
+	fmt.Printf("║  Model:    %s\n", modelPath)
+	fmt.Printf("║  Dataset:  %s\n", trainDataset)
+	fmt.Printf("║  Epochs:   %d, batch=%d, lr=%.1e\n", trainEpochs, trainBatchSize, lr)
+	fmt.Printf("║  LoRA:     rank=%d\n", trainLoraRank)
+	fmt.Printf("║  Output:   %s\n", trainOutput)
+	fmt.Printf("║  Dashboard: http://localhost:8077\n")
+	fmt.Printf("╚═══════════════════════════════════════════════════════════╝\n\n")
+
+	start := time.Now()
+	result, err := training.RunSFTLocal(context.Background(), cfg)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nSFT ended: %v (elapsed: %v)\n", err, elapsed)
+		if elapsed > 10*time.Second {
+			fmt.Printf("\n✓ Checkpoints saved in %s\n", trainOutput)
+			return nil
+		}
+		return err
+	}
+
+	fmt.Printf("\n✓ SFT complete in %v\n", elapsed)
+	if result != nil {
+		fmt.Printf("✓ Checkpoints: %s/checkpoint.dclora\n", trainOutput)
+	}
 	return nil
 }
 
