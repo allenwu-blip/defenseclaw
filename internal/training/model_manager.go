@@ -23,6 +23,10 @@ var SupportedModels = []ModelInfo{
 	{Name: "phi4:14b", Size: "8.4 GB", Params: "14B", Quant: "Q4_K_M", RAM: "24 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Microsoft Phi-4, strong reasoning"},
 	{Name: "mistral:7b", Size: "4.1 GB", Params: "7B", Quant: "Q4_K_M", RAM: "12 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Mistral v0.3"},
 	{Name: "codellama:7b", Size: "3.8 GB", Params: "7B", Quant: "Q4_0", RAM: "12 GB", GRPO: true, SFT: true, Recommended: false, Notes: "Code-specialized"},
+	{Name: "deepseek-r1:8b", Size: "4.9 GB", Params: "8B", Quant: "Q4_K_M", RAM: "16 GB", GRPO: true, SFT: true, Recommended: false, Notes: "DeepSeek R1, strong reasoning+code"},
+	{Name: "deepseek-r1:14b", Size: "9.0 GB", Params: "14B", Quant: "Q4_K_M", RAM: "24 GB", GRPO: true, SFT: true, Recommended: false, Notes: "DeepSeek R1, larger reasoning"},
+	{Name: "deepseek-r1:32b", Size: "19 GB", Params: "32B", Quant: "Q4_K_M", RAM: "48 GB", GRPO: true, SFT: true, Recommended: false, Notes: "DeepSeek R1, maximum quality"},
+	{Name: "deepseek-coder-v2:16b", Size: "9.4 GB", Params: "16B", Quant: "Q4_K_M", RAM: "24 GB", GRPO: true, SFT: true, Recommended: false, Notes: "DeepSeek Coder V2, code-focused"},
 }
 
 type ModelInfo struct {
