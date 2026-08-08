@@ -65,9 +65,8 @@ func validateObservabilityV8FilePaths(source *ObservabilityV8Source, configuredF
 		if err != nil {
 			return fmt.Errorf("%s: cannot normalize configured path", role.name)
 		}
-		// Both failures below are filesystem outcomes, not statements about the
-		// document. Keeping the cause distinguishes "this ancestor denied
-		// access" from a value the operator can correct by editing.
+		// Both failures below describe the filesystem, not the document, so the
+		// cause is kept rather than reported as a semantic error.
 		resolved, err := observabilityV8ResolveExistingPathPrefix(absolute)
 		if err != nil {
 			return newV8ConfigPathError(role.name, absolute, err)

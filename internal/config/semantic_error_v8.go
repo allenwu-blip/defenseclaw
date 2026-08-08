@@ -72,9 +72,8 @@ func (e *V8SemanticError) Unwrap() error {
 }
 
 // V8ConfigPathError reports a filesystem failure while inspecting a configured
-// path. The document parsed, and the value has the right shape and type: only
-// the object it names could not be reached. It therefore carries no source
-// position, because no edit to the document would fix it.
+// path. The value itself is well formed; only the object it names could not be
+// reached, so the error carries no source position.
 type V8ConfigPathError struct {
 	Path  string
 	File  string

@@ -7,9 +7,8 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/safefile"
 )
 
-// PinnedDeploymentMode reports the machine-wide deployment mode pin. Callers
-// without a loaded config use it to tell a managed runtime tree from a
-// self-managed one.
+// PinnedDeploymentMode reports the machine-wide deployment mode pin, for
+// callers that distinguish a managed runtime tree without a loaded config.
 func PinnedDeploymentMode() string {
 	return os.Getenv(DeploymentModeEnv)
 }
@@ -17,17 +16,15 @@ func PinnedDeploymentMode() string {
 // PrepareServiceRuntimeDir readies a gateway runtime directory for use.
 //
 // safefile enforces a private-state contract: the caller must be the sole
-// owner. A managed enterprise runtime tree is installer-provisioned and
-// Administrators-owned with a service-SID writer ACE, so that contract does not
-// hold and safefile would both reject the owner and rewrite the canonical DACL.
-// Managed paths are validated against the managed trust model instead, which
-// accepts exactly that layout.
+// owner. A managed enterprise runtime tree is Administrators-owned with a
+// service-SID writer ACE, so managed paths are validated against the managed
+// trust model, which accepts that layout.
 func PrepareServiceRuntimeDir(deploymentMode, path, label string) error {
 	if !IsManagedEnterprise(deploymentMode) {
 		return safefile.ProtectDirectory(path)
 	}
-	// Only the leaf is created. A missing ancestor means the installer-provisioned
-	// tree is incomplete, which must surface rather than be filled in here.
+	// Only the leaf is created; a missing ancestor means the installer-provisioned
+	// tree is incomplete and must surface.
 	if err := os.Mkdir(path, 0o700); err != nil && !os.IsExist(err) {
 		return err
 	}
@@ -47,13 +44,11 @@ func PrepareServiceRuntimeFile(deploymentMode, path, label string) error {
 // runtime, such as a generated token or persisted state.
 //
 // safefile.WritePrivate imposes the private-state contract on the parent
-// directory before writing: sole ownership by the writer, and a DACL of that
-// owner plus SYSTEM. A managed enterprise runtime directory is
-// installer-provisioned, Administrators-owned, and shared with the service
-// through a narrow writer ACE, so the contract cannot hold; applying it would
-// also strip the Administrators ACE the installer's verifier requires. Managed
-// paths are validated against the managed trust model and published in place,
-// leaving the installer's inheritable DACL to govern the result.
+// directory: sole ownership by the writer, and a DACL of that owner plus
+// SYSTEM. A managed enterprise runtime directory is Administrators-owned and
+// shared with the service through a narrow writer ACE, so managed paths are
+// validated against the managed trust model and published in place under the
+// installer's inheritable DACL.
 func WriteServiceRuntimeFile(deploymentMode, path, label string, data []byte) error {
 	if !IsManagedEnterprise(deploymentMode) {
 		return safefile.WritePrivate(path, data)
@@ -68,7 +63,7 @@ func WriteServiceRuntimeFile(deploymentMode, path, label string, data []byte) er
 		return err
 	}
 	// A replacement keeps the destination's own descriptor, so an existing file
-	// has to prove it is still trusted before it is written through.
+	// must still be trusted before it is written through.
 	if _, err := os.Lstat(path); err == nil {
 		if err := ValidateTrustedServiceRuntimeFilePath(path, label, serviceAccount); err != nil {
 			return err

@@ -98,10 +98,9 @@ def test_canonical_setter_replaces_the_entire_protected_dacl() -> None:
 def test_state_root_ancestor_grant_is_additive_not_a_canonical_seizure() -> None:
     """A state-root ancestor is a shared vendor directory.
 
-    ``C:\\ProgramData\\Cisco`` may already exist and belong to another Cisco
-    product. The gateway needs to traverse it, but applying the canonical
-    protected DACL there would take ownership and drop every ACE that product
-    relies on, so the grant has to add a single non-inherited ACE instead.
+    ``C:\\ProgramData\\Cisco`` may belong to another Cisco product, so the
+    gateway's traverse right is one added non-inherited ACE. The canonical
+    protected DACL would take ownership and drop that product's ACEs.
     """
     source = MODULE.read_text(encoding="utf-8")
     grant = source[
@@ -123,7 +122,7 @@ def test_state_root_ancestor_grant_is_additive_not_a_canonical_seizure() -> None
     ]
     assert "Grant-DefenseClawStateAncestorTraverse" in applied
 
-    # The ancestor invariant that predates the grant still has to hold.
+    # The ancestor trust invariant still has to hold.
     verifier = source[
         source.index("function Assert-DefenseClawStateAncestorTraverse") :
         source.index("function Initialize-DefenseClawManagedRoot")
@@ -132,8 +131,8 @@ def test_state_root_ancestor_grant_is_additive_not_a_canonical_seizure() -> None
     assert "must not " in verifier
     assert "cannot traverse an ancestor of " in verifier
 
-    # The base itself is an OS directory and the root carries its own DACL, so
-    # neither may appear in the ancestor list.
+    # The base is an OS directory and the root carries its own DACL, so neither
+    # appears in the ancestor list.
     ancestors = source[
         source.index("function Get-DefenseClawManagedRootAncestors") :
         source.index("$script:StateAncestorTraverseRights")

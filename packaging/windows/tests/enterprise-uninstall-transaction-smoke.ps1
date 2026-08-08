@@ -135,8 +135,7 @@ try {
             return @{
                 InstallRoot = $installRoot
                 StateRoot = $stateRoot
-                # The harness roots live directly under a temporary directory,
-                # so there is nothing between a required base and the root.
+                # Harness roots sit directly under a temporary directory.
                 StateRootAncestors = @()
                 BinDirectory = $binDirectory
                 AgentDirectory = $agentDirectory

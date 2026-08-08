@@ -1813,10 +1813,9 @@ function New-DefenseClawProtectedDirectory {
     return [bool]$created
 }
 
-# Directories between the required base and a managed root. They hold no
-# managed content themselves, but every principal that opens anything under the
-# root must be able to walk them. The base itself is excluded: it is an OS
-# directory, and so is the root, which carries its own canonical DACL.
+# Directories strictly between the required base and a managed root. The base
+# is an OS directory and the root carries its own canonical DACL, so neither is
+# returned.
 function Get-DefenseClawManagedRootAncestors {
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -1839,27 +1838,21 @@ function Get-DefenseClawManagedRootAncestors {
     return @($ancestors)
 }
 
-# The gateway runs as a virtual service account, so it is in neither SYSTEM nor
-# Administrators and cannot walk the protected directories above its state root
-# to open its own config. It needs execute to traverse and read-control to read
-# the descriptors its own ancestor trust check inspects.
+# Execute to traverse the ancestor, read-control to read the descriptor the
+# gateway's own ancestor trust check inspects.
 $script:StateAncestorTraverseRights =
     [Security.AccessControl.FileSystemRights]::ReadAndExecute
 
-# A state-root ancestor is a shared vendor directory that another product may
-# have created and may still rely on, so its owner and every other ACE are left
-# alone and one non-inherited ACE is added. Replacing the DACL here would seize
-# a tree this installer does not own; Initialize-DefenseClawManagedRoot makes
-# the same distinction when it validates an ancestor it finds instead of
-# creating it. Not inheriting keeps the grant off sibling trees.
+# A state-root ancestor is a shared vendor directory this installer does not
+# own, so the owner and every other ACE are preserved and one ACE is added.
+# The ACE is not inherited, keeping the grant off sibling trees.
 function Add-DefenseClawStateAncestorTraverseRule {
     param(
         [Parameter(Mandatory)][Security.AccessControl.DirectorySecurity]$Security,
         [Parameter(Mandatory)][string]$GatewayServiceSID
     )
     $identity = [Security.Principal.SecurityIdentifier]::new($GatewayServiceSID)
-    # Drop any inheritance or rights variant of an earlier grant so repeated
-    # installs converge on exactly one ACE.
+    # Repeated installs converge on exactly one ACE for this SID.
     [void]$Security.PurgeAccessRules($identity)
     [void]$Security.AddAccessRule(
         [Security.AccessControl.FileSystemAccessRule]::new(
@@ -1897,8 +1890,8 @@ function Assert-DefenseClawStateAncestorTraverse {
         [Parameter(Mandatory)][string]$Path,
         [Parameter(Mandatory)][string]$GatewayServiceSID
     )
-    # The ancestor invariant is unchanged: no untrusted principal may own it or
-    # hold rights that would let it replace what sits underneath.
+    # No untrusted principal may own the ancestor or hold rights that would let
+    # it replace what sits underneath.
     Assert-DefenseClawTrustedAncestor -Path $Path
     $required = $script:StateAncestorTraverseRights
     $granted = [Security.AccessControl.FileSystemRights]0
@@ -6437,9 +6430,9 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         if ($null -eq $okProperty -or
             $okProperty.Value -isnot [bool] -or
             -not [bool]$okProperty.Value) {
-            # The per-target cause is the only description of why this target
-            # failed; the report-level error below is not set for it. Control
-            # characters are folded so one row cannot restructure the message.
+            # The per-target cause is the only description of this failure; the
+            # report-level error below is not set for it. Control characters are
+            # folded so one row cannot restructure the message.
             $rowError = [string]$row.error
             $rowDetail = ''
             if (-not [string]::IsNullOrWhiteSpace($rowError)) {

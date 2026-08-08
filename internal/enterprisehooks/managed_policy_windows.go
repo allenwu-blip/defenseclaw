@@ -517,10 +517,9 @@ func validateWindowsClaudeManagedPolicyTeardownOptions(
 		return nil, err
 	}
 	// A deployment with no Claude connector rows tears down an empty target
-	// set. Every other caller canonicalizes the ownership metadata of a policy
-	// that exists, where empty means the metadata is corrupt. An empty set here
-	// only reaches the absent-policy branch: a policy that exists must still
-	// match its recorded targets exactly.
+	// set, which reaches only the absent-policy branch. Every other caller
+	// canonicalizes the metadata of a policy that exists, where empty means
+	// that metadata is corrupt.
 	var targets []string
 	if len(opts.TargetSIDs) != 0 {
 		canonical, err := canonicalWindowsClaudeTargetSIDs(opts.TargetSIDs)

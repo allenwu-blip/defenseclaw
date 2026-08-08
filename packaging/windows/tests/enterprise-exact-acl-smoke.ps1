@@ -192,10 +192,9 @@ if ($pairingsChecked -ne $pairings.Count) {
     throw 'installer/verifier pairing check did not exercise every pairing'
 }
 
-# The builder declares the ACL kinds and the applier accepts them. A kind added
-# to one and not the other passes every test above and then fails at install
-# time on parameter validation, so require the two sets to be identical and to
-# be exactly what this smoke covers.
+# The builder declares the ACL kinds and the applier accepts them. Both sets
+# must be identical and exactly what this smoke covers; a kind in only one of
+# them fails at install time on parameter validation.
 $kindSetsAgree = & $module {
     param($Cases)
     $validValues = {
@@ -234,9 +233,8 @@ if (-not $kindSetsAgree) {
 }
 
 # A state-root ancestor such as C:\ProgramData\Cisco is a shared vendor
-# directory another product may have created and may still depend on. The
-# traverse grant therefore has to be additive: seizing the tree with a canonical
-# protected DACL would silently revoke that product's access.
+# directory another product may depend on, so the traverse grant is additive:
+# it must not take the owner or drop an ACE it did not add.
 $ancestorCases = & $module {
     param($GatewaySID)
     $vendorDirectory = {
@@ -263,7 +261,7 @@ $ancestorCases = & $module {
             -GatewayServiceSID $GatewaySID) `
         -GatewayServiceSID $GatewaySID)
 
-    # An earlier inheritable grant must collapse to the non-inherited one.
+    # An inheritable grant collapses to the non-inherited one.
     $widened = & $sddlOf (Add-DefenseClawStateAncestorTraverseRule `
         -Security (& $vendorDirectory (
             $shared + "(A;OICI;FA;;;$GatewaySID)"

@@ -7,9 +7,8 @@ package enterprisehooks
 
 import "testing"
 
-// A deployment with no Claude connector rows tears down an empty target set.
-// The gate rejected that before the transaction opened, so the absent-policy
-// success path could never run and such a deployment stayed unremovable.
+// A Codex-only deployment tears down an empty Claude target set, and this gate
+// runs before the transaction opens.
 func TestValidateWindowsClaudeManagedPolicyTeardownOptionsAcceptsNoTargets(t *testing.T) {
 	original := windowsEnterpriseHookTrustCheck
 	windowsEnterpriseHookTrustCheck = func(string) error { return nil }
@@ -42,8 +41,7 @@ func TestValidateWindowsClaudeManagedPolicyTeardownOptionsAcceptsNoTargets(t *te
 		}
 	})
 
-	// The relaxation must not become a way to tear down a Claude deployment by
-	// claiming it has no targets: an existing policy still has to match.
+	// An empty set must not tear down a policy that exists.
 	t.Run("enrolled policy still requires its targets", func(t *testing.T) {
 		enrolled := windowsClaudeManagedPolicyState{
 			SchemaVersion:      2,
