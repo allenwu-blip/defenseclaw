@@ -34,7 +34,7 @@ func RunGrpoLocal(ctx context.Context, cfg GrpoLocalConfig) (*RunResult, error) 
 		cfg.GroupSize = 4
 	}
 	if cfg.MaxGenLength == 0 {
-		cfg.MaxGenLength = 256
+		cfg.MaxGenLength = 128
 	}
 	if cfg.ClipEpsilon == 0 {
 		cfg.ClipEpsilon = 0.2
