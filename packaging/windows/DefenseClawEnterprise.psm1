@@ -1813,6 +1813,120 @@ function New-DefenseClawProtectedDirectory {
     return [bool]$created
 }
 
+# Directories between the required base and a managed root. They hold no
+# managed content themselves, but every principal that opens anything under the
+# root must be able to walk them. The base itself is excluded: it is an OS
+# directory, and so is the root, which carries its own canonical DACL.
+function Get-DefenseClawManagedRootAncestors {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$RequiredBase
+    )
+    $base = [IO.Path]::GetFullPath($RequiredBase).TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    if (-not $full.StartsWith($base + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "managed root is outside its required ancestor base: $full"
+    }
+    $relative = $full.Substring($base.Length).TrimStart('\')
+    $components = @($relative.Split('\') |
+        Microsoft.PowerShell.Core\Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $ancestors = [Collections.Generic.List[string]]::new()
+    $current = $base
+    for ($index = 0; $index -lt $components.Count - 1; $index++) {
+        $current = Microsoft.PowerShell.Management\Join-Path $current $components[$index]
+        [void]$ancestors.Add($current)
+    }
+    return @($ancestors)
+}
+
+# The gateway runs as a virtual service account, so it is in neither SYSTEM nor
+# Administrators and cannot walk the protected directories above its state root
+# to open its own config. It needs execute to traverse and read-control to read
+# the descriptors its own ancestor trust check inspects.
+$script:StateAncestorTraverseRights =
+    [Security.AccessControl.FileSystemRights]::ReadAndExecute
+
+# A state-root ancestor is a shared vendor directory that another product may
+# have created and may still rely on, so its owner and every other ACE are left
+# alone and one non-inherited ACE is added. Replacing the DACL here would seize
+# a tree this installer does not own; Initialize-DefenseClawManagedRoot makes
+# the same distinction when it validates an ancestor it finds instead of
+# creating it. Not inheriting keeps the grant off sibling trees.
+function Add-DefenseClawStateAncestorTraverseRule {
+    param(
+        [Parameter(Mandatory)][Security.AccessControl.DirectorySecurity]$Security,
+        [Parameter(Mandatory)][string]$GatewayServiceSID
+    )
+    $identity = [Security.Principal.SecurityIdentifier]::new($GatewayServiceSID)
+    # Drop any inheritance or rights variant of an earlier grant so repeated
+    # installs converge on exactly one ACE.
+    [void]$Security.PurgeAccessRules($identity)
+    [void]$Security.AddAccessRule(
+        [Security.AccessControl.FileSystemAccessRule]::new(
+            $identity,
+            $script:StateAncestorTraverseRights,
+            [Security.AccessControl.InheritanceFlags]::None,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+    )
+    return $Security
+}
+
+function Grant-DefenseClawStateAncestorTraverse {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$GatewayServiceSID
+    )
+    Assert-DefenseClawNoReparsePath -Path $Path
+    Assert-DefenseClawTrustedAncestor -Path $Path
+    $security = Add-DefenseClawStateAncestorTraverseRule `
+        -Security (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path) `
+        -GatewayServiceSID $GatewayServiceSID
+    Microsoft.PowerShell.Security\Set-Acl `
+        -LiteralPath $Path `
+        -AclObject $security `
+        -ErrorAction Stop
+    Assert-DefenseClawStateAncestorTraverse `
+        -Path $Path `
+        -GatewayServiceSID $GatewayServiceSID
+}
+
+function Assert-DefenseClawStateAncestorTraverse {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$GatewayServiceSID
+    )
+    # The ancestor invariant is unchanged: no untrusted principal may own it or
+    # hold rights that would let it replace what sits underneath.
+    Assert-DefenseClawTrustedAncestor -Path $Path
+    $required = $script:StateAncestorTraverseRights
+    $granted = [Security.AccessControl.FileSystemRights]0
+    $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
+    foreach ($rule in $acl.Access) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)) {
+            continue
+        }
+        if ((ConvertTo-DefenseClawSID -Identity $rule.IdentityReference) -ne $GatewayServiceSID) {
+            continue
+        }
+        if ($rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None) {
+            throw (
+                'gateway traverse grant on a shared managed ancestor must not ' +
+                "be inheritable: $Path"
+            )
+        }
+        $granted = $granted -bor $rule.FileSystemRights
+    }
+    if (($granted -band $required) -ne $required) {
+        throw (
+            "gateway service $GatewayServiceSID cannot traverse an ancestor of " +
+            "its own state root: $Path"
+        )
+    }
+}
+
 function Initialize-DefenseClawManagedRoot {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -2970,6 +3084,9 @@ function Set-DefenseClawManagedAcls {
             -GatewayServiceSID $gatewaySID
     }
 
+    foreach ($ancestor in @($Layout.StateRootAncestors)) {
+        Grant-DefenseClawStateAncestorTraverse -Path $ancestor -GatewayServiceSID $gatewaySID
+    }
     Set-DefenseClawPathAcl -Path $Layout.StateRoot -Kind StateDirectory -GatewayServiceSID $gatewaySID
     Set-DefenseClawPathAcl -Path $Layout.ConfigDirectory -Kind ConfigDirectory -GatewayServiceSID $gatewaySID
     Set-DefenseClawPathAcl -Path $Layout.GuardianDirectory -Kind AdminDirectory -GatewayServiceSID $gatewaySID
@@ -3195,6 +3312,9 @@ function Get-DefenseClawLayout {
     return @{
         InstallRoot = $InstallRoot
         StateRoot = $StateRoot
+        StateRootAncestors = (Get-DefenseClawManagedRootAncestors `
+            -Root $fullStateRoot `
+            -RequiredBase $script:ProgramData)
         BinDirectory = $bin
         AgentDirectory = $agentDirectory
         LibexecDirectory = $libexec
@@ -6317,7 +6437,15 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         if ($null -eq $okProperty -or
             $okProperty.Value -isnot [bool] -or
             -not [bool]$okProperty.Value) {
-            throw "managed-hook teardown did not complete target $($row.connector)@$($row.sid)"
+            # The per-target cause is the only description of why this target
+            # failed; the report-level error below is not set for it. Control
+            # characters are folded so one row cannot restructure the message.
+            $rowError = [string]$row.error
+            $rowDetail = ''
+            if (-not [string]::IsNullOrWhiteSpace($rowError)) {
+                $rowDetail = ': ' + ($rowError -replace '[\x00-\x1f\x7f]', ' ')
+            }
+            throw "managed-hook teardown did not complete target $($row.connector)@$($row.sid)$rowDetail"
         }
     }
     if ([int]$probe.exit_code -ne 0 -or -not [bool]$report.ok) {
@@ -7093,6 +7221,11 @@ function Assert-DefenseClawEnterpriseDeployment {
             -AllowedReaderSIDs $adminReaders `
             -RequiredRights $adminRights `
             -RejectUntrustedRead
+    }
+    foreach ($ancestor in @($Layout.StateRootAncestors)) {
+        Assert-DefenseClawStateAncestorTraverse `
+            -Path $ancestor `
+            -GatewayServiceSID $gatewaySID
     }
     Assert-DefenseClawPathAcl `
         -Path $Layout.StateRoot `

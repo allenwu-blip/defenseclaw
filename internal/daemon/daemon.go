@@ -30,7 +30,6 @@ import (
 
 	"github.com/defenseclaw/defenseclaw/internal/managed"
 	"github.com/defenseclaw/defenseclaw/internal/pathidentity"
-	"github.com/defenseclaw/defenseclaw/internal/safefile"
 )
 
 const (
@@ -879,7 +878,9 @@ func (d *Daemon) writePIDInfoAt(pid int, executable string, startIdentity string
 	if err != nil {
 		return err
 	}
-	return safefile.WritePrivate(d.pidFile, data)
+	return managed.WriteServiceRuntimeFile(
+		managed.PinnedDeploymentMode(), d.pidFile, "gateway pid file", data,
+	)
 }
 
 func IsDaemonChild() bool {

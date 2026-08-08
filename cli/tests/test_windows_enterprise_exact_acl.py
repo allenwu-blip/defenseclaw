@@ -95,6 +95,52 @@ def test_canonical_setter_replaces_the_entire_protected_dacl() -> None:
     assert "$script:IcaclsExe" not in setter
 
 
+def test_state_root_ancestor_grant_is_additive_not_a_canonical_seizure() -> None:
+    """A state-root ancestor is a shared vendor directory.
+
+    ``C:\\ProgramData\\Cisco`` may already exist and belong to another Cisco
+    product. The gateway needs to traverse it, but applying the canonical
+    protected DACL there would take ownership and drop every ACE that product
+    relies on, so the grant has to add a single non-inherited ACE instead.
+    """
+    source = MODULE.read_text(encoding="utf-8")
+    grant = source[
+        source.index("function Add-DefenseClawStateAncestorTraverseRule") :
+        source.index("function Assert-DefenseClawStateAncestorTraverse")
+    ]
+
+    assert "PurgeAccessRules" in grant
+    assert "InheritanceFlags]::None" in grant
+    assert "Get-Acl" in grant
+    # The canonical builder replaces the owner and the whole DACL.
+    assert "New-DefenseClawCanonicalPathAcl" not in grant
+    assert "Set-DefenseClawPathAcl" not in grant
+    assert "SetAccessRuleProtection" not in grant
+    assert "SetOwner" not in grant
+
+    applied = source[
+        source.index("foreach ($ancestor in @($Layout.StateRootAncestors)) {") :
+    ]
+    assert "Grant-DefenseClawStateAncestorTraverse" in applied
+
+    # The ancestor invariant that predates the grant still has to hold.
+    verifier = source[
+        source.index("function Assert-DefenseClawStateAncestorTraverse") :
+        source.index("function Initialize-DefenseClawManagedRoot")
+    ]
+    assert "Assert-DefenseClawTrustedAncestor" in verifier
+    assert "must not " in verifier
+    assert "cannot traverse an ancestor of " in verifier
+
+    # The base itself is an OS directory and the root carries its own DACL, so
+    # neither may appear in the ancestor list.
+    ancestors = source[
+        source.index("function Get-DefenseClawManagedRootAncestors") :
+        source.index("$script:StateAncestorTraverseRights")
+    ]
+    assert "$index -lt $components.Count - 1" in ancestors
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell smoke")
 @pytest.mark.parametrize("engine", _powershell_engines())
 def test_every_managed_path_kind_has_an_exact_descriptor(engine: str) -> None:
@@ -128,4 +174,6 @@ def test_every_managed_path_kind_has_an_exact_descriptor(engine: str) -> None:
         "native_raw_acl_query_checked": True,
         "split_explicit_aces_rejected": True,
         "installer_verifier_pairings_checked": 16,
+        "acl_kind_sets_agree": True,
+        "state_ancestor_grant_is_additive": True,
     }

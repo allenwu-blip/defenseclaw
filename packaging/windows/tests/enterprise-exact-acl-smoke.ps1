@@ -192,6 +192,99 @@ if ($pairingsChecked -ne $pairings.Count) {
     throw 'installer/verifier pairing check did not exercise every pairing'
 }
 
+# The builder declares the ACL kinds and the applier accepts them. A kind added
+# to one and not the other passes every test above and then fails at install
+# time on parameter validation, so require the two sets to be identical and to
+# be exactly what this smoke covers.
+$kindSetsAgree = & $module {
+    param($Cases)
+    $validValues = {
+        param($CommandName)
+        $command = Microsoft.PowerShell.Core\Get-Command -Name $CommandName
+        $sets = @(
+            $command.Parameters['Kind'].Attributes |
+                Microsoft.PowerShell.Core\Where-Object {
+                    $_ -is [Management.Automation.ValidateSetAttribute]
+                }
+        )
+        if ($sets.Count -ne 1) {
+            throw "$CommandName does not declare exactly one Kind validate set"
+        }
+        return @($sets[0].ValidValues | Microsoft.PowerShell.Utility\Sort-Object)
+    }
+    $builder = & $validValues 'New-DefenseClawCanonicalPathAcl'
+    $applier = & $validValues 'Set-DefenseClawPathAcl'
+    $covered = @([string[]]$Cases.Keys | Microsoft.PowerShell.Utility\Sort-Object)
+    if (($builder -join "`n") -cne ($applier -join "`n")) {
+        throw (
+            'canonical ACL kinds diverge between builder and applier: ' +
+            "builder=$($builder -join ',') applier=$($applier -join ',')"
+        )
+    }
+    if (($builder -join "`n") -cne ($covered -join "`n")) {
+        throw (
+            'canonical ACL smoke does not cover every declared kind: ' +
+            "declared=$($builder -join ',') covered=$($covered -join ',')"
+        )
+    }
+    return $true
+} $expected
+if (-not $kindSetsAgree) {
+    throw 'canonical ACL kind parity check did not run'
+}
+
+# A state-root ancestor such as C:\ProgramData\Cisco is a shared vendor
+# directory another product may have created and may still depend on. The
+# traverse grant therefore has to be additive: seizing the tree with a canonical
+# protected DACL would silently revoke that product's access.
+$ancestorCases = & $module {
+    param($GatewaySID)
+    $vendorDirectory = {
+        param($SDDL)
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetSecurityDescriptorSddlForm($SDDL)
+        return $security
+    }
+    $sddlOf = {
+        param($Security)
+        return $Security.GetSecurityDescriptorSddlForm(
+            [Security.AccessControl.AccessControlSections]::All
+        )
+    }
+    # Administrators-owned, with a second product's ACE on it.
+    $shared = 'O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)'
+    $granted = & $sddlOf (Add-DefenseClawStateAncestorTraverseRule `
+        -Security (& $vendorDirectory $shared) `
+        -GatewayServiceSID $GatewaySID)
+
+    $twice = & $sddlOf (Add-DefenseClawStateAncestorTraverseRule `
+        -Security (Add-DefenseClawStateAncestorTraverseRule `
+            -Security (& $vendorDirectory $shared) `
+            -GatewayServiceSID $GatewaySID) `
+        -GatewayServiceSID $GatewaySID)
+
+    # An earlier inheritable grant must collapse to the non-inherited one.
+    $widened = & $sddlOf (Add-DefenseClawStateAncestorTraverseRule `
+        -Security (& $vendorDirectory (
+            $shared + "(A;OICI;FA;;;$GatewaySID)"
+        )) `
+        -GatewayServiceSID $GatewaySID)
+
+    [pscustomobject]@{
+        foreign_vendor_ace_preserved = $granted -match [regex]::Escape('(A;OICI;0x1200a9;;;BU)')
+        owner_preserved = $granted.StartsWith('O:BAG:BA')
+        traverse_ace_not_inherited = $granted -match [regex]::Escape("(A;;0x1200a9;;;$GatewaySID)")
+        tree_not_seized = -not ($granted -match [regex]::Escape("(A;OICI;0x1200a9;;;$GatewaySID)"))
+        repeat_grant_is_idempotent = $twice -ceq $granted
+        widened_prior_grant_collapsed = $widened -ceq $granted
+    }
+} $serviceSID
+foreach ($property in $ancestorCases.psobject.Properties) {
+    if (-not [bool]$property.Value) {
+        throw "state-root ancestor traverse grant regression failed: $($property.Name)"
+    }
+}
+
 $comparisonCases = & $module {
     $expectedRaw = [Security.AccessControl.RawSecurityDescriptor]::new(
         'O:BAG:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)'
@@ -247,4 +340,6 @@ if ($null -eq $nativeDescriptor.DiscretionaryAcl) {
     native_raw_acl_query_checked = $true
     split_explicit_aces_rejected = $true
     installer_verifier_pairings_checked = $pairingsChecked
+    acl_kind_sets_agree = [bool]$kindSetsAgree
+    state_ancestor_grant_is_additive = $true
 } | Microsoft.PowerShell.Utility\ConvertTo-Json -Compress
