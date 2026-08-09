@@ -5384,9 +5384,34 @@ function Restore-DefenseClawTransaction {
             -DeferAutomaticStart
         Set-DefenseClawManagedAcls -Layout $Layout -GatewayServiceName ([string]$snapshot.gateway_service)
     }
+    # An NT SERVICE principal stops resolving once its service is deleted, so
+    # read the SID while the rolled-back gateway still exists.
+    $rolledBackGatewaySID = ''
+    foreach ($service in $snapshot.services) {
+        if ([bool]$service.existed -or -not [string]::Equals(
+                [string]$service.name,
+                [string]$snapshot.gateway_service,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            continue
+        }
+        if (Test-DefenseClawServiceExists -Name ([string]$service.name)) {
+            $rolledBackGatewaySID = Get-DefenseClawServiceSID `
+                -ServiceName ([string]$service.name)
+        }
+    }
     foreach ($service in $snapshot.services) {
         if (-not [bool]$service.existed) {
             Remove-DefenseClawService -Name ([string]$service.name)
+        }
+    }
+    # Shared ancestors outlive the transaction that granted traverse to them.
+    # A surviving gateway keeps its grant; only a deleted one is revoked.
+    if (-not [string]::IsNullOrWhiteSpace($rolledBackGatewaySID)) {
+        foreach ($ancestor in @($Layout.StateRootAncestors)) {
+            Revoke-DefenseClawStateAncestorTraverse `
+                -Path $ancestor `
+                -GatewayServiceSID $rolledBackGatewaySID
         }
     }
     Remove-DefenseClawTransactionCreatedSharedDirectories `

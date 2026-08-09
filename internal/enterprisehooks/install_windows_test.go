@@ -370,7 +370,7 @@ func newWindowsGenericCodexFixtureBeforeProtection(
 	windowsEnterpriseAdministratorCheck = func() error { return nil }
 	windowsEnterpriseMutationIdentityCheck = func() error { return nil }
 	windowsEnterpriseTargetImpersonation = func(_ *windows.SID, _ string, fn func() error) error {
-		return runWindowsTestThreadImpersonated(fn)
+		return runWindowsTestThreadImpersonatedAsSelf(fn)
 	}
 	windowsEnterpriseHookExecutable = func() (string, error) { return trustedHookExe, nil }
 	windowsEnterpriseHookTrustCheck = func(string) error { return nil }
@@ -455,7 +455,7 @@ func newWindowsManagedInstallFixtureWithHomeSetup(
 	windowsEnterpriseAdministratorCheck = func() error { return nil }
 	windowsEnterpriseMutationIdentityCheck = func() error { return nil }
 	windowsEnterpriseTargetImpersonation = func(_ *windows.SID, _ string, fn func() error) error {
-		return runWindowsTestThreadImpersonated(fn)
+		return runWindowsTestThreadImpersonatedAsSelf(fn)
 	}
 	windowsClaudeHigherPolicyCheck = func() error { return nil }
 	windowsManagedPolicyOwnerSID = func() (*windows.SID, error) { return targetSID, nil }
@@ -2025,7 +2025,10 @@ func stubWindowsAuthorizedRepairIdentityChecks(t *testing.T) {
 	})
 }
 
-func runWindowsTestThreadImpersonated(fn func() error) (result error) {
+// ImpersonateSelf installs a thread token for the process user, so the process
+// and thread accessors return the same SID here. Coverage for the two disagreeing
+// lives in the connector package, where the identity source is a test seam.
+func runWindowsTestThreadImpersonatedAsSelf(fn func() error) (result error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if err := windows.ImpersonateSelf(windows.SecurityImpersonation); err != nil {
