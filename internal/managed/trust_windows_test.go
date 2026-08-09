@@ -229,9 +229,8 @@ func TestWindowsAncestorAllowsCreateOnlyButRejectsReplacementRights(t *testing.T
 	}
 }
 
-// The relaxed ancestor mask exists for the rights stock Windows grants on system
-// roots. Those go to BUILTIN\Users and Authenticated Users, so both keep the
-// relaxed rule; Everyone receives none and is held to the leaf rule.
+// Stock system roots grant these rights to BUILTIN\Users and Authenticated
+// Users, so both keep the relaxed ancestor rule. Everyone answers to the leaf rule.
 func TestWindowsAncestorHoldsEveryoneToTheLeafRule(t *testing.T) {
 	for _, test := range []struct {
 		name    string

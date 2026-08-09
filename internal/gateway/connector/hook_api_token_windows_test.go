@@ -38,8 +38,8 @@ func TestHookAPIWindowsTrustUsesEffectiveImpersonatedUserSID(t *testing.T) {
 	}
 }
 
-// The guardian impersonates outside managed mode too whenever a thread token is
-// installed, so trust must not depend on the deployment mode.
+// A thread token can be installed outside managed mode, so trust follows the
+// effective user rather than the deployment mode.
 func TestHookAPIWindowsTrustUsesEffectiveUserSIDOutsideManagedMode(t *testing.T) {
 	t.Setenv(managed.DeploymentModeEnv, "")
 	targetSID, err := windows.StringToSid("S-1-5-21-111-222-333-1002")

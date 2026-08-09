@@ -18,8 +18,8 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
-// pinWindowsEffectiveUserSIDForTest stands in for an installed thread token,
-// which a test process cannot obtain without an interactive target session.
+// pinWindowsEffectiveUserSIDForTest stands in for a thread token naming another
+// principal, which a test process cannot obtain without a second account.
 func pinWindowsEffectiveUserSIDForTest(t *testing.T, sid *windows.SID) {
 	t.Helper()
 	previous := windowsEffectiveUserSID
@@ -36,9 +36,8 @@ func windowsProcessUserSIDForTest(t *testing.T) *windows.SID {
 	return user.User.Sid
 }
 
-// Windows takes a new object's owner from the effective token, so an artifact
-// the guardian creates while impersonating belongs to the target user. The
-// descriptor it stamps has to name that same principal.
+// The descriptor a creator stamps must name the principal Windows records as
+// owner, which is the effective token's user.
 func TestAtomicTransformPrivateDescriptorNamesTheEffectiveUser(t *testing.T) {
 	target, err := windows.StringToSid("S-1-5-21-111-222-333-1001")
 	if err != nil {
@@ -65,8 +64,7 @@ func TestAtomicTransformPrivateDescriptorNamesTheEffectiveUser(t *testing.T) {
 	}
 }
 
-// The creator and the validator must read one identity. A validator still bound
-// to the process token would accept this directory no matter who owns it.
+// The validator must demand the same identity the creator stamps.
 func TestAtomicTransformPrivateValidationNamesTheEffectiveUser(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
 	file, err := openAtomicTransformBoundDirectoryPlatform(dir)
@@ -94,10 +92,9 @@ func TestAtomicTransformPrivateValidationNamesTheEffectiveUser(t *testing.T) {
 	}
 }
 
-// NTFS may swap the two equivalent allow ACEs during a rename, so the witness
-// normalizes that one form. The normalization is keyed on the effective user,
-// which makes the witness intermittent rather than merely wrong when the
-// identity is read from the wrong token.
+// NTFS may swap the two equivalent allow ACEs during a rename. The witness
+// tolerates that only for the effective user, so a wrong identity costs the
+// tolerance and mismatches whenever the swap happens.
 func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *testing.T) {
 	owner := windowsProcessUserSIDForTest(t)
 	foreign, err := windows.StringToSid("S-1-5-21-111-222-333-1001")

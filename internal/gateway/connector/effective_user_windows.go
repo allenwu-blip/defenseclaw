@@ -13,20 +13,13 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// windowsEffectiveUserSID is the single identity every per-user artifact in this
-// package is created under and validated against. Creator and validator must
-// read the same token or they disagree about every artifact they exchange.
+// windowsEffectiveUserSID is the one identity every per-user artifact in this
+// package is created under and validated against.
 var windowsEffectiveUserSID = defaultWindowsEffectiveUserSID
 
 // defaultWindowsEffectiveUserSID returns the impersonated thread user when one
-// is installed, and the process user otherwise.
-//
-// Windows takes a new object's owner from the effective token, which is the
-// thread token whenever one is installed. The enterprise guardian is a
-// LocalSystem process that mutates per-user paths under an exact target-user
-// thread token, so its process token names the wrong principal for anything it
-// creates inside a profile. Callers with no thread token read the same value
-// either way.
+// is installed, and the process user otherwise. Windows takes a new object's
+// owner from the same token, so this is who owns what the caller creates.
 func defaultWindowsEffectiveUserSID() (*windows.SID, error) {
 	var token windows.Token
 	err := windows.OpenThreadToken(windows.CurrentThread(), windows.TOKEN_QUERY, true, &token)

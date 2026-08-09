@@ -339,12 +339,10 @@ func windowsWriteLikeAccess(mask windows.ACCESS_MASK) bool {
 	return mask&(writeLike|fileDeleteChild) != 0
 }
 
-// windowsWorldSID reports whether sid is Everyone.
-//
-// The ancestor rule tolerates non-replacing write rights because stock Windows
-// grants them on roots like C:\ProgramData, but it grants them to BUILTIN\Users
-// and Authenticated Users, never to Everyone. A write right here was therefore
-// granted deliberately, so the leaf rule applies and it must be justified.
+// windowsWorldSID reports whether sid is Everyone. The relaxed ancestor rule
+// covers what stock Windows grants on roots like C:\ProgramData, which goes to
+// BUILTIN\Users and Authenticated Users. Everyone gets nothing there, so a write
+// right for it is deliberate and answers to the leaf rule.
 func windowsWorldSID(sid *windows.SID) bool {
 	return sid != nil && sid.IsWellKnown(windows.WinWorldSid)
 }

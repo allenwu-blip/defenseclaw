@@ -2025,9 +2025,8 @@ func stubWindowsAuthorizedRepairIdentityChecks(t *testing.T) {
 	})
 }
 
-// ImpersonateSelf installs a thread token for the process user, so the process
-// and thread accessors return the same SID here. Coverage for the two disagreeing
-// lives in the connector package, where the identity source is a test seam.
+// ImpersonateSelf names the process user, so both token accessors agree here.
+// The connector package covers them disagreeing.
 func runWindowsTestThreadImpersonatedAsSelf(fn func() error) (result error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

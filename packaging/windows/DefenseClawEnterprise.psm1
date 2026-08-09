@@ -5124,9 +5124,8 @@ function Remove-DefenseClawCodexPolicySerializationLock {
         -Label 'Codex policy serialization lock'
 }
 
-# Both locks sit in shared vendor directories the lifecycle never claims, so only
-# the lock files themselves are dropped, once the policy artifacts they
-# serialized are gone.
+# Both locks sit in shared vendor directories the lifecycle never claims, so the
+# lock files are dropped and the directories left as found.
 function Remove-DefenseClawCommittedManagedHooksSerializationLocks {
     param([Parameter(Mandatory)][hashtable]$Layout)
     foreach ($lock in @(
@@ -5384,8 +5383,7 @@ function Restore-DefenseClawTransaction {
             -DeferAutomaticStart
         Set-DefenseClawManagedAcls -Layout $Layout -GatewayServiceName ([string]$snapshot.gateway_service)
     }
-    # An NT SERVICE principal stops resolving once its service is deleted, so
-    # read the SID while the rolled-back gateway still exists.
+    # An NT SERVICE principal stops resolving once its service is deleted.
     $rolledBackGatewaySID = ''
     foreach ($service in $snapshot.services) {
         if ([bool]$service.existed -or -not [string]::Equals(
@@ -5405,8 +5403,8 @@ function Restore-DefenseClawTransaction {
             Remove-DefenseClawService -Name ([string]$service.name)
         }
     }
-    # Shared ancestors outlive the transaction that granted traverse to them.
-    # A surviving gateway keeps its grant; only a deleted one is revoked.
+    # Shared ancestors outlive the transaction, so a deleted gateway gives its
+    # traverse grant back. A surviving one keeps it.
     if (-not [string]::IsNullOrWhiteSpace($rolledBackGatewaySID)) {
         foreach ($ancestor in @($Layout.StateRootAncestors)) {
             Revoke-DefenseClawStateAncestorTraverse `
@@ -6531,8 +6529,8 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         if ($null -eq $okProperty -or
             $okProperty.Value -isnot [bool] -or
             -not [bool]$okProperty.Value) {
-            # The cause is carried per row, and by the report when the failure
-            # preceded row attribution. Control characters are folded so one row
+            # The cause sits on the row, or on the report when the failure came
+            # before row attribution. Control characters are folded so one row
             # cannot restructure the message.
             $rowError = [string]$row.error
             if ([string]::IsNullOrWhiteSpace($rowError)) {
@@ -10060,8 +10058,8 @@ function Invoke-DefenseClawCommittedUninstallCleanup {
         [Parameter(Mandatory)][string]$GuardianServiceName,
         [switch]$Purge,
         # Only the caller that deleted the services can still resolve the virtual
-        # account SID. A resumed cleanup omits it and leaves the ancestor grant
-        # pointing at a deleted principal, which grants nobody anything.
+        # account SID. A resumed cleanup omits it, leaving a grant to a principal
+        # that no longer exists.
         [string]$GatewayServiceSID
     )
     $metadata = Get-DefenseClawDeploymentMetadata -Layout $Layout -Required
