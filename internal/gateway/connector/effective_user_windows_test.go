@@ -124,8 +124,12 @@ func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *
 	userFirst := fmt.Sprintf("D:P(A;;FA;;;%s)(A;;FA;;;SY)", owner)
 	// The canonicalizer matches this DACL by the owner's numeric SID text, which
 	// a process user carrying an SDDL alias would not produce.
-	if round, err := windows.SecurityDescriptorFromString(systemFirst); err != nil || round.String() != systemFirst {
-		t.Skip("process user SID does not round-trip through SDDL")
+	round, err := windows.SecurityDescriptorFromString(systemFirst)
+	if err != nil {
+		t.Fatalf("parse fixture DACL %s: %v", systemFirst, err)
+	}
+	if !strings.Contains(round.String(), owner.String()) {
+		t.Skip("process user SID renders as an SDDL alias")
 	}
 
 	pinWindowsEffectiveUserSIDForTest(t, owner)
