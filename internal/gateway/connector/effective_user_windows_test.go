@@ -93,8 +93,7 @@ func TestAtomicTransformPrivateValidationNamesTheEffectiveUser(t *testing.T) {
 }
 
 // NTFS may swap the two equivalent allow ACEs during a rename. The witness
-// tolerates that only for the effective user, so a wrong identity costs the
-// tolerance and mismatches whenever the swap happens.
+// absorbs that only for the effective user, so a wrong identity mismatches.
 func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *testing.T) {
 	owner := windowsProcessUserSIDForTest(t)
 	foreign, err := windows.StringToSid("S-1-5-21-111-222-333-1001")
@@ -110,9 +109,8 @@ func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *
 	}
 	file := openWindowsWritableDACLHandleForTest(t, path)
 	defer file.Close()
-	// Some Windows CI images own new objects as the built-in Administrators
-	// group, and the witness normalizes ACE order only for an owning effective
-	// user. This file was just created here, so name its owner explicitly.
+	// The witness normalizes ACE order only when the effective user owns the
+	// file, and elevated processes create files owned by BUILTIN\Administrators.
 	if err := windows.SetSecurityInfo(
 		windows.Handle(file.Fd()), windows.SE_FILE_OBJECT,
 		windows.OWNER_SECURITY_INFORMATION, owner, nil, nil, nil,
@@ -122,8 +120,7 @@ func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *
 
 	systemFirst := fmt.Sprintf("D:P(A;;FA;;;SY)(A;;FA;;;%s)", owner)
 	userFirst := fmt.Sprintf("D:P(A;;FA;;;%s)(A;;FA;;;SY)", owner)
-	// The canonicalizer matches this DACL by the owner's numeric SID text, which
-	// a process user carrying an SDDL alias would not produce.
+	// The canonicalizer keys on the owner's numeric SID text.
 	round, err := windows.SecurityDescriptorFromString(systemFirst)
 	if err != nil {
 		t.Fatalf("parse fixture DACL %s: %v", systemFirst, err)
