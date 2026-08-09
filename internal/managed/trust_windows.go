@@ -229,14 +229,14 @@ func rejectUntrustedWindowsWriteACEsWithWriter(
 		default:
 			continue
 		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 		writeLike := windowsWriteLikeAccess(ace.Mask)
-		if ancestor {
+		if ancestor && !windowsWorldSID(sid) {
 			writeLike = WindowsAncestorReplaceAccess(ace.Mask)
 		}
 		if !writeLike {
 			continue
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
 		if !windowsTrustedOwner(sid) && !sameWindowsSID(sid, allowedWriter) {
 			return fmt.Errorf("%s: untrusted Windows principal %s has write-like access mask 0x%x", path, sidString(sid), uint32(ace.Mask))
 		}
@@ -337,6 +337,16 @@ func windowsWriteLikeAccess(mask windows.ACCESS_MASK) bool {
 			windows.FILE_WRITE_ATTRIBUTES,
 	)
 	return mask&(writeLike|fileDeleteChild) != 0
+}
+
+// windowsWorldSID reports whether sid is Everyone.
+//
+// The ancestor rule tolerates non-replacing write rights because stock Windows
+// grants them on roots like C:\ProgramData, but it grants them to BUILTIN\Users
+// and Authenticated Users, never to Everyone. A write right here was therefore
+// granted deliberately, so the leaf rule applies and it must be justified.
+func windowsWorldSID(sid *windows.SID) bool {
+	return sid != nil && sid.IsWellKnown(windows.WinWorldSid)
 }
 
 func windowsTrustedOwner(sid *windows.SID) bool {
