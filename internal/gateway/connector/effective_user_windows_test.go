@@ -110,9 +110,23 @@ func TestAtomicTransformProtectionWitnessToleratesACEReorderForEffectiveUser(t *
 	}
 	file := openWindowsWritableDACLHandleForTest(t, path)
 	defer file.Close()
+	// Some Windows CI images own new objects as the built-in Administrators
+	// group, and the witness normalizes ACE order only for an owning effective
+	// user. This file was just created here, so name its owner explicitly.
+	if err := windows.SetSecurityInfo(
+		windows.Handle(file.Fd()), windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION, owner, nil, nil, nil,
+	); err != nil {
+		t.Fatalf("set config owner: %v", err)
+	}
 
 	systemFirst := fmt.Sprintf("D:P(A;;FA;;;SY)(A;;FA;;;%s)", owner)
 	userFirst := fmt.Sprintf("D:P(A;;FA;;;%s)(A;;FA;;;SY)", owner)
+	// The canonicalizer matches this DACL by the owner's numeric SID text, which
+	// a process user carrying an SDDL alias would not produce.
+	if round, err := windows.SecurityDescriptorFromString(systemFirst); err != nil || round.String() != systemFirst {
+		t.Skip("process user SID does not round-trip through SDDL")
+	}
 
 	pinWindowsEffectiveUserSIDForTest(t, owner)
 	ownerSystemFirst := protectionWitnessForDACL(t, file, systemFirst)
@@ -161,7 +175,7 @@ func openWindowsWritableDACLHandleForTest(t *testing.T, path string) *os.File {
 	}
 	handle, err := windows.CreateFile(
 		pathPtr,
-		windows.GENERIC_READ|windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.GENERIC_READ|windows.READ_CONTROL|windows.WRITE_DAC|windows.WRITE_OWNER,
 		windows.FILE_SHARE_READ, nil, windows.OPEN_EXISTING,
 		windows.FILE_ATTRIBUTE_NORMAL, 0,
 	)
