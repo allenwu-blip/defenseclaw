@@ -201,3 +201,50 @@ func TestValidateWindowsCodexMachineLayoutChecksProgramDataOnlyAsAncestor(t *tes
 		}
 	}
 }
+
+// A deployment with no enrolled Codex target has no machine-policy directory.
+func TestRemoveWindowsCodexMachineRequirementsAcceptsAbsentPolicyDirectory(t *testing.T) {
+	programData := t.TempDir()
+	stateRoot := t.TempDir()
+	policyDir := filepath.Join(programData, "OpenAI", "Codex")
+	managedDir := filepath.Join(stateRoot, "bin")
+	installDir := filepath.Join(stateRoot, "install")
+	for _, dir := range []string{managedDir, installDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+	}
+
+	originalProgramData := windowsCodexMachineProgramData
+	t.Cleanup(func() { windowsCodexMachineProgramData = originalProgramData })
+	windowsCodexMachineProgramData = func() (string, error) { return programData, nil }
+
+	opts := WindowsCodexMachineRequirementsOptions{
+		RequirementsPath:   filepath.Join(policyDir, "requirements.toml"),
+		ManagedStatePath:   filepath.Join(policyDir, windowsCodexManagedStateFile),
+		ManagedDir:         managedDir,
+		HookBinary:         filepath.Join(managedDir, "defenseclaw-hook.exe"),
+		OwnershipPath:      filepath.Join(installDir, "codex-requirements-ownership.json"),
+		GatewayAddr:        "127.0.0.1:18000",
+		GatewayServiceName: "DefenseClawGateway",
+	}
+	if adminErr := requireWindowsCodexMachineAdministrator(); adminErr != nil {
+		t.Skipf("removal requires an elevated Administrator or LocalSystem token: %v", adminErr)
+	}
+	report, err := RemoveWindowsCodexMachineRequirements(opts)
+	if err != nil {
+		t.Fatalf("remove with an absent policy directory: %v", err)
+	}
+	if !report.OK || !report.SafeToRemoveBinary ||
+		!report.ManagedStateRemovedOrAbsent ||
+		report.SurvivingOwnedPathReferences != 0 {
+		t.Fatalf("absent Codex policy did not report a clean removal: %+v", report)
+	}
+	// PowerShell rejects any disposition outside its allow list.
+	if report.Disposition != "ownership_absent" {
+		t.Fatalf("unexpected removal disposition %q", report.Disposition)
+	}
+	if _, err := os.Lstat(policyDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removal created the Codex machine-policy directory: %v", err)
+	}
+}

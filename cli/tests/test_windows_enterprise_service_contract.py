@@ -1978,3 +1978,19 @@ def test_certification_covers_effective_policy_revocation_and_lock_squatting() -
     assert ".defenseclaw-managed-hooks.lock" in harness
     assert "legacy_named_objects_ignored = $true" in harness
     assert "protected_file_lock_bounded_fail_closed = $true" in harness
+
+
+def test_uninstall_returns_shared_vendor_directories_to_their_prior_state() -> None:
+    """Uninstall leaves nothing of ours in directories other vendors own."""
+    module = read(MODULE)
+
+    # Both serialization locks outlive the policy files they guard.
+    assert "CodexManagedHooksLockPath" in module
+    assert "ClaudeManagedHooksLockPath" in module
+    assert "Remove-DefenseClawCommittedManagedHooksSerializationLocks -Layout $Layout" in module
+
+    # The traverse grant names a virtual account that only exists while the
+    # service does, so it is dropped by the caller that deleted the service.
+    assert "function Revoke-DefenseClawStateAncestorTraverse" in module
+    assert "Revoke-DefenseClawStateAncestorTraverse `" in module
+    assert "-GatewayServiceSID $gatewaySID" in module

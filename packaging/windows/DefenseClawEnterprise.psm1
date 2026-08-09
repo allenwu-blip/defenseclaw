@@ -1920,6 +1920,44 @@ function Assert-DefenseClawStateAncestorTraverse {
     }
 }
 
+# Drops the grant added by Grant-DefenseClawStateAncestorTraverse. Valid only
+# after both services are deleted, when the SID is stale.
+function Revoke-DefenseClawStateAncestorTraverse {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$GatewayServiceSID
+    )
+    if (-not (Microsoft.PowerShell.Management\Test-Path `
+            -LiteralPath $Path `
+            -PathType Container)) {
+        return
+    }
+    Assert-DefenseClawNoReparsePath -Path $Path
+    Assert-DefenseClawTrustedAncestor -Path $Path
+    $security = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path
+    $explicit = $false
+    foreach ($rule in $security.Access) {
+        if ($rule.IsInherited) {
+            continue
+        }
+        if ((ConvertTo-DefenseClawSID -Identity $rule.IdentityReference) -eq
+            $GatewayServiceSID) {
+            $explicit = $true
+            break
+        }
+    }
+    if (-not $explicit) {
+        return
+    }
+    [void]$security.PurgeAccessRules(
+        [Security.Principal.SecurityIdentifier]::new($GatewayServiceSID)
+    )
+    Microsoft.PowerShell.Security\Set-Acl `
+        -LiteralPath $Path `
+        -AclObject $security `
+        -ErrorAction Stop
+}
+
 function Initialize-DefenseClawManagedRoot {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -3350,6 +3388,13 @@ function Get-DefenseClawLayout {
         CodexManagedHooksDirectory = $bin
         CodexManagedHooksStatePath = (Microsoft.PowerShell.Management\Join-Path $codexMachinePolicyDirectory '.defenseclaw-managed-hooks.state')
         CodexManagedHooksLockPath = (Microsoft.PowerShell.Management\Join-Path $codexMachinePolicyDirectory '.defenseclaw-managed-hooks.lock')
+        ClaudeManagedHooksLockPath = (
+            Microsoft.PowerShell.Management\Join-Path `
+                (Microsoft.PowerShell.Management\Join-Path `
+                    (Microsoft.PowerShell.Management\Join-Path $script:ProgramFiles 'ClaudeCode') `
+                    'managed-settings.d') `
+                '.defenseclaw-managed-hooks.lock'
+        )
         CodexRequirementsOwnershipPath = (Microsoft.PowerShell.Management\Join-Path $installState 'codex-requirements-ownership.json')
         CodexRequirementsAclBackupPath = (Microsoft.PowerShell.Management\Join-Path $installState 'codex-requirements-acl-backup.json')
         CodexTrustedShellAttestationPath = (Microsoft.PowerShell.Management\Join-Path $installState 'agent-application-control-attestation.json')
@@ -5026,11 +5071,34 @@ function Initialize-DefenseClawCodexMachinePolicyParent {
     }
 }
 
-# The Codex policy serialization lock outlives the policy files it guards, so
-# the emptiness check below would read DefenseClaw's own bookkeeping as foreign
-# content and strand a directory this transaction created. Only the exact lock
-# path is removed, and only as a protected regular file in the directory being
-# cleared; anything else still fails closed.
+# Only the exact lock path is removed, and only as a regular file no untrusted
+# principal can write; anything else fails closed.
+function Remove-DefenseClawManagedHooksSerializationLock {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $Path)) {
+        return
+    }
+    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label is not a regular file: $Path"
+    }
+    Assert-DefenseClawNoReparsePath -Path $Path
+    Assert-DefenseClawPathAcl `
+        -Path $Path `
+        -AllowedWriterSIDs @(
+            $script:SystemSID,
+            $script:AdministratorsSID,
+            $script:TrustedInstallerSID
+        ) `
+        -AllowUsersRead `
+        -AllowInheritance
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $Path -Force
+}
+
+# The Codex policy serialization lock outlives the policy files it guards, so it
+# is cleared before the emptiness check that follows.
 function Remove-DefenseClawCodexPolicySerializationLock {
     param(
         [Parameter(Mandatory)][string]$Directory,
@@ -5051,23 +5119,31 @@ function Remove-DefenseClawCodexPolicySerializationLock {
         )) {
         return
     }
-    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $lockPath)) {
-        return
-    }
-    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $lockPath -PathType Leaf)) {
-        throw "Codex policy serialization lock is not a regular file: $lockPath"
-    }
-    Assert-DefenseClawNoReparsePath -Path $lockPath
-    Assert-DefenseClawPathAcl `
+    Remove-DefenseClawManagedHooksSerializationLock `
         -Path $lockPath `
-        -AllowedWriterSIDs @(
-            $script:SystemSID,
-            $script:AdministratorsSID,
-            $script:TrustedInstallerSID
-        ) `
-        -AllowUsersRead `
-        -AllowInheritance
-    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $lockPath -Force
+        -Label 'Codex policy serialization lock'
+}
+
+# Both locks sit in shared vendor directories the lifecycle never claims, so only
+# the lock files themselves are dropped, once the policy artifacts they
+# serialized are gone.
+function Remove-DefenseClawCommittedManagedHooksSerializationLocks {
+    param([Parameter(Mandatory)][hashtable]$Layout)
+    foreach ($lock in @(
+        @{ Key = 'CodexManagedHooksLockPath'; Label = 'Codex policy serialization lock' },
+        @{ Key = 'ClaudeManagedHooksLockPath'; Label = 'Claude Code policy serialization lock' }
+    )) {
+        if (-not $Layout.ContainsKey($lock.Key)) {
+            continue
+        }
+        $path = [string]$Layout[$lock.Key]
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            continue
+        }
+        Remove-DefenseClawManagedHooksSerializationLock `
+            -Path ([IO.Path]::GetFullPath($path)) `
+            -Label $lock.Label
+    }
 }
 
 function Remove-DefenseClawTransactionCreatedSharedDirectories {
@@ -6430,10 +6506,13 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         if ($null -eq $okProperty -or
             $okProperty.Value -isnot [bool] -or
             -not [bool]$okProperty.Value) {
-            # The per-target cause is the only description of this failure; the
-            # report-level error below is not set for it. Control characters are
-            # folded so one row cannot restructure the message.
+            # The cause is carried per row, and by the report when the failure
+            # preceded row attribution. Control characters are folded so one row
+            # cannot restructure the message.
             $rowError = [string]$row.error
+            if ([string]::IsNullOrWhiteSpace($rowError)) {
+                $rowError = [string]$report.error
+            }
             $rowDetail = ''
             if (-not [string]::IsNullOrWhiteSpace($rowError)) {
                 $rowDetail = ': ' + ($rowError -replace '[\x00-\x1f\x7f]', ' ')
@@ -9954,7 +10033,11 @@ function Invoke-DefenseClawCommittedUninstallCleanup {
         [Parameter(Mandatory)][hashtable]$Layout,
         [Parameter(Mandatory)][string]$GatewayServiceName,
         [Parameter(Mandatory)][string]$GuardianServiceName,
-        [switch]$Purge
+        [switch]$Purge,
+        # Only the caller that deleted the services can still resolve the virtual
+        # account SID. A resumed cleanup omits it and leaves the ancestor grant
+        # pointing at a deleted principal, which grants nobody anything.
+        [string]$GatewayServiceSID
     )
     $metadata = Get-DefenseClawDeploymentMetadata -Layout $Layout -Required
     Assert-DefenseClawMetadataIdentity `
@@ -9977,6 +10060,14 @@ function Invoke-DefenseClawCommittedUninstallCleanup {
         -Layout $Layout `
         -GatewayServiceName $GatewayServiceName `
         -GuardianServiceName $GuardianServiceName)
+    Remove-DefenseClawCommittedManagedHooksSerializationLocks -Layout $Layout
+    if (-not [string]::IsNullOrWhiteSpace($GatewayServiceSID)) {
+        foreach ($ancestor in @($Layout.StateRootAncestors)) {
+            Revoke-DefenseClawStateAncestorTraverse `
+                -Path $ancestor `
+                -GatewayServiceSID $GatewayServiceSID
+        }
+    }
     if ($Purge) {
         [void](Publish-DefenseClawStatePurgeIntent `
             -Layout $Layout `
@@ -10784,7 +10875,8 @@ function Invoke-DefenseClawUninstallLifecycle {
         -Layout $Layout `
         -GatewayServiceName $GatewayServiceName `
         -GuardianServiceName $GuardianServiceName `
-        -Purge:$Purge
+        -Purge:$Purge `
+        -GatewayServiceSID $gatewaySID
     $result |
         Microsoft.PowerShell.Utility\Add-Member `
             -MemberType NoteProperty `

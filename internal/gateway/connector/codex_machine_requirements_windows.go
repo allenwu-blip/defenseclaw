@@ -440,7 +440,26 @@ func RemoveWindowsCodexMachineRequirements(
 	opts WindowsCodexMachineRequirementsOptions,
 ) (WindowsCodexMachineRequirementsReport, error) {
 	report := windowsCodexMachineReport("remove", opts)
-	err := withWindowsCodexMachineMutation(opts, func() error {
+	if err := requireWindowsCodexMachineAdministrator(); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	// The locked path below requires the Codex machine-policy directory, which
+	// exists only once a target has been enrolled. No artifact means nothing to
+	// remove, which is the same result that path reports for this state.
+	present, err := windowsCodexMachineAnyArtifactPathExists(opts)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if !present {
+		report.OK = true
+		report.Disposition = "ownership_absent"
+		report.SafeToRemoveBinary = true
+		report.ManagedStateRemovedOrAbsent = true
+		return report, nil
+	}
+	err = withWindowsCodexMachineMutation(opts, func() error {
 		requirements, err := readWindowsCodexMachineFile(
 			opts.RequirementsPath,
 			windowsCodexMachineRequirementsLimit,
