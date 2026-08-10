@@ -2665,16 +2665,16 @@ func (p *GuardrailProxy) handleChatCompletion(w http.ResponseWriter, r *http.Req
 		}
 		elapsed := time.Since(t0)
 
-		// End guardrail span with decision.
-		if p.otel != nil && grSpan != nil {
-			decision := "allow"
-			if verdict.Action == "block" {
-				decision = "deny"
-			} else if verdict.Severity != "NONE" {
-				decision = "warn"
-			}
-			p.otel.EndGuardrailSpan(grSpan, decision, verdict.Severity, verdict.Reason, t0)
-		}
+//		// End guardrail span with decision.
+//		if p.otel != nil && grSpan != nil {
+//			decision := "allow"
+//			if verdict.Action == "block" {
+//				decision = "deny"
+//			} else if verdict.Severity != "NONE" {
+//				decision = "warn"
+//			}
+//			p.otel.EndGuardrailSpan(grSpan, decision, verdict.Severity, verdict.Reason, t0)
+//		}
 
 		preCallSeverity = verdict.Severity
 		p.logPreCall(req.Model, req.Messages, verdict, elapsed)

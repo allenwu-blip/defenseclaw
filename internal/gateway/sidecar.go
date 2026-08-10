@@ -68,6 +68,8 @@ type Sidecar struct {
 	startedAt     time.Time
 	cfg           *config.Config
 	cfgCurrent    atomic.Pointer[config.Config]
+	otelMu sync.RWMutex
+	otel   *telemetry.Provider
 	client        *Client
 	router        *EventRouter
 	store         *audit.Store
