@@ -783,7 +783,9 @@ try {
         function script:Assert-DefenseClawRecordedArtifactHashes {
             param(
                 [Parameter(Mandatory)]$Metadata,
-                [Parameter(Mandatory)][hashtable]$Layout
+                [Parameter(Mandatory)][hashtable]$Layout,
+                [string[]]$ReplacedArtifacts = @(),
+                [string]$Action = 'this action'
             )
         }
         function script:Get-DefenseClawServiceSID {
