@@ -6359,7 +6359,20 @@ function Complete-DefenseClawCodexRequirementsRemoval {
     if ($verifiedAbsentDisposition) {
         if (Microsoft.PowerShell.Management\Test-Path `
             -LiteralPath $Layout.CodexRequirementsAclBackupPath) {
-            throw 'verified-absent Codex removal unexpectedly retains a DefenseClaw ACL preimage'
+            # A preimage that recorded no prior file names no foreign ACL to
+            # restore, so it leaves with the deployment. One that recorded a
+            # file now missing is state this teardown cannot explain.
+            $absentBackup = Get-DefenseClawCodexRequirementsAclBackup -Layout $Layout
+            if ([bool]$absentBackup.existed) {
+                throw (
+                    'verified-absent Codex removal retains an ACL preimage for ' +
+                    "$($Layout.CodexMachinePolicyPath), which existed before this deployment; " +
+                    'restore or remove that file, then run Uninstall again'
+                )
+            }
+            Microsoft.PowerShell.Management\Remove-Item `
+                -LiteralPath $Layout.CodexRequirementsAclBackupPath `
+                -Force
         }
         return
     }
@@ -7529,7 +7542,10 @@ function Assert-DefenseClawRecordedArtifactHashes {
     param(
         [Parameter(Mandatory)]$Metadata,
         [Parameter(Mandatory)][hashtable]$Layout,
-        [string[]]$ReplacedArtifacts = @()
+        [string[]]$ReplacedArtifacts = @(),
+        # Names the caller in drift errors. Every lifecycle action shares this
+        # gate, and the only way out is an Upgrade that replaces the artifact.
+        [string]$Action = 'this action'
     )
     foreach ($required in @('gateway', 'hook', 'installer', 'module')) {
         if ($required -notin $ReplacedArtifacts -and
@@ -7557,7 +7573,11 @@ function Assert-DefenseClawRecordedArtifactHashes {
             [string]$property.Value,
             [StringComparison]::OrdinalIgnoreCase
         )) {
-            throw "refusing to bless pre-existing artifact hash drift during repair/upgrade: $($property.Name)"
+            throw (
+                "$Action refuses unrecorded artifact hash drift: $($property.Name) " +
+                "at $path does not match deployment metadata; run Upgrade with " +
+                "the replacement for $($property.Name) to re-record it"
+            )
         }
     }
 }
@@ -10279,7 +10299,8 @@ function Invoke-DefenseClawInstallLikeLifecycle {
         Assert-DefenseClawRecordedArtifactHashes `
             -Metadata $metadata `
             -Layout $Layout `
-            -ReplacedArtifacts $replaced
+            -ReplacedArtifacts $replaced `
+            -Action $Action
     }
 
     $priorCodexTargetEnabled = $false
@@ -10650,7 +10671,8 @@ function Invoke-DefenseClawUninstallLifecycle {
     Assert-DefenseClawManagedInstallTree -Layout $Layout
     Assert-DefenseClawRecordedArtifactHashes `
         -Metadata $metadata `
-        -Layout $Layout
+        -Layout $Layout `
+        -Action 'Uninstall'
     $selfUninstallCallerIdentity = $null
     if ($SelfUninstallCallerPID -gt 0) {
         $selfUninstallCallerIdentity =
@@ -10940,7 +10962,8 @@ function Invoke-DefenseClawReconcileLifecycle {
         -Guardian
     Assert-DefenseClawRecordedArtifactHashes `
         -Metadata $metadata `
-        -Layout $Layout
+        -Layout $Layout `
+        -Action 'Reconcile'
     if ([bool]$Layout.CodexTargetEnabled) {
         Assert-DefenseClawCodexMachinePolicyDirectory -Path $Layout.CodexVendorDirectory
         Assert-DefenseClawCodexMachinePolicyDirectory -Path $Layout.CodexMachinePolicyDirectory
