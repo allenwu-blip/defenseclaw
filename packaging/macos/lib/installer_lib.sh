@@ -106,35 +106,249 @@ home_perms_ok() {
 # top-level string field, or empty on any error (missing file,
 # unreadable file, malformed JSON, missing field, non-string value).
 # Metadata-only: no shell interpolation of the payload, no exec of
-# any binary the payload names. The python3 sub-invocation stays
-# hard-scoped to json.load + dict.get; the field name is passed as a
-# separate argv (not concatenated into the script) so a caller
-# feeding a hostile FIELD cannot inject python.
+# any binary the payload names. The reader is a depth-aware awk
+# tokenizer scoped to top-level string-field lookup — no external
+# runtime dependency.
+#
+# QA regression this addresses: stock macOS ships /usr/bin/python3 as
+# a *stub* that requires Xcode Command Line Tools to actually invoke
+# the interpreter. `[ -x /usr/bin/python3 ]` passes on those hosts,
+# but the interpreter fails to launch and every DefenseClaw install
+# that shelled out to python3 crashed on first-boot env_config trust
+# check. Awk is part of the macOS base image, no CLT dependency.
 _read_json_field() {
   local path="$1"
   local field="$2"
-  local py
-  if [ -x /usr/bin/python3 ]; then
-    py="/usr/bin/python3"
-  else
-    py="$(command -v python3 || echo /usr/bin/python3)"
-  fi
-  "${py}" -c '
-import json, sys
-try:
-  with open(sys.argv[1]) as f:
-    v = json.load(f).get(sys.argv[2], "")
-  if isinstance(v, str):
-    print(v)
-except Exception:
-  pass
-' "${path}" "${field}" 2>/dev/null
+  [[ -f "${path}" ]] || return 0
+  # Awk parser: matches the top-level `"<field>": "<value>"` pair
+  # (immediately inside the outer object). Only the outer object's
+  # members are iterated, so we don't need a general depth counter —
+  # non-string, non-container values are skipped by scanning to the
+  # next delimiter, and nested objects/arrays are consumed by a local
+  # nest_depth counter that respects strings (a `{` inside a JSON
+  # string doesn't inflate it). Escape sequences \" \\ \/ \n \r \t
+  # \b \f are decoded; \uXXXX (BMP + surrogate pairs) are decoded to
+  # UTF-8. On any tokenization error the parser bails and prints
+  # nothing, matching the pre-existing "malformed → empty" contract
+  # callers gate on.
+  awk -v FIELD="${field}" '
+    function utf8(cp,    b0, b1, b2, b3) {
+      if (cp < 0)         return ""
+      if (cp < 128)       return sprintf("%c", cp)
+      if (cp < 2048)      return sprintf("%c%c",
+                                          192 + int(cp/64),
+                                          128 + (cp%64))
+      if (cp < 65536)     return sprintf("%c%c%c",
+                                          224 + int(cp/4096),
+                                          128 + int((cp/64)%64),
+                                          128 + (cp%64))
+      return sprintf("%c%c%c%c",
+                     240 + int(cp/262144),
+                     128 + int((cp/4096)%64),
+                     128 + int((cp/64)%64),
+                     128 + (cp%64))
+    }
+    function hex4(s,    i, c, v, n) {
+      if (length(s) != 4) return -1
+      n = 0
+      for (i = 1; i <= 4; i++) {
+        c = tolower(substr(s, i, 1))
+        v = index("0123456789abcdef", c)
+        if (v == 0) return -1
+        n = n * 16 + (v - 1)
+      }
+      return n
+    }
+    # read_string() reads a JSON string starting AT the opening quote;
+    # advances `pos` past the closing quote; returns the decoded value
+    # or sets `err` on malformed input.
+    function read_string(    out, c, esc, hex, cp, low) {
+      if (substr(buf, pos, 1) != "\"") { err = 1; return "" }
+      pos++
+      out = ""
+      while (pos <= buflen) {
+        c = substr(buf, pos, 1); pos++
+        if (c == "\"") return out
+        if (c == "\\") {
+          if (pos > buflen) { err = 1; return "" }
+          esc = substr(buf, pos, 1); pos++
+          if      (esc == "\"") out = out "\""
+          else if (esc == "\\") out = out "\\"
+          else if (esc == "/")  out = out "/"
+          else if (esc == "b")  out = out sprintf("%c", 8)
+          else if (esc == "f")  out = out sprintf("%c", 12)
+          else if (esc == "n")  out = out "\n"
+          else if (esc == "r")  out = out "\r"
+          else if (esc == "t")  out = out "\t"
+          else if (esc == "u") {
+            if (pos + 3 > buflen) { err = 1; return "" }
+            hex = substr(buf, pos, 4); pos += 4
+            cp = hex4(hex)
+            if (cp < 0) { err = 1; return "" }
+            if (cp >= 55296 && cp <= 56319) {
+              # High surrogate — expect \uDCxx low surrogate.
+              if (substr(buf, pos, 2) != "\\u") { err = 1; return "" }
+              pos += 2
+              if (pos + 3 > buflen) { err = 1; return "" }
+              hex = substr(buf, pos, 4); pos += 4
+              low = hex4(hex)
+              if (low < 56320 || low > 57343) { err = 1; return "" }
+              cp = 65536 + ((cp - 55296) * 1024) + (low - 56320)
+            } else if (cp >= 56320 && cp <= 57343) {
+              err = 1; return ""
+            }
+            out = out utf8(cp)
+          } else {
+            err = 1; return ""
+          }
+        } else {
+          out = out c
+        }
+      }
+      err = 1
+      return ""
+    }
+    # skip_string() advances past a JSON string without decoding.
+    # Assumes `pos` is at the opening quote.
+    function skip_string(    c) {
+      if (substr(buf, pos, 1) != "\"") { err = 1; return }
+      pos++
+      while (pos <= buflen) {
+        c = substr(buf, pos, 1); pos++
+        if (c == "\"") return
+        if (c == "\\") {
+          if (pos > buflen) { err = 1; return }
+          pos++
+        }
+      }
+      err = 1
+    }
+    function skip_ws(    c) {
+      while (pos <= buflen) {
+        c = substr(buf, pos, 1)
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") pos++
+        else return
+      }
+    }
+    {
+      # Accumulate the entire file into buf. Awk normally splits by
+      # RS; the default is "\n" so we join with the same character to
+      # rebuild the payload verbatim from the shell perspective.
+      if (buf == "") buf = $0
+      else           buf = buf "\n" $0
+    }
+    END {
+      buflen = length(buf)
+      pos = 1
+      err = 0
+      skip_ws()
+      if (substr(buf, pos, 1) != "{") exit 0
+      pos++
+      # State machine: only the OUTER object members are iterated,
+      # so keys are always at logical depth 1. For values that are
+      # not the sought field, skip strings / numbers / literals /
+      # nested containers to reach the next comma or closing brace.
+      # The inner-container walk below uses its own local nest_depth
+      # counter, so no top-level depth counter is needed here.
+      #
+      # We defer printing the matched value until AFTER the whole
+      # object has been validated as well-formed. Emitting on match
+      # would silently accept truncated inputs like
+      # `{"version":"1",` — the field-then-comma-then-EOF shape a
+      # crashed writer leaves behind. `found` records whether the
+      # match happened; `val` holds the value; the print at the END
+      # of a clean parse commits it.
+      found = 0
+      val = ""
+      while (pos <= buflen) {
+        skip_ws()
+        if (pos > buflen) exit 0
+        c = substr(buf, pos, 1)
+        if (c == "}") {
+          # Closing brace — object end. Validate that only
+          # whitespace follows (no trailing garbage) before
+          # emitting.
+          pos++
+          skip_ws()
+          if (pos <= buflen) exit 0
+          if (found) print val
+          exit 0
+        }
+        if (c == ",") { pos++; continue }
+        if (c != "\"") exit 0
+        # Read the top-level key.
+        key_is_target = 0
+        key = read_string()
+        if (err) exit 0
+        if (key == FIELD) key_is_target = 1
+        skip_ws()
+        if (substr(buf, pos, 1) != ":") exit 0
+        pos++
+        skip_ws()
+        c = substr(buf, pos, 1)
+        if (key_is_target && c == "\"") {
+          v = read_string()
+          if (err) exit 0
+          # Remember the last string value seen for FIELD. JSON
+          # semantics: duplicate top-level keys are permitted but
+          # ill-defined; most parsers keep the LAST one. Follow
+          # that convention rather than the first-wins short-circuit.
+          val = v
+          found = 1
+          continue
+        }
+        # Not the sought field (or non-string value) — skip the value
+        # so we can reach the next key. Value can be string, number,
+        # literal (true/false/null), object, or array.
+        if (c == "\"") {
+          skip_string()
+          if (err) exit 0
+          # A non-target string value invalidates a previously-found
+          # match with the SAME key iff it was actually the same key;
+          # we do not track that here because the key path above
+          # already recorded the target hit. Non-target keys never
+          # touch `found`/`val`.
+        } else if (c == "{" || c == "[") {
+          nest_depth = 1
+          pos++
+          while (pos <= buflen && nest_depth > 0) {
+            c = substr(buf, pos, 1)
+            if (c == "\"") {
+              skip_string()
+              if (err) exit 0
+              continue
+            }
+            if (c == "{" || c == "[") nest_depth++
+            else if (c == "}" || c == "]") nest_depth--
+            pos++
+          }
+          if (nest_depth != 0) exit 0
+        } else {
+          # scalar: number / true / false / null — consume until we
+          # hit a delimiter (comma, closing brace, whitespace).
+          # Empty run (no scalar bytes at all) means the buffer ended
+          # mid-value, e.g. `{"version":`. Treat that as malformed.
+          start_pos = pos
+          while (pos <= buflen) {
+            c = substr(buf, pos, 1)
+            if (c == "," || c == "}" || c == " " || c == "\t" ||
+                c == "\n" || c == "\r") break
+            pos++
+          }
+          if (pos == start_pos) exit 0
+        }
+      }
+      # Ran off the end of the buffer without a closing brace: object
+      # was truncated. Discard any found value.
+      exit 0
+    }
+  ' "${path}" 2>/dev/null
 }
 
 # _read_json_version PATH -> convenience shim for the .version field.
 # Kept as a named helper so the connector-version-discovery code in
 # discover_agent_version reads clearly; delegates to _read_json_field
-# so we don't grow two copies of the same python3 one-liner.
+# so we don't grow two copies of the same JSON reader.
 _read_json_version() {
   _read_json_field "$1" "version"
 }
@@ -1238,6 +1452,37 @@ apply_ai_discovery_home_dirs() {
     return 1
   fi
 
+  # Resolve chained symlinks up-front so every downstream mktemp /
+  # atomic rename lands in the CONCRETE target's directory (not the
+  # link's parent dir on a different filesystem). rename(2) is atomic
+  # only within a single filesystem; a temp file in ~/.dotfiles/…
+  # renamed over a target under /Volumes/other-fs/… would fail with
+  # EXDEV. Resolving the whole chain before we create the temp files
+  # keeps the swap on the same fs as the concrete target.
+  #
+  # Bounded loop (max 16 hops, matching Linux MAXSYMLINKS) guards
+  # against symlink cycles. On a resolution error or cycle we fall
+  # back to the last resolvable path, and downstream mv will surface
+  # a concrete errno the operator can act on.
+  local target="${config_path}"
+  local __hop
+  for __hop in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    [[ -L "${target}" ]] || break
+    local __link
+    __link="$(readlink -- "${target}" 2>/dev/null || true)"
+    if [[ -z "${__link}" ]]; then break; fi
+    case "${__link}" in
+      /*) target="${__link}" ;;
+      *)  target="$(dirname -- "${target}")/${__link}" ;;
+    esac
+  done
+  # If the resolved target is missing (broken symlink) fail loudly —
+  # we cannot safely mint a temp beside a path that doesn't exist.
+  if [[ ! -e "${target}" ]]; then
+    printf 'apply_ai_discovery_home_dirs: config path %s resolves to missing target: %s\n' "${config_path}" "${target}" >&2
+    return 1
+  fi
+
   # Collect homes from user_lines. Skip empty rows so the newline at
   # end of a heredoc-produced list doesn't produce a phantom entry.
   local -a homes=()
@@ -1265,94 +1510,222 @@ apply_ai_discovery_home_dirs() {
     done
   fi
 
+  # All tempfiles below live in the concrete target's directory so
+  # the final rename(2) is a same-filesystem atomic swap.
   local tmp
-  tmp="$(mktemp "${config_path}.hd.XXXXXX")" || return 1
-  # Rewrite the ai_discovery block:
+  tmp="$(mktemp "${target}.hd.XXXXXX")" || return 1
+  # Rewrite the ai_discovery block with awk (no external runtime dep):
   #   - find `ai_discovery:` line
   #   - keep `enabled: true` and any other scalar children
   #   - drop the old home_dirs block (list or scalar or placeholder)
   #   - inject the new block right after the ai_discovery: header
-  /usr/bin/python3 - "${config_path}" "${tmp}" "${block}" <<'PY'
-import sys, re
-
-src, dst, block = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(src, "r", encoding="utf-8") as fh:
-    lines = fh.readlines()
-
-out = []
-i = 0
-n = len(lines)
-while i < n:
-    line = lines[i]
-    if re.match(r'^ai_discovery:\s*$', line):
-        out.append(line)
-        i += 1
-        # Consume the ai_discovery block until we hit a non-indented
-        # non-empty line (next top-level key) or EOF. Drop any existing
-        # home_dirs entry (list or scalar); keep every other child so
-        # operator-added tuning (scan_interval_min, disabled_signature_ids,
-        # ...) survives across enumerator passes.
-        keep = []
-        while i < n:
-            child = lines[i]
-            if child.strip() == "":
-                keep.append(child); i += 1; continue
-            # Non-indented (or ends the block) -> stop consuming.
-            if not (child.startswith(" ") or child.startswith("\t")):
-                break
-            # home_dirs: <scalar>  OR  home_dirs:\n followed by "    - …"
-            m = re.match(r'^(\s+)home_dirs:\s*(.*)$', child)
-            if m:
-                indent = m.group(1)
-                i += 1
-                # If the value was empty, swallow every subsequent line
-                # that is more-indented than the home_dirs key itself
-                # (list entries / block comments). Deeper-indent check
-                # is len(indent)+1 so a sibling key at the same indent
-                # correctly terminates the sweep.
-                if m.group(2).strip() == "":
-                    while i < n:
-                        nxt = lines[i]
-                        if nxt.strip() == "":
-                            i += 1; continue
-                        # count leading whitespace
-                        stripped = nxt.lstrip()
-                        nxt_indent = len(nxt) - len(stripped)
-                        if nxt_indent > len(indent):
-                            i += 1; continue
-                        break
-                continue
-            keep.append(child); i += 1
-        # Inject the fresh home_dirs block first, then re-emit the
-        # preserved children so the file reads top-to-bottom naturally.
-        out.append(block)
-        out.extend(keep)
-        continue
-    out.append(line)
-    i += 1
-
-with open(dst, "w", encoding="utf-8") as fh:
-    fh.writelines(out)
-PY
+  # The block is emitted from awk via a token marker so we can inject
+  # it AFTER awk exits with a single printf — BSD awk does not accept
+  # embedded newlines in a `-v NAME=<multiline>` initialiser.
+  # Non-zero rc bubbles up so the caller's atomic-swap semantics stay
+  # intact.
+  local marker='__DEFENSECLAW_HOME_DIRS_INJECT__'
+  awk -v MARKER="${marker}" '
+    function is_ws(c) { return c == " " || c == "\t" }
+    function leading_ws_len(s,    n, i, c) {
+      n = 0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (is_ws(c)) n++
+        else break
+      }
+      return n
+    }
+    function strip(s) { sub(/^[ \t]+/, "", s); sub(/[ \t\r]+$/, "", s); return s }
+    BEGIN {
+      in_ai = 0
+      seen_ai = 0
+      consuming_home = 0
+      home_indent_len = 0
+      # direct_child_indent records the indentation depth of the FIRST
+      # direct child of `ai_discovery:` we see; this is the level a
+      # legitimate `home_dirs:` key lives at. A `home_dirs:` deeper
+      # than direct_child_indent (say `ai_discovery.source.home_dirs`)
+      # is an operator-added nested sub-map, not our top-level list —
+      # preserve it verbatim. Zero means we have not seen a child yet.
+      direct_child_indent = 0
+    }
+    {
+      line = $0
+      if (!in_ai) {
+        if (line ~ /^ai_discovery:[ \t]*$/) {
+          print line
+          in_ai = 1
+          seen_ai = 1
+          # Emit a one-line marker after the header; a follow-up sed
+          # pass replaces the marker with the freshly-rendered block.
+          # This detour avoids passing multi-line data through
+          # `awk -v` — BSD awk rejects embedded newlines in -v args.
+          print MARKER
+          direct_child_indent = 0
+          next
+        }
+        print line
+        next
+      }
+      # inside ai_discovery block ---------------------------------------
+      stripped = strip(line)
+      if (consuming_home) {
+        if (stripped == "") { next }              # swallow blank line inside old block
+        this_indent = leading_ws_len(line)
+        if (this_indent > home_indent_len) { next } # nested list entry / comment
+        consuming_home = 0
+        # fall through to normal handling
+      }
+      # Non-indented (or empty line at top-level) -> ai_discovery block ends.
+      if (stripped == "") { print line; next }
+      first_char = substr(line, 1, 1)
+      if (!is_ws(first_char)) {
+        in_ai = 0
+        print line
+        next
+      }
+      this_indent = leading_ws_len(line)
+      # Record the direct-child indent from the first child line we
+      # see. render_config emits two-space YAML, so this is normally
+      # 2 — but honor whatever the actual file uses so hand-edited
+      # configs with a different indent still work.
+      if (direct_child_indent == 0) direct_child_indent = this_indent
+      # home_dirs child: drop entirely BUT ONLY at the direct-child
+      # indent. A deeper `home_dirs:` under an operator-added subkey
+      # (`ai_discovery.source.home_dirs`, `ai_discovery.overrides.
+      # home_dirs`, …) belongs to that nested map and MUST be
+      # preserved. Matching `home_dirs:` at any depth would silently
+      # eat that user state on every reconcile tick.
+      #
+      # `home_dirs:` at direct-child indent with an empty tail means a
+      # possibly-multi-line list follows — enter consuming_home mode
+      # to swallow every deeper-indented line until the next same- or
+      # lesser-indented sibling. BSD awk (macOS) does not support
+      # gawk-style match(..., array); use a regex-then-substr split.
+      if (this_indent == direct_child_indent && line ~ /^[ \t]+home_dirs:[ \t]*/) {
+        home_indent_len = this_indent
+        colon_pos = index(line, ":")
+        tail = strip(substr(line, colon_pos + 1))
+        if (tail == "") consuming_home = 1
+        next
+      }
+      # Any other ai_discovery child (including a nested `home_dirs:`
+      # under a deeper sub-map): preserve verbatim.
+      print line
+    }
+    END {
+      # A config.yaml without an `ai_discovery:` block is a real
+      # anomaly on managed_enterprise: render_config always emits one
+      # (see the ai_discovery: header render further up). Missing it
+      # implies (a) an operator hand-edited the file and removed the
+      # block, or (b) the config predates the block. In either case
+      # the reconcile call silently returning "unchanged" would leave
+      # the daemon blind to per-user home dirs — surface the anomaly
+      # with a distinct exit code the caller maps to a loud error.
+      if (!seen_ai) exit 3
+    }
+  ' "${target}" > "${tmp}"
   local rc=$?
+  if (( rc == 3 )); then
+    rm -f -- "${tmp}"
+    printf 'apply_ai_discovery_home_dirs: no ai_discovery: block in %s (config predates ai_discovery or was hand-edited); refusing to silently succeed\n' "${config_path}" >&2
+    return 1
+  fi
   if (( rc != 0 )); then
     rm -f -- "${tmp}"
     return "${rc}"
   fi
+  # Replace the one-line marker with the freshly-rendered block.
+  # A sed-based swap would need metacharacter escaping across GNU/BSD
+  # variants for a payload that legitimately contains forward slashes
+  # (home paths) and other regex-active characters. Do it in a second
+  # awk pass that reads the block from a scratch file — this dodges
+  # both the sed-escaping problem and the "awk -v cannot hold embedded
+  # newlines" BSD limitation.
+  local block_file tmp2
+  block_file="$(mktemp "${target}.hd-block.XXXXXX")" || { rm -f -- "${tmp}"; return 1; }
+  printf '%s' "${block}" > "${block_file}"
+  tmp2="$(mktemp "${target}.hd2.XXXXXX")" || { rm -f -- "${tmp}" "${block_file}"; return 1; }
+  awk -v MARKER="${marker}" -v BLOCK_FILE="${block_file}" '
+    BEGIN {
+      block = ""
+      while ((getline line < BLOCK_FILE) > 0) {
+        block = block line "\n"
+      }
+      close(BLOCK_FILE)
+    }
+    $0 == MARKER { printf "%s", block; next }
+    { print }
+  ' "${tmp}" > "${tmp2}"
+  rc=$?
+  rm -f -- "${tmp}" "${block_file}"
+  if (( rc != 0 )); then
+    rm -f -- "${tmp2}"
+    return "${rc}"
+  fi
+  tmp="${tmp2}"
 
-  # Preserve mode + ownership from the existing config, then atomic-swap
+  # Preserve mode + ownership from the existing target, then atomic-swap
   # only when the content actually changed so downstream reload
   # heuristics that watch mtime aren't triggered on a no-op tick.
-  chown --reference="${config_path}" "${tmp}" 2>/dev/null || \
-    chown "$(stat -f '%Su:%Sg' "${config_path}")" "${tmp}"
-  chmod --reference="${config_path}" "${tmp}" 2>/dev/null || \
-    chmod "$(stat -f '%A' "${config_path}")" "${tmp}"
+  # `--reference` is a GNU coreutils extension not available on macOS
+  # `chown`/`chmod`; the fallback uses `stat -f` to read the target's
+  # existing owner/mode and re-apply them via the string form.
+  #
+  # Both fallbacks are gated on `[[ -e target ]]` so a target that
+  # vanished between the resolve step and this block (rare, but a
+  # concurrent unlink race is possible on shared home dirs) does not
+  # abort under `set -e` when `stat -f` returns an empty string that
+  # chown/chmod would then choke on. The `chown --reference` /
+  # `chmod --reference` GNU variants short-circuit the fallback via
+  # ||, so on Linux we never reach the guarded branch.
+  if ! chown --reference="${target}" "${tmp}" 2>/dev/null; then
+    if [[ -e "${target}" ]]; then
+      chown "$(stat -f '%Su:%Sg' "${target}")" "${tmp}"
+    fi
+  fi
+  if ! chmod --reference="${target}" "${tmp}" 2>/dev/null; then
+    if [[ -e "${target}" ]]; then
+      chmod "$(stat -f '%A' "${target}")" "${tmp}"
+    fi
+  fi
 
-  if cmp -s "${tmp}" "${config_path}"; then
+  if cmp -s "${tmp}" "${target}"; then
     rm -f -- "${tmp}"
     return 0
   fi
-  /bin/mv -f -- "${tmp}" "${config_path}"
+  # Check /bin/mv exit status so a rename failure (permissions,
+  # cross-fs EXDEV — should not happen given the upfront symlink
+  # resolution, but defense-in-depth — or a concurrent unlink) never
+  # silently reports success. On failure remove the temp and return
+  # non-zero. The explicit `return 0` after sync stops the function
+  # from returning `sync`'s exit status as its own; `sync` is
+  # best-effort and its rc must not decide the swap's outcome.
+  #
+  # Capture `mv`'s exit status BEFORE using it in the printf: an
+  # `if ! /bin/mv …; then … $? …` chain resolves `$?` to the negated
+  # test's status (always 0 in the taken branch) — the original
+  # non-zero code from mv would be lost. Store it in `mv_rc` at the
+  # invocation site so the diagnostic reports the real errno bucket.
+  local mv_rc=0
+  /bin/mv -f -- "${tmp}" "${target}" || mv_rc=$?
+  if (( mv_rc != 0 )); then
+    printf 'apply_ai_discovery_home_dirs: rename %s -> %s failed (rc=%d)\n' "${tmp}" "${target}" "${mv_rc}" >&2
+    rm -f -- "${tmp}"
+    return 1
+  fi
+  # Endpoint-durability: flush pending disk writes so the rename
+  # survives a kernel panic / laptop-lid-close / power-drop
+  # immediately after. Without this, a mid-boot crash between the
+  # rename and the eventual buffer flush can lose the swap and leave
+  # config.yaml empty on next boot — a hard-to-diagnose "daemon did
+  # not come up after upgrade" bug. macOS `sync(1)` is a no-argument
+  # wrapper around `sync(2)` (global buffer flush); over-inclusive
+  # but always available. Best-effort — never causes the rewrite to
+  # fail.
+  sync 2>/dev/null || true
+  return 0
 }
 
 # ---- legacy path relocation --------------------------------------------
