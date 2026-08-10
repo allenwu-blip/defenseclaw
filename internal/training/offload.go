@@ -362,20 +362,116 @@ func exportSFTDataset(examples []QueryExample, outputPath, modelName string) err
 	defer f.Close()
 
 	writer := bufio.NewWriter(f)
+
+	// Tokenize all prompts+completions via Python BPE (same as dataset create)
+	modelPath, _ := EnsureModel(modelName)
+	if modelPath == "" {
+		modelPath = modelName
+	}
 	template := DetectChatTemplate(modelName)
 
 	for _, ex := range examples {
+		// Tokenize prompt via Python
+		promptTokens, err := tokenizeWithPython(modelPath, ex.Prompt, template)
+		if err != nil {
+			// Fallback: use template prefix only (training still works, just less context)
+			promptTokens = template.Prefix
+		}
+
+		// Tokenize completion
+		compTokens, err := tokenizeCompletionPython(modelPath, ex.Response)
+		if err != nil {
+			compTokens = []int{} // empty completion tokens
+		}
+
+		// Full sequence = prompt + completion + EOS
+		fullTokens := make([]int, 0, len(promptTokens)+len(compTokens)+1)
+		fullTokens = append(fullTokens, promptTokens...)
+		fullTokens = append(fullTokens, compTokens...)
+		fullTokens = append(fullTokens, template.Suffix[0]) // EOS
+
 		entry := map[string]interface{}{
-			"prompt":        ex.Prompt,
-			"completion":    ex.Response,
-			"prompt_tokens": template.Prefix, // simplified — real impl needs full tokenization
-			"full_tokens":   append(template.Prefix, template.Suffix...), // placeholder
+			"prompt":           ex.Prompt,
+			"completion":       ex.Response,
+			"prompt_tokens":    promptTokens,
+			"completion_tokens": compTokens,
+			"full_tokens":      fullTokens,
 		}
 		data, _ := json.Marshal(entry)
 		writer.Write(data)
 		writer.WriteByte('\n')
 	}
 	return writer.Flush()
+}
+
+// tokenizeCompletionPython tokenizes just the completion text (no chat template)
+func tokenizeCompletionPython(modelPath, text string) ([]int, error) {
+	script := fmt.Sprintf(`
+import struct, json, sys
+
+f = open('%s', 'rb')
+f.read(4); f.read(4)
+n_tensors = struct.unpack('<Q', f.read(8))[0]
+n_kv = struct.unpack('<Q', f.read(8))[0]
+GV = {0:1,1:1,2:2,3:2,4:4,5:4,6:4,7:1,10:8,11:8,12:8}
+tokens_list = None; merges_list = None
+for i in range(n_kv):
+    kl = struct.unpack('<Q', f.read(8))[0]; key = f.read(kl).decode('utf-8','replace')
+    vt = struct.unpack('<I', f.read(4))[0]
+    if key == 'tokenizer.ggml.tokens' and vt == 9:
+        at = struct.unpack('<I', f.read(4))[0]; al = struct.unpack('<Q', f.read(8))[0]
+        tokens_list = []
+        for j in range(al):
+            sl = struct.unpack('<Q', f.read(8))[0]; tokens_list.append(f.read(sl).decode('utf-8','replace'))
+    elif key == 'tokenizer.ggml.merges' and vt == 9:
+        at = struct.unpack('<I', f.read(4))[0]; al = struct.unpack('<Q', f.read(8))[0]
+        merges_list = []
+        for j in range(al):
+            sl = struct.unpack('<Q', f.read(8))[0]; merges_list.append(f.read(sl).decode('utf-8','replace'))
+    elif vt == 9:
+        at = struct.unpack('<I', f.read(4))[0]; al = struct.unpack('<Q', f.read(8))[0]
+        for j in range(al):
+            if at == 8: sl = struct.unpack('<Q', f.read(8))[0]; f.read(sl)
+            elif at in GV: f.read(GV[at])
+    elif vt == 8: sl = struct.unpack('<Q', f.read(8))[0]; f.read(sl)
+    elif vt in GV: f.read(GV[vt])
+f.close()
+
+bs = list(range(ord("!"),ord("~")+1))+list(range(0xA1,0xAD))+list(range(0xAE,0x100))
+cs = bs[:]; n = 0
+for b in range(256):
+    if b not in bs: bs.append(b); cs.append(256+n); n+=1
+byte_encoder = {b: chr(c) for b, c in zip(bs, cs)}
+vocab = {t: i for i, t in enumerate(tokens_list)}
+merge_rank = {m: i for i, m in enumerate(merges_list)}
+
+def bpe_encode(text):
+    encoded = ''.join(byte_encoder[b] for b in text.encode('utf-8'))
+    word = list(encoded)
+    while len(word) > 1:
+        best_pair = None; best_rank = len(merges_list)
+        for i in range(len(word)-1):
+            pair = word[i]+' '+word[i+1]
+            if pair in merge_rank and merge_rank[pair] < best_rank:
+                best_pair = (i, word[i]+word[i+1]); best_rank = merge_rank[pair]
+        if best_pair is None: break
+        idx, merged = best_pair
+        word = word[:idx] + [merged] + word[idx+2:]
+    return [vocab[t] for t in word if t in vocab]
+
+print(json.dumps(bpe_encode(sys.argv[1])))
+`, modelPath)
+
+	out, err := runShell(fmt.Sprintf("python3 -c %q %q", script, text))
+	if err != nil {
+		return nil, err
+	}
+
+	var ids []int
+	if json.Unmarshal([]byte(strings.TrimSpace(out)), &ids) != nil {
+		return nil, fmt.Errorf("failed to parse tokens")
+	}
+	return ids, nil
 }
 
 func loadCollectedData(path string) ([]QueryExample, error) {
