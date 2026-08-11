@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build-managed-windows-gateway.sh
+# build-managed-windows-bundle.sh
 #
 # Cross-build the managed-enterprise Windows gateway zip on macOS (or any
 # host with a Go toolchain), so a Windows tester can consume the zip via
@@ -80,15 +80,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${VERSION}" ]]; then
-  echo "build-managed-windows-gateway: --version is required" >&2
+  echo "build-managed-windows-bundle: --version is required" >&2
   exit 64
 fi
 if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9_.-]+)?$ ]]; then
-  echo "build-managed-windows-gateway: invalid version: ${VERSION}" >&2
+  echo "build-managed-windows-bundle: invalid version: ${VERSION}" >&2
   exit 64
 fi
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 AI_COMMON_REPO_SSH="${AI_COMMON_REPO_SSH:-git@github.com-aispg:cisco-aispg/ai-common.git}"
 AI_COMMON_REPO_HTTPS="${AI_COMMON_REPO_HTTPS:-https://github.com/cisco-aispg/ai-common.git}"
@@ -98,7 +98,7 @@ export GOPRIVATE
 
 require_bin() {
   command -v "$1" >/dev/null 2>&1 || {
-    echo "build-managed-windows-gateway: missing required tool: $1" >&2
+    echo "build-managed-windows-bundle: missing required tool: $1" >&2
     exit 1
   }
 }
@@ -128,7 +128,7 @@ if [[ -z "${AI_COMMON_DIR}" ]]; then
   fi
 else
   if [[ ! -d "${AI_COMMON_DIR}/.git" ]]; then
-    echo "build-managed-windows-gateway: --ai-common-dir must point at a git checkout: ${AI_COMMON_DIR}" >&2
+    echo "build-managed-windows-bundle: --ai-common-dir must point at a git checkout: ${AI_COMMON_DIR}" >&2
     exit 1
   fi
   echo "==> using existing ai-common checkout at ${AI_COMMON_DIR}"
@@ -139,12 +139,12 @@ fi
 
 OVERLAY_PATH="${AI_COMMON_DIR}/defenseclaw_cmid_overlay/provider_cisco.go"
 if [[ ! -f "${OVERLAY_PATH}" ]]; then
-  echo "build-managed-windows-gateway: overlay file not found in ai-common@${REF}:" >&2
+  echo "build-managed-windows-bundle: overlay file not found in ai-common@${REF}:" >&2
   echo "    ${OVERLAY_PATH}" >&2
   exit 1
 fi
 if [[ ! -f "${AI_COMMON_DIR}/cmid/go.mod" ]]; then
-  echo "build-managed-windows-gateway: cmid module not found in ai-common@${REF}:" >&2
+  echo "build-managed-windows-bundle: cmid module not found in ai-common@${REF}:" >&2
   echo "    ${AI_COMMON_DIR}/cmid/go.mod" >&2
   exit 1
 fi

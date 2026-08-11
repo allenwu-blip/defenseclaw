@@ -78,7 +78,7 @@ private `cisco-aispg/ai-common` repo:
 
 ### macOS (or Linux) — prep the managed gateway zip
 
-`scripts/build-managed-windows-gateway.sh` clones `cisco-aispg/ai-common` at
+`packaging/scripts/build-managed-windows-bundle.sh` clones `cisco-aispg/ai-common` at
 `--ref` (default `develop`), computes the Go pseudo-version for that ref,
 snapshots the OSS cloudreg stub + `go.mod` + `go.sum`, applies the private
 overlay, runs `go get` to pin the ai-common/cmid module, and cross-builds
@@ -92,7 +92,7 @@ snapshot is restored on exit — whether the build succeeded or failed — so
 the OSS working tree stays clean.
 
 ```
-scripts/build-managed-windows-gateway.sh \
+packaging/scripts/build-managed-windows-bundle.sh \
     --ref develop \
     --version 0.9.0-rc1 \
     --dist-dir ./dist
@@ -101,7 +101,7 @@ scripts/build-managed-windows-gateway.sh \
 Or via Make:
 
 ```
-make packaging-managed-windows-gateway VERSION=0.9.0-rc1
+make packaging-managed-windows-bundle VERSION=0.9.0-rc1
 ```
 
 Requires: `git`, `go`, and either SSH access to

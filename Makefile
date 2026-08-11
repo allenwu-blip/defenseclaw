@@ -94,7 +94,7 @@ endef
 .PHONY: help all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
         plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
-        packaging-macos-test packaging-macos-bundle packaging-managed-windows-gateway packaging-windows-managed-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
+        packaging-macos-test packaging-macos-bundle packaging-managed-windows-bundle packaging-windows-managed-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
         security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
@@ -769,7 +769,7 @@ packaging-macos-bundle:
 # zip, and a Windows tester (which typically does not) only runs the OSS
 # installer flow against that zip.
 #
-# packaging-managed-windows-gateway (macOS / Linux / Windows-with-bash):
+# packaging-managed-windows-bundle (macOS / Linux / Windows-with-bash):
 #   Clones ai-common at $(WINDOWS_MANAGED_REF), applies the cloudreg overlay,
 #   pins the ai-common/cmid pseudo-version, cross-builds defenseclaw.exe +
 #   defenseclaw-hook.exe with -tags cmid, stamps VERSIONINFO / icon on both,
@@ -777,8 +777,8 @@ packaging-macos-bundle:
 #   alongside a gateway-source-commit.txt sidecar. Restores the OSS working
 #   tree on exit.
 WINDOWS_MANAGED_REF ?= develop
-packaging-managed-windows-gateway:
-	@scripts/build-managed-windows-gateway.sh \
+packaging-managed-windows-bundle:
+	@packaging/scripts/build-managed-windows-bundle.sh \
 	    --ref "$(WINDOWS_MANAGED_REF)" \
 	    --version "$(VERSION)" \
 	    --dist-dir "$(DIST_DIR)"

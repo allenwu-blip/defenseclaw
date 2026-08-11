@@ -6,7 +6,7 @@
     Windows-side consumer of a pre-staged managed-enterprise gateway zip.
 
 .DESCRIPTION
-    scripts/build-managed-windows-gateway.sh runs on macOS (or any host with a
+    packaging/scripts/build-managed-windows-bundle.sh runs on macOS (or any host with a
     Go toolchain and SSH access to cisco-aispg/ai-common) and produces:
 
         <DistRoot>/defenseclaw_<Version>_windows_amd64.zip
@@ -91,7 +91,7 @@ if (-not (Test-Path -LiteralPath $gatewayZip -PathType Leaf)) {
     throw @"
 build-windows-managed-bundle: missing pre-staged gateway zip: $gatewayZip
 
-Run scripts/build-managed-windows-gateway.sh on macOS to produce it, then
+Run packaging/scripts/build-managed-windows-bundle.sh on macOS to produce it, then
 copy it (and gateway-source-commit.txt) into $distFull alongside the
 release-candidate wheel and upgrade-manifest.json.
 "@
