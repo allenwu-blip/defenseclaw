@@ -111,12 +111,14 @@ Requires: `git`, `go`, and either SSH access to
 
 Copy `defenseclaw_<version>_windows_amd64.zip` and
 `gateway-source-commit.txt` into a directory alongside the release-candidate
-`defenseclaw-<version>-py3-none-any.whl` and `upgrade-manifest.json`, then
-either invoke `build-windows-installer.ps1` directly (it accepts
-`-DistributionFlavor managed-enterprise` and will use the pre-staged gateway
-zip verbatim):
+`defenseclaw-<version>-py3-none-any.whl` and `upgrade-manifest.json`, sync
+the defenseclaw working tree to the commit listed in the sidecar, and run
+`scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise`:
 
 ```powershell
+$expected = (Get-Content .\dist\gateway-source-commit.txt -Raw).Trim()
+git checkout $expected
+
 .\scripts\build-windows-installer.ps1 `
     -DistRoot .\dist `
     -OutRoot .\dist\windows-installer `
@@ -125,18 +127,13 @@ zip verbatim):
     -DistributionFlavor managed-enterprise
 ```
 
-…or use `scripts/build-windows-managed-bundle.ps1` for a small wrapper that
-cross-checks `gateway-source-commit.txt` against the local git HEAD (the
-installer bakes the local HEAD into the manifest / provenance, so a mismatch
-would misreport the source commit):
-
-```powershell
-.\scripts\build-windows-managed-bundle.ps1 `
-    -Version 0.9.0-rc1 `
-    -DistRoot .\dist `
-    -OutRoot .\dist\windows-installer `
-    -StateRoot .\dist\windows-installer-state
-```
+When `gateway-source-commit.txt` is present in `-DistRoot`, the installer
+cross-checks the local `git HEAD` against it and refuses to proceed on a
+mismatch — the installer bakes the local HEAD into `manifest.source_commit`
+and the provenance record, so a mismatch would silently ship a setup.exe
+whose gateway metadata points at the wrong commit. Pass `-SkipCommitCheck`
+if you understand the trade-off and want to force the build anyway. OSS
+builds do not ship the sidecar; nothing changes for them.
 
 Or via Make on the Windows box:
 

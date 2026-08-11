@@ -795,16 +795,18 @@ packaging-managed-windows-bundle:
 #     (from the macOS step above) AND defenseclaw-$(VERSION)-py3-none-any.whl
 #     + upgrade-manifest.json (typically from the release candidate pipeline).
 #   - Local git HEAD checked out at the same defenseclaw commit the gateway
-#     was built from — the wrapper enforces this by cross-checking
-#     gateway-source-commit.txt.
+#     was built from. When gateway-source-commit.txt is present in
+#     $(DIST_DIR), build-windows-installer.ps1 refuses to proceed on a
+#     mismatch unless -SkipCommitCheck is passed.
 WINDOWS_INSTALLER_OUT   ?= $(DIST_DIR)/windows-installer
 WINDOWS_INSTALLER_STATE ?= $(DIST_DIR)/windows-installer-state
 packaging-windows-managed-bundle:
-	@pwsh -NoProfile -File scripts/build-windows-managed-bundle.ps1 \
-	    -Version "$(VERSION)" \
+	@pwsh -NoProfile -File scripts/build-windows-installer.ps1 \
 	    -DistRoot "$(DIST_DIR)" \
 	    -OutRoot "$(WINDOWS_INSTALLER_OUT)" \
-	    -StateRoot "$(WINDOWS_INSTALLER_STATE)"
+	    -StateRoot "$(WINDOWS_INSTALLER_STATE)" \
+	    -Version "$(VERSION)" \
+	    -DistributionFlavor managed-enterprise
 
 # Native SwiftUI companion-app checks and release packaging. The release target
 # builds a runtime-bearing drag-to-Applications DMG plus an app-only self-update
