@@ -1,0 +1,8 @@
+self-hosted-runner:
+  labels:
+    - connector-lab
+    - connector-lab-ephemeral
+    - defenseclaw-macos
+    - e2e
+
+config-variables: null

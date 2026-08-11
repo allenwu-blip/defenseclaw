@@ -231,6 +231,46 @@ jobs:
           echo "baseline=${baseline}" >> "${GITHUB_OUTPUT}"
           echo "candidate=${candidate}" >> "${GITHUB_OUTPUT}"
 
+      - name: Create immutable attempt receipt
+        shell: bash
+        env:
+          CONNECTOR: ${{ matrix.connector }}
+          BASELINE_VERSION: ${{ steps.versions.outputs.baseline }}
+          CANDIDATE_VERSION: ${{ steps.versions.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"]) / "connector-version-radar-attempt"
+          root.mkdir(mode=0o700, parents=True, exist_ok=True)
+          output = root / "attempt.json"
+          temporary = root / "attempt.json.tmp"
+          payload = {
+              "schema_version": 1,
+              "intent": "attempt",
+              "connector": os.environ["CONNECTOR"],
+              "baseline_version": os.environ["BASELINE_VERSION"],
+              "candidate_version": os.environ["CANDIDATE_VERSION"],
+          }
+          temporary.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+          os.chmod(temporary, 0o600)
+          os.replace(temporary, output)
+          PY
+
+      # Upload before invoking candidate code. Artifacts are immutable, so a
+      # candidate running as the ephemeral account cannot rewrite this receipt.
+      - name: Upload immutable attempt receipt
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: connector-version-radar-attempt-${{ matrix.connector }}-${{ steps.versions.outputs.candidate }}
+          path: ${{ runner.temp }}/connector-version-radar-attempt/attempt.json
+          if-no-files-found: error
+          retention-days: 30
+          include-hidden-files: false
+
       - name: Run isolated upgrade regression harness
         id: harness
         shell: bash
@@ -258,56 +298,6 @@ jobs:
           # Defer failure until state and artifacts have been handled.
           exit 0
 
-      - name: Record meaningful radar outcome
-        if: ${{ always() }}
-        shell: bash
-        env:
-          CONNECTOR: ${{ matrix.connector }}
-          FALLBACK_CANDIDATE: ${{ steps.versions.outputs.candidate }}
-          RESOLVED_CANDIDATE: ${{ steps.harness.outputs.candidate_version }}
-          CLASSIFICATION: ${{ steps.harness.outputs.classification }}
-          RESULT_ROOT: ${{ steps.harness.outputs.result_root }}
-          BASELINE_VERSION: ${{ steps.versions.outputs.baseline }}
-          BASELINE_OVERRIDE: ${{ inputs.baseline_version || '' }}
-          CANDIDATE_OVERRIDE: ${{ inputs.candidate_version || '' }}
-        run: |
-          set -euo pipefail
-          state="${HOME}/Library/Application Support/DefenseClawConnectorLab/version-radar-state.json"
-          version="${RESOLVED_CANDIDATE:-${FALLBACK_CANDIDATE}}"
-          if [ -n "${BASELINE_OVERRIDE}" ] || [ -n "${CANDIDATE_OVERRIDE}" ]; then
-            echo "Not advancing daily radar state for an explicit historical/manual comparison."
-            if [ -n "${RESULT_ROOT}" ] && [ -f "${state}" ]; then
-              /bin/cp -p "${state}" "${RESULT_ROOT}/radar-state-after.json"
-            fi
-            exit 0
-          fi
-          case "${CLASSIFICATION}" in
-            pass)
-              python3 scripts/connector-version-radar.py mark \
-                --state "${state}" --connector "${CONNECTOR}" \
-                --version "${version}" --result passed
-              ;;
-            candidate_regression)
-              if [ "${BASELINE_VERSION}" != "${version}" ]; then
-                # The harness proved this exact baseline before the candidate
-                # failed. Preserve it as the next comparison's known-good
-                # release even if the globally installed CLI auto-updates.
-                python3 scripts/connector-version-radar.py mark \
-                  --state "${state}" --connector "${CONNECTOR}" \
-                  --version "${BASELINE_VERSION}" --result passed
-              fi
-              python3 scripts/connector-version-radar.py mark \
-                --state "${state}" --connector "${CONNECTOR}" \
-                --version "${version}" --result attempted
-              ;;
-            *)
-              echo "Not advancing radar state for classification=${CLASSIFICATION:-missing}; a later run will retry."
-              ;;
-          esac
-          if [ -n "${RESULT_ROOT}" ] && [ -f "${state}" ]; then
-            /bin/cp -p "${state}" "${RESULT_ROOT}/radar-state-after.json"
-          fi
-
       - name: Upload live evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
@@ -319,7 +309,6 @@ jobs:
           path: |
             ${{ steps.harness.outputs.result_root }}/classification.json
             ${{ steps.harness.outputs.result_root }}/results.jsonl
-            ${{ steps.harness.outputs.result_root }}/radar-state-after.json
           if-no-files-found: error
           retention-days: 30
           include-hidden-files: false
@@ -336,6 +325,56 @@ jobs:
             2|3|4|5) exit "${HARNESS_EXIT_CODE}" ;;
             *) echo "::error::Unexpected harness exit code: ${HARNESS_EXIT_CODE:-missing}"; exit 4 ;;
           esac
+
+  persist:
+    name: Persist validated radar outcomes
+    needs: [detect, live]
+    # Run for both successful candidates and classified regressions. Historical
+    # overrides are audited but deliberately do not advance daily state.
+    if: ${{ always() && needs.detect.result == 'success' && needs.live.result != 'skipped' && github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, macOS, ARM64, connector-lab, defenseclaw-macos]
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Download trusted detector evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: connector-version-radar-detection
+          path: ${{ runner.temp }}/connector-version-radar-transfer/detection
+
+      - name: Download immutable attempt receipts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: connector-version-radar-attempt-*
+          path: ${{ runner.temp }}/connector-version-radar-transfer/receipts
+          merge-multiple: false
+
+      - name: Reconcile isolated outcomes into detector state
+        shell: bash
+        env:
+          BASELINE_OVERRIDE: ${{ inputs.baseline_version || '' }}
+          CANDIDATE_OVERRIDE: ${{ inputs.candidate_version || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BASELINE_OVERRIDE}" ] || [ -n "${CANDIDATE_OVERRIDE}" ]; then
+            echo "Not advancing daily radar state for an explicit historical/manual comparison."
+            exit 0
+          fi
+          state_dir="${HOME}/Library/Application Support/DefenseClawConnectorLab"
+          transfer="${RUNNER_TEMP}/connector-version-radar-transfer"
+          mkdir -p "${state_dir}"
+          chmod 700 "${state_dir}"
+          python3 scripts/connector-version-radar.py reconcile \
+            --state "${state_dir}/version-radar-state.json" \
+            --expected-radar "${transfer}/detection/radar.json" \
+            --receipts-root "${transfer}/receipts"
 
   report:
     name: Report connector regressions

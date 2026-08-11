@@ -48,6 +48,7 @@ import json
 import os
 import platform
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,7 @@ SCHEMA_VERSION = 1
 EXIT_OK = 0
 EXIT_INFRASTRUCTURE_ERROR = 2
 DEFAULT_TIMEOUT_SECONDS = 20.0
+MAX_LIVE_EVIDENCE_BYTES = 64 * 1024
 ANTIGRAVITY_MANIFEST_BASE = (
     "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests"
 )
@@ -610,18 +612,19 @@ def mark_state(
     """Persist a candidate attempt or a successful live certification run."""
 
     normalized = parse_version(version).normalized
+    if not isinstance(connector, str) or connector not in SPECS:
+        raise ValueError(f"unsupported connector: {connector!r}")
+    if result not in {"attempted", "passed"}:
+        raise ValueError(f"unsupported state result: {result!r}")
     timestamp = now or utc_now()
     state = load_state(state_path)
-    entry = state["connectors"].setdefault(connector, {})
-    if not isinstance(entry, dict):
-        entry = {}
-        state["connectors"][connector] = entry
-    entry["last_attempted_version"] = normalized
-    entry["last_attempted_at"] = timestamp
-    if result == "passed":
-        entry["last_passed_version"] = normalized
-        entry["last_passed_at"] = timestamp
-    state["updated_at"] = timestamp
+    _mark_state_payload(
+        state,
+        connector=connector,
+        version=normalized,
+        result=result,
+        timestamp=timestamp,
+    )
     try:
         atomic_write_json(state_path, state)
     except OSError as exc:
@@ -632,6 +635,136 @@ def mark_state(
         "connector": connector,
         "version": normalized,
         "result": result,
+        "recorded_at": timestamp,
+    }
+
+
+def _mark_state_payload(
+    state: dict[str, Any],
+    *,
+    connector: str,
+    version: str,
+    result: str,
+    timestamp: str,
+) -> None:
+    """Apply one already-validated mark to an in-memory state document."""
+
+    entry = state["connectors"].setdefault(connector, {})
+    if not isinstance(entry, dict):
+        entry = {}
+        state["connectors"][connector] = entry
+    entry["last_attempted_version"] = version
+    entry["last_attempted_at"] = timestamp
+    if result == "passed":
+        entry["last_passed_version"] = version
+        entry["last_passed_at"] = timestamp
+    state["updated_at"] = timestamp
+
+
+def _load_bounded_json(path: Path, *, label: str) -> Any:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise RadarError(f"could not inspect {label} {path}: {exc}") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        raise RadarError(f"{label} must be a regular file: {path}")
+    if metadata.st_size > MAX_LIVE_EVIDENCE_BYTES:
+        raise RadarError(f"{label} exceeds {MAX_LIVE_EVIDENCE_BYTES} bytes: {path}")
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise RadarError(f"could not read {label} {path}: {exc}") from exc
+    if len(raw) > MAX_LIVE_EVIDENCE_BYTES:
+        raise RadarError(f"{label} exceeds {MAX_LIVE_EVIDENCE_BYTES} bytes: {path}")
+    try:
+        return json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RadarError(f"{label} is not valid UTF-8 JSON: {path}: {exc}") from exc
+
+
+def reconcile_attempt_receipts(
+    *,
+    state_path: Path,
+    expected_radar_path: Path,
+    receipts_root: Path,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Validate pre-execution receipts and atomically record scheduled attempts."""
+
+    expected_radar = _load_bounded_json(expected_radar_path, label="expected radar document")
+    if not isinstance(expected_radar, dict) or not isinstance(expected_radar.get("candidates"), list):
+        raise RadarError("expected radar document must contain a candidates array")
+
+    expected: dict[str, tuple[str, str]] = {}
+    for candidate in expected_radar["candidates"]:
+        if not isinstance(candidate, dict):
+            raise RadarError("each expected radar candidate must be a JSON object")
+        connector = candidate.get("connector")
+        baseline = candidate.get("baseline_version")
+        version = candidate.get("candidate_version")
+        if (
+            not isinstance(connector, str)
+            or connector not in SPECS
+            or not isinstance(baseline, str)
+            or not isinstance(version, str)
+        ):
+            raise RadarError("expected radar candidates require a known connector and exact versions")
+        try:
+            normalized_baseline = parse_version(baseline).normalized
+            normalized_version = parse_version(version).normalized
+        except ValueError as exc:
+            raise RadarError(f"expected radar candidate {connector} has an invalid version: {exc}") from exc
+        if normalized_baseline != baseline or normalized_version != version:
+            raise RadarError(f"expected radar candidate {connector} versions must be normalized")
+        if connector in expected:
+            raise RadarError(f"expected radar document repeats connector {connector}")
+        expected[connector] = (baseline, version)
+
+    receipt_paths = sorted(receipts_root.rglob("attempt.json"))
+    attempted: dict[str, tuple[str, str]] = {}
+    for path in receipt_paths:
+        payload = _load_bounded_json(path, label="attempt receipt")
+        if not isinstance(payload, dict):
+            raise RadarError(f"attempt receipt must be a JSON object: {path}")
+        connector = payload.get("connector")
+        if not isinstance(connector, str) or connector not in expected:
+            raise RadarError(f"attempt receipt names an unexpected connector: {connector!r}")
+        if payload.get("schema_version") != SCHEMA_VERSION or payload.get("intent") != "attempt":
+            raise RadarError(f"attempt receipt has an unsupported schema or intent: {path}")
+        baseline = payload.get("baseline_version")
+        version = payload.get("candidate_version")
+        if (baseline, version) != expected[connector]:
+            raise RadarError(f"attempt receipt versions do not match detection for {connector}")
+        if connector in attempted:
+            raise RadarError(f"multiple attempt receipts found for {connector}")
+        attempted[connector] = (baseline, version)
+
+    timestamp = now or utc_now()
+    state = load_state(state_path)
+    updates: list[dict[str, str]] = []
+    for connector in CONNECTOR_ORDER:
+        if connector not in attempted:
+            continue
+        _baseline, version = attempted[connector]
+        _mark_state_payload(
+            state,
+            connector=connector,
+            version=version,
+            result="attempted",
+            timestamp=timestamp,
+        )
+        updates.append({"connector": connector, "version": version, "result": "attempted"})
+
+    if updates:
+        try:
+            atomic_write_json(state_path, state)
+        except OSError as exc:
+            raise RadarError(f"could not persist state {state_path}: {exc}") from exc
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "status": "ok",
+        "receipt_count": len(receipt_paths),
+        "updates": updates,
         "recorded_at": timestamp,
     }
 
@@ -712,6 +845,14 @@ def _build_parser() -> argparse.ArgumentParser:
     mark.add_argument("--connector", required=True, choices=CONNECTOR_ORDER)
     mark.add_argument("--version", required=True)
     mark.add_argument("--result", required=True, choices=("attempted", "passed"))
+
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="Validate immutable pre-execution receipts and persist attempts.",
+    )
+    reconcile.add_argument("--state", required=True, type=Path)
+    reconcile.add_argument("--expected-radar", required=True, type=Path)
+    reconcile.add_argument("--receipts-root", required=True, type=Path)
     return parser
 
 
@@ -726,6 +867,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result=args.result,
             )
         except (RadarError, ValueError) as exc:
+            payload = infrastructure_payload(str(exc))
+            print(json.dumps(payload, sort_keys=True))
+            return EXIT_INFRASTRUCTURE_ERROR
+        print(json.dumps(payload, sort_keys=True))
+        return EXIT_OK
+
+    if args.command == "reconcile":
+        try:
+            payload = reconcile_attempt_receipts(
+                state_path=args.state,
+                expected_radar_path=args.expected_radar,
+                receipts_root=args.receipts_root,
+            )
+        except RadarError as exc:
             payload = infrastructure_payload(str(exc))
             print(json.dumps(payload, sort_keys=True))
             return EXIT_INFRASTRUCTURE_ERROR

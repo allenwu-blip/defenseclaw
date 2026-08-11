@@ -192,6 +192,166 @@ class ConnectorVersionRadarTests(unittest.TestCase):
             ],
         )
 
+    def test_reconcile_attempt_receipts_records_scheduled_candidates_atomically(self):
+        self.state.write_text(
+            json.dumps({"schema_version": 1, "connectors": {}}) + "\n",
+            encoding="utf-8",
+        )
+        expected = self.root / "radar.json"
+        expected.write_text(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "connector": "codex",
+                            "baseline_version": "0.142.5",
+                            "candidate_version": "0.144.1",
+                        },
+                        {
+                            "connector": "claudecode",
+                            "baseline_version": "2.1.207",
+                            "candidate_version": "2.1.208",
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        receipts = self.root / "receipts"
+        codex = receipts / "connector-version-radar-attempt-codex-0.144.1"
+        claude = receipts / "connector-version-radar-attempt-claudecode-2.1.208"
+        codex.mkdir(parents=True)
+        claude.mkdir(parents=True)
+        (codex / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "intent": "attempt",
+                    "connector": "codex",
+                    "baseline_version": "0.142.5",
+                    "candidate_version": "0.144.1",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (claude / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "intent": "attempt",
+                    "connector": "claudecode",
+                    "baseline_version": "2.1.207",
+                    "candidate_version": "2.1.208",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = radar.reconcile_attempt_receipts(
+            state_path=self.state,
+            expected_radar_path=expected,
+            receipts_root=receipts,
+            now="2026-08-11T12:00:00Z",
+        )
+
+        self.assertEqual(
+            result["updates"],
+            [
+                {"connector": "codex", "version": "0.144.1", "result": "attempted"},
+                {"connector": "claudecode", "version": "2.1.208", "result": "attempted"},
+            ],
+        )
+        persisted = json.loads(self.state.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["connectors"]["codex"]["last_attempted_version"], "0.144.1")
+        self.assertEqual(persisted["connectors"]["claudecode"]["last_attempted_version"], "2.1.208")
+        self.assertNotIn("last_passed_version", persisted["connectors"]["codex"])
+        self.assertNotIn("last_passed_version", persisted["connectors"]["claudecode"])
+
+    def test_reconcile_rejects_mismatched_candidate_without_partial_state_write(self):
+        original = b'{"schema_version":1,"connectors":{}}\n'
+        self.state.write_bytes(original)
+        expected = self.root / "radar.json"
+        expected.write_text(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "connector": "codex",
+                            "baseline_version": "0.142.5",
+                            "candidate_version": "0.144.1",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        receipts = self.root / "receipts"
+        receipts.mkdir()
+        (receipts / "attempt.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "intent": "attempt",
+                    "connector": "codex",
+                    "baseline_version": "0.142.5",
+                    "candidate_version": "9.9.9",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(radar.RadarError, "do not match detection"):
+            radar.reconcile_attempt_receipts(
+                state_path=self.state,
+                expected_radar_path=expected,
+                receipts_root=receipts,
+            )
+        self.assertEqual(self.state.read_bytes(), original)
+
+    def test_reconcile_with_no_attempt_receipts_does_not_write_state(self):
+        original = b'{"schema_version":1,"connectors":{}}\n'
+        self.state.write_bytes(original)
+        expected = self.root / "radar.json"
+        expected.write_text(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "connector": "codex",
+                            "baseline_version": "0.142.5",
+                            "candidate_version": "0.144.1",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        receipts = self.root / "receipts"
+        receipts.mkdir()
+
+        result = radar.reconcile_attempt_receipts(
+            state_path=self.state,
+            expected_radar_path=expected,
+            receipts_root=receipts,
+        )
+
+        self.assertEqual(result["updates"], [])
+        self.assertEqual(self.state.read_bytes(), original)
+
+    def test_mark_rejects_unsupported_result_before_state_mutation(self):
+        original = b'{"schema_version":1,"connectors":{}}\n'
+        self.state.write_bytes(original)
+
+        with self.assertRaisesRegex(ValueError, "unsupported state result"):
+            radar.mark_state(
+                state_path=self.state,
+                connector="codex",
+                version="0.144.1",
+                result="ignored",
+            )
+
+        self.assertEqual(self.state.read_bytes(), original)
+
     def test_last_passed_release_remains_baseline_after_global_cli_updates(self):
         initial_runner = self._runner()
         radar.check_radar(

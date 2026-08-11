@@ -15,6 +15,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "scripts" / "live-connector-e2e" / "upgrade-regression.sh"
 RADAR_WORKFLOW = REPO / ".github" / "workflows" / "connector-version-radar.yml"
+ACTIONLINT_CONFIG = REPO / ".github" / "actionlint.yaml"
 PERSIST = REPO / "scripts" / "live-connector-e2e" / "lib" / "persistent-macos.sh"
 REPORT = REPO / "scripts" / "live-connector-e2e" / "report.py"
 ANTIGRAVITY_DRIVER = REPO / "scripts" / "live-connector-e2e" / "drivers" / "antigravity.sh"
@@ -79,12 +80,54 @@ def test_harness_cli_exposes_workflow_contract() -> None:
 def test_radar_candidate_execution_requires_isolated_runner_opt_in() -> None:
     workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
     live_start = workflow.index("  live:\n")
-    live_end = workflow.index("  report:\n", live_start)
+    live_end = workflow.index("  persist:\n", live_start)
     live = workflow[live_start:live_end]
 
     assert "vars.CONNECTOR_RADAR_LIVE_ENABLED == 'true'" in live
     assert "runs-on: [self-hosted, macOS, ARM64, connector-lab-ephemeral, defenseclaw-macos]" in live
     assert "runs-on: [self-hosted, macOS, ARM64, connector-lab, defenseclaw-macos]" not in live
+
+
+def test_radar_attempt_receipts_are_immutable_before_candidate_execution() -> None:
+    workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
+    live_start = workflow.index("  live:\n")
+    persist_start = workflow.index("  persist:\n", live_start)
+    report_start = workflow.index("  report:\n", persist_start)
+    live = workflow[live_start:persist_start]
+    persist = workflow[persist_start:report_start]
+
+    create_receipt = live.index("      - name: Create immutable attempt receipt\n")
+    upload_receipt = live.index("      - name: Upload immutable attempt receipt\n")
+    run_candidate = live.index("      - name: Run isolated upgrade regression harness\n")
+    assert create_receipt < upload_receipt < run_candidate
+    assert "name: connector-version-radar-attempt-${{ matrix.connector }}-" in live
+    assert "runs-on: [self-hosted, macOS, ARM64, connector-lab, defenseclaw-macos]" in persist
+    assert "name: connector-version-radar-detection" in persist
+    assert "pattern: connector-version-radar-attempt-*" in persist
+    assert "scripts/connector-version-radar.py reconcile" in persist
+    assert 'expected-radar "${transfer}/detection/radar.json"' in persist
+    assert 'receipts-root "${transfer}/receipts"' in persist
+    assert "classification.json" not in persist
+    assert "connector-lab-ephemeral" not in persist
+
+
+def test_radar_persistent_state_transactions_are_workflow_serialized() -> None:
+    workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
+    jobs_start = workflow.index("jobs:\n")
+    global_config = workflow[:jobs_start]
+    persist_start = workflow.index("  persist:\n", jobs_start)
+    report_start = workflow.index("  report:\n", persist_start)
+    persist = workflow[persist_start:report_start]
+
+    assert "group: connector-version-radar-main" in global_config
+    assert "cancel-in-progress: false" in global_config
+    assert "needs: [detect, live]" in persist
+
+
+def test_actionlint_knows_all_repository_self_hosted_labels() -> None:
+    config = ACTIONLINT_CONFIG.read_text(encoding="utf-8")
+    for label in ("connector-lab", "connector-lab-ephemeral", "defenseclaw-macos", "e2e"):
+        assert f"    - {label}\n" in config
 
 
 def test_radar_upload_excludes_raw_candidate_and_gateway_evidence() -> None:
@@ -97,7 +140,7 @@ def test_radar_upload_excludes_raw_candidate_and_gateway_evidence() -> None:
     assert f"path: {result_root}\n" not in upload
     assert f"{result_root}/classification.json" in upload
     assert f"{result_root}/results.jsonl" in upload
-    assert f"{result_root}/radar-state-after.json" in upload
+    assert f"{result_root}/radar-state-after.json" not in upload
     assert "include-hidden-files: true" not in upload
     uploaded_paths = {
         line.strip()
@@ -107,7 +150,6 @@ def test_radar_upload_excludes_raw_candidate_and_gateway_evidence() -> None:
     assert uploaded_paths == {
         f"{result_root}/classification.json",
         f"{result_root}/results.jsonl",
-        f"{result_root}/radar-state-after.json",
     }
 
 
