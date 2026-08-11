@@ -338,6 +338,13 @@ class ConnectorVersionRadarTests(unittest.TestCase):
         self.assertEqual(result["updates"], [])
         self.assertEqual(self.state.read_bytes(), original)
 
+    def test_bounded_json_loader_rejects_non_utf8_json_encodings(self):
+        encoded = self.root / "utf16.json"
+        encoded.write_bytes('{"intent":"attempt"}'.encode("utf-16"))
+
+        with self.assertRaisesRegex(radar.RadarError, "not valid UTF-8 JSON"):
+            radar._load_bounded_json(encoded, label="attempt receipt")
+
     def test_mark_rejects_unsupported_result_before_state_mutation(self):
         original = b'{"schema_version":1,"connectors":{}}\n'
         self.state.write_bytes(original)

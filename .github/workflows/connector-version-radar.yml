@@ -384,7 +384,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-      issues: write
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -401,30 +400,14 @@ jobs:
           # JSONL files, and flattening can overwrite identical result names.
           merge-multiple: false
 
-      - name: Ensure regression label exists
+      # Candidate-writable JSON is review-only evidence. It may make this job
+      # red and render a summary, but it never reaches a repository write token.
+      - name: Render review-only regression summary
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh label create connector-regression \
-            --description "Upstream connector version compatibility regression" \
-            --color d73a4a \
-            --force
-
-      - name: Render summary and open or update the regression issue
-        env:
-          GH_TOKEN: ${{ github.token }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           mkdir -p radar-results
-          open_flag=()
-          while IFS= read -r -d '' classification; do
-            if jq -e '.classification == "candidate_regression"' "${classification}" >/dev/null; then
-              open_flag+=(--open-issue)
-              break
-            fi
-          done < <(find radar-results -name classification.json -type f -print0)
           python3 scripts/live-connector-e2e/report.py \
             --results-dir radar-results \
-            "${open_flag[@]}" \
             --run-url "${RUN_URL}"

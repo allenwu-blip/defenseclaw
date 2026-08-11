@@ -153,6 +153,17 @@ def test_radar_upload_excludes_raw_candidate_and_gateway_evidence() -> None:
     }
 
 
+def test_candidate_writable_radar_evidence_has_no_repository_write_token() -> None:
+    workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
+    report_start = workflow.index("  report:\n")
+    report = workflow[report_start:]
+
+    assert "issues: write" not in report
+    assert "GH_TOKEN:" not in report
+    assert "--open-issue" not in report
+    assert "Render review-only regression summary" in report
+
+
 def test_harness_never_globally_installs_or_removes_auth_homes() -> None:
     text = HARNESS.read_text(encoding="utf-8")
     persist_text = PERSIST.read_text(encoding="utf-8")

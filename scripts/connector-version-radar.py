@@ -677,7 +677,7 @@ def _load_bounded_json(path: Path, *, label: str) -> Any:
     if len(raw) > MAX_LIVE_EVIDENCE_BYTES:
         raise RadarError(f"{label} exceeds {MAX_LIVE_EVIDENCE_BYTES} bytes: {path}")
     try:
-        return json.loads(raw)
+        return json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RadarError(f"{label} is not valid UTF-8 JSON: {path}: {exc}") from exc
 
