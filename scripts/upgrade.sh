@@ -7203,9 +7203,12 @@ bridge_phase1_cleanup_owned_temporaries() {
         "${UPGRADE_RECOVERY_ROOT}/phase-one-active.json" \
         "${BRIDGE_RECOVERY_PLAN_ID}" \
         "${mutation_token}" <<'PY'
+import ctypes
+import errno
 import json
 import os
 import re
+import secrets
 import stat
 import sys
 
@@ -7214,12 +7217,15 @@ with open(journal_path, encoding="utf-8") as stream:
     journal = json.load(stream)
 if journal.get("schema_version") != 4 or journal.get("plan_id") != plan_id:
     raise RuntimeError("phase-one temporary cleanup journal identity changed")
+openclaw_home_existed = journal.get("openclaw_home_existed")
+if not isinstance(openclaw_home_existed, bool):
+    raise RuntimeError("phase-one temporary cleanup OpenClaw existence state changed")
 identity_paths = {
     "recovery_home": os.path.abspath(journal["recovery_home"]),
     "data_dir": os.path.abspath(data_dir),
     "openclaw_home": (
         os.path.abspath(openclaw_home)
-        if journal.get("openclaw_home_existed") is True
+        if openclaw_home_existed
         else (os.path.dirname(os.path.abspath(openclaw_home)) or ".")
     ),
     "config_parent": os.path.dirname(os.path.abspath(config_path)) or ".",
@@ -7231,7 +7237,13 @@ for name, path in identity_paths.items():
     info = os.lstat(path)
     identity = identities[name]
     if (
-        stat.S_ISLNK(info.st_mode)
+        not isinstance(identity, dict)
+        or set(identity) != {"device", "inode"}
+        or isinstance(identity.get("device"), bool)
+        or isinstance(identity.get("inode"), bool)
+        or not isinstance(identity.get("device"), int)
+        or not isinstance(identity.get("inode"), int)
+        or stat.S_ISLNK(info.st_mode)
         or not stat.S_ISDIR(info.st_mode)
         or info.st_dev != identity.get("device")
         or info.st_ino != identity.get("inode")
@@ -7241,43 +7253,215 @@ for name, path in identity_paths.items():
 generic_prefix = f".tmp.upgrade-{token}."
 tagged_writer = re.compile(rf"^\..+\.upgrade-{re.escape(token)}\.[A-Za-z0-9_-]+\.tmp$")
 cursor_prefix = f".migration_state.upgrade-{token}."
-roots = {identity_paths["data_dir"], identity_paths["config_parent"]}
-if os.path.isdir(openclaw_home) and not os.path.islink(openclaw_home):
-    roots.add(os.path.abspath(openclaw_home))
-roots = sorted(roots)
-seen = 0
-for root in roots:
-    with os.scandir(root) as entries:
+cleanup_quarantine = re.compile(
+    rf"^\.defenseclaw-cleanup-{re.escape(token)}-"
+    r"([0-9a-f]+)-([0-9a-f]+)-[0-9a-f]{32}\.quarantine$"
+)
+directory_flags = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+uid = os.geteuid()
+
+
+def expected_identity(name: str) -> dict:
+    return identities[name]
+
+
+def validate_bound_descriptor(
+    name: str,
+    path: str,
+    descriptor: int,
+    opened: os.stat_result,
+) -> None:
+    expected = expected_identity(name)
+    try:
+        named = os.lstat(path)
+    except OSError as exc:
+        raise RuntimeError(f"phase-one {name} disappeared during temporary cleanup") from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or stat.S_ISLNK(opened.st_mode)
+        or opened.st_dev != expected["device"]
+        or opened.st_ino != expected["inode"]
+        or not os.path.samestat(named, opened)
+        or not os.path.samestat(os.fstat(descriptor), opened)
+    ):
+        raise RuntimeError(f"phase-one {name} identity changed during temporary cleanup")
+
+
+def quarantine_no_replace(
+    descriptor: int,
+    source_name: str,
+    inspected: os.stat_result,
+) -> str:
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = library.renameatx_np
+        flag = 0x4  # RENAME_EXCL
+    elif sys.platform.startswith("linux"):
+        function = library.renameat2
+        flag = 0x1  # RENAME_NOREPLACE
+    else:
+        raise RuntimeError("phase-one temporary quarantine is unsupported")
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+    for _attempt in range(16):
+        quarantine_name = (
+            f".defenseclaw-cleanup-{token}-"
+            f"{inspected.st_dev:x}-{inspected.st_ino:x}-"
+            f"{secrets.token_hex(16)}.quarantine"
+        )
+        result = function(
+            descriptor,
+            os.fsencode(source_name),
+            descriptor,
+            os.fsencode(quarantine_name),
+            flag,
+        )
+        if result == 0:
+            os.fsync(descriptor)
+            return quarantine_name
+        code = ctypes.get_errno()
+        if code in {errno.EEXIST, errno.ENOTEMPTY}:
+            continue
+        raise RuntimeError(f"phase-one temporary quarantine failed with errno {code}")
+    raise RuntimeError("phase-one temporary quarantine name allocation was exhausted")
+
+
+def cleanup_descriptor(descriptor: int) -> None:
+    directory_device = os.fstat(descriptor).st_dev
+    with os.scandir(descriptor) as entries:
         members = []
         for entry in entries:
             if len(members) == 100000:
                 raise RuntimeError("phase-one temporary cleanup exceeded its scan bound")
             members.append((entry.name, entry.inode()))
-    descriptor = os.open(root, os.O_RDONLY)
-    try:
-        directory_device = os.fstat(descriptor).st_dev
-        for name, observed_inode in members:
-            owned = (
-                name.startswith(generic_prefix)
-                or (name.startswith(cursor_prefix) and name.endswith(".tmp"))
-                or tagged_writer.fullmatch(name) is not None
+    for name, observed_inode in members:
+        quarantine_match = cleanup_quarantine.fullmatch(name)
+        owned = (
+            name.startswith(generic_prefix)
+            or (name.startswith(cursor_prefix) and name.endswith(".tmp"))
+            or tagged_writer.fullmatch(name) is not None
+            or quarantine_match is not None
+        )
+        if not owned:
+            continue
+        info = os.lstat(name, dir_fd=descriptor)
+        if info.st_dev != directory_device or info.st_ino != observed_inode:
+            raise RuntimeError(
+                "phase-one owned temporary identity changed before inspection"
             )
-            if not owned:
-                continue
-            info = os.lstat(name, dir_fd=descriptor)
-            if (
-                info.st_dev != directory_device
-                or info.st_ino != observed_inode
-            ):
-                raise RuntimeError(
-                    "phase-one owned temporary identity changed before inspection"
-                )
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid():
-                raise RuntimeError("phase-one owned temporary has an unsafe identity")
-            os.unlink(name, dir_fd=descriptor)
-        os.fsync(descriptor)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_uid != uid:
+            raise RuntimeError("phase-one owned temporary has an unsafe identity")
+        if quarantine_match is not None and (
+            info.st_dev != int(quarantine_match.group(1), 16)
+            or info.st_ino != int(quarantine_match.group(2), 16)
+        ):
+            os.fsync(descriptor)
+            raise RuntimeError(
+                "phase-one cleanup quarantine identity changed before replay"
+            )
+        quarantine_name = quarantine_no_replace(descriptor, name, info)
+        quarantined = os.stat(
+            quarantine_name,
+            dir_fd=descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(quarantined.st_mode)
+            or stat.S_ISLNK(quarantined.st_mode)
+            or quarantined.st_uid != uid
+            or not os.path.samestat(quarantined, info)
+        ):
+            os.fsync(descriptor)
+            raise RuntimeError(
+                "phase-one owned temporary identity changed during quarantine"
+            )
+        os.unlink(quarantine_name, dir_fd=descriptor)
+    os.fsync(descriptor)
+
+
+def cleanup_bound_root(name: str, path: str) -> None:
+    descriptor = os.open(path, directory_flags)
+    try:
+        opened = os.fstat(descriptor)
+        validate_bound_descriptor(name, path, descriptor, opened)
+        cleanup_descriptor(descriptor)
+        validate_bound_descriptor(name, path, descriptor, opened)
     finally:
         os.close(descriptor)
+
+
+cleanup_bound_root("data_dir", identity_paths["data_dir"])
+cleanup_bound_root("config_parent", identity_paths["config_parent"])
+if openclaw_home_existed:
+    cleanup_bound_root("openclaw_home", os.path.abspath(openclaw_home))
+else:
+    parent = identity_paths["openclaw_home"]
+    child_name = os.path.basename(os.path.abspath(openclaw_home))
+    if not child_name:
+        raise RuntimeError("phase-one absent OpenClaw path has no child name")
+    parent_descriptor = os.open(parent, directory_flags)
+    try:
+        parent_opened = os.fstat(parent_descriptor)
+        validate_bound_descriptor(
+            "openclaw_home", parent, parent_descriptor, parent_opened
+        )
+        try:
+            child_descriptor = os.open(
+                child_name,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+        except FileNotFoundError:
+            child_descriptor = -1
+        if child_descriptor >= 0:
+            try:
+                child_opened = os.fstat(child_descriptor)
+                child_named = os.stat(
+                    child_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(child_opened.st_mode)
+                    or stat.S_ISLNK(child_opened.st_mode)
+                    or child_opened.st_uid != uid
+                    or stat.S_IMODE(child_opened.st_mode) & 0o022
+                    or not os.path.samestat(child_named, child_opened)
+                ):
+                    raise RuntimeError(
+                        "target-created OpenClaw home is unsafe during temporary cleanup"
+                    )
+                cleanup_descriptor(child_descriptor)
+                child_named = os.stat(
+                    child_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not os.path.samestat(child_named, child_opened)
+                    or not os.path.samestat(os.fstat(child_descriptor), child_opened)
+                ):
+                    raise RuntimeError(
+                        "target-created OpenClaw home changed during temporary cleanup"
+                    )
+            finally:
+                os.close(child_descriptor)
+        validate_bound_descriptor(
+            "openclaw_home", parent, parent_descriptor, parent_opened
+        )
+    finally:
+        os.close(parent_descriptor)
 PY
 }
 

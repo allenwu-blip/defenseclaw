@@ -593,6 +593,54 @@ def _phase_one_recovery_cleanup_program() -> str:
     )
 
 
+def _bridge_phase_one_cleanup_program() -> str:
+    source = UPGRADE_SCRIPT.read_text(encoding="utf-8")
+    function_start = source.index("bridge_phase1_cleanup_owned_temporaries()")
+    heredoc_start = source.index("<<'PY'\n", function_start) + len("<<'PY'\n")
+    heredoc_end = source.index("\nPY\n}", heredoc_start)
+    return source[heredoc_start:heredoc_end] + "\n"
+
+
+def _directory_identity(path: Path) -> dict[str, int]:
+    info = path.lstat()
+    return {"device": info.st_dev, "inode": info.st_ino}
+
+
+def _write_bridge_phase_one_cleanup_journal(
+    recovery_home: Path,
+    data_home: Path,
+    openclaw_home: Path,
+    config_path: Path,
+    plan_id: str,
+    *,
+    openclaw_home_existed: bool = True,
+) -> Path:
+    recovery_root = recovery_home / ".upgrade-recovery"
+    recovery_root.mkdir(mode=0o700)
+    openclaw_identity_path = openclaw_home if openclaw_home_existed else openclaw_home.parent
+    journal = recovery_root / "phase-one-active.json"
+    journal.write_text(
+        json.dumps(
+            {
+                "schema_version": 4,
+                "plan_id": plan_id,
+                "recovery_home": str(recovery_home),
+                "openclaw_home_existed": openclaw_home_existed,
+                "path_identities": {
+                    "recovery_home": _directory_identity(recovery_home),
+                    "data_dir": _directory_identity(data_home),
+                    "openclaw_home": _directory_identity(openclaw_identity_path),
+                    "config_parent": _directory_identity(config_path.parent),
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    journal.chmod(0o600)
+    return journal
+
+
 def _run_bridge_comment_restore(
     source_path: Path,
     active_path: Path,
@@ -643,6 +691,69 @@ def _run_phase_one_recovery_cleanup(
         capture_output=True,
         check=False,
         timeout=15,
+    )
+
+
+def _run_bridge_phase_one_cleanup(
+    data_home: Path,
+    openclaw_home: Path,
+    config_path: Path,
+    journal_path: Path,
+    plan_id: str,
+    token: str,
+    *,
+    program: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-",
+            str(data_home),
+            str(openclaw_home),
+            str(config_path),
+            str(journal_path),
+            plan_id,
+            token,
+        ],
+        input=program or _bridge_phase_one_cleanup_program(),
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=15,
+    )
+
+
+def _seed_bridge_phase_one_cleanup_fixture(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, Path, Path, str, str]:
+    tmp_path.chmod(0o700)
+    recovery_home = tmp_path / "controller"
+    data_home = tmp_path / "data"
+    openclaw_home = tmp_path / "openclaw"
+    config_parent = tmp_path / "config-root"
+    for directory in (recovery_home, data_home, openclaw_home, config_parent):
+        directory.mkdir(mode=0o700)
+    config_path = config_parent / "active.yaml"
+    config_path.write_text("config_version: 7\n", encoding="utf-8")
+    token = "a" * 32
+    plan_id = f"phase-one-{token}"
+    journal = _write_bridge_phase_one_cleanup_journal(
+        recovery_home,
+        data_home,
+        openclaw_home,
+        config_path,
+        plan_id,
+    )
+    return (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
     )
 
 
@@ -703,10 +814,294 @@ def test_bridge_comment_restore_is_ordered_before_seal_and_uses_source_snapshot(
     assert "os.lstat(name, dir_fd=descriptor)" in bridge_cleanup
     assert "entry.stat(" not in bridge_cleanup
     assert "entry.is_symlink()" not in bridge_cleanup
-    assert "os.unlink(name, dir_fd=descriptor)" in bridge_cleanup
+    assert "os.unlink(name, dir_fd=descriptor)" not in bridge_cleanup
+    assert "os.unlink(quarantine_name, dir_fd=descriptor)" in bridge_cleanup
     assert "os.unlink(entry.path)" not in bridge_cleanup
     assert "info.st_dev != directory_device" in bridge_cleanup
     assert "info.st_ino != observed_inode" in bridge_cleanup
+    assert "descriptor = os.open(path, directory_flags)" in bridge_cleanup
+    bound_root = bridge_cleanup[bridge_cleanup.index("def cleanup_bound_root(") :]
+    assert bound_root.index("descriptor = os.open(path, directory_flags)") < bound_root.index(
+        "cleanup_descriptor(descriptor)"
+    )
+    assert "with os.scandir(descriptor)" in bridge_cleanup
+    assert 'getattr(os, "O_NOFOLLOW", 0)' in bridge_cleanup
+    assert "function = library.renameatx_np" in bridge_cleanup
+    assert "function = library.renameat2" in bridge_cleanup
+    assert "flag = 0x4  # RENAME_EXCL" in bridge_cleanup
+    assert "flag = 0x1  # RENAME_NOREPLACE" in bridge_cleanup
+    assert "not os.path.samestat(quarantined, info)" in bridge_cleanup
+    assert "cleanup_quarantine.fullmatch(name)" in bridge_cleanup
+
+
+@POSIX_UPGRADE_CUSTODY
+def test_bridge_phase_one_cleanup_removes_only_owned_temporaries(tmp_path: Path) -> None:
+    (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    ) = _seed_bridge_phase_one_cleanup_fixture(tmp_path)
+    owned = config_parent / f".active.yaml.upgrade-{token}.owned.tmp"
+    unrelated = config_parent / "operator-notes.txt"
+    owned.write_text("owned\n", encoding="utf-8")
+    unrelated.write_text("preserve\n", encoding="utf-8")
+
+    completed = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not owned.exists()
+    assert unrelated.read_text(encoding="utf-8") == "preserve\n"
+    assert not list(config_parent.glob(f".defenseclaw-cleanup-{token}-*.quarantine"))
+
+
+@POSIX_UPGRADE_CUSTODY
+def test_bridge_phase_one_cleanup_root_replacement_cannot_redirect_unlink(
+    tmp_path: Path,
+) -> None:
+    (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    ) = _seed_bridge_phase_one_cleanup_fixture(tmp_path)
+    temporary_name = f".active.yaml.upgrade-{token}.owned.tmp"
+    (config_parent / temporary_name).write_text("bound-sensitive-bytes\n", encoding="utf-8")
+    displaced_parent = Path(f"{config_parent}.bound")
+    program = _bridge_phase_one_cleanup_program()
+    needle = "        validate_bound_descriptor(name, path, descriptor, opened)\n        cleanup_descriptor(descriptor)"
+    assert program.count(needle) == 1
+    program = program.replace(
+        needle,
+        "        validate_bound_descriptor(name, path, descriptor, opened)\n"
+        "        if name == 'config_parent':\n"
+        "            os.rename(path, path + '.bound')\n"
+        "            os.mkdir(path, 0o700)\n"
+        f"            with open(os.path.join(path, {temporary_name!r}), 'w', encoding='utf-8') as stream:\n"
+        "                stream.write('replacement-must-survive\\n')\n"
+        "        cleanup_descriptor(descriptor)",
+        1,
+    )
+
+    completed = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+        program=program,
+    )
+
+    assert completed.returncode != 0
+    assert "config_parent identity changed during temporary cleanup" in completed.stderr
+    assert not (displaced_parent / temporary_name).exists()
+    replacement = config_parent / temporary_name
+    assert replacement.read_text(encoding="utf-8") == "replacement-must-survive\n"
+
+
+@POSIX_UPGRADE_CUSTODY
+def test_bridge_phase_one_cleanup_quarantine_never_replaces_existing_name(
+    tmp_path: Path,
+) -> None:
+    (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    ) = _seed_bridge_phase_one_cleanup_fixture(tmp_path)
+    temporary_name = f".active.yaml.upgrade-{token}.owned.tmp"
+    temporary = config_parent / temporary_name
+    temporary.write_text("owned-sensitive-bytes\n", encoding="utf-8")
+    program = _bridge_phase_one_cleanup_program()
+    needle = "        quarantine_name = quarantine_no_replace(descriptor, name, info)"
+    assert program.count(needle) == 1
+    program = program.replace(
+        needle,
+        f"        if name == {temporary_name!r}:\n"
+        "            collision_name = (\n"
+        "                f'.defenseclaw-cleanup-{token}-'\n"
+        "                f'{info.st_dev:x}-{info.st_ino:x}-'\n"
+        "                + ('b' * 32) + '.quarantine'\n"
+        "            )\n"
+        "            collision = os.open(\n"
+        "                collision_name,\n"
+        "                os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n"
+        "                0o600,\n"
+        "                dir_fd=descriptor,\n"
+        "            )\n"
+        "            try:\n"
+        "                os.write(collision, b'collision-must-survive\\n')\n"
+        "                os.fsync(collision)\n"
+        "            finally:\n"
+        "                os.close(collision)\n"
+        "            secrets.token_hex = lambda _length: 'b' * 32\n"
+        f"{needle}",
+        1,
+    )
+
+    completed = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+        program=program,
+    )
+
+    assert completed.returncode != 0
+    assert "quarantine name allocation was exhausted" in completed.stderr
+    assert temporary.read_text(encoding="utf-8") == "owned-sensitive-bytes\n"
+    quarantines = list(config_parent.glob(f".defenseclaw-cleanup-{token}-*.quarantine"))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text(encoding="utf-8") == "collision-must-survive\n"
+
+
+@POSIX_UPGRADE_CUSTODY
+def test_bridge_phase_one_cleanup_entry_replacement_is_quarantined_not_deleted(
+    tmp_path: Path,
+) -> None:
+    (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    ) = _seed_bridge_phase_one_cleanup_fixture(tmp_path)
+    temporary_name = f".active.yaml.upgrade-{token}.owned.tmp"
+    temporary = config_parent / temporary_name
+    temporary.write_text("inspected-sensitive-bytes\n", encoding="utf-8")
+    program = _bridge_phase_one_cleanup_program()
+    needle = "        quarantine_name = quarantine_no_replace(descriptor, name, info)"
+    assert program.count(needle) == 1
+    program = program.replace(
+        needle,
+        f"        if name == {temporary_name!r}:\n"
+        "            os.rename(\n"
+        "                name,\n"
+        "                name + '.inspected',\n"
+        "                src_dir_fd=descriptor,\n"
+        "                dst_dir_fd=descriptor,\n"
+        "            )\n"
+        "            replacement = os.open(\n"
+        "                name,\n"
+        "                os.O_WRONLY | os.O_CREAT | os.O_EXCL,\n"
+        "                0o600,\n"
+        "                dir_fd=descriptor,\n"
+        "            )\n"
+        "            try:\n"
+        "                os.write(replacement, b'replacement-must-survive\\n')\n"
+        "                os.fsync(replacement)\n"
+        "            finally:\n"
+        "                os.close(replacement)\n"
+        f"{needle}",
+        1,
+    )
+
+    completed = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+        program=program,
+    )
+
+    assert completed.returncode != 0
+    assert "identity changed during quarantine" in completed.stderr
+    inspected = config_parent / f"{temporary_name}.inspected"
+    assert inspected.read_text(encoding="utf-8") == "inspected-sensitive-bytes\n"
+    assert not temporary.exists()
+    quarantines = list(config_parent.glob(f".defenseclaw-cleanup-{token}-*.quarantine"))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text(encoding="utf-8") == "replacement-must-survive\n"
+
+    replay = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    )
+
+    assert replay.returncode != 0
+    assert "quarantine identity changed before replay" in replay.stderr
+    assert quarantines[0].read_text(encoding="utf-8") == "replacement-must-survive\n"
+
+
+@POSIX_UPGRADE_CUSTODY
+def test_bridge_phase_one_cleanup_replays_matching_crash_left_quarantine(
+    tmp_path: Path,
+) -> None:
+    (
+        data_home,
+        openclaw_home,
+        config_parent,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    ) = _seed_bridge_phase_one_cleanup_fixture(tmp_path)
+    temporary_name = f".active.yaml.upgrade-{token}.owned.tmp"
+    temporary = config_parent / temporary_name
+    temporary.write_text("crash-left-sensitive-bytes\n", encoding="utf-8")
+    program = _bridge_phase_one_cleanup_program()
+    needle = "        quarantine_name = quarantine_no_replace(descriptor, name, info)"
+    assert program.count(needle) == 1
+    program = program.replace(
+        needle,
+        f"{needle}\n        os.kill(os.getpid(), 9)",
+        1,
+    )
+
+    crashed = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+        program=program,
+    )
+
+    assert crashed.returncode < 0
+    assert not temporary.exists()
+    quarantines = list(config_parent.glob(f".defenseclaw-cleanup-{token}-*.quarantine"))
+    assert len(quarantines) == 1
+    assert quarantines[0].read_text(encoding="utf-8") == "crash-left-sensitive-bytes\n"
+
+    replay = _run_bridge_phase_one_cleanup(
+        data_home,
+        openclaw_home,
+        config_path,
+        journal,
+        plan_id,
+        token,
+    )
+
+    assert replay.returncode == 0, replay.stderr
+    assert not list(config_parent.glob(f".defenseclaw-cleanup-{token}-*.quarantine"))
 
 
 @POSIX_UPGRADE_CUSTODY
