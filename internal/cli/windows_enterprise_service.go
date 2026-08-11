@@ -36,6 +36,10 @@ import (
 const (
 	windowsEnterpriseInstallerEnv = "DEFENSECLAW_WINDOWS_ENTERPRISE_INSTALLER"
 	windowsEnterpriseTempSDDL     = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	// 1603 is the fatal-install result Windows deployment systems act on.
+	// Never report 3010 from a failure: that means installed and awaiting a
+	// reboot, and it would mark an incomplete deployment as done.
+	windowsEnterpriseFailureExitCode = 1603
 )
 
 type windowsEnterpriseLifecycleOptions struct {
@@ -90,6 +94,7 @@ type windowsServiceConfigValidation struct {
 var (
 	windowsEnterpriseCommandRunner        = runWindowsEnterprisePowerShell
 	windowsEnterpriseScriptFinder         = findWindowsEnterpriseInstaller
+	windowsEnterprisePayloadStager        = stageWindowsEnterprisePayload
 	windowsEnterpriseTrustValidator       = validateWindowsEnterpriseInstallerTrust
 	windowsEnterpriseExecutableResolver   = os.Executable
 	windowsEnterpriseProgramFilesResolver = func() (string, error) {
@@ -142,7 +147,10 @@ func newWindowsEnterpriseLifecycleCommand(action string) *cobra.Command {
 		Short:        windowsEnterpriseLifecycleSummary(action),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runWindowsEnterpriseLifecycle(cmd.Context(), cmd, action, opts)
+			return withExitCode(
+				runWindowsEnterpriseLifecycle(cmd.Context(), cmd, action, opts),
+				windowsEnterpriseFailureExitCode,
+			)
 		},
 	}
 	flags := cmd.Flags()
@@ -223,7 +231,19 @@ func runWindowsEnterpriseLifecycle(
 	}
 	script, err := windowsEnterpriseScriptFinder(opts.installerPath)
 	if err != nil {
-		return failPreflight(err)
+		// A release that ships a lone executable has no installer to find, so
+		// the embedded copy answers discovery alone. A named installer that is
+		// missing or untrusted stays an error.
+		if !errors.Is(err, errWindowsEnterpriseInstallerNotFound) ||
+			windowsEnterpriseInstallerOverride(opts.installerPath) != "" {
+			return failPreflight(err)
+		}
+		staged, cleanup, stageErr := windowsEnterprisePayloadStager()
+		if stageErr != nil {
+			return failPreflight(errors.Join(err, stageErr))
+		}
+		defer func() { _ = cleanup() }()
+		script = staged
 	}
 	args := windowsEnterprisePowerShellArgs(action, opts)
 	executable, executableErr := windowsEnterpriseExecutableResolver()
@@ -550,12 +570,20 @@ func canonicalWindowsEnterpriseAction(action string) string {
 	return strings.ToUpper(action[:1]) + strings.ToLower(action[1:])
 }
 
+// windowsEnterpriseInstallerOverride reports the operator's chosen installer,
+// if any. An override is honoured exactly: a release that carries the scripts
+// internally still must not quietly answer a request for a specific file.
+func windowsEnterpriseInstallerOverride(explicit string) string {
+	if value := strings.TrimSpace(explicit); value != "" {
+		return value
+	}
+	return strings.TrimSpace(os.Getenv(windowsEnterpriseInstallerEnv))
+}
+
 func findWindowsEnterpriseInstaller(explicit string) (string, error) {
 	var candidates []string
-	if value := strings.TrimSpace(explicit); value != "" {
-		candidates = append(candidates, value)
-	} else if value := strings.TrimSpace(os.Getenv(windowsEnterpriseInstallerEnv)); value != "" {
-		candidates = append(candidates, value)
+	if override := windowsEnterpriseInstallerOverride(explicit); override != "" {
+		candidates = append(candidates, override)
 	} else {
 		executable, err := os.Executable()
 		if err == nil {
@@ -581,7 +609,8 @@ func findWindowsEnterpriseInstaller(explicit string) (string, error) {
 		return filepath.Clean(absolute), nil
 	}
 	return "", fmt.Errorf(
-		"Windows enterprise installer was not found; pass --installer or set %s",
+		"%w; pass --installer or set %s",
+		errWindowsEnterpriseInstallerNotFound,
 		windowsEnterpriseInstallerEnv,
 	)
 }
@@ -652,7 +681,17 @@ func runWindowsEnterprisePowerShell(
 	if runErr != nil || cleanupErr != nil {
 		var failures []error
 		if runErr != nil {
-			failures = append(failures, fmt.Errorf("Windows enterprise installer: %w", runErr))
+			// The child's own code is the first thing an operator needs, and
+			// "exit status N" alone does not say who exited.
+			var exit *exec.ExitError
+			if errors.As(runErr, &exit) {
+				failures = append(failures, fmt.Errorf(
+					"Windows enterprise installer exited with code %d",
+					exit.ExitCode(),
+				))
+			} else {
+				failures = append(failures, fmt.Errorf("Windows enterprise installer: %w", runErr))
+			}
 		}
 		if cleanupErr != nil {
 			failures = append(failures, fmt.Errorf("remove protected Windows enterprise PowerShell temp: %w", cleanupErr))
@@ -761,36 +800,15 @@ func prepareWindowsEnterprisePowerShellTempWithOps(
 	if err != nil {
 		return "", nil, fmt.Errorf("resolve the trusted ProgramData directory: %w", err)
 	}
-	descriptor, err := windows.SecurityDescriptorFromString(windowsEnterpriseTempSDDL)
+	path, err := createProtectedWindowsEnterpriseDirectory(
+		parent,
+		"DefenseClaw-PowerShell-",
+		"Windows enterprise PowerShell temp",
+		ops.randomRead,
+		ops.createDirectory,
+	)
 	if err != nil {
-		return "", nil, fmt.Errorf("build protected Windows enterprise PowerShell temp descriptor: %w", err)
-	}
-	attributes := &windows.SecurityAttributes{
-		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
-		SecurityDescriptor: descriptor,
-	}
-	var path string
-	for attempt := 0; attempt < 4; attempt++ {
-		capability := make([]byte, 16)
-		if _, err := ops.randomRead(capability); err != nil {
-			return "", nil, fmt.Errorf("generate protected Windows enterprise PowerShell temp name: %w", err)
-		}
-		path = filepath.Join(parent, "DefenseClaw-PowerShell-"+hex.EncodeToString(capability))
-		pathPtr, err := winpath.UTF16Ptr(path)
-		if err != nil {
-			return "", nil, fmt.Errorf("encode protected Windows enterprise PowerShell temp path: %w", err)
-		}
-		createErr := ops.createDirectory(pathPtr, attributes)
-		if createErr == nil {
-			break
-		}
-		if createErr != windows.ERROR_ALREADY_EXISTS {
-			return "", nil, fmt.Errorf("create protected Windows enterprise PowerShell temp: %w", createErr)
-		}
-		path = ""
-	}
-	if path == "" {
-		return "", nil, errors.New("create protected Windows enterprise PowerShell temp: random path collisions exhausted")
+		return "", nil, err
 	}
 	removeEmptyOnError := func(cause error) (string, func() error, error) {
 		removeErr := ops.remove(path)
@@ -812,6 +830,46 @@ func prepareWindowsEnterprisePowerShellTempWithOps(
 		return nil
 	}
 	return filepath.Clean(path), cleanup, nil
+}
+
+// createProtectedWindowsEnterpriseDirectory creates a freshly named child of
+// parent whose DACL admits only SYSTEM and Administrators. The random name
+// keeps an unprivileged caller from planting the directory first and owning
+// what lands inside it.
+func createProtectedWindowsEnterpriseDirectory(
+	parent string,
+	prefix string,
+	label string,
+	randomRead func([]byte) (int, error),
+	createDirectory func(*uint16, *windows.SecurityAttributes) error,
+) (string, error) {
+	descriptor, err := windows.SecurityDescriptorFromString(windowsEnterpriseTempSDDL)
+	if err != nil {
+		return "", fmt.Errorf("build protected %s descriptor: %w", label, err)
+	}
+	attributes := &windows.SecurityAttributes{
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: descriptor,
+	}
+	for attempt := 0; attempt < 4; attempt++ {
+		capability := make([]byte, 16)
+		if _, err := randomRead(capability); err != nil {
+			return "", fmt.Errorf("generate protected %s name: %w", label, err)
+		}
+		path := filepath.Join(parent, prefix+hex.EncodeToString(capability))
+		pathPtr, err := winpath.UTF16Ptr(path)
+		if err != nil {
+			return "", fmt.Errorf("encode protected %s path: %w", label, err)
+		}
+		createErr := createDirectory(pathPtr, attributes)
+		if createErr == nil {
+			return path, nil
+		}
+		if createErr != windows.ERROR_ALREADY_EXISTS {
+			return "", fmt.Errorf("create protected %s: %w", label, createErr)
+		}
+	}
+	return "", fmt.Errorf("create protected %s: random path collisions exhausted", label)
 }
 
 func trustedWindowsEnterpriseUserTempDirectory() (string, error) {

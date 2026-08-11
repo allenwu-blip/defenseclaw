@@ -288,7 +288,7 @@ func ExecuteContext(ctx context.Context) int {
 		if errors.Is(err, context.Canceled) {
 			return 0
 		}
-		return 1
+		return commandExitCode(err)
 	}
 	return 0
 }
