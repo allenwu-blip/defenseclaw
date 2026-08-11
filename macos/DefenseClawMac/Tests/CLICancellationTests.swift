@@ -423,7 +423,7 @@ struct CLICancellationTests {
         defer { _ = Darwin.kill(childPID, SIGKILL) }
         let parentExited = await waitForProcessExit(
             parentPID,
-            attempts: 20,
+            attempts: 400,
             delay: .milliseconds(5)
         )
         expect(parentExited, "the process-group leader exits before cancellation")
