@@ -3,65 +3,55 @@
 
 <#
 .SYNOPSIS
-    Build a managed-enterprise Windows setup.exe: swap the private cloudreg
-    overlay in, cross-build defenseclaw.exe + defenseclaw-hook.exe with
-    -tags cmid, package the goreleaser-shaped gateway zip, then drive
-    build-windows-installer.ps1 -DistributionFlavor managed-enterprise.
+    Windows-side consumer of a pre-staged managed-enterprise gateway zip.
 
 .DESCRIPTION
-    Windows counterpart of scripts/build-macos-bundle.sh, adapted to the
-    Windows installer's DistRoot contract: $DistRoot must already contain
-    the wheel and upgrade-manifest.json produced elsewhere (typically by
-    the release candidate pipeline); this script writes / overwrites only
-    the gateway zip.
+    scripts/build-managed-windows-gateway.sh runs on macOS (or any host with a
+    Go toolchain and SSH access to cisco-aispg/ai-common) and produces:
 
-    The overlay swap follows the exact snapshot / restore pattern of
-    scripts/build-macos-bundle.sh: internal/managed/cloudreg/provider_cisco.go,
-    go.mod, and go.sum are copied into a temp dir before the swap and
-    restored on exit whether the build succeeded or failed, leaving the
-    working tree clean for the next run.
+        <DistRoot>/defenseclaw_<Version>_windows_amd64.zip
+        <DistRoot>/gateway-source-commit.txt
 
-    The Windows binding for the CMID library lives in the private
-    github.com/cisco-aispg/ai-common/cmid module; the caller of this script
-    is responsible for having a valid -CmidOverlay path and a matching
-    -CmidVersion pseudo-version. scripts/build-managed-windows-installer.ps1
-    wraps this script and handles that plumbing.
+    This script is the Windows-side counterpart. Given a -DistRoot that
+    already contains the gateway zip above plus the release-candidate wheel
+    and upgrade-manifest.json, it:
+
+        1. Verifies the gateway zip is present and contains the two exe's.
+        2. Reads gateway-source-commit.txt and refuses to proceed unless the
+           defenseclaw working tree is checked out at that commit — the
+           installer bakes the local git HEAD into the payload manifest and
+           the provenance JSON, so a commit mismatch would misreport where
+           the gateway was built from.
+        3. Invokes scripts/build-windows-installer.ps1 with
+           -DistributionFlavor managed-enterprise.
+
+    Everything CMID-specific (private overlay, -tags cmid build, resource
+    stamping) already happened on the macOS side; this script does not need
+    SSH access to the private repo and does not swap anything in the working
+    tree.
 
 .PARAMETER Version
-    Release version string, e.g. 0.9.0 or 0.9.0-rc1.
+    Release version string, must match the version used to build the gateway
+    zip (which the script cross-checks by expected file name).
 
 .PARAMETER DistRoot
-    Directory containing the Python wheel and upgrade-manifest.json. The
-    generated gateway zip is written here alongside those files.
+    Directory containing the pre-staged gateway zip, wheel, upgrade-manifest,
+    and gateway-source-commit.txt.
 
 .PARAMETER OutRoot
-    Directory where DefenseClawSetup-x64.exe and its sidecars will be
-    written by build-windows-installer.ps1.
+    Directory where DefenseClawSetup-x64.exe and its sidecars will land.
 
 .PARAMETER StateRoot
     Scratch directory for build-windows-installer.ps1.
 
-.PARAMETER CmidOverlay
-    Absolute (or repo-relative) path to the private cloudreg
-    provider_cisco.go overlay file. Required whenever -Tags contains
-    "cmid" and -SkipOverlay is not passed.
+.PARAMETER SkipCommitCheck
+    Bypass the gateway-source-commit.txt cross-check. Only for local dev when
+    you know what you are doing (the installer will still record the local
+    HEAD as source_commit; the resulting artifact should not be treated as
+    a reproducible release).
 
-.PARAMETER CmidVersion
-    Pseudo-version to pin github.com/cisco-aispg/ai-common/cmid to via
-    `go get`. Required whenever -CmidOverlay is set.
-
-.PARAMETER Tags
-    Comma-separated go build -tags value. Defaults to "cmid".
-
-.PARAMETER SkipOverlay
-    Skip the overlay swap and go-get pin. Intended for local packaging
-    tests without private-registry access; the resulting managed-enterprise
-    binary will fail-closed at runtime because the OSS stub is still in
-    place.
-
-.PARAMETER SkipInstaller
-    Skip invoking build-windows-installer.ps1. Only build the gateway zip
-    (useful for testing this script in isolation).
+.PARAMETER SkipSigning
+    Forwarded to build-windows-installer.ps1. Skips Authenticode signing.
 #>
 
 [CmdletBinding()]
@@ -70,193 +60,109 @@ param(
     [Parameter(Mandatory = $true)][string]$DistRoot,
     [Parameter(Mandatory = $true)][string]$OutRoot,
     [Parameter(Mandatory = $true)][string]$StateRoot,
-    [string]$CmidOverlay = "",
-    [string]$CmidVersion = "",
-    [string]$Tags = "cmid",
-    [switch]$SkipOverlay,
-    [switch]$SkipInstaller
+    [switch]$SkipCommitCheck,
+    [switch]$SkipSigning
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 if (-not $IsWindows) {
-    throw "build-windows-managed-bundle.ps1 must run on Windows (needs the .exe toolchain and PowerShell resource stamping)."
+    throw "build-windows-managed-bundle.ps1 must run on Windows (drives build-windows-installer.ps1)."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$cloudregTarget = Join-Path $repoRoot 'internal\managed\cloudreg\provider_cisco.go'
-$goModFile = Join-Path $repoRoot 'go.mod'
-$goSumFile = Join-Path $repoRoot 'go.sum'
-$windowsResources = Join-Path $repoRoot 'internal\tools\windowsresources'
-$iconAsset = Join-Path $repoRoot 'macos\DefenseClawMac\DefenseClawMac\Assets.xcassets\AppIcon.appiconset\icon_256.png'
+$distFull = [IO.Path]::GetFullPath($DistRoot)
+$outFull = [IO.Path]::GetFullPath($OutRoot)
+$stateFull = [IO.Path]::GetFullPath($StateRoot)
 $buildInstaller = Join-Path $PSScriptRoot 'build-windows-installer.ps1'
 
-foreach ($required in @($cloudregTarget, $goModFile, $goSumFile, $iconAsset, $buildInstaller)) {
-    if (-not (Test-Path -LiteralPath $required)) {
+foreach ($required in @($buildInstaller)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "build-windows-managed-bundle: missing required repo input: $required"
     }
 }
 
-if ($Version -notmatch '^\d+\.\d+\.\d+(-[A-Za-z0-9_.-]+)?$') {
-    throw "Invalid version for managed Windows bundle: $Version"
+# --- pre-flight: gateway zip present with the expected shape ------------
+
+$gatewayZipName = "defenseclaw_${Version}_windows_amd64.zip"
+$gatewayZip = Join-Path $distFull $gatewayZipName
+if (-not (Test-Path -LiteralPath $gatewayZip -PathType Leaf)) {
+    throw @"
+build-windows-managed-bundle: missing pre-staged gateway zip: $gatewayZip
+
+Run scripts/build-managed-windows-gateway.sh on macOS to produce it, then
+copy it (and gateway-source-commit.txt) into $distFull alongside the
+release-candidate wheel and upgrade-manifest.json.
+"@
 }
 
-$distFull = [IO.Path]::GetFullPath($DistRoot)
-$outFull = [IO.Path]::GetFullPath($OutRoot)
-$stateFull = [IO.Path]::GetFullPath($StateRoot)
-[IO.Directory]::CreateDirectory($distFull) | Out-Null
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$archive = [IO.Compression.ZipFile]::OpenRead($gatewayZip)
+try {
+    $entryNames = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+    foreach ($needed in @('defenseclaw.exe', 'defenseclaw-hook.exe')) {
+        if ($needed -notin $entryNames) {
+            throw "Pre-staged gateway zip is missing $needed at the archive root: $gatewayZip"
+        }
+    }
+} finally {
+    $archive.Dispose()
+}
+
+# --- pre-flight: local git HEAD matches the gateway's source commit ----
+
+$commitSidecar = Join-Path $distFull 'gateway-source-commit.txt'
+if (-not $SkipCommitCheck) {
+    if (-not (Test-Path -LiteralPath $commitSidecar -PathType Leaf)) {
+        throw @"
+build-windows-managed-bundle: missing gateway-source-commit.txt in $distFull.
+Either copy it from the macOS build output, or re-run with -SkipCommitCheck
+if you understand that the installer will bake the local git HEAD into the
+manifest and provenance without any cross-check.
+"@
+    }
+    $expected = (Get-Content -LiteralPath $commitSidecar -Raw -Encoding UTF8).Trim()
+    if ($expected -notmatch '^[0-9a-f]{40}$') {
+        throw "build-windows-managed-bundle: gateway-source-commit.txt does not contain a 40-char lowercase git OID: $expected"
+    }
+    $localHead = (& git -C $repoRoot rev-parse --verify HEAD).Trim().ToLowerInvariant()
+    if ($LASTEXITCODE -ne 0) {
+        throw "build-windows-managed-bundle: git rev-parse HEAD failed in $repoRoot"
+    }
+    if ($localHead -ne $expected) {
+        throw @"
+build-windows-managed-bundle: local defenseclaw HEAD does not match the
+gateway's source commit.
+
+  gateway built from: $expected
+  local HEAD:         $localHead
+
+Check the same commit out (git -C $repoRoot checkout $expected) before
+building the installer, or re-run with -SkipCommitCheck if you accept a
+mismatched source_commit in the manifest / provenance.
+"@
+    }
+}
+
+# --- drive the OSS installer flow -------------------------------------
+
 [IO.Directory]::CreateDirectory($outFull) | Out-Null
 [IO.Directory]::CreateDirectory($stateFull) | Out-Null
 
-$applyOverlay = -not $SkipOverlay -and ($Tags -match '(^|,)cmid(,|$)')
-if ($applyOverlay) {
-    if (-not $CmidOverlay) {
-        throw "-CmidOverlay is required when -Tags contains 'cmid' (pass -SkipOverlay to build with the OSS stub for local tests only)."
-    }
-    if (-not $CmidVersion) {
-        throw "-CmidVersion is required when -CmidOverlay is set."
-    }
-    $overlayAbs = $CmidOverlay
-    if (-not [IO.Path]::IsPathRooted($overlayAbs)) {
-        $overlayAbs = Join-Path $repoRoot $CmidOverlay
-    }
-    if (-not (Test-Path -LiteralPath $overlayAbs -PathType Leaf)) {
-        throw "build-windows-managed-bundle: overlay file not found: $overlayAbs"
-    }
+Write-Host "==> building managed-enterprise setup.exe from pre-staged gateway zip"
+$installerArgs = @(
+    '-DistRoot', $distFull,
+    '-OutRoot',  $outFull,
+    '-StateRoot', $stateFull,
+    '-Version', $Version,
+    '-DistributionFlavor', 'managed-enterprise'
+)
+if ($SkipSigning) { $installerArgs += '-SkipSigning' }
+
+& $buildInstaller @installerArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "build-windows-installer.ps1 failed with exit code $LASTEXITCODE"
 }
 
-# --- overlay snapshot + restore (mirrors build-macos-bundle.sh:87-131) ---
-
-$snapshotDir = $null
-$overlayApplied = $false
-
-function Restore-Overlay {
-    if ($script:overlayApplied -and $script:snapshotDir -and (Test-Path -LiteralPath $script:snapshotDir)) {
-        Write-Host "==> restoring cloudreg stub + go.mod/go.sum from snapshot"
-        Copy-Item -LiteralPath (Join-Path $script:snapshotDir 'provider_cisco.go') -Destination $cloudregTarget -Force
-        Copy-Item -LiteralPath (Join-Path $script:snapshotDir 'go.mod')             -Destination $goModFile      -Force
-        Copy-Item -LiteralPath (Join-Path $script:snapshotDir 'go.sum')             -Destination $goSumFile      -Force
-        $script:overlayApplied = $false
-    }
-    if ($script:snapshotDir -and (Test-Path -LiteralPath $script:snapshotDir)) {
-        Remove-Item -LiteralPath $script:snapshotDir -Recurse -Force -ErrorAction SilentlyContinue
-    }
-}
-
-try {
-    if ($applyOverlay) {
-        $snapshotDir = New-Item -ItemType Directory -Path (Join-Path ([IO.Path]::GetTempPath()) ("dc-cmid-overlay-" + [Guid]::NewGuid().ToString("N"))) | Select-Object -ExpandProperty FullName
-        Write-Host "==> snapshotting cloudreg stub + go.mod/go.sum to $snapshotDir"
-        Copy-Item -LiteralPath $cloudregTarget -Destination (Join-Path $snapshotDir 'provider_cisco.go') -Force
-        Copy-Item -LiteralPath $goModFile      -Destination (Join-Path $snapshotDir 'go.mod')             -Force
-        Copy-Item -LiteralPath $goSumFile      -Destination (Join-Path $snapshotDir 'go.sum')             -Force
-
-        # Flip OVERLAY_APPLIED BEFORE the swap so a mid-write failure past
-        # this point still triggers a restore from the snapshot.
-        $overlayApplied = $true
-        Write-Host "==> applying cloudreg overlay: $overlayAbs"
-        Copy-Item -LiteralPath $overlayAbs -Destination $cloudregTarget -Force
-
-        Write-Host "==> pinning managed cloud auth module @$CmidVersion"
-        Push-Location $repoRoot
-        try {
-            & go get "github.com/cisco-aispg/ai-common/cmid@$CmidVersion"
-            if ($LASTEXITCODE -ne 0) {
-                throw "go get failed with exit code $LASTEXITCODE"
-            }
-        } finally {
-            Pop-Location
-        }
-    }
-
-    # --- cross-build gateway + hook with -tags $Tags ------------------
-
-    $stageDir = Join-Path $stateFull "gateway-stage"
-    if (Test-Path -LiteralPath $stageDir) {
-        Remove-Item -LiteralPath $stageDir -Recurse -Force
-    }
-    [IO.Directory]::CreateDirectory($stageDir) | Out-Null
-
-    $gatewayExe = Join-Path $stageDir 'defenseclaw.exe'
-    $hookExe    = Join-Path $stageDir 'defenseclaw-hook.exe'
-    $ldflagsGateway = "-s -w -buildid=defenseclaw-$Version-windows-amd64 -X main.version=$Version"
-    $ldflagsHook    = "-s -w -buildid=defenseclaw-hook-$Version-windows-amd64 -H=windowsgui -X main.version=$Version"
-
-    Push-Location $repoRoot
-    try {
-        $env:GOOS = 'windows'
-        $env:GOARCH = 'amd64'
-        $env:CGO_ENABLED = '0'
-        $goArgs = @('build', '-trimpath', '-buildvcs=false')
-        if ($Tags) { $goArgs += @('-tags', $Tags) }
-        Write-Host "==> building defenseclaw.exe (windows/amd64 tags=$Tags)"
-        & go @goArgs -ldflags $ldflagsGateway -o $gatewayExe ./cmd/defenseclaw
-        if ($LASTEXITCODE -ne 0) { throw "go build defenseclaw failed with exit code $LASTEXITCODE" }
-
-        Write-Host "==> stamping defenseclaw.exe VERSIONINFO / icon"
-        & go run "./internal/tools/windowsresources" -target windows_amd64 `
-            -executable $gatewayExe -component gateway -version $Version -icon $iconAsset
-        if ($LASTEXITCODE -ne 0) { throw "windowsresources gateway stamp failed with exit code $LASTEXITCODE" }
-
-        Write-Host "==> building defenseclaw-hook.exe (windows/amd64 tags=$Tags)"
-        & go @goArgs -ldflags $ldflagsHook -o $hookExe ./cmd/defenseclaw-hook
-        if ($LASTEXITCODE -ne 0) { throw "go build defenseclaw-hook failed with exit code $LASTEXITCODE" }
-
-        Write-Host "==> stamping defenseclaw-hook.exe VERSIONINFO / icon"
-        & go run "./internal/tools/windowsresources" -target windows_amd64 `
-            -executable $hookExe -component hook -version $Version -icon $iconAsset
-        if ($LASTEXITCODE -ne 0) { throw "windowsresources hook stamp failed with exit code $LASTEXITCODE" }
-    } finally {
-        Remove-Item Env:GOOS -ErrorAction SilentlyContinue
-        Remove-Item Env:GOARCH -ErrorAction SilentlyContinue
-        Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue
-        Pop-Location
-    }
-
-    # --- assemble the goreleaser-shaped archive ------------------------
-
-    Write-Host "==> assembling gateway archive contents"
-    foreach ($shipped in @('LICENSE', 'README.md', 'CHANGELOG.md')) {
-        $source = Join-Path $repoRoot $shipped
-        if (Test-Path -LiteralPath $source -PathType Leaf) {
-            Copy-Item -LiteralPath $source -Destination (Join-Path $stageDir $shipped) -Force
-        }
-    }
-    $packagingSource = Join-Path $repoRoot 'packaging'
-    Copy-Item -LiteralPath $packagingSource -Destination (Join-Path $stageDir 'packaging') -Recurse -Force
-
-    $gatewayZipName = "defenseclaw_${Version}_windows_amd64.zip"
-    $gatewayZip = Join-Path $distFull $gatewayZipName
-    if (Test-Path -LiteralPath $gatewayZip) {
-        Remove-Item -LiteralPath $gatewayZip -Force
-    }
-    Write-Host "==> writing $gatewayZipName"
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory(
-        $stageDir, $gatewayZip,
-        [IO.Compression.CompressionLevel]::Optimal, $false
-    )
-
-    if ($SkipInstaller) {
-        Write-Host "==> -SkipInstaller set: gateway zip written to $gatewayZip; not invoking build-windows-installer.ps1"
-        return
-    }
-
-    # --- drive build-windows-installer.ps1 ----------------------------
-
-    Write-Host "==> building managed-enterprise setup.exe"
-    & $buildInstaller `
-        -DistRoot $distFull `
-        -OutRoot $outFull `
-        -StateRoot $stateFull `
-        -Version $Version `
-        -DistributionFlavor 'managed-enterprise'
-    if ($LASTEXITCODE -ne 0) {
-        throw "build-windows-installer.ps1 failed with exit code $LASTEXITCODE"
-    }
-    Write-Host "==> managed-enterprise Windows bundle complete"
-}
-finally {
-    Restore-Overlay
-}
+Write-Host "==> managed-enterprise Windows bundle complete"

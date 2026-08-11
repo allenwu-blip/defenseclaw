@@ -66,46 +66,89 @@ environment, profile, or working directory.
 ## Managed-enterprise build
 
 The public OSS setup.exe is built by `scripts/build-windows-installer.ps1
--DistributionFlavor oss`. A managed-enterprise setup.exe additionally links the
-private CMID provider so the gateway can authenticate to AI Defense; that
+-DistributionFlavor oss`. A managed-enterprise setup.exe additionally links
+the private CMID provider so the gateway can authenticate to AI Defense; that
 requires a `-tags cmid` gateway with the private cloudreg overlay swapped into
 `internal/managed/cloudreg/provider_cisco.go` and the
 `github.com/cisco-aispg/ai-common/cmid` module pinned to a specific
 pseudo-version.
 
-Two scripts wrap that:
+The build is split so the Windows tester never needs SSH access to the
+private `cisco-aispg/ai-common` repo:
 
-- `scripts/build-managed-windows-installer.ps1` — outer orchestrator. Clones
-  `cisco-aispg/ai-common` at `-Ref` (default `develop`), computes the Go
-  pseudo-version of that ref, and invokes the inner script with `-CmidOverlay`
-  and `-CmidVersion` set. Mirrors `scripts/build-managed-bundle.sh` for macOS.
+### macOS (or Linux) — prep the managed gateway zip
 
-- `scripts/build-windows-managed-bundle.ps1` — inner build script. Snapshots
-  `provider_cisco.go` + `go.mod` + `go.sum`, applies the overlay, runs
-  `go get` to pin the module, cross-builds `defenseclaw.exe` and
-  `defenseclaw-hook.exe` with `-tags cmid`, packages them into the goreleaser-
-  shaped gateway zip, then drives `build-windows-installer.ps1
-  -DistributionFlavor managed-enterprise`. The snapshot is restored on exit
-  whether the build succeeded or failed. Mirrors `scripts/build-macos-bundle.sh`
-  for macOS.
+`scripts/build-managed-windows-gateway.sh` clones `cisco-aispg/ai-common` at
+`--ref` (default `develop`), computes the Go pseudo-version for that ref,
+snapshots the OSS cloudreg stub + `go.mod` + `go.sum`, applies the private
+overlay, runs `go get` to pin the ai-common/cmid module, and cross-builds
+`defenseclaw.exe` + `defenseclaw-hook.exe` with `GOOS=windows GOARCH=amd64
+-tags cmid`. The two binaries get VERSIONINFO + icon stamped via the
+cross-platform `internal/tools/windowsresources` tool (Go, works on any host
+that can produce Windows PEs). The result is packaged into the goreleaser-
+shaped `defenseclaw_<version>_windows_amd64.zip` alongside a
+`gateway-source-commit.txt` recording the defenseclaw HEAD used. The
+snapshot is restored on exit — whether the build succeeded or failed — so
+the OSS working tree stays clean.
 
-The Makefile target `packaging-windows-managed-bundle` wraps the inner script
-when `CMID_OVERLAY` + `CMID_VERSION` are already known (parallels
-`packaging-macos-bundle`). Otherwise call
-`scripts/build-managed-windows-installer.ps1` directly:
+```
+scripts/build-managed-windows-gateway.sh \
+    --ref develop \
+    --version 0.9.0-rc1 \
+    --dist-dir ./dist
+```
+
+Or via Make:
+
+```
+make packaging-managed-windows-gateway VERSION=0.9.0-rc1
+```
+
+Requires: `git`, `go`, and either SSH access to
+`git@github.com-aispg:cisco-aispg/ai-common.git` or an HTTPS-token path.
+
+### Windows — consume the pre-staged zip
+
+Copy `defenseclaw_<version>_windows_amd64.zip` and
+`gateway-source-commit.txt` into a directory alongside the release-candidate
+`defenseclaw-<version>-py3-none-any.whl` and `upgrade-manifest.json`, then
+either invoke `build-windows-installer.ps1` directly (it accepts
+`-DistributionFlavor managed-enterprise` and will use the pre-staged gateway
+zip verbatim):
 
 ```powershell
-pwsh -File .\scripts\build-managed-windows-installer.ps1 `
-    -Ref develop -Version 0.9.0-rc1 `
-    -DistRoot .\dist -OutRoot .\dist\windows-installer `
+.\scripts\build-windows-installer.ps1 `
+    -DistRoot .\dist `
+    -OutRoot .\dist\windows-installer `
+    -StateRoot .\dist\windows-installer-state `
+    -Version 0.9.0-rc1 `
+    -DistributionFlavor managed-enterprise
+```
+
+…or use `scripts/build-windows-managed-bundle.ps1` for a small wrapper that
+cross-checks `gateway-source-commit.txt` against the local git HEAD (the
+installer bakes the local HEAD into the manifest / provenance, so a mismatch
+would misreport the source commit):
+
+```powershell
+.\scripts\build-windows-managed-bundle.ps1 `
+    -Version 0.9.0-rc1 `
+    -DistRoot .\dist `
+    -OutRoot .\dist\windows-installer `
     -StateRoot .\dist\windows-installer-state
 ```
 
-`-DistRoot` must already contain `defenseclaw-<version>-py3-none-any.whl` and
-`upgrade-manifest.json` (typically staged by the release candidate pipeline);
-the script writes / overwrites `defenseclaw_<version>_windows_amd64.zip` in
-the same directory before driving the installer build.
+Or via Make on the Windows box:
+
+```
+make packaging-windows-managed-bundle VERSION=0.9.0-rc1
+```
+
+The Windows box does not need access to `cisco-aispg/ai-common`. Everything
+CMID-specific already happened on the macOS side; the Windows flow only
+consumes the gateway zip and produces the setup.exe.
 
 The resulting `DefenseClawSetup-x64.exe.provenance.json` reports
 `distribution_flavor: "managed-enterprise"`; `cmd/defenseclaw-setup` accepts
-both `oss` and `managed-enterprise` payload flavors and rejects any other value.
+both `oss` and `managed-enterprise` payload flavors and rejects any other
+value.

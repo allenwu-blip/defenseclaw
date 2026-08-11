@@ -94,7 +94,7 @@ endef
 .PHONY: help all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
         plugin plugin-install maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
-        packaging-macos-test packaging-macos-bundle packaging-windows-managed-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
+        packaging-macos-test packaging-macos-bundle packaging-managed-windows-gateway packaging-windows-managed-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
         security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
@@ -764,21 +764,39 @@ packaging-macos-bundle:
 	    "$(CMID_OVERLAY)" \
 	    "$(CMID_VERSION)"
 
-# packaging-windows-managed-bundle is the Windows analog of
-# packaging-macos-bundle. It shells out to scripts/build-windows-managed-bundle.ps1
-# (which must run on Windows) to swap the cloudreg CMID overlay in, build
-# defenseclaw.exe + defenseclaw-hook.exe with -tags cmid, package them into
-# the goreleaser-shaped gateway zip inside $(DIST_DIR), and then drive
-# scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise
-# to produce DefenseClawSetup-x64.exe in $(WINDOWS_INSTALLER_OUT).
+# The managed-enterprise Windows build is split so a macOS release box (which
+# has SSH access to cisco-aispg/ai-common) prepares the -tags cmid gateway
+# zip, and a Windows tester (which typically does not) only runs the OSS
+# installer flow against that zip.
 #
-# Prereqs:
-#   - Windows amd64 host with pwsh, git, and the Go toolchain (>= go.mod).
-#   - $(DIST_DIR) already staged with defenseclaw-$(VERSION)-py3-none-any.whl
-#     and upgrade-manifest.json (typically by the release candidate pipeline).
-#   - CMID_OVERLAY + CMID_VERSION set to the private overlay path and its
-#     matching pseudo-version. scripts/build-managed-windows-installer.ps1
-#     wraps this target and handles the ai-common clone + pseudo-version.
+# packaging-managed-windows-gateway (macOS / Linux / Windows-with-bash):
+#   Clones ai-common at $(WINDOWS_MANAGED_REF), applies the cloudreg overlay,
+#   pins the ai-common/cmid pseudo-version, cross-builds defenseclaw.exe +
+#   defenseclaw-hook.exe with -tags cmid, stamps VERSIONINFO / icon on both,
+#   and packages them into $(DIST_DIR)/defenseclaw_$(VERSION)_windows_amd64.zip
+#   alongside a gateway-source-commit.txt sidecar. Restores the OSS working
+#   tree on exit.
+WINDOWS_MANAGED_REF ?= develop
+packaging-managed-windows-gateway:
+	@scripts/build-managed-windows-gateway.sh \
+	    --ref "$(WINDOWS_MANAGED_REF)" \
+	    --version "$(VERSION)" \
+	    --dist-dir "$(DIST_DIR)"
+
+# packaging-windows-managed-bundle (Windows only):
+#   Consumes the pre-staged gateway zip produced above (plus the release-
+#   candidate wheel and upgrade-manifest.json under $(DIST_DIR)) and drives
+#   scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise
+#   to produce DefenseClawSetup-x64.exe in $(WINDOWS_INSTALLER_OUT).
+#
+# Prereqs on the Windows box:
+#   - pwsh, git, and the Go / uv toolchains (>= go.mod / pyproject.toml).
+#   - $(DIST_DIR) staged with the gateway zip + gateway-source-commit.txt
+#     (from the macOS step above) AND defenseclaw-$(VERSION)-py3-none-any.whl
+#     + upgrade-manifest.json (typically from the release candidate pipeline).
+#   - Local git HEAD checked out at the same defenseclaw commit the gateway
+#     was built from — the wrapper enforces this by cross-checking
+#     gateway-source-commit.txt.
 WINDOWS_INSTALLER_OUT   ?= $(DIST_DIR)/windows-installer
 WINDOWS_INSTALLER_STATE ?= $(DIST_DIR)/windows-installer-state
 packaging-windows-managed-bundle:
@@ -786,10 +804,7 @@ packaging-windows-managed-bundle:
 	    -Version "$(VERSION)" \
 	    -DistRoot "$(DIST_DIR)" \
 	    -OutRoot "$(WINDOWS_INSTALLER_OUT)" \
-	    -StateRoot "$(WINDOWS_INSTALLER_STATE)" \
-	    -CmidOverlay "$(CMID_OVERLAY)" \
-	    -CmidVersion "$(CMID_VERSION)" \
-	    -Tags "$(BUNDLE_TAGS)"
+	    -StateRoot "$(WINDOWS_INSTALLER_STATE)"
 
 # Native SwiftUI companion-app checks and release packaging. The release target
 # builds a runtime-bearing drag-to-Applications DMG plus an app-only self-update
