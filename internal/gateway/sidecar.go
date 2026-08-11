@@ -1729,7 +1729,18 @@ func (s *Sidecar) ensureCMIDProvider(ctx context.Context) (cloudreg.Provider, er
 		return s.cmidProviderInst, nil
 	}
 	cfg := s.currentConfig()
-	prov, err := cloudreg.New(cloudreg.Config{LibPath: cfg.CloudAuth.LibPath})
+	libPath := strings.TrimSpace(cfg.CloudAuth.LibPath)
+	if libPath != "" {
+		// This is the one config value that ends in native code running
+		// inside the gateway's service account, so it faces the same path
+		// trust the deployment demands of every other artifact: an
+		// administrator-owned library, on an administrator-owned path. An
+		// empty value leaves the provider to find its own library.
+		if err := managed.ValidateTrustedFilePath(libPath, "managed cloud auth library"); err != nil {
+			return nil, fmt.Errorf("refusing untrusted managed cloud auth library: %w", err)
+		}
+	}
+	prov, err := cloudreg.New(cloudreg.Config{LibPath: libPath})
 	if err != nil {
 		return nil, err
 	}
