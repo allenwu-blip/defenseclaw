@@ -57,6 +57,8 @@ WHEEL=""
 GATEWAY="${WORK}/defenseclaw-gateway"
 GATEWAY_INPUT="${MACOS_GATEWAY_INPUT:-}"
 OVERRIDES="${WORK}/overrides.txt"
+DECODED_WHEEL=""
+DEPENDENCY_LOCK="${WORK}/runtime-requirements.lock"
 KEYCHAIN_PATH=""
 KEYCHAIN_PASSWORD=""
 NOTARY_KEY_PATH=""
@@ -64,6 +66,7 @@ P12_PATH=""
 ORIGINAL_KEYCHAINS=()
 
 cleanup() {
+    [[ -z "${DECODED_WHEEL}" ]] || rm -f "${DECODED_WHEEL}"
     if [[ -n "${KEYCHAIN_PATH}" ]]; then
         if (( ${#ORIGINAL_KEYCHAINS[@]} > 0 )); then
             security list-keychains -d user -s "${ORIGINAL_KEYCHAINS[@]}" >/dev/null 2>&1 || true
@@ -75,7 +78,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for command in xcodebuild xcrun codesign ditto file hdiutil python3 shasum spctl cmp; do
+for command in xcodebuild xcrun codesign ditto file hdiutil python3 shasum spctl cmp uv; do
     command -v "${command}" >/dev/null || {
         echo "required command not found: ${command}" >&2
         exit 1
@@ -247,6 +250,81 @@ printf '%s' "${GATEWAY_VERSION_OUTPUT}" | grep -Fq "${VERSION}" || {
 python3 "${ROOT}/scripts/export-uv-overrides.py" "${ROOT}/pyproject.toml" > "${OVERRIDES}"
 grep -q '^textual' "${OVERRIDES}" || { echo "dependency overrides are incomplete" >&2; exit 1; }
 
+# Resolve the Python dependency graph once inside the authenticated release
+# build. The protected root wheel is installed separately with --no-deps;
+# every network-fetched dependency must match a hash sealed into the app.
+DECODED_WHEEL="${WORK}/defenseclaw-${VERSION}-py3-none-any.whl"
+python3 - "${WHEEL}" "${DECODED_WHEEL}" "${EXPECTED_WHEEL_SHA}" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import stat
+import sys
+
+source_path = Path(sys.argv[1])
+destination_path = Path(sys.argv[2])
+expected_sha256 = sys.argv[3]
+magic = b"DEFENSECLAW-PROTECTED-ARTIFACT-V1\n"
+maximum_bytes = 512 * 1024 * 1024
+
+source_stat = source_path.lstat()
+if not stat.S_ISREG(source_stat.st_mode) or source_stat.st_size > maximum_bytes:
+    raise SystemExit("protected runtime wheel is not a bounded regular file")
+
+descriptor = os.open(
+    destination_path,
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+    0o600,
+)
+success = False
+try:
+    with source_path.open("rb") as source, os.fdopen(descriptor, "wb") as destination:
+        header = source.read(len(magic))
+        if header != magic:
+            raise SystemExit("protected runtime wheel envelope is invalid")
+        encoded_hasher = hashlib.sha256(header)
+        decoded_bytes = 0
+        while chunk := source.read(4 << 20):
+            encoded_hasher.update(chunk)
+            decoded_bytes += len(chunk)
+            if decoded_bytes + len(magic) > maximum_bytes:
+                raise SystemExit("protected runtime wheel exceeds the decode limit")
+            destination.write(bytes(value ^ 0xA5 for value in chunk))
+        if decoded_bytes == 0:
+            raise SystemExit("protected runtime wheel contains no payload")
+        destination.flush()
+        os.fsync(destination.fileno())
+    if encoded_hasher.hexdigest() != expected_sha256:
+        raise SystemExit("protected runtime wheel changed during dependency resolution")
+    success = True
+finally:
+    if not success:
+        destination_path.unlink(missing_ok=True)
+PY
+
+RUNTIME_REQUIREMENTS_IN="${WORK}/runtime-requirements.in"
+printf 'defenseclaw @ file://%s\n' "${DECODED_WHEEL}" > "${RUNTIME_REQUIREMENTS_IN}"
+uv --no-config pip compile "${RUNTIME_REQUIREMENTS_IN}" \
+    --overrides "${OVERRIDES}" \
+    --no-emit-package defenseclaw \
+    --python-version 3.12 \
+    --generate-hashes \
+    --no-header \
+    --no-annotate \
+    --output-file "${DEPENDENCY_LOCK}"
+grep -q -- '--hash=sha256:' "${DEPENDENCY_LOCK}" || {
+    echo "runtime dependency lock contains no authenticated distribution hashes" >&2
+    exit 1
+}
+grep -q '^defenseclaw==' "${DEPENDENCY_LOCK}" && {
+    echo "runtime dependency lock unexpectedly contains the separately authenticated root wheel" >&2
+    exit 1
+}
+python3 "${APP_ROOT}/scripts/validate_dependency_lock.py" \
+    "${ROOT}/pyproject.toml" "${DEPENDENCY_LOCK}"
+rm -f "${DECODED_WHEEL}" "${RUNTIME_REQUIREMENTS_IN}"
+DECODED_WHEEL=""
+
 echo "Building DefenseClawMac.app"
 xcodebuild \
     -project "${PROJECT}" \
@@ -283,6 +361,7 @@ mkdir -p "${PAYLOAD}"
 cp "${GATEWAY}" "${PAYLOAD}/defenseclaw-gateway"
 cp "${WHEEL}" "${PAYLOAD}/$(basename "${WHEEL}")"
 cp "${OVERRIDES}" "${PAYLOAD}/overrides.txt"
+cp "${DEPENDENCY_LOCK}" "${PAYLOAD}/runtime-requirements.lock"
 cp "${UPGRADE_MANIFEST}" "${PAYLOAD}/upgrade-manifest.json"
 cp "${RUNTIME_ATTESTATION}" "${PAYLOAD}/runtime-candidate-checksums.txt"
 cp "${ROOT}/LICENSE" "${PAYLOAD}/LICENSE"
@@ -310,12 +389,14 @@ unset GATEWAY_REQUIREMENT
 GATEWAY_SHA="$(shasum -a 256 "${PAYLOAD}/defenseclaw-gateway" | awk '{print $1}')"
 WHEEL_SHA="$(shasum -a 256 "${PAYLOAD}/$(basename "${WHEEL}")" | awk '{print $1}')"
 OVERRIDES_SHA="$(shasum -a 256 "${PAYLOAD}/overrides.txt" | awk '{print $1}')"
+DEPENDENCY_LOCK_SHA="$(shasum -a 256 "${PAYLOAD}/runtime-requirements.lock" | awk '{print $1}')"
 UPGRADE_MANIFEST_SHA="$(shasum -a 256 "${PAYLOAD}/upgrade-manifest.json" | awk '{print $1}')"
 RUNTIME_ATTESTATION_SHA="$(shasum -a 256 "${PAYLOAD}/runtime-candidate-checksums.txt" | awk '{print $1}')"
 
 python3 - "${PAYLOAD}/payload-manifest.json" "${VERSION}" "${GATEWAY_SHA}" \
     "$(basename "${WHEEL}")" "${WHEEL_SHA}" "${OVERRIDES_SHA}" \
-    "${UPGRADE_MANIFEST_SHA}" "${RUNTIME_ATTESTATION_SHA}" "${BUILD_DATE}" <<'PY'
+    "${DEPENDENCY_LOCK_SHA}" "${UPGRADE_MANIFEST_SHA}" \
+    "${RUNTIME_ATTESTATION_SHA}" "${BUILD_DATE}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -327,6 +408,7 @@ import sys
     wheel_name,
     wheel_sha,
     overrides_sha,
+    dependency_lock_sha,
     upgrade_manifest_sha,
     runtime_attestation_sha,
     built_at,
@@ -338,6 +420,10 @@ payload = {
     "gateway": {"file": "defenseclaw-gateway", "sha256": gateway_sha},
     "wheel": {"file": wheel_name, "sha256": wheel_sha},
     "overrides": {"file": "overrides.txt", "sha256": overrides_sha},
+    "dependency_lock": {
+        "file": "runtime-requirements.lock",
+        "sha256": dependency_lock_sha,
+    },
     "upgrade_manifest": {"file": "upgrade-manifest.json", "sha256": upgrade_manifest_sha},
     "runtime_attestation": {
         "file": "runtime-candidate-checksums.txt",

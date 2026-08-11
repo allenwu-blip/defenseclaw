@@ -25,7 +25,7 @@ mkdir -p "$MODULE_CACHE"
 
 # RuntimePayload is intentionally kept in RuntimeInstaller.swift beside its
 # only consumer. Compile that production type without the AppState extension.
-sed '/^enum RuntimeInstallState:/,$d' \
+sed '/^\/\/ TEST-EXTRACT-BOUNDARY: RuntimePayloadTestSupport$/,$d' \
   "$ROOT/DefenseClawMac/DataLayer/RuntimeInstaller.swift" \
   > "$BUILD_DIR/RuntimePayload.swift"
 

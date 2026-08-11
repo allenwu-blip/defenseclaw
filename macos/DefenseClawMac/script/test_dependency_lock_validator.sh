@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Copyright 2026 Cisco Systems, Inc. and its affiliates
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,8 +15,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-repository = "keitheobrien/defenseclaw_mac"
-tag = "v1.1.16"
-commit = "3a22d372fc4f2948bfb813ddfe0649cc3bb5f236"
-source_version = "1.1.16"
-imported_at = "2026-08-11"
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+exec python3 "$ROOT/Tests/DependencyLockValidatorTests.py"

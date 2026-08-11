@@ -18,18 +18,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/defenseclaw-cancellation-tests.XXXXXX")"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/defenseclaw-resource-tests.XXXXXX")"
 trap 'rm -rf "$BUILD_DIR"' EXIT
 MODULE_CACHE="$BUILD_DIR/ModuleCache"
 mkdir -p "$MODULE_CACHE"
 
 CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" xcrun swiftc \
   -module-cache-path "$MODULE_CACHE" \
+  "$ROOT/DefenseClawMac/DataLayer/Models.swift" \
   "$ROOT/DefenseClawMac/DataLayer/InstallationContext.swift" \
   "$ROOT/DefenseClawMac/DataLayer/ConfigStore.swift" \
-  "$ROOT/DefenseClawMac/DataLayer/AlertDispositionCommand.swift" \
-  "$ROOT/DefenseClawMac/DataLayer/CLIRunner.swift" \
-  "$ROOT/Tests/CLICancellationTests.swift" \
-  -o "$BUILD_DIR/CLICancellationTests"
+  "$ROOT/DefenseClawMac/DataLayer/RegistryStore.swift" \
+  "$ROOT/DefenseClawMac/DataLayer/EventStreamReader.swift" \
+  "$ROOT/DefenseClawMac/DataLayer/GatewayClient.swift" \
+  "$ROOT/Tests/ResourceBoundaryTests.swift" \
+  -o "$BUILD_DIR/ResourceBoundaryTests"
 
-"$BUILD_DIR/CLICancellationTests"
+"$BUILD_DIR/ResourceBoundaryTests"

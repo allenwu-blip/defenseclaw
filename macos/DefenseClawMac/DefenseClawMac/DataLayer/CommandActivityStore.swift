@@ -119,7 +119,7 @@ final class CommandActivityStore {
         )
         selectedID = id
         while entries.count > Self.maximumEntries,
-              let removable = entries.lastIndex(where: { !$0.status.isActive }) {
+              let removable = entries.lastIndex(where: { $0.status != .running }) {
             entries.remove(at: removable)
         }
 

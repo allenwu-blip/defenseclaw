@@ -31,7 +31,6 @@ struct AlertsView: View {
     @State private var confirmAck = false
     @State private var findingDetails: [ScanFindingEvent] = []
     @State private var findingHistory: [AuditEvent] = []
-    @State private var hydratedAuditEvent: AuditEvent?
 
     private var connectorScopedAlerts: [AlertRow] {
         appState.unackedAlerts.filter { appState.connectorFilterAllows($0.connectorName) }
@@ -61,15 +60,6 @@ struct AlertsView: View {
 
     private var selectedRow: AlertRow? {
         rows.first { selection.contains($0.id) }
-    }
-
-    private var selectedInspectorRow: AlertRow? {
-        guard let row = selectedRow,
-              case .audit(let summary) = row,
-              let hydratedAuditEvent,
-              hydratedAuditEvent.id == summary.id
-        else { return selectedRow }
-        return .audit(hydratedAuditEvent)
     }
 
     var body: some View {
@@ -132,12 +122,11 @@ struct AlertsView: View {
             get: { selectedRow != nil },
             set: { if !$0 { selection = [] } }
         )) {
-            if let row = selectedInspectorRow {
+            if let row = selectedRow {
                 alertInspector(row)
-                    .dcInspectorColumnWidth()
+                    .inspectorColumnWidth(min: 340, ideal: 440)
             }
         }
-        .reportsDetailInspector(selectedRow != nil)
         .searchable(text: $search, placement: .toolbar, prompt: "Search action, target, details")
         .toolbar {
             ToolbarItemGroup {
@@ -148,15 +137,16 @@ struct AlertsView: View {
                 }
                 .disabled(
                     selectedRows.isEmpty
-                        || appState.ackInProgress
                         || (!selectedAuditSeverities.isEmpty
                             && !appState.installationMutationsAllowed)
                 )
+                .dcQuickHelp("Acknowledge selected alerts")
                 Button {
                     Task { await appState.refreshAlerts() }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
+                .dcQuickHelp("Refresh alerts")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .dcRefreshPanel)) { _ in
@@ -182,9 +172,8 @@ struct AlertsView: View {
                 }
             }
             .disabled(
-                appState.ackInProgress
-                    || (!selectedAuditSeverities.isEmpty
-                        && !appState.installationMutationsAllowed)
+                !selectedAuditSeverities.isEmpty
+                    && !appState.installationMutationsAllowed
             )
         } message: {
             Text(acknowledgmentMessage)
@@ -192,57 +181,42 @@ struct AlertsView: View {
     }
 
     private func alertInspector(_ row: AlertRow) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.action).font(.headline)
-                        HStack(spacing: 6) {
-                            SeverityBadge(severity: row.severity)
-                            Text(row.kind.capitalized).font(.caption).foregroundStyle(.secondary)
-                        }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(row.action).font(.headline)
+                    HStack(spacing: 6) {
+                        SeverityBadge(severity: row.severity)
+                        Text(row.kind.capitalized).font(.caption).foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    Button { selection = [] } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("Close alert details")
                 }
-                KeyValueGrid(pairs: [
-                    ("Target", row.target),
-                    ("Time", row.timestamp.formatted()),
-                    ("Connector", row.connectorName),
-                    ("Run ID", row.runID),
-                ].filter { !$0.1.isEmpty })
+                Spacer()
+                Button { selection = [] } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close alert details")
+            }
+            KeyValueGrid(pairs: [
+                ("Target", row.target),
+                ("Time", row.timestamp.formatted()),
+                ("Connector", row.connectorName),
+                ("Run ID", row.runID),
+            ].filter { !$0.1.isEmpty })
 
-                let structured = StructuredDetailParser.pairs(row.details)
-                let safeMetadata = structured.isEmpty
-                    ? StructuredDetailParser.safeMetadataPairs(row.details)
-                    : []
-                if !safeMetadata.isEmpty {
-                    Divider()
-                    Text("Security Metadata").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    KeyValueGrid(pairs: safeMetadata)
-                }
-                if !structured.isEmpty {
-                    Divider()
-                    Text("Event Details").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    KeyValueGrid(pairs: structured)
-                }
+            let structured = StructuredDetailParser.pairs(row.details)
+            if structured.isEmpty {
                 if !row.details.isEmpty {
-                    Divider()
-                    Text("Raw Details").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    Text(row.details)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(8)
-                        .background(Cisco.surfacePanel, in: RoundedRectangle(cornerRadius: 6))
-                        .textSelection(.enabled)
+                    Text(row.details).font(.callout).textSelection(.enabled)
                 }
+            } else {
+                Divider()
+                Text("Event Details").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                KeyValueGrid(pairs: structured)
+            }
 
-                if !findingDetails.isEmpty {
-                    Divider()
-                    Text("Findings").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            if !findingDetails.isEmpty {
+                Divider()
+                Text("Findings").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(findingDetails) { finding in
                             VStack(alignment: .leading, spacing: 4) {
@@ -265,64 +239,51 @@ struct AlertsView: View {
                             .background(Cisco.surfacePanel, in: RoundedRectangle(cornerRadius: 6))
                         }
                     }
-                } else if case .scan(let scan) = row, !scan.findingTitles.isEmpty {
-                    Divider()
-                    Text("Findings").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(scan.findingTitles, id: \.self) { Text($0).font(.caption) }
                 }
+                .frame(maxHeight: 230)
+            } else if case .scan(let scan) = row, !scan.findingTitles.isEmpty {
+                Divider()
+                Text("Findings").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(scan.findingTitles, id: \.self) { Text($0).font(.caption) }
+            }
 
-                if !findingHistory.isEmpty {
-                    Divider()
-                    Text("History for This Target").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(findingHistory.prefix(5)) { event in
-                        HStack {
-                            Text(event.timestamp, format: .dateTime.month().day().hour().minute())
-                                .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                            Text(event.action).font(.caption).lineLimit(1)
-                            Spacer()
-                            SeverityBadge(severity: event.severity)
-                        }
+            if !findingHistory.isEmpty {
+                Divider()
+                Text("History for This Target").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                ForEach(findingHistory.prefix(5)) { event in
+                    HStack {
+                        Text(event.timestamp, format: .dateTime.month().day().hour().minute())
+                            .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(event.action).font(.caption).lineLimit(1)
+                        Spacer()
+                        SeverityBadge(severity: event.severity)
                     }
                 }
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer()
         }
+        .padding(12)
     }
 
     private func loadSelectedDetail() {
         guard let row = selectedRow else {
-            hydratedAuditEvent = nil
             findingDetails = []
             findingHistory = []
             return
         }
-        hydratedAuditEvent = nil
         let selectedID = row.id
         Task {
             let installationGeneration = appState.installationGeneration
-            var detailRow = row
-            var selectedAuditID: String?
-            if case .audit(let event) = row {
-                selectedAuditID = event.id
-                if let fullEvent = await appState.audit.event(id: event.id) {
-                    guard installationGeneration == appState.installationGeneration else { return }
-                    detailRow = .audit(fullEvent)
-                }
-            }
             let details = await appState.audit.scanFindings(
-                runID: detailRow.runID.nonEmpty,
-                target: detailRow.target.nonEmpty,
+                runID: row.runID.nonEmpty,
+                target: row.target.nonEmpty,
                 limit: 20
             )
             guard installationGeneration == appState.installationGeneration else { return }
-            let history = await appState.audit.relatedEvents(target: detailRow.target, limit: 10)
-                .filter { $0.id != selectedAuditID }
+            let history = await appState.audit.relatedEvents(target: row.target, limit: 10)
+                .filter { $0.id != row.id }
             guard installationGeneration == appState.installationGeneration,
                   selectedRow?.id == selectedID else { return }
-            if case .audit(let fullEvent) = detailRow {
-                hydratedAuditEvent = fullEvent
-            }
             findingDetails = details
             findingHistory = history
         }

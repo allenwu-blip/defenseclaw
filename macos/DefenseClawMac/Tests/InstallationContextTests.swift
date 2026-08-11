@@ -22,10 +22,12 @@ struct InstallationContextTests {
     private static let currentDirectory = URL(fileURLWithPath: "/work", isDirectory: true)
 
     static func main() async {
+        CLIProcessGroupLauncher.execIfRequested()
         sourcePrecedenceMatchesRuntime()
         managedLayoutAndCapabilitiesAreExact()
         explicitUnreadableAndRelativePathsFailClosed()
         configPathsAndVenvResolveIndependently()
+        emptyFlowCollectionsMatchRuntimeGeneratedConfig()
         managedEvidenceMonotonicallyRemovesMutation()
         nestedAuditPathIsReadCorrectly()
         protectedEnvironmentCannotBeOverridden()
@@ -200,6 +202,50 @@ struct InstallationContextTests {
             selectedPackaged.dataDirectory.path == InstallationContext.managedRuntimePath,
             "explicit packaged config without data_dir uses the managed runtime"
         )
+    }
+
+    private static func emptyFlowCollectionsMatchRuntimeGeneratedConfig() {
+        let path = "/chosen/generated-empty-collections.yaml"
+        var context = resolve(
+            environment: ["DEFENSECLAW_CONFIG": path],
+            texts: [path: """
+            config_version: 8
+            deployment_mode: unmanaged_byod
+            observability: { } # no custom destinations
+            registries: [ ] # no external registries
+            """]
+        )
+        expect(!isInvalid(context), "runtime-generated empty mappings remain valid")
+        expect(
+            MiniYAML.parse("observability: {}\n")["observability"]?.mapping?.isEmpty == true,
+            "empty flow mapping retains its YAML type"
+        )
+        expect(
+            MiniYAML.parse("registries: []\n")["registries"]?.sequence?.isEmpty == true,
+            "empty flow sequence retains its YAML type"
+        )
+
+        let quotedPath = "/chosen/quoted-empty-mapping.yaml"
+        context = resolve(
+            environment: ["DEFENSECLAW_CONFIG": quotedPath],
+            texts: [quotedPath: """
+            config_version: 8
+            deployment_mode: unmanaged_byod
+            observability: "{}"
+            """]
+        )
+        expect(isInvalid(context), "quoted braces remain a scalar and fail closed")
+
+        let sequencePath = "/chosen/observability-sequence.yaml"
+        context = resolve(
+            environment: ["DEFENSECLAW_CONFIG": sequencePath],
+            texts: [sequencePath: """
+            config_version: 8
+            deployment_mode: unmanaged_byod
+            observability: []
+            """]
+        )
+        expect(isInvalid(context), "an observability sequence remains invalid")
     }
 
     private static func managedEvidenceMonotonicallyRemovesMutation() {

@@ -81,7 +81,7 @@ PAYLOAD="${DMG_APP}/Contents/Resources/RuntimePayload"
     echo "DMG Applications link is missing or incorrect" >&2
     exit 1
 }
-for relative in defenseclaw-gateway overrides.txt payload-manifest.json upgrade-manifest.json runtime-candidate-checksums.txt LICENSE NOTICE THIRD_PARTY_LICENSES.txt; do
+for relative in defenseclaw-gateway overrides.txt runtime-requirements.lock payload-manifest.json upgrade-manifest.json runtime-candidate-checksums.txt LICENSE NOTICE THIRD_PARTY_LICENSES.txt; do
     [[ -f "${PAYLOAD}/${relative}" ]] || { echo "runtime payload missing ${relative}" >&2; exit 1; }
 done
 for relative in LICENSE NOTICE THIRD_PARTY_LICENSES.txt; do
@@ -128,7 +128,7 @@ version = sys.argv[2]
 manifest = json.loads((payload / "payload-manifest.json").read_text(encoding="utf-8"))
 if manifest.get("runtime_version") != version or manifest.get("arch") != "arm64":
     raise SystemExit("payload manifest version or architecture mismatch")
-for key in ("gateway", "wheel", "overrides", "upgrade_manifest", "runtime_attestation"):
+for key in ("gateway", "wheel", "overrides", "dependency_lock", "upgrade_manifest", "runtime_attestation"):
     item = manifest.get(key) or {}
     path = payload / str(item.get("file", ""))
     if not path.is_file():
@@ -174,6 +174,9 @@ if zipfile.is_zipfile(payload / expected_wheel):
 if not zipfile.is_zipfile(io.BytesIO(inner)):
     raise SystemExit("embedded protected wheel payload is invalid")
 PY
+
+python3 "${ROOT}/macos/DefenseClawMac/scripts/validate_dependency_lock.py" \
+    "${ROOT}/pyproject.toml" "${PAYLOAD}/runtime-requirements.lock"
 
 ditto -x -k "${ZIP}" "${UNZIP}"
 ZIP_APP="${UNZIP}/DefenseClawMac.app"

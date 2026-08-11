@@ -100,10 +100,9 @@ struct LogsView: View {
         .inspector(isPresented: inspectorPresented) {
             if let selectedDisplayRow {
                 logInspector(selectedDisplayRow)
-                    .dcInspectorColumnWidth()
+                    .inspectorColumnWidth(min: 300, ideal: 380)
             }
         }
-        .reportsDetailInspector(selectedDisplayRow != nil)
         .searchable(text: $search, placement: .toolbar, prompt: "Search log lines")
         .toolbar {
             ToolbarItemGroup {
@@ -111,11 +110,13 @@ struct LogsView: View {
                     Label("Auto-scroll", systemImage: "arrow.down.to.line")
                 }
                 .toggleStyle(.button)
+                .dcQuickHelp("Follow new log lines")
                 Button {
                     reload()
                 } label: {
                     Label("Reload from disk", systemImage: "arrow.clockwise")
                 }
+                .dcQuickHelp("Reload logs from disk")
             }
         }
         .task {
@@ -150,31 +151,17 @@ struct LogsView: View {
                 HStack(spacing: 12) {
                     streamPicker.frame(maxWidth: 440)
                     Spacer()
-                    redactionStatus
-                    redactionButton
+                    redactionPolicyButton
                     ConnectorFilterChip(names: appState.activeConnectorNames, selection: $state.connectorFilter)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 440)
-                .onChange(of: stream) { _, _ in Task { await load(force: true) } }
-                Spacer()
-                Button("Redaction policy…") { showRedactionPolicy = true }
-                    .controlSize(.small)
-                    .help("Inspect or apply the v8 redaction policy")
-                ConnectorFilterChip(names: appState.activeConnectorNames, selection: $state.connectorFilter)
-            }
-
-            HStack(spacing: 12) {
-                FilterChipRow(
-                    "Preset",
-                    options: [("Preset: all", LogPreset.all)] +
-                        LogPreset.allCases.dropFirst().map { ($0.rawValue, $0) },
-                    selection: $preset
-                )
-                Picker("Severity ≥", selection: $severityFloor) {
-                    Text("Any severity").tag(Optional<Severity>.none)
-                    ForEach([Severity.critical, .high, .medium, .low], id: \.self) {
-                        Text("≥ \($0.rawValue)").tag(Optional($0))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        streamPicker.frame(maxWidth: .infinity)
+                        ConnectorFilterChip(names: appState.activeConnectorNames, selection: $state.connectorFilter)
+                    }
+                    HStack(spacing: 10) {
+                        redactionPolicyButton
+                        Spacer()
                     }
                 }
             }
@@ -217,29 +204,16 @@ struct LogsView: View {
 
     private var streamPicker: some View {
         Picker("Stream", selection: $stream) {
-            ForEach(LogStream.allCases) { Text($0.title).tag($0) }
+            ForEach(LogStream.allCases) { stream in Text(stream.title).tag(stream) }
         }
         .pickerStyle(.segmented)
         .onChange(of: stream) { _, _ in Task { await load(force: true) } }
     }
 
-    @ViewBuilder
-    private var redactionStatus: some View {
-        if !appState.config.redactionEnabled {
-            Text("RAW — redaction off")
-                .font(.caption2.weight(.bold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
-                .background(Cisco.orange.opacity(0.18), in: Capsule())
-                .foregroundStyle(Cisco.orange)
-                .help("redaction off - `defenseclaw setup redaction on` to re-enable")
-        }
-    }
-
-    private var redactionButton: some View {
-        Button("Redaction…") { showRedactionToggle = true }
+    private var redactionPolicyButton: some View {
+        Button("Redaction policy…") { showRedactionPolicy = true }
             .controlSize(.small)
-            .help("Toggle the redaction kill-switch (runs defenseclaw setup redaction on|off)")
+            .help("Inspect or apply the v8 redaction policy")
     }
 
     private var severityPicker: some View {
@@ -400,43 +374,39 @@ struct LogsView: View {
     }
 
     private func logInspector(_ item: DisplayLogRow) -> some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text("Event Details").font(.headline)
-                    Spacer()
-                    Button { selectedRowID = nil } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Close Inspector")
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Event Details").font(.headline)
+                Spacer()
+                Button { selectedRowID = nil } label: {
+                    Image(systemName: "xmark.circle.fill")
                 }
-                Text(item.message)
-                    .font(.system(.callout, design: .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                KeyValueGrid(pairs: [
-                    ("First", item.row.timestamp.formatted(date: .abbreviated, time: .standard)),
-                    ("Last", item.lastTimestamp.formatted(date: .abbreviated, time: .standard)),
-                    ("Stream", item.row.stream.title),
-                    ("Event", item.row.eventType),
-                    ("Action", item.row.action),
-                    ("Severity", item.row.severity.rawValue),
-                    ("Connector", item.row.connector),
-                    ("Occurrences", "\(item.count)"),
-                ].filter { !$0.1.isEmpty })
-                Divider()
-                Text("Raw Event").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                .buttonStyle(.borderless)
+                .help("Close Inspector")
+            }
+            Text(item.message)
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+            KeyValueGrid(pairs: [
+                ("First", item.row.timestamp.formatted(date: .abbreviated, time: .standard)),
+                ("Last", item.lastTimestamp.formatted(date: .abbreviated, time: .standard)),
+                ("Stream", item.row.stream.title),
+                ("Event", item.row.eventType),
+                ("Action", item.row.action),
+                ("Severity", item.row.severity.rawValue),
+                ("Connector", item.row.connector),
+                ("Occurrences", "\(item.count)"),
+            ].filter { !$0.1.isEmpty })
+            Divider()
+            Text("Raw Event").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            ScrollView {
                 Text(item.row.rawJSON)
                     .font(.system(.caption, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(12)
     }
 
     /// Refreshes from the stream buffer, but only publishes when the tail

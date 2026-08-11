@@ -128,8 +128,8 @@ indirect enum YAMLNode: Sendable {
 
 enum MiniYAML {
     /// Parses block-style YAML mappings/sequences with plain or quoted scalars.
-    /// Ignores comments, documents markers, anchors, and flow collections —
-    /// adequate for defenseclaw's generated config.yaml.
+    /// Supports empty flow collections emitted by DefenseClaw; otherwise
+    /// ignores document markers, anchors, and non-empty flow collections.
     static func parse(_ text: String) -> YAMLNode {
         var lines: [(indent: Int, content: String)] = []
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
@@ -169,7 +169,7 @@ enum MiniYAML {
                     let value = String(inline[inline.index(after: colon)...]).trimmingCharacters(in: .whitespaces)
                     item[key] = value.isEmpty
                         ? parseBlock(lines: lines, index: &index, indent: nextIndent(lines, index, greaterThan: indent))
-                        : .scalar(unquote(value))
+                        : inlineNode(value)
                     while index < lines.count, lines[index].indent > indent, !lines[index].content.hasPrefix("- ") {
                         let sub = lines[index]
                         if let c = findColon(sub.content) {
@@ -178,12 +178,12 @@ enum MiniYAML {
                             index += 1
                             item[k] = v.isEmpty
                                 ? parseBlock(lines: lines, index: &index, indent: nextIndent(lines, index, greaterThan: sub.indent))
-                                : .scalar(unquote(v))
+                                : inlineNode(v)
                         } else { index += 1 }
                     }
                     seq.append(.mapping(item))
                 } else {
-                    seq.append(.scalar(unquote(inline)))
+                    seq.append(inlineNode(inline))
                 }
             } else if let colon = findColon(content) {
                 if isSequence == true { break }
@@ -194,7 +194,7 @@ enum MiniYAML {
                 if value.isEmpty {
                     map[key] = parseBlock(lines: lines, index: &index, indent: nextIndent(lines, index, greaterThan: indent))
                 } else {
-                    map[key] = .scalar(unquote(value))
+                    map[key] = inlineNode(value)
                 }
             } else {
                 index += 1 // unrecognized line — skip
@@ -202,6 +202,37 @@ enum MiniYAML {
         }
         if isSequence == true { return .sequence(seq) }
         return .mapping(map)
+    }
+
+    /// DefenseClaw's generated config uses compact empty collections such as
+    /// `observability: {}`. Preserve those collection types while leaving
+    /// quoted values like `"{}"` as ordinary strings.
+    private static func inlineNode(_ raw: String) -> YAMLNode {
+        let value = raw.trimmingCharacters(in: .whitespaces)
+        let syntax = stripInlineComment(value).trimmingCharacters(in: .whitespaces)
+        let isQuoted = (syntax.hasPrefix("\"") && syntax.hasSuffix("\""))
+            || (syntax.hasPrefix("'") && syntax.hasSuffix("'"))
+        let compactSyntax = syntax.filter { !$0.isWhitespace }
+        if !isQuoted, compactSyntax == "{}" { return .mapping([:]) }
+        if !isQuoted, compactSyntax == "[]" { return .sequence([]) }
+        return .scalar(unquote(value))
+    }
+
+    private static func stripInlineComment(_ value: String) -> String {
+        var inSingle = false
+        var inDouble = false
+        var previous: Character?
+        for index in value.indices {
+            let character = value[index]
+            if character == "'" && !inDouble { inSingle.toggle() }
+            if character == "\"" && !inSingle { inDouble.toggle() }
+            if character == "#" && !inSingle && !inDouble,
+               previous?.isWhitespace == true {
+                return String(value[..<index])
+            }
+            previous = character
+        }
+        return value
     }
 
     private static func nextIndent(_ lines: [(indent: Int, content: String)], _ index: Int, greaterThan indent: Int) -> Int {

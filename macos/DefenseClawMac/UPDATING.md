@@ -52,13 +52,47 @@ DefenseClawMac.xcodeproj/
 DefenseClawMac/
 Tests/
 script/build_and_run.sh
+script/test_ai_discovery_actions.sh
+script/test_ai_discovery_models.sh
+script/test_alert_queue_projection.sh
+script/test_app_state_signal_safety.sh
+script/test_catalog_action_safety.sh
+script/test_cli_cancellation.sh
 script/test_connector_onboarding.sh
+script/test_dependency_lock_validator.sh
+script/test_first_run_connector_selection.sh
+script/test_inspector_layout_policy.sh
+script/test_installation_context.sh
+script/test_inventory_capability_warnings.sh
+script/test_local_model_discovery.sh
+script/test_main_window_lifecycle.sh
+script/test_numeric_safety.sh
+script/test_output_safety.sh
+script/test_resource_boundaries.sh
+script/test_runtime_contract_surfaces.sh
+script/test_runtime_install_filesystem.sh
+script/test_runtime_protected_artifact.sh
+script/test_secret_file_safety.sh
+script/test_setup_definitions_parity.sh
+script/test_structured_detail_parser.sh
+script/test_supply_chain_safety.sh
+script/test_toolbar_help.sh
+script/test_update_checker_safety.sh
+script/test_update_checker_verification.sh
+scripts/validate_dependency_lock.py
 tools/
 images/
 .gitignore
 ```
 
-Do not import upstream Git metadata, `.codex`, personal signing identities, a duplicate `LICENSE`, or design/planning documents that the monorepo supersedes. Port relevant changes from the standalone DMG script into `scripts/build-macos-app-release.sh`; do not restore its hard-coded team, keychain profile, or download-from-an-already-published-release assumptions.
+The `maintained_paths` array in `scripts/update-macos-app.sh` is the canonical
+machine-readable copy of this list. Do not import upstream Git metadata,
+`.codex`, its runtime-compatibility audit harness (which depends on that
+standalone skill), personal signing identities, a duplicate `LICENSE`, or
+design/planning documents that the monorepo supersedes. Port relevant changes
+from the standalone DMG script into `scripts/build-macos-app-release.sh`; do not
+restore its hard-coded team, keychain profile, or
+download-from-an-already-published-release assumptions.
 
 ## 2. Preserve Cisco integration points
 

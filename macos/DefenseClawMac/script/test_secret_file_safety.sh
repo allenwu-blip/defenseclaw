@@ -35,9 +35,13 @@ CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" xcrun swiftc \
 
 "$BUILD_DIR/SecretAndFileSafetyTests"
 
-if grep -F -- '<ENV_NAME> --value <secret>' \
-    "$ROOT/DefenseClawMac/DataLayer/CommandRegistry.swift" \
-    "$REPOSITORY_ROOT/cli/defenseclaw/tui/registry_data.py"; then
+SEARCH_FILES=("$ROOT/DefenseClawMac/DataLayer/CommandRegistry.swift")
+UPSTREAM_REGISTRY="$REPOSITORY_ROOT/cli/defenseclaw/tui/registry_data.py"
+if [[ -f "$UPSTREAM_REGISTRY" ]]; then
+  SEARCH_FILES+=("$UPSTREAM_REGISTRY")
+fi
+
+if grep -F -- '<ENV_NAME> --value <secret>' "${SEARCH_FILES[@]}"; then
   echo "keys set still advertises a secret-bearing argv flag" >&2
   exit 1
 fi

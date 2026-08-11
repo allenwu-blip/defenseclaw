@@ -99,14 +99,34 @@ maintained_paths=(
     DefenseClawMac
     Tests
     script/build_and_run.sh
+    script/test_ai_discovery_actions.sh
+    script/test_ai_discovery_models.sh
     script/test_connector_onboarding.sh
     script/test_alert_queue_projection.sh
+    script/test_app_state_signal_safety.sh
+    script/test_catalog_action_safety.sh
     script/test_cli_cancellation.sh
+    script/test_dependency_lock_validator.sh
+    script/test_first_run_connector_selection.sh
     script/test_inspector_layout_policy.sh
+    script/test_installation_context.sh
     script/test_inventory_capability_warnings.sh
+    script/test_local_model_discovery.sh
+    script/test_main_window_lifecycle.sh
+    script/test_numeric_safety.sh
+    script/test_output_safety.sh
+    script/test_resource_boundaries.sh
     script/test_runtime_contract_surfaces.sh
+    script/test_runtime_install_filesystem.sh
     script/test_runtime_protected_artifact.sh
+    script/test_secret_file_safety.sh
+    script/test_setup_definitions_parity.sh
     script/test_structured_detail_parser.sh
+    script/test_supply_chain_safety.sh
+    script/test_toolbar_help.sh
+    script/test_update_checker_safety.sh
+    script/test_update_checker_verification.sh
+    scripts/validate_dependency_lock.py
     tools
     images
     .gitignore
@@ -123,9 +143,17 @@ if ! git -C "${SYNC}" merge --no-edit "${NEW_COMMIT}"; then
     exit 1
 fi
 
+# The monorepo intentionally excludes the standalone repository's `.codex`
+# runtime-compat skill. Do not retain its test harness without the audited
+# implementation that it imports.
+rm -f \
+    "${SYNC}/Tests/RuntimeCompatibilityAuditTests.py" \
+    "${SYNC}/script/test_runtime_compat_audit.sh"
+
 for path in "${maintained_paths[@]}"; do
     copy_path "${SYNC}/${path}" "${APP_ROOT}/${path}"
 done
+rm -f "${APP_ROOT}/script/test_runtime_compat_audit.sh"
 
 TITLE="$(git -C "${SYNC}" log -1 --format=%s "${NEW_COMMIT}")"
 IMPORTED_AT="$(date -u +%Y-%m-%d)"

@@ -18,7 +18,7 @@ import Foundation
 
 @main
 enum RuntimeContractSurfaceTests {
-    static func main() {
+    static func main() throws {
         precondition(CommandRegistry.sourceCount == 231, "unexpected upstream command count")
         precondition(CommandRegistry.all.count == CommandRegistry.sourceCount, "registry count mismatch")
 
@@ -37,7 +37,7 @@ enum RuntimeContractSurfaceTests {
         let keysSet = command(titled: "keys set")
         precondition(keysSet.acceptsSecretInput, "keys set must use hidden stdin")
         let secret = "credential-value-that-must-not-enter-argv"
-        let invocation = try! keysSet.invocation(
+        let invocation = try keysSet.invocation(
             extraArguments: ["GALILEO_API_KEY"],
             secretInput: secret
         )
@@ -45,16 +45,22 @@ enum RuntimeContractSurfaceTests {
         precondition(invocation.standardInput == secret)
         precondition(!invocation.arguments.contains(secret), "credential leaked into argv")
 
-        let alertInvocation = try! command(titled: "alerts acknowledge").invocation(
+        let alertInvocation = try command(titled: "alerts acknowledge").invocation(
             extraArguments: ["--severity", "HIGH"],
             secretInput: ""
+        )
+        precondition(
+            AlertDispositionCommand.confirmationInput == "y",
+            "confirmation is a logical response; CLIRunner owns its newline"
         )
         precondition(alertInvocation.standardInput == AlertDispositionCommand.confirmationInput)
         precondition(alertInvocation.arguments == ["alerts", "acknowledge", "--severity", "HIGH"])
 
         let directAlertInvocation = AlertDispositionCommand.acknowledge(severity: "HIGH")
         precondition(directAlertInvocation.arguments == alertInvocation.arguments)
-        precondition(directAlertInvocation.standardInput == "y")
+        precondition(
+            directAlertInvocation.standardInput == AlertDispositionCommand.confirmationInput
+        )
 
         print("Runtime contract surface tests passed")
     }

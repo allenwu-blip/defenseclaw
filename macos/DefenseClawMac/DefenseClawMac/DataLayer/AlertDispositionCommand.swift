@@ -22,10 +22,12 @@ struct AlertDispositionInvocation: Equatable, Sendable {
 }
 
 enum AlertDispositionCommand {
-    /// Tagged runtime 0.8.6 accepts only severity selectors. Current mainline
-    /// keeps those selectors but asks for confirmation before applying a broad
-    /// mutation. Supplying the answer on stdin works with both contracts: the
-    /// tagged runtime ignores it, while current mainline consumes it.
+    /// Runtime 0.8.9 keeps severity selectors and asks for confirmation before
+    /// applying a broad mutation. Supplying the answer on stdin also remains
+    /// compatible with older tagged runtimes that ignore it.
+    // CLIRunner owns line termination and closes stdin after this logical
+    // response. Keeping the answer newline-free prevents an extra blank
+    // response from being delivered to interactive commands.
     static let confirmationInput = "y"
 
     static func acknowledge(severity: String) -> AlertDispositionInvocation {

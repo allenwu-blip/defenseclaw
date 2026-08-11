@@ -89,16 +89,19 @@ struct ActivityView: View {
                     } label: {
                         Label("Run Command", systemImage: "play.circle")
                     }
+                    .dcQuickHelp("Open Command Palette")
                     Button {
                         appState.activity.clearCompleted()
                     } label: {
                         Label("Clear Completed", systemImage: "trash")
                     }
                     .disabled(!appState.activity.entries.contains { !$0.status.isActive })
+                    .dcQuickHelp("Clear completed commands")
                 } else {
                     Button { Task { await loadMutations() } } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }
+                    .dcQuickHelp("Refresh mutations")
                 }
             }
         }
@@ -187,7 +190,7 @@ struct ActivityView: View {
 
     private var inspectorPresented: Binding<Bool> {
         Binding(
-            get: { tab == .commands ? selectedCommand != nil : selectedMutation != nil },
+            get: { inspectorIsPresented },
             set: { shown in
                 if !shown {
                     if tab == .commands { appState.activity.selectedID = nil }
@@ -227,13 +230,9 @@ struct ActivityView: View {
                         .controlSize(.small)
                         .disabled(true)
                     }
-                    Button {
-                        appState.activity.selectedID = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("Close command details")
+                    Button { appState.activity.selectedID = nil } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("Close command details")
                 }
                 KeyValueGrid(pairs: [
                     ("Status", entry.statusLabel),

@@ -22,7 +22,9 @@ struct InventoryOutputParseResult {
 }
 
 enum InventoryOutputParser {
-    static let maximumInputBytes = CLIOutputLimits.maximumOutputBytes
+    // Keep aligned with CLIOutputLimits.maximumOutputBytes. This parser is also
+    // compiled independently by its focused regression tests.
+    static let maximumInputBytes = 4 * 1_024 * 1_024
     static let maximumCandidateCount = 64
     private static let maximumNestingDepth = 512
 
@@ -36,9 +38,10 @@ enum InventoryOutputParser {
         "memory": "memory backend is private to the framework",
     ]
 
-    /// Prefer structured errors so known capability notes can be separated
-    /// from real subprocess, permission, and configuration failures. Older
-    /// payloads without details retain their summary count.
+    /// Count failures that require user action. Prefer the structured error
+    /// list so known runtime capability notes can be distinguished from real
+    /// subprocess, permission, or configuration failures. Older payloads that
+    /// omit that list retain their summary count.
     static func actionableErrorCount(in document: [String: Any]) -> Int {
         if let errors = document["errors"] as? [Any] {
             return errors.reduce(into: 0) { count, error in
@@ -53,8 +56,8 @@ enum InventoryOutputParser {
         return 0
     }
 
-    /// Collapse per-connector aggregate warnings into one accurate warning,
-    /// preserving every unrelated diagnostic line.
+    /// Collapse the runtime's per-connector aggregate warnings into one
+    /// accurate warning while preserving every unrelated diagnostic line.
     static func userFacingDiagnostics(from result: InventoryOutputParseResult) -> String {
         var removedAggregateWarning = false
         var lines = result.diagnostics.components(separatedBy: .newlines).filter { line in

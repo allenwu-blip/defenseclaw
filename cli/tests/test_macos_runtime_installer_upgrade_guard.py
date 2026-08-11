@@ -97,6 +97,13 @@ def test_bundled_runtime_refusal_names_exact_supported_upgrade_path() -> None:
         "tested-source policy",
         "the 0.8.4 bridge",
         "rollback, migrations, and health checks",
+    ):
+        assert required in refusal
+
+    resolver = source[
+        source.index("enum RuntimeUpgradeResolverCommand") : source.index("struct RuntimeAuditRecoveryTarget")
+    ]
+    for required in (
         "releases/download/",
         "defenseclaw-upgrade.sh",
         "checksums.txt.sig",
@@ -110,9 +117,9 @@ def test_bundled_runtime_refusal_names_exact_supported_upgrade_path() -> None:
         "unset VERSION",
         "bash <(printf '%s\\\\n' \"$resolver\") --yes",
     ):
-        assert required in refusal
-    assert "raw.githubusercontent.com" not in refusal
-    assert "| bash" not in refusal
+        assert required in resolver
+    assert "raw.githubusercontent.com" not in resolver
+    assert "| bash" not in resolver
 
 
 def test_true_fresh_install_still_stages_and_verifies_both_components() -> None:
@@ -120,7 +127,8 @@ def test_true_fresh_install_still_stages_and_verifies_both_components() -> None:
     filesystem = FILESYSTEM.read_text(encoding="utf-8")
 
     for required in (
-        'arguments: ["venv", stagingDir, "--clear", "--relocatable", "--python", "3.12"]',
+        '"--no-config", "venv", stagingDir, "--clear", "--relocatable"',
+        '"--no-config", "pip", "install", "--python", stagingDir + "/bin/python"',
         '"Verify staged DefenseClaw CLI"',
         '"Verify DefenseClaw CLI"',
         '"Verify DefenseClaw gateway"',
@@ -162,7 +170,9 @@ def test_true_fresh_install_still_stages_and_verifies_both_components() -> None:
     assert "expectedSourceSHA256: payload.wheelSHA256" in source
     assert "decodeXORByte: RuntimePayload.protectedArtifactXORByte" in source
     assert "expectedSourceSHA256: payload.gatewaySHA256" in source
-    assert "expectedSourceSHA256: overridesSHA256" in source
+    assert "expectedSourceSHA256: payload.dependencyLockSHA256" in source
+    assert '"--require-hashes"' in source
+    assert '"--no-deps", materializedWheel' in source
     assert "sourceHasher.update(data:" in filesystem
     assert "if let decodeXORByte" in filesystem
     assert "bytes[index] ^= decodeXORByte" in filesystem
@@ -431,14 +441,11 @@ def test_mac_app_runtime_update_exposes_only_runnable_authenticated_command() ->
     assert "Show Upgrade Path" not in main_window
     assert "isRuntimeFailed || isRuntimeActionRequired ? 4 : 1" in main_window
     assert "no installed files or services were changed" in app_state
-    assert "authenticatedRuntimeUpgradeResolverCommand" in app_state
+    assert "RuntimeUpgradeResolverCommand.authenticated" in app_state
     assert "copy the authenticated resolver command" in app_state
     assert "defenseclaw-upgrade.sh" in settings
     assert "checksums" in settings
-    assert (
-        "https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/upgrade/"
-        in settings
-    )
+    assert "https://cisco-ai-defense.github.io/defenseclaw/docs/get-started/upgrade/" in settings
     assert "docs/CLI.md#upgrade" not in settings
     assert "scripts/upgrade.sh resolver" not in app_state
     assert "scripts/upgrade.sh resolver" not in settings
@@ -456,9 +463,7 @@ def test_mac_app_runtime_update_exposes_only_runnable_authenticated_command() ->
 @pytest.mark.skipif(os.name == "nt", reason="macOS resolver validation requires /bin/bash")
 def test_mac_app_resolver_command_is_raw_canonical_semver_gated_and_bash_syntax_valid() -> None:
     source = _source()
-    function_start = source.index(
-        "static func authenticatedRuntimeUpgradeResolverCommand(releaseTag: String) -> String?"
-    )
+    function_start = source.index("static func authenticated(releaseTag: String) -> String?")
     function_source = source[function_start:]
     assert 'releaseTag.hasPrefix("v") ? String(releaseTag.dropFirst()) : releaseTag' in function_source
     assert '#"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"#' in function_source
@@ -500,9 +505,7 @@ def test_mac_app_resolver_command_is_raw_canonical_semver_gated_and_bash_syntax_
 @pytest.mark.skipif(os.name == "nt", reason="macOS resolver execution requires /bin/bash")
 def test_mac_app_resolver_command_executes_the_verified_in_memory_bytes(tmp_path: Path) -> None:
     source = _source()
-    function_start = source.index(
-        "static func authenticatedRuntimeUpgradeResolverCommand(releaseTag: String) -> String?"
-    )
+    function_start = source.index("static func authenticated(releaseTag: String) -> String?")
     function_source = source[function_start:]
     literal_start = function_source.index('return """') + len('return """')
     literal_end = function_source.index('        """', literal_start)

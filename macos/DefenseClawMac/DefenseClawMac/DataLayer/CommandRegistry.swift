@@ -15,7 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Synchronized with DefenseClaw mainline cli/defenseclaw/tui/registry_data.py.
-// Keep these 227 entries aligned when the TUI command palette changes.
+// Keep these entries aligned when the TUI command palette changes.
 
 import Foundation
 
@@ -82,7 +82,7 @@ struct CommandDefinition: Identifiable, Hashable, Sendable {
     var requiresTerminal: Bool {
         summary.localizedCaseInsensitiveContains("interactive")
             || arguments.last == "shell"
-            || title == "setup galileo"
+            || (binary == "defenseclaw" && arguments == ["setup", "galileo"])
     }
 
     var acceptsSecretInput: Bool {
@@ -124,9 +124,9 @@ struct CommandDefinition: Identifiable, Hashable, Sendable {
             let invocationArguments = arguments + extraArguments
             return CommandExecutionPlan(
                 arguments: invocationArguments,
-                standardInput: AlertDispositionCommand.suppliesConfirmation(
-                    for: invocationArguments
-                ) ? AlertDispositionCommand.confirmationInput : nil
+                standardInput: AlertDispositionCommand.suppliesConfirmation(for: invocationArguments)
+                    ? AlertDispositionCommand.confirmationInput
+                    : nil
             )
         }
         let environmentName = extraArguments.first ?? ""
@@ -172,22 +172,8 @@ struct CommandInvocation: Equatable, Sendable {
     let standardInput: String?
 }
 
-enum CommandInvocationError: LocalizedError, Equatable {
-    case invalidCredentialName
-    case missingCredentialValue
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidCredentialName:
-            return "Enter one credential environment name."
-        case .missingCredentialValue:
-            return "Enter the credential value."
-        }
-    }
-}
-
 enum CommandRegistry {
-    static let sourceCount = 227
+    static let sourceCount = 231
     static let all: [CommandDefinition] = [
         CommandDefinition(id: 0, title: "init", binary: "defenseclaw", arguments: ["init"], summary: "Initialize DefenseClaw", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 1, title: "init first-run", binary: "defenseclaw", arguments: ["init", "--non-interactive", "--yes", "--verify"], summary: "Run guided first-run backend with defaults", category: "setup", requiresInput: false, usage: ""),
@@ -209,11 +195,10 @@ enum CommandRegistry {
         CommandDefinition(id: 17, title: "setup openhands", binary: "defenseclaw", arguments: ["setup", "openhands", "--yes"], summary: "Configure OpenHands observability hooks", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 18, title: "setup antigravity", binary: "defenseclaw", arguments: ["setup", "antigravity", "--yes"], summary: "Configure Antigravity observability hooks", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 19, title: "setup opencode", binary: "defenseclaw", arguments: ["setup", "opencode", "--yes"], summary: "Configure OpenCode observability hooks", category: "setup", requiresInput: false, usage: ""),
-        CommandDefinition(id: 226, title: "setup amp", binary: "defenseclaw", arguments: ["setup", "amp", "--yes"], summary: "Configure Amp synchronous policy plugin", category: "setup", requiresInput: false, usage: ""),
-        CommandDefinition(id: 20, title: "setup rotate-token", binary: "defenseclaw", arguments: ["setup", "rotate-token", "--yes"], summary: "Rotate the gateway token", category: "setup", requiresInput: false, usage: ""),
-        CommandDefinition(id: 21, title: "setup gateway", binary: "defenseclaw", arguments: ["setup", "gateway"], summary: "Configure gateway connection (interactive)", category: "setup", requiresInput: false, usage: ""),
-        CommandDefinition(id: 22, title: "setup guardrail", binary: "defenseclaw", arguments: ["setup", "guardrail"], summary: "Configure LLM guardrail", category: "setup", requiresInput: false, usage: ""),
-        CommandDefinition(id: 23, title: "setup redaction", binary: "defenseclaw", arguments: ["setup", "redaction"], summary: "Configure v8 redaction policy", category: "setup", requiresInput: true, usage: "[status|remove-all|apply|defaults|bucket|profile|destination|route] [flags]"),
+        CommandDefinition(id: 20, title: "setup omnigent", binary: "defenseclaw", arguments: ["setup", "omnigent", "--yes"], summary: "Configure OmniGent ALLOW/ASK/DENY policy bridge", category: "setup", requiresInput: false, usage: ""),
+        CommandDefinition(id: 21, title: "setup rotate-token", binary: "defenseclaw", arguments: ["setup", "rotate-token", "--yes"], summary: "Rotate the gateway token", category: "setup", requiresInput: false, usage: ""),
+        CommandDefinition(id: 22, title: "setup gateway", binary: "defenseclaw", arguments: ["setup", "gateway"], summary: "Configure gateway connection (interactive)", category: "setup", requiresInput: false, usage: ""),
+        CommandDefinition(id: 23, title: "setup guardrail", binary: "defenseclaw", arguments: ["setup", "guardrail"], summary: "Configure LLM guardrail", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 24, title: "setup notifications", binary: "defenseclaw", arguments: ["setup", "notifications"], summary: "Show/toggle desktop notifications", category: "setup", requiresInput: true, usage: "<status|on|off> [--yes]"),
         CommandDefinition(id: 25, title: "setup splunk", binary: "defenseclaw", arguments: ["setup", "splunk"], summary: "Configure Splunk / O11y", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 26, title: "setup local-observability up", binary: "defenseclaw", arguments: ["setup", "local-observability", "up"], summary: "Start local Prom/Loki/Tempo/Grafana stack", category: "setup", requiresInput: false, usage: ""),
@@ -268,8 +253,8 @@ enum CommandRegistry {
         CommandDefinition(id: 75, title: "block mcp", binary: "defenseclaw", arguments: ["mcp", "block"], summary: "Block an MCP server", category: "enforce", requiresInput: true, usage: "<url>"),
         CommandDefinition(id: 76, title: "allow mcp", binary: "defenseclaw", arguments: ["mcp", "allow"], summary: "Allow-list an MCP server", category: "enforce", requiresInput: true, usage: "<url>"),
         CommandDefinition(id: 77, title: "unblock mcp", binary: "defenseclaw", arguments: ["mcp", "unblock"], summary: "Unblock an MCP server", category: "enforce", requiresInput: true, usage: "<url>"),
-        CommandDefinition(id: 78, title: "set mcp", binary: "defenseclaw", arguments: ["mcp", "set"], summary: "Scan + set MCP server in the active connector's config", category: "enforce", requiresInput: true, usage: "<url>"),
-        CommandDefinition(id: 79, title: "unset mcp", binary: "defenseclaw", arguments: ["mcp", "unset"], summary: "Unset MCP server from the active connector's config", category: "enforce", requiresInput: true, usage: "<url>"),
+        CommandDefinition(id: 78, title: "set mcp", binary: "defenseclaw", arguments: ["mcp", "set"], summary: "Scan + set MCP server in the active connector's config", category: "enforce", requiresInput: true, usage: "<name> [--url <url>]"),
+        CommandDefinition(id: 79, title: "unset mcp", binary: "defenseclaw", arguments: ["mcp", "unset"], summary: "Unset MCP server from the active connector's config", category: "enforce", requiresInput: true, usage: "<name-or-url>"),
         CommandDefinition(id: 80, title: "block plugin", binary: "defenseclaw", arguments: ["plugin", "block"], summary: "Block a plugin", category: "enforce", requiresInput: true, usage: "<plugin-name>"),
         CommandDefinition(id: 81, title: "allow plugin", binary: "defenseclaw", arguments: ["plugin", "allow"], summary: "Allow-list a plugin", category: "enforce", requiresInput: true, usage: "<plugin-name>"),
         CommandDefinition(id: 82, title: "disable plugin", binary: "defenseclaw", arguments: ["plugin", "disable"], summary: "Disable a plugin at runtime", category: "enforce", requiresInput: true, usage: "<plugin-name>"),
@@ -346,7 +331,7 @@ enum CommandRegistry {
         CommandDefinition(id: 153, title: "sandbox exec", binary: "defenseclaw-gateway", arguments: ["sandbox", "exec"], summary: "Run command in sandbox", category: "sandbox", requiresInput: true, usage: "<command>"),
         CommandDefinition(id: 154, title: "sandbox shell", binary: "defenseclaw-gateway", arguments: ["sandbox", "shell"], summary: "Open sandbox shell", category: "sandbox", requiresInput: false, usage: ""),
         CommandDefinition(id: 155, title: "sandbox policy diff", binary: "defenseclaw-gateway", arguments: ["sandbox", "policy", "diff"], summary: "Compare policy vs endpoints", category: "sandbox", requiresInput: false, usage: ""),
-        CommandDefinition(id: 156, title: "upgrade", binary: "defenseclaw", arguments: ["upgrade", "--yes"], summary: "Upgrade DefenseClaw", category: "other", requiresInput: false, usage: ""),
+        CommandDefinition(id: 156, title: "upgrade", binary: "defenseclaw", arguments: ["upgrade", "--yes"], summary: "Run CLI upgrade preflight; hard cuts require the release-owned resolver", category: "other", requiresInput: false, usage: ""),
         CommandDefinition(id: 157, title: "uninstall dry-run", binary: "defenseclaw", arguments: ["uninstall", "--dry-run"], summary: "Preview uninstall changes without modifying the system", category: "other", requiresInput: false, usage: ""),
         CommandDefinition(id: 158, title: "uninstall --yes", binary: "defenseclaw", arguments: ["uninstall", "--yes"], summary: "Uninstall DefenseClaw after showing the plan", category: "other", requiresInput: false, usage: ""),
         CommandDefinition(id: 159, title: "uninstall --all --yes", binary: "defenseclaw", arguments: ["uninstall", "--all", "--yes"], summary: "Uninstall DefenseClaw and wipe local data", category: "other", requiresInput: false, usage: ""),
@@ -450,9 +435,8 @@ enum CommandArgumentParser {
                 continue
             }
             if let activeQuote = quote {
-                if character == activeQuote {
-                    quote = nil
-                } else {
+                if character == activeQuote { quote = nil }
+                else {
                     current.append(character)
                     tokenStarted = true
                 }
@@ -473,15 +457,9 @@ enum CommandArgumentParser {
             }
         }
 
-        if escaped {
-            throw ParseError(message: "The final backslash does not escape a character.")
-        }
-        if quote != nil {
-            throw ParseError(message: "A quoted argument is not closed.")
-        }
-        if tokenStarted {
-            result.append(current)
-        }
+        if escaped { throw ParseError(message: "The final backslash does not escape a character.") }
+        if quote != nil { throw ParseError(message: "A quoted argument is not closed.") }
+        if tokenStarted { result.append(current) }
         return result
     }
 }

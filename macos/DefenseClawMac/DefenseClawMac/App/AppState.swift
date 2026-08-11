@@ -815,16 +815,17 @@ final class AppState {
         connectorSetupInFlight.contains(ConnectorOnboarding.normalizedConnector(name))
     }
 
-    /// Runtime 0.8.6 accepts severity selectors directly, while current
-    /// mainline confirms those broad mutations interactively. The invocation
-    /// helper preserves the tagged-runtime argv and supplies that confirmation
-    /// over stdin for forward compatibility. Audit rows drop from the queue via
-    /// the acknowledgement projection; synthetic stream rows remain a local
-    /// hide because they have no protected audit disposition.
+    /// Runtime 0.8.9 keeps severity selectors and confirms broad mutations
+    /// interactively. The invocation helper supplies that confirmation over
+    /// stdin while remaining compatible with older runtimes that ignore it.
+    /// Audit rows drop from the queue via the acknowledgement projection;
+    /// synthetic stream rows remain a local hide because they have no protected
+    /// audit disposition.
     func acknowledge(_ rows: [AlertRow]) async {
         guard !rows.isEmpty, !ackInProgress else { return }
         ackInProgress = true
         defer { ackInProgress = false }
+        let generation = installationGeneration
 
         ackError = nil
         var severities = Set<Severity>()
@@ -847,6 +848,7 @@ final class AppState {
                 origin: "Alerts",
                 successEffects: ["\(severity.rawValue) alerts acknowledged"]
             )
+            guard installationSnapshotIsCurrent(generation) else { return }
             if !result.succeeded {
                 let detail = result.output
                     .split(separator: "\n")
@@ -858,6 +860,7 @@ final class AppState {
                 )
             }
         }
+        guard installationSnapshotIsCurrent(generation) else { return }
         if failures.isEmpty {
             for row in localRows { dismissedIDs.insert(row.id) }
         } else {
@@ -1111,7 +1114,7 @@ final class AppState {
         // binary — never present overlapping runtime actions.
         guard !runtimeInstallState.isRunning else { return false }
         guard let runtimeUpdate = availableRuntimeUpdate else { return true }
-        guard let resolverCommand = Self.authenticatedRuntimeUpgradeResolverCommand(
+        guard let resolverCommand = RuntimeUpgradeResolverCommand.authenticated(
             releaseTag: runtimeUpdate.tag
         ) else {
             let failure = """
@@ -1129,6 +1132,37 @@ final class AppState {
         runtimeUpgradeLog = guidance
         runtimeUpgradeState = .actionRequired(guidance: guidance, command: resolverCommand)
         return false
+    }
+
+    /// Targets the installation that produced the warning. The installed CLI
+    /// authenticates the release-owned resolver before replacing any audit
+    /// files; the app only prepares the explicit operator command.
+    func auditStoreRecoveryCommand(
+        expectedGeneration: Int,
+        expectedBinaryPath: String?
+    ) async -> String? {
+        guard installationSnapshotIsCurrent(expectedGeneration) else { return nil }
+        guard let expectedBinaryPath,
+              await cli.locateBinary() == expectedBinaryPath else { return nil }
+        let versionResult = await cli.run(
+            binary: expectedBinaryPath,
+            arguments: ["--version"],
+            mutation: false
+        )
+        guard installationSnapshotIsCurrent(expectedGeneration),
+              await cli.locateBinary() == expectedBinaryPath,
+              versionResult.succeeded,
+              let installedVersion = UpdateChecker.parseVersion(versionResult.output) else {
+            return nil
+        }
+        return RuntimeAuditRecoveryCommand.command(for: RuntimeAuditRecoveryTarget(
+            homeRoot: installationContext.homeRoot,
+            configURL: installationContext.configURL,
+            venvURL: installationContext.venvURL,
+            runtimeCLIURL: URL(fileURLWithPath: expectedBinaryPath, isDirectory: false),
+            installedVersion: installedVersion,
+            permitsMutation: installationContext.permitsMutation
+        ))
     }
 
     /// Download, install over the current bundle, and restart the app.

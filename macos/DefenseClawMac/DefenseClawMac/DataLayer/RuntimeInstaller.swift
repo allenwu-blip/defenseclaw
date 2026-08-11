@@ -55,6 +55,7 @@ struct RuntimePayload: Sendable {
     )
     static let protectedArtifactXORByte: UInt8 = 0xA5
     static let maximumProtectedArtifactBytes: Int64 = 512 * 1024 * 1024
+
     var version: String
     var tag: String
     var arch: String
@@ -64,10 +65,15 @@ struct RuntimePayload: Sendable {
     var wheelSHA256: String
     /// Optional dependency overrides — upstream pyproject's [tool.uv]
     /// override-dependencies (CVE floors + the textual>=8.2.7 pin the
-    /// wheel's own scanner constraint would defeat). Applied with
-    /// `uv pip install --overrides` to reproduce upstream's resolution.
+    /// wheel's own scanner constraint would defeat). Retained as provenance
+    /// for the build-generated dependency lock; never resolved again on-device.
     var overridesURL: URL?
     var overridesSHA256: String?
+    /// Build-time resolution output for the target macOS/Python platform.
+    /// Every dependency is version-pinned and includes accepted SHA-256
+    /// distribution hashes; the root wheel remains separately authenticated.
+    var dependencyLockURL: URL
+    var dependencyLockSHA256: String
 
     /// Loaded once per launch — the bundle is immutable while running.
     static let bundled: RuntimePayload? = load()
@@ -85,7 +91,11 @@ struct RuntimePayload: Sendable {
               let wheel = root["wheel"] as? [String: Any],
               let wheelFile = wheel["file"] as? String,
               let wheelSHA = wheel["sha256"] as? String,
-              wheelFile == expectedProtectedWheelFilename(version: version)
+              let dependencyLock = root["dependency_lock"] as? [String: Any],
+              let dependencyLockFile = dependencyLock["file"] as? String,
+              let dependencyLockSHA = dependencyLock["sha256"] as? String,
+              dependencyLockFile == "runtime-requirements.lock",
+              wheelFile == "defenseclaw-\(version)-2-py3-none-any.dcwheel"
         else { return nil }
         let overrides = root["overrides"] as? [String: Any]
         let overridesFile = overrides?["file"] as? String
@@ -98,7 +108,9 @@ struct RuntimePayload: Sendable {
             wheelURL: payloadDir.appendingPathComponent(wheelFile),
             wheelSHA256: wheelSHA,
             overridesURL: overridesFile.map(payloadDir.appendingPathComponent),
-            overridesSHA256: overrides?["sha256"] as? String
+            overridesSHA256: overrides?["sha256"] as? String,
+            dependencyLockURL: payloadDir.appendingPathComponent(dependencyLockFile),
+            dependencyLockSHA256: dependencyLockSHA
         )
     }
 
@@ -130,6 +142,12 @@ struct RuntimePayload: Sendable {
                 return "Bundled dependency overrides do not match their manifest checksum."
             }
         }
+        guard let lockActual = Self.sha256(of: dependencyLockURL) else {
+            return "Bundled runtime dependency lock is missing or unreadable."
+        }
+        guard lockActual == dependencyLockSHA256 else {
+            return "Bundled runtime dependency lock does not match its manifest checksum."
+        }
         return nil
     }
 
@@ -158,7 +176,6 @@ struct RuntimePayload: Sendable {
         defer { try? handle.close() }
         guard (try? handle.read(upToCount: protectedArtifactMagic.count))
                 == protectedArtifactMagic else { return nil }
-
         var hasher = SHA256()
         var sawPayload = false
         var encodedBytesRead = Int64(protectedArtifactMagic.count)
@@ -176,7 +193,6 @@ struct RuntimePayload: Sendable {
         guard sawPayload else { return nil }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
-
     /// Decode a protected release artifact into a private installer input.
     /// The encoded checksum is revalidated while streaming so a development
     /// build cannot swap the artifact between the initial integrity check and
@@ -238,7 +254,7 @@ struct RuntimePayload: Sendable {
         }
     }
 
-    private static func decodeProtectedBytes(_ data: inout Data) {
+    static func decodeProtectedBytes(_ data: inout Data) {
         data.withUnsafeMutableBytes { bytes in
             for index in bytes.indices {
                 bytes[index] ^= protectedArtifactXORByte
@@ -255,6 +271,96 @@ struct RuntimePayload: Sendable {
         return (attributes?[.size] as? NSNumber)?.int64Value
     }
 }
+
+/// Produces the runnable, signed-release resolver command shared by native-app
+/// upgrade surfaces. The release tag is validated before URL interpolation.
+enum RuntimeUpgradeResolverCommand {
+    static func authenticated(releaseTag: String) -> String? {
+        let tag = releaseTag.hasPrefix("v") ? String(releaseTag.dropFirst()) : releaseTag
+        guard tag.range(
+            of: #"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"#,
+            options: .regularExpression
+        ) != nil else { return nil }
+        let assetBase = "https://github.com/cisco-ai-defense/defenseclaw/releases/download/\(tag)"
+        return """
+        (
+          set -eu
+          unset VERSION
+          umask 077
+          command -v cosign >/dev/null
+          checksums="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt')"
+          signature="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt.sig')"
+          certificate="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt.pem')"
+          resolver="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/defenseclaw-upgrade.sh')"
+          cosign verify-blob --certificate <(printf '%s\\n' "$certificate") --signature <(printf '%s\\n' "$signature") --certificate-identity 'https://github.com/cisco-ai-defense/defenseclaw/.github/workflows/release.yaml@refs/heads/main' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' <(printf '%s\\n' "$checksums")
+          line="$(printf '%s\\n' "$checksums" | grep -E '^[0-9a-f]{64}  defenseclaw-upgrade[.]sh$')"
+          [ "$(printf '%s\\n' "$line" | wc -l | tr -d ' ')" = 1 ]
+          expected="${line%% *}"
+          if command -v sha256sum >/dev/null; then
+            actual="$(printf '%s\\n' "$resolver" | sha256sum | awk '{print $1}')"
+          else
+            actual="$(printf '%s\\n' "$resolver" | shasum -a 256 | awk '{print $1}')"
+          fi
+          [ "$actual" = "$expected" ]
+          [ "$(printf '%s\\n' "$resolver" | tail -n 1)" = '# DefenseClaw upgrade resolver complete v1' ]
+          bash -n <(printf '%s\\n' "$resolver")
+          bash <(printf '%s\\n' "$resolver") --yes
+        )
+        """
+    }
+}
+
+struct RuntimeAuditRecoveryTarget {
+    let homeRoot: URL
+    let configURL: URL
+    let venvURL: URL
+    let runtimeCLIURL: URL
+    let installedVersion: String
+    let permitsMutation: Bool
+}
+
+/// Targets the selected installation's CLI. Modern DefenseClaw handles this
+/// flag before config/audit initialization and authenticates the release-owned
+/// recovery resolver in a sanitized environment.
+enum RuntimeAuditRecoveryCommand {
+    static func command(for target: RuntimeAuditRecoveryTarget) -> String? {
+        guard target.permitsMutation,
+              FileManager.default.isExecutableFile(atPath: target.runtimeCLIURL.path),
+              let version = normalizedVersion(target.installedVersion),
+              let home = shellQuote(target.homeRoot.path),
+              let config = shellQuote(target.configURL.path),
+              let venv = shellQuote(target.venvURL.path),
+              let cli = shellQuote(target.runtimeCLIURL.path),
+              let quotedVersion = shellQuote(version) else {
+            return nil
+        }
+        return """
+        (
+          set -eu
+          export DEFENSECLAW_HOME=\(home)
+          export DEFENSECLAW_CONFIG=\(config)
+          export DEFENSECLAW_VENV=\(venv)
+          exec \(cli) upgrade --yes --version \(quotedVersion) --recover-corrupt-audit
+        )
+        """
+    }
+
+    private static func normalizedVersion(_ value: String) -> String? {
+        let version = value.hasPrefix("v") ? String(value.dropFirst()) : value
+        guard version.range(
+            of: #"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"#,
+            options: .regularExpression
+        ) != nil else { return nil }
+        return version
+    }
+
+    private static func shellQuote(_ value: String) -> String? {
+        guard !value.contains(where: { $0.isNewline || $0 == "\0" }) else { return nil }
+        return "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+}
+
+// TEST-EXTRACT-BOUNDARY: RuntimePayloadTestSupport
 
 enum RuntimeInstallState: Equatable {
     case idle
@@ -405,13 +511,17 @@ extension AppState {
         runtimeInstallState = .running("Ensuring Python 3.12")
         // Expected to miss on Macs without 3.12 (install.sh probes silently
         // too) — a miss is not a failure, so it stays out of Activity.
-        let find = await cli.run(binary: uv, arguments: ["python", "find", "3.12"], mutation: false)
+        let find = await cli.run(
+            binary: uv,
+            arguments: ["--no-config", "python", "find", "3.12"],
+            mutation: false
+        )
         if !find.succeeded {
             runtimeInstallState = .running("Downloading Python 3.12 (network)")
             let install = await installerStep(
                 "Install Python 3.12 (uv, ~40 MB download)",
                 binary: uv,
-                arguments: ["python", "install", "3.12"],
+                arguments: ["--no-config", "python", "install", "3.12"],
                 successEffects: ["Python 3.12 installed (uv-managed)"]
             )
             guard install.succeeded else {
@@ -465,7 +575,10 @@ extension AppState {
             binary: uv,
             // --relocatable: entry-point scripts must survive the staging →
             // .venv rename without baked-in staging shebangs.
-            arguments: ["venv", stagingDir, "--clear", "--relocatable", "--python", "3.12"],
+            arguments: [
+                "--no-config", "venv", stagingDir, "--clear", "--relocatable",
+                "--python", "3.12",
+            ],
             successEffects: ["Virtual environment staged"]
         )
         guard venv.succeeded else {
@@ -487,9 +600,9 @@ extension AppState {
 
         runtimeInstallState = .running("Materializing authenticated runtime wheel")
         let materializedWheel = dataHome + "/defenseclaw-\(payload.version)-py3-none-any.whl"
-        let materializedOverrides = dataHome + "/dependency-overrides-\(payload.version).txt"
+        let materializedDependencyLock = dataHome + "/runtime-requirements-\(payload.version).lock"
         var materializedWheelIdentity: RuntimeInstallFilesystem.PathIdentity?
-        var materializedOverridesIdentity: RuntimeInstallFilesystem.PathIdentity?
+        var materializedDependencyLockIdentity: RuntimeInstallFilesystem.PathIdentity?
         do {
             materializedWheelIdentity = try RuntimeInstallFilesystem.installRegularFileNoReplace(
                 source: payload.wheelURL.path,
@@ -500,16 +613,13 @@ extension AppState {
                 decodeXORByte: RuntimePayload.protectedArtifactXORByte,
                 expectedSourceSHA256: payload.wheelSHA256
             )
-            if let overridesURL = payload.overridesURL,
-               let overridesSHA256 = payload.overridesSHA256 {
-                materializedOverridesIdentity = try RuntimeInstallFilesystem.installRegularFileNoReplace(
-                    source: overridesURL.path,
-                    destination: materializedOverrides,
-                    expectedParentIdentity: dataHomeIdentity,
-                    mode: 0o600,
-                    expectedSourceSHA256: overridesSHA256
-                )
-            }
+            materializedDependencyLockIdentity = try RuntimeInstallFilesystem.installRegularFileNoReplace(
+                source: payload.dependencyLockURL.path,
+                destination: materializedDependencyLock,
+                expectedParentIdentity: dataHomeIdentity,
+                mode: 0o600,
+                expectedSourceSHA256: payload.dependencyLockSHA256
+            )
         } catch {
             if let materializedWheelIdentity {
                 _ = RuntimeInstallFilesystem.cleanupOwnedPath(
@@ -529,34 +639,43 @@ extension AppState {
             return
         }
 
-        runtimeInstallState = .running("Installing DefenseClaw CLI \(payload.version) (network: PyPI dependencies)")
-        var wheelArguments = ["pip", "install", "--python", stagingDir + "/bin/python"]
-        if materializedOverridesIdentity != nil {
-            // Upstream's own override-dependencies: without them a fresh
-            // resolve honors the scanner's textual<8 cap and the TUI
-            // crashes, and the CVE-driven floors are lost.
-            wheelArguments += ["--overrides", materializedOverrides]
-        }
-        wheelArguments.append(materializedWheel)
-        let wheel = await installerStep(
-            "Install DefenseClaw CLI \(payload.version) (bundled wheel + PyPI dependencies)",
+        runtimeInstallState = .running("Installing hash-locked Python dependencies (network: PyPI)")
+        let dependencies = await installerStep(
+            "Install DefenseClaw CLI \(payload.version) hash-locked dependencies",
             binary: uv,
-            arguments: wheelArguments,
-            successEffects: ["DefenseClaw CLI \(payload.version) installed"]
+            arguments: [
+                "--no-config", "pip", "install", "--python", stagingDir + "/bin/python",
+                "--require-hashes",
+                "--requirements", materializedDependencyLock,
+            ],
+            successEffects: ["Authenticated Python dependency set installed"]
         )
+        var wheel = dependencies
+        if dependencies.succeeded {
+            runtimeInstallState = .running("Installing authenticated DefenseClaw CLI \(payload.version)")
+            wheel = await installerStep(
+                "Install authenticated DefenseClaw CLI \(payload.version) wheel",
+                binary: uv,
+                arguments: [
+                    "--no-config", "pip", "install", "--python", stagingDir + "/bin/python",
+                    "--no-deps", materializedWheel,
+                ],
+                successEffects: ["DefenseClaw CLI \(payload.version) installed"]
+            )
+        }
         let wheelCleanupSucceeded = materializedWheelIdentity.map {
             RuntimeInstallFilesystem.cleanupOwnedPath(
                 materializedWheel,
                 identity: $0
             )
         } ?? false
-        let overridesCleanupSucceeded = materializedOverridesIdentity.map {
+        let dependencyLockCleanupSucceeded = materializedDependencyLockIdentity.map {
             RuntimeInstallFilesystem.cleanupOwnedPath(
-                materializedOverrides,
+                materializedDependencyLock,
                 identity: $0
             )
-        } ?? true
-        guard wheelCleanupSucceeded, overridesCleanupSucceeded else {
+        } ?? false
+        guard wheelCleanupSucceeded, dependencyLockCleanupSucceeded else {
             RuntimeInstallFilesystem.cleanupFailedFreshInstall(
                 stagingDir: stagingDir,
                 stagingIdentity: stagingIdentity,
@@ -566,6 +685,22 @@ extension AppState {
             runtimeInstallState = .failed(
                 "Private runtime input cleanup could not prove ownership; installation was not activated."
             )
+            return
+        }
+        guard dependencies.succeeded else {
+            RuntimeInstallFilesystem.cleanupFailedFreshInstall(
+                stagingDir: stagingDir,
+                stagingIdentity: stagingIdentity,
+                dataHome: dataHome,
+                removeDataHomeIfEmpty: !dataHomeExistedBeforeInstall
+            )
+            if dependencies.cancelled {
+                runtimeInstallState = .failed("Installation cancelled. No pre-existing runtime was changed; retry when ready.")
+            } else {
+                runtimeInstallState = .failed(
+                    "Hash-locked dependency install failed (exit \(dependencies.exitCode)). Only distributions matching the signed runtime lock are accepted from pypi.org / files.pythonhosted.org. Check network or proxy access; no pre-existing runtime was changed. See Activity for output."
+                )
+            }
             return
         }
         guard wheel.succeeded else {
@@ -579,7 +714,7 @@ extension AppState {
                 runtimeInstallState = .failed("Installation cancelled. No pre-existing runtime was changed; retry when ready.")
             } else {
                 runtimeInstallState = .failed(
-                    "CLI wheel install failed (exit \(wheel.exitCode)). This step downloads Python dependencies from pypi.org / files.pythonhosted.org — check network or proxy access. No pre-existing runtime was changed; retry after correcting the network issue. See Activity for output."
+                    "Authenticated CLI wheel install failed (exit \(wheel.exitCode)). Dependency resolution was not retried or widened. No pre-existing runtime was changed; see Activity for output."
                 )
             }
             return
@@ -999,7 +1134,7 @@ extension AppState {
     }
 
     private static func existingRuntimeRefusal(marker: String, payload: RuntimePayload) -> String {
-        guard let resolverCommand = authenticatedRuntimeUpgradeResolverCommand(
+        guard let resolverCommand = RuntimeUpgradeResolverCommand.authenticated(
             releaseTag: payload.tag
         ) else {
             return """
@@ -1017,40 +1152,4 @@ extension AppState {
         """
     }
 
-    /// Produce only the runnable, signed-release resolver command shared by
-    /// every native-app refusal surface. Returning nil prevents a release tag
-    /// from being interpolated into a URL unless it is canonical SemVer.
-    static func authenticatedRuntimeUpgradeResolverCommand(releaseTag: String) -> String? {
-        let tag = releaseTag.hasPrefix("v") ? String(releaseTag.dropFirst()) : releaseTag
-        guard tag.range(
-            of: #"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"#,
-            options: .regularExpression
-        ) != nil else { return nil }
-        let assetBase = "https://github.com/cisco-ai-defense/defenseclaw/releases/download/\(tag)"
-        return """
-        (
-          set -eu
-          unset VERSION
-          umask 077
-          command -v cosign >/dev/null
-          checksums="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt')"
-          signature="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt.sig')"
-          certificate="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/checksums.txt.pem')"
-          resolver="$(curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 '\(assetBase)/defenseclaw-upgrade.sh')"
-          cosign verify-blob --certificate <(printf '%s\\n' "$certificate") --signature <(printf '%s\\n' "$signature") --certificate-identity 'https://github.com/cisco-ai-defense/defenseclaw/.github/workflows/release.yaml@refs/heads/main' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' <(printf '%s\\n' "$checksums")
-          line="$(printf '%s\\n' "$checksums" | grep -E '^[0-9a-f]{64}  defenseclaw-upgrade[.]sh$')"
-          [ "$(printf '%s\\n' "$line" | wc -l | tr -d ' ')" = 1 ]
-          expected="${line%% *}"
-          if command -v sha256sum >/dev/null; then
-            actual="$(printf '%s\\n' "$resolver" | sha256sum | awk '{print $1}')"
-          else
-            actual="$(printf '%s\\n' "$resolver" | shasum -a 256 | awk '{print $1}')"
-          fi
-          [ "$actual" = "$expected" ]
-          [ "$(printf '%s\\n' "$resolver" | tail -n 1)" = '# DefenseClaw upgrade resolver complete v1' ]
-          bash -n <(printf '%s\\n' "$resolver")
-          bash <(printf '%s\\n' "$resolver") --yes
-        )
-        """
-    }
 }

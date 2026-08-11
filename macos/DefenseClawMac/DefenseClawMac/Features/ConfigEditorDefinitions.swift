@@ -15,7 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Typed config-editor catalog — a port of the TUI's Setup config sections
-// (tui/panels/setup.py build of ConfigSection/ConfigField, DefenseClaw 0.8.3).
+// (tui/panels/setup.py build of ConfigSection/ConfigField, DefenseClaw 0.8.5).
 // Every editable field carries its exact config.yaml dotted key, kind, choice
 // options, and hint; read-only sections render as headers with guidance.
 
@@ -587,12 +587,12 @@ enum ConfigEditorCatalog {
         ))
 
         sections.append(ConfigEditorSection(
-            name: "Audit Sinks",
-            summary: "Read-only audit sink summary.",
-            help: "Manage via Setup → Observability (Splunk) or `defenseclaw setup observability`.",
+            name: "Observability",
+            summary: "Read-only config v8 destination summary.",
+            help: "Manage via Setup → Observability or `defenseclaw setup observability`.",
             fields: [
                 .init(label: "How to edit", key: "", kind: .header,
-                      headerValue: "Use the Observability / Splunk wizards; sinks appear in the Overview destinations table."),
+                      headerValue: "Use the Observability wizards; named destinations appear in the Overview destinations table."),
             ]
         ))
 
