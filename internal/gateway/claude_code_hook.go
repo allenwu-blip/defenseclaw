@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/defenseclaw/defenseclaw/internal/actionfacts"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/notifier"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
@@ -137,15 +138,35 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 		if req.HookEventName == "UserPromptExpansion" {
 			assetDecisions = append(assetDecisions, a.claudeCodePromptExpansionAssetDecisions(ctx, req)...)
 		}
-	case "PreToolUse", "PermissionRequest", "PermissionDenied":
-		verdict = a.inspectToolPolicyCtx(ctx, &ToolInspectRequest{Tool: claudeCodeToolName(req), Args: claudeCodeToolArgs(req), Direction: "tool_call", Connector: "claudecode", MCPServerName: req.MCPServerName})
+	case "PreToolUse", "PermissionRequest":
+		toolName := claudeCodeToolName(req)
+		toolArgs := claudeCodeToolArgs(req)
+		toolRequest := &ToolInspectRequest{
+			Tool:          toolName,
+			Args:          toolArgs,
+			Direction:     "tool_call",
+			Connector:     "claudecode",
+			MCPServerName: req.MCPServerName,
+		}
+		verdict = a.inspectTrustedToolPolicyCtx(ctx, toolRequest, trustedActionRequest{
+			Input: actionfacts.Input{
+				Tool:       toolName,
+				Args:       toolArgs,
+				CWD:        req.CWD,
+				ActiveHome: trustedSameHostHome(),
+			},
+			LegacyText:         string(toolArgs),
+			Connector:          "claudecode",
+			EnforcementCapable: true,
+			record:             toolChainRecorderFromContext(ctx),
+		})
 		if decision, matched := a.claudeCodeMCPAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "mcp", decision: decision})
 		}
 		if decision, matched := a.claudeCodeSkillAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "skill", decision: decision})
 		}
-	case "PostToolUse", "PostToolUseFailure", "PostToolBatch":
+	case "PostToolUse", "PostToolUseFailure", "PermissionDenied", "PostToolBatch":
 		verdict = a.inspectMessageContent(ctx, &ToolInspectRequest{Tool: "message", Content: claudeCodeToolOutput(req), Direction: "tool_result", Connector: "claudecode"})
 		if decision, matched := a.claudeCodeMCPAssetDecision(ctx, req); matched {
 			assetDecisions = append(assetDecisions, runtimeAssetDecision{targetType: "mcp", decision: decision})
@@ -214,7 +235,10 @@ func (a *APIServer) evaluateClaudeCodeHook(ctx context.Context, req claudeCodeHo
 		a.dispatchClaudeCodeHookNotification(req, action, rawAction, verdict.Severity, verdict.Reason, wouldBlock, evalCtx,
 			sinkPolicyFor(ctx, verdict.RedactionEnabled))
 	}
-	resp := claudeCodeResponseFor(req, action, rawAction, verdict.Severity, verdict.Reason, verdict.Findings, mode, wouldBlock)
+	resp := claudeCodeResponseFor(
+		req, action, rawAction, verdict.Severity, verdict.Reason, verdict.Findings, mode, wouldBlock,
+		sinkPolicyFor(ctx, verdict.RedactionEnabled),
+	)
 	// Stamp the unified-pipeline correlation keys so the agent-hook
 	// dispatch wrapper (claudeCodeResponseToAgentHookResponse) and
 	// the audit envelope (HookAuditEnvelope.EvaluationID / RuleIDs)
@@ -258,8 +282,9 @@ func (a *APIServer) dispatchClaudeCodeHookNotification(req claudeCodeHookRequest
 	}
 	// Honor the cloud-controlled per-inspection redaction policy
 	// (all-sinks scope, managed_enterprise only) when a caller passes
-	// one; otherwise default to the historical ForSinkReason behavior.
-	safeReason := redaction.ReasonForSink(reason, notificationSinkPolicy(policy))
+	// one; otherwise keep compatibility redaction while allowing exact
+	// compiled-in rule metadata through for operator triage.
+	safeReason := notificationDisplayReason(reason, notificationSinkPolicy(policy))
 	base := notifier.BlockEvent{
 		Source:       notifier.SourceHook,
 		Target:       target,
@@ -342,7 +367,7 @@ func (a *APIServer) claudeCodeMode() string {
 	return normalizeAgentHookMode(mode)
 }
 
-func claudeCodeResponseFor(req claudeCodeHookRequest, action, rawAction, severity, reason string, findings []string, mode string, wouldBlock bool) claudeCodeHookResponse {
+func claudeCodeResponseFor(req claudeCodeHookRequest, action, rawAction, severity, reason string, findings []string, mode string, wouldBlock bool, policy ...redaction.SinkPolicy) claudeCodeHookResponse {
 	if severity == "" {
 		severity = "NONE"
 	}
@@ -352,7 +377,7 @@ func claudeCodeResponseFor(req claudeCodeHookRequest, action, rawAction, severit
 	if rawAction == "" {
 		rawAction = action
 	}
-	safeReason := redaction.ReasonForAgent(reason)
+	safeReason := agentDisplayReason(reason, notificationSinkPolicy(policy))
 	additional := claudeCodeAdditionalContext(rawAction, severity, safeReason, wouldBlock)
 	resp := claudeCodeHookResponse{
 		Action:            action,

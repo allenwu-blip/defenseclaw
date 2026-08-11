@@ -30,6 +30,7 @@ This command surfaces the common policy levers directly:
   defenseclaw guardrail fail-mode      # open vs closed on hook failures
   defenseclaw guardrail hilt           # human-in-the-loop prompting
   defenseclaw guardrail block-message  # message shown when an action is blocked
+  defenseclaw guardrail validate-pack  # strict offline rule-pack validation
 
 All of these accept ``--connector X`` to scope the change to one
 configured peer on a multi-connector install (one gateway enforces N
@@ -44,6 +45,7 @@ Antigravity / ZeptoClaw configure themselves.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 
@@ -85,10 +87,11 @@ _CONNECTOR_LABELS = {
     "openhands": "OpenHands",
     "antigravity": "Antigravity",
     "opencode": "OpenCode",
+    "amp": "Amp",
     "omnigent": "OmniGent",
 }
 
-_RUNTIME_FAIL_MODE_CONNECTORS = frozenset({"claudecode", "codex"})
+_RUNTIME_FAIL_MODE_CONNECTORS = frozenset({"claudecode", "codex", "amp"})
 
 
 def _preflight_config_write(app: AppContext) -> None:
@@ -302,6 +305,7 @@ def guardrail() -> None:
       hilt           human-in-the-loop prompting
       block-message  message shown when an action is blocked
       list-packs     list rule packs + the dir each connector enforces
+      validate-pack  validate one pack with the authoritative Go loader
 
     \b
     Multi-connector: one gateway enforces N hook connectors. Each policy
@@ -985,7 +989,7 @@ def _set_connector_fail_mode(app: AppContext, requested: str, mode: str | None, 
 
     Per-connector analog of the global ``guardrail fail-mode``: writes
     ``guardrail.connectors[X].hook_fail_mode`` so one connector can run a
-    different response-layer fail posture than its peers. On restart the Go
+    different delivery/response fail posture than its peers. On restart the Go
     boot loop regenerates that connector's hook with the new ``FAIL_MODE``;
     the others are untouched.
 
@@ -1254,25 +1258,23 @@ def fail_mode_cmd(
     yes: bool,
     connector_flag: str | None,
 ) -> None:
-    """Show or change the hook fail mode (response-layer behavior).
+    """Show or change the hook failure behavior.
 
-    The hook fail mode controls what generated hooks do when the
-    DefenseClaw gateway answers but the answer is bad — a 4xx, an
-    unparseable JSON body, or a missing ``action`` field. Two values
-    are supported:
+    The hook fail mode controls what generated hooks do when delivery or
+    authentication fails, or when the DefenseClaw gateway returns a 4xx,
+    an unparseable JSON body, or no ``action`` field. Two values are supported:
 
       \b
       open   — allow the tool/prompt and log the failure.
                A misbehaving gateway never bricks your agent.
                Recommended for almost all installs.
-      closed — block the tool/prompt on any gateway error.
+      closed — block supported events when inspection is unavailable.
                Choose for regulated workflows where every prompt
                MUST be inspected.
 
-    Transport-layer failures (gateway unreachable / timeout / 5xx)
-    follow the same connector-scoped setting. ``closed`` blocks them;
-    ``open`` allows them. ``DEFENSECLAW_STRICT_AVAILABILITY=1`` remains
-    an unconditional force-closed override for compatibility.
+    Transport failures (gateway unreachable / timeout / 5xx) follow the
+    same connector-scoped setting. ``DEFENSECLAW_STRICT_AVAILABILITY=1``
+    additionally forces transport and missing-token failures closed.
 
     Without an argument this prints the current value. With
     ``open`` or ``closed`` it persists the choice to ~/.defenseclaw/
@@ -2167,6 +2169,90 @@ _RULE_PACK_PRESETS = (
     ("strict", "Tighter thresholds; blocks more aggressively."),
     ("permissive", "Looser thresholds; favors availability over blocking."),
 )
+
+
+@guardrail.command("validate-pack")
+@click.argument("path", type=click.Path(path_type=str))
+@click.option(
+    "--json",
+    "json_out",
+    is_flag=True,
+    help="Emit the versioned validation result as deterministic JSON.",
+)
+def validate_pack_cmd(path: str, json_out: bool) -> None:
+    """Validate rule pack PATH without starting or contacting the gateway.
+
+    The installed ``defenseclaw-gateway`` binary performs the authoritative
+    schema, fallback, category, and Go/RE2 pattern checks. Invalid packs exit
+    non-zero. Python only validates and renders the versioned helper protocol;
+    it never substitutes an independent validator.
+    """
+    from defenseclaw import rulepack_validation
+
+    if not path.strip():
+        raise click.UsageError("PATH must not be empty.")
+
+    try:
+        result = rulepack_validation.validate_rule_pack(path)
+    except rulepack_validation.RulePackValidationBridgeError as exc:
+        if json_out:
+            click.echo(
+                json.dumps(
+                    rulepack_validation.bridge_error_wire(exc),
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        else:
+            click.echo(
+                "Rule pack validation unavailable: " + str(exc),
+                err=True,
+            )
+        raise SystemExit(2) from exc
+
+    if json_out:
+        click.echo(
+            json.dumps(
+                result.to_wire_dict(),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    elif result.valid:
+        summary = result.summary or {}
+        click.echo(
+            "Rule pack valid: " + rulepack_validation.safe_display_path(path)
+        )
+        click.echo(
+            "  rules: "
+            f"{summary['enabled_rule_count']}/{summary['rule_count']} enabled "
+            f"across {summary['rule_file_count']} files"
+        )
+        click.echo(
+            "  components: "
+            f"judges={summary['judge_count']} "
+            f"judge_categories={summary['judge_category_count']} "
+            f"local_patterns={summary['local_pattern_count']} "
+            f"suppressions={summary['suppression_count']} "
+            f"sensitive_tools={summary['sensitive_tool_count']}"
+        )
+        click.echo(f"  digest: {summary['digest']}")
+    else:
+        issue = result.error
+        assert issue is not None
+        click.echo(
+            "Rule pack invalid: " + rulepack_validation.safe_display_path(path),
+            err=True,
+        )
+        click.echo(
+            f"  {issue.code} at {issue.path}: {issue.reason}",
+            err=True,
+        )
+
+    if not result.valid:
+        raise SystemExit(1)
 
 
 @guardrail.command("list-packs")

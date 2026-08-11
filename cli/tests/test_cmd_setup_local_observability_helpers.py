@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from defenseclaw.commands.cmd_setup_local_observability import (
     _apply_local_otlp_config,
+    _print_stack_summary,
 )
 from defenseclaw.commands.redaction_status import redaction_status_hint
 
@@ -47,6 +48,31 @@ class TestBridgeReadinessContract(unittest.TestCase):
             "http://127.0.0.1:3100/ready",
         ):
             self.assertIn(marker, text)
+
+
+class TestStackSummary(unittest.TestCase):
+    def test_grafana_access_matches_packaged_anonymous_admin_config(self):
+        output: list[str] = []
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup_local_observability.click.echo",
+                side_effect=lambda value="": output.append(str(value)),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup_local_observability.ux.bold",
+                side_effect=lambda value: value,
+            ),
+            patch("defenseclaw.commands.cmd_setup_local_observability.ux.section"),
+            patch("defenseclaw.commands.cmd_setup_local_observability.ux.subhead"),
+            patch(
+                "defenseclaw.commands.cmd_setup_local_observability.print_redaction_status_hint"
+            ),
+        ):
+            _print_stack_summary({}, logs_enabled=False)
+
+        rendered = "\n".join(output)
+        self.assertIn("anonymous Admin; login disabled", rendered)
+        self.assertNotIn("admin / admin", rendered)
 
 
 class TestV8LocalDestinationWriter(unittest.TestCase):
@@ -88,12 +114,12 @@ class TestV8LocalDestinationWriter(unittest.TestCase):
         )
         reload_cfg.assert_called_once_with(app)
 
-    def test_v8_redaction_summary_uses_route_policy(self):
+    def test_v8_redaction_summary_uses_destination_policy(self):
         cfg = SimpleNamespace(_source_config_version=8)
         status, label, command = redaction_status_hint(cfg)
         self.assertEqual(status, "PER DESTINATION (defaults are unredacted)")
-        self.assertIn("route redaction", label)
-        self.assertIn("config show --effective", command)
+        self.assertIn("destination redaction", label)
+        self.assertEqual(command, "defenseclaw setup redaction status")
 
 
 if __name__ == "__main__":

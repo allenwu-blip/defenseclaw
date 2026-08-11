@@ -45,7 +45,7 @@ func requireNativeWindowsX64() error {
 	return nil
 }
 
-func publishStableHookRuntime(source, gatewayPath, dataRoot, transactionID string) error {
+func publishStableHookRuntime(source, hookPath, gatewayPath, dataRoot, transactionID string) error {
 	// Setup disables stable-hook cold starts before entering the durable
 	// quiescing phase. Wait for any already-authorized image handle to drain
 	// before Publish applies the gateway DACL and hashes the exact file.
@@ -55,7 +55,12 @@ func publishStableHookRuntime(source, gatewayPath, dataRoot, transactionID strin
 	if err := waitForExecutableRelease(gatewayPath, setupExecutableReleaseTimeout); err != nil {
 		return fmt.Errorf("wait for installed gateway release before hook publication: %w", err)
 	}
-	if err := hookruntime.Publish(source, gatewayPath, dataRoot, transactionID); err != nil {
+	if !pathidentity.Same(source, hookPath) {
+		if err := waitForExecutableRelease(hookPath, setupExecutableReleaseTimeout); err != nil {
+			return fmt.Errorf("wait for installed full hook release before trampoline publication: %w", err)
+		}
+	}
+	if err := hookruntime.Publish(source, hookPath, gatewayPath, dataRoot, transactionID); err != nil {
 		return err
 	}
 	paths, err := hookruntime.CurrentUserPaths()
@@ -96,6 +101,10 @@ func stableHookRuntimeActiveAt(paths hookruntime.Paths, gatewayPath, dataRoot st
 	if state.Active() && state.SchemaVersion == hookruntime.SchemaVersion &&
 		!pathidentity.Same(state.GatewayPath, gatewayPath) {
 		return false, errors.New("active stable hook runtime belongs to a different installed gateway")
+	}
+	expectedHookPath := filepath.Join(filepath.Dir(gatewayPath), hookruntime.LauncherName)
+	if state.Active() && state.DelegationCapable() && !pathidentity.Same(state.HookPath, expectedHookPath) {
+		return false, errors.New("active stable hook runtime belongs to a different installed full hook")
 	}
 	return state.Active(), nil
 }
@@ -572,8 +581,8 @@ func validatePrivateTransactionPath(path string, wantDirectory bool) error {
 	if err != nil || user == nil || user.User.Sid == nil {
 		return fmt.Errorf("resolve installer transaction owner: %w", err)
 	}
-	if owner == nil || !owner.Equals(user.User.Sid) {
-		return fmt.Errorf("installer transaction path is not owned by the current user: %s", path)
+	if err := validatePrivateTransactionOwner(path, owner, user.User.Sid); err != nil {
+		return err
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
@@ -616,6 +625,13 @@ func validatePrivateTransactionPath(path string, wantDirectory bool) error {
 		if ace.Mask&writeLike != 0 {
 			return fmt.Errorf("untrusted principal has write access to installer transaction path: %s", path)
 		}
+	}
+	return nil
+}
+
+func validatePrivateTransactionOwner(path string, owner, currentUser *windows.SID) error {
+	if owner == nil || currentUser == nil || !owner.Equals(currentUser) {
+		return fmt.Errorf("installer transaction path is not owned by the current user: %s", path)
 	}
 	return nil
 }
@@ -686,7 +702,7 @@ function Test-CleanupOwnership([object]$marker) {
     } catch {
         return $false
     }
-    return $marker.phase -ceq 'converged' -and
+    return $marker.phase -ceq 'complete' -and
         $marker.transaction.action -ceq 'uninstall' -and
         $marker.transaction.id -ceq $expectedID -and
         [string]::Equals($markerTarget, $expectedTarget, [StringComparison]::OrdinalIgnoreCase)
@@ -714,8 +730,8 @@ try {
 }
 
 # Re-read under a handle that denies write/delete sharing. Keeping that handle
-# open through Remove-Item prevents a new setup transaction from replacing the
-# ownership marker between the final identity check and deletion.
+# open through exact deletion prevents a new setup transaction from replacing
+# the ownership marker between the final identity check and deletion.
 $markerLock=$null
 $reader=$null
 try {
@@ -729,7 +745,25 @@ try {
     $marker=($reader.ReadToEnd() | ConvertFrom-Json)
     if (-not (Test-CleanupOwnership $marker)) { exit 0 }
     if (Test-Path -LiteralPath $target -PathType Container) {
-        Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
+        $targetInfo=[IO.DirectoryInfo]::new([IO.Path]::GetFullPath($target))
+        if (($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { exit 0 }
+        $maintenancePath=[IO.Path]::GetFullPath([string]$marker.transaction.maintenance_path)
+        $maintenanceInfo=[IO.FileInfo]::new($maintenancePath)
+        if (-not $maintenanceInfo.Exists -or
+            ($maintenanceInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            exit 0
+        }
+        $entries=@([IO.Directory]::EnumerateFileSystemEntries($targetInfo.FullName))
+        if ($entries.Count -ne 1 -or
+            -not [string]::Equals(
+                [IO.Path]::GetFullPath([string]$entries[0]),
+                $maintenancePath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            exit 0
+        }
+        [IO.File]::Delete($maintenancePath)
+        [IO.Directory]::Delete($targetInfo.FullName, $false)
     }
 } catch {
     exit 0

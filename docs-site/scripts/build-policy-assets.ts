@@ -320,6 +320,33 @@ function buildRecipes(strict: PresetBundle): Recipe[] {
       examples: ['https://hooks.slack.com/services/T0000/B0000/abcdefg12345'],
       counterexamples: ['https://hooks.slack.com/wrongpath', 'https://example.com'],
     },
+    'OBFUSC-UNICODE-ZWSP': {
+      examples: [
+        'a' +
+          '\u200B' +
+          'b' +
+          '\u200C' +
+          'c' +
+          '\u200D' +
+          'd' +
+          '\uFEFF' +
+          'e' +
+          '\u200B' +
+          'f' +
+          '\u200C' +
+          'g' +
+          '\u200D' +
+          'h' +
+          '\uFEFF' +
+          'i' +
+          '\u200B' +
+          'j' +
+          '\u200C',
+      ],
+      counterexamples: ['copy' + '\u200B' + 'paste', '👩' + '\u200D' + '💻'],
+      why:
+        'Requires ten zero-width characters immediately after ASCII alphanumerics, avoiding isolated formatting artifacts and emoji ZWJ sequences.',
+    },
   };
 
   for (const [filename, file] of Object.entries(strict.guardrail.rules)) {
@@ -476,11 +503,22 @@ function buildScenarios(): Scenario[] {
       input: {
         target_type: 'plugin',
         target_name: 'defenseclaw',
-        path: '/Users/op/.defenseclaw/plugins/defenseclaw',
+        path: '/Users/op/.config/amp/plugins/defenseclaw.ts',
         block_list: [],
         allow_list: [
-          { target_type: 'plugin', target_name: 'defenseclaw', reason: 'first-party DefenseClaw plugin' },
+          {
+            target_type: 'plugin',
+            target_name: 'defenseclaw',
+            reason: 'first-party DefenseClaw plugin',
+            source_path_contains: ['.config/amp/plugins/defenseclaw.ts'],
+          },
         ],
+        scan_result: {
+          max_severity: 'CRITICAL',
+          total_findings: 1,
+          scanner_name: 'mcp-scanner',
+          findings: [{ severity: 'CRITICAL', scanner: 'mcp-scanner', title: 'Allow-list precedence fixture' }],
+        },
       },
     },
     {
@@ -722,12 +760,16 @@ function compileWasm(opts: { skipMissingOpa: boolean }): { compiled: string[]; s
   const compiled: string[] = [];
   const skipped: string[] = [];
 
-  // Locate `opa` on PATH. We resolve via `which` instead of a hard-
-  // coded path so the script works on Linux CI runners and macOS dev
-  // boxes alike.
+  // Locate `opa` on PATH without hard-coding an installation directory.
+  // `which` emits MSYS paths such as /tmp/... on Windows; Node's native
+  // process launcher cannot execute those paths. Use the platform resolver
+  // so Windows receives a native drive-qualified path from where.exe.
   let opaPath = '';
   try {
-    opaPath = execFileSync('which', ['opa'], { encoding: 'utf-8' }).trim();
+    const resolver = process.platform === 'win32' ? 'where.exe' : 'which';
+    opaPath = execFileSync(resolver, ['opa'], { encoding: 'utf-8' })
+      .trim()
+      .split(/\r?\n/, 1)[0] ?? '';
   } catch {
     /* missing — fall through */
   }

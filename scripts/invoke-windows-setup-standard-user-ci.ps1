@@ -19,10 +19,12 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract')]
     [string]$Mode,
-    [ValidateSet('codex', 'claudecode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp')][string]$Connector = 'codex',
     [Parameter(Mandatory)][string]$ArtifactRoot,
     [Parameter(Mandatory)][string]$StateRoot,
     [string]$TargetVersion = '',
+    [ValidateSet('immediate', 'deferred')]
+    [string]$BootstrapUninstallContract = 'deferred',
     [string]$DiagnosticsRoot = '',
     [ValidateRange(60, 7200)][int]$TimeoutSeconds = 4500,
     [switch]$Child,
@@ -389,6 +391,7 @@ function Invoke-ChildMode {
             & (Join-Path $PSScriptRoot 'test-fresh-install-release-windows.ps1') `
                 -ReleaseDir $artifacts `
                 -TargetVersion $TargetVersion `
+                -UninstallContract $BootstrapUninstallContract `
                 -StateRoot $state `
                 -Child
         } elseif ($Mode -eq 'contract') {
@@ -738,7 +741,7 @@ function Publish-BoundedDisposableContractResults {
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$DestinationPath,
         [Parameter(Mandatory)][string]$DestinationRoot,
-        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode')]
+        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'amp')]
         [string]$ExpectedConnector
     )
 
@@ -1000,6 +1003,14 @@ try {
             "live-connector-e2e\golden\$Connector\pre_tool_block.json",
             "live-connector-e2e\golden\$Connector\session_start.json"
         )
+        if ($Connector -eq 'amp') {
+            $harnessFiles += @(
+                'live-connector-e2e\golden\amp\agent_start.json',
+                'live-connector-e2e\golden\amp\tool_result.json',
+                'live-connector-e2e\golden\amp\subagent_tool_call.json',
+                'live-connector-e2e\golden\amp\agent_end.json'
+            )
+        }
     } elseif ($Mode -eq 'bootstrap-acceptance') {
         $harnessFiles += @(
             'test-fresh-install-release-windows.ps1'
@@ -1139,7 +1150,10 @@ try {
         $arguments += @('-Connector', $Connector)
     }
     if ($Mode -eq 'bootstrap-acceptance') {
-        $arguments += @('-TargetVersion', $TargetVersion)
+        $arguments += @(
+            '-TargetVersion', $TargetVersion,
+            '-BootstrapUninstallContract', $BootstrapUninstallContract
+        )
     }
     if ($Mode -eq 'setup-acceptance') {
         $arguments += '-ExerciseWmiEscape'

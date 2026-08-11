@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from defenseclaw.connector_paths import (
+    amp_policy_plugin_path,
     connector_config_files,
     hermes_config_path,
     omnigent_config_path,
@@ -127,17 +128,14 @@ class FirstRunOptions:
     cisco_endpoint: str = ""
     cisco_api_key: str = ""
     cisco_api_key_env: str = "CISCO_AI_DEFENSE_API_KEY"
-    # hook_fail_mode controls what generated hooks
-    # (codex-hook, claude-code-hook, inspect-*) do when the
-    # gateway returns a *response-layer* failure (4xx, malformed
-    # JSON, missing action). Empty string means "leave the
+    # hook_fail_mode controls what generated hooks (codex-hook,
+    # claude-code-hook, inspect-*) do when delivery, authentication,
+    # or a gateway response fails. Empty string means "leave the
     # current cfg.guardrail.hook_fail_mode untouched" so callers
     # who don't care don't accidentally clobber an operator's
-    # earlier choice. Transport-layer failures (gateway
-    # unreachable / 5xx) ALWAYS allow unless
-    # DEFENSECLAW_STRICT_AVAILABILITY=1, regardless of this
-    # value — see _normalize_hook_fail_mode for the canonical
-    # rule.
+    # earlier choice. Transport failures and invalid responses
+    # follow the same effective value. DEFENSECLAW_STRICT_AVAILABILITY=1
+    # additionally forces transport and missing-token failures closed.
     hook_fail_mode: str = ""
     # human_approval is the operator's HITL (Human-In-the-Loop)
     # toggle. ``None`` means "leave whatever was loaded alone" —
@@ -619,7 +617,27 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
             )
     try:
         cfg = cfg_mod.load()
-    except Exception:
+    except Exception as exc:
+        if connector == "none" and not was_config_absent:
+            cfg = cfg_mod.default_config()
+            setup.append(
+                StepResult(
+                    "Config",
+                    "fail",
+                    f"existing configuration could not be loaded and was preserved: {exc}",
+                    "defenseclaw config validate",
+                )
+            )
+            return FirstRunReport(
+                status="needs_attention",
+                config_file=str(cfg_mod.config_path()),
+                data_dir=cfg.data_dir,
+                connector=connector,
+                profile=profile,
+                setup=setup,
+                next_commands=["defenseclaw config validate"],
+                connector_mode_warnings=connector_mode_warnings,
+            )
         cfg = cfg_mod.default_config()
         cfg_mod.prepare_fresh_v8_config(cfg)
         new_config = True
@@ -649,13 +667,14 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         setup.append(StepResult("Migration State", "pass", "recovered pending fresh cursor"))
 
     cfg.environment = cfg_mod.detect_environment()
-    if profile == "action":
+    if connector != "none" and profile == "action":
         mode_warning = _first_run_action_mode_warning(connector, getattr(cfg, "data_dir", ""))
         if mode_warning:
             connector_mode_warnings.append(mode_warning)
             profile = "observe"
 
-    _apply_first_run_choices(cfg, options, connector, profile, scanner_mode)
+    if connector != "none":
+        _apply_first_run_choices(cfg, options, connector, profile, scanner_mode)
 
     try:
         cfg.save()
@@ -675,7 +694,14 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         try:
             store.init()
         except Exception as exc:  # broad: sqlite/file errors need to surface
-            setup.append(StepResult("Audit DB", "fail", str(exc), "defenseclaw doctor --fix"))
+            setup.append(
+                StepResult(
+                    "Audit DB",
+                    "fail",
+                    str(exc),
+                    "defenseclaw doctor --fix --dry-run",
+                )
+            )
         # A genuinely new/pre-v8 bootstrap has no canonical graph yet. Re-running
         # first-run against v8 must use the live owner and must not silently drop
         # ordinary v8 setup mutations.
@@ -687,7 +713,9 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
 
         bootstrap = bootstrap_env(cfg, logger)
         if bootstrap.errors:
-            setup.extend(StepResult("Bootstrap", "fail", e, "defenseclaw doctor --fix") for e in bootstrap.errors)
+            setup.extend(
+                StepResult("Bootstrap", "fail", e, "defenseclaw doctor --fix --dry-run") for e in bootstrap.errors
+            )
         else:
             setup.append(StepResult("Bootstrap", "pass", cfg.data_dir))
 
@@ -704,7 +732,10 @@ def run_first_run(options: FirstRunOptions) -> FirstRunReport:
         app.store = store
         app.logger = logger
 
-        setup.append(_quiet_guardrail_setup(app, connector, verbose=options.verbose))
+        if connector == "none":
+            setup.append(StepResult("Guardrail", "skip", "no connector requested"))
+        else:
+            setup.append(_quiet_guardrail_setup(app, connector, verbose=options.verbose))
         setup.extend(_connector_mode_warning_steps(connector_mode_warnings))
 
         if options.sandbox:
@@ -782,7 +813,11 @@ def targeted_readiness(cfg: Config, options: FirstRunOptions) -> list[StepResult
             "Audit database",
             "pass" if os.path.isfile(cfg.audit_db) else "fail",
             cfg.audit_db,
-            "defenseclaw doctor --fix" if not os.path.isfile(cfg.audit_db) else "",
+            (
+                "defenseclaw doctor --fix --fix-id doctor.state.audit-db.initialize"
+                if not os.path.isfile(cfg.audit_db)
+                else ""
+            ),
         )
     )
     device_key = cfg.gateway.device_key_file
@@ -791,7 +826,11 @@ def targeted_readiness(cfg: Config, options: FirstRunOptions) -> list[StepResult
             "Device key",
             "pass" if device_key and os.path.isfile(device_key) else "fail",
             device_key or "(unset)",
-            "defenseclaw doctor --fix" if not (device_key and os.path.isfile(device_key)) else "",
+            (
+                "defenseclaw doctor --fix --fix-id doctor.identity.device-key.initialize"
+                if not (device_key and os.path.isfile(device_key))
+                else ""
+            ),
         )
     )
 
@@ -852,7 +891,9 @@ def _normalize_connector(raw: str | None) -> str:
     value = (raw or "").strip().lower()
     if value in {"claude", "claude-code", "claude_code"}:
         value = "claudecode"
-    if value in {"none", ""}:
+    if value == "none":
+        return "none"
+    if value == "":
         value = "codex"
     try:
         return connector_paths.normalize(value)
@@ -1338,11 +1379,10 @@ def _pid_file_running(pid_file: str) -> bool:
     planted or staled gateway.pid could make ``quickstart``/``init`` skip
     starting the sidecar — generated hooks then forwarded uninspected traffic
     because the default fail mode for the inspect hook is "open" until the
-    gateway is up. We additionally require the PID's argv0 to match a known
-    gateway binary name (POSIX, via /proc or ``ps``). Windows has no equally
-    cheap argv0 probe and the Go daemon's ``processExists``
-    (internal/daemon/proc_windows.go) is liveness-only too, so there a live
-    PID is accepted.
+    gateway is up. We additionally require the PID's process image to match a
+    known gateway binary name. POSIX uses ``/proc`` or ``ps``; Windows uses
+    ``QueryFullProcessImageNameW`` through the shared fail-closed identity
+    verifier.
     """
     from defenseclaw.process_liveness import pid_alive, read_pid_file
 
@@ -1351,8 +1391,6 @@ def _pid_file_running(pid_file: str) -> bool:
         return False
     if not pid_alive(pid):
         return False
-    if os.name == "nt":
-        return True
     return _pid_looks_like_gateway(pid)
 
 
@@ -1374,6 +1412,8 @@ def _pid_looks_like_gateway(pid: int) -> bool:
 
 
 def _connector_readiness(cfg: Config, connector: str) -> StepResult:
+    if connector == "none":
+        return StepResult("Connector", "skip", "no connector requested")
     if connector == "openclaw":
         path = os.path.expanduser(cfg.claw.config_file)
         if os.path.isfile(path):
@@ -1470,6 +1510,25 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             "warn",
             "OpenCode bridge plugin not found yet",
             "defenseclaw setup opencode",
+        )
+    if connector == "amp":
+        # Amp's DefenseClaw plugin is global even when a workspace is set.
+        # Do not select it by position from ``connector_config_files``:
+        # that list includes optional workspace files and managed settings,
+        # so its indices are intentionally not a stable artifact contract.
+        path = amp_policy_plugin_path()
+        try:
+            plugin_text = Path(path).read_text(encoding="utf-8")
+            configured = "DefenseClaw" in plugin_text and "/api/v1/amp/hook" in plugin_text
+        except (OSError, UnicodeError):
+            configured = False
+        if configured:
+            return StepResult("Connector", "pass", f"Amp system policy plugin found at {path}")
+        return StepResult(
+            "Connector",
+            "warn",
+            f"Amp system policy plugin not found at {path}",
+            "defenseclaw setup amp",
         )
     if connector == "omnigent":
         path = omnigent_config_path()

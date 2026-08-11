@@ -110,6 +110,14 @@ class BuildPlanTests(unittest.TestCase):
 
 
 class UninstallCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = patch(
+            "defenseclaw.commands.windows_native_uninstall.prepare_native_windows_uninstall",
+            return_value=None,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_dry_run_does_not_execute(self):
         runner = CliRunner()
         with patch("defenseclaw.commands.cmd_uninstall._execute_plan") as exec_mock:
@@ -869,6 +877,25 @@ class RenderPlanConnectorTests(unittest.TestCase):
                 include_openclaw=True,
             )
         self.assertEqual(got, ("openclaw", "codex"))
+
+    def test_teardown_connectors_include_inactive_amp_backup(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            managed = os.path.join(
+                data_dir,
+                "connector_backups",
+                "amp",
+                "config.json",
+            )
+            os.makedirs(os.path.dirname(managed), exist_ok=True)
+            with open(managed, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            got = cmd_uninstall._teardown_connectors(
+                (),
+                data_dir=data_dir,
+                openclaw_config_file="",
+                include_openclaw=True,
+            )
+        self.assertEqual(got, ("amp",))
 
 
 class ConnectorTeardownDispatchTests(unittest.TestCase):

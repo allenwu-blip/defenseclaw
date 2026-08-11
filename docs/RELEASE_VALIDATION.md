@@ -57,11 +57,10 @@ publication:
 | macOS | Intel and Apple Silicon gateway archives, shared CLI/plugin assets, and the unified macOS app | Install the exact sealed candidate with `install.sh`; run the same target-specific authenticated upgrade paths; with a complete Apple credential set, require Developer ID signing and notarization; with no Apple credentials, require ad-hoc signing and explicit `-unverified` artifact names |
 | Windows | amd64 and arm64 gateway binaries, shared CLI assets, and the x64 `DefenseClawSetup-x64.exe` | Exercise the exact x64 candidate through `install.ps1` and native Setup; verify the installed CLI/gateway versions; with both Windows credentials, require Cisco Authenticode; with neither, require explicit unverified provenance and exact `NotSigned` state |
 
-This is the complete release acceptance scope. The first native Windows release
-has no older native Windows baseline, and all Windows acceptance through
-`0.8.8` is explicitly fresh-install-only. Request validation blocks any later
-target until native Windows upgrade certification exists.
-This is a fresh-install only gate, not evidence of a native upgrade path.
+This is the complete release acceptance scope. Windows acceptance is
+explicitly fresh-install-only. Every target must pass the exact native Setup
+and `install.ps1` lifecycle, but no historical Windows baseline is inferred or
+required. This gate is not evidence of a native Windows upgrade path.
 
 The POSIX upgrade sources are resolved from authenticated published release
 metadata: the latest supported version older than the target, the exact
@@ -78,6 +77,25 @@ fixture, exact `0.8.5`, exact `0.8.4`, newest `0.7.x` (`0.7.2` today), newest
 `0.6.x` (`0.6.6` today), and newest `0.5.x` (`0.5.0` today). Fixed anchors and
 family selectors are mandatory; baseline resolution fails instead of silently
 omitting an unavailable lane.
+
+The exact `0.8.5` lane also runs exact authenticated public `0.8.1` as a
+companion case through `0.8.4`, `0.8.5`, and the final target. This keeps the
+selected policy at seven lanes while continuously proving the longest
+supported bridge path that exposed the historical controller’s `uv` lookup.
+
+Field-recovery acceptance additionally installs and runs first setup through
+the authenticated published `0.8.6` and `0.8.7` controllers without
+manufacturing a cursor. The candidate resolver must recognize only those two
+real public cursorless field states and recover them on Linux and macOS while
+running with the immutable rescue bootstrap’s minimal
+`/usr/bin:/bin:/usr/sbin:/sbin` tool path. This keeps the seven-lane matrix
+compact while retaining the exact `0.8.7` regression after it stops being the
+latest-older lane.
+
+Every positive resolver case, not only field recovery, runs with only the test
+release-server `curl` shim plus that minimal system tool path. A runner- or
+developer-installed `uv` is explicitly absent, so release acceptance cannot
+mask a broken authenticated private-`uv` handoff.
 
 Platform signing credentials are optional as complete groups. For macOS, all
 five Developer ID and notary values produce signed, notarized artifacts with

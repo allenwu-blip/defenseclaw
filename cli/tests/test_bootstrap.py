@@ -64,6 +64,16 @@ class BootstrapEnvTests(unittest.TestCase):
         self._prev_home = os.environ.get("DEFENSECLAW_HOME")
         os.environ["DEFENSECLAW_HOME"] = self._tmp.name
         self.addCleanup(self._restore_home)
+        # bootstrap_env may adopt a token from a connector config reachable on
+        # the test host and intentionally publish it into this process. Keep
+        # that production behavior inside each test so a Linux validator with
+        # OpenClaw installed cannot leak the token into later Doctor tests.
+        self._gateway_token_env = patch.dict(
+            os.environ,
+            {"DEFENSECLAW_GATEWAY_TOKEN": "", "OPENCLAW_GATEWAY_TOKEN": ""},
+        )
+        self._gateway_token_env.start()
+        self.addCleanup(self._gateway_token_env.stop)
 
     def _restore_home(self) -> None:
         if self._prev_home is None:
@@ -206,6 +216,27 @@ class BootstrapEnvTests(unittest.TestCase):
 
         self.assertEqual(result.status, "warn")
 
+    def test_amp_readiness_uses_global_plugin_with_or_without_workspace(self):
+        plugin = Path(self._tmp.name) / "amp-home" / "plugins" / "defenseclaw.ts"
+        plugin.parent.mkdir(parents=True)
+        plugin.write_text(
+            "// DefenseClaw\nconst endpoint = '/api/v1/amp/hook';\n",
+            encoding="utf-8",
+        )
+
+        for workspace in ("", os.path.join(self._tmp.name, "workspace")):
+            with self.subTest(workspace=workspace or "<none>"):
+                cfg = _cfg_for(os.path.join(self._tmp.name, "dchome"))
+                cfg.claw.workspace_dir = workspace
+                with patch(
+                    "defenseclaw.bootstrap.amp_policy_plugin_path",
+                    return_value=str(plugin),
+                ):
+                    result = _connector_readiness(cfg, "amp")
+
+                self.assertEqual(result.status, "pass")
+                self.assertIn(str(plugin), result.detail)
+
 
 class FreshMigrationCursorTests(unittest.TestCase):
     """Fresh v8 publication seeds one non-clobbering migration cursor."""
@@ -273,6 +304,90 @@ class FreshMigrationCursorTests(unittest.TestCase):
         self.assertEqual(state.package_version, __version__)
         self.assertEqual(state.applied_at["0.8.5"], migration_state.BOOTSTRAP_SENTINEL)
         self.assertTrue(all(state.applied_at[version] == migration_state.BOOTSTRAP_SENTINEL for version in expected))
+
+    def test_no_connector_first_run_creates_canonical_config_and_cursor_without_connector_setup(self):
+        from defenseclaw import migration_state
+        from defenseclaw.bootstrap import FirstRunOptions, run_first_run
+
+        data_dir = os.path.join(self._tmp.name, "none")
+        with (
+            patch.dict(os.environ, {"DEFENSECLAW_HOME": data_dir}),
+            patch("defenseclaw.bootstrap._quiet_guardrail_setup") as connector_setup,
+        ):
+            report = run_first_run(
+                FirstRunOptions(
+                    connector="none",
+                    profile="observe",
+                    skip_install=True,
+                    start_gateway=False,
+                    verify=False,
+                )
+            )
+
+        self.assertNotEqual(report.status, "needs_attention")
+        self.assertTrue(os.path.isfile(os.path.join(data_dir, "config.yaml")))
+        self.assertIsNotNone(migration_state.load(data_dir))
+        connector_setup.assert_not_called()
+        self.assertTrue(
+            any(step.name == "Guardrail" and step.status == "skip" for step in report.setup)
+        )
+
+    def test_no_connector_first_run_preserves_existing_connector_selection(self):
+        from defenseclaw.bootstrap import FirstRunOptions, run_first_run
+        from defenseclaw.config import default_config, load, prepare_fresh_v8_config
+
+        data_dir = os.path.join(self._tmp.name, "none-existing")
+        with patch.dict(os.environ, {"DEFENSECLAW_HOME": data_dir}):
+            cfg = default_config()
+            prepare_fresh_v8_config(cfg)
+            cfg.claw.mode = "claudecode"
+            cfg.guardrail.connector = "claudecode"
+            cfg.guardrail.mode = "action"
+            cfg.save()
+
+            report = run_first_run(
+                FirstRunOptions(
+                    connector="none",
+                    profile="observe",
+                    skip_install=True,
+                    start_gateway=False,
+                    verify=False,
+                )
+            )
+            preserved = load()
+
+        self.assertNotEqual(report.status, "needs_attention")
+        self.assertEqual(preserved.claw.mode, "claudecode")
+        self.assertEqual(preserved.guardrail.connector, "claudecode")
+        self.assertEqual(preserved.guardrail.mode, "action")
+
+    def test_no_connector_first_run_preserves_unloadable_existing_config(self):
+        from defenseclaw.bootstrap import FirstRunOptions, run_first_run
+
+        data_dir = os.path.join(self._tmp.name, "none-unloadable")
+        config_path = os.path.join(data_dir, "config.yaml")
+        os.makedirs(data_dir)
+        original = b"config_version: 8\noperator_extension: preserve-me\n"
+        with open(config_path, "wb") as stream:
+            stream.write(original)
+
+        with (
+            patch.dict(os.environ, {"DEFENSECLAW_HOME": data_dir}),
+            patch("defenseclaw.config.load", side_effect=OSError("injected load failure")),
+        ):
+            report = run_first_run(
+                FirstRunOptions(
+                    connector="none",
+                    profile="observe",
+                    skip_install=True,
+                    start_gateway=False,
+                    verify=False,
+                )
+            )
+
+        self.assertEqual(report.status, "needs_attention")
+        with open(config_path, "rb") as stream:
+            self.assertEqual(stream.read(), original)
 
     def test_rerun_preserves_bootstrapped_cursor_byte_for_byte(self):
         from defenseclaw import migration_state
@@ -1183,6 +1298,81 @@ class StartGatewayStructuredDriftTests(unittest.TestCase):
         self.assertEqual(result.detail, "started")
         self.assertEqual(len(recorder), 1)
         self.assertEqual(recorder[0][1], "start")
+
+    def test_windows_live_unrelated_reused_pid_does_not_suppress_start(self):
+        import subprocess
+
+        from defenseclaw.bootstrap import _start_gateway_structured
+
+        self._write_pid_file()
+        completed = subprocess.CompletedProcess(
+            args=["defenseclaw-gateway", "start"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        with (
+            patch.object(os, "name", "nt"),
+            patch(
+                "defenseclaw.bootstrap.shutil.which",
+                return_value=r"C:\Program Files\DefenseClaw\defenseclaw-gateway.exe",
+            ),
+            patch(
+                "defenseclaw.bootstrap.subprocess.run",
+                return_value=completed,
+            ) as run,
+            patch(
+                "defenseclaw.process_liveness.read_pid_file",
+                return_value=os.getpid(),
+            ),
+            patch(
+                "defenseclaw.process_liveness.pid_alive",
+                return_value=True,
+            ),
+            patch(
+                "defenseclaw.process_liveness.process_is_gateway",
+                return_value=False,
+            ) as process_is_gateway,
+        ):
+            result = _start_gateway_structured(self.cfg)
+
+        self.assertEqual(result.status, "pass")
+        self.assertEqual(result.detail, "started")
+        process_is_gateway.assert_called_once_with(os.getpid())
+        run.assert_called_once_with(
+            [
+                r"C:\Program Files\DefenseClaw\defenseclaw-gateway.exe",
+                "start",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+    def test_windows_verified_gateway_still_counts_as_running(self):
+        from defenseclaw.bootstrap import _pid_file_running
+
+        self._write_pid_file()
+        with (
+            patch.object(os, "name", "nt"),
+            patch(
+                "defenseclaw.process_liveness.read_pid_file",
+                return_value=os.getpid(),
+            ),
+            patch(
+                "defenseclaw.process_liveness.pid_alive",
+                return_value=True,
+            ),
+            patch(
+                "defenseclaw.process_liveness.process_is_gateway",
+                return_value=True,
+            ) as process_is_gateway,
+        ):
+            self.assertTrue(
+                _pid_file_running(os.path.join(self.data_dir, "gateway.pid")),
+            )
+
+        process_is_gateway.assert_called_once_with(os.getpid())
 
 
 # ---------------------------------------------------------------------------
