@@ -1443,15 +1443,40 @@ func TestValidSourceCommitRequiresExactLowercaseGitOID(t *testing.T) {
 	}
 }
 
-func TestVerifyPayloadManifestRejectsManagedEnterpriseWithoutOverlay(t *testing.T) {
+// The flavor whitelist accepts oss and managed-enterprise. Managed-enterprise
+// setup.exe artifacts are built by scripts/build-managed-windows-installer.ps1,
+// which swaps the private cloudreg overlay in before compilation; the flavor
+// value on the manifest is baked in at build time, so widening this check is a
+// whitelist widen and not a runtime bypass.
+func TestVerifyPayloadManifestAcceptsManagedEnterprise(t *testing.T) {
 	manifest := payloadManifest{
-		SchemaVersion:      1,
+		SchemaVersion:      2,
 		Version:            "1.2.3",
 		SourceCommit:       "0123456789abcdef0123456789abcdef01234567",
 		DistributionFlavor: "managed-enterprise",
 	}
-	if err := verifyPayloadManifest(t.TempDir(), manifest); err == nil {
-		t.Fatal("verifyPayloadManifest accepted a managed-enterprise payload without the private Windows CMID overlay")
+	err := verifyPayloadManifest(t.TempDir(), manifest)
+	if err == nil {
+		t.Fatal("verifyPayloadManifest accepted a manifest with no file hashes")
+	}
+	if strings.Contains(err.Error(), "unsupported payload distribution flavor") {
+		t.Fatalf("managed-enterprise flavor was rejected at the flavor gate: %v", err)
+	}
+}
+
+func TestVerifyPayloadManifestRejectsUnknownDistributionFlavor(t *testing.T) {
+	manifest := payloadManifest{
+		SchemaVersion:      2,
+		Version:            "1.2.3",
+		SourceCommit:       "0123456789abcdef0123456789abcdef01234567",
+		DistributionFlavor: "unknown",
+	}
+	err := verifyPayloadManifest(t.TempDir(), manifest)
+	if err == nil {
+		t.Fatal("verifyPayloadManifest accepted an unknown distribution flavor")
+	}
+	if !strings.Contains(err.Error(), "unsupported payload distribution flavor") {
+		t.Fatalf("unknown flavor produced a non-flavor error: %v", err)
 	}
 }
 

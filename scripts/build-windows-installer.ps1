@@ -754,11 +754,12 @@ foreach ($requiredSetupInput in @(
 }
 . $WindowsAuthenticodeHelper
 
-if ($DistributionFlavor -eq 'managed-enterprise') {
-    throw @'
-The public Windows installer builder cannot produce a managed-enterprise artifact. A managed Windows release requires the private CMID provider overlay, its pinned private module version, and authorized dependency credentials; only the macOS bundle pipeline currently implements that overlay contract. Refusing to compile the public cmid-tagged stub.
-'@
-}
+# managed-enterprise is a valid flavor as long as the caller has already
+# staged a -tags cmid gateway zip under -DistRoot; scripts/build-managed-windows-installer.ps1
+# does that swap (private cloudreg overlay + pinned ai-common/cmid module +
+# go build -tags cmid) before invoking this script. The DistributionFlavor
+# value flows into the payload manifest and provenance record below, so a
+# managed setup.exe is self-identifying at install time.
 $sourceCommit = Get-GitSourceCommit $repoRoot
 $sourceDateEpoch = Get-GitSourceEpoch $repoRoot $sourceCommit
 
