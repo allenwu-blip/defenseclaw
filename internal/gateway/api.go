@@ -908,7 +908,7 @@ func (a *APIServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/codex/notify", a.handleCodexNotify)
 	mux.HandleFunc("/v1/connectors", a.handleConnectors)
 
-	handler := maxBodyMiddleware(mux, 1<<20)
+	handler := apiBodyLimitMiddleware(mux, apiRequestBodyMaxBytes, otlpRequestBodyMaxBytes)
 	handler = a.apiCSRFProtect(handler)
 	handler = a.tokenAuth(handler)
 	handler = a.metricsMiddleware(handler)
@@ -3060,6 +3060,21 @@ func (sw *statusWriter) Flush() {
 	}
 }
 
+type authenticatedInspectConnectorKey struct{}
+
+func withAuthenticatedInspectConnector(ctx context.Context, connectorName string) context.Context {
+	connectorName = canonicalConnectorRulePackKey(connectorName)
+	if connectorName == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, authenticatedInspectConnectorKey{}, connectorName)
+}
+
+func authenticatedInspectConnector(ctx context.Context) string {
+	connectorName, _ := ctx.Value(authenticatedInspectConnectorKey{}).(string)
+	return canonicalConnectorRulePackKey(connectorName)
+}
+
 // tokenAuth wraps a handler with Bearer token authentication. Management
 // clients may use Authorization, X-DefenseClaw-Token, or the proxy-compatible
 // X-DC-Auth header; all are compared against the same gateway token.
@@ -3171,6 +3186,10 @@ func (a *APIServer) tokenAuth(next http.Handler) http.Handler {
 				_, registered = a.connectorRegistry.Get(hookScope)
 			}
 			if registered && a.hookAPITokenMatches(hookScope, token) {
+				r = r.WithContext(withAuthenticatedInspectConnector(
+					PromoteSessionIfAuthenticated(r.Context()),
+					hookScope,
+				))
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -3357,23 +3376,44 @@ func (a *APIServer) apiCSRFProtect(next http.Handler) http.Handler {
 	})
 }
 
+const (
+	apiRequestBodyMaxBytes  int64 = 1 << 20
+	otlpRequestBodyMaxBytes int64 = 64 << 20
+)
+
+// apiBodyLimitMiddleware preserves the ordinary API mutation ceiling while
+// allowing exact OTLP-HTTP ingest routes to receive exporter batches. The
+// 64 MiB OTLP limit follows the protocol's recommended receiver default and
+// matches the observability pipeline's supported maximum export batch size.
+func apiBodyLimitMiddleware(next http.Handler, maxBytes, otlpMaxBytes int64) http.Handler {
+	return bodyLimitMiddleware(next, func(r *http.Request) int64 {
+		if isOTLPEndpointPath(r.URL.Path) {
+			return otlpMaxBytes
+		}
+		return maxBytes
+	})
+}
+
+// maxBodyMiddleware applies one uniform cap to all state-changing methods.
+func maxBodyMiddleware(next http.Handler, maxBytes int64) http.Handler {
+	return bodyLimitMiddleware(next, func(*http.Request) int64 { return maxBytes })
+}
+
+func bodyLimitMiddleware(next http.Handler, maxBytes func(*http.Request) int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			r.Body = http.MaxBytesReader(w, r.Body, maxBytes(r))
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // csrfProtect wraps a handler with localhost CSRF defenses. Mutating methods
 // (POST, PUT, PATCH, DELETE) require:
 //  1. X-DefenseClaw-Client header (blocks simple/no-cors browser requests)
 //  2. Content-Type containing "application/json"
 //  3. Origin, if present, must be a localhost address
 //
-// maxBodyMiddleware caps the request body size for state-changing methods
-// to prevent memory exhaustion from oversized payloads.
-func maxBodyMiddleware(next http.Handler, maxBytes int64) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 // Read-only requests (GET, HEAD, OPTIONS) are exempt.
 func csrfProtect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

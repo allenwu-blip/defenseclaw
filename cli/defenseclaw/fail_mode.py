@@ -33,7 +33,15 @@ _AMP_FAIL_MODE_PATTERN = re.compile(r'\bconst\s+DC_FAIL_MODE:\s*string\s*=\s*"(o
 _EXPECTED_CONTRACTS = {
     "amp": frozenset({"amp-plugin-v1"}),
     "claudecode": frozenset({"claudecode-hooks-v1"}),
-    "codex": frozenset({"codex-hooks-v1", "codex-hooks-v2", "codex-hooks-v3"}),
+    "codex": frozenset(
+        {
+            "codex-hooks-v1",
+            "codex-hooks-v2",
+            "codex-hooks-v3",
+            "codex-hooks-v3-generic",
+            "codex-hooks-v4",
+        }
+    ),
 }
 _SHARED_RUNTIME_CONNECTORS = frozenset({"claudecode", "codex"})
 _WINDOWS_LAUNCHER_CONNECTORS = frozenset({"claudecode", "codex"})

@@ -1426,6 +1426,11 @@ function Invoke-BuildArtifacts {
         if ($null -eq $previousCgo) { Remove-Item Env:CGO_ENABLED -ErrorAction SilentlyContinue }
         else { $env:CGO_ENABLED = $previousCgo }
     }
+    foreach ($file in @('LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.txt')) {
+        foreach ($targetRoot in @($gatewayVerificationStage, $stage)) {
+            Copy-Item -LiteralPath (Join-Path $WorkspaceRoot $file) -Destination $targetRoot -Force
+        }
+    }
     $gatewayArchive = Join-Path $dist "defenseclaw_${packageVersion}_windows_amd64.zip"
     $gatewayArchiveVerification = Join-Path $root 'gateway-archive-verification.zip'
     Invoke-WindowsNativeProcess $uv @(
@@ -1436,7 +1441,7 @@ function Invoke-BuildArtifacts {
     ) -TimeoutSeconds 900 -WorkingDirectory $WorkspaceRoot | Out-Null
     Invoke-WindowsNativeProcess $uv @(
         'run', '--frozen', 'python', $artifactHelper, 'zip',
-        '--source', $stage,
+        '--source', $gatewayVerificationStage,
         '--output', $gatewayArchiveVerification,
         '--epoch', $sourceDateEpoch
     ) -TimeoutSeconds 900 -WorkingDirectory $WorkspaceRoot | Out-Null
@@ -1444,13 +1449,42 @@ function Invoke-BuildArtifacts {
         (Get-FileHash -LiteralPath $gatewayArchiveVerification -Algorithm SHA256).Hash) {
         throw 'deterministic gateway ZIP self-check failed'
     }
+    $gatewayLicenseArchive = [IO.Compression.ZipFile]::OpenRead($gatewayArchive)
+    try {
+        foreach ($file in @('LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.txt')) {
+            $matches = @(
+                $gatewayLicenseArchive.Entries |
+                    Where-Object { $_.FullName.Replace('\', '/') -eq $file }
+            )
+            if ($matches.Count -ne 1) {
+                throw "gateway ZIP must contain exactly one root $file file"
+            }
+            $entryStream = $matches[0].Open()
+            $entryBuffer = [IO.MemoryStream]::new()
+            try {
+                $entryStream.CopyTo($entryBuffer)
+                $archived = [Convert]::ToBase64String($entryBuffer.ToArray())
+            } finally {
+                $entryBuffer.Dispose()
+                $entryStream.Dispose()
+            }
+            $canonical = [Convert]::ToBase64String(
+                [IO.File]::ReadAllBytes((Join-Path $WorkspaceRoot $file))
+            )
+            if ($archived -ne $canonical) {
+                throw "gateway ZIP $file differs from the canonical source file"
+            }
+        }
+    } finally {
+        $gatewayLicenseArchive.Dispose()
+    }
 
     $packageStage = Join-Path $root 'package-source'
     if (Test-Path -LiteralPath $packageStage) {
         Remove-SafeDisposableTree -Path $packageStage -Root $root
     }
     [IO.Directory]::CreateDirectory($packageStage) | Out-Null
-    foreach ($file in @('pyproject.toml', 'README.md', 'LICENSE', 'NOTICE', 'MANIFEST.in')) {
+    foreach ($file in @('pyproject.toml', 'README.md', 'LICENSE', 'NOTICE', 'THIRD_PARTY_LICENSES.txt', 'MANIFEST.in')) {
         Copy-Item -LiteralPath (Join-Path $WorkspaceRoot $file) -Destination $packageStage -Force
     }
     [IO.Directory]::CreateDirectory((Join-Path $packageStage 'cli')) | Out-Null
@@ -1718,6 +1752,8 @@ async def smoke():
             signal_id='model', state='seen', category='local_model',
             model=AIUsageModel(
                 id='Qwen/Qwen3-4B-GGUF', status='installed', format='gguf',
+                owner_application='Meetily', modality='generative',
+                relevance='primary', discovery_confidence=0.95,
                 provenance=AIUsageModelProvenance(
                     publisher='Alibaba Cloud', country_code='CN',
                     root_model='Qwen/Qwen3-4B', quantized=True,
@@ -1752,8 +1788,9 @@ async def smoke():
         model_cells = tuple(str(cell) for cell in models.get_row_at(0))
         if not any('Qwen/Qwen3-4B-GGUF' in cell for cell in model_cells):
             raise RuntimeError(f'packaged model row missing model ID: {model_cells}')
-        if not any('CN' in cell for cell in model_cells):
-            raise RuntimeError(f'packaged model row missing accessible country code: {model_cells}')
+        expected_cells = ('seen', 'Qwen/Qwen3-4B-GGUF', 'Meetily', 'Generative', 'Primary', '95%', 'installed', 'gguf')
+        if model_cells != expected_cells:
+            raise RuntimeError(f'packaged model row has unexpected compact columns: {model_cells}')
         await pilot.press('t')
         focus_deadline = loop.time() + 5
         while loop.time() < focus_deadline:
@@ -1763,6 +1800,10 @@ async def smoke():
             await asyncio.sleep(0.025)
         else:
             raise RuntimeError('packaged keyboard could not focus the local-model table')
+        await pilot.press('enter')
+        await pilot.pause()
+        if not discovery.detail_open or 'country=CN' not in app.detail_text:
+            raise RuntimeError(f'packaged model detail missing country provenance: {app.detail_text}')
 
 asyncio.run(asyncio.wait_for(smoke(), timeout=20))
 print('headless TUI rendered separate AI product/model tables with provenance')

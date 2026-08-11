@@ -204,8 +204,9 @@ type ActionEntry struct {
 }
 
 type Store struct {
-	db     *sql.DB
-	dbPath string
+	db          *sql.DB
+	dbPath      string
+	dbPathGuard *preparedAuditDatabasePath
 
 	// lifecycleMu serializes initialization/close and lets mandatory v8
 	// event-history transactions pin a ready store until commit or rollback.
@@ -328,11 +329,11 @@ func openSQLite(dbPath string) (*sql.DB, error) {
 }
 
 func NewStore(dbPath string) (*Store, error) {
-	db, identity, err := openHardenedAuditSQLiteWithIdentity(dbPath, auditDBPathHooks{})
+	db, identity, pathGuard, err := openHardenedAuditSQLiteWithIdentity(dbPath, auditDBPathHooks{})
 	if err != nil {
 		return nil, err
 	}
-	return &Store{db: db, dbPath: identity}, nil
+	return &Store{db: db, dbPath: identity, dbPathGuard: pathGuard}, nil
 }
 
 // sqliteCoded is the structural interface implemented by the
@@ -1716,6 +1717,14 @@ var migrations = []migration{
 		description: "runtime assets: add durable connector session provenance state",
 		apply:       migrateRuntimeAssetState,
 	},
+	{
+		description: "guardrails: add bounded durable tool-call chain state",
+		apply:       migrateToolChainState,
+	},
+	{
+		description: "guardrails: add pending tool-call predecessor lifecycle",
+		apply:       migrateToolChainPendingState,
+	},
 }
 
 // tableExists reports whether the given SQLite table is present.
@@ -1823,6 +1832,13 @@ func (s *Store) Init() error {
 		"correlation_pending_operations",
 		"correlation_receipts",
 		"correlation_identity_claims",
+		"guardrail_chain_partitions",
+		"guardrail_chain_events",
+		"guardrail_chain_deny_receipts",
+		"guardrail_chain_pending_actions",
+		"guardrail_chain_pending_boundaries",
+		"guardrail_chain_terminal_resets",
+		"guardrail_chain_cutoff_barriers",
 	} {
 		present, err := tableExists(s.db, table)
 		if err != nil {
@@ -1838,7 +1854,7 @@ func (s *Store) Init() error {
 	if err := s.proveDurableWrite(context.Background()); err != nil {
 		return err
 	}
-	if err := revalidateHardenedAuditSQLite(s.dbPath, auditDBPathHooks{}); err != nil {
+	if err := revalidateHardenedAuditSQLite(s.dbPathGuard); err != nil {
 		return fmt.Errorf("audit: revalidate database paths after initialization: %w", err)
 	}
 
@@ -2036,6 +2052,14 @@ var knownTables = map[string]bool{
 	"correlation_pending_operations":    true,
 	"correlation_receipts":              true,
 	"correlation_identity_claims":       true,
+	// Bounded, content-free state for the six fixed tool-call chains.
+	"guardrail_chain_partitions":         true,
+	"guardrail_chain_events":             true,
+	"guardrail_chain_deny_receipts":      true,
+	"guardrail_chain_pending_actions":    true,
+	"guardrail_chain_pending_boundaries": true,
+	"guardrail_chain_terminal_resets":    true,
+	"guardrail_chain_cutoff_barriers":    true,
 	// Connector/session selection and load provenance (WIN-AUD-070/071).
 	"runtime_asset_state": true,
 }
@@ -3821,6 +3845,7 @@ func (s *Store) InsertNetworkEgressEvent(e NetworkEgressRow) error {
 			e.Details = strings.ReplaceAll(e.Details, rawURL, e.URL)
 		}
 	}
+	e.Details = netguard.ScrubURLsInText(e.Details)
 	if e.ID == "" {
 		e.ID = uuid.New().String()
 	}
@@ -4015,7 +4040,10 @@ func (s *Store) Close() error {
 	// transactions to release the lifecycle read lock.
 	s.ready.Store(false)
 	s.closed = true
-	return s.db.Close()
+	err := s.db.Close()
+	s.dbPathGuard.close()
+	s.dbPathGuard = nil
+	return err
 }
 
 // currentRunID resolves the per-process run id used to stamp audit
