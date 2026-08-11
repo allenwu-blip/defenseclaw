@@ -42,7 +42,7 @@ struct OutputSafetyTests {
         await taskCancellationInterruptsChildAndDrainsPipe()
         resolvesRuntimePythonAdjacentToSelectedCLI()
         parsesBoundedInventoryDocuments()
-        normalizesInventoryCapabilityNotes()
+        parsesCapabilityWarningsAtOutputBoundary()
         rejectsOversizedAndAdversarialInventoryOutput()
         print("CLI output and inventory parser safety tests passed")
     }
@@ -208,50 +208,21 @@ struct OutputSafetyTests {
         )
     }
 
-    private static func normalizesInventoryCapabilityNotes() {
-        let capabilityNotes: [[String: Any]] = [
-            [
-                "command": "codex:agents",
-                "error": "agents are not a first-class concept on this connector",
-            ],
-            [
-                "command": "codex:tools",
-                "error": "tool registry is owned by each plugin's manifest",
-            ],
-            [
-                "command": "codex:models",
-                "error": "model providers are configured inside the framework",
-            ],
-            [
-                "command": "codex:memory",
-                "error": "memory backend is private to the framework",
-            ],
-        ]
+    private static func parsesCapabilityWarningsAtOutputBoundary() {
         let capabilityOnly: [String: Any] = [
             "connector": "codex",
-            "errors": capabilityNotes,
-            "summary": ["errors": 4],
+            "errors": [[
+                "command": "codex:agents",
+                "error": "agents are not a first-class concept on this connector",
+            ]],
+            "summary": ["errors": 1],
         ]
-        expect(
-            InventoryOutputParser.actionableErrorCount(in: capabilityOnly) == 0,
-            "expected connector capability notes are not counted as failures"
-        )
-
         let repeatedWarning = Array(
-            repeating: "Warning: 4 connector inventory command(s) failed",
+            repeating: "Warning: 1 connector inventory command(s) failed",
             count: 5
         ).joined(separator: "\n")
-        let capabilityResult = InventoryOutputParseResult(
-            documents: Array(repeating: capabilityOnly, count: 5),
-            diagnostics: repeatedWarning
-        )
-        expect(
-            InventoryOutputParser.userFacingDiagnostics(from: capabilityResult).isEmpty,
-            "aggregate warnings disappear when every reported error is a capability note"
-        )
-
         let encodedDocuments = try? JSONSerialization.data(
-            withJSONObject: capabilityResult.documents,
+            withJSONObject: Array(repeating: capabilityOnly, count: 5),
             options: [.sortedKeys]
         )
         let mixedOutput = repeatedWarning + "\n"
@@ -267,44 +238,6 @@ struct OutputSafetyTests {
                 "parsed runtime capability warnings are suppressed"
             )
         }
-
-        var mixed = capabilityOnly
-        mixed["errors"] = capabilityNotes + [[
-            "command": "codex:skills",
-            "error": "permission denied",
-        ]]
-        let mixedResult = InventoryOutputParseResult(
-            documents: [mixed],
-            diagnostics: repeatedWarning + "\nscanner cache is stale"
-        )
-        expect(
-            InventoryOutputParser.actionableErrorCount(in: mixed) == 1,
-            "real inventory failures remain actionable"
-        )
-        expect(
-            InventoryOutputParser.userFacingDiagnostics(from: mixedResult)
-                == "Warning: 1 connector inventory command(s) failed\nscanner cache is stale",
-            "warnings are deduplicated and unrelated diagnostics are preserved"
-        )
-
-        var wrongCategory = capabilityOnly
-        wrongCategory["errors"] = [[
-            "command": "codex:skills",
-            "error": "agents are not a first-class concept on this connector",
-        ]]
-        expect(
-            InventoryOutputParser.actionableErrorCount(in: wrongCategory) == 1,
-            "capability text under the wrong command remains actionable"
-        )
-
-        let legacy: [String: Any] = [
-            "connector": "codex",
-            "summary": ["errors": 3],
-        ]
-        expect(
-            InventoryOutputParser.actionableErrorCount(in: legacy) == 3,
-            "legacy summaries without structured errors retain their count"
-        )
     }
 
     private static func rejectsOversizedAndAdversarialInventoryOutput() {

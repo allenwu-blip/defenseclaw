@@ -19,11 +19,12 @@ import Foundation
 
 // Minimal standalone-test dependency for CLIRunner.doctor(). The app target
 // supplies the production model from DataLayer/Models.swift.
-struct DoctorCheck {
-    enum Result { case pass, warn, fail }
+struct DoctorCheck: Identifiable, Sendable {
+    enum Result: String { case pass, warn, fail }
     var name: String
     var result: Result
     var detail: String
+    var id: String { name }
 }
 
 @main
@@ -38,6 +39,7 @@ struct CLICancellationTests {
         await cancelledParentDoesNotLeaveDescendant()
         await forkedReparentedGrandchildIsKilled()
         await closedOutputDoesNotBlockCancellation()
+        await exitedLeaderStillCancelsDescendantGroup()
         await inheritedPipeDoesNotHoldRunOpen()
         await standardInputIsWrittenAndClosed()
         cancelledResultIsNotSuccessful()
@@ -372,6 +374,67 @@ struct CLICancellationTests {
         expect(result.cancelled, "closed-output child is cancelled")
     }
 
+    private static func exitedLeaderStillCancelsDescendantGroup() async {
+        let runner = CLIRunner()
+        let runID = UUID()
+        let parentMarker = temporaryMarker("exited-leader-parent")
+        let childMarker = temporaryMarker("exited-leader-child")
+        defer {
+            try? FileManager.default.removeItem(at: parentMarker)
+            try? FileManager.default.removeItem(at: childMarker)
+        }
+        let childProgram = """
+        import signal
+        import sys
+        import time
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(30)
+        """
+        let parentProgram = """
+        import os
+        import subprocess
+        import sys
+
+        child = subprocess.Popen(
+            [sys.executable, "-c", sys.argv[1]],
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        with open(sys.argv[2], "w", encoding="utf-8") as marker:
+            marker.write(str(os.getpid()))
+        with open(sys.argv[3], "w", encoding="utf-8") as marker:
+            marker.write(str(child.pid))
+        """
+        let task = Task {
+            await runner.run(
+                binary: "/usr/bin/python3",
+                arguments: ["-c", parentProgram, childProgram, parentMarker.path, childMarker.path],
+                mutation: false,
+                runID: runID
+            )
+        }
+        guard let parentPID = await waitForPID(parentMarker),
+              let childPID = await waitForPID(childMarker) else {
+            expect(false, "exited-leader fixture records both process identifiers")
+            return
+        }
+        defer { _ = Darwin.kill(childPID, SIGKILL) }
+        let parentExited = await waitForProcessExit(
+            parentPID,
+            attempts: 20,
+            delay: .milliseconds(5)
+        )
+        expect(parentExited, "the process-group leader exits before cancellation")
+        let cancellation = await runner.cancel(runID: runID)
+        expect(cancellation == .requested, "a retained descendant group accepts cancellation")
+        let result = await task.value
+        expect(result.cancelled, "descendant-only cancellation marks the run cancelled")
+        let childExited = await waitForProcessExit(childPID, attempts: 180)
+        expect(childExited, "cancellation escalation terminates the retained descendant group")
+    }
+
     private static func inheritedPipeDoesNotHoldRunOpen() async {
         let runner = CLIRunner()
         let childProgram = """
@@ -379,7 +442,7 @@ struct CLICancellationTests {
         import sys
 
         subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(3)"],
+            [sys.executable, "-c", "import time; time.sleep(10)"],
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
@@ -393,7 +456,7 @@ struct CLICancellationTests {
         )
         expect(result.succeeded, "direct parent exit succeeds")
         expect(result.output.contains("direct-parent-exited"), "direct parent output is retained")
-        expect(ContinuousClock.now - started < .seconds(2), "descendant-held pipe is bounded")
+        expect(ContinuousClock.now - started < .seconds(5), "descendant-held pipe is bounded")
     }
 
     private static func standardInputIsWrittenAndClosed() async {
@@ -440,10 +503,14 @@ struct CLICancellationTests {
         return nil
     }
 
-    private static func waitForProcessExit(_ pid: pid_t, attempts: Int = 120) async -> Bool {
+    private static func waitForProcessExit(
+        _ pid: pid_t,
+        attempts: Int = 120,
+        delay: Duration = .milliseconds(30)
+    ) async -> Bool {
         for _ in 0..<attempts {
             if Darwin.kill(pid, 0) == -1, errno == ESRCH { return true }
-            try? await Task.sleep(for: .milliseconds(30))
+            try? await Task.sleep(for: delay)
         }
         return false
     }

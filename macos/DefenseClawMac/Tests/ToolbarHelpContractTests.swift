@@ -14,7 +14,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import Foundation
+import AppKit
+import SwiftUI
 
 @main
 enum ToolbarHelpContractTests {
@@ -75,6 +76,8 @@ enum ToolbarHelpContractTests {
 
         try expectQuickHelpImplementation(at: root)
         try expectStableOverviewToolbarItems(at: root)
+        expectRuntimeHelpBridge()
+        rejectsHelpPairedWithAnEarlierLabel()
         print("ToolbarHelpContractTests passed")
     }
 
@@ -82,14 +85,13 @@ enum ToolbarHelpContractTests {
         guard let helpRange = source.range(of: expectation.help) else {
             fail("\(expectation.file) is missing \(expectation.help)")
         }
-        let available = source.distance(from: source.startIndex, to: helpRange.lowerBound)
-        let lowerBound = source.index(
-            helpRange.lowerBound,
-            offsetBy: -min(700, available)
-        )
-        let nearbySource = source[lowerBound..<helpRange.upperBound]
-        guard nearbySource.contains(expectation.action) else {
+        let preceding = source[..<helpRange.lowerBound]
+        guard let actionRange = preceding.range(of: expectation.action, options: .backwards) else {
             fail("\(expectation.file) does not attach \(expectation.help) to \(expectation.action)")
+        }
+        let intervening = source[actionRange.upperBound..<helpRange.lowerBound]
+        guard !intervening.contains("Label(") && !intervening.contains(".dcQuickHelp(") else {
+            fail("\(expectation.file) attaches \(expectation.help) to a nearer toolbar label")
         }
     }
 
@@ -103,6 +105,8 @@ enum ToolbarHelpContractTests {
             "window.acceptsMouseMovedEvents = true",
             "popover.animates = false",
             "accessibilityHint(Text(text))",
+            "DCQuickHelpBridge(text: text)",
+            "Self.accessibilityHelp(in: view)",
         ]
         for requirement in requirements where !source.contains(requirement) {
             fail("QuickHoverHelp.swift is missing \(requirement)")
@@ -112,6 +116,51 @@ enum ToolbarHelpContractTests {
         let appSource = try String(contentsOf: appURL, encoding: .utf8)
         guard appSource.contains("DCToolbarQuickHelpMonitor.shared.start()") else {
             fail("AppDelegate does not start the toolbar quick-help monitor")
+        }
+    }
+
+    private static func expectRuntimeHelpBridge() {
+        let initialHelp = "Run help"
+        let updatedHelp = "Updated run help"
+        let hostingView = NSHostingView(
+            rootView: Button("Run") {}
+                .dcQuickHelp(initialHelp)
+        )
+        hostingView.frame = NSRect(x: 0, y: 0, width: 120, height: 30)
+        hostingView.layoutSubtreeIfNeeded()
+
+        guard DCToolbarQuickHelpMonitor.accessibilityHelp(in: hostingView) == initialHelp else {
+            fail("toolbar help bridge did not export the SwiftUI accessibility hint to AppKit")
+        }
+
+        hostingView.rootView = Button("Run") {}
+            .dcQuickHelp(updatedHelp)
+        hostingView.layoutSubtreeIfNeeded()
+        guard DCToolbarQuickHelpMonitor.accessibilityHelp(in: hostingView) == updatedHelp else {
+            fail("toolbar help bridge did not refresh dynamic help text")
+        }
+    }
+
+    private static func rejectsHelpPairedWithAnEarlierLabel() {
+        let fixture = """
+        Label("Expected", systemImage: "checkmark")
+        Label("Intervening", systemImage: "xmark")
+        .dcQuickHelp("Expected help")
+        """
+        let expectation = Expectation(
+            file: "fixture.swift",
+            action: #"Label("Expected", systemImage: "checkmark")"#,
+            help: #".dcQuickHelp("Expected help")"#
+        )
+        guard let helpRange = fixture.range(of: expectation.help),
+              let actionRange = fixture[..<helpRange.lowerBound]
+                .range(of: expectation.action, options: .backwards)
+        else {
+            fail("toolbar help adversarial fixture is malformed")
+        }
+        let intervening = fixture[actionRange.upperBound..<helpRange.lowerBound]
+        guard intervening.contains("Label(") else {
+            fail("toolbar help pairing must reject an intervening label")
         }
     }
 

@@ -101,21 +101,10 @@ enum CLIProcessGroupLauncher {
             String(cString: buffer.baseAddress!)
         }
         let canonicalParent = URL(fileURLWithPath: parentPath).resolvingSymlinksInPath()
-        guard canonicalParent.path == canonicalExecutable.path else { return false }
-
-        guard let parentAttributes = try? FileManager.default.attributesOfItem(
-                  atPath: canonicalParent.path
-              ),
-              let executableAttributes = try? FileManager.default.attributesOfItem(
-                  atPath: canonicalExecutable.path
-              ),
-              let parentDevice = parentAttributes[.systemNumber] as? NSNumber,
-              let parentFile = parentAttributes[.systemFileNumber] as? NSNumber,
-              let executableDevice = executableAttributes[.systemNumber] as? NSNumber,
-              let executableFile = executableAttributes[.systemFileNumber] as? NSNumber else {
-            return false
-        }
-        return parentDevice == executableDevice && parentFile == executableFile
+        // proc_pidpath binds this comparison to the running parent's image.
+        // A second stat through canonicalParent would only stat the same path
+        // again and would not add process-image identity assurance.
+        return canonicalParent.path == canonicalExecutable.path
     }
 
     private static func failAndExit() -> Never {
@@ -171,18 +160,25 @@ private final class CLIProcessTree: @unchecked Sendable {
         }
     }
 
+    deinit {
+        // Signalling is deliberately owned by CLIRunner's cancellation path;
+        // releasing the tracker must never terminate a process implicitly.
+    }
+
     /// Waits until the signed launcher has established the dedicated group.
     /// A command that already exited needs no cancellation tracking; a live
     /// command that never establishes its group is rejected fail-closed.
-    func waitUntilReady(process: Process) -> Bool {
+    func waitUntilReady(process: Process) async -> Bool {
+        for _ in 0..<1_000 {
+            if readinessProbe(process: process) { return true }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return readinessProbe(process: process)
+    }
+
+    private func readinessProbe(process: Process) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        for _ in 0..<1_000 {
-            refreshProcessGroup()
-            if processGroupID != nil { return true }
-            if !process.isRunning { return true }
-            usleep(1_000)
-        }
         refreshProcessGroup()
         return processGroupID != nil || !process.isRunning
     }
@@ -957,16 +953,8 @@ actor CLIRunner {
         }
         let runToken = UUID()
         let processTree = CLIProcessTree(rootPID: proc.processIdentifier)
-        guard processTree.waitUntilReady(process: proc) else {
-            processTree.send(SIGKILL)
-            proc.waitUntilExit()
-            try? pipe.fileHandleForReading.close()
-            try? inputPipe?.fileHandleForWriting.close()
-            return CLIResult(
-                exitCode: 126,
-                output: "Internal command launcher did not establish an isolated process group."
-            )
-        }
+        // Register before the first suspension so cancellation cannot race the
+        // readiness probe and observe a live but untracked command.
         runStates[executionID] = .running(ActiveRun(
             token: runToken,
             process: proc,
@@ -974,6 +962,21 @@ actor CLIRunner {
             mutation: mutation,
             cancellationRequested: false
         ))
+        guard await processTree.waitUntilReady(process: proc) else {
+            processTree.send(SIGKILL)
+            _ = await Task.detached(priority: .utility) {
+                await Self.waitForTermination(of: proc)
+            }.value
+            if case .running(let active) = runStates[executionID], active.token == runToken {
+                runStates[executionID] = nil
+            }
+            try? pipe.fileHandleForReading.close()
+            try? inputPipe?.fileHandleForWriting.close()
+            return CLIResult(
+                exitCode: 126,
+                output: "Internal command launcher did not establish an isolated process group."
+            )
+        }
 
         if let standardInput, let inputPipe {
             inputPipe.fileHandleForWriting.write(Data((standardInput + "\n").utf8))
@@ -982,9 +985,9 @@ actor CLIRunner {
 
         let readControl = CLIOutputReadControl()
         let terminationTask = Task.detached(priority: .utility) {
-            proc.waitUntilExit()
+            let status = await Self.waitForTermination(of: proc)
             readControl.markParentExited()
-            return proc.terminationStatus
+            return status
         }
 
         // Keep process waiting and pipe reads off the actor so Cancel remains
@@ -1021,7 +1024,9 @@ actor CLIRunner {
                 )
                 let pollResult = Darwin.poll(&descriptor, 1, 100)
                 if pollResult == 0 {
-                    if readControl.hasParentExited { break readLoop }
+                    // Give a just-exited parent the full bounded drain window;
+                    // bytes written immediately before exit can become
+                    // readable after the termination observer fires.
                     continue readLoop
                 }
                 if pollResult < 0 {
@@ -1131,10 +1136,9 @@ actor CLIRunner {
         case .running(var active):
             if let expectedToken, active.token != expectedToken { return .notFound }
             guard !active.cancellationRequested else { return .alreadyRequested }
-            guard active.process.isRunning else { return .finishing }
             active.cancellationRequested = true
             runStates[executionID] = .running(active)
-            active.processTree.send(SIGINT)
+            guard active.processTree.send(SIGINT) else { return .finishing }
             scheduleCancellationEscalation(processTree: active.processTree)
             return .requested
         }
@@ -1150,6 +1154,17 @@ actor CLIRunner {
             try? await Task.sleep(for: .seconds(1))
             processTree.send(SIGKILL)
         }
+    }
+
+    /// `Process.waitUntilExit()` can remain blocked when a very short-lived
+    /// child exits before the detached waiter starts. Foundation already owns
+    /// child reaping, so poll its thread-safe running state cooperatively and
+    /// read the terminal status only after it reports completion.
+    private nonisolated static func waitForTermination(of process: Process) async -> Int32 {
+        while process.isRunning {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return process.terminationStatus
     }
 
     /// Lightweight doctor probe (TUI Shift+D) — parsed into check rows.

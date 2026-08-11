@@ -16,7 +16,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
+import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,19 +33,24 @@ SCANNER_URL = (
 
 
 class DependencyLockValidatorTests(unittest.TestCase):
-    def validate(self, lock: str, source_url: str = SCANNER_URL) -> subprocess.CompletedProcess[str]:
+    def validate(
+        self,
+        lock: str,
+        source_url: str = SCANNER_URL,
+        marker: str = "",
+    ) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pyproject = root / "pyproject.toml"
             lock_path = root / "requirements.lock"
+            requirement = f"cisco-ai-skill-scanner @ {source_url}{marker}"
             pyproject.write_text(
-                '[project]\nname = "fixture"\nversion = "1.0.0"\n'
-                f'dependencies = ["cisco-ai-skill-scanner @ {source_url}"]\n',
+                f'[project]\nname = "fixture"\nversion = "1.0.0"\ndependencies = [{json.dumps(requirement)}]\n',
                 encoding="utf-8",
             )
             lock_path.write_text(lock, encoding="utf-8")
             return subprocess.run(
-                ["python3", str(VALIDATOR), str(pyproject), str(lock_path)],
+                [sys.executable, str(VALIDATOR), str(pyproject), str(lock_path)],
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -67,6 +74,28 @@ class DependencyLockValidatorTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unauthenticated direct reference", result.stdout)
+
+    def test_rejects_changed_direct_reference_hash(self) -> None:
+        result = self.validate(
+            f"cisco-ai-skill-scanner @ {SCANNER_URL} \\\n"
+            "    --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("direct-reference hash does not match source", result.stdout)
+
+    def test_rejects_unsupported_source_markers(self) -> None:
+        lock = (
+            "cisco-ai-skill-scanner==2.0.4 \\\n"
+            "    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        )
+        for marker in (
+            ' ; python_version == "3.12" or sys_platform == "darwin"',
+            ' ; (python_version == "3.12")',
+        ):
+            with self.subTest(marker=marker):
+                result = self.validate(lock, marker=marker)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("unsupported marker", result.stdout)
 
     def test_rejects_local_paths(self) -> None:
         result = self.validate(

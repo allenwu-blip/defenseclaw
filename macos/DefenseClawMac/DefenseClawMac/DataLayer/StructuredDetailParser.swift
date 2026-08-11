@@ -19,6 +19,7 @@ import Foundation
 /// Parses the gateway's human-readable `key=value` detail format without
 /// mistaking metadata inside `<redacted ...>` placeholders for event fields.
 enum StructuredDetailParser {
+    private static let maximumRedactionNestingDepth = 8
     private static let safeMetadataKeys: Set<String> = [
         "action", "connector", "decision", "evaluation_id", "finding_count",
         "findings", "max_severity", "rule_ids", "scan_id", "scanner",
@@ -27,13 +28,20 @@ enum StructuredDetailParser {
     /// Parses a contiguous structured record. If the record starts with prose
     /// or a redaction placeholder, callers should preserve it as raw text.
     static func pairs(_ details: String) -> [(String, String)] {
+        pairs(details, redactionDepth: 0)
+    }
+
+    private static func pairs(
+        _ details: String,
+        redactionDepth: Int
+    ) -> [(String, String)] {
         let characters = Array(details)
         var index = skipWhitespace(in: characters, from: 0)
         var result: [(String, String)] = []
 
         while index < characters.count {
             guard let pair = parsePair(in: characters, from: index) else { break }
-            result.append((label(pair.key), displayValue(pair.value)))
+            result.append((label(pair.key), displayValue(pair.value, depth: redactionDepth)))
             index = skipWhitespace(in: characters, from: pair.nextIndex)
         }
         return result
@@ -60,7 +68,7 @@ enum StructuredDetailParser {
             if let pair = parsePair(in: characters, from: index) {
                 let normalizedKey = pair.key.lowercased()
                 if safeMetadataKeys.contains(normalizedKey), seen.insert(normalizedKey).inserted {
-                    result.append((label(normalizedKey), displayValue(pair.value)))
+                    result.append((label(normalizedKey), displayValue(pair.value, depth: 0)))
                 }
                 index = pair.nextIndex
             } else {
@@ -142,10 +150,14 @@ enum StructuredDetailParser {
         return (key, String(characters[valueStart..<index]), index)
     }
 
-    private static func displayValue(_ value: String) -> String {
+    private static func displayValue(_ value: String, depth: Int) -> String {
         guard value.hasPrefix("<redacted"), value.hasSuffix(">") else { return value }
+        guard depth < maximumRedactionNestingDepth else { return "redacted" }
         let body = value.dropFirst().dropLast()
-        let attributes = pairs(String(body.dropFirst("redacted".count)))
+        let attributes = pairs(
+            String(body.dropFirst("redacted".count)),
+            redactionDepth: depth + 1
+        )
         let length = attributes.first { $0.0 == "Len" }?.1
         let digest = attributes.first { $0.0 == "Sha" }?.1
         return [

@@ -217,12 +217,19 @@ struct InstallationContextTests {
         )
         expect(!isInvalid(context), "runtime-generated empty mappings remain valid")
         expect(
-            MiniYAML.parse("observability: {}\n")["observability"]?.mapping?.isEmpty == true,
-            "empty flow mapping retains its YAML type"
+            MiniYAML.parse("observability: { } # no custom destinations\n")["observability"]?
+                .mapping?.isEmpty == true,
+            "spaced and commented empty flow mapping retains its YAML type"
         )
         expect(
-            MiniYAML.parse("registries: []\n")["registries"]?.sequence?.isEmpty == true,
-            "empty flow sequence retains its YAML type"
+            MiniYAML.parse("registries: [ ] # no external registries\n")["registries"]?
+                .sequence?.isEmpty == true,
+            "spaced and commented empty flow sequence retains its YAML type"
+        )
+        expect(
+            MiniYAML.parse("value: \"alpha \\\"# beta\" # trailing comment")["value"]?
+                .string == "alpha \\\"# beta",
+            "escaped double quotes keep an in-string hash out of comment parsing"
         )
 
         let quotedPath = "/chosen/quoted-empty-mapping.yaml"

@@ -18,10 +18,33 @@ import AppKit
 import SwiftUI
 
 extension View {
-    /// Keeps a concise accessibility description beside the visual toolbar
-    /// help supplied by `DCToolbarQuickHelpMonitor`.
+    /// Supplies one help string to both accessibility and the visual toolbar
+    /// popover presented by `DCToolbarQuickHelpMonitor`.
     func dcQuickHelp(_ text: String) -> some View {
         accessibilityHint(Text(text))
+            .background(
+                DCQuickHelpBridge(text: text)
+                    .allowsHitTesting(false)
+            )
+    }
+}
+
+/// SwiftUI accessibility hints live in its virtual accessibility tree and are
+/// not exposed through `NSView.accessibilityHelp()`. Export the same string on
+/// an inert AppKit view so the toolbar hover monitor can find it without
+/// maintaining a second label-to-help registry.
+private struct DCQuickHelpBridge: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context _: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        view.setAccessibilityElement(false)
+        view.setAccessibilityHelp(text)
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context _: Context) {
+        view.setAccessibilityHelp(text)
     }
 }
 
@@ -38,6 +61,13 @@ final class DCToolbarQuickHelpMonitor {
     private var currentHelp: String?
 
     private init() {}
+
+    deinit {
+        if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     func start() {
         guard eventMonitor == nil else { return }
@@ -118,11 +148,8 @@ final class DCToolbarQuickHelpMonitor {
     ) -> (view: NSView, help: String)? {
         let items = (toolbar.visibleItems ?? []).flatMap(expandedItems)
         for item in items {
-            guard let help = DCToolbarQuickHelpCatalog.text(
-                windowTitle: window.title,
-                itemLabel: item.label
-            ),
-            let view = item.view,
+            guard let view = item.view,
+            let help = Self.accessibilityHelp(in: view),
             view.window === window
             else { continue }
 
@@ -130,6 +157,16 @@ final class DCToolbarQuickHelpMonitor {
             if view.bounds.insetBy(dx: -3, dy: -3).contains(point) {
                 return (view, help)
             }
+        }
+        return nil
+    }
+
+    static func accessibilityHelp(in view: NSView) -> String? {
+        if let help = view.accessibilityHelp(), !help.isEmpty {
+            return help
+        }
+        for subview in view.subviews {
+            if let help = accessibilityHelp(in: subview) { return help }
         }
         return nil
     }
@@ -146,73 +183,6 @@ final class DCToolbarQuickHelpMonitor {
     }
 }
 
-private enum DCToolbarQuickHelpCatalog {
-    private static let pageHelp: [String: [String: String]] = [
-        "Overview": [
-            "Run Health Check": "Run DefenseClaw Doctor",
-            "Refresh": "Refresh overview",
-        ],
-        "Alerts": [
-            "Acknowledge Selection": "Acknowledge selected alerts",
-            "Refresh": "Refresh alerts",
-        ],
-        "Logs": [
-            "Auto-scroll": "Follow new log lines",
-            "Reload from disk": "Reload logs from disk",
-        ],
-        "Audit": [
-            "Export JSON": "Export audit events as JSON",
-            "Refresh": "Refresh audit events",
-        ],
-        "Activity": [
-            "Run Command": "Open Command Palette",
-            "Clear Completed": "Clear completed commands",
-            "Refresh": "Refresh mutations",
-        ],
-        "Inventory": [
-            "Rescan All": "Rescan connector inventories",
-        ],
-        "AI Discovery": [
-            "Enable AI Discovery": "Enable AI Discovery",
-            "Scan Now": "Scan this Mac for AI products and models",
-            "Refresh": "Refresh AI Discovery results",
-        ],
-        "Registries": [
-            "Add Source": "Add Registry Source",
-            "Remove Source": "Remove Selected Source",
-            "Approve": "Approve selected registry entry",
-            "Reject": "Reject selected registry entry",
-            "Require Registry": "Require Registry",
-            "Make Registry Optional": "Make Registry Optional",
-            "Sync Selected": "Sync selected registry source",
-            "Sync All": "Sync all registry sources",
-            "Refresh": "Refresh registries",
-        ],
-        "Skills": [
-            "Install Skill": "Install a skill",
-            "Refresh": "Refresh catalog",
-        ],
-        "MCPs": [
-            "Set MCP Server": "Scan and add or update an MCP server",
-            "Refresh": "Refresh catalog",
-        ],
-        "Plugins": [
-            "Install Plugin": "Install a plugin",
-            "Refresh": "Refresh catalog",
-        ],
-        "Tools": [
-            "Refresh": "Refresh catalog",
-        ],
-    ]
-
-    static func text(windowTitle: String, itemLabel: String) -> String? {
-        if itemLabel == "Command Palette" {
-            return "Command Palette (Command-Shift-P)"
-        }
-        return pageHelp[windowTitle]?[itemLabel]
-    }
-}
-
 private final class DCQuickHelpPresenter {
     static let shared = DCQuickHelpPresenter()
 
@@ -224,6 +194,11 @@ private final class DCQuickHelpPresenter {
         popover = NSPopover()
         popover.animates = false
         popover.behavior = .applicationDefined
+    }
+
+    deinit {
+        pendingPresentation?.cancel()
+        popover.close()
     }
 
     func schedule(text: String, from anchor: NSView, delay: TimeInterval) {

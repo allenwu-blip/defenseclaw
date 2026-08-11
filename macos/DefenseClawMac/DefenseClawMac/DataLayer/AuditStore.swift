@@ -320,12 +320,16 @@ actor AuditStore {
                 """)
         }
         let rows = query("""
-            SELECT *, substr(COALESCE(details, ''), 1, 4096) AS details
+            SELECT *, substr(COALESCE(details, ''), 1, 4096) AS details_preview
             FROM audit_events
             WHERE \(conditions.joined(separator: " AND "))
             ORDER BY timestamp DESC, rowid DESC LIMIT ?
             """, binds: [max(limit, 1)])
-        return rows.map(decodeAuditEvent)
+        return rows.map { row in
+            var bounded = row
+            bounded["details"] = row["details_preview"] ?? row["details"]
+            return decodeAuditEvent(bounded)
+        }
             .filter { $0.severity != .info }
     }
 

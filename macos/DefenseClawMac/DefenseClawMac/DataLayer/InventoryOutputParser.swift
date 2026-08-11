@@ -161,6 +161,7 @@ enum InventoryOutputParser {
         guard value.hasPrefix(prefix), value.hasSuffix(suffix) else { return false }
         let countStart = value.index(value.startIndex, offsetBy: prefix.count)
         let countEnd = value.index(value.endIndex, offsetBy: -suffix.count)
+        guard countStart <= countEnd else { return false }
         return Int(value[countStart..<countEnd]) != nil
     }
 

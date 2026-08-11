@@ -49,8 +49,12 @@ checks = {
     "runtime installs authenticated root wheel without re-resolving dependencies": '"--no-deps", materializedWheel' in runtime,
     "runtime does not apply unlocked overrides": 'wheelArguments += ["--overrides"' not in runtime,
     "first-run no longer references mutable main": 'defenseclaw/main/scripts' not in first_run,
-    "updater pins Apple Team ID": 'expectedTeamIdentifier = "9R236BB67S"' in updater,
-    "updater enforces designated requirement": '"-R=\\(Self.expectedCodeRequirement)"' in updater,
+    "updater pins Cisco bundle identity": 'expectedBundleIdentifier = "com.cisco.defenseclaw.macos"' in updater,
+    "updater binds the running Developer ID team": 'kSecCodeInfoTeamIdentifier' in updater,
+    "updater disables ad-hoc self-update": 'this app is not signed by a trusted Apple Developer ID team' in updater,
+    "updater enforces the derived designated requirement": '"-R=\\(expectedCodeRequirement)"' in updater,
+    "installer authenticates the signed checksum manifest": '$cosign\\" verify-blob' in updater,
+    "installer pins the release workflow identity": 'release.yaml@refs/heads/main' in updater,
 }
 
 failed = [label for label, ok in checks.items() if not ok]

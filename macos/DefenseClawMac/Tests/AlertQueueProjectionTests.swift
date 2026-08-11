@@ -26,10 +26,29 @@ enum ConfigStore {
 enum AlertQueueProjectionTests {
     static func main() async {
         await currentSchemaExcludesAcknowledgedAndNonFindingRows()
+        await alertDetailsAreExplicitlyBounded()
         await legacySchemaRemainsReadable()
         await reopensAfterSamePathReplacement()
         await dropsStaleHandleWhilePathIsMissing()
         print("AlertQueueProjectionTests passed")
+    }
+
+    private static func alertDetailsAreExplicitlyBounded() async {
+        let url = temporaryDatabaseURL("bounded-details")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let details = String(repeating: "x", count: 5_000)
+        execute(url, """
+            CREATE TABLE audit_events (
+                id TEXT, timestamp TEXT, action TEXT, target TEXT, actor TEXT,
+                details TEXT, severity TEXT, run_id TEXT, structured_json TEXT,
+                connector TEXT
+            );
+            INSERT INTO audit_events VALUES
+                ('bounded', '2026-07-22T12:00:00Z', 'scan', '', '', '\(details)', 'HIGH', '', '', '');
+            """)
+
+        let rows = await AuditStore(url: url).alertQueueEvents()
+        expect(rows.first?.details.count == 4_096, "alert details use the explicit preview alias")
     }
 
     private static func currentSchemaExcludesAcknowledgedAndNonFindingRows() async {

@@ -37,11 +37,26 @@ CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" xcrun swiftc \
 
 SEARCH_FILES=("$ROOT/DefenseClawMac/DataLayer/CommandRegistry.swift")
 UPSTREAM_REGISTRY="$REPOSITORY_ROOT/cli/defenseclaw/tui/registry_data.py"
-if [[ -f "$UPSTREAM_REGISTRY" ]]; then
+if [[ -d "$REPOSITORY_ROOT/cli" ]]; then
+  [[ -f "$UPSTREAM_REGISTRY" && -r "$UPSTREAM_REGISTRY" ]] || {
+    echo "required upstream command registry is missing or unreadable: $UPSTREAM_REGISTRY" >&2
+    exit 1
+  }
   SEARCH_FILES+=("$UPSTREAM_REGISTRY")
 fi
 
-if grep -F -- '<ENV_NAME> --value <secret>' "${SEARCH_FILES[@]}"; then
-  echo "keys set still advertises a secret-bearing argv flag" >&2
-  exit 1
-fi
+set +e
+grep -F -- '<ENV_NAME> --value <secret>' "${SEARCH_FILES[@]}"
+grep_status=$?
+set -e
+case "$grep_status" in
+  0)
+    echo "keys set still advertises a secret-bearing argv flag" >&2
+    exit 1
+    ;;
+  1) ;;
+  *)
+    echo "could not inspect every command registry for secret-bearing argv flags" >&2
+    exit 1
+    ;;
+esac

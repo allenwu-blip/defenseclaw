@@ -124,7 +124,7 @@ final class AppState {
             && scannerFixInFlight.isEmpty
             && connectorSetupInFlight.isEmpty
             && !enforcementInventoryInProgress
-            && !activity.entries.contains(where: { $0.status == .running })
+            && !activity.entries.contains(where: { $0.status.isActive })
     }
 
     // Self-update state (this Mac app)
@@ -254,6 +254,16 @@ final class AppState {
     /// Shared presentation signal for the main window's responsive
     /// sidebar/detail/inspector layout. Only the visible panel publishes it.
     var detailInspectorPresented = false
+    @ObservationIgnored private var detailInspectorReporters: Set<UUID> = []
+
+    func reportDetailInspector(_ reporter: UUID, isPresented: Bool) {
+        if isPresented {
+            detailInspectorReporters.insert(reporter)
+        } else {
+            detailInspectorReporters.remove(reporter)
+        }
+        detailInspectorPresented = !detailInspectorReporters.isEmpty
+    }
 
     // Settings (mirrored via @AppStorage in views; defaults here)
     @ObservationIgnored @AppStorage(SettingsKeys.pulseInterval) var pulseInterval: Double = 5
@@ -871,6 +881,11 @@ final class AppState {
 
     /// Severity-wide dismissal with the same cross-runtime confirmation bridge.
     func dismissViaCLI(severity: Severity?) async {
+        guard !ackInProgress else { return }
+        ackInProgress = true
+        defer { ackInProgress = false }
+        let generation = installationGeneration
+
         ackError = nil
         let invocation = AlertDispositionCommand.dismiss(severity: severity?.rawValue)
         let result = await runCommand(
@@ -881,6 +896,7 @@ final class AppState {
             origin: "Alerts",
             successEffects: ["Alert queue updated"]
         )
+        guard installationSnapshotIsCurrent(generation) else { return }
         if !result.succeeded {
             ackError = "alerts dismiss \(severity?.rawValue ?? "all") failed (exit \(result.exitCode))"
         }

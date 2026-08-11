@@ -22,9 +22,20 @@ struct StructuredDetailParserTests {
         leadingRedactionFallsBackToRawDetails()
         safeMetadataSkipsRedactionAttributes()
         redactedValueRemainsOneField()
+        deeplyNestedRedactionsAreBounded()
         quotedValuesRemainIntact()
         prettyJSONStillFormatsStructuredPayloads()
         print("StructuredDetailParserTests passed")
+    }
+
+    private static func deeplyNestedRedactionsAreBounded() {
+        var value = "1"
+        for _ in 0..<1_000 {
+            value = "<redacted Len=\(value)>"
+        }
+        let parsed = StructuredDetailParser.pairs("payload=\(value)")
+        expect(parsed.count == 1, "deeply nested redactions remain one field")
+        expect(parsed[0].1.hasPrefix("redacted"), "deep redaction rendering terminates safely")
     }
 
     private static func leadingRedactionFallsBackToRawDetails() {

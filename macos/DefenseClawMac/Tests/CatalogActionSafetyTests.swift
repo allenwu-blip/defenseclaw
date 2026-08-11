@@ -21,6 +21,16 @@ import Foundation
 struct CatalogActionSafetyTests {
     static func main() async {
         CLIProcessGroupLauncher.execIfRequested()
+        let defaults = UserDefaults.standard
+        let previousOverride = defaults.string(forKey: CLIRunner.pathOverrideKey)
+        defaults.removeObject(forKey: CLIRunner.pathOverrideKey)
+        defer {
+            if let previousOverride {
+                defaults.set(previousOverride, forKey: CLIRunner.pathOverrideKey)
+            } else {
+                defaults.removeObject(forKey: CLIRunner.pathOverrideKey)
+            }
+        }
         scanActionsRemainOneClickButAreMutations()
         informationalActionsRemainNonMutating()
         auditCorruptionClassifierIsExact()
@@ -165,11 +175,21 @@ struct CatalogActionSafetyTests {
         }
         setenv("CATALOG_TEST_FAILURE", "rebind", 1)
         defer { unsetenv("CATALOG_TEST_FAILURE") }
+        let ready = first.root.appendingPathComponent("rebind-ready")
+        let release = first.root.appendingPathComponent("rebind-release")
+        setenv("CATALOG_TEST_READY", ready.path, 1)
+        setenv("CATALOG_TEST_RELEASE", release.path, 1)
+        defer {
+            unsetenv("CATALOG_TEST_READY")
+            unsetenv("CATALOG_TEST_RELEASE")
+        }
         let runner = CLIRunner(context: first.context)
 
         let load = Task { try await CatalogCLI.plugins(using: runner) }
-        try? await Task.sleep(for: .milliseconds(100))
+        let loadStarted = await waitForFile(ready)
+        expect(loadStarted, "catalog fixture reaches the pinned load")
         await runner.rebind(to: second.context)
+        try? Data().write(to: release)
         do {
             _ = try await load.value
             fail("a catalog load cannot cross installations")
@@ -201,12 +221,22 @@ struct CatalogActionSafetyTests {
         }
         setenv("CATALOG_TEST_FAILURE", "rebind", 1)
         defer { unsetenv("CATALOG_TEST_FAILURE") }
+        let ready = first.root.appendingPathComponent("override-ready")
+        let release = first.root.appendingPathComponent("override-release")
+        setenv("CATALOG_TEST_READY", ready.path, 1)
+        setenv("CATALOG_TEST_RELEASE", release.path, 1)
+        defer {
+            unsetenv("CATALOG_TEST_READY")
+            unsetenv("CATALOG_TEST_RELEASE")
+        }
 
         let load = Task {
             try await CatalogCLI.plugins(using: CLIRunner(context: first.context))
         }
-        try? await Task.sleep(for: .milliseconds(100))
+        let loadStarted = await waitForFile(ready)
+        expect(loadStarted, "catalog fixture reaches the pinned binary")
         defaults.set(second.binaryURL.path, forKey: CLIRunner.pathOverrideKey)
+        try? Data().write(to: release)
         do {
             let listing = try await load.value
             expect(listing.auditHistoryUnavailable, "the pinned binary completes degraded loading")
@@ -225,6 +255,14 @@ struct CatalogActionSafetyTests {
             atPath: FileManager.default.temporaryDirectory.path
         )) ?? []
         return Set(values.filter { $0.hasPrefix(prefix) })
+    }
+
+    private static func waitForFile(_ url: URL, attempts: Int = 200) async -> Bool {
+        for _ in 0..<attempts {
+            if FileManager.default.fileExists(atPath: url.path) { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
     }
 
     private static func actionAndInvocation(
@@ -266,7 +304,7 @@ struct CatalogActionSafetyTests {
         Foundation.exit(1)
     }
 
-    private final class CatalogFixture {
+    private struct CatalogFixture {
         let root: URL
         let context: InstallationContext
         let binaryURL: URL
@@ -302,7 +340,17 @@ struct CatalogActionSafetyTests {
               exit 1
             fi
             if [ "$DEFENSECLAW_HOME" = "\(home.path)" ]; then
-              if [ "${CATALOG_TEST_FAILURE:-}" = "rebind" ]; then sleep 1; fi
+              if [ "${CATALOG_TEST_FAILURE:-}" = "rebind" ]; then
+                [ -n "${CATALOG_TEST_READY:-}" ]
+                [ -n "${CATALOG_TEST_RELEASE:-}" ]
+                printf '%s\n' ready > "$CATALOG_TEST_READY"
+                attempts=0
+                while [ ! -f "$CATALOG_TEST_RELEASE" ] && [ "$attempts" -lt 500 ]; do
+                  sleep 0.01
+                  attempts=$((attempts + 1))
+                done
+                [ -f "$CATALOG_TEST_RELEASE" ]
+              fi
               printf '%s\\n' 'Failed to open audit store: database disk image is malformed' >&2
               exit 1
             fi

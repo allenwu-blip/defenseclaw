@@ -16,20 +16,33 @@
 
 import Foundation
 
-// Minimal standalone-test dependency for InventoryOutputParser. The app target
-// supplies the production limit from DataLayer/CLIRunner.swift.
-enum CLIOutputLimits {
-    static let maximumOutputBytes = 16 * 1024 * 1024
-}
-
 @main
 struct InventoryCapabilityWarningTests {
     static func main() {
         filtersCapabilityNotesAcrossConnectors()
         preservesRealFailuresAndDiagnostics()
         rejectsNearMatches()
+        rejectsOverlappingAggregateWarningShapes()
         supportsLegacySummaryCounts()
         print("InventoryCapabilityWarningTests passed")
+    }
+
+    private static func rejectsOverlappingAggregateWarningShapes() {
+        let overlap = "Warning: connector inventory command(s) failed"
+        let malformed = InventoryOutputParseResult(documents: [], diagnostics: overlap)
+        expect(
+            InventoryOutputParser.userFacingDiagnostics(from: malformed) == overlap,
+            "overlapping prefix and suffix text remains a diagnostic instead of trapping"
+        )
+
+        for count in ["0", "1", "12"] {
+            let warning = "Warning: \(count) connector inventory command(s) failed"
+            let valid = InventoryOutputParseResult(documents: [], diagnostics: warning)
+            expect(
+                InventoryOutputParser.userFacingDiagnostics(from: valid).isEmpty,
+                "a numeric aggregate warning is recognized"
+            )
+        }
     }
 
     private static func filtersCapabilityNotesAcrossConnectors() {

@@ -23,6 +23,7 @@
 
 import AppKit
 import Foundation
+import Security
 
 struct ReleaseInfo: Sendable, Equatable {
     var tag: String          // e.g. "v0.3.1"
@@ -38,6 +39,9 @@ struct RuntimeInstallerInfo: Sendable, Equatable {
     var tag: String
     var assetURL: URL
     var assetSHA256: String
+    var checksumsURL: URL
+    var checksumSignatureURL: URL
+    var checksumCertificateURL: URL
     var releaseURL: URL
 
     var localFileName: String {
@@ -47,7 +51,27 @@ struct RuntimeInstallerInfo: Sendable, Equatable {
     var downloadCommand: String {
         let destination = "$HOME/Downloads/\(localFileName)"
         let temporary = destination + ".download"
-        return "tmp=\"\(temporary)\"; dest=\"\(destination)\"; /usr/bin/curl -fL --proto '=https' --tlsv1.2 --output \"$tmp\" '\(assetURL.absoluteString)' && actual=\"$(/usr/bin/shasum -a 256 \"$tmp\" | /usr/bin/awk '{print $1}')\" && test \"$actual\" = '\(assetSHA256)' && /bin/mv -f \"$tmp\" \"$dest\""
+        let manifest = destination + ".checksums.txt"
+        let signature = manifest + ".sig"
+        let certificate = manifest + ".pem"
+        return [
+            "tmp=\"\(temporary)\"",
+            "dest=\"\(destination)\"",
+            "manifest=\"\(manifest)\"",
+            "signature=\"\(signature)\"",
+            "certificate=\"\(certificate)\"",
+            "cosign=\"$(command -v cosign)\"",
+            "/usr/bin/curl -fL --proto '=https' --tlsv1.2 --output \"$manifest\" '\(checksumsURL.absoluteString)'",
+            "/usr/bin/curl -fL --proto '=https' --tlsv1.2 --output \"$signature\" '\(checksumSignatureURL.absoluteString)'",
+            "/usr/bin/curl -fL --proto '=https' --tlsv1.2 --output \"$certificate\" '\(checksumCertificateURL.absoluteString)'",
+            "\"$cosign\" verify-blob --certificate \"$certificate\" --signature \"$signature\" --certificate-identity 'https://github.com/cisco-ai-defense/defenseclaw/.github/workflows/release.yaml@refs/heads/main' --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \"$manifest\" >/dev/null",
+            "expected=\"$(/usr/bin/awk '$2 == \"install.sh\" { count += 1; digest = $1 } END { if (count != 1 || digest !~ /^[0-9A-Fa-f]{64}$/) exit 1; print tolower(digest) }' \"$manifest\")\"",
+            "test \"$expected\" = '\(assetSHA256)'",
+            "/usr/bin/curl -fL --proto '=https' --tlsv1.2 --output \"$tmp\" '\(assetURL.absoluteString)'",
+            "actual=\"$(/usr/bin/shasum -a 256 \"$tmp\" | /usr/bin/awk '{print $1}')\"",
+            "test \"$actual\" = \"$expected\"",
+            "/bin/mv -f \"$tmp\" \"$dest\"",
+        ].joined(separator: " && ")
     }
 
     var reviewCommand: String {
@@ -77,10 +101,35 @@ actor UpdateChecker {
     /// The underlying DefenseClaw runtime (CLI + gateway) — upgraded via
     /// `defenseclaw upgrade`, but version-checked against its releases here.
     static let runtimeRepo = "cisco-ai-defense/defenseclaw"
-    nonisolated static let expectedBundleIdentifier = "com.keitheobrien.DefenseClawMac"
-    nonisolated static let expectedTeamIdentifier = "9R236BB67S"
-    nonisolated static let expectedCodeRequirement =
-        #"anchor apple generic and identifier "com.keitheobrien.DefenseClawMac" and certificate leaf[subject.OU] = "9R236BB67S""#
+    nonisolated static let expectedBundleIdentifier = "com.cisco.defenseclaw.macos"
+
+    nonisolated static func expectedCodeRequirement(teamIdentifier: String) -> String? {
+        guard teamIdentifier.range(
+            of: #"^[A-Z0-9]{10}$"#,
+            options: .regularExpression
+        ) != nil else { return nil }
+        return #"anchor apple generic and identifier "\#(expectedBundleIdentifier)" and certificate leaf[subject.OU] = "\#(teamIdentifier)""#
+    }
+
+    /// Self-update trusts the same Developer ID team as the currently running,
+    /// notarized Cisco build. Ad-hoc builds have no TeamIdentifier and fail
+    /// closed instead of accepting an unverified update channel.
+    nonisolated static func signingTeamIdentifier(at bundleURL: URL) -> String? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(bundleURL as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        ) == errSecSuccess,
+        let information = signingInformation as? [String: Any],
+        let teamIdentifier = information[kSecCodeInfoTeamIdentifier as String] as? String,
+        expectedCodeRequirement(teamIdentifier: teamIdentifier) != nil
+        else { return nil }
+        return teamIdentifier
+    }
 
     static var currentVersion: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
@@ -115,9 +164,10 @@ actor UpdateChecker {
         await fetchLatest(repo: Self.runtimeRepo, requireSelfUpdateAsset: false)
     }
 
-    /// Latest release-owned shell installer. Unlike a raw branch URL, this
-    /// asset is bound to the release's GitHub-provided SHA-256 digest; the
-    /// generated Terminal commands verify that digest before both review and
+    /// Latest release-owned shell installer. Unlike a raw branch URL, the
+    /// generated Terminal command authenticates the release checksum manifest
+    /// with its Sigstore identity, requires its exact install.sh binding to
+    /// match GitHub's asset digest, then verifies the bytes before review and
     /// execution.
     func latestRuntimeInstaller() async -> RuntimeInstallerInfo? {
         guard let url = URL(
@@ -182,7 +232,7 @@ actor UpdateChecker {
     }
 
     nonisolated static func isEligibleSelfUpdateAsset(name: String, version: String) -> Bool {
-        name == "DefenseClawMac-\(version).zip"
+        name == "DefenseClawMac-\(version)-macos-arm64.zip"
     }
 
     nonisolated static func selectSelfUpdateAsset(
@@ -203,12 +253,27 @@ actor UpdateChecker {
             return nil
         }
         let assets = (dict["assets"] as? [[String: Any]]) ?? []
-        guard let asset = assets.first(where: { ($0["name"] as? String) == "install.sh" }),
-              let urlString = asset["browser_download_url"] as? String,
-              let assetURL = URL(string: urlString),
-              assetURL.scheme == "https",
-              assetURL.host == "github.com",
-              assetURL.path == "/cisco-ai-defense/defenseclaw/releases/download/\(tag)/install.sh"
+        func exactAsset(_ name: String) -> ([String: Any], URL)? {
+            let matches = assets.filter { ($0["name"] as? String) == name }
+            guard matches.count == 1,
+                  let asset = matches.first,
+                  let urlString = asset["browser_download_url"] as? String,
+                  let url = URL(string: urlString),
+                  url.scheme == "https",
+                  url.host == "github.com",
+                  url.user == nil,
+                  url.password == nil,
+                  url.port == nil,
+                  url.query == nil,
+                  url.fragment == nil,
+                  url.path == "/cisco-ai-defense/defenseclaw/releases/download/\(tag)/\(name)"
+            else { return nil }
+            return (asset, url)
+        }
+        guard let (asset, assetURL) = exactAsset("install.sh"),
+              let (_, checksumsURL) = exactAsset("checksums.txt"),
+              let (_, checksumSignatureURL) = exactAsset("checksums.txt.sig"),
+              let (_, checksumCertificateURL) = exactAsset("checksums.txt.pem")
         else { return nil }
         let digest = ((asset["digest"] as? String) ?? "")
             .replacingOccurrences(of: "sha256:", with: "")
@@ -222,6 +287,9 @@ actor UpdateChecker {
             tag: tag,
             assetURL: assetURL,
             assetSHA256: digest,
+            checksumsURL: checksumsURL,
+            checksumSignatureURL: checksumSignatureURL,
+            checksumCertificateURL: checksumCertificateURL,
             releaseURL: releaseURL
         )
     }
@@ -252,6 +320,12 @@ actor UpdateChecker {
         }
         guard release.assetSHA256.count == 64 else {
             return "The release asset has no SHA-256 digest; refusing to install an unverifiable update."
+        }
+        guard let teamIdentifier = Self.signingTeamIdentifier(at: Bundle.main.bundleURL),
+              let expectedCodeRequirement = Self.expectedCodeRequirement(
+                  teamIdentifier: teamIdentifier
+              ) else {
+            return "Self-update is disabled because this app is not signed by a trusted Apple Developer ID team."
         }
 
         progress(.downloading)
@@ -318,7 +392,7 @@ actor UpdateChecker {
         let signature = await Self.runProcess(
             "/usr/bin/codesign", [
                 "--verify", "--deep", "--strict", "--verbose=2",
-                "-R=\(Self.expectedCodeRequirement)", newApp.path,
+                "-R=\(expectedCodeRequirement)", newApp.path,
             ]
         )
         guard signature.exitCode == 0 else {
@@ -348,7 +422,7 @@ actor UpdateChecker {
         let installedSignature = await Self.runProcess(
             "/usr/bin/codesign", [
                 "--verify", "--deep", "--strict", "--verbose=2",
-                "-R=\(Self.expectedCodeRequirement)", targetPath,
+                "-R=\(expectedCodeRequirement)", targetPath,
             ]
         )
         if installedSignature.exitCode != 0 {

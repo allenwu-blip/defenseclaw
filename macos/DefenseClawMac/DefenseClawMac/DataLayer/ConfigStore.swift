@@ -219,20 +219,36 @@ enum MiniYAML {
     }
 
     private static func stripInlineComment(_ value: String) -> String {
+        guard let comment = inlineCommentIndex(in: value) else { return value }
+        return String(value[..<comment])
+    }
+
+    private static func inlineCommentIndex(in value: String) -> String.Index? {
         var inSingle = false
         var inDouble = false
+        var escaped = false
         var previous: Character?
         for index in value.indices {
             let character = value[index]
+            if escaped {
+                escaped = false
+                previous = character
+                continue
+            }
+            if character == "\\" && inDouble {
+                escaped = true
+                previous = character
+                continue
+            }
             if character == "'" && !inDouble { inSingle.toggle() }
             if character == "\"" && !inSingle { inDouble.toggle() }
             if character == "#" && !inSingle && !inDouble,
                previous?.isWhitespace == true {
-                return String(value[..<index])
+                return index
             }
             previous = character
         }
-        return value
+        return nil
     }
 
     private static func nextIndent(_ lines: [(indent: Int, content: String)], _ index: Int, greaterThan indent: Int) -> Int {
@@ -258,30 +274,7 @@ enum MiniYAML {
     }
 
     private static func unquote(_ s: String) -> String {
-        var t = ""
-        var inSingle = false
-        var inDouble = false
-        var escaped = false
-        for character in s {
-            if escaped {
-                t.append(character)
-                escaped = false
-                continue
-            }
-            if character == "\\" && inDouble {
-                t.append(character)
-                escaped = true
-                continue
-            }
-            if character == "'" && !inDouble { inSingle.toggle() }
-            if character == "\"" && !inSingle { inDouble.toggle() }
-            if character == "#" && !inSingle && !inDouble,
-               t.last?.isWhitespace == true {
-                break
-            }
-            t.append(character)
-        }
-        t = t.trimmingCharacters(in: .whitespaces)
+        var t = stripInlineComment(s).trimmingCharacters(in: .whitespaces)
         if t.count >= 2, (t.hasPrefix("\"") && t.hasSuffix("\"")) || (t.hasPrefix("'") && t.hasSuffix("'")) {
             t = String(t.dropFirst().dropLast())
         }

@@ -171,7 +171,6 @@ struct SkillsView: View {
                 ? CatalogCLI.auditHistoryUnavailableMessage
                 : nil
             if listing.auditHistoryUnavailable {
-                invocation = nil
                 showingInstall = false
             }
             error = nil
@@ -181,7 +180,6 @@ struct SkillsView: View {
             warning = nil
             actionsAvailable = false
             loadedBinaryPath = nil
-            invocation = nil
             showingInstall = false
         }
         loaded = true
@@ -283,7 +281,6 @@ struct MCPsView: View {
                 ? CatalogCLI.auditHistoryUnavailableMessage
                 : nil
             if listing.auditHistoryUnavailable {
-                invocation = nil
                 showingSetForm = false
             }
             error = nil
@@ -293,7 +290,6 @@ struct MCPsView: View {
             warning = nil
             actionsAvailable = false
             loadedBinaryPath = nil
-            invocation = nil
             showingSetForm = false
         }
         loaded = true
@@ -390,7 +386,6 @@ struct PluginsView: View {
                 ? CatalogCLI.auditHistoryUnavailableMessage
                 : nil
             if listing.auditHistoryUnavailable {
-                invocation = nil
                 showingInstall = false
             }
             error = nil
@@ -400,7 +395,6 @@ struct PluginsView: View {
             warning = nil
             actionsAvailable = false
             loadedBinaryPath = nil
-            invocation = nil
             showingInstall = false
         }
         loaded = true
@@ -994,15 +988,20 @@ private struct CatalogContainer<Content: View>: View {
                 content
             }
         }
+        .onChange(of: warning) { _, _ in recoveryStatus = nil }
     }
 
     private func copyRecoveryCommand() {
         guard let recoveryCommand else { return }
+        let expectedWarning = warning
+        recoveryStatus = nil
         Task {
             guard let command = await recoveryCommand() else {
-                error = "Could not prepare an audit repair command for this DefenseClaw installation. Refresh the panel and verify the installation is writable."
+                guard warning == expectedWarning else { return }
+                recoveryStatus = "Could not prepare an audit repair command for this DefenseClaw installation. Refresh the panel and verify the installation is writable."
                 return
             }
+            guard warning == expectedWarning else { return }
             copyToPasteboard(command)
             recoveryStatus = "Copied. Quit DefenseClaw completely, then run the command in Terminal. The runtime preserves the corrupt database family before creating a healthy store."
         }

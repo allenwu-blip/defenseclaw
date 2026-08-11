@@ -446,6 +446,29 @@ struct SetupDefinitionsParityTests {
                 "\(host) emits the explicit local TLS opt-out"
             )
         }
+
+        for host in [
+            "localhost.attacker.example",
+            "127.0.0.1.attacker.example",
+            "notlocalhost",
+        ] {
+            let values = [
+                "action": "add",
+                "preset": "splunk-hec",
+                "host": host,
+                "port": "8088",
+                "verify-tls-hec": "no",
+            ]
+            expect(
+                TUIWizards.observabilityValidation(values) != nil,
+                "\(host) cannot impersonate a loopback host"
+            )
+            expect(
+                !TUIWizards.observabilityCommands(values, false)[0]
+                    .contains("--no-verify-tls"),
+                "\(host) cannot emit a TLS opt-out"
+            )
+        }
     }
 
     private static func secureSetupSecretsUseChildEnvironment() {
@@ -470,7 +493,13 @@ struct SetupDefinitionsParityTests {
             expect(message == nil, "\(item.id) accepts its child-environment secret transport")
             let environment = wizard.secretEnvironment?(item.values) ?? [:]
             expect(environment[item.environmentKey] == "private-value", "\(item.id) exports its documented child environment key")
-            let arguments = wizard.commandBuilder?(item.values, false).flatMap { $0 } ?? []
+            guard let commandBuilder = wizard.commandBuilder else {
+                expect(false, "\(item.id) has a command builder")
+                continue
+            }
+            let commands = commandBuilder(item.values, false)
+            expect(!commands.isEmpty, "\(item.id) emits at least one setup command")
+            let arguments = commands.flatMap { $0 }
             expect(!arguments.contains("private-value"), "\(item.id) secret never enters argv")
 
             var withoutSecret = item.values

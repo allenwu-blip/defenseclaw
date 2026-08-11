@@ -394,7 +394,7 @@ struct FirstRunView: View {
 
     private var scriptInstaller: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Download the release installer, verify its published SHA-256 digest, review the verified local file, then run it from Terminal. The Mac app does not execute a remote script automatically.")
+            Text("Download the release installer, authenticate its signed checksum manifest, review the verified local file, then run it from Terminal. The Mac app does not execute a remote script automatically.")
                 .font(.callout).foregroundStyle(.secondary)
             if installerMetadataLoading {
                 HStack(spacing: 6) {
@@ -438,9 +438,10 @@ struct FirstRunView: View {
         guard !installerMetadataLoading else { return }
         installerMetadataLoading = true
         installerMetadataError = nil
+        installerRelease = nil
         defer { installerMetadataLoading = false }
         guard let release = await appState.updater.latestRuntimeInstaller() else {
-            installerMetadataError = "The latest release has no digest-bound install.sh asset. Use the official release page and verify its published checksum manually."
+            installerMetadataError = "The latest release has no signed checksum metadata for install.sh. Use the official release page and verify its published signature and checksum manually."
             return
         }
         installerRelease = release

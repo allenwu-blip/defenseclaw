@@ -105,6 +105,8 @@ def authenticated_direct_requirements(
             fail("authenticated source contains an invalid direct requirement")
         requirement_name, requirement_url, marker = match.groups()
         applies = marker_applies(marker)
+        if applies is None:
+            fail(f"authenticated source contains an unsupported marker for {requirement_name}")
         if applies is False:
             continue
         parsed = urlsplit(requirement_url)

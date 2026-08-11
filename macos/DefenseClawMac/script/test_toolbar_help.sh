@@ -27,6 +27,7 @@ CLANG_MODULE_CACHE_PATH="$MODULE_CACHE" xcrun swiftc \
   -parse-as-library \
   -module-cache-path "$MODULE_CACHE" \
   "$ROOT/Tests/ToolbarHelpContractTests.swift" \
+  "$ROOT/DefenseClawMac/DesignSystem/QuickHoverHelp.swift" \
   -o "$BUILD_DIR/ToolbarHelpContractTests"
 
 "$BUILD_DIR/ToolbarHelpContractTests" "$ROOT"

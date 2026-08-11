@@ -206,7 +206,7 @@ struct ActivityView: View {
 
     private func commandInspector(_ entry: CommandActivityEntry) -> some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .top) {
                     Text(entry.title).font(.headline).lineLimit(2)
                     Spacer(minLength: 8)

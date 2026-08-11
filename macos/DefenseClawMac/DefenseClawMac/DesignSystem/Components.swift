@@ -21,16 +21,19 @@ import SwiftUI
 
 private struct DetailInspectorPresentationReporter: ViewModifier {
     @Environment(AppState.self) private var appState
+    @State private var reporterID = UUID()
     let isPresented: Bool
 
     func body(content: Content) -> some View {
         content
-            .onAppear { appState.detailInspectorPresented = isPresented }
+            .onAppear {
+                appState.reportDetailInspector(reporterID, isPresented: isPresented)
+            }
             .onChange(of: isPresented) { _, presented in
-                appState.detailInspectorPresented = presented
+                appState.reportDetailInspector(reporterID, isPresented: presented)
             }
             .onDisappear {
-                if isPresented { appState.detailInspectorPresented = false }
+                appState.reportDetailInspector(reporterID, isPresented: false)
             }
     }
 }
