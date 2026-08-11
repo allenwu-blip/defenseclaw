@@ -14,6 +14,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 HARNESS = REPO / "scripts" / "live-connector-e2e" / "upgrade-regression.sh"
+RADAR_WORKFLOW = REPO / ".github" / "workflows" / "connector-version-radar.yml"
 PERSIST = REPO / "scripts" / "live-connector-e2e" / "lib" / "persistent-macos.sh"
 REPORT = REPO / "scripts" / "live-connector-e2e" / "report.py"
 ANTIGRAVITY_DRIVER = REPO / "scripts" / "live-connector-e2e" / "drivers" / "antigravity.sh"
@@ -73,6 +74,41 @@ def test_harness_cli_exposes_workflow_contract() -> None:
         "--classification-output",
     ):
         assert flag in proc.stdout
+
+
+def test_radar_candidate_execution_requires_isolated_runner_opt_in() -> None:
+    workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
+    live_start = workflow.index("  live:\n")
+    live_end = workflow.index("  report:\n", live_start)
+    live = workflow[live_start:live_end]
+
+    assert "vars.CONNECTOR_RADAR_LIVE_ENABLED == 'true'" in live
+    assert "runs-on: [self-hosted, macOS, ARM64, connector-lab-ephemeral, defenseclaw-macos]" in live
+    assert "runs-on: [self-hosted, macOS, ARM64, connector-lab, defenseclaw-macos]" not in live
+
+
+def test_radar_upload_excludes_raw_candidate_and_gateway_evidence() -> None:
+    workflow = RADAR_WORKFLOW.read_text(encoding="utf-8")
+    upload_start = workflow.index("      - name: Upload live evidence\n")
+    upload_end = workflow.index("      - name: Propagate harness classification\n", upload_start)
+    upload = workflow[upload_start:upload_end]
+
+    result_root = "${{ steps.harness.outputs.result_root }}"
+    assert f"path: {result_root}\n" not in upload
+    assert f"{result_root}/classification.json" in upload
+    assert f"{result_root}/results.jsonl" in upload
+    assert f"{result_root}/radar-state-after.json" in upload
+    assert "include-hidden-files: true" not in upload
+    uploaded_paths = {
+        line.strip()
+        for line in upload.splitlines()
+        if line.strip().startswith(result_root)
+    }
+    assert uploaded_paths == {
+        f"{result_root}/classification.json",
+        f"{result_root}/results.jsonl",
+        f"{result_root}/radar-state-after.json",
+    }
 
 
 def test_harness_never_globally_installs_or_removes_auth_homes() -> None:

@@ -1,7 +1,9 @@
 # Daily upstream connector version radar and isolated macOS upgrade regression
-# harness. This workflow is intentionally separate from connector-live-e2e.yml:
-# the existing hosted Layer A contract matrix remains unchanged, while only
-# trusted default-branch code can reach the persistent connector-lab runner.
+# harness. Detection may use the persistent connector lab, but untrusted
+# candidate binaries are disabled by default and may run only after repository
+# admins provision a dedicated ephemeral runner label plus the explicit opt-in
+# variable below. This workflow remains separate from connector-live-e2e.yml so
+# the hosted Layer A contract matrix is unchanged.
 
 name: Connector Version Radar
 
@@ -33,8 +35,8 @@ on:
         type: string
         default: ""
 
-# The lab is persistent. Prevent overlap and never cancel a harness midway
-# through connector config restoration. GitHub retains at most one pending run.
+# Prevent overlap and never cancel detection or a harness midway through state
+# handling. GitHub retains at most one pending run.
 concurrency:
   group: connector-version-radar-main
   cancel-in-progress: false
@@ -154,8 +156,13 @@ jobs:
   live:
     name: Upgrade ${{ matrix.connector }} ${{ inputs.baseline_version || matrix.baseline_version }} to ${{ inputs.candidate_version || matrix.candidate_version }}
     needs: detect
-    if: ${{ needs.detect.outputs.any_new == 'true' && github.ref == 'refs/heads/main' }}
-    runs-on: [self-hosted, macOS, ARM64, connector-lab, defenseclaw-macos]
+    # Candidate releases are untrusted code. CONNECTOR_RADAR_LIVE_ENABLED must
+    # remain unset/false until admins provision the dedicated ephemeral label
+    # with an isolated OS account, HOME/Keychain, scoped credentials, and
+    # teardown-after-one-job semantics. The persistent detector runner is not
+    # an acceptable fallback for this job.
+    if: ${{ needs.detect.outputs.any_new == 'true' && github.ref == 'refs/heads/main' && vars.CONNECTOR_RADAR_LIVE_ENABLED == 'true' }}
+    runs-on: [self-hosted, macOS, ARM64, connector-lab-ephemeral, defenseclaw-macos]
     timeout-minutes: 45
     permissions:
       contents: read
@@ -306,10 +313,16 @@ jobs:
         uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: connector-version-radar-${{ matrix.connector }}-${{ steps.versions.outputs.candidate }}
-          path: ${{ steps.harness.outputs.result_root }}
+          # Upload only bounded, structured classifications. Candidate
+          # stdout/stderr, gateway logs, SQLite databases, connector config,
+          # and hidden files can contain credentials and remain excluded.
+          path: |
+            ${{ steps.harness.outputs.result_root }}/classification.json
+            ${{ steps.harness.outputs.result_root }}/results.jsonl
+            ${{ steps.harness.outputs.result_root }}/radar-state-after.json
           if-no-files-found: error
           retention-days: 30
-          include-hidden-files: true
+          include-hidden-files: false
 
       - name: Propagate harness classification
         if: ${{ always() }}
