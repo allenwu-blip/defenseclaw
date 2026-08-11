@@ -142,10 +142,20 @@ int llama_engine_logprobs(const int *tokens, int len, float *logprobs_out) {
 
     llama_memory_clear(llama_get_memory(g_llama->ctx), true);
 
-    /* Decode entire sequence at once */
-    struct llama_batch batch = llama_batch_get_one((llama_token *)tokens, len);
+    /* Decode with logits enabled for ALL positions */
+    struct llama_batch batch = llama_batch_init(len, 0, 1);
+    for (int i = 0; i < len; i++) {
+        batch.token[i] = tokens[i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        batch.logits[i] = 1;
+    }
+    batch.n_tokens = len;
+
     if (llama_decode(g_llama->ctx, batch) != 0) {
         fprintf(stderr, "llama_inference: logprobs decode failed\n");
+        llama_batch_free(batch);
         return -1;
     }
 
@@ -155,7 +165,7 @@ int llama_engine_logprobs(const int *tokens, int len, float *logprobs_out) {
         float *logits = llama_get_logits_ith(g_llama->ctx, i);
         if (!logits) { logprobs_out[i] = 0; continue; }
 
-        /* Softmax to get probability of next token */
+        /* log P(next_token) = logit[next] - log_sum_exp(logits) */
         float max_val = -1e30f;
         for (int v = 0; v < n_vocab; v++) if (logits[v] > max_val) max_val = logits[v];
         double sum = 0;
@@ -164,6 +174,7 @@ int llama_engine_logprobs(const int *tokens, int len, float *logprobs_out) {
         logprobs_out[i] = logits[tokens[i + 1]] - log_sum;
     }
 
+    llama_batch_free(batch);
     return 0;
 }
 
