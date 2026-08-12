@@ -8,13 +8,12 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build windows
-
 package managed
 
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -80,5 +79,18 @@ func TestCompareVersionsOrdersNumericallyAndDemotesJunk(t *testing.T) {
 	}
 	if compareVersions("backup", "0.0.0.1") >= 0 {
 		t.Fatal("an unparsable directory outranked a real version")
+	}
+}
+
+func TestSortVersionsDescendingKeepsEqualNamesInPlace(t *testing.T) {
+	// Names that compare equal carry no version signal to order them by,
+	// so the sort has to leave ReadDir's ordering alone rather than
+	// reach for a tiebreaker that would reorder 1.2 against 1.2.0.
+	names := []string{"backup", "old", "1.2", "1.2.0"}
+	sortVersionsDescending(names)
+
+	want := []string{"1.2", "1.2.0", "backup", "old"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("sorted to %v, want %v", names, want)
 	}
 }
