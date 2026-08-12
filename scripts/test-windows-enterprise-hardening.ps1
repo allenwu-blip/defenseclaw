@@ -4028,8 +4028,7 @@ function Initialize-ProtectedCertificationSources {
 function Get-AgentBinaryTrustIdentity(
     [string]$Path,
     [ValidateSet('codex', 'claude')]
-    [string]$Agent,
-    [switch]$AllowMissingFileVersion
+    [string]$Agent
 ) {
     $resolved = Assert-SourcePathHasNoReparse $Path "$Agent application-control"
     $signature = Get-AuthenticodeSignature -LiteralPath $resolved
@@ -4056,16 +4055,8 @@ function Get-AgentBinaryTrustIdentity(
         $fileVersionText,
         '(?<!\d)(\d+\.\d+\.\d+(?:\.\d+)?)(?!\d)'
     )
-    if (-not $match.Success -and
-        -not (
-            $Agent -eq 'codex' -and
-            $AllowMissingFileVersion -and
-            [string]::IsNullOrWhiteSpace($fileVersionText)
-        )) {
-        throw "$Agent application-control artifact has no parseable file version: $fileVersionText"
-    }
     $version = $null
-    $versionSource = 'protected_active_user_runtime_probe_required'
+    $versionSource = 'agent_version_probe'
     if ($match.Success) {
         try {
             $version = [Version]$match.Groups[1].Value
@@ -4073,6 +4064,12 @@ function Get-AgentBinaryTrustIdentity(
         } catch {
             throw "$Agent application-control artifact has invalid file version: $fileVersionText"
         }
+    }
+    elseif ($Agent -ne 'codex') {
+        # The Codex CLI ships without PE VersionInfo whatever version it is, so
+        # its version comes from the contract's own probe. Claude carries one,
+        # and reading it here keeps the artifact check off the binary.
+        throw "$Agent application-control artifact has no parseable file version: $fileVersionText"
     }
     return [pscustomobject]@{
         agent = $Agent
@@ -4116,18 +4113,114 @@ function Get-CodexTrustedHookLauncherIdentity([string]$Path) {
     }
 }
 
+$script:ApprovedCodexVersion = $null
+
+# Every later phase records or compares the approved Codex version, and all of
+# them run after protected-approved-agent-runtimes establishes it. Reading it
+# early is an ordering mistake, so say so rather than compare against nothing.
+function Get-ApprovedCodexVersionText {
+    if ($null -eq $script:ApprovedCodexVersion) {
+        throw (
+            'the approved Codex version is not established yet; ' +
+            'Initialize-ProtectedCodexRuntime must run first'
+        )
+    }
+    return [string]$script:ApprovedCodexVersion.text
+}
+
+# The certified range comes from what the product publishes, not a number
+# pinned here. internal/gateway/connector/hook_contract.go is held to this
+# inventory by a Go test, so certification tracks the versions DefenseClaw
+# actually supports instead of drifting on every Codex release.
+function Get-CertifiedAgentContract([ValidateSet('codex', 'claude')][string]$Agent) {
+    $inventory = Join-Path `
+        (Split-Path -Parent $PSScriptRoot) `
+        'cli\defenseclaw\inventory\hook_contracts.json'
+    if (-not (Test-Path -LiteralPath $inventory -PathType Leaf)) {
+        throw "hook contract inventory is missing: $inventory"
+    }
+    $document = ConvertFrom-SingleJSONDocument `
+        ([IO.File]::ReadAllText((ConvertTo-CanonicalPath $inventory))) `
+        'hook contract inventory'
+    if ($document.connectors.PSObject.Properties.Name -notcontains $Agent) {
+        throw "hook contract inventory publishes no $Agent connector"
+    }
+    $connector = $document.connectors.$Agent
+    # Certification proves the contract a current agent resolves to, which is
+    # the one DefenseClaw falls back to when it cannot read a version.
+    $default = @($connector.contracts | Where-Object {
+        [bool]$_.default_for_unversioned
+    })
+    if ($default.Count -ne 1) {
+        throw (
+            "$Agent must publish exactly one default hook contract; " +
+            "got $($default.Count)"
+        )
+    }
+    $minimum = [string]$default[0].agent_version.min_inclusive
+    if ([string]::IsNullOrWhiteSpace($minimum)) {
+        throw (
+            "$Agent default hook contract $($default[0].contract_id) " +
+            'publishes no minimum version'
+        )
+    }
+    $maximum = [string]$default[0].agent_version.max_exclusive
+    return [pscustomobject]@{
+        agent = $Agent
+        contract_id = [string]$default[0].contract_id
+        probe = [string]$connector.version_probe
+        min_inclusive = [Version]$minimum
+        max_exclusive = if ([string]::IsNullOrWhiteSpace($maximum)) {
+            $null
+        } else {
+            [Version]$maximum
+        }
+    }
+}
+
+# Asks the artifact its own version the way the contract says to. Signature and
+# digest have already accepted this binary, and nothing else can report the
+# version of a CLI that carries no PE VersionInfo.
+function Get-AgentArtifactVersion(
+    [string]$Path,
+    [pscustomobject]$Contract,
+    [string]$Label
+) {
+    $arguments = @($Contract.probe -split '\s+' | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    })
+    if ($arguments.Count -lt 2) {
+        throw "$($Contract.agent) contract publishes no usable version probe: $($Contract.probe)"
+    }
+    $reported = (Invoke-NativeProcess `
+        -FilePath $Path `
+        -ArgumentList $arguments[1..($arguments.Count - 1)] `
+        -Label $Label `
+        -TimeoutSeconds 60).StdOut.Trim()
+    $match = [regex]::Match($reported, '(?<!\d)(\d+\.\d+\.\d+)(?!\d)')
+    if (-not $match.Success) {
+        throw (
+            "$($Contract.agent) artifact reported no parseable version from " +
+            "'$($Contract.probe)': $reported"
+        )
+    }
+    return [pscustomobject]@{
+        text = $reported
+        version = [Version]$match.Groups[1].Value
+    }
+}
+
 function Initialize-ProtectedCodexRuntime {
     $source = Assert-SourcePathHasNoReparse `
         $script:OriginalCodexSource `
-        'Codex 0.144.3'
+        'approved Codex'
     $sourceDigest = Get-FileDigest $source
     if ($sourceDigest -cne [string]$script:SourceDigests['codex']) {
         throw 'Codex source changed between preflight and protected runtime staging'
     }
     $approvedCodexIdentity = Get-AgentBinaryTrustIdentity `
         $source `
-        'codex' `
-        -AllowMissingFileVersion
+        'codex'
     $approvedClaudeIdentity = Get-AgentBinaryTrustIdentity `
         $script:OriginalClaudeSource `
         'claude'
@@ -4162,11 +4255,19 @@ function Initialize-ProtectedCodexRuntime {
             throw "$($identityCheck.identity.agent) source changed between preflight and protected staging"
         }
     }
-    if ($null -ne $approvedCodexIdentity.version -and
-        $approvedCodexIdentity.version.ToString(3) -cne '0.144.3') {
+    $codexContract = Get-CertifiedAgentContract 'codex'
+    $script:ApprovedCodexVersion = Get-AgentArtifactVersion `
+        $source `
+        $codexContract `
+        'approved-codex-version'
+    if ($script:ApprovedCodexVersion.version -lt $codexContract.min_inclusive -or
+        ($null -ne $codexContract.max_exclusive -and
+            $script:ApprovedCodexVersion.version -ge $codexContract.max_exclusive)) {
         throw (
-            'approved Codex certification artifact must be exact 0.144.3; ' +
-            "got $($approvedCodexIdentity.file_version)"
+            'approved Codex certification artifact is outside hook contract ' +
+            "$($codexContract.contract_id) " +
+            "[$($codexContract.min_inclusive), $($codexContract.max_exclusive)); " +
+            "got $($script:ApprovedCodexVersion.text)"
         )
     }
     if ($approvedClaudeIdentity.version -lt [Version]'2.1.152') {
@@ -4175,10 +4276,17 @@ function Initialize-ProtectedCodexRuntime {
             "got $($approvedClaudeIdentity.file_version)"
         )
     }
-    if ($rejectedCodexIdentity.version -ge [Version]'0.131.0') {
+    # The rejected fixture has to fall outside the certified contract, or the
+    # matrix proves nothing about refusing an agent DefenseClaw cannot govern.
+    $rejectedCodexVersion = Get-AgentArtifactVersion `
+        $script:OriginalRejectedCodexSource `
+        $codexContract `
+        'rejected-codex-version'
+    if ($rejectedCodexVersion.version -ge $codexContract.min_inclusive) {
         throw (
             'rejected Codex artifact must be an official signed release below ' +
-            "0.131.0; got $($rejectedCodexIdentity.file_version)"
+            "$($codexContract.min_inclusive), the minimum of hook contract " +
+            "$($codexContract.contract_id); got $($rejectedCodexVersion.text)"
         )
     }
     if ($rejectedClaudeIdentity.version -ge [Version]'2.1.152') {
@@ -4377,7 +4485,7 @@ public static class $probeClass
         [Text.Encoding]::UTF8.GetBytes($script:CodexRuntimeBinary)
     )
     $versionProbe = Invoke-ActiveUserPowerShell `
-        -Label 'codex-0.144.3-active-user-version' `
+        -Label 'approved-codex-active-user-version' `
         -Script @"
 `$ErrorActionPreference = 'Stop'
 `$binary = [Text.Encoding]::UTF8.GetString(
@@ -4393,11 +4501,12 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $version = ConvertFrom-SingleJSONDocument `
         $versionProbe.StdOut `
         'Codex active-user version'
-    if ([string]$version.version -cne 'codex-cli 0.144.3' -or
+    if ([string]$version.version -cne [string]$script:ApprovedCodexVersion.text -or
         [string]$version.sid -ne $script:PrimarySID) {
         throw (
-            'protected runtime is not exact Codex 0.144.3 under the target ' +
-            "medium token: version=$($version.version) sid=$($version.sid)"
+            'protected runtime is not the approved Codex ' +
+            "$($script:ApprovedCodexVersion.text) under the target medium " +
+            "token: version=$($version.version) sid=$($version.sid)"
         )
     }
     $trustedLauncherVersion = $null
@@ -4424,10 +4533,12 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
         $trustedLauncherVersion = ConvertFrom-SingleJSONDocument `
             $launcherVersionProbe.StdOut `
             'Codex trusted hook launcher active-user version'
-        if ([string]$trustedLauncherVersion.version -cne 'codex-cli 0.144.3' -or
+        if ([string]$trustedLauncherVersion.version -cne
+                [string]$script:ApprovedCodexVersion.text -or
             [string]$trustedLauncherVersion.sid -ne $script:PrimarySID) {
             throw (
-                'trusted hook launcher is not a drop-in Codex 0.144.3 CLI ' +
+                'trusted hook launcher is not a drop-in Codex ' +
+                "$($script:ApprovedCodexVersion.text) CLI " +
                 "under the target medium token: version=" +
                 "$($trustedLauncherVersion.version) sid=" +
                 "$($trustedLauncherVersion.sid)"
@@ -4467,11 +4578,8 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
         codex_path = $script:CodexRuntimeBinary
         codex_sha256 = $sourceDigest
         codex_version = [string]$version.version
-        codex_version_source = if ($null -eq $approvedCodexIdentity.version) {
-            'protected_active_user_runtime_probe'
-        } else {
-            'pe_version_info_and_protected_active_user_runtime_probe'
-        }
+        codex_version_source = 'agent_version_probe_and_protected_active_user_runtime_probe'
+        codex_hook_contract = [string]$codexContract.contract_id
         codex_signer_subject = [string]$stagedSignature.SignerCertificate.Subject
         codex_trusted_hook_launcher_path =
             $script:CodexTrustedHookLauncherRuntimeBinary
@@ -4749,7 +4857,7 @@ foreach ($case in @(
     $approvedClaude = @(
         $rows | Where-Object { [string]$_.name -eq 'approved_claude' }
     )[0]
-    if ([string]$approvedCodex.stdout -cne 'codex-cli 0.144.3' -or
+    if ([string]$approvedCodex.stdout -cne (Get-ApprovedCodexVersionText) -or
         [string]$approvedClaude.stdout -notmatch
             '(?<!\d)2\.1\.(?:15[2-9]|1[6-9]\d|[2-9]\d{2,})(?!\d)') {
         throw 'approved portable clients did not report the certified versions'
@@ -4780,9 +4888,12 @@ foreach ($case in @(
         throw 'an unsigned custom client or fake shell executed and wrote its marker'
     }
     return [pscustomobject]@{
-        approved_portable_clients = @('codex 0.144.3', 'claude >=2.1.152')
+        approved_portable_clients = @(
+            (Get-ApprovedCodexVersionText),
+            'claude >=2.1.152'
+        )
         rejected_portable_clients = @(
-            'signed Codex <0.131.0',
+            'signed Codex below the certified hook contract',
             'signed Claude <2.1.152',
             'unsigned custom Codex',
             'unsigned custom Claude',
@@ -7429,7 +7540,7 @@ targets:
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
     connector: codex
-    agent_version: "codex-cli 0.144.3"
+    agent_version: "$(Get-ApprovedCodexVersionText)"
   - user_home: '$primaryHomeYAML'
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
@@ -7579,7 +7690,7 @@ targets:
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
     connector: codex
-    agent_version: "codex-cli 0.144.3"
+    agent_version: "$(Get-ApprovedCodexVersionText)"
 "@
         }
         Write-ProtectedManifest `
@@ -10515,7 +10626,7 @@ try {
         return [pscustomobject]@{
             label = $Label
             binary_role = $BinaryRole
-            codex_version = 'codex-cli 0.144.3'
+            codex_version = Get-ApprovedCodexVersionText
             codex_sha256 = $ExpectedSHA256
             codex_exit_code = [int]$result.exit_code
             provider_reached = $true
@@ -10563,7 +10674,7 @@ try {
     return [pscustomobject]@{
         label = $Label
         binary_role = $BinaryRole
-        codex_version = 'codex-cli 0.144.3'
+        codex_version = Get-ApprovedCodexVersionText
         codex_sha256 = $ExpectedSHA256
         codex_exit_code = [int]$result.exit_code
         provider_reached = [bool]$result.provider_reached
@@ -14253,12 +14364,12 @@ targets:
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
     connector: codex
-    agent_version: "codex-cli 0.144.3"
+    agent_version: "$(Get-ApprovedCodexVersionText)"
   - user_home: '$hostileHomeYAML'
     sid: '$($script:PrimarySID)'
     data_dir: '$hostileDataYAML'
     connector: codex
-    agent_version: "codex-cli 0.144.3"
+    agent_version: "$(Get-ApprovedCodexVersionText)"
   - user_home: '$primaryHomeYAML'
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
@@ -17879,7 +17990,7 @@ targets:
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
     connector: codex
-    agent_version: "codex-cli 0.144.3"
+    agent_version: "$(Get-ApprovedCodexVersionText)"
   - user_home: '$primaryHomeYAML'
     sid: '$($script:PrimarySID)'
     data_dir: '$primaryDataYAML'
