@@ -4132,7 +4132,7 @@ function Get-ApprovedCodexVersionText {
 # pinned here. internal/gateway/connector/hook_contract.go is held to this
 # inventory by a Go test, so certification tracks the versions DefenseClaw
 # actually supports instead of drifting on every Codex release.
-function Get-CertifiedAgentContract([ValidateSet('codex', 'claude')][string]$Agent) {
+function Get-CertifiedAgentContract([ValidateSet('codex', 'claudecode')][string]$Agent) {
     $inventory = Join-Path `
         (Split-Path -Parent $PSScriptRoot) `
         'cli\defenseclaw\inventory\hook_contracts.json'
@@ -4270,10 +4270,14 @@ function Initialize-ProtectedCodexRuntime {
             "got $($script:ApprovedCodexVersion.text)"
         )
     }
-    if ($approvedClaudeIdentity.version -lt [Version]'2.1.152') {
+    # Claude does carry PE VersionInfo, so only the threshold comes from the
+    # contract; the version still reads off the artifact without running it.
+    $claudeContract = Get-CertifiedAgentContract 'claudecode'
+    if ($approvedClaudeIdentity.version -lt $claudeContract.min_inclusive) {
         throw (
-            'approved Claude certification artifact is below 2.1.152; ' +
-            "got $($approvedClaudeIdentity.file_version)"
+            'approved Claude certification artifact is below ' +
+            "$($claudeContract.min_inclusive), the minimum of hook contract " +
+            "$($claudeContract.contract_id); got $($approvedClaudeIdentity.file_version)"
         )
     }
     # The rejected fixture has to fall outside the certified contract, or the
@@ -4289,10 +4293,11 @@ function Initialize-ProtectedCodexRuntime {
             "$($codexContract.contract_id); got $($rejectedCodexVersion.text)"
         )
     }
-    if ($rejectedClaudeIdentity.version -ge [Version]'2.1.152') {
+    if ($rejectedClaudeIdentity.version -ge $claudeContract.min_inclusive) {
         throw (
             'rejected Claude artifact must be an official signed release below ' +
-            "2.1.152; got $($rejectedClaudeIdentity.file_version)"
+            "$($claudeContract.min_inclusive), the minimum of hook contract " +
+            "$($claudeContract.contract_id); got $($rejectedClaudeIdentity.file_version)"
         )
     }
     if ([string]$approvedCodexIdentity.sha256 -ceq
@@ -4565,11 +4570,17 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
     $claudeVersion = ConvertFrom-SingleJSONDocument `
         $claudeVersionProbe.StdOut `
         'Claude active-user version'
-    if ([string]$claudeVersion.version -notmatch
-            '(?<!\d)2\.1\.(?:15[2-9]|1[6-9]\d|[2-9]\d{2,})(?!\d)' -or
+    $claudeRuntimeReported = [regex]::Match(
+        [string]$claudeVersion.version,
+        '(?<!\d)(\d+\.\d+\.\d+)(?!\d)'
+    )
+    if (-not $claudeRuntimeReported.Success -or
+        [Version]$claudeRuntimeReported.Groups[1].Value -lt
+            $claudeContract.min_inclusive -or
         [string]$claudeVersion.sid -ne $script:PrimarySID) {
         throw (
-            'protected runtime is not approved Claude >=2.1.152 under the ' +
+            'protected runtime is not approved Claude >=' +
+            "$($claudeContract.min_inclusive) under the " +
             "target medium token: version=$($claudeVersion.version) " +
             "sid=$($claudeVersion.sid)"
         )
@@ -4857,9 +4868,14 @@ foreach ($case in @(
     $approvedClaude = @(
         $rows | Where-Object { [string]$_.name -eq 'approved_claude' }
     )[0]
+    $claudeContract = Get-CertifiedAgentContract 'claudecode'
+    $claudeReported = [regex]::Match(
+        [string]$approvedClaude.stdout,
+        '(?<!\d)(\d+\.\d+\.\d+)(?!\d)'
+    )
     if ([string]$approvedCodex.stdout -cne (Get-ApprovedCodexVersionText) -or
-        [string]$approvedClaude.stdout -notmatch
-            '(?<!\d)2\.1\.(?:15[2-9]|1[6-9]\d|[2-9]\d{2,})(?!\d)') {
+        -not $claudeReported.Success -or
+        [Version]$claudeReported.Groups[1].Value -lt $claudeContract.min_inclusive) {
         throw 'approved portable clients did not report the certified versions'
     }
     foreach ($rejected in @(
@@ -4890,11 +4906,11 @@ foreach ($case in @(
     return [pscustomobject]@{
         approved_portable_clients = @(
             (Get-ApprovedCodexVersionText),
-            'claude >=2.1.152'
+            "claude >=$($claudeContract.min_inclusive)"
         )
         rejected_portable_clients = @(
             'signed Codex below the certified hook contract',
-            'signed Claude <2.1.152',
+            "signed Claude <$($claudeContract.min_inclusive)",
             'unsigned custom Codex',
             'unsigned custom Claude',
             'fake pwsh',
