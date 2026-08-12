@@ -1461,8 +1461,14 @@ function Invoke-DefenseClawNative {
         throw "required System32 tool is missing: $resolved"
     }
     Assert-DefenseClawNoReparsePath -Path $resolved
+    # $LASTEXITCODE is an engine variable the caller's session may never have
+    # populated, and Set-StrictMode -Version Latest turns an unqualified read
+    # of an unset variable into a terminating error. Seed a value no tool can
+    # return so a missing exit code still fails closed instead of throwing
+    # before the check below.
+    $global:LASTEXITCODE = -1
     $output = & $resolved @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    $exitCode = $global:LASTEXITCODE
     if ($exitCode -ne 0) {
         $detail = ($output | Microsoft.PowerShell.Utility\Out-String).Trim()
         throw "$resolved exited $exitCode while running '$($Arguments -join ' ')': $detail"
@@ -6085,8 +6091,11 @@ function Invoke-DefenseClawGatewayCommand {
             $null,
             'Process'
         )
+        # See Invoke-DefenseClawNative: seeded so an unset engine variable
+        # cannot throw here, and cannot read as success either.
+        $global:LASTEXITCODE = -1
         $output = & $gateway @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+        $exitCode = $global:LASTEXITCODE
         if ($exitCode -ne 0 -and -not $AllowFailure) {
             throw "defenseclaw-gateway exited $exitCode for '$($Arguments -join ' ')': $(($output | Microsoft.PowerShell.Utility\Out-String).Trim())"
         }
