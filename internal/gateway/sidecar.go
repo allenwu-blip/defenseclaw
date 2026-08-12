@@ -1746,6 +1746,14 @@ func (s *Sidecar) ensureCMIDProvider(ctx context.Context) (cloudreg.Provider, er
 
 func (s *Sidecar) buildCMIDProvider(ctx context.Context) (cloudreg.Provider, error) {
 	libPath := strings.TrimSpace(s.currentConfig().CloudAuth.LibPath)
+	if libPath == "" {
+		// Secure Client nests the identity library under two version
+		// directories that move on its own upgrade schedule, so neither
+		// this config nor the installer can pin it. Resolve it now and
+		// hold the result to the same trust bar as an operator-supplied
+		// path; finding nothing leaves the provider its own default.
+		libPath = managed.DiscoverCMIDLibrary()
+	}
 	if libPath != "" {
 		// This is the one config value that ends in native code running
 		// inside the gateway's service account, so it faces the same path
