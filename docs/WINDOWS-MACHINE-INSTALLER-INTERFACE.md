@@ -149,3 +149,58 @@ The resulting `DefenseClawSetup-x64.exe.provenance.json` reports
 `distribution_flavor: "managed-enterprise"`; `cmd/defenseclaw-setup` accepts
 both `oss` and `managed-enterprise` payload flavors and rejects any other
 value.
+
+## AVC env_config.json contract
+
+Cisco Secure Client's AVC packaging pipeline can drop a small overlay
+file at a canonical path *after* DefenseClaw is installed — for example,
+when a region change moves a tenant from the US inspect endpoint to EU.
+The gateway sidecar's `ConfigManager` watches that path via fsnotify
+and re-reads `cisco_ai_defense_endpoint` on every change, so no
+DefenseClaw restart is needed for a region flip.
+
+- **Path:** `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw\env_config.json`
+  (see [`internal/config/env_config_windows.go`](../internal/config/env_config_windows.go) — `DefaultEnvConfigPath`).
+  Mirrors the macOS `/opt/cisco/secureclient/defenseclaw/env_config.json`
+  convention: the file lives under the Secure Client per-machine data
+  root, separate from DefenseClaw's own `%ProgramData%\Cisco\DefenseClaw\`
+  tree.
+
+- **Owner / ACL:** the parent directory and the file itself must be
+  administrator-owned with **no** non-admin write ACEs. The gateway
+  service SID needs Read on the file (grantable via inheritance from
+  the parent directory). This matches every other DefenseClaw managed
+  artifact — [`internal/managed/trust_windows.go`](../internal/managed/trust_windows.go)
+  refuses to load a file whose ancestor chain is world- or user-
+  writable.
+
+- **Contents:** JSON with one meaningful key,
+  `cisco_ai_defense_endpoint`, whose value is an HTTPS bare origin
+  (no path, no query, no fragment, no userinfo). Both the shell
+  installer's `_valid_aid_endpoint_url()` and the Go loader enforce
+  the same URL shape; a value that fails either check is rejected
+  as an overlay, and the previously-active endpoint is retained
+  with a health error surfaced on `defenseclaw status`.
+
+  ```json
+  {
+    "cisco_ai_defense_endpoint": "https://eu.api.inspect.aidefense.security.cisco.com"
+  }
+  ```
+
+- **Ownership boundary:** DefenseClaw's Windows installer does **not**
+  create this directory or write the file — that is AVC's job, mirroring
+  macOS where AVC (not `install-enterprise.sh`) authors env_config.json.
+  On a freshly installed Windows managed box before AVC has landed the
+  file, the gateway treats the missing overlay as "no override" and
+  falls through to `cisco_ai_defense.endpoint` from `config.yaml`.
+
+- **Runtime trust check:** at every `ConfigManager` reload the gateway
+  re-validates the file (owner, no reparse point, ancestor chain admin-
+  owned) via `managed.ValidateTrustedFilePath` before parsing. A file
+  that fails the check is rejected as if it were malformed — the current
+  in-memory endpoint is kept and an error is logged. When the DefenseClaw
+  gateway is not running elevated (dev boxes, unit tests, opensource
+  local runs), the trust check is skipped and only the parse-shape
+  validation runs; `DEFENSECLAW_ENV_CONFIG_SKIP_TRUST=1` forces the
+  skip regardless of elevation for tests that need it.
