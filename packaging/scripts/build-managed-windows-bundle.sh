@@ -96,9 +96,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # both halves have to read the same HEAD. Without stamping -X main.commit here
 # the binaries would carry the "unknown" default that main.go initializes,
 # which the installer's identity gate would reject on every managed build.
-DEFENSECLAW_HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD | tr '[:upper:]' '[:lower:]')"
-if [[ ! "${DEFENSECLAW_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "build-managed-windows-bundle: could not resolve defenseclaw HEAD as a 40-char lowercase git OID: ${DEFENSECLAW_HEAD_SHA}" >&2
+SOURCE_COMMIT="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD | tr '[:upper:]' '[:lower:]')"
+if [[ ! "${SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "build-managed-windows-bundle: could not resolve defenseclaw HEAD as a 40-char lowercase git OID: ${SOURCE_COMMIT}" >&2
   exit 1
 fi
 
@@ -222,8 +222,8 @@ HOOK_EXE="${STAGE_DIR}/defenseclaw-hook.exe"
 # main.commit defaults to "unknown", which build-windows-installer.ps1's
 # Assert-DefenseClawBinaryIdentity rejects. Stamp the exact HEAD sha we
 # derived above so identity verification passes.
-LDFLAGS_GATEWAY="-s -w -buildid=defenseclaw-${VERSION}-windows-amd64 -X main.version=${VERSION} -X main.commit=${DEFENSECLAW_HEAD_SHA}"
-LDFLAGS_HOOK="-s -w -buildid=defenseclaw-hook-${VERSION}-windows-amd64 -H=windowsgui -X main.version=${VERSION} -X main.commit=${DEFENSECLAW_HEAD_SHA}"
+LDFLAGS_GATEWAY="-s -w -buildid=defenseclaw-${VERSION}-windows-amd64 -X main.version=${VERSION} -X main.commit=${SOURCE_COMMIT}"
+LDFLAGS_HOOK="-s -w -buildid=defenseclaw-hook-${VERSION}-windows-amd64 -H=windowsgui -X main.version=${VERSION} -X main.commit=${SOURCE_COMMIT}"
 ICON_PATH="${REPO_ROOT}/macos/DefenseClawMac/DefenseClawMac/Assets.xcassets/AppIcon.appiconset/icon_256.png"
 
 echo "==> building defenseclaw.exe (windows/amd64 tags=cmid)"
@@ -266,21 +266,21 @@ echo "==> writing ${GATEWAY_ZIP}"
 # deterministic mtime if the version is recent enough. cd + zip from the
 # stage dir so entries land at the archive root, matching goreleaser.
 require_bin zip
-DEFENSECLAW_HEAD_TS="$(git -C "${REPO_ROOT}" show -s --format=%ct HEAD)"
-export SOURCE_DATE_EPOCH="${DEFENSECLAW_HEAD_TS}"
+SOURCE_COMMIT_EPOCH="$(git -C "${REPO_ROOT}" show -s --format=%ct HEAD)"
+export SOURCE_DATE_EPOCH="${SOURCE_COMMIT_EPOCH}"
 ( cd "${STAGE_DIR}" && zip -X -r -q "${GATEWAY_ZIP}" . )
 
 # ---- write the source-commit sidecar so Windows can sync -----------------
 
 COMMIT_FILE="${DIST_ABS}/gateway-source-commit.txt"
 cat > "${COMMIT_FILE}" <<EOF
-${DEFENSECLAW_HEAD_SHA}
+${SOURCE_COMMIT}
 EOF
 
 echo ""
 echo "==> managed Windows gateway prep complete"
 echo "    gateway zip:      ${GATEWAY_ZIP}"
-echo "    source commit:    ${COMMIT_FILE}  (${DEFENSECLAW_HEAD_SHA})"
+echo "    source commit:    ${COMMIT_FILE}  (${SOURCE_COMMIT})"
 echo "    pinned cmid:      ${CMID_VERSION}"
 echo ""
 echo "Hand ${GATEWAY_ZIP} and ${COMMIT_FILE} to the Windows tester. On the"
