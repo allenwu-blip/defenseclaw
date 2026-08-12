@@ -22,9 +22,8 @@ import (
 )
 
 // registerFakeCloudProvider installs a credential factory for one test.
-// The OSS build registers none, which is exactly what the managed
-// guardrail refuses to boot on, so every managed test that expects to
-// get past that gate has to opt in.
+// The OSS build registers none, so every managed test that expects to
+// get past the guardrail's boot gate has to opt in.
 func registerFakeCloudProvider(t *testing.T, provider cloudreg.Provider, buildErr error) {
 	t.Helper()
 	cloudreg.Register(func(cloudreg.Config) (cloudreg.Provider, error) {

@@ -60,9 +60,8 @@ func cmidArchDirectory() string {
 }
 
 // discoverCMIDLibraryIn walks CM\<version>\CMID\<version>\<arch> newest
-// first and returns the first library that exists. Taking the newest of
-// each version directory keeps a machine that kept an older Secure
-// Client tree around from pinning the gateway to a stale library.
+// first and returns the first library that exists, so a leftover older
+// tree cannot pin the gateway to a stale library.
 func discoverCMIDLibraryIn(cmRoot, arch string) string {
 	for _, cmVersion := range versionDirectoriesNewestFirst(cmRoot) {
 		cmidRoot := filepath.Join(cmRoot, cmVersion, cmidNestedDirectory)
@@ -100,8 +99,7 @@ func versionDirectoriesNewestFirst(root string) []string {
 }
 
 func sortVersionsDescending(names []string) {
-	// Insertion sort: these directories number in the single digits, and
-	// this keeps the comparison entirely local.
+	// Insertion sort: these directories number in the single digits.
 	for i := 1; i < len(names); i++ {
 		for j := i; j > 0 && compareVersions(names[j-1], names[j]) < 0; j-- {
 			names[j-1], names[j] = names[j], names[j-1]

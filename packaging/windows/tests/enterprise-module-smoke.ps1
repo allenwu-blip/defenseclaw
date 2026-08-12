@@ -554,9 +554,7 @@ finally {
         [string]$certificationMetadata['certification_codex_home'] -cne $certificationHome) {
         throw 'certification deployment metadata does not pin exact CODEX_HOME'
     }
-    # A failing System32 tool has to reach the exit-code check. Under Stop,
-    # 5.1 raises its stderr as a NativeCommandError at the invocation instead,
-    # which skips the check and hides the exit code from every caller.
+    # A failing System32 tool must surface its exit code, not its stderr.
     $nativeFailure = $null
     try {
         Invoke-DefenseClawNative `

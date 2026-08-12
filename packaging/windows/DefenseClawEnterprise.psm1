@@ -1461,11 +1461,9 @@ function Invoke-DefenseClawNative {
         throw "required System32 tool is missing: $resolved"
     }
     Assert-DefenseClawNoReparsePath -Path $resolved
-    # Windows PowerShell 5.1 wraps native stderr as a NativeCommandError while
-    # the preference is Stop, which throws at the invocation below and skips
-    # the exit-code check entirely — the caller sees raw stderr instead of the
-    # message this function raises. The exit code is the assertion here, so a
-    # tool is allowed to write to stderr and judged on what it returned.
+    # 5.1 raises native stderr as a terminating error while the preference
+    # is Stop. The exit code is the assertion here, so let the tool write to
+    # stderr and judge it on what it returned.
     $previousErrorAction = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -6097,9 +6095,8 @@ function Invoke-DefenseClawGatewayCommand {
             $null,
             'Process'
         )
-        # See Invoke-DefenseClawNative: under Stop, 5.1 turns the gateway's
-        # stderr into a throw at the invocation and the exit code below is
-        # never consulted. -AllowFailure callers depend on reading it.
+        # See Invoke-DefenseClawNative: 5.1 raises native stderr as a
+        # terminating error under Stop, and -AllowFailure needs the code.
         $previousErrorAction = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'

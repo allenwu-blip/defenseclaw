@@ -73,11 +73,9 @@ func Register(f Factory) {
 	factory = f
 }
 
-// Registered reports whether this build carries a factory at all. It
-// separates the two ways managed inspection can be missing: a binary
-// compiled without managed-cloud support can never inspect and should
-// not run in managed_enterprise, whereas a registered factory that
-// fails today may just be waiting on the local agent.
+// Registered reports whether this build carries a factory at all. A
+// binary compiled without managed-cloud support can never inspect; a
+// registered factory that fails may only be waiting on the agent.
 func Registered() bool {
 	mu.RLock()
 	defer mu.RUnlock()

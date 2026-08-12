@@ -13,6 +13,6 @@
 package managed
 
 // DiscoverCMIDLibrary has nothing to find off Windows: the version-nested
-// Cloud Management layout it walks is a Secure Client for Windows shape,
-// and every other platform's provider resolves its own library.
+// layout it walks is Secure Client for Windows, and other platforms'
+// providers resolve their own library.
 func DiscoverCMIDLibrary() string { return "" }

@@ -158,8 +158,7 @@ type Sidecar struct {
 	cmidProviderInst cloudreg.Provider
 
 	// Last outcome of building the managed cloud auth provider, so
-	// /health can report whether inspection is actually reachable
-	// instead of leaving operators to infer it from enforcement mode.
+	// /health can report whether inspection is reachable.
 	inspectionMu        sync.RWMutex
 	inspectionAvailable bool
 	inspectionDetail    string
@@ -1747,11 +1746,10 @@ func (s *Sidecar) ensureCMIDProvider(ctx context.Context) (cloudreg.Provider, er
 func (s *Sidecar) buildCMIDProvider(ctx context.Context) (cloudreg.Provider, error) {
 	libPath := strings.TrimSpace(s.currentConfig().CloudAuth.LibPath)
 	if libPath == "" {
-		// Secure Client nests the identity library under two version
-		// directories that move on its own upgrade schedule, so neither
-		// this config nor the installer can pin it. Resolve it now and
-		// hold the result to the same trust bar as an operator-supplied
-		// path; finding nothing leaves the provider its own default.
+		// Secure Client nests the identity library under version
+		// directories that move on its own upgrade schedule, so it
+		// cannot be pinned at install time. Finding nothing leaves the
+		// provider its own default.
 		libPath = managed.DiscoverCMIDLibrary()
 	}
 	if libPath != "" {
@@ -1774,10 +1772,9 @@ func (s *Sidecar) buildCMIDProvider(ctx context.Context) (cloudreg.Provider, err
 	return prov, nil
 }
 
-// setInspectionAvailability records whether managed inspection can
-// currently reach a credential provider. A failure here is what makes
-// pickInspector return nil, so it is the signal /health needs to avoid
-// advertising enforcement that nothing is behind.
+// setInspectionAvailability records whether managed inspection can reach
+// a credential provider. A failure here is what makes pickInspector
+// return nil, so /health reports it alongside enforcement mode.
 func (s *Sidecar) setInspectionAvailability(err error) {
 	s.inspectionMu.Lock()
 	defer s.inspectionMu.Unlock()
@@ -1790,9 +1787,8 @@ func (s *Sidecar) setInspectionAvailability(err error) {
 }
 
 // inspectionAvailability reports the last managed-inspection outcome.
-// The bool is false until a provider has been built at least once, so
-// the managed guardrail probes eagerly at startup rather than leaving
-// health to guess.
+// False until a provider has been built at least once, which is why the
+// managed guardrail probes at startup.
 func (s *Sidecar) inspectionAvailability() (bool, string) {
 	s.inspectionMu.RLock()
 	defer s.inspectionMu.RUnlock()
@@ -3246,11 +3242,8 @@ func (s *Sidecar) runManagedEnterpriseMultiHookGuardrail(ctx context.Context, re
 	}
 
 	// Managed mode disables the local detectors, so remote inspection is
-	// the only thing standing between a tool call and the upstream. A
-	// build with no credential factory can never reach it, and every
-	// call would be allowed while health reported enforcement — refuse
-	// the boot instead of composing a local fail-closed into a global
-	// fail-open.
+	// all that stands between a tool call and its upstream. A build with
+	// no credential factory can never reach it.
 	if !cloudreg.Registered() {
 		err := fmt.Errorf(
 			"managed_enterprise requires managed-cloud support: %w",
@@ -3259,10 +3252,8 @@ func (s *Sidecar) runManagedEnterpriseMultiHookGuardrail(ctx context.Context, re
 		s.health.SetGuardrail(StateError, err.Error(), nil)
 		return err
 	}
-	// Unlike a missing factory, a registered one that fails today may
-	// just be waiting on the local agent, so this probe reports rather
-	// than refuses. It also moves a bad cloud auth library path from a
-	// lazy per-request failure to a startup signal.
+	// A registered factory that fails now may only be waiting on the
+	// local agent, so probe once and report rather than refuse.
 	if _, err := s.ensureCMIDProvider(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "[guardrail] managed_enterprise: inspection unavailable at boot: %v\n", err)
 	}
@@ -3337,9 +3328,8 @@ func (s *Sidecar) runManagedEnterpriseMultiHookGuardrail(ctx context.Context, re
 		}
 		if !inspectionAvailable {
 			detail["inspection_error"] = inspectionDetail
-			// enforcement_enabled describes the configured hook mode. Say
-			// plainly that nothing is inspecting behind it so the pair is
-			// not read as working enforcement.
+			// enforcement_enabled describes the configured hook mode, so
+			// say plainly that nothing is inspecting behind it.
 			detail["hint"] = "remote inspection is unreachable; tool calls are not being inspected"
 		}
 		s.health.SetGuardrail(state, status, detail)
