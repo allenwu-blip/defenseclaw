@@ -1461,8 +1461,18 @@ function Invoke-DefenseClawNative {
         throw "required System32 tool is missing: $resolved"
     }
     Assert-DefenseClawNoReparsePath -Path $resolved
-    $output = & $resolved @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
+    # 5.1 raises native stderr as a terminating error while the preference
+    # is Stop. The exit code is the assertion here, so let the tool write to
+    # stderr and judge it on what it returned.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $resolved @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
     if ($exitCode -ne 0) {
         $detail = ($output | Microsoft.PowerShell.Utility\Out-String).Trim()
         throw "$resolved exited $exitCode while running '$($Arguments -join ' ')': $detail"
@@ -6085,8 +6095,17 @@ function Invoke-DefenseClawGatewayCommand {
             $null,
             'Process'
         )
-        $output = & $gateway @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
+        # See Invoke-DefenseClawNative: 5.1 raises native stderr as a
+        # terminating error under Stop, and -AllowFailure needs the code.
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = & $gateway @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
         if ($exitCode -ne 0 -and -not $AllowFailure) {
             throw "defenseclaw-gateway exited $exitCode for '$($Arguments -join ' ')': $(($output | Microsoft.PowerShell.Utility\Out-String).Trim())"
         }

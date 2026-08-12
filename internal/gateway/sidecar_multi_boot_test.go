@@ -502,6 +502,7 @@ func TestStartMultiHookConfigGuards_DisabledSelfHealStartsNone(t *testing.T) {
 }
 
 func TestManagedMultiHookGuardrailFailsClosedWhenScopedTokenFails(t *testing.T) {
+	registerFakeCloudProvider(t, newFakeCloudProvider("token"), nil)
 	conn := &hookBootStubConnector{bootStubConnector: bootStubConnector{stubConnector: stubConnector{name: "codex"}}}
 	reg := connector.NewRegistry()
 	reg.RegisterBuiltin(conn)
@@ -527,6 +528,7 @@ func TestManagedMultiHookGuardrailFailsClosedWhenScopedTokenFails(t *testing.T) 
 }
 
 func TestManagedMultiHookGuardrailPreflightsAllScopedTokens(t *testing.T) {
+	registerFakeCloudProvider(t, newFakeCloudProvider("token"), nil)
 	first := &bootStubConnector{stubConnector: stubConnector{name: "codex"}}
 	second := &hookBootStubConnector{bootStubConnector: bootStubConnector{stubConnector: stubConnector{name: "cursor"}}}
 	reg := connector.NewRegistry()
@@ -744,6 +746,7 @@ func TestRunGuardrailMultiManagedEnterpriseSkipsServiceHomeLifecycle(t *testing.
 	if runtime.GOOS == "windows" {
 		t.Skip("managed enterprise hook lifecycle is rejected on native Windows")
 	}
+	registerFakeCloudProvider(t, newFakeCloudProvider("token"), nil)
 	dir := t.TempDir()
 	codexConfig := filepath.Join(t.TempDir(), ".codex", "config.toml")
 	claudeSettings := filepath.Join(t.TempDir(), ".claude", "settings.json")
