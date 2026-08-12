@@ -156,6 +156,13 @@ type Sidecar struct {
 	// for the sidecar's lifetime. Managed-mode wiring only.
 	cmidProviderMu   sync.Mutex
 	cmidProviderInst cloudreg.Provider
+
+	// Last outcome of building the managed cloud auth provider, so
+	// /health can report whether inspection is actually reachable
+	// instead of leaving operators to infer it from enforcement mode.
+	inspectionMu        sync.RWMutex
+	inspectionAvailable bool
+	inspectionDetail    string
 }
 
 // osToastSenderFor returns the sender the OS-toast lane of the
@@ -1728,8 +1735,17 @@ func (s *Sidecar) ensureCMIDProvider(ctx context.Context) (cloudreg.Provider, er
 	if s.cmidProviderInst != nil {
 		return s.cmidProviderInst, nil
 	}
-	cfg := s.currentConfig()
-	libPath := strings.TrimSpace(cfg.CloudAuth.LibPath)
+	prov, err := s.buildCMIDProvider(ctx)
+	s.setInspectionAvailability(err)
+	if err != nil {
+		return nil, err
+	}
+	s.cmidProviderInst = prov
+	return prov, nil
+}
+
+func (s *Sidecar) buildCMIDProvider(ctx context.Context) (cloudreg.Provider, error) {
+	libPath := strings.TrimSpace(s.currentConfig().CloudAuth.LibPath)
 	if libPath != "" {
 		// This is the one config value that ends in native code running
 		// inside the gateway's service account, so it faces the same path
@@ -1747,8 +1763,32 @@ func (s *Sidecar) ensureCMIDProvider(ctx context.Context) (cloudreg.Provider, er
 	if err := prov.Refresh(ctx); err != nil {
 		return nil, err
 	}
-	s.cmidProviderInst = prov
 	return prov, nil
+}
+
+// setInspectionAvailability records whether managed inspection can
+// currently reach a credential provider. A failure here is what makes
+// pickInspector return nil, so it is the signal /health needs to avoid
+// advertising enforcement that nothing is behind.
+func (s *Sidecar) setInspectionAvailability(err error) {
+	s.inspectionMu.Lock()
+	defer s.inspectionMu.Unlock()
+	s.inspectionAvailable = err == nil
+	if err != nil {
+		s.inspectionDetail = err.Error()
+		return
+	}
+	s.inspectionDetail = ""
+}
+
+// inspectionAvailability reports the last managed-inspection outcome.
+// The bool is false until a provider has been built at least once, so
+// the managed guardrail probes eagerly at startup rather than leaving
+// health to guess.
+func (s *Sidecar) inspectionAvailability() (bool, string) {
+	s.inspectionMu.RLock()
+	defer s.inspectionMu.RUnlock()
+	return s.inspectionAvailable, s.inspectionDetail
 }
 
 func (s *Sidecar) apiSnapshot() *APIServer {
@@ -3197,6 +3237,28 @@ func (s *Sidecar) runManagedEnterpriseMultiHookGuardrail(ctx context.Context, re
 		return nil
 	}
 
+	// Managed mode disables the local detectors, so remote inspection is
+	// the only thing standing between a tool call and the upstream. A
+	// build with no credential factory can never reach it, and every
+	// call would be allowed while health reported enforcement — refuse
+	// the boot instead of composing a local fail-closed into a global
+	// fail-open.
+	if !cloudreg.Registered() {
+		err := fmt.Errorf(
+			"managed_enterprise requires managed-cloud support: %w",
+			cloudreg.ErrNoProviderRegistered,
+		)
+		s.health.SetGuardrail(StateError, err.Error(), nil)
+		return err
+	}
+	// Unlike a missing factory, a registered one that fails today may
+	// just be waiting on the local agent, so this probe reports rather
+	// than refuses. It also moves a bad cloud auth library path from a
+	// lazy per-request failure to a startup signal.
+	if _, err := s.ensureCMIDProvider(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "[guardrail] managed_enterprise: inspection unavailable at boot: %v\n", err)
+	}
+
 	type managedConnectorRegistration struct {
 		conn connector.Connector
 		opts connector.SetupOpts
@@ -3254,15 +3316,25 @@ func (s *Sidecar) runManagedEnterpriseMultiHookGuardrail(ctx context.Context, re
 			enforcementEnabled = hookEnforcement
 			hint = "hook-only connectors talk directly to their native upstreams; enterprise hook guardian owns installation and repair"
 		}
-		s.health.SetGuardrail(state, status, map[string]interface{}{
-			"summary":             summary,
-			"connectors":          succeeded,
-			"enforcement_enabled": enforcementEnabled,
-			"proxy_port":          "closed",
-			"hint":                hint,
-			"lifecycle_manager":   "enterprise_hook_guardian",
-			"guardian_verified":   covered,
-		})
+		inspectionAvailable, inspectionDetail := s.inspectionAvailability()
+		detail := map[string]interface{}{
+			"summary":              summary,
+			"connectors":           succeeded,
+			"enforcement_enabled":  enforcementEnabled,
+			"inspection_available": inspectionAvailable,
+			"proxy_port":           "closed",
+			"hint":                 hint,
+			"lifecycle_manager":    "enterprise_hook_guardian",
+			"guardian_verified":    covered,
+		}
+		if !inspectionAvailable {
+			detail["inspection_error"] = inspectionDetail
+			// enforcement_enabled describes the configured hook mode. Say
+			// plainly that nothing is inspecting behind it so the pair is
+			// not read as working enforcement.
+			detail["hint"] = "remote inspection is unreachable; tool calls are not being inspected"
+		}
+		s.health.SetGuardrail(state, status, detail)
 	}
 	publishHealth()
 	fmt.Fprintf(os.Stderr, "[guardrail] managed_enterprise multi-connector hook mode: %d connector(s): %s — proxy port closed; enterprise hook guardian owns hook files\n", len(succeeded), strings.Join(succeeded, ", "))
