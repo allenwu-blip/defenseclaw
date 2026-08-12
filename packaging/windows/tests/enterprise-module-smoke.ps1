@@ -554,6 +554,27 @@ finally {
         [string]$certificationMetadata['certification_codex_home'] -cne $certificationHome) {
         throw 'certification deployment metadata does not pin exact CODEX_HOME'
     }
+    # A failing System32 tool has to reach the exit-code check. Under Stop,
+    # 5.1 raises its stderr as a NativeCommandError at the invocation instead,
+    # which skips the check and hides the exit code from every caller.
+    $nativeFailure = $null
+    try {
+        Invoke-DefenseClawNative `
+            -File (Join-Path $script:System32 'icacls.exe') `
+            -Arguments @((Join-Path $script:System32 'DefenseClawMissing_0123456789'))
+    }
+    catch {
+        $nativeFailure = [string]$_.Exception.Message
+    }
+    if ($null -eq $nativeFailure) {
+        throw 'a failing native tool did not raise an error'
+    }
+    if ($nativeFailure -notmatch 'exited \d+ while running') {
+        throw "native stderr escaped the exit-code check: $nativeFailure"
+    }
+    if ($ErrorActionPreference -cne 'Stop') {
+        throw "native invocation left the error preference at $ErrorActionPreference"
+    }
 }
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()

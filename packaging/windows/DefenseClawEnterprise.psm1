@@ -1461,14 +1461,20 @@ function Invoke-DefenseClawNative {
         throw "required System32 tool is missing: $resolved"
     }
     Assert-DefenseClawNoReparsePath -Path $resolved
-    # $LASTEXITCODE is an engine variable the caller's session may never have
-    # populated, and Set-StrictMode -Version Latest turns an unqualified read
-    # of an unset variable into a terminating error. Seed a value no tool can
-    # return so a missing exit code still fails closed instead of throwing
-    # before the check below.
-    $global:LASTEXITCODE = -1
-    $output = & $resolved @Arguments 2>&1
-    $exitCode = $global:LASTEXITCODE
+    # Windows PowerShell 5.1 wraps native stderr as a NativeCommandError while
+    # the preference is Stop, which throws at the invocation below and skips
+    # the exit-code check entirely — the caller sees raw stderr instead of the
+    # message this function raises. The exit code is the assertion here, so a
+    # tool is allowed to write to stderr and judged on what it returned.
+    $previousErrorAction = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $resolved @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
     if ($exitCode -ne 0) {
         $detail = ($output | Microsoft.PowerShell.Utility\Out-String).Trim()
         throw "$resolved exited $exitCode while running '$($Arguments -join ' ')': $detail"
@@ -6091,11 +6097,18 @@ function Invoke-DefenseClawGatewayCommand {
             $null,
             'Process'
         )
-        # See Invoke-DefenseClawNative: seeded so an unset engine variable
-        # cannot throw here, and cannot read as success either.
-        $global:LASTEXITCODE = -1
-        $output = & $gateway @Arguments 2>&1
-        $exitCode = $global:LASTEXITCODE
+        # See Invoke-DefenseClawNative: under Stop, 5.1 turns the gateway's
+        # stderr into a throw at the invocation and the exit code below is
+        # never consulted. -AllowFailure callers depend on reading it.
+        $previousErrorAction = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = & $gateway @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorAction
+        }
         if ($exitCode -ne 0 -and -not $AllowFailure) {
             throw "defenseclaw-gateway exited $exitCode for '$($Arguments -join ' ')': $(($output | Microsoft.PowerShell.Utility\Out-String).Trim())"
         }
