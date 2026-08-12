@@ -581,10 +581,15 @@ even when the listener knows the JSON shape of an allow response.
 
 The process-creation matrix runs under the exact protected medium user. The
 approved signed Codex 0.144.3 and approved signed Claude 2.1.207 binaries must
-start. Mandatory caller-supplied official signed Codex below 0.131.0, official
+start. Mandatory caller-supplied official signed Codex below 0.133.0, official
 signed Claude below 2.1.152, and custom unsigned lookalikes must be rejected by
-application control at process creation. The harness never downloads these
-artifacts; evidence identifies their exact paths, versions, signers, and
+application control at process creation. Both floors are the minimums of the
+current hook contracts in `cli/defenseclaw/inventory/hook_contracts.json`; the
+harness reads them from there, so a published contract change moves the
+required fixtures without a harness edit. A rejected fixture must be an
+official signed release below its floor, otherwise its denial proves only that
+application control rejects unsigned binaries. The harness never downloads
+these artifacts; evidence identifies their exact paths, versions, signers, and
 SHA-256 digests.
 
 The real approved Claude binary runs against a loopback no-auth Anthropic
