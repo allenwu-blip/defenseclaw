@@ -4180,7 +4180,8 @@ function Get-CertifiedAgentContract([ValidateSet('codex', 'claudecode')][string]
 
 # Asks the artifact its own version the way the contract says to. Signature and
 # digest have already accepted this binary, and nothing else can report the
-# version of a CLI that carries no PE VersionInfo.
+# version of a CLI that carries no PE VersionInfo. Only for artifacts
+# certification is meant to run: a rejected fixture is read, never executed.
 function Get-AgentArtifactVersion(
     [string]$Path,
     [pscustomobject]$Contract,
@@ -4282,15 +4283,22 @@ function Initialize-ProtectedCodexRuntime {
     }
     # The rejected fixture has to fall outside the certified contract, or the
     # matrix proves nothing about refusing an agent DefenseClaw cannot govern.
-    $rejectedCodexVersion = Get-AgentArtifactVersion `
-        $script:OriginalRejectedCodexSource `
-        $codexContract `
-        'rejected-codex-version'
-    if ($rejectedCodexVersion.version -ge $codexContract.min_inclusive) {
+    # Its version comes off the PE header rather than the contract's probe:
+    # application control is required to deny this artifact process creation,
+    # so nothing here may depend on being able to run it.
+    if ($null -eq $rejectedCodexIdentity.version) {
+        throw (
+            'rejected Codex artifact must carry a readable PE file version; ' +
+            'certification is not allowed to execute it to ask, because ' +
+            'application control must deny it: ' +
+            "$($rejectedCodexIdentity.file_version)"
+        )
+    }
+    if ($rejectedCodexIdentity.version -ge $codexContract.min_inclusive) {
         throw (
             'rejected Codex artifact must be an official signed release below ' +
             "$($codexContract.min_inclusive), the minimum of hook contract " +
-            "$($codexContract.contract_id); got $($rejectedCodexVersion.text)"
+            "$($codexContract.contract_id); got $($rejectedCodexIdentity.file_version)"
         )
     }
     if ($rejectedClaudeIdentity.version -ge $claudeContract.min_inclusive) {
