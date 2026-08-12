@@ -90,6 +90,18 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
+# Derive the defenseclaw source commit up front. scripts/build-windows-installer.ps1
+# re-derives the same HEAD via Get-GitSourceCommit and then refuses any binary
+# whose reported main.commit does not match a 40-char lowercase git OID, so
+# both halves have to read the same HEAD. Without stamping -X main.commit here
+# the binaries would carry the "unknown" default that main.go initializes,
+# which the installer's identity gate would reject on every managed build.
+DEFENSECLAW_HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse --verify HEAD | tr '[:upper:]' '[:lower:]')"
+if [[ ! "${DEFENSECLAW_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "build-managed-windows-bundle: could not resolve defenseclaw HEAD as a 40-char lowercase git OID: ${DEFENSECLAW_HEAD_SHA}" >&2
+  exit 1
+fi
+
 AI_COMMON_REPO_SSH="${AI_COMMON_REPO_SSH:-git@github.com-aispg:cisco-aispg/ai-common.git}"
 AI_COMMON_REPO_HTTPS="${AI_COMMON_REPO_HTTPS:-https://github.com/cisco-aispg/ai-common.git}"
 
@@ -207,8 +219,11 @@ trap 'restore_overlay; rm -rf "${STAGE_DIR}"' EXIT
 
 GATEWAY_EXE="${STAGE_DIR}/defenseclaw.exe"
 HOOK_EXE="${STAGE_DIR}/defenseclaw-hook.exe"
-LDFLAGS_GATEWAY="-s -w -buildid=defenseclaw-${VERSION}-windows-amd64 -X main.version=${VERSION}"
-LDFLAGS_HOOK="-s -w -buildid=defenseclaw-hook-${VERSION}-windows-amd64 -H=windowsgui -X main.version=${VERSION}"
+# main.commit defaults to "unknown", which build-windows-installer.ps1's
+# Assert-DefenseClawBinaryIdentity rejects. Stamp the exact HEAD sha we
+# derived above so identity verification passes.
+LDFLAGS_GATEWAY="-s -w -buildid=defenseclaw-${VERSION}-windows-amd64 -X main.version=${VERSION} -X main.commit=${DEFENSECLAW_HEAD_SHA}"
+LDFLAGS_HOOK="-s -w -buildid=defenseclaw-hook-${VERSION}-windows-amd64 -H=windowsgui -X main.version=${VERSION} -X main.commit=${DEFENSECLAW_HEAD_SHA}"
 ICON_PATH="${REPO_ROOT}/macos/DefenseClawMac/DefenseClawMac/Assets.xcassets/AppIcon.appiconset/icon_256.png"
 
 echo "==> building defenseclaw.exe (windows/amd64 tags=cmid)"
@@ -257,7 +272,6 @@ export SOURCE_DATE_EPOCH="${DEFENSECLAW_HEAD_TS}"
 
 # ---- write the source-commit sidecar so Windows can sync -----------------
 
-DEFENSECLAW_HEAD_SHA="$(git -C "${REPO_ROOT}" rev-parse HEAD)"
 COMMIT_FILE="${DIST_ABS}/gateway-source-commit.txt"
 cat > "${COMMIT_FILE}" <<EOF
 ${DEFENSECLAW_HEAD_SHA}
