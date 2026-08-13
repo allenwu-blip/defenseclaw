@@ -103,7 +103,10 @@ param(
 
     [switch]$DisposableHost,
 
-    [switch]$KeepWorkRoot
+    [switch]$KeepWorkRoot,
+
+    [ValidateSet('none', 'fixture', 'normal-mode-noop', 'certification-isolation')]
+    [string]$FailureInjectionPhase = 'none'
 )
 
 Set-StrictMode -Version Latest
@@ -123,6 +126,8 @@ $script:PrimarySID = ''
 $script:HostileSID = ''
 $script:PrimaryProfile = ''
 $script:HostileProfile = ''
+$script:HostileProfileExpected = ''
+$script:HostileProfileExpectedWasAbsent = $false
 $script:PrimarySessionID = -1
 $script:PrimaryDataDir = ''
 $script:CertificationCodexHome = ''
@@ -159,6 +164,10 @@ $script:ScheduledTasks = [Collections.Generic.List[string]]::new()
 $script:UserTreeSnapshots = [Collections.Generic.List[object]]::new()
 $script:SecretNeedles = [Collections.Generic.List[string]]::new()
 $script:SourceDigests = [ordered]@{}
+$script:PowerShellSelection = $null
+$script:PowerShellPrerequisite = $null
+$script:FailureEvidence = $null
+$script:CertificationParentRoots = @()
 $script:CodexSharedOwnedByHarness = $false
 $script:CodexSharedExpectedBeforeCleanup = $null
 $script:APIPort = 0
@@ -191,6 +200,33 @@ function Protect-SensitiveDisplayText([string]$Value) {
         }
     }
     return $text
+}
+
+function ConvertTo-CertificationErrorEvidence(
+    [Management.Automation.ErrorRecord]$Record
+) {
+    if ($null -eq $Record) { return $null }
+    $invocation = $Record.InvocationInfo
+    return [pscustomobject]@{
+        exception_type = Protect-SensitiveDisplayText (
+            $Record.Exception.GetType().FullName
+        )
+        message = Protect-SensitiveDisplayText $Record.Exception.Message
+        fully_qualified_error_id = Protect-SensitiveDisplayText (
+            [string]$Record.FullyQualifiedErrorId
+        )
+        script_stack_trace = Protect-SensitiveDisplayText (
+            [string]$Record.ScriptStackTrace
+        )
+        script_name = Protect-SensitiveDisplayText (
+            [IO.Path]::GetFileName([string]$invocation.ScriptName)
+        )
+        script_line_number = [int]$invocation.ScriptLineNumber
+        offset_in_line = [int]$invocation.OffsetInLine
+        invocation_position = Protect-SensitiveDisplayText (
+            [string]$invocation.PositionMessage
+        )
+    }
 }
 
 function ConvertTo-CanonicalPath([string]$Path) {
@@ -447,7 +483,11 @@ function Invoke-Check([string]$Name, [scriptblock]$Body) {
         if ($null -eq $detail) { $detail = 'passed' }
         Add-Result $Name 'passed' ([string]$detail)
     } catch {
-        Add-Result $Name 'failed' $_.Exception.Message
+        Add-Result `
+            $Name `
+            'failed' `
+            $_.Exception.Message `
+            @{ error = ConvertTo-CertificationErrorEvidence $_ }
         throw
     }
 }
@@ -456,37 +496,119 @@ function Add-SkippedResult([string]$Name, [string]$Reason) {
     Add-Result $Name 'skipped' $Reason
 }
 
-function Get-PowerShellExecutable {
-    $candidates = [Collections.Generic.List[string]]::new()
-    $processPathProperty = [Environment].GetProperty(
-        'ProcessPath',
-        [Reflection.BindingFlags]::Public -bor
-            [Reflection.BindingFlags]::Static
+function Assert-MachineWidePowerShellPath([string]$Path) {
+    $full = ConvertTo-CanonicalPath $Path
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) {
+        throw "machine-wide PowerShell executable is missing: $full"
+    }
+    $windowsDirectory = ConvertTo-CanonicalPath (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
     )
-    if ($null -ne $processPathProperty) {
-        $processPath = [string]$processPathProperty.GetValue($null, $null)
-        if (-not [string]::IsNullOrWhiteSpace($processPath)) {
-            $candidates.Add($processPath)
+    $systemPowerShell = ConvertTo-CanonicalPath (
+        Join-Path `
+            $windowsDirectory `
+            'System32\WindowsPowerShell\v1.0\powershell.exe'
+    )
+    $programFiles = ConvertTo-CanonicalPath (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    )
+    $programFilesPowerShell = ConvertTo-CanonicalPath (
+        Join-Path $programFiles 'PowerShell'
+    )
+    $source = ''
+    $boundary = ''
+    if ($full.Equals(
+            $systemPowerShell,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        $source = 'windows-system32'
+        $boundary = $windowsDirectory
+    } elseif ($full.StartsWith(
+            ($programFilesPowerShell.TrimEnd('\') + '\'),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        [IO.Path]::GetFileName($full).Equals(
+            'pwsh.exe',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        $source = 'program-files'
+        $boundary = $programFiles
+    } else {
+        throw (
+            'credentialed child PowerShell must be machine-wide under ' +
+            "System32 or Program Files; selected=$full"
+        )
+    }
+
+    $current = $full
+    while ($true) {
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "machine-wide PowerShell path traverses a reparse point: $current"
+        }
+        if ($current.Equals($boundary, [StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            $parent.Equals($current, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "machine-wide PowerShell path escaped its approved root: $full"
+        }
+        $current = ConvertTo-CanonicalPath $parent
+    }
+    return [pscustomobject]@{
+        path = $full
+        source = $source
+        acl_chain_checked = $true
+        reparse_free = $true
+    }
+}
+
+function Get-PowerShellExecutable {
+    $programFiles = ConvertTo-CanonicalPath (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    )
+    $windowsDirectory = ConvertTo-CanonicalPath (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+    )
+    $candidates = [Collections.Generic.List[string]]::new()
+    $candidates.Add((Join-Path $programFiles 'PowerShell\7\pwsh.exe'))
+    $powerShellRoot = Join-Path $programFiles 'PowerShell'
+    if (Test-Path -LiteralPath $powerShellRoot -PathType Container) {
+        foreach ($directory in @(
+            Get-ChildItem `
+                -LiteralPath $powerShellRoot `
+                -Directory `
+                -Force `
+                -ErrorAction Stop |
+                Sort-Object Name -Descending
+        )) {
+            $candidates.Add((Join-Path $directory.FullName 'pwsh.exe'))
         }
     }
-    try {
-        $currentProcessPath = [string](
-            Get-Process -Id $PID -ErrorAction Stop
-        ).Path
-        if (-not [string]::IsNullOrWhiteSpace($currentProcessPath)) {
-            $candidates.Add($currentProcessPath)
-        }
-    } catch {}
-    foreach ($name in @('powershell.exe', 'pwsh.exe')) {
-        $candidates.Add((Join-Path $PSHOME $name))
-    }
+    $candidates.Add((
+        Join-Path `
+            $windowsDirectory `
+            'System32\WindowsPowerShell\v1.0\powershell.exe'
+    ))
+
+    $seen = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
     foreach ($candidate in @($candidates.ToArray())) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            return ConvertTo-CanonicalPath $candidate
+        if (-not $seen.Add((ConvertTo-CanonicalPath $candidate)) -or
+            -not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
         }
+        $selection = Assert-MachineWidePowerShellPath $candidate
+        $script:PowerShellSelection = $selection
+        return [string]$selection.path
     }
-    throw 'cannot resolve the current 64-bit PowerShell executable'
+    throw (
+        'cannot resolve a machine-wide PowerShell executable under Program ' +
+        'Files or Windows System32; install PowerShell 7 machine-wide or ' +
+        'repair the built-in Windows PowerShell installation'
+    )
 }
 
 function Invoke-NativeProcess {
@@ -621,6 +743,126 @@ function Set-ICaclsOwnerAndDacl {
             @($Options)
         ) `
         -Label $Label
+}
+
+function Assert-NormalModeRuntimeFileSecurity(
+    [string]$Path,
+    [string]$ExpectedOwnerSID,
+    [string]$Label
+) {
+    $full = ConvertTo-CanonicalPath $Path
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label is not a regular runtime file: $full"
+    }
+    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $ownerSID = ConvertTo-CertificationSID $acl.Owner
+    $rules = @($acl.Access)
+    $expectedSIDs = @(
+        $ExpectedOwnerSID,
+        'S-1-5-18',
+        'S-1-5-32-544'
+    )
+    if ($ownerSID -ne $ExpectedOwnerSID -or
+        -not [bool]$acl.AreAccessRulesProtected -or
+        $rules.Count -ne $expectedSIDs.Count) {
+        throw (
+            "$Label owner/DACL is not exact: owner=$ownerSID " +
+            "protected=$($acl.AreAccessRulesProtected) rules=$($rules.Count)"
+        )
+    }
+    foreach ($expectedSID in $expectedSIDs) {
+        $matches = @(
+            $rules |
+                Where-Object {
+                    (ConvertTo-CertificationSID $_.IdentityReference) -eq
+                        $expectedSID
+                }
+        )
+        if ($matches.Count -ne 1 -or
+            $matches[0].AccessControlType -ne
+                [Security.AccessControl.AccessControlType]::Allow -or
+            $matches[0].FileSystemRights -ne
+                [Security.AccessControl.FileSystemRights]::FullControl -or
+            $matches[0].InheritanceFlags -ne
+                [Security.AccessControl.InheritanceFlags]::None -or
+            $matches[0].PropagationFlags -ne
+                [Security.AccessControl.PropagationFlags]::None -or
+            [bool]$matches[0].IsInherited) {
+            throw "$Label ACL entry for $expectedSID is not exact Full Control"
+        }
+    }
+    return [pscustomobject]@{
+        path = $full
+        owner_sid = $ownerSID
+        dacl_protected = $true
+        explicit_full_control_sids = $expectedSIDs
+    }
+}
+
+function Assert-AlternateUserPowerShellPrerequisite(
+    [Management.Automation.PSCredential]$Credential,
+    [string]$ExpectedSID,
+    [string]$Label
+) {
+    $actualSID = (
+        [Security.Principal.NTAccount]::new($Credential.UserName)
+    ).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($actualSID -ne $ExpectedSID) {
+        throw "$Label credential SID is $actualSID, want $ExpectedSID"
+    }
+    $selection = Assert-MachineWidePowerShellPath `
+        $script:PowerShellExecutable
+    $stdout = Join-Path $script:WorkRoot ($Label + '.stdout.log')
+    $stderr = Join-Path $script:WorkRoot ($Label + '.stderr.log')
+    $process = $null
+    try {
+        try {
+            $process = Start-Process `
+                -FilePath ([string]$selection.path) `
+                -ArgumentList '-NoLogo -NoProfile -NonInteractive -Command "exit 0"' `
+                -WorkingDirectory $script:System32 `
+                -Credential $Credential `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput $stdout `
+                -RedirectStandardError $stderr `
+                -PassThru
+        } catch {
+            throw (
+                "$Label cannot start the selected machine-wide PowerShell " +
+                "as $ExpectedSID. Ensure Read & Execute access on the " +
+                'executable and every parent directory. ' +
+                "path=$($selection.path); error=$($_.Exception.Message)"
+            )
+        }
+        if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill($true) } catch {}
+            throw "$Label machine-wide PowerShell access preflight timed out"
+        }
+        $process.Refresh()
+        if ($process.ExitCode -ne 0) {
+            $stderrText = if (Test-Path -LiteralPath $stderr -PathType Leaf) {
+                [IO.File]::ReadAllText($stderr)
+            } else { '' }
+            throw (
+                "$Label machine-wide PowerShell access preflight exited " +
+                "$($process.ExitCode): " +
+                (Protect-SensitiveDisplayText $stderrText)
+            )
+        }
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+    $script:PowerShellPrerequisite = [pscustomobject]@{
+        path = [string]$selection.path
+        source = [string]$selection.source
+        target_sid = $ExpectedSID
+        acl_chain_checked = [bool]$selection.acl_chain_checked
+        target_execution_succeeded = $true
+        load_user_profile_requested = $false
+    }
+    return $script:PowerShellPrerequisite
 }
 
 function Invoke-UserPowerShell {
@@ -901,11 +1143,14 @@ function Get-ActiveWTSSessions {
 
 function Resolve-ProtectedActiveUser([string]$ExplicitSID) {
     $sessions = @(Get-ActiveWTSSessions)
-    $matches = if ([string]::IsNullOrWhiteSpace($ExplicitSID)) {
-        $sessions
-    } else {
-        @($sessions | Where-Object { [string]$_.sid -eq $ExplicitSID.Trim() })
-    }
+    $matches = @(
+        if ([string]::IsNullOrWhiteSpace($ExplicitSID)) {
+            $sessions
+        } else {
+            $sessions |
+                Where-Object { [string]$_.sid -eq $ExplicitSID.Trim() }
+        }
+    )
     if ($matches.Count -ne 1) {
         $active = @($sessions | ForEach-Object {
             "$($_.account)[$($_.sid)]/session=$($_.session_id)"
@@ -1510,6 +1755,10 @@ $payload = [Text.Encoding]::UTF8.GetString(
 $pipe = $null
 $exitCode = 255
 $errorText = ''
+$errorType = ''
+$errorStack = ''
+$errorLine = 0
+$errorPosition = ''
 $stdoutText = ''
 $stderrText = ''
 try {
@@ -1691,6 +1940,10 @@ try {
     }
 } catch {
     $errorText = $_.Exception.Message
+    $errorType = $_.Exception.GetType().FullName
+    $errorStack = [string]$_.ScriptStackTrace
+    $errorLine = [int]$_.InvocationInfo.ScriptLineNumber
+    $errorPosition = [string]$_.InvocationInfo.PositionMessage
 } finally {
     if ($null -ne $pipe -and $pipe.IsConnected) {
         $result = [pscustomobject]@{
@@ -1701,6 +1954,10 @@ try {
             nonce = [string]$payload.nonce
             exit_code = $exitCode
             wrapper_error = $errorText
+            wrapper_error_type = $errorType
+            wrapper_script_stack_trace = $errorStack
+            wrapper_script_line_number = $errorLine
+            wrapper_invocation_position = $errorPosition
             stdout = $stdoutText
             stderr = $stderrText
         }
@@ -1717,6 +1974,10 @@ try {
                     nonce = [string]$payload.nonce
                     exit_code = 253
                     wrapper_error = 'active-user capture exceeded its bounded payload'
+                    wrapper_error_type = 'System.InvalidOperationException'
+                    wrapper_script_stack_trace = ''
+                    wrapper_script_line_number = 0
+                    wrapper_invocation_position = ''
                     stdout = ''
                     stderr = ''
                 } | ConvertTo-Json -Compress)
@@ -1910,6 +2171,18 @@ if (-not [string]::IsNullOrWhiteSpace($errorText)) { exit 251 }
                 "$Label active-user wrapper failed: " +
                 (Protect-SensitiveDisplayText (
                     [string]$done.wrapper_error
+                )) +
+                "; type=" +
+                (Protect-SensitiveDisplayText (
+                    [string]$done.wrapper_error_type
+                )) +
+                "; line=$([int]$done.wrapper_script_line_number); stack=" +
+                (Protect-SensitiveDisplayText (
+                    [string]$done.wrapper_script_stack_trace
+                )) +
+                "; position=" +
+                (Protect-SensitiveDisplayText (
+                    [string]$done.wrapper_invocation_position
                 ))
             )
         }
@@ -3786,6 +4059,26 @@ function New-RandomCredential([string]$UserName) {
     return [pscredential]::new($qualified, $secure)
 }
 
+function Get-ExpectedCertificationProfilePath([string]$UserName) {
+    Assert-CertificationUserName $UserName 'profile'
+    $profileListKey =
+        'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+    $profilesDirectory = Get-ItemPropertyValue `
+        -LiteralPath $profileListKey `
+        -Name ProfilesDirectory `
+        -ErrorAction Stop
+    $root = ConvertTo-CanonicalPath ([string]$profilesDirectory)
+    $expected = ConvertTo-CanonicalPath (Join-Path $root $UserName)
+    if (-not [IO.Path]::GetDirectoryName($expected).Equals(
+            $root,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [IO.Path]::GetFileName($expected) -cne $UserName) {
+        throw "temporary profile path is not the exact expected child: $expected"
+    }
+    return $expected
+}
+
 function New-CertificationLocalUser(
     [string]$UserName,
     [Management.Automation.PSCredential]$Credential
@@ -3802,7 +4095,13 @@ function New-CertificationLocalUser(
         -UserMayNotChangePassword `
         -Description 'DefenseClaw enterprise certification user' |
         Out-Null
+    if ($UserName -ceq $script:HostileUserName) {
+        $script:HostileUserCreated = $true
+    }
     $user = Get-LocalUser -Name $UserName -ErrorAction Stop
+    if ($UserName -ceq $script:HostileUserName) {
+        $script:HostileSID = [string]$user.SID.Value
+    }
     if ($user.Enabled -ne $true) {
         throw "temporary local user is disabled: $UserName"
     }
@@ -3817,6 +4116,10 @@ function Initialize-CertificationProfile(
     [Management.Automation.PSCredential]$Credential,
     [string]$Label
 ) {
+    $null = Assert-AlternateUserPowerShellPrerequisite `
+        -Credential $Credential `
+        -ExpectedSID $script:HostileSID `
+        -Label ($Label + '-powershell-prerequisite')
     $result = Invoke-UserPowerShell `
         -Credential $Credential `
         -Label $Label `
@@ -5103,6 +5406,7 @@ function New-ProtectedUserTreeSnapshot(
         path = [string]$inventory.root
         backup = $backup
         inventory = $inventory
+        ephemeral = [bool]$Ephemeral
     }
     if (-not $Ephemeral) {
         $script:UserTreeSnapshots.Add($snapshot)
@@ -5152,7 +5456,17 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
             [StringComparison]::OrdinalIgnoreCase
         )
     )
+    $isACLMatrixRoot = (
+        [bool]$Snapshot.ephemeral -and
+        [IO.Path]::GetDirectoryName($safe).Equals(
+            $script:PrimaryProfile,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -and
+        [IO.Path]::GetFileName($safe) -ceq
+            ".defenseclaw-acl-roundtrip-$($script:RunToken)"
+    )
     if (-not $isCertificationCodexHome -and
+        -not $isACLMatrixRoot -and
         [IO.Path]::GetFileName($safe) -cne '.defenseclaw') {
         throw "protected-user restore root is unexpected: $safe"
     }
@@ -5162,8 +5476,8 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
             Remove-ExactCanonicalUserTreeReparse `
                 -Path $safe `
                 -Label "$($Snapshot.name) restore"
-        } else {
-            Remove-Item -LiteralPath $safe -Recurse -Force -ErrorAction Stop
+        } elseif (-not $item.PSIsContainer) {
+            throw "protected-user restore root is not a directory: $safe"
         }
     }
     if (-not [bool]$Snapshot.inventory.existed) {
@@ -5180,7 +5494,7 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
         -ArgumentList @(
             [string]$Snapshot.backup,
             $safe,
-            '/E',
+            '/MIR',
             '/COPY:DAT',
             '/DCOPY:DAT',
             '/XJ',
@@ -5201,10 +5515,18 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
         [Security.AccessControl.AccessControlSections]::Owner -bor
         [Security.AccessControl.AccessControlSections]::Group
     )
-    $rows = @($Snapshot.inventory.entries | Sort-Object {
-        ([string]$_.relative_path).Length
-    } -Descending)
-    foreach ($row in $rows) {
+    # Apply parent descriptors first so Windows computes every inherited ACE
+    # from the restored parent. Applying the root last can rewrite descendant
+    # inheritance after their exact descriptors were already restored.
+    $securityRows = @(
+        $Snapshot.inventory.entries |
+            Sort-Object `
+                @{ Expression = {
+                    ([string]$_.relative_path).Length
+                } }, `
+                @{ Expression = { [string]$_.relative_path } }
+    )
+    foreach ($row in $securityRows) {
         $target = if ([string]$row.relative_path -eq '.') {
             $safe
         } else {
@@ -5217,6 +5539,19 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
         }
         $security.SetSecurityDescriptorSddlForm([string]$row.sddl, $sections)
         Set-Acl -LiteralPath $target -AclObject $security
+    }
+
+    # Restore timestamps and attributes from children to parents after all
+    # copying and ACL propagation so child updates cannot drift parent metadata.
+    $metadataRows = @($Snapshot.inventory.entries | Sort-Object {
+        ([string]$_.relative_path).Length
+    } -Descending)
+    foreach ($row in $metadataRows) {
+        $target = if ([string]$row.relative_path -eq '.') {
+            $safe
+        } else {
+            Join-Path $safe ([string]$row.relative_path)
+        }
         $lastWrite = [DateTime]::new(
             [long]$row.last_write_utc_ticks,
             [DateTimeKind]::Utc
@@ -5230,6 +5565,138 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
     }
     $restored = Get-ProtectedUserTreeInventory $safe "$($Snapshot.name) restored"
     Assert-SameUserTreeInventory $Snapshot.inventory $restored "$($Snapshot.name) restore"
+}
+
+function Test-ProtectedUserTreeSecurityRoundTrip {
+    $root = Assert-PathBelow `
+        (Join-Path `
+            $script:PrimaryProfile `
+            ".defenseclaw-acl-roundtrip-$($script:RunToken)") `
+        $script:PrimaryProfile `
+        'ACL round-trip matrix root'
+    if (-not [IO.Path]::GetDirectoryName($root).Equals(
+            $script:PrimaryProfile,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [IO.Path]::GetFileName($root) -cne
+            ".defenseclaw-acl-roundtrip-$($script:RunToken)") {
+        throw "ACL round-trip matrix root is not the exact profile child: $root"
+    }
+    if (Test-Path -LiteralPath $root) {
+        throw "ACL round-trip matrix root already exists: $root"
+    }
+
+    $snapshot = $null
+    try {
+        $inheritedDirectory = Join-Path $root 'inherited'
+        $protectedDirectory = Join-Path $root 'protected'
+        [IO.Directory]::CreateDirectory($inheritedDirectory) | Out-Null
+        [IO.Directory]::CreateDirectory($protectedDirectory) | Out-Null
+        Write-UTF8File (Join-Path $inheritedDirectory 'empty.txt') ''
+        Write-UTF8File `
+            (Join-Path $inheritedDirectory 'nonempty.txt') `
+            "inherited-baseline`r`n"
+        Write-UTF8File `
+            (Join-Path $protectedDirectory 'nonempty.txt') `
+            "protected-baseline`r`n"
+
+        $rootACL = Get-Acl -LiteralPath $root -ErrorAction Stop
+        $rootACL.SetOwner([Security.Principal.SecurityIdentifier]::new(
+            $script:PrimarySID
+        ))
+        $rootACL.SetGroup([Security.Principal.SecurityIdentifier]::new(
+            'S-1-5-32-544'
+        ))
+        Set-Acl -LiteralPath $root -AclObject $rootACL
+        $null = Set-ICaclsOwnerAndDacl `
+            -Path $protectedDirectory `
+            -Owner '*S-1-5-32-544' `
+            -Grants @(
+                "*$($script:PrimarySID):(OI)(CI)F",
+                '*S-1-5-18:(OI)(CI)F',
+                '*S-1-5-32-544:(OI)(CI)F'
+            ) `
+            -Label 'acl-roundtrip-protected-directory'
+
+        $rootACL = Get-Acl -LiteralPath $root -ErrorAction Stop
+        $inheritedACL = Get-Acl `
+            -LiteralPath $inheritedDirectory `
+            -ErrorAction Stop
+        $protectedACL = Get-Acl `
+            -LiteralPath $protectedDirectory `
+            -ErrorAction Stop
+        if ([bool]$rootACL.AreAccessRulesProtected -or
+            [bool]$inheritedACL.AreAccessRulesProtected -or
+            -not [bool]$protectedACL.AreAccessRulesProtected -or
+            (ConvertTo-CertificationSID $rootACL.Owner) -ne
+                $script:PrimarySID -or
+            (ConvertTo-CertificationSID $rootACL.Group) -ne
+                'S-1-5-32-544' -or
+            (ConvertTo-CertificationSID $protectedACL.Owner) -ne
+                'S-1-5-32-544') {
+            throw 'ACL round-trip matrix did not establish its owner/group/inheritance cases'
+        }
+
+        $snapshot = New-ProtectedUserTreeSnapshot `
+            -Path $root `
+            -Name "acl-roundtrip-$($script:RunToken)" `
+            -Ephemeral
+        Write-UTF8File `
+            (Join-Path $inheritedDirectory 'nonempty.txt') `
+            "changed`r`n"
+        Remove-Item `
+            -LiteralPath (Join-Path $inheritedDirectory 'empty.txt') `
+            -Force `
+            -ErrorAction Stop
+        Write-UTF8File (Join-Path $protectedDirectory 'extra.txt') 'extra'
+        $null = Set-ICaclsOwnerAndDacl `
+            -Path $root `
+            -Owner '*S-1-5-32-544' `
+            -Grants @(
+                '*S-1-5-18:(OI)(CI)F',
+                '*S-1-5-32-544:(OI)(CI)F'
+            ) `
+            -Label 'acl-roundtrip-drift'
+
+        Restore-ProtectedUserTreeSnapshot $snapshot
+        return [pscustomobject]@{
+            protected_inheritance = $true
+            unprotected_inheritance = $true
+            owner_and_group = $true
+            canonical_ace_order = $true
+            inherited_aces = $true
+            empty_and_nonempty_files = $true
+            exact_inventory_restored = $true
+        }
+    } finally {
+        if (Test-Path -LiteralPath $root) {
+            $item = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer -or
+                ($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "ACL round-trip cleanup root is unsafe: $root"
+            }
+            $nestedReparse = @(
+                Get-ChildItem `
+                    -LiteralPath $root `
+                    -Force `
+                    -Recurse `
+                    -ErrorAction Stop |
+                    Where-Object {
+                        ($_.Attributes -band
+                            [IO.FileAttributes]::ReparsePoint) -ne 0
+                    }
+            )
+            if ($nestedReparse.Count -ne 0) {
+                throw 'ACL round-trip cleanup found a reparse point'
+            }
+            Remove-Item `
+                -LiteralPath $root `
+                -Recurse `
+                -Force `
+                -ErrorAction Stop
+        }
+    }
 }
 
 function Get-DeploymentDigests {
@@ -5589,6 +6056,28 @@ function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
             '*S-1-5-32-544:(OI)(CI)F'
         ) `
         -Label 'normal-mode-synthetic-home-dacl'
+    foreach ($entry in $runtimeFiles.GetEnumerator()) {
+        $null = Set-ICaclsOwnerAndDacl `
+            -Path ([string]$entry.Value.destination) `
+            -Owner "*$($script:PrimarySID)" `
+            -Grants @(
+                "*$($script:PrimarySID):F",
+                '*S-1-5-18:F',
+                '*S-1-5-32-544:F'
+            ) `
+            -Label "normal-mode-$($entry.Key)-runtime-file-dacl"
+        $security = Assert-NormalModeRuntimeFileSecurity `
+            -Path ([string]$entry.Value.destination) `
+            -ExpectedOwnerSID $script:PrimarySID `
+            -Label "normal-mode $($entry.Key) runtime file"
+        if ((Get-FileDigest ([string]$entry.Value.destination)) -cne
+            [string]$entry.Value.sha256) {
+            throw "normal-mode $($entry.Key) runtime bytes changed while securing the file"
+        }
+        $entry.Value | Add-Member `
+            -NotePropertyName security `
+            -NotePropertyValue $security
+    }
 
     $inputObject = [ordered]@{
         expected_sid = $script:PrimarySID
@@ -5810,7 +6299,48 @@ if (-not [string]::Equals(
 $dataRoot = [IO.Path]::GetFullPath([string]$inputObject.data_root).TrimEnd('\')
 $codexHome = [IO.Path]::GetFullPath([string]$inputObject.codex_home).TrimEnd('\')
 $claudeHome = [IO.Path]::GetFullPath([string]$inputObject.claude_home).TrimEnd('\')
-$runtimeRoot = [IO.Path]::GetFullPath([string]$inputObject.runtime_root).TrimEnd('\')
+$expectedRuntimeRoot = [IO.Path]::GetFullPath(
+    (Join-Path $syntheticHome '.local\bin')
+).TrimEnd('\')
+function Assert-ExactNormalModeRuntimeRoot([string]$Candidate) {
+    $full = [IO.Path]::GetFullPath($Candidate).TrimEnd('\')
+    if (-not $full.Equals(
+            $expectedRuntimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [IO.Path]::GetDirectoryName($full).Equals(
+            [IO.Path]::GetFullPath(
+                (Join-Path $syntheticHome '.local')
+            ).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'normal-mode trusted runtime root escaped the exact synthetic .local\bin child'
+    }
+    return $full
+}
+$runtimeRoot = Assert-ExactNormalModeRuntimeRoot (
+    [string]$inputObject.runtime_root
+)
+$trustedPrefixEscapeRejections = 0
+foreach ($escapeCandidate in @(
+    $profile,
+    $syntheticHome,
+    [IO.Path]::GetDirectoryName($runtimeRoot)
+)) {
+    try {
+        $null = Assert-ExactNormalModeRuntimeRoot $escapeCandidate
+        throw 'normal-mode trusted runtime root accepted an escaping prefix'
+    } catch {
+        if ($_.Exception.Message -notlike
+            'normal-mode trusted runtime root escaped*') {
+            throw
+        }
+        $trustedPrefixEscapeRejections++
+    }
+}
+if ($trustedPrefixEscapeRejections -ne 3) {
+    throw 'normal-mode trusted runtime escape-negative matrix was incomplete'
+}
 $workRoot = [IO.Path]::GetFullPath([string]$inputObject.work_root).TrimEnd('\')
 $cli = [IO.Path]::GetFullPath([string]$inputObject.source_cli)
 $wheel = [IO.Path]::GetFullPath([string]$inputObject.source_wheel)
@@ -5853,6 +6383,13 @@ try {
                 'Process'
             )
         }
+    }
+    $env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $runtimeRoot
+    if ([Environment]::GetEnvironmentVariable(
+            'DEFENSECLAW_TRUSTED_BIN_PREFIXES',
+            'Process'
+        ) -cne $runtimeRoot) {
+        throw 'normal-mode trusted runtime prefix is not the exact runtime root'
     }
     $env:DEFENSECLAW_HOME = $dataRoot
     $env:DEFENSECLAW_CONFIG = Join-Path $dataRoot 'config.yaml'
@@ -6095,6 +6632,9 @@ try {
     gateway_pid = $gatewayPID
     watchdog_pid = $watchdogPID
     gateway_port = [int]$inputObject.api_port
+    trusted_bin_prefix = $env:DEFENSECLAW_TRUSTED_BIN_PREFIXES
+    trusted_prefix_escape_rejections = $trustedPrefixEscapeRejections
+    runtime_file_count = 5
     log_count = $logs.Count
 } | ConvertTo-Json -Compress
 '@.Replace('__INPUT__', $inputBase64)
@@ -6110,7 +6650,14 @@ try {
         -not [bool]$result.hook_self_heal -or
         [string]::IsNullOrWhiteSpace(
             [string]$result.owned_hook_fingerprint_sha256
-        )) {
+        ) -or
+        -not [string]::Equals(
+            [string]$result.trusted_bin_prefix,
+            $runtimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [int]$result.trusted_prefix_escape_rejections -ne 3 -or
+        [int]$result.runtime_file_count -ne $runtimeFiles.Count) {
         throw 'normal-mode active user did not prove existing hook auto-heal'
     }
     $after = Get-ProtectedUserTreeInventory `
@@ -6137,6 +6684,8 @@ try {
         watchdog_pid = [int]$result.watchdog_pid
         enterprise_absent_before = [bool]$RequireEnterpriseAbsent
         protected_machine_state_unchanged = $true
+        trusted_bin_prefix_exact = $true
+        runtime_files_target_owned = $true
         fixture_cleanup_exact = $true
         machine_before = $machineBefore
         machine_after = $machineAfter
@@ -16846,34 +17395,84 @@ function Test-AdministratorGenericMutationDenied {
     return 'elevated administrator direct generic reconcile was denied; LocalSystem service-mediated reconcile remains healthy'
 }
 
-function Remove-CertificationProfile([string]$SID, [string]$Label) {
+function Remove-CertificationProfile(
+    [string]$SID,
+    [string]$UserName,
+    [string]$Label
+) {
     if ([string]::IsNullOrWhiteSpace($SID)) { return }
+    Assert-CertificationUserName $UserName 'profile cleanup'
+    if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+        throw "$Label profile cleanup requires the exact local account to be removed first"
+    }
     $profiles = @(Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue | Where-Object {
         [string]$_.SID -eq $SID
     })
     if ($profiles.Count -gt 1) {
         throw "$Label SID has multiple user profiles"
     }
-    $expectedPath = if ($Label -ceq 'hostile') {
-        $script:HostileProfile
-    } elseif ($Label -ceq 'primary') {
-        $script:PrimaryProfile
-    } else {
+    if ($Label -cne 'hostile') {
         throw "unknown certification profile label: $Label"
+    }
+    $expectedPath = if (-not [string]::IsNullOrWhiteSpace(
+        $script:HostileProfile
+    )) {
+        ConvertTo-CanonicalPath $script:HostileProfile
+    } else {
+        ConvertTo-CanonicalPath $script:HostileProfileExpected
+    }
+    $expectedFromName = Get-ExpectedCertificationProfilePath $UserName
+    if (-not $expectedPath.Equals(
+            $expectedFromName,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not $script:HostileProfileExpectedWasAbsent) {
+        throw "$Label profile cleanup path lacks an exact absent baseline: $expectedPath"
     }
     foreach ($profile in $profiles) {
         $localPath = ConvertTo-CanonicalPath ([string]$profile.LocalPath)
         if ([bool]$profile.Loaded -or [bool]$profile.Special -or
-            $localPath -cne $expectedPath) {
+            -not $localPath.Equals(
+                $expectedPath,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
             throw "$Label profile is unsafe to delete: $localPath"
         }
-        $item = Get-Item -LiteralPath $localPath -Force -ErrorAction Stop
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "$Label profile is a reparse point: $localPath"
+        if (Test-Path -LiteralPath $localPath) {
+            $item = Get-Item -LiteralPath $localPath -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label profile is not a real directory: $localPath"
+            }
         }
         Remove-CimInstance `
             -InputObject $profile `
             -Confirm:$false `
+            -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $expectedPath) {
+        $item = Get-Item -LiteralPath $expectedPath -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Label residual profile is not a real directory: $expectedPath"
+        }
+        $nestedReparse = @(
+            Get-ChildItem `
+                -LiteralPath $expectedPath `
+                -Force `
+                -Recurse `
+                -ErrorAction Stop |
+                Where-Object {
+                    ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+                }
+        )
+        if ($nestedReparse.Count -ne 0) {
+            throw "$Label residual profile contains a reparse point"
+        }
+        Remove-Item `
+            -LiteralPath $expectedPath `
+            -Recurse `
+            -Force `
             -ErrorAction Stop
     }
     $remaining = @(Get-CimInstance Win32_UserProfile -ErrorAction Stop | Where-Object {
@@ -16896,6 +17495,51 @@ function Remove-CertificationRoot(
     }
     $safe = Assert-PathBelow $Path $ExpectedParent $Label
     Remove-Item -LiteralPath $safe -Recurse -Force -ErrorAction Stop
+}
+
+function Remove-EmptyCertificationParentRoot([object]$State) {
+    if ([bool]$State.existed_before -or
+        -not (Test-Path -LiteralPath ([string]$State.path))) {
+        return
+    }
+    $expected = @(
+        $script:ProgramFilesCertificationRoot,
+        $script:ProgramDataCertificationRoot,
+        $script:ProgramDataStagingRoot,
+        $script:ProgramDataWorkRoot
+    ) | Where-Object {
+        [string]::Equals(
+            (ConvertTo-CanonicalPath $_),
+            (ConvertTo-CanonicalPath ([string]$State.path)),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    if (@($expected).Count -ne 1) {
+        throw "unrecognized certification parent cleanup target: $($State.path)"
+    }
+    $safe = ConvertTo-CanonicalPath ([string]$State.path)
+    $item = Get-Item -LiteralPath $safe -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "certification parent cleanup target is unsafe: $safe"
+    }
+    $children = @(
+        Get-ChildItem -LiteralPath $safe -Force -ErrorAction Stop
+    )
+    if ($children.Count -ne 0) {
+        return
+    }
+    Remove-Item -LiteralPath $safe -Force -ErrorAction Stop
+    if (Test-Path -LiteralPath $safe) {
+        throw "empty certification parent remains after cleanup: $safe"
+    }
+}
+
+function Invoke-CertificationFailureInjection([string]$Checkpoint) {
+    if ($FailureInjectionPhase -cne 'none' -and
+        $FailureInjectionPhase -ceq $Checkpoint) {
+        throw "intentional certification failure injection after $Checkpoint"
+    }
 }
 
 function Register-CertificationSecretFile([string]$Path) {
@@ -17195,21 +17839,31 @@ function Invoke-BoundedCleanup {
         }
     )) {
         if (-not [bool]$user.Created) { continue }
-        try {
-            Remove-CertificationProfile $user.SID $user.Label
-        } catch {
-            $script:CleanupErrors.Add(
-                "$($user.Label) profile: " + (Protect-SensitiveDisplayText $_.Exception.Message)
-            )
-        }
+        $cleanupSID = [string]$user.SID
         try {
             Assert-CertificationUserName $user.Name 'cleanup'
-            if (Get-LocalUser -Name $user.Name -ErrorAction SilentlyContinue) {
+            $localUser = Get-LocalUser `
+                -Name $user.Name `
+                -ErrorAction SilentlyContinue
+            if ($null -ne $localUser) {
+                if ([string]::IsNullOrWhiteSpace($cleanupSID)) {
+                    $cleanupSID = [string]$localUser.SID.Value
+                }
                 Remove-LocalUser -Name $user.Name -ErrorAction Stop
             }
         } catch {
             $script:CleanupErrors.Add(
                 "$($user.Label) user: " + (Protect-SensitiveDisplayText $_.Exception.Message)
+            )
+        }
+        try {
+            Remove-CertificationProfile `
+                $cleanupSID `
+                $user.Name `
+                $user.Label
+        } catch {
+            $script:CleanupErrors.Add(
+                "$($user.Label) profile: " + (Protect-SensitiveDisplayText $_.Exception.Message)
             )
         }
     }
@@ -17253,6 +17907,24 @@ function Invoke-BoundedCleanup {
         } catch {
             $script:CleanupErrors.Add(
                 'work root: ' + (Protect-SensitiveDisplayText $_.Exception.Message)
+            )
+        }
+    }
+    foreach ($parentState in @($script:CertificationParentRoots)) {
+        if ($KeepWorkRoot -and
+            [string]::Equals(
+                [string]$parentState.path,
+                $script:ProgramDataWorkRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            continue
+        }
+        try {
+            Remove-EmptyCertificationParentRoot $parentState
+        } catch {
+            $script:CleanupErrors.Add(
+                'certification parent root: ' +
+                (Protect-SensitiveDisplayText $_.Exception.Message)
             )
         }
     }
@@ -17318,6 +17990,9 @@ function Write-FinalEvidence([string]$Status, [string]$Failure) {
             protected_config_baseline_sha256 = $script:PrimaryConfigBaselineSHA256
             denial_user = $script:HostileUserName
             denial_user_sid = $script:HostileSID
+            credentialed_powershell = $script:PowerShellSelection
+            credentialed_powershell_prerequisite =
+                $script:PowerShellPrerequisite
             install_root = $script:InstallRoot
             state_root = $script:StateRoot
         }
@@ -17374,6 +18049,7 @@ function Write-FinalEvidence([string]$Status, [string]$Failure) {
             live_codex_mutated = $false
         }
         failure = Protect-SensitiveDisplayText $Failure
+        failure_detail = $script:FailureEvidence
         results = $script:Results
         cleanup_ok = $script:CleanupErrors.Count -eq 0
         cleanup_errors = $script:CleanupErrors
@@ -17683,6 +18359,19 @@ $script:WorkRoot = Assert-PathBelow `
     (Join-Path $script:ProgramDataWorkRoot $script:RunToken) `
     $script:ProgramDataWorkRoot `
     'work root'
+$script:CertificationParentRoots = @(
+    foreach ($parentRoot in @(
+        $script:ProgramFilesCertificationRoot,
+        $script:ProgramDataCertificationRoot,
+        $script:ProgramDataStagingRoot,
+        $script:ProgramDataWorkRoot
+    )) {
+        [pscustomobject]@{
+            path = ConvertTo-CanonicalPath $parentRoot
+            existed_before = Test-Path -LiteralPath $parentRoot
+        }
+    }
+)
 $script:FixtureRoot = Join-Path $script:StagingRoot 'fixtures'
 $script:ConfigSource = Join-Path $script:StagingRoot 'config.yaml'
 $script:ManifestSource = Join-Path $script:StagingRoot 'targets.yaml'
@@ -17732,6 +18421,7 @@ $plan = [ordered]@{
     claude_managed_state_path = $script:ClaudeManagedStatePath
     staging_root = $script:StagingRoot
     work_root = $script:WorkRoot
+    credentialed_powershell = $script:PowerShellSelection
     evidence_directory = $script:EvidenceDirectory
     allow_unsigned_fixture_binaries = [bool]$AllowUnsigned
     agent_application_control_attested = [bool]$AttestAgentApplicationControl
@@ -17776,6 +18466,7 @@ $plan = [ordered]@{
         'codex-and-claude'
     }
     host_mutation = -not $script:PlanOnly
+    failure_injection_phase = $FailureInjectionPhase
 }
 
 if ($script:PlanOnly) {
@@ -17894,6 +18585,17 @@ try {
         Initialize-ActiveUserHandoff
 
         $script:HostileCredential = New-RandomCredential $script:HostileUserName
+        $script:HostileProfileExpected =
+            Get-ExpectedCertificationProfilePath $script:HostileUserName
+        $script:HostileProfileExpectedWasAbsent = -not (
+            Test-Path -LiteralPath $script:HostileProfileExpected
+        )
+        if (-not $script:HostileProfileExpectedWasAbsent) {
+            throw (
+                'refusing pre-existing temporary profile path: ' +
+                $script:HostileProfileExpected
+            )
+        }
         $script:HostileSID = New-CertificationLocalUser `
             $script:HostileUserName `
             $script:HostileCredential
@@ -17905,8 +18607,20 @@ try {
             throw "hostile profile SID mismatch: $($hostile.sid) != $($script:HostileSID)"
         }
         $script:HostileProfile = ConvertTo-CanonicalPath ([string]$hostile.profile)
+        if (-not $script:HostileProfile.Equals(
+                $script:HostileProfileExpected,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw (
+                'temporary user profile did not use the exact expected path: ' +
+                $script:HostileProfile
+            )
+        }
         $token = Assert-ProtectedUserTamperToken
         return "active target $($script:PrimaryUserName) session=$($script:PrimarySessionID); created exact non-admin denial user $($script:HostileUserName); $token"
+    }
+    Invoke-Check 'protected-user-acl-round-trip-matrix' {
+        Test-ProtectedUserTreeSecurityRoundTrip
     }
     Invoke-Check 'protected-source-staging' {
         Initialize-ProtectedCertificationSources
@@ -17929,6 +18643,7 @@ try {
             'cannot modify them'
         )
     }
+    Invoke-CertificationFailureInjection 'fixture'
 
     $script:Phase = 'normal-mode-noop'
     try {
@@ -17949,6 +18664,7 @@ try {
     Invoke-Check 'preinstall-normal-mode-is-no-op' {
         Test-NormalModePreinstallNoOp
     }
+    Invoke-CertificationFailureInjection 'normal-mode-noop'
     $script:Phase = 'certification-isolation'
     Invoke-Check 'certification-codex-home-fixture' {
         $fixture = Initialize-CertificationCodexHome
@@ -17961,6 +18677,7 @@ try {
         $null = Assert-MachineCodexHomeUnchanged
         return 'machine and coordinator process CODEX_HOME stayed byte/type/existence exact'
     }
+    Invoke-CertificationFailureInjection 'certification-isolation'
 
     $apiPort = Get-FreeLoopbackPort
     $script:APIPort = $apiPort
@@ -18855,8 +19572,13 @@ targets:
     }
     $completed = $true
 } catch {
+    $script:FailureEvidence = ConvertTo-CertificationErrorEvidence $_
     $failure = $_.Exception.Message
-    Add-Result 'harness-failure' 'failed' $failure
+    Add-Result `
+        'harness-failure' `
+        'failed' `
+        $failure `
+        @{ error = $script:FailureEvidence }
 } finally {
     try {
         if (-not (Test-Path -LiteralPath $script:EvidenceDirectory -PathType Container)) {

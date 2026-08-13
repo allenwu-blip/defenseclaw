@@ -1784,15 +1784,26 @@ def test_certification_purges_through_installed_cli_without_retirement_leaks() -
 
 def test_certification_uses_fixed_clean_windows_powershell_bootstrap() -> None:
     harness = read(HARNESS)
+    selector = harness[
+        harness.index("function Assert-MachineWidePowerShellPath") : harness.index(
+            "function Invoke-NativeProcess"
+        )
+    ]
 
     assert "[string]$InstallerPath = ''" in harness
     assert "$resolvedInstallerPath = if ([string]::IsNullOrWhiteSpace($InstallerPath))" in harness
     assert "Join-Path (Split-Path -Parent $PSScriptRoot)" not in harness
-    assert "[Environment]::ProcessPath" not in harness
-    assert "[Environment].GetProperty(" in harness
-    assert "Get-Process -Id $PID -ErrorAction Stop" in harness
-    assert "foreach ($name in @('powershell.exe', 'pwsh.exe'))" in harness
+    assert "ProcessPath" not in selector
+    assert "Get-Process -Id $PID" not in selector
+    assert "[Environment+SpecialFolder]::ProgramFiles" in selector
+    assert "Assert-MachineWidePowerShellPath" in selector
+    assert "credentialed child PowerShell must be machine-wide" in selector
+    assert "PowerShell\\7\\pwsh.exe" in selector
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in harness
+    assert "Ensure Read & Execute access" in harness
+    assert "-Credential $Credential" in harness
+    assert "target_execution_succeeded = $true" in harness
+    assert "load_user_profile_requested = $false" in harness
     assert "BootstrapPowerShellExecutable" in harness
     assert "$start.Environment.Clear()" in harness
     assert "StrictWindowsBootstrapEnvironment" in harness
@@ -1875,6 +1886,25 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "enterprise_absent_before = [bool]$RequireEnterpriseAbsent" in live_repair
     assert "machine_before = $machineBefore" in live_repair
     assert "machine_after = $machineAfter" in live_repair
+    clear_environment = live_repair.index(
+        "[Environment]::GetEnvironmentVariables('Process').Keys"
+    )
+    exact_trust = live_repair.index(
+        "$env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $runtimeRoot"
+    )
+    init = live_repair.index("& $cli init")
+    assert clear_environment < exact_trust < init
+    assert "Join-Path $syntheticHome '.local\\bin'" in live_repair
+    assert "Assert-ExactNormalModeRuntimeRoot" in live_repair
+    assert "trusted runtime root escaped the exact synthetic" in live_repair
+    assert "trusted_prefix_escape_rejections = $trustedPrefixEscapeRejections" in live_repair
+    assert "trusted_prefix_escape_rejections -ne 3" in live_repair
+    assert "$env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $syntheticHome" not in live_repair
+    assert "Assert-NormalModeRuntimeFileSecurity" in live_repair
+    assert '-Owner "*$($script:PrimarySID)"' in live_repair
+    assert '"*$($script:PrimarySID):F"' in live_repair
+    assert "runtime_files_target_owned = $true" in live_repair
+    assert "trusted_bin_prefix_exact = $true" in live_repair
 
     preinstall_live = harness.index(
         "'preinstall-normal-mode-live-hook-auto-heal-is-no-op'"
@@ -1885,6 +1915,114 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+def test_certification_cleanup_handles_partial_profiles_and_empty_parents() -> None:
+    harness = read(HARNESS)
+    profile_cleanup = harness[
+        harness.index("function Remove-CertificationProfile") : harness.index(
+            "function Remove-CertificationRoot"
+        )
+    ]
+    cleanup = harness[
+        harness.index("function Invoke-BoundedCleanup") : harness.index(
+            "function Write-FinalEvidence"
+        )
+    ]
+
+    assert "profile cleanup requires the exact local account to be removed first" in profile_cleanup
+    assert "$script:HostileProfileExpected" in profile_cleanup
+    assert "$script:HostileProfileExpectedWasAbsent" in profile_cleanup
+    assert "[bool]$profile.Loaded" in profile_cleanup
+    assert "[bool]$profile.Special" in profile_cleanup
+    assert "Remove-CimInstance" in profile_cleanup
+    assert "residual profile contains a reparse point" in profile_cleanup
+    assert cleanup.index("Remove-LocalUser") < cleanup.index(
+        "Remove-CertificationProfile"
+    )
+
+    parent_cleanup = harness[
+        harness.index("function Remove-EmptyCertificationParentRoot") : harness.index(
+            "function Register-CertificationSecretFile"
+        )
+    ]
+    assert "$script:ProgramDataStagingRoot" in parent_cleanup
+    assert "$script:ProgramDataWorkRoot" in parent_cleanup
+    assert "existed_before" in parent_cleanup
+    assert "[IO.FileAttributes]::ReparsePoint" in parent_cleanup
+    assert "$children = @(" in parent_cleanup
+    assert "Remove-Item -LiteralPath $safe -Force" in parent_cleanup
+    assert "Remove-EmptyCertificationParentRoot $parentState" in cleanup
+
+    install = harness.index("Invoke-Check 'enterprise-installer-install'")
+    for checkpoint in ("fixture", "normal-mode-noop", "certification-isolation"):
+        call = harness.index(f"Invoke-CertificationFailureInjection '{checkpoint}'")
+        assert call < install
+
+
+def test_certification_restores_user_tree_security_without_root_recreation_drift() -> None:
+    harness = read(HARNESS)
+    restore = harness[
+        harness.index("function Restore-ProtectedUserTreeSnapshot") : harness.index(
+            "function Get-DeploymentDigests"
+        )
+    ]
+
+    assert "'/MIR'" in restore
+    assert "'/COPY:DAT'" in restore
+    assert "Applying the root last can rewrite descendant" in restore
+    assert "$securityRows" in restore
+    assert "$metadataRows" in restore
+    assert restore.index("foreach ($row in $securityRows)") < restore.index(
+        "foreach ($row in $metadataRows)"
+    )
+    assert "Remove-Item -LiteralPath $safe -Recurse" not in restore
+    assert "SetSecurityDescriptorSddlForm" in restore
+    assert "Assert-SameUserTreeInventory" in restore
+
+    matrix = harness[
+        harness.index("function Test-ProtectedUserTreeSecurityRoundTrip") : harness.index(
+            "function Get-DeploymentDigests"
+        )
+    ]
+    assert "protected_inheritance = $true" in matrix
+    assert "unprotected_inheritance = $true" in matrix
+    assert "owner_and_group = $true" in matrix
+    assert "canonical_ace_order = $true" in matrix
+    assert "inherited_aces = $true" in matrix
+    assert "empty_and_nonempty_files = $true" in matrix
+    assert "exact_inventory_restored = $true" in matrix
+    assert "protected-user-acl-round-trip-matrix" in harness
+
+
+def test_certification_retains_structured_failure_location_and_strictmode_arrays() -> None:
+    harness = read(HARNESS)
+    error_evidence = harness[
+        harness.index("function ConvertTo-CertificationErrorEvidence") : harness.index(
+            "function ConvertTo-CanonicalPath"
+        )
+    ]
+    resolver = harness[
+        harness.index("function Resolve-ProtectedActiveUser") : harness.index(
+            "function Initialize-ActiveUserHandoff"
+        )
+    ]
+
+    for field in (
+        "exception_type",
+        "script_stack_trace",
+        "script_line_number",
+        "offset_in_line",
+        "invocation_position",
+    ):
+        assert field in error_evidence
+    assert "Protect-SensitiveDisplayText" in error_evidence
+    assert "failure_detail = $script:FailureEvidence" in harness
+    assert "wrapper_error_type" in harness
+    assert "wrapper_script_stack_trace" in harness
+    assert "wrapper_script_line_number" in harness
+    assert "$matches = @(" in resolver
+    assert "$matches.Count -ne 1" in resolver
 
 
 def test_non_admin_file_denials_require_access_denied_not_generic_io() -> None:
