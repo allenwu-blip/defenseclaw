@@ -1596,7 +1596,12 @@ function ConvertTo-DefenseClawWindowsCommandLineArgument {
 }
 
 function ConvertTo-DefenseClawWindowsCommandLine {
-    param([Parameter(Mandatory)][string[]]$Arguments)
+    param(
+        [Parameter(Mandatory)]
+        [ValidateNotNull()]
+        [AllowEmptyString()]
+        [string[]]$Arguments
+    )
     $encoded = [Collections.Generic.List[string]]::new()
     foreach ($argument in $Arguments) {
         $encoded.Add((

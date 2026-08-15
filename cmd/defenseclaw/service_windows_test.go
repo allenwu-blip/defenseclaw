@@ -701,24 +701,6 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 	}
 }
 
-func windowsPowerShellFunction(t *testing.T, module, name string) string {
-	t.Helper()
-	declaration := regexp.MustCompile(
-		`(?m)^function[ \t]+` + regexp.QuoteMeta(name) +
-			`(?:[ \t]*\([^\r\n)]*\))?[ \t]*\{`,
-	)
-	location := declaration.FindStringIndex(module)
-	if location == nil {
-		t.Fatalf("PowerShell function %s was not found", name)
-	}
-	remainder := module[location[1]:]
-	next := regexp.MustCompile(`(?m)^function[ \t]+`).FindStringIndex(remainder)
-	if next == nil {
-		return module[location[0]:]
-	}
-	return module[location[0] : location[1]+next[0]]
-}
-
 func readWindowsEnterpriseInstaller(t *testing.T) []byte {
 	t.Helper()
 	installerPath := filepath.Join("..", "..", "packaging", "windows", "install-enterprise.ps1")

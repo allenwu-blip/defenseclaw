@@ -347,6 +347,7 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
 
 def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
     module = read(MODULE)
+    module_smoke = read(MODULE_SMOKE)
     codex_requirements = read(WINDOWS_CODEX_REQUIREMENTS)
     claude_policy = read(WINDOWS_CLAUDE_POLICY)
 
@@ -361,6 +362,15 @@ def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
         "ConvertTo-DefenseClawWindowsCommandLine",
     ):
         assert contract in module
+    command_line_encoder = module[
+        module.index("function ConvertTo-DefenseClawWindowsCommandLine {") :
+        module.index("function ConvertFrom-DefenseClawProcessText")
+    ]
+    assert "[AllowEmptyString()]" in command_line_encoder
+    assert "[ValidateNotNull()]" in command_line_encoder
+    assert "[string[]]$Arguments" in command_line_encoder
+    assert "CharSet = CharSet.Unicode" in module_smoke
+    assert "ExactSpelling = true" in module_smoke
     assert module.count("Assert-DefenseClawServiceImagePath `") == 2
     assert "[Text.UTF8Encoding]::new($false)" in module
 
@@ -878,6 +888,8 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
             (
                 "ambient_cmdlet_shadow_ignored",
                 "fixed_native_helper_spoof_ignored",
+                "command_line_empty_argument_round_trip",
+                "command_line_invalid_arguments_rejected",
                 "certification_scope_rejections",
                 "lifecycle_file_lock_reuse_stable",
             ),

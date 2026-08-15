@@ -263,7 +263,11 @@ namespace DefenseClaw.Windows.Tests
 {
     public static class CommandLine
     {
-        [DllImport("shell32.dll", SetLastError = true)]
+        [DllImport(
+            "shell32.dll",
+            CharSet = CharSet.Unicode,
+            ExactSpelling = true,
+            SetLastError = true)]
         private static extern IntPtr CommandLineToArgvW(
             string commandLine,
             out int argumentCount);
@@ -321,6 +325,28 @@ namespace DefenseClaw.Windows.Tests
             [StringComparison]::Ordinal
         )) {
             throw "native command-line encoder changed argv[$index]"
+        }
+    }
+    foreach ($invalidFixture in @(
+        [pscustomobject]@{
+            name = 'null'
+            arguments = [object[]]@('safe', $null)
+        },
+        [pscustomobject]@{
+            name = 'NUL'
+            arguments = [object[]]@('safe', ('unsafe' + [char]0))
+        }
+    )) {
+        $rejected = $false
+        try {
+            [void](ConvertTo-DefenseClawWindowsCommandLine `
+                -Arguments $invalidFixture.arguments)
+        }
+        catch {
+            $rejected = $true
+        }
+        if (-not $rejected) {
+            throw "native command-line encoder accepted a $($invalidFixture.name) argument"
         }
     }
 
@@ -869,6 +895,8 @@ else {
     lifecycle_file_lock_reuse_stable = $elevated
     ambient_cmdlet_shadow_ignored = $true
     fixed_native_helper_spoof_ignored = $true
+    command_line_empty_argument_round_trip = $true
+    command_line_invalid_arguments_rejected = $true
     production_codex_home_absent = $true
     certification_codex_home_exact = $true
     certification_scope_rejections = $true
