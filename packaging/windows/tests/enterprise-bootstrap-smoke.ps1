@@ -691,6 +691,19 @@ try {
     Invoke-RejectedBootstrap `
         -InstallerPath (Join-Path $untrustedRoot 'install-enterprise.ps1') `
         -ExpectedError 'untrusted owner|replacement access|write-like access' `
+        -InstallerArguments @(
+            '-Action', 'Status',
+            '-GatewayServiceName', $scopeGatewayService,
+            '-GuardianServiceName', $scopeGuardianService,
+            '-InstallRoot', $scopeInstallRoot,
+            '-StateRoot', $scopeStateRoot,
+            '-CertificationCodexHome', $scopeCertificationCodexHome,
+            '-AllowUnsigned',
+            '-Json'
+        )
+    Invoke-RejectedBootstrap `
+        -InstallerPath (Join-Path $untrustedRoot 'install-enterprise.ps1') `
+        -ExpectedError 'untrusted owner|replacement access|write-like access' `
         -PreloadFixedHelperSpoof
     Invoke-RejectedBootstrap `
         -InstallerPath (Join-Path $untrustedRoot 'install-enterprise.ps1') `

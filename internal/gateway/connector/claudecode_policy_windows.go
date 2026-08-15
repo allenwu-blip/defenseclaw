@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/defenseclaw/defenseclaw/internal/winpath"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 )
@@ -19,7 +18,13 @@ import (
 const claudeCodeWindowsPolicyKey = `SOFTWARE\Policies\ClaudeCode`
 
 var claudeCodeWindowsProgramFilesRoot = func() (string, error) {
-	return winpath.CurrentUserKnownFolderPath(windows.FOLDERID_ProgramFiles)
+	// Program Files is machine-wide. An explicit current-process token adds
+	// user-token impersonation rights that a hardened LocalSystem token does
+	// not need and may not grant.
+	return windows.KnownFolderPath(
+		windows.FOLDERID_ProgramFiles,
+		windows.KF_FLAG_DEFAULT,
+	)
 }
 
 func claudeCodePlatformManagedSettingsRoot() (string, error) {

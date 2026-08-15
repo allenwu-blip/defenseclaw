@@ -8,8 +8,28 @@ package connector
 import (
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
+
+func TestClaudeCodeDefaultProgramFilesResolverIsMachineScoped(t *testing.T) {
+	want, err := windows.KnownFolderPath(
+		windows.FOLDERID_ProgramFiles,
+		windows.KF_FLAG_DEFAULT,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := claudeCodeWindowsProgramFilesRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(filepath.Clean(got), filepath.Clean(want)) {
+		t.Fatalf("Program Files root = %q, want machine Known Folder %q", got, want)
+	}
+}
 
 func TestClaudeCodeManagedSettingsRootUsesProgramFilesKnownFolder(t *testing.T) {
 	previous := claudeCodeWindowsProgramFilesRoot

@@ -168,6 +168,19 @@ $certificationStateRoot = Join-Path `
     $programData `
     "Cisco\DefenseClaw-Cert\$token"
 try {
+    $missingCertificationStatus = Invoke-DefenseClawEnterpriseLifecycle `
+        -Action Status `
+        -InstallRoot $certificationInstallRoot `
+        -StateRoot $certificationStateRoot `
+        -GatewayServiceName "DefenseClawCertGateway_$token" `
+        -GuardianServiceName "DefenseClawCertGuardian_$token" `
+        -CertificationCodexHome $certificationCodexHome `
+        -AllowUnsigned
+    if (-not [bool]$missingCertificationStatus.ok -or
+        [bool]$missingCertificationStatus.installed -or
+        (Test-Path -LiteralPath $certificationCodexHome)) {
+        throw 'unsigned pre-install Status did not preserve its absent certification CODEX_HOME'
+    }
     [void](New-Item -ItemType Directory -Path $certificationCodexHome)
     [void](New-Item -ItemType Directory -Path $wrongCertificationCodexHome)
     $certificationStatus = Invoke-DefenseClawEnterpriseLifecycle `
@@ -176,7 +189,8 @@ try {
         -StateRoot $certificationStateRoot `
         -GatewayServiceName "DefenseClawCertGateway_$token" `
         -GuardianServiceName "DefenseClawCertGuardian_$token" `
-        -CertificationCodexHome $certificationCodexHome
+        -CertificationCodexHome $certificationCodexHome `
+        -AllowUnsigned
     if (-not [bool]$certificationStatus.ok -or [bool]$certificationStatus.installed) {
         throw 'certification Status did not accept its exact isolated CODEX_HOME'
     }
@@ -236,6 +250,161 @@ finally {
     }
     if (Test-Path -LiteralPath $wrongCertificationCodexHome) {
         Remove-Item -LiteralPath $wrongCertificationCodexHome -Force
+    }
+}
+
+if (-not ('DefenseClaw.Windows.Tests.CommandLine' -as [type])) {
+    [void](Microsoft.PowerShell.Utility\Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace DefenseClaw.Windows.Tests
+{
+    public static class CommandLine
+    {
+        [DllImport("shell32.dll", SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW(
+            string commandLine,
+            out int argumentCount);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        public static string[] Parse(string commandLine)
+        {
+            int count;
+            IntPtr values = CommandLineToArgvW(commandLine, out count);
+            if (values == IntPtr.Zero)
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                string[] result = new string[count];
+                for (int index = 0; index < count; index++)
+                {
+                    IntPtr value = Marshal.ReadIntPtr(values, index * IntPtr.Size);
+                    result[index] = Marshal.PtrToStringUni(value);
+                }
+                return result;
+            }
+            finally
+            {
+                LocalFree(values);
+            }
+        }
+    }
+}
+'@ -Language CSharp -ErrorAction Stop)
+}
+
+& $module {
+    $argumentFixture = [string[]]@(
+        'config',
+        'DefenseClawGateway',
+        'binPath=',
+        '"C:\Program Files\Cisco\DefenseClaw\defenseclaw-gateway.exe" enterprise hooks watch --manifest "C:\ProgramData\Cisco\DefenseClaw\targets.yaml" --interval 1m',
+        'trailing-slash\',
+        ''
+    )
+    $encodedFixture = ConvertTo-DefenseClawWindowsCommandLine `
+        -Arguments $argumentFixture
+    $decodedFixture = [DefenseClaw.Windows.Tests.CommandLine]::Parse(
+        'fixture.exe ' + $encodedFixture
+    )
+    if ($decodedFixture.Count -ne $argumentFixture.Count + 1) {
+        throw 'native command-line encoder changed the argument count'
+    }
+    for ($index = 0; $index -lt $argumentFixture.Count; $index++) {
+        if (-not [string]::Equals(
+            [string]$decodedFixture[$index + 1],
+            [string]$argumentFixture[$index],
+            [StringComparison]::Ordinal
+        )) {
+            throw "native command-line encoder changed argv[$index]"
+        }
+    }
+
+    $engine = Microsoft.PowerShell.Management\Join-Path `
+        $script:System32 `
+        'WindowsPowerShell\v1.0\powershell.exe'
+    $success = Invoke-DefenseClawProcess `
+        -File $engine `
+        -Arguments @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            '[Console]::Out.Write("fresh-success"); exit 0'
+        ) `
+        -TimeoutSeconds 15
+    if ([int]$success.exit_code -ne 0 -or
+        [string]$success.stdout -cne 'fresh-success') {
+        throw 'fresh native success result was not captured exactly'
+    }
+    $failure = Invoke-DefenseClawProcess `
+        -File $engine `
+        -Arguments @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            '[Console]::Error.Write("fresh-stderr"); exit 23'
+        ) `
+        -TimeoutSeconds 15
+    if ([int]$failure.exit_code -ne 23 -or
+        [string]$failure.stderr -cne 'fresh-stderr') {
+        throw 'fresh native nonzero/stderr result was not captured exactly'
+    }
+    $timedOut = $false
+    try {
+        [void](Invoke-DefenseClawProcess `
+            -File $engine `
+            -Arguments @(
+                '-NoLogo',
+                '-NoProfile',
+                '-NonInteractive',
+                '-Command',
+                'Start-Sleep -Seconds 5'
+            ) `
+            -TimeoutSeconds 1)
+    }
+    catch {
+        $timedOut = $_.Exception.Message -match 'timed out after 1 seconds'
+    }
+    if (-not $timedOut) {
+        throw 'bounded native process did not report its timeout'
+    }
+
+    $jsonRoot = Microsoft.PowerShell.Management\Join-Path `
+        ([IO.Path]::GetTempPath()) `
+        ('defenseclaw-json-smoke-' + [Guid]::NewGuid().ToString('N'))
+    $jsonPath = Microsoft.PowerShell.Management\Join-Path `
+        $jsonRoot `
+        'state.json'
+    try {
+        [IO.Directory]::CreateDirectory($jsonRoot) |
+            Microsoft.PowerShell.Core\Out-Null
+        Write-DefenseClawJsonAtomic `
+            -Value ([ordered]@{ schema_version = 1; ok = $true }) `
+            -Path $jsonPath
+        $jsonBytes = [IO.File]::ReadAllBytes($jsonPath)
+        if ($jsonBytes.Length -lt 2 -or
+            ($jsonBytes.Length -ge 3 -and
+                $jsonBytes[0] -eq 0xEF -and
+                $jsonBytes[1] -eq 0xBB -and
+                $jsonBytes[2] -eq 0xBF)) {
+            throw 'atomic JSON writer emitted an empty document or UTF-8 BOM'
+        }
+        $json = [Text.Encoding]::UTF8.GetString($jsonBytes) |
+            Microsoft.PowerShell.Utility\ConvertFrom-Json
+        if ([int]$json.schema_version -ne 1 -or -not [bool]$json.ok) {
+            throw 'atomic JSON writer did not round-trip its payload'
+        }
+    }
+    finally {
+        if ([IO.Directory]::Exists($jsonRoot)) {
+            [IO.Directory]::Delete($jsonRoot, $true)
+        }
     }
 }
 

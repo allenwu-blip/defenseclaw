@@ -49,8 +49,10 @@ DEFENSECLAW_MAIN = ROOT / "cmd" / "defenseclaw" / "main.go"
 DEFENSECLAW_MAIN_TEST = ROOT / "cmd" / "defenseclaw" / "main_test.go"
 WINDOWS_SERVICE_HOST = ROOT / "cmd" / "defenseclaw" / "service_windows.go"
 WINDOWS_SERVICE_HOST_TEST = ROOT / "cmd" / "defenseclaw" / "service_windows_test.go"
+WINDOWS_CODEX_REQUIREMENTS = ROOT / "internal" / "cli" / "windows_codex_requirements.go"
 WINDOWS_CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_machine_requirements_windows.go"
 CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_machine_requirements.go"
+WINDOWS_CLAUDE_POLICY = ROOT / "internal" / "gateway" / "connector" / "claudecode_policy_windows.go"
 POWERSHELL = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
 
 
@@ -230,11 +232,9 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
     assert "$env:ProgramData" not in module
     assert "Assert-DefenseClawBootstrapModuleTrust" in installer
     assert "DefenseClaw enterprise installer rejected its module before import" in installer
-    assert "AllowUnsigned = [bool](" in installer
-    assert (
-        "$AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair', 'Uninstall')"
-        in installer
-    )
+    assert "AllowUnsigned = [bool]$AllowUnsigned" in installer
+    assert "action is outside the enterprise lifecycle" in installer
+    assert "every certification lifecycle action" in installer
     # The config directory carries a gateway-service read ACE, so the verifier
     # must assert it against the gateway reader set. Listing it as
     # administrator-only rejects the ACE the installer just wrote.
@@ -306,6 +306,41 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
     assert "-StartMode 2" in module
     assert "'failureflag', $service, '1'" in module
     assert "'sdset', $service, $script:ServiceSDDL" in module
+
+
+def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
+    module = read(MODULE)
+    codex_requirements = read(WINDOWS_CODEX_REQUIREMENTS)
+    claude_policy = read(WINDOWS_CLAUDE_POLICY)
+
+    assert "$LASTEXITCODE" not in module
+    for contract in (
+        "[Diagnostics.ProcessStartInfo]::new()",
+        "$start.UseShellExecute = $false",
+        "$start.RedirectStandardOutput = $true",
+        "$start.RedirectStandardError = $true",
+        "$process.WaitForExit($TimeoutSeconds * 1000)",
+        "exit_code = [int]$process.ExitCode",
+        "ConvertTo-DefenseClawWindowsCommandLine",
+    ):
+        assert contract in module
+    assert module.count("Assert-DefenseClawServiceImagePath `") == 2
+    assert "[Text.UTF8Encoding]::new($false)" in module
+
+    requirements_report = module[
+        module.index("function Invoke-DefenseClawCodexRequirementsCommand") :
+        module.index("function Complete-DefenseClawCodexRequirementsRemoval")
+    ]
+    assert requirements_report.index("if ([int]$probe.exit_code -ne 0") < requirements_report.index(
+        "@('requirements_path'"
+    )
+    assert "body = trimWindowsJSONBOM(body)" in codex_requirements
+    assert "bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf})" in codex_requirements
+
+    assert "windows.KnownFolderPath(" in claude_policy
+    assert "windows.FOLDERID_ProgramFiles" in claude_policy
+    assert "windows.KF_FLAG_DEFAULT" in claude_policy
+    assert "CurrentUserKnownFolderPath" not in claude_policy
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
@@ -449,8 +484,8 @@ def test_poisoned_program_root_environment_cannot_redirect_defaults(
         },
         "read_only": {
             "action": "status|verify|reconcile|uninstall",
-            "certification_codex_home": False,
-            "allow_unsigned": False,
+            "certification_codex_home": True,
+            "allow_unsigned": True,
             "core_hardening_certification": False,
         },
     }
@@ -491,6 +526,9 @@ def test_active_user_results_use_pid_bound_administrator_owned_pipe() -> None:
     assert "'S-1-5-18'" in capture
     assert "'S-1-5-32-544'" in capture
     assert "Get-ScheduledTaskEngineProcessIDs" in capture
+    assert "Where-Object { $_ -gt 0 }" in capture
+    assert "$taskAbsent = $true" in capture
+    assert "[void]$script:ScheduledTasks.Remove($safeTaskName)" in capture
     assert "Assert-ProtectedActiveUserCaptureTaskSecurity" in capture
     assert "'O:BAG:BAD:P'" in capture
     assert "'(A;;FA;;;SY)'" in capture
@@ -597,6 +635,8 @@ def test_certification_scheduled_tasks_are_removed_fail_closed() -> None:
 def test_certification_preserves_canonical_user_trees_exactly() -> None:
     harness = read(HARNESS)
 
+    assert "$home =" not in harness.lower()
+    assert "$certificationhome =" in harness.lower()
     assert "[Environment+SpecialFolder]::ProgramFiles" in harness
     assert "[Environment+SpecialFolder]::CommonApplicationData" in harness
     assert "$env:ProgramFiles" not in harness
@@ -667,6 +707,13 @@ def test_certification_activates_disabled_staging_only_through_public_repair() -
     assert "Invoke-EnterpriseLifecycleCLIJSON" in activation
     assert "elevated_powershell_temp_boundary" in activation
     assert "Get-EnterprisePowerShellTempSnapshot" in harness
+    temp_snapshot = harness[
+        harness.index("function Get-EnterprisePowerShellTempSnapshot") : harness.index(
+            "function Update-EnterprisePowerShellTempObservation"
+        )
+    ]
+    assert "$script:KnownProgramData" in temp_snapshot
+    assert "$script:WindowsDirectory 'Temp'" not in temp_snapshot
     assert "Start-ActiveUserEnterprisePowerShellTempProbe" in harness
     assert "DefenseClaw-PowerShell-[a-f0-9]{32}" in harness
     assert "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" in harness
@@ -734,6 +781,14 @@ def test_certification_exercises_tamper_and_full_scm_denial_surface() -> None:
     assert "Assert-SameServiceControlSnapshot" in harness
     assert "evidence-secret-hygiene" in harness
     assert "Protect-TreeFromRegisteredSecretLeak" in harness
+    assert "$maximumTextFileBytes = 8MB" in harness
+    assert "$maximumTotalTextBytes = 64MB" in harness
+    assert "Test-CertificationEvidenceTextFile" in harness
+    assert "Get-CertificationTreeEntriesNoFollow" in harness
+    assert "$maximumEntries = 100000" in harness
+    assert "-IncludeReparse" in harness
+    assert "staged-binary-digests.json" in harness
+    assert "Copy-Item -LiteralPath $entry.FullName -Destination $logRoot -Recurse" not in harness
 
 
 def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
@@ -2462,6 +2517,8 @@ def test_certification_restores_user_tree_security_without_root_recreation_drift
     assert "inherited_aces = $true" in matrix
     assert "empty_and_nonempty_files = $true" in matrix
     assert "exact_inventory_restored = $true" in matrix
+    assert "absent_baseline_removed = $true" in matrix
+    assert "acl-roundtrip-absent-baseline-drift" in matrix
     assert "protected-user-acl-round-trip-matrix" in harness
 
 
@@ -2529,15 +2586,15 @@ def test_certification_separates_core_health_from_production_security() -> None:
     assert "claude_effective_policy_persisted" in harness
     assert "$passed = $Status -eq 'passed'" in harness
     assert "failed exact restoration is retained as diagnostic evidence" in harness
-    assert "CertificationCodexHome must accompany only unsigned mutating" in harness
-    assert "certification transactions in full and Claude-only modes" in harness
-    assert "production and read-only actions must omit it" in harness
+    assert "CertificationCodexHome must accompany every unsigned" in harness
+    assert "certification lifecycle action" in harness
+    assert "signed production actions omit" in harness
     assert "CoreHardeningCertification must accompany only unsigned" in harness
     assert "Claude-only mutating certification actions" in harness
     assert "lifecycle_scope_matrix" in harness
     assert "function Get-CertificationLifecycleScopeArguments" in harness
-    assert "if ($Action -notin @('Install', 'Upgrade', 'Repair'))" in harness
-    assert "if (-not $script:CertificationCodexHomeInitialized)" in harness
+    assert "$mutation = $Action -in @('Install', 'Upgrade', 'Repair')" in harness
+    assert "unsigned stateful lifecycle scope requires the exact initialized" in harness
     assert "-UnsignedCertification ([bool]$AllowUnsigned)" in harness
     assert "[bool]($AllowUnsigned -and $ClaudeOnly)" in harness
 

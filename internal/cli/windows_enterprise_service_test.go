@@ -146,6 +146,38 @@ func TestWindowsEnterpriseLifecycleCertificationModeMatrix(t *testing.T) {
 			},
 		},
 		{
+			name:   "unsigned preinstall status",
+			action: "status",
+			opts: windowsEnterpriseLifecycleOptions{
+				allowUnsigned:          true,
+				certificationCodexHome: certificationHome,
+			},
+		},
+		{
+			name:   "unsigned verify",
+			action: "verify",
+			opts: windowsEnterpriseLifecycleOptions{
+				allowUnsigned:          true,
+				certificationCodexHome: certificationHome,
+			},
+		},
+		{
+			name:   "unsigned reconcile",
+			action: "reconcile",
+			opts: windowsEnterpriseLifecycleOptions{
+				allowUnsigned:          true,
+				certificationCodexHome: certificationHome,
+			},
+		},
+		{
+			name:   "unsigned uninstall",
+			action: "uninstall",
+			opts: windowsEnterpriseLifecycleOptions{
+				allowUnsigned:          true,
+				certificationCodexHome: certificationHome,
+			},
+		},
+		{
 			name:        "unsigned lacks scope home",
 			action:      "install",
 			opts:        windowsEnterpriseLifecycleOptions{allowUnsigned: true},
@@ -228,6 +260,22 @@ func TestWindowsEnterprisePowerShellArgsCoreCertificationIsExplicit(t *testing.T
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("core certification args = %#v, want %#v", got, want)
+	}
+}
+
+func TestWindowsEnterprisePowerShellArgsUnsignedReadOnlyScopeIsExplicit(t *testing.T) {
+	opts := &windowsEnterpriseLifecycleOptions{
+		allowUnsigned:          true,
+		certificationCodexHome: `C:\Users\cert\.codex-defenseclaw-cert-0123456789`,
+	}
+	got := windowsEnterprisePowerShellArgs("status", opts)
+	want := []string{
+		"-Action", "Status",
+		"-CertificationCodexHome", opts.certificationCodexHome,
+		"-AllowUnsigned",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unsigned status args = %#v, want %#v", got, want)
 	}
 }
 

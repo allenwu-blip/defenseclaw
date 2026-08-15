@@ -407,8 +407,16 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
         [string]$RequestedCertificationCodexHome
     )
     $prefix = '-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope'
-    if ($LifecycleAction -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
-        throw "$prefix; action must be Install, Upgrade, Repair, or Uninstall"
+    if ($LifecycleAction -notin @(
+        'Install',
+        'Upgrade',
+        'Repair',
+        'Reconcile',
+        'Status',
+        'Verify',
+        'Uninstall'
+    )) {
+        throw "$prefix; action is outside the enterprise lifecycle"
     }
     if ($RequestedGatewayServiceName -cnotmatch '^DefenseClawCertGateway_([a-f0-9]{10})$') {
         throw "$prefix; gateway service name is outside the certification namespace"
@@ -474,10 +482,21 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
             ".codex-defenseclaw-cert-$runID") {
         throw "$prefix; CertificationCodexHome must be the exact local run-scoped directory"
     }
-    if (-not (Microsoft.PowerShell.Management\Test-Path `
+    $certificationHomeExists = Microsoft.PowerShell.Management\Test-Path `
         -LiteralPath $certificationHome `
-        -PathType Container)) {
+        -PathType Container
+    $allowMissingCertificationHome = $LifecycleAction -in @(
+        'Status',
+        'Verify'
+    )
+    if (-not $certificationHomeExists -and
+        -not $allowMissingCertificationHome) {
         throw "$prefix; CertificationCodexHome must be an existing directory"
+    }
+    if ((Microsoft.PowerShell.Management\Test-Path `
+            -LiteralPath $certificationHome) -and
+        -not $certificationHomeExists) {
+        throw "$prefix; CertificationCodexHome must be a directory when present"
     }
 
     $nativePathType = Initialize-DefenseClawBootstrapNativePath
@@ -494,7 +513,12 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
         )) {
         throw "$prefix; CertificationCodexHome must be on local fixed NTFS without redirection"
     }
-    $current = $certificationHome
+    $current = if ($certificationHomeExists) {
+        $certificationHome
+    }
+    else {
+        [IO.Path]::GetDirectoryName($certificationHome)
+    }
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         $item = Microsoft.PowerShell.Management\Get-Item `
             -LiteralPath $current `
@@ -1346,9 +1370,8 @@ try {
             -RequestedGuardianServiceName $GuardianServiceName `
             -RequestedCertificationCodexHome $CertificationCodexHome
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($CertificationCodexHome) -and
-        $Action -in @('Install', 'Upgrade', 'Repair')) {
-        throw '-CertificationCodexHome requires -AllowUnsigned for every Install, Upgrade, or Repair'
+    elseif (-not [string]::IsNullOrWhiteSpace($CertificationCodexHome)) {
+        throw '-CertificationCodexHome requires -AllowUnsigned for every lifecycle action'
     }
     if ($CoreHardeningCertification -and
         $Action -notin @('Install', 'Upgrade', 'Repair')) {
@@ -1413,12 +1436,9 @@ try {
         AttestCodexTrustedHookLauncher = [bool]$AttestCodexTrustedHookLauncher
         CodexTrustedHookLauncherBinary = $CodexTrustedHookLauncherBinary
         SelfUninstallCallerPID = $SelfUninstallCallerPID
-        # -AllowUnsigned also permits the protected staged module to bootstrap
-        # in certification builds. The lifecycle module accepts that
-        # relaxation only while installing/replacing artifacts.
-        AllowUnsigned = [bool](
-            $AllowUnsigned -and $Action -in @('Install', 'Upgrade', 'Repair', 'Uninstall')
-        )
+        # The exact service/root/CODEX_HOME grammar scopes this relaxation for
+        # every certification lifecycle action, including pre-install Status.
+        AllowUnsigned = [bool]$AllowUnsigned
         InstallerSource = $PSCommandPath
         ModuleSource = $modulePath
     }

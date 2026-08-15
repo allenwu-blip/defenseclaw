@@ -222,10 +222,6 @@ func runWindowsEnterpriseLifecycle(
 	if opts.noStart && action != "install" && action != "upgrade" && action != "repair" {
 		return failPreflight(errors.New("--no-start is valid only with install, upgrade, or repair"))
 	}
-	if opts.allowUnsigned && action != "install" && action != "upgrade" &&
-		action != "repair" && action != "uninstall" {
-		return failPreflight(errors.New("--allow-unsigned is valid only with install, upgrade, repair, or uninstall"))
-	}
 	if err := validateWindowsEnterpriseLifecycleSecurityOptions(cmd, action, opts); err != nil {
 		return failPreflight(err)
 	}
@@ -501,27 +497,25 @@ func validateWindowsEnterpriseLifecycleSecurityOptions(
 		return errors.New("Windows enterprise lifecycle options are unavailable")
 	}
 	mutationAction := action == "install" || action == "upgrade" || action == "repair"
-	securityOptionUsed := opts.attestAgentApplicationControl ||
+	mutationSecurityOptionUsed := opts.attestAgentApplicationControl ||
 		opts.attestClaudeEffectivePolicy ||
 		opts.attestCodexTrustedHookLauncher ||
 		opts.coreHardeningCertification ||
-		strings.TrimSpace(opts.codexTrustedHookLauncherBinary) != "" ||
-		strings.TrimSpace(opts.certificationCodexHome) != ""
+		strings.TrimSpace(opts.codexTrustedHookLauncherBinary) != ""
 	for _, name := range []string{
 		"attest-agent-application-control",
 		"attest-claude-effective-policy",
 		"attest-codex-trusted-hook-launcher",
 		"codex-trusted-hook-launcher-binary",
-		"certification-codex-home",
 		"core-hardening-certification",
 	} {
 		if cmd != nil && cmd.Flags().Changed(name) {
-			securityOptionUsed = true
+			mutationSecurityOptionUsed = true
 		}
 	}
-	if securityOptionUsed && !mutationAction {
+	if mutationSecurityOptionUsed && !mutationAction {
 		return errors.New(
-			"Windows enterprise security attestations and certification options are valid only with install, upgrade, or repair",
+			"Windows enterprise security attestations and core certification are valid only with install, upgrade, or repair",
 		)
 	}
 	if opts.codexTrustedHookLauncherBinary != "" &&

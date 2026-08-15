@@ -368,6 +368,9 @@ func readWindowsCodexDeploymentMetadata(
 	if err != nil || !os.SameFile(opened, current) {
 		return metadata, false, errors.New("protected deployment metadata path changed while it was read")
 	}
+	// Windows PowerShell 5.1 historically wrote UTF-8 JSON with a BOM. Accept
+	// that one exact legacy prefix while new lifecycle writes are BOM-less.
+	body = trimWindowsJSONBOM(body)
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(&metadata); err != nil {
 		return metadata, false, fmt.Errorf("parse protected deployment metadata: %w", err)
@@ -377,6 +380,10 @@ func readWindowsCodexDeploymentMetadata(
 		return metadata, false, errors.New("protected deployment metadata contains trailing JSON")
 	}
 	return metadata, true, nil
+}
+
+func trimWindowsJSONBOM(body []byte) []byte {
+	return bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf})
 }
 
 func sameWindowsEnterprisePathCLI(left, right string) bool {

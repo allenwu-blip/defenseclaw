@@ -1135,7 +1135,8 @@ function Resolve-DefenseClawCertificationCodexHome {
     param(
         [string]$Path,
         [Parameter(Mandatory)][string]$GatewayServiceName,
-        [Parameter(Mandatory)][string]$GuardianServiceName
+        [Parameter(Mandatory)][string]$GuardianServiceName,
+        [switch]$AllowMissing
     )
     if ([string]::IsNullOrWhiteSpace($Path)) {
         return ''
@@ -1150,7 +1151,7 @@ function Resolve-DefenseClawCertificationCodexHome {
         throw 'certification gateway and guardian service names must use the same run identifier'
     }
 
-    $full = Resolve-DefenseClawFullPath -Path $Path -MustExist
+    $full = Resolve-DefenseClawFullPath -Path $Path
     if ($full.StartsWith('\\') -or $full.StartsWith('//') -or
         $full.StartsWith('\\?\') -or $full.StartsWith('\\.\') -or
         ($full.Length -gt 2 -and $full.Substring(2).Contains(':'))) {
@@ -1164,8 +1165,15 @@ function Resolve-DefenseClawCertificationCodexHome {
     )) {
         throw "certification CODEX_HOME basename must be exactly $expectedLeaf"
     }
-    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $full -PathType Container)) {
+    $exists = Microsoft.PowerShell.Management\Test-Path `
+        -LiteralPath $full `
+        -PathType Container
+    if (-not $exists -and -not $AllowMissing) {
         throw "certification CODEX_HOME must be an existing directory: $full"
+    }
+    if ((Microsoft.PowerShell.Management\Test-Path -LiteralPath $full) -and
+        -not $exists) {
+        throw "certification CODEX_HOME must be a directory when present: $full"
     }
     $driveRoot = [IO.Path]::GetPathRoot($full)
     $logicalDisk = Get-DefenseClawLogicalDisk -DriveID $driveRoot.TrimEnd('\')
@@ -1177,7 +1185,9 @@ function Resolve-DefenseClawCertificationCodexHome {
         )) {
         throw "certification CODEX_HOME must be on a local fixed NTFS volume: $full"
     }
-    Assert-DefenseClawNoReparsePath -Path $full
+    Assert-DefenseClawNoReparsePath `
+        -Path $full `
+        -AllowMissingLeaf:(-not $exists)
     return $full
 }
 
@@ -1191,8 +1201,16 @@ function Assert-DefenseClawUnsignedCertificationScope {
         [string]$CertificationCodexHome
     )
     $prefix = '-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope'
-    if ($Action -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
-        throw "$prefix; action must be Install, Upgrade, Repair, or Uninstall"
+    if ($Action -notin @(
+        'Install',
+        'Upgrade',
+        'Repair',
+        'Reconcile',
+        'Status',
+        'Verify',
+        'Uninstall'
+    )) {
+        throw "$prefix; action is outside the enterprise lifecycle"
     }
     if ($GatewayServiceName -cnotmatch '^DefenseClawCertGateway_([a-f0-9]{10})$') {
         throw "$prefix; gateway service name is outside the certification namespace"
@@ -1446,6 +1464,136 @@ function Install-DefenseClawSourceDescriptor {
     }
 }
 
+function ConvertTo-DefenseClawWindowsCommandLineArgument {
+    param([AllowEmptyString()][string]$Argument)
+    if ($null -eq $Argument -or $Argument.IndexOf([char]0) -ge 0) {
+        throw 'native process argument is null or contains NUL'
+    }
+    if ($Argument.Length -eq 0) {
+        return '""'
+    }
+    if ($Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+
+    # ProcessStartInfo on .NET Framework exposes only a single command-line
+    # string. Encode each argv element with the inverse of CommandLineToArgvW
+    # so Windows PowerShell 5.1 cannot strip literal quotes from values such as
+    # an SCM binPath containing a quoted executable and quoted manifest.
+    $encoded = [Text.StringBuilder]::new($Argument.Length + 2)
+    [void]$encoded.Append('"')
+    $backslashes = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq [char]0x5c) {
+            $backslashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$encoded.Append([char]0x5c, (2 * $backslashes) + 1)
+            [void]$encoded.Append('"')
+            $backslashes = 0
+            continue
+        }
+        if ($backslashes -gt 0) {
+            [void]$encoded.Append([char]0x5c, $backslashes)
+            $backslashes = 0
+        }
+        [void]$encoded.Append($character)
+    }
+    if ($backslashes -gt 0) {
+        [void]$encoded.Append([char]0x5c, 2 * $backslashes)
+    }
+    [void]$encoded.Append('"')
+    return $encoded.ToString()
+}
+
+function ConvertTo-DefenseClawWindowsCommandLine {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $encoded = [Collections.Generic.List[string]]::new()
+    foreach ($argument in $Arguments) {
+        $encoded.Add((
+            ConvertTo-DefenseClawWindowsCommandLineArgument `
+                -Argument $argument
+        ))
+    }
+    $commandLine = $encoded -join ' '
+    if ($commandLine.Length -ge 32767) {
+        throw 'native process command line is too long'
+    }
+    return $commandLine
+}
+
+function ConvertFrom-DefenseClawProcessText {
+    param([AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) {
+        return @()
+    }
+    return @(
+        $Text.TrimEnd([char[]]@([char]13, [char]10)) -split '\r?\n'
+    )
+}
+
+function Invoke-DefenseClawProcess {
+    param(
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [ValidateRange(1, 1800)][int]$TimeoutSeconds = 300
+    )
+    $resolved = [IO.Path]::GetFullPath($File)
+    if (-not (Microsoft.PowerShell.Management\Test-Path `
+            -LiteralPath $resolved `
+            -PathType Leaf)) {
+        throw "required native executable is missing: $resolved"
+    }
+    Assert-DefenseClawNoReparsePath -Path $resolved
+
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $resolved
+    $start.Arguments = ConvertTo-DefenseClawWindowsCommandLine `
+        -Arguments $Arguments
+    if ($resolved.Length + $start.Arguments.Length + 4 -ge 32767) {
+        throw 'native process application path plus command line is too long'
+    }
+    $start.WorkingDirectory = [IO.Path]::GetDirectoryName($resolved)
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    try {
+        if (-not $process.Start()) {
+            throw "native process did not start: $resolved"
+        }
+        # Begin both reads before waiting so neither redirected pipe can fill
+        # and deadlock the child. ExitCode comes from the Process object, never
+        # ambient automatic-variable state in a fresh module scope.
+        $standardOutput = $process.StandardOutput.ReadToEndAsync()
+        $standardError = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill() } catch {}
+            try { $process.WaitForExit() } catch {}
+            throw "native process timed out after $TimeoutSeconds seconds: $resolved"
+        }
+        $process.WaitForExit()
+        $stdout = [string]$standardOutput.Result
+        $stderr = [string]$standardError.Result
+        return [pscustomobject]@{
+            exit_code = [int]$process.ExitCode
+            stdout = $stdout
+            stderr = $stderr
+            output = @(
+                @(ConvertFrom-DefenseClawProcessText -Text $stdout) +
+                @(ConvertFrom-DefenseClawProcessText -Text $stderr)
+            )
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Invoke-DefenseClawNative {
     param(
         [Parameter(Mandatory)][string]$File,
@@ -1457,28 +1605,15 @@ function Invoke-DefenseClawNative {
         [IO.Path]::GetDirectoryName($resolved) -ine $script:System32) {
         throw "refusing elevated native tool outside System32: $File"
     }
-    if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $resolved -PathType Leaf)) {
-        throw "required System32 tool is missing: $resolved"
-    }
-    Assert-DefenseClawNoReparsePath -Path $resolved
-    # 5.1 raises native stderr as a terminating error while the preference
-    # is Stop. The exit code is the assertion here, so let the tool write to
-    # stderr and judge it on what it returned.
-    $previousErrorAction = $ErrorActionPreference
-    try {
-        $ErrorActionPreference = 'Continue'
-        $output = & $resolved @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorAction
-    }
-    if ($exitCode -ne 0) {
-        $detail = ($output | Microsoft.PowerShell.Utility\Out-String).Trim()
-        throw "$resolved exited $exitCode while running '$($Arguments -join ' ')': $detail"
+    $result = Invoke-DefenseClawProcess `
+        -File $resolved `
+        -Arguments $Arguments
+    if ([int]$result.exit_code -ne 0) {
+        $detail = ($result.output | Microsoft.PowerShell.Utility\Out-String).Trim()
+        throw "$resolved exited $($result.exit_code) while running '$($Arguments -join ' ')': $detail"
     }
     if ($Capture) {
-        return @($output)
+        return @($result.output)
     }
 }
 
@@ -2256,7 +2391,15 @@ function Write-DefenseClawJsonAtomic {
     New-DefenseClawDirectory -Path ([IO.Path]::GetDirectoryName($Path))
     $temporary = "$Path.new.$([Guid]::NewGuid().ToString('N'))"
     try {
-        $Value | Microsoft.PowerShell.Utility\ConvertTo-Json -Depth 12 | Microsoft.PowerShell.Management\Set-Content -LiteralPath $temporary -Encoding UTF8
+        $json = $Value | Microsoft.PowerShell.Utility\ConvertTo-Json -Depth 12
+        # Windows PowerShell 5.1's -Encoding UTF8 emits a BOM, which Go's
+        # encoding/json intentionally rejects. Use explicit BOM-less UTF-8 so
+        # every PowerShell version publishes byte-identical JSON.
+        [IO.File]::WriteAllText(
+            $temporary,
+            $json,
+            [Text.UTF8Encoding]::new($false)
+        )
         Microsoft.PowerShell.Management\Move-Item -LiteralPath $temporary -Destination $Path -Force
     }
     finally {
@@ -2727,6 +2870,9 @@ function Set-DefenseClawManagedServices {
             'DisplayName=', 'DefenseClaw Enterprise Gateway'
         ))
     }
+    Assert-DefenseClawServiceImagePath `
+        -Name $GatewayServiceName `
+        -ExpectedImage $gatewayImage
     if (Test-DefenseClawServiceExists -Name $GuardianServiceName) {
         [void](Invoke-DefenseClawNative -File $script:ScExe -Arguments @(
             'config', $GuardianServiceName,
@@ -2751,6 +2897,9 @@ function Set-DefenseClawManagedServices {
             'DisplayName=', 'DefenseClaw Enterprise Hook Guardian'
         ))
     }
+    Assert-DefenseClawServiceImagePath `
+        -Name $GuardianServiceName `
+        -ExpectedImage $guardianImage
 
     [void](Invoke-DefenseClawNative -File $script:ScExe -Arguments @('sidtype', $GatewayServiceName, 'restricted'))
     [void](Invoke-DefenseClawNative -File $script:ScExe -Arguments @('sidtype', $GuardianServiceName, 'unrestricted'))
@@ -3838,6 +3987,31 @@ function Assert-DefenseClawOwnedServiceOrAbsent {
     $expectedAccount = if ($Guardian) { 'LocalSystem' } else { "NT SERVICE\$Name" }
     if (-not [string]::Equals($objectName, $expectedAccount, [StringComparison]::OrdinalIgnoreCase)) {
         throw "refusing to replace service $Name owned by unexpected account $objectName"
+    }
+}
+
+function Assert-DefenseClawServiceImagePath {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$ExpectedImage
+    )
+    Assert-DefenseClawServiceName -Name $Name
+    if (-not (Test-DefenseClawServiceExists -Name $Name)) {
+        throw "SCM did not publish the managed service after configuration: $Name"
+    }
+    $key = "HKLM:\SYSTEM\CurrentControlSet\Services\$Name"
+    $actual = [string](
+        Microsoft.PowerShell.Management\Get-ItemPropertyValue `
+            -LiteralPath $key `
+            -Name ImagePath `
+            -ErrorAction Stop
+    )
+    if (-not [string]::Equals(
+        $actual,
+        $ExpectedImage,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "SCM published an unexpected ImagePath for $Name`: $actual"
     }
 }
 
@@ -6095,27 +6269,19 @@ function Invoke-DefenseClawGatewayCommand {
             $null,
             'Process'
         )
-        # See Invoke-DefenseClawNative: 5.1 raises native stderr as a
-        # terminating error under Stop, and -AllowFailure needs the code.
-        $previousErrorAction = $ErrorActionPreference
-        try {
-            $ErrorActionPreference = 'Continue'
-            $output = & $gateway @Arguments 2>&1
-            $exitCode = $LASTEXITCODE
-        }
-        finally {
-            $ErrorActionPreference = $previousErrorAction
-        }
-        if ($exitCode -ne 0 -and -not $AllowFailure) {
-            throw "defenseclaw-gateway exited $exitCode for '$($Arguments -join ' ')': $(($output | Microsoft.PowerShell.Utility\Out-String).Trim())"
+        $processResult = Invoke-DefenseClawProcess `
+            -File $gateway `
+            -Arguments $Arguments
+        if ([int]$processResult.exit_code -ne 0 -and -not $AllowFailure) {
+            throw "defenseclaw-gateway exited $($processResult.exit_code) for '$($Arguments -join ' ')': $(($processResult.output | Microsoft.PowerShell.Utility\Out-String).Trim())"
         }
         if ($Capture) {
             return [ordered]@{
-                exit_code = $exitCode
-                output = @($output)
+                exit_code = [int]$processResult.exit_code
+                output = @($processResult.output)
             }
         }
-        return $exitCode
+        return [int]$processResult.exit_code
     }
     finally {
         foreach ($key in $keys) {
@@ -6180,6 +6346,15 @@ function Invoke-DefenseClawCodexRequirementsCommand {
     )) {
         throw "Codex requirements report action mismatch: $($report.action)"
     }
+    if ([int]$probe.exit_code -ne 0 -or -not [bool]$report.ok) {
+        $detail = if (-not [string]::IsNullOrWhiteSpace([string]$report.error)) {
+            [string]$report.error
+        }
+        else {
+            (($probe.output | Microsoft.PowerShell.Utility\Out-String).Trim())
+        }
+        throw "Codex requirements $Action failed: $detail"
+    }
     foreach ($pair in @(
         @('requirements_path', $Layout.CodexMachinePolicyPath),
         @('ownership_path', $Layout.CodexRequirementsOwnershipPath),
@@ -6209,15 +6384,6 @@ function Invoke-DefenseClawCodexRequirementsCommand {
             [string]$property.Value -cnotmatch '^[0-9a-f]{64}$') {
             throw "Codex requirements report contains an invalid $hashName"
         }
-    }
-    if ([int]$probe.exit_code -ne 0 -or -not [bool]$report.ok) {
-        $detail = if (-not [string]::IsNullOrWhiteSpace([string]$report.error)) {
-            [string]$report.error
-        }
-        else {
-            (($probe.output | Microsoft.PowerShell.Utility\Out-String).Trim())
-        }
-        throw "Codex requirements $Action failed: $detail"
     }
     if ($Action -in @('inspect', 'reconcile', 'verify')) {
         if ([string]$report.agent_application_control_prerequisite -cne
@@ -11083,7 +11249,8 @@ function Invoke-DefenseClawEnterpriseLifecycle {
     $resolvedCertificationCodexHome = Resolve-DefenseClawCertificationCodexHome `
         -Path $CertificationCodexHome `
         -GatewayServiceName $GatewayServiceName `
-        -GuardianServiceName $GuardianServiceName
+        -GuardianServiceName $GuardianServiceName `
+        -AllowMissing:($Action -in @('Status', 'Verify'))
     if ($Purge -and $Action -ne 'Uninstall') {
         throw '-Purge is valid only with Uninstall'
     }
@@ -11094,17 +11261,13 @@ function Invoke-DefenseClawEnterpriseLifecycle {
     if ($NoStart -and $Action -notin @('Install', 'Upgrade', 'Repair')) {
         throw '-NoStart is valid only with Install, Upgrade, or Repair'
     }
-    if ($AllowUnsigned -and $Action -notin @('Install', 'Upgrade', 'Repair', 'Uninstall')) {
-        throw '-AllowUnsigned is valid only with Install, Upgrade, Repair, or Uninstall'
-    }
     if ($CoreHardeningCertification -and
         $Action -notin @('Install', 'Upgrade', 'Repair')) {
         throw '-CoreHardeningCertification is valid only with Install, Upgrade, or Repair'
     }
     if (-not [string]::IsNullOrWhiteSpace($resolvedCertificationCodexHome) -and
-        $Action -in @('Install', 'Upgrade', 'Repair') -and
         -not $AllowUnsigned) {
-        throw '-CertificationCodexHome requires -AllowUnsigned for every Install, Upgrade, or Repair'
+        throw '-CertificationCodexHome requires -AllowUnsigned for every lifecycle action'
     }
     if ($CoreHardeningCertification -and
         (-not $AllowUnsigned -or

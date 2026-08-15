@@ -390,7 +390,8 @@ func TestCertificationCodexHomeIsOptInAndPinnedAcrossLifecycle(t *testing.T) {
 
 	resolver := windowsPowerShellFunction(t, normalized, "Resolve-DefenseClawCertificationCodexHome")
 	for _, required := range []string{
-		"Resolve-DefenseClawFullPath -Path $Path -MustExist",
+		"[switch]$AllowMissing",
+		"-AllowMissingLeaf:(-not $exists)",
 		"[int]$logicalDisk.DriveType -ne 3",
 		"[string]$logicalDisk.FileSystem",
 		"'NTFS'",
@@ -404,6 +405,47 @@ func TestCertificationCodexHomeIsOptInAndPinnedAcrossLifecycle(t *testing.T) {
 	if strings.Contains(environment, "CertificationCodexHome") ||
 		strings.Contains(environment, "CODEX_HOME") {
 		t.Fatal("SCM service environments must never receive certification CODEX_HOME")
+	}
+}
+
+func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *testing.T) {
+	module := strings.ReplaceAll(string(readWindowsEnterpriseModule(t)), "\r\n", "\n")
+	native := windowsPowerShellFunction(t, module, "Invoke-DefenseClawNative")
+	gateway := windowsPowerShellFunction(t, module, "Invoke-DefenseClawGatewayCommand")
+	process := windowsPowerShellFunction(t, module, "Invoke-DefenseClawProcess")
+	writer := windowsPowerShellFunction(t, module, "Write-DefenseClawJsonAtomic")
+	services := windowsPowerShellFunction(t, module, "Set-DefenseClawManagedServices")
+	requirements := windowsPowerShellFunction(t, module, "Invoke-DefenseClawCodexRequirementsCommand")
+
+	for label, body := range map[string]string{"native": native, "gateway": gateway} {
+		if strings.Contains(body, "$LASTEXITCODE") ||
+			!strings.Contains(body, "Invoke-DefenseClawProcess") {
+			t.Fatalf("%s command still depends on ambient native exit state", label)
+		}
+	}
+	for _, contract := range []string{
+		"[Diagnostics.ProcessStartInfo]::new()",
+		"$start.UseShellExecute = $false",
+		"$start.RedirectStandardOutput = $true",
+		"$start.RedirectStandardError = $true",
+		"$process.WaitForExit($TimeoutSeconds * 1000)",
+		"exit_code = [int]$process.ExitCode",
+	} {
+		if !strings.Contains(process, contract) {
+			t.Fatalf("bounded process runner missing %q", contract)
+		}
+	}
+	if !strings.Contains(writer, "[Text.UTF8Encoding]::new($false)") ||
+		strings.Contains(writer, "Set-Content") {
+		t.Fatal("atomic JSON writer is not pinned to BOM-less UTF-8")
+	}
+	if strings.Count(services, "Assert-DefenseClawServiceImagePath `") != 2 {
+		t.Fatal("service creation does not immediately verify both ImagePath values")
+	}
+	failureCheck := strings.Index(requirements, "if ([int]$probe.exit_code -ne 0")
+	firstSuccessPath := strings.Index(requirements, "@('requirements_path'")
+	if failureCheck < 0 || firstSuccessPath < 0 || failureCheck > firstSuccessPath {
+		t.Fatal("Codex requirements failure is masked by success-layout validation")
 	}
 }
 
@@ -573,6 +615,51 @@ func TestWindowsLifecycleUsesProtectedFileLockNotSquattableGlobalObject(t *testi
 	}
 }
 
+func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
+	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
+	if strings.Contains(strings.ToLower(harness), "$home =") {
+		t.Fatal("certification harness assigns PowerShell's read-only HOME automatic variable")
+	}
+
+	initializer := windowsPowerShellFunction(t, harness, "Initialize-CertificationCodexHome")
+	if strings.Contains(initializer, "$home =") ||
+		!strings.Contains(initializer, "$certificationHome =") {
+		t.Fatal("certification CODEX_HOME initializer collides with automatic HOME")
+	}
+
+	engineIDs := windowsPowerShellFunction(t, harness, "Get-ScheduledTaskEngineProcessIDs")
+	removeTask := windowsPowerShellFunction(t, harness, "Remove-CertificationScheduledTask")
+	if !strings.Contains(engineIDs, "Where-Object { $_ -gt 0 }") ||
+		!strings.Contains(removeTask, "$taskAbsent = $true") ||
+		!strings.Contains(removeTask, "[void]$script:ScheduledTasks.Remove($safeTaskName)") {
+		t.Fatal("scheduled-task cleanup does not filter PID zero and retire proven-absent tracking")
+	}
+
+	tempSnapshot := windowsPowerShellFunction(t, harness, "Get-EnterprisePowerShellTempSnapshot")
+	if !strings.Contains(tempSnapshot, "$script:KnownProgramData") ||
+		strings.Contains(tempSnapshot, "$script:WindowsDirectory 'Temp'") {
+		t.Fatal("enterprise temp monitor is not aligned with the ProgramData launcher root")
+	}
+
+	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
+	if !strings.Contains(restore, "$($Snapshot.name)-absent-cleanup-root-acl") ||
+		!strings.Contains(restore, "Get-CertificationTreeEntriesNoFollow") ||
+		!strings.Contains(restore, "Remove-Item `\n                -LiteralPath $safe `") {
+		t.Fatal("absent user-tree baseline cannot remove the exact harness-created fixture")
+	}
+
+	protect := windowsPowerShellFunction(t, harness, "Protect-TreeFromRegisteredSecretLeak")
+	copyEvidence := windowsPowerShellFunction(t, harness, "Copy-WorkEvidence")
+	if !strings.Contains(protect, "$maximumTextFileBytes = 8MB") ||
+		!strings.Contains(protect, "$maximumTotalTextBytes = 64MB") ||
+		!strings.Contains(protect, "Test-CertificationEvidenceTextFile") ||
+		!strings.Contains(copyEvidence, "Get-CertificationTreeEntriesNoFollow") ||
+		!strings.Contains(copyEvidence, "staged-binary-digests.json") ||
+		strings.Contains(copyEvidence, "Copy-Item -LiteralPath $entry.FullName -Destination $logRoot -Recurse") {
+		t.Fatal("certification evidence collection is not bounded to text plus named binary digests")
+	}
+}
+
 func windowsPowerShellFunction(t *testing.T, module, name string) string {
 	t.Helper()
 	start := strings.Index(module, "function "+name+" {")
@@ -605,6 +692,16 @@ func readWindowsEnterpriseModule(t *testing.T) []byte {
 		t.Fatalf("ReadFile(%s): %v", modulePath, err)
 	}
 	return module
+}
+
+func readWindowsEnterpriseHarness(t *testing.T) []byte {
+	t.Helper()
+	harnessPath := filepath.Join("..", "..", "scripts", "test-windows-enterprise-hardening.ps1")
+	harness, err := os.ReadFile(harnessPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", harnessPath, err)
+	}
+	return harness
 }
 
 func waitForServiceState(t *testing.T, changes <-chan svc.Status, want svc.State) {

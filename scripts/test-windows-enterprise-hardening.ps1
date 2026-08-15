@@ -1309,7 +1309,11 @@ function Get-ScheduledTaskEngineProcessIDs([string]$TaskName) {
         $folder = $service.GetFolder('\')
         $task = $folder.GetTask($TaskName)
         $instances = @($task.GetInstances(0))
-        return @($instances | ForEach-Object { [uint32]$_.EnginePID })
+        return @(
+            $instances |
+                ForEach-Object { [uint32]$_.EnginePID } |
+                Where-Object { $_ -gt 0 }
+        )
     } finally {
         foreach ($instance in $instances) {
             try {
@@ -1485,66 +1489,72 @@ function Remove-CertificationScheduledTask([string]$TaskName) {
     $enginePIDs = [uint32[]]@(
         Get-ScheduledTaskEngineProcessIDs $safeTaskName
     )
+    $taskAbsent = $false
     try {
-        Stop-ScheduledTask `
+        try {
+            Stop-ScheduledTask `
+                -TaskName $safeTaskName `
+                -TaskPath '\' `
+                -ErrorAction Stop
+        } catch {
+            # Stopping is best-effort; unregistering and proving absence are not.
+        }
+        Unregister-ScheduledTask `
             -TaskName $safeTaskName `
             -TaskPath '\' `
+            -Confirm:$false `
             -ErrorAction Stop
-    } catch {
-        # Stopping is best-effort; unregistering and proving absence are not.
-    }
-    Unregister-ScheduledTask `
-        -TaskName $safeTaskName `
-        -TaskPath '\' `
-        -Confirm:$false `
-        -ErrorAction Stop
-    $remaining = @(
-        Get-ScheduledTask -ErrorAction Stop |
-            Where-Object {
-                [string]$_.TaskName -ceq $safeTaskName -and
-                [string]$_.TaskPath -ceq '\'
-            }
-    )
-    if ($remaining.Count -ne 0) {
-        throw (
-            'certification scheduled task remains after unregister: ' +
-            $safeTaskName
+        $remaining = @(
+            Get-ScheduledTask -ErrorAction Stop |
+                Where-Object {
+                    [string]$_.TaskName -ceq $safeTaskName -and
+                    [string]$_.TaskPath -ceq '\'
+                }
         )
-    }
-    $engineDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
-    do {
-        $remainingEnginePIDs = @(
-            foreach ($enginePID in $enginePIDs) {
-                try {
-                    $engineProcess = [Diagnostics.Process]::GetProcessById(
-                        [int]$enginePID
-                    )
-                    try {
-                        if (-not $engineProcess.HasExited) {
-                            $enginePID
-                        }
-                    } finally {
-                        $engineProcess.Dispose()
-                    }
-                } catch [ArgumentException] {}
-            }
-        )
-        if ($remainingEnginePIDs.Count -eq 0) {
-            break
+        if ($remaining.Count -ne 0) {
+            throw (
+                'certification scheduled task remains after unregister: ' +
+                $safeTaskName
+            )
         }
-        Start-Sleep -Milliseconds 100
-    } while ([DateTimeOffset]::UtcNow -lt $engineDeadline)
-    if ($remainingEnginePIDs.Count -ne 0) {
-        throw (
-            'certification scheduled-task engines remain after cleanup: ' +
-            ($remainingEnginePIDs -join ',')
-        )
+        $taskAbsent = $true
+        $engineDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+        do {
+            $remainingEnginePIDs = @(
+                foreach ($enginePID in $enginePIDs) {
+                    if ([uint32]$enginePID -eq 0) { continue }
+                    try {
+                        $engineProcess = [Diagnostics.Process]::GetProcessById(
+                            [int]$enginePID
+                        )
+                        try {
+                            if (-not $engineProcess.HasExited) {
+                                $enginePID
+                            }
+                        } finally {
+                            $engineProcess.Dispose()
+                        }
+                    } catch [ArgumentException] {}
+                }
+            )
+            if ($remainingEnginePIDs.Count -eq 0) {
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        } while ([DateTimeOffset]::UtcNow -lt $engineDeadline)
+        if ($remainingEnginePIDs.Count -ne 0) {
+            throw (
+                'certification scheduled-task engines remain after cleanup: ' +
+                ($remainingEnginePIDs -join ',')
+            )
+        }
     }
-    if (-not $script:ScheduledTasks.Remove($safeTaskName)) {
-        throw (
-            'certification scheduled-task tracking removal failed: ' +
-            $safeTaskName
-        )
+    finally {
+        # Once task absence is proven, stale tracking must not turn a later
+        # cleanup pass into a false missing-task failure.
+        if ($taskAbsent) {
+            [void]$script:ScheduledTasks.Remove($safeTaskName)
+        }
     }
 }
 
@@ -3565,10 +3575,9 @@ function Stop-ActiveUserSparseArtifactAttack(
 }
 
 function Get-EnterprisePowerShellTempSnapshot {
-    $root = Assert-PathBelow `
-        (Join-Path $script:WindowsDirectory 'Temp') `
-        $script:WindowsDirectory `
-        'Windows enterprise PowerShell temp parent'
+    # The public Go launcher creates elevated capability directories directly
+    # below the trusted ProgramData Known Folder, not Windows\Temp.
+    $root = ConvertTo-CanonicalPath $script:KnownProgramData
     $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
     if (-not $rootItem.PSIsContainer -or
         ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -3934,20 +3943,21 @@ function Stop-ActiveUserEnterprisePowerShellTempProbe([object]$Probe) {
 }
 
 function Initialize-CertificationCodexHome {
-    $home = Assert-CertificationCodexHomePath $script:CertificationCodexHome
-    if (Test-Path -LiteralPath $home) {
-        throw "refusing pre-existing certification CODEX_HOME: $home"
+    $certificationHome = Assert-CertificationCodexHomePath `
+        $script:CertificationCodexHome
+    if (Test-Path -LiteralPath $certificationHome) {
+        throw "refusing pre-existing certification CODEX_HOME: $certificationHome"
     }
     $snapshot = New-ProtectedUserTreeSnapshot `
-        -Path $home `
+        -Path $certificationHome `
         -Name "codex-cert-$($script:RunToken)"
     if ([bool]$snapshot.inventory.existed) {
-        throw "certification CODEX_HOME absent baseline unexpectedly existed: $home"
+        throw "certification CODEX_HOME absent baseline unexpectedly existed: $certificationHome"
     }
 
     $script:CodexUserHookSentinel = Assert-PathBelow `
-        (Join-Path $home 'forbidden-user-hook-fired.txt') `
-        $home `
+        (Join-Path $certificationHome 'forbidden-user-hook-fired.txt') `
+        $certificationHome `
         'forbidden user-hook sentinel'
     $hostileHookScript = @"
 [IO.File]::WriteAllText(
@@ -3965,7 +3975,7 @@ function Initialize-CertificationCodexHome {
         $hostileEncoded
     )
     $inputObject = [ordered]@{
-        path = $home
+        path = $certificationHome
         profile = $script:PrimaryProfile
         sid = $script:PrimarySID
         expected_name = ".codex-defenseclaw-cert-$($script:RunToken)"
@@ -4046,17 +4056,19 @@ if (Test-Path -LiteralPath ([string]$inputObject.hostile_sentinel)) {
         [string]$json.sid -ne $script:PrimarySID -or
         -not [string]::Equals(
             [string]$json.codex_home,
-            $home,
+            $certificationHome,
             [StringComparison]::OrdinalIgnoreCase
         )) {
         throw 'active-user certification CODEX_HOME initialization returned inconsistent identity/path evidence'
     }
     $script:CertificationCodexHomeInitialized = $true
     $script:PrimaryConfigPath = Assert-PathBelow `
-        (Join-Path $home 'config.toml') `
-        $home `
+        (Join-Path $certificationHome 'config.toml') `
+        $certificationHome `
         'certification Codex config'
-    $null = Assert-CertificationCodexHomePath $home -RequireExisting
+    $null = Assert-CertificationCodexHomePath `
+        $certificationHome `
+        -RequireExisting
     if (-not (Test-Path -LiteralPath $script:PrimaryConfigPath -PathType Leaf)) {
         throw "active user did not initialize certification Codex config: $($script:PrimaryConfigPath)"
     }
@@ -4070,7 +4082,7 @@ if (Test-Path -LiteralPath ([string]$inputObject.hostile_sentinel)) {
     $script:PrimaryConfigBaselineACL = Get-Acl -LiteralPath $script:PrimaryConfigPath
     $script:PrimaryConfigBaselineSHA256 = Get-FileDigest $script:PrimaryConfigPath
     return [pscustomobject]@{
-        path = $home
+        path = $certificationHome
         config = $script:PrimaryConfigPath
         sid = $script:PrimarySID
         owner_sid = $configOwnerSID
@@ -4965,12 +4977,12 @@ if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
 }
 
 function Test-AgentApplicationControlBoundary {
-    $home = Assert-CertificationCodexHomePath `
+    $certificationHome = Assert-CertificationCodexHomePath `
         $script:CertificationCodexHome `
         -RequireExisting
     $fixtureRoot = Assert-PathBelow `
-        (Join-Path $home 'application-control') `
-        $home `
+        (Join-Path $certificationHome 'application-control') `
+        $certificationHome `
         'user-writable application-control fixture'
     if (Test-Path -LiteralPath $fixtureRoot) {
         throw "application-control fixture already exists: $fixtureRoot"
@@ -5085,8 +5097,8 @@ foreach ($property in $inputObject.sources.PSObject.Properties) {
     }
 
     $script:CodexRejectedClientMarker = Assert-PathBelow `
-        (Join-Path $home ".defenseclaw-rejected-client-$($script:RunToken).txt") `
-        $home `
+        (Join-Path $certificationHome ".defenseclaw-rejected-client-$($script:RunToken).txt") `
+        $certificationHome `
         'rejected client marker'
     if (Test-Path -LiteralPath $script:CodexRejectedClientMarker) {
         throw "rejected-client marker already exists: $($script:CodexRejectedClientMarker)"
@@ -5510,6 +5522,57 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
     }
     if (-not [bool]$Snapshot.inventory.existed) {
         if (Test-Path -LiteralPath $safe) {
+            # This is an exact harness-created direct child, already limited
+            # above to the registered certification home or ACL matrix root.
+            # Product hardening may have replaced its owner/DACL before a
+            # failed transaction, so first recover deletion rights without
+            # following any reparse point.
+            $cleanupGrants = @(
+                '*S-1-5-18:(OI)(CI)F',
+                '*S-1-5-32-544:(OI)(CI)F',
+                "*$($script:PrimarySID):(OI)(CI)F"
+            )
+            $null = Set-ICaclsOwnerAndDacl `
+                -Path $safe `
+                -Owner '*S-1-5-32-544' `
+                -Grants $cleanupGrants `
+                -Label "$($Snapshot.name)-absent-cleanup-root-acl"
+            $null = Set-ICaclsOwnerAndDacl `
+                -Path $safe `
+                -Owner '*S-1-5-32-544' `
+                -Grants $cleanupGrants `
+                -Options @('/T', '/C', '/L') `
+                -Label "$($Snapshot.name)-absent-cleanup-descendant-acl"
+            $nestedReparse = @(
+                Get-CertificationTreeEntriesNoFollow `
+                    -Root $safe `
+                    -Label "$($Snapshot.name) absent-cleanup tree" `
+                    -IncludeReparse |
+                    Where-Object {
+                        ($_.Attributes -band
+                            [IO.FileAttributes]::ReparsePoint) -ne 0
+                    } |
+                    Sort-Object { $_.FullName.Length } -Descending
+            )
+            foreach ($reparse in $nestedReparse) {
+                $reparsePath = Assert-PathBelow `
+                    $reparse.FullName `
+                    $safe `
+                    "$($Snapshot.name) absent-cleanup reparse"
+                if ($reparse.PSIsContainer) {
+                    [IO.Directory]::Delete($reparsePath, $false)
+                }
+                else {
+                    [IO.File]::Delete($reparsePath)
+                }
+            }
+            Remove-Item `
+                -LiteralPath $safe `
+                -Recurse `
+                -Force `
+                -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $safe) {
             throw "absent baseline remains after cleanup: $safe"
         }
         return
@@ -5614,6 +5677,32 @@ function Test-ProtectedUserTreeSecurityRoundTrip {
         throw "ACL round-trip matrix root already exists: $root"
     }
 
+    # Exercise the absent-baseline branch against the same ownership/DACL
+    # shape left by a failed first enterprise transaction before running the
+    # existing-baseline round trip below.
+    $absentSnapshot = New-ProtectedUserTreeSnapshot `
+        -Path $root `
+        -Name "acl-roundtrip-$($script:RunToken)" `
+        -Ephemeral
+    $failedInstallDirectory = Join-Path $root 'failed-first-install'
+    [IO.Directory]::CreateDirectory($failedInstallDirectory) | Out-Null
+    Write-UTF8File `
+        (Join-Path $failedInstallDirectory 'partial-state.json') `
+        '{"partial":true}'
+    $null = Set-ICaclsOwnerAndDacl `
+        -Path $root `
+        -Owner '*S-1-5-32-544' `
+        -Grants @(
+            '*S-1-5-18:(OI)(CI)F',
+            '*S-1-5-32-544:(OI)(CI)F'
+        ) `
+        -Options @('/T', '/C', '/L') `
+        -Label 'acl-roundtrip-absent-baseline-drift'
+    Restore-ProtectedUserTreeSnapshot $absentSnapshot
+    if (Test-Path -LiteralPath $root) {
+        throw 'absent-baseline ACL round trip retained its failed-install tree'
+    }
+
     $snapshot = $null
     try {
         $inheritedDirectory = Join-Path $root 'inherited'
@@ -5695,6 +5784,7 @@ function Test-ProtectedUserTreeSecurityRoundTrip {
             inherited_aces = $true
             empty_and_nonempty_files = $true
             exact_inventory_restored = $true
+            absent_baseline_removed = $true
         }
     } finally {
         if (Test-Path -LiteralPath $root) {
@@ -9733,16 +9823,17 @@ function Assert-EnterpriseMachinePolicyAbsent([string]$Label) {
 }
 
 function Test-FreshClientsHaveNoEnterpriseHookAfterUninstall {
-    $home = Assert-CertificationCodexHomePath $script:CertificationCodexHome
-    if (Test-Path -LiteralPath $home) {
-        throw "fresh post-uninstall client home unexpectedly exists: $home"
+    $certificationHome = Assert-CertificationCodexHomePath `
+        $script:CertificationCodexHome
+    if (Test-Path -LiteralPath $certificationHome) {
+        throw "fresh post-uninstall client home unexpectedly exists: $certificationHome"
     }
     $snapshot = @(
         $script:UserTreeSnapshots.ToArray() |
             Where-Object {
                 [string]::Equals(
                     [string]$_.path,
-                    $home,
+                    $certificationHome,
                     [StringComparison]::OrdinalIgnoreCase
                 )
             }
@@ -9756,7 +9847,7 @@ function Test-FreshClientsHaveNoEnterpriseHookAfterUninstall {
     $policyBefore = Assert-EnterpriseMachinePolicyAbsent `
         'before fresh post-uninstall client processes'
     $inputObject = [ordered]@{
-        path = $home
+        path = $certificationHome
         profile = $script:PrimaryProfile
         sid = $script:PrimarySID
         expected_name = ".codex-defenseclaw-cert-$($script:RunToken)"
@@ -9818,12 +9909,14 @@ if (-not $item.PSIsContainer -or
         [string]$created.sid -ne $script:PrimarySID -or
         -not [string]::Equals(
             [string]$created.path,
-            $home,
+            $certificationHome,
             [StringComparison]::OrdinalIgnoreCase
         )) {
         throw 'fresh post-uninstall client root creation returned inconsistent evidence'
     }
-    $null = Assert-CertificationCodexHomePath $home -RequireExisting
+    $null = Assert-CertificationCodexHomePath `
+        $certificationHome `
+        -RequireExisting
 
     $codex = $null
     $claude = $null
@@ -9845,7 +9938,7 @@ if (-not $item.PSIsContainer -or
         Restore-ProtectedUserTreeSnapshot $snapshot[0]
     }
     $restored = Get-ProtectedUserTreeInventory `
-        $home `
+        $certificationHome `
         'fresh post-uninstall client root after cleanup'
     Assert-SameUserTreeInventory `
         $snapshot[0].inventory `
@@ -10463,10 +10556,10 @@ function Get-CertificationLifecycleScopeArguments(
     [bool]$CoreHardeningCertification
 ) {
     $arguments = [Collections.Generic.List[string]]::new()
-    if ($Action -notin @('Install', 'Upgrade', 'Repair')) {
-        return $arguments.ToArray()
-    }
-    if ($CoreHardeningCertification -and -not $UnsignedCertification) {
+    $mutation = $Action -in @('Install', 'Upgrade', 'Repair')
+    if ($mutation -and
+        $CoreHardeningCertification -and
+        -not $UnsignedCertification) {
         throw (
             'internal certification scope error: core hardening requires ' +
             'unsigned certification'
@@ -10475,9 +10568,16 @@ function Get-CertificationLifecycleScopeArguments(
     if (-not $UnsignedCertification) {
         return $arguments.ToArray()
     }
-    if (-not $script:CertificationCodexHomeInitialized) {
+    if ($Action -in @(
+            'Install',
+            'Upgrade',
+            'Repair',
+            'Reconcile',
+            'Uninstall'
+        ) -and
+        -not $script:CertificationCodexHomeInitialized) {
         throw (
-            'unsigned mutating lifecycle scope requires the exact initialized ' +
+            'unsigned stateful lifecycle scope requires the exact initialized ' +
             'certification CODEX_HOME'
         )
     }
@@ -10485,7 +10585,7 @@ function Get-CertificationLifecycleScopeArguments(
     $arguments.Add('-CertificationCodexHome')
     $arguments.Add($script:CertificationCodexHome)
     $arguments.Add('-AllowUnsigned')
-    if ($CoreHardeningCertification) {
+    if ($mutation -and $CoreHardeningCertification) {
         $arguments.Add('-CoreHardeningCertification')
     }
     return $arguments.ToArray()
@@ -10648,18 +10748,25 @@ function Get-EnterpriseLifecycleCLIArguments(
     if ($Purge) {
         $arguments.Add('--purge')
     }
-    if ($AllowUnsigned -and $mutation) {
+    if ($AllowUnsigned) {
         Assert-CertificationScope
-        if (-not $script:CertificationCodexHomeInitialized) {
+        if ($Action -in @(
+                'Install',
+                'Upgrade',
+                'Repair',
+                'Reconcile',
+                'Uninstall'
+            ) -and
+            -not $script:CertificationCodexHomeInitialized) {
             throw (
-                "unsigned public $Action requires the exact initialized " +
+                "unsigned stateful public $Action requires the exact initialized " +
                 'certification CODEX_HOME scope'
             )
         }
         $arguments.Add('--certification-codex-home')
         $arguments.Add($script:CertificationCodexHome)
         $arguments.Add('--allow-unsigned')
-        if ($ClaudeOnly) {
+        if ($mutation -and $ClaudeOnly) {
             $arguments.Add('--core-hardening-certification')
         }
     }
@@ -10767,8 +10874,9 @@ function Test-AllowUnsignedHarnessContract {
             Where-Object { $_ -ceq '-CoreHardeningCertification' }
     ).Count
     $expectedInstallUnsigned = if ($AllowUnsigned) { 1 } else { 0 }
+    $expectedVerifyUnsigned = if ($AllowUnsigned) { 1 } else { 0 }
     if ($installUnsignedCount -ne $expectedInstallUnsigned -or
-        $verifyUnsignedCount -ne 0) {
+        $verifyUnsignedCount -ne $expectedVerifyUnsigned) {
         throw (
             'harness unsigned argument contract is unsafe: ' +
             "install=$installUnsignedCount verify=$verifyUnsignedCount " +
@@ -10813,11 +10921,12 @@ function Test-AllowUnsignedHarnessContract {
     $expectedCertificationHomeCount = if ($AllowUnsigned) { 1 } else { 0 }
     if ($installCertificationHomeCount -ne
             $expectedCertificationHomeCount -or
-        $verifyCertificationHomeCount -ne 0) {
+        $verifyCertificationHomeCount -ne
+            $expectedCertificationHomeCount) {
         throw (
-            'CertificationCodexHome must accompany only unsigned mutating ' +
-            'certification transactions in full and Claude-only modes; signed ' +
-            "production and read-only actions must omit it: install=$installCertificationHomeCount " +
+            'CertificationCodexHome must accompany every unsigned ' +
+            'certification lifecycle action; signed production actions omit ' +
+            "it: install=$installCertificationHomeCount " +
             "verify=$verifyCertificationHomeCount " +
             "allow_unsigned=$([bool]$AllowUnsigned)"
         )
@@ -10880,8 +10989,8 @@ function Test-AllowUnsignedHarnessContract {
             action = 'Verify'
             allow_unsigned = $true
             core_hardening = $true
-            home_count = 0
-            unsigned_count = 0
+            home_count = 1
+            unsigned_count = 1
             core_count = 0
         }
     )) {
@@ -11317,23 +11426,23 @@ function Invoke-ActualCodexCertificationRun {
         )) {
         throw "$Label did not select the protected $BinaryRole runtime"
     }
-    $home = Assert-CertificationCodexHomePath `
+    $certificationHome = Assert-CertificationCodexHomePath `
         $script:CertificationCodexHome `
         -RequireExisting
     $port = Get-FreeLoopbackPort
     $shellDirectory = Assert-PathBelow `
-        (Join-Path $home ".defenseclaw-hostile-shell-$($script:RunToken)") `
-        $home `
+        (Join-Path $certificationHome ".defenseclaw-hostile-shell-$($script:RunToken)") `
+        $certificationHome `
         'hostile Codex shell directory'
     $script:CodexHostileShellMarker = Assert-PathBelow `
-        (Join-Path $home ".defenseclaw-shell-probe-$($script:RunToken).txt") `
-        $home `
+        (Join-Path $certificationHome ".defenseclaw-shell-probe-$($script:RunToken).txt") `
+        $certificationHome `
         'hostile Codex shell marker'
     $inputObject = [ordered]@{
         binary = $resolvedBinary
         binary_sha256 = $ExpectedSHA256
         binary_role = $BinaryRole
-        home = $home
+        home = $certificationHome
         sid = $script:PrimarySID
         port = $port
         profile = 'defenseclaw-cert'
@@ -11363,7 +11472,9 @@ $actualSID = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($actualSID -ne [string]$inputObject.sid) {
     throw "actual Codex test SID mismatch: $actualSID"
 }
-$home = [IO.Path]::GetFullPath([string]$inputObject.home).TrimEnd('\')
+$certificationHome = [IO.Path]::GetFullPath(
+    [string]$inputObject.home
+).TrimEnd('\')
 $binary = [IO.Path]::GetFullPath([string]$inputObject.binary)
 if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
     throw "protected Codex binary is missing: $binary"
@@ -11376,7 +11487,7 @@ if ($binarySHA256 -cne [string]$inputObject.binary_sha256) {
 }
 $baseConfig = [IO.Path]::GetFullPath([string]$inputObject.base_config)
 $homeWasEmpty = @(
-    Get-ChildItem -LiteralPath $home -Force -ErrorAction Stop
+    Get-ChildItem -LiteralPath $certificationHome -Force -ErrorAction Stop
 ).Count -eq 0
 if ([bool]$inputObject.delete_user_config) {
     if (Test-Path -LiteralPath $baseConfig -PathType Leaf) {
@@ -11386,7 +11497,7 @@ if ([bool]$inputObject.delete_user_config) {
         throw "failed to delete alternate user config: $baseConfig"
     }
 }
-$profilePath = Join-Path $home (
+$profilePath = Join-Path $certificationHome (
     ([string]$inputObject.profile) + '.config.toml'
 )
 $provider = @"
@@ -11445,12 +11556,12 @@ $processStartTimeUTC = ''
 try {
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $binary
-    $start.WorkingDirectory = $home
+    $start.WorkingDirectory = $certificationHome
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $start.Environment['CODEX_HOME'] = $home
+    $start.Environment['CODEX_HOME'] = $certificationHome
     $start.Environment['DEFENSECLAW_CERT_DUMMY_KEY'] = 'local-certification-only'
     $start.Environment['NO_PROXY'] = '127.0.0.1,localhost'
     $start.Environment['no_proxy'] = '127.0.0.1,localhost'
@@ -11780,7 +11891,7 @@ try {
         codex_exit_code = [int]$result.exit_code
         provider_reached = [bool]$result.provider_reached
         request_line = [string]$result.request_line
-        alternate_codex_home = $home
+        alternate_codex_home = $certificationHome
         user_config_deleted = [bool]$DeleteUserConfig
         bypass_hook_trust_requested = [bool]$BypassHookTrust
         hostile_shell_injected = [bool]$HostileShell
@@ -11877,21 +11988,21 @@ function Invoke-ActualClaudeCertificationRun {
             -not (Test-Path -LiteralPath $script:HostileShellProbeBinary -PathType Leaf))) {
         throw "$Label requires protected Claude and hostile-hook probe binaries"
     }
-    $home = Assert-CertificationCodexHomePath `
+    $certificationHome = Assert-CertificationCodexHomePath `
         $script:CertificationCodexHome `
         -RequireExisting
     $port = Get-FreeLoopbackPort
     $configDir = Assert-PathBelow `
-        (Join-Path $home ".claude-config-$($script:RunToken)") `
-        $home `
+        (Join-Path $certificationHome ".claude-config-$($script:RunToken)") `
+        $certificationHome `
         'hostile Claude user settings directory'
     $workspace = Assert-PathBelow `
-        (Join-Path $home "claude-workspace-$($script:RunToken)") `
-        $home `
+        (Join-Path $certificationHome "claude-workspace-$($script:RunToken)") `
+        $certificationHome `
         'hostile Claude project directory'
     $hostileMarker = Assert-PathBelow `
-        (Join-Path $home ".claude-hostile-hook-$($script:RunToken).txt") `
-        $home `
+        (Join-Path $certificationHome ".claude-hostile-hook-$($script:RunToken).txt") `
+        $certificationHome `
         'hostile Claude hook marker'
     $dummyKey = "dc-claude-local-$($script:RunToken)"
     $script:SecretNeedles.Add($dummyKey)
@@ -11900,7 +12011,7 @@ function Invoke-ActualClaudeCertificationRun {
         binary_sha256 = [string]$script:SourceDigests['claude']
         hostile_hook_binary = $script:HostileShellProbeBinary
         hostile_hook_marker = $hostileMarker
-        home = $home
+        home = $certificationHome
         config_dir = $configDir
         workspace = $workspace
         sid = $script:PrimarySID
@@ -18101,23 +18212,148 @@ function Register-CurrentCertificationSecrets {
         if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             continue
         }
-        foreach ($file in Get-ChildItem -LiteralPath $root -Filter '*.token' -File -Recurse -Force) {
+        $tokenFiles = @(
+            Get-CertificationTreeEntriesNoFollow `
+                -Root $root `
+                -Label 'certification secret discovery' |
+                Where-Object {
+                    -not $_.PSIsContainer -and
+                    $_.Name.EndsWith(
+                        '.token',
+                        [StringComparison]::OrdinalIgnoreCase
+                    )
+                }
+        )
+        foreach ($file in $tokenFiles) {
             Register-CertificationSecretFile $file.FullName
         }
     }
 }
 
-function Protect-TreeFromRegisteredSecretLeak([string]$Root, [string]$Label) {
-    if (-not (Test-Path -LiteralPath $Root -PathType Container) -or
-        $script:SecretNeedles.Count -eq 0) {
+function Test-CertificationEvidenceTextFile([IO.FileInfo]$File) {
+    return $File.Extension.ToLowerInvariant() -in @(
+        '.csv',
+        '.err',
+        '.json',
+        '.log',
+        '.out',
+        '.ps1',
+        '.toml',
+        '.txt',
+        '.xml',
+        '.yaml',
+        '.yml'
+    )
+}
+
+function Get-CertificationTreeEntriesNoFollow {
+    param(
+        [string]$Root,
+        [string]$Label,
+        [switch]$IncludeReparse
+    )
+    $canonicalRoot = ConvertTo-CanonicalPath $Root
+    $rootItem = Get-Item -LiteralPath $canonicalRoot -Force -ErrorAction Stop
+    if (-not $rootItem.PSIsContainer -or
+        ($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label root is not a real directory: $canonicalRoot"
+    }
+
+    # Enumerate one directory at a time. Reparse directories are either
+    # rejected or returned as leaf entries; they are never placed on the
+    # traversal stack.
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $entries = [Collections.Generic.List[IO.FileSystemInfo]]::new()
+    $pending.Push($canonicalRoot)
+    $maximumEntries = 100000
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        foreach ($entry in Get-ChildItem `
+            -LiteralPath $current `
+            -Force `
+            -ErrorAction Stop) {
+            $entryPath = Assert-PathBelow `
+                $entry.FullName `
+                $canonicalRoot `
+                "$Label entry"
+            $isReparse = (
+                ($entry.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0
+            )
+            if ($isReparse -and -not $IncludeReparse) {
+                throw "$Label contains an unsafe reparse entry: $entryPath"
+            }
+            $entries.Add($entry)
+            if ($entries.Count -gt $maximumEntries) {
+                throw "$Label exceeds the $maximumEntries-entry evidence bound"
+            }
+            if ($entry.PSIsContainer -and -not $isReparse) {
+                $pending.Push($entryPath)
+            }
+            elseif (-not $entry.PSIsContainer -and
+                -not $isReparse -and
+                -not (Test-Path -LiteralPath $entryPath -PathType Leaf)) {
+                throw "$Label contains a non-regular filesystem object: $entryPath"
+            }
+        }
+    }
+    return $entries.ToArray()
+}
+
+function Protect-TreeFromRegisteredSecretLeak {
+    param(
+        [string]$Root,
+        [string]$Label,
+        [IO.FileInfo[]]$Files
+    )
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
         return
     }
+    if ($null -eq $Files) {
+        $Files = [IO.FileInfo[]]@(
+            Get-CertificationTreeEntriesNoFollow `
+                -Root $Root `
+                -Label $Label |
+                Where-Object {
+                    -not $_.PSIsContainer -and
+                    (Test-CertificationEvidenceTextFile $_)
+                }
+        )
+    }
+    $maximumTextFileBytes = 8MB
+    $maximumTotalTextBytes = 64MB
+    [int64]$processedTextBytes = 0
     $leaked = [Collections.Generic.List[string]]::new()
-    foreach ($file in Get-ChildItem -LiteralPath $Root -File -Recurse -Force) {
-        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw "$Label contains an unsafe reparse file: $($file.FullName)"
+    foreach ($file in $Files) {
+        if ($file.Length -gt $maximumTextFileBytes -or
+            $processedTextBytes + $file.Length -gt $maximumTotalTextBytes) {
+            # WorkRoot is an exact disposable harness tree. Replace unbounded
+            # text artifacts with non-secret metadata instead of reading or
+            # copying gigabytes into evidence.
+            $omission = [ordered]@{
+                omitted = $true
+                reason = 'bounded certification text-evidence limit'
+                original_length = [int64]$file.Length
+                per_file_limit = [int64]$maximumTextFileBytes
+                total_limit = [int64]$maximumTotalTextBytes
+            } | ConvertTo-Json -Compress
+            [IO.File]::WriteAllText(
+                $file.FullName,
+                $omission,
+                [Text.UTF8Encoding]::new($false)
+            )
+            continue
         }
         $text = [IO.File]::ReadAllText($file.FullName)
+        $processedTextBytes += $file.Length
+        if ($text.IndexOf([char]0) -ge 0) {
+            [IO.File]::WriteAllText(
+                $file.FullName,
+                '{"omitted":true,"reason":"binary content in text evidence"}',
+                [Text.UTF8Encoding]::new($false)
+            )
+            continue
+        }
         $redacted = $text
         foreach ($secret in @($script:SecretNeedles.ToArray())) {
             if (-not [string]::IsNullOrWhiteSpace($secret)) {
@@ -18143,13 +18379,78 @@ function Copy-WorkEvidence {
         return
     }
     Register-CurrentCertificationSecrets
-    Protect-TreeFromRegisteredSecretLeak $script:WorkRoot 'work logs'
+    $textFiles = [IO.FileInfo[]]@(
+        Get-CertificationTreeEntriesNoFollow `
+            -Root $script:WorkRoot `
+            -Label 'work evidence' |
+            Where-Object {
+                -not $_.PSIsContainer -and
+                (Test-CertificationEvidenceTextFile $_)
+            }
+    )
+    Protect-TreeFromRegisteredSecretLeak `
+        $script:WorkRoot `
+        'work logs' `
+        $textFiles
     $logRoot = Join-Path $script:EvidenceDirectory 'logs'
     [IO.Directory]::CreateDirectory($logRoot) | Out-Null
-    foreach ($entry in Get-ChildItem -LiteralPath $script:WorkRoot -Force) {
-        Copy-Item -LiteralPath $entry.FullName -Destination $logRoot -Recurse -Force
+    foreach ($file in $textFiles) {
+        $relative = $file.FullName.Substring(
+            $script:WorkRoot.TrimEnd('\').Length
+        ).TrimStart('\')
+        $destination = Assert-PathBelow `
+            (Join-Path $logRoot $relative) `
+            $logRoot `
+            'bounded work evidence destination'
+        [IO.Directory]::CreateDirectory(
+            [IO.Path]::GetDirectoryName($destination)
+        ) | Out-Null
+        Copy-Item `
+            -LiteralPath $file.FullName `
+            -Destination $destination `
+            -Force
     }
-    Protect-TreeFromRegisteredSecretLeak $logRoot 'copied evidence logs'
+
+    $binaryDigests = [Collections.Generic.List[object]]::new()
+    foreach ($binary in @(
+        [pscustomobject]@{
+            name = 'codex'
+            path = $script:CodexRuntimeBinary
+        },
+        [pscustomobject]@{
+            name = 'claude'
+            path = $script:ClaudeRuntimeBinary
+        },
+        [pscustomobject]@{
+            name = 'codex_trusted_hook_launcher'
+            path = $script:CodexTrustedHookLauncherRuntimeBinary
+        }
+    )) {
+        if ([string]::IsNullOrWhiteSpace([string]$binary.path) -or
+            -not (Test-Path -LiteralPath $binary.path -PathType Leaf)) {
+            continue
+        }
+        $safeBinary = Assert-PathBelow `
+            ([string]$binary.path) `
+            $script:WorkRoot `
+            "staged $($binary.name) evidence binary"
+        $item = Get-Item -LiteralPath $safeBinary -Force
+        if (($item.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "staged evidence binary is a reparse point: $safeBinary"
+        }
+        $binaryDigests.Add([pscustomobject]@{
+            name = [string]$binary.name
+            path = $safeBinary
+            length = [int64]$item.Length
+            sha256 = Get-FileDigest $safeBinary
+        })
+    }
+    [IO.File]::WriteAllText(
+        (Join-Path $logRoot 'staged-binary-digests.json'),
+        ($binaryDigests.ToArray() | ConvertTo-Json -Depth 3),
+        [Text.UTF8Encoding]::new($false)
+    )
 }
 
 function Get-NormalModeProcessStartIdentity(
@@ -19131,8 +19432,8 @@ $plan = [ordered]@{
         }
         read_only = [ordered]@{
             action = 'status|verify|reconcile|uninstall'
-            certification_codex_home = $false
-            allow_unsigned = $false
+            certification_codex_home = $true
+            allow_unsigned = $true
             core_hardening_certification = $false
         }
     }
@@ -19421,7 +19722,7 @@ targets:
         Add-Result `
             'allow-unsigned-certification-scope' `
             'passed' `
-            'unsigned import is emitted only for mutating install/upgrade/repair inside the exact run-scoped service/root/CODEX_HOME grammar; production defaults and every near miss were rejected' `
+            'unsigned import is emitted for every lifecycle action only inside the exact run-scoped service/root/CODEX_HOME grammar; core and production attestations remain mutation-only, and production defaults plus every near miss were rejected' `
             @{
                 contract = $unsignedScopeProof
             }
