@@ -13733,7 +13733,12 @@ function Get-CertificationServiceTokenSnapshot {
             $token.Groups |
                 Where-Object { [string]$_.Sid -eq $serviceSID }
         )
-        if ($serviceGroups.Count -ne 1 -or [bool]$serviceGroups[0].DenyOnly) {
+        # The virtual-account gateway already proves the service SID as its
+        # exact TokenUser. Windows does not redundantly duplicate that identity
+        # in TokenGroups. The LocalSystem guardian has a different TokenUser,
+        # so its non-deny-only service SID group remains mandatory.
+        if (-not $gateway -and
+            ($serviceGroups.Count -ne 1 -or [bool]$serviceGroups[0].DenyOnly)) {
             throw "$serviceName PID $($process.process_id) lacks its non-deny-only service SID group $serviceSID"
         }
         $restrictedSIDs = @(
@@ -13764,6 +13769,8 @@ function Get-CertificationServiceTokenSnapshot {
             token_user_name = [string]$token.UserName
             integrity_sid = [string]$token.IntegritySid
             expected_integrity_sid = $expectedIntegritySID
+            service_sid_group_required = -not $gateway
+            service_sid_group_count = $serviceGroups.Count
             restricted = [bool]$token.IsRestricted
             required_privileges = @($wantedPrivileges)
             actual_privileges = @(
@@ -20118,7 +20125,7 @@ targets:
         Add-Result `
             'live-service-token-least-privilege' `
             'passed' `
-            'live gateway/guardian TokenUser, High gateway/System guardian integrity, privileges, service SID groups, and restricted-token semantics match the hardened contract' `
+            'live gateway/guardian TokenUser, High gateway/System guardian integrity, privileges, service-SID identity/group semantics, and restricted-token semantics match the hardened contract' `
             @{ service_tokens = @($serviceTokenSnapshot) }
     } catch {
         Add-Result `

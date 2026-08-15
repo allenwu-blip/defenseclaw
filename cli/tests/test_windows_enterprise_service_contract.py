@@ -1445,6 +1445,11 @@ def test_certification_inspects_actual_live_service_tokens() -> None:
     assert "$expectedIntegritySID = if ($gateway)" in token_probe
     assert "integrity $($token.IntegritySid), want $expectedIntegrityName" in token_probe
     assert "expected_integrity_sid = $expectedIntegritySID" in token_probe
+    assert "if (-not $gateway -and" in token_probe
+    assert "service_sid_group_required = -not $gateway" in token_probe
+    assert "service_sid_group_count = $serviceGroups.Count" in token_probe
+    assert "foreach ($requiredSID in @($serviceSID, 'S-1-1-0', 'S-1-5-33'))" in token_probe
+    assert "restricted SID list lacks one exact service-logon SID" in token_probe
     for privilege in (
         "SeChangeNotifyPrivilege",
         "SeTcbPrivilege",
@@ -1459,6 +1464,7 @@ def test_certification_inspects_actual_live_service_tokens() -> None:
         assert privilege in harness
     assert "live-service-token-least-privilege" in harness
     assert "High gateway/System guardian integrity" in harness
+    assert "service-SID identity/group semantics" in harness
     assert "service_tokens = @($serviceTokenSnapshot)" in harness
 
 
