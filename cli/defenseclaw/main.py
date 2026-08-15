@@ -238,7 +238,7 @@ def cli(ctx: click.Context) -> None:
     # see a clear diagnostic instead of a deep stack trace. Skipped for
     # recovery commands (doctor/config/keys/upgrade) so a broken config
     # doesn't lock them out of the tools that would fix it.
-    if invoked not in SKIP_AUTO_VALIDATE:
+    if invoked not in SKIP_AUTO_VALIDATE and invoked != "setup":
         from defenseclaw.commands.cmd_config import validate_config
 
         result = validate_config()
@@ -253,6 +253,15 @@ def cli(ctx: click.Context) -> None:
                 err=True,
             )
             raise SystemExit(1)
+
+    # The setup group must inspect its child command before deciding whether
+    # gateway-backed canonical validation and runtime/audit initialization are
+    # required. ``setup trusted-paths add|list|remove`` is the deliberately
+    # narrow offline trust bootstrap; every other setup path performs the same
+    # validation and initialization in the setup group callback.
+    if invoked == "setup":
+        app.setup_runtime_deferred = True
+        return
 
     try:
         app.store = Store(app.cfg.audit_db)

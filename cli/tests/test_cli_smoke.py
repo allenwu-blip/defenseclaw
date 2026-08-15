@@ -16,6 +16,7 @@
 
 import json
 import os
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -231,7 +232,7 @@ class CliSmokeTests(unittest.TestCase):
             self.assertFalse(config_file.exists())
             self.assertFalse((home / "audit.db").exists())
 
-    def test_preinit_setup_rejects_mutating_trusted_paths_subcommand(self):
+    def test_preinit_trusted_paths_remove_is_available_without_creating_config(self):
         from defenseclaw.main import cli
 
         runner = CliRunner()
@@ -251,9 +252,98 @@ class CliSmokeTests(unittest.TestCase):
                 )
 
             self.assertEqual(result.exit_code, 1, result.output)
-            self.assertIn("DefenseClaw is not initialized", result.output)
+            self.assertIn("not an operator-added trusted prefix", result.output)
             self.assertFalse(config_file.exists())
             self.assertFalse((home / "audit.db").exists())
+
+    def test_offline_trusted_path_add_list_init_subprocess_preserves_config(self):
+        cli_root = Path(__file__).resolve().parents[1]
+        repository_root = Path(__file__).resolve().parents[2]
+        gateway = repository_root / (
+            "defenseclaw-gateway.exe" if os.name == "nt" else "defenseclaw-gateway"
+        )
+        if not gateway.is_file():
+            self.skipTest("real gateway binary is unavailable")
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            root = Path.cwd()
+            home = root / "profile"
+            data_dir = home / ".defenseclaw"
+            config_file = data_dir / "config.yaml"
+            runtime_root = root / "staged-runtime"
+            empty_path = root / "empty-path"
+            runtime_root.mkdir()
+            empty_path.mkdir()
+            expected = str(runtime_root.resolve())
+            environment = {
+                "PATH": str(empty_path.resolve()),
+                "HOME": str(home.resolve()),
+                "USERPROFILE": str(home.resolve()),
+                "APPDATA": str((home / "AppData" / "Roaming").resolve()),
+                "LOCALAPPDATA": str((home / "AppData" / "Local").resolve()),
+                "CODEX_HOME": str((home / ".codex").resolve()),
+                "CLAUDE_CONFIG_DIR": str((home / ".claude").resolve()),
+                "DEFENSECLAW_HOME": str(data_dir.resolve()),
+                "DEFENSECLAW_CONFIG": str(config_file.resolve()),
+                "DEFENSECLAW_TRUSTED_BIN_PREFIXES": "",
+                "DEFENSECLAW_GATEWAY_BIN": str(gateway.resolve()),
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONPATH": str(cli_root.resolve()),
+            }
+            for name in ("SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP"):
+                if value := os.environ.get(name):
+                    environment[name] = value
+
+            def invoke(
+                *arguments: str,
+                gateway_required: bool = False,
+            ) -> subprocess.CompletedProcess[str]:
+                child_environment = environment.copy()
+                if not gateway_required:
+                    child_environment.pop("DEFENSECLAW_GATEWAY_BIN", None)
+                return subprocess.run(
+                    [sys.executable, "-m", "defenseclaw.main", *arguments],
+                    cwd=root,
+                    env=child_environment,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=120,
+                    check=False,
+                )
+
+            added = invoke("setup", "trusted-paths", "add", expected, "--json")
+            before = invoke("setup", "trusted-paths", "list", "--json")
+            initialized = invoke(
+                "init",
+                "--skip-install",
+                "--non-interactive",
+                "--yes",
+                "--connector",
+                "none",
+                "--no-start-gateway",
+                "--no-verify",
+                "--json-summary",
+                gateway_required=True,
+            )
+            after = invoke("setup", "trusted-paths", "list", "--json")
+
+            self.assertEqual(added.returncode, 0, added.stderr + added.stdout)
+            self.assertEqual(before.returncode, 0, before.stderr + before.stdout)
+            self.assertEqual(initialized.returncode, 0, initialized.stderr + initialized.stdout)
+            self.assertEqual(after.returncode, 0, after.stderr + after.stdout)
+            before_rows = [row for row in json.loads(before.stdout) if row["source"] == "config"]
+            after_rows = [row for row in json.loads(after.stdout) if row["source"] == "config"]
+            self.assertEqual([row["resolved"] for row in before_rows], [expected])
+            self.assertEqual([row["resolved"] for row in after_rows], [expected])
+            document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                document["ai_discovery"]["trusted_binary_prefixes"],
+                [expected],
+            )
+            self.assertFalse((data_dir / "agent_selection.json").exists())
 
     def test_trusted_paths_bootstrap_rejects_existing_legacy_config(self):
         from defenseclaw.main import cli

@@ -636,10 +636,6 @@ function Invoke-NativeProcess {
     if ($StrictWindowsBootstrapEnvironment) {
         $start.Environment.Clear()
         $bootstrapEnvironment = [ordered]@{
-            SystemRoot = $script:WindowsDirectory
-            windir = $script:WindowsDirectory
-            ProgramFiles = $script:KnownProgramFiles
-            ProgramData = $script:KnownProgramData
             ComSpec = Join-Path $script:System32 'cmd.exe'
             PATH = @(
                 $script:System32,
@@ -6178,7 +6174,12 @@ function Read-SharedBytes([string]$Path) {
                 $memory = [IO.MemoryStream]::new()
                 try {
                     $stream.CopyTo($memory)
-                    return $memory.ToArray()
+                    # PowerShell enumerates arrays written to its pipeline. A
+                    # zero-byte array would therefore become no output and the
+                    # caller would receive $null. Unary comma preserves the
+                    # byte[] as one object under both Windows PowerShell 5.1
+                    # and PowerShell 7.
+                    return ,$memory.ToArray()
                 } finally {
                     $memory.Dispose()
                 }
@@ -6205,6 +6206,96 @@ function Get-BytesSHA256([byte[]]$Bytes) {
     } finally {
         $sha.Dispose()
     }
+}
+
+function ConvertTo-SanitizedNormalModeDiagnostic([string]$Value) {
+    $safe = [string]$Value
+    $safe = $safe -replace (
+        '(?i)\bauthorization\s*[:=]\s*[^\r\n,;]+'
+    ), 'authorization=<redacted>'
+    $safe = $safe -replace (
+        '(?i)\b(password|secret|token|api[_-]?key|access[_-]?token)' +
+        '\s*[:=]\s*[^\r\n,;]+'
+    ), '$1=<redacted>'
+    $safe = ($safe -replace '[\x00-\x1f]+', ' ').Trim()
+    if ($safe.Length -gt 512) {
+        $safe = $safe.Substring(0, 512) + '...'
+    }
+    return $safe
+}
+
+function Get-NormalModeReadinessSnapshot(
+    [string]$GatewayPIDPath,
+    [string]$WatchdogPIDPath,
+    [string]$ManagedConfigPath
+) {
+    $snapshot = [ordered]@{}
+    foreach ($entry in @(
+        [pscustomobject]@{ name = 'gateway'; path = $GatewayPIDPath },
+        [pscustomobject]@{ name = 'watchdog'; path = $WatchdogPIDPath }
+    )) {
+        $state = [ordered]@{
+            exists = Test-Path -LiteralPath $entry.path -PathType Leaf
+            content = ''
+            pid = 0
+            executable = ''
+            error = ''
+        }
+        if ($state.exists) {
+            try {
+                $raw = Read-SharedText ([string]$entry.path)
+                $state.content = ConvertTo-SanitizedNormalModeDiagnostic $raw
+                $state.pid = Read-PID ([string]$entry.path)
+                $state.executable = Get-ProcessExecutable ([int]$state.pid)
+            } catch {
+                $state.error = ConvertTo-SanitizedNormalModeDiagnostic (
+                    $_.Exception.Message
+                )
+            }
+        }
+        $snapshot[[string]$entry.name] = [pscustomobject]$state
+    }
+
+    $config = [ordered]@{
+        exists = Test-Path -LiteralPath $ManagedConfigPath -PathType Leaf
+        size = 0
+        sha256 = ''
+        hook_table = $false
+        event_tables = 0
+        command_windows = 0
+        private_trusted_hashes = 0
+        error = ''
+    }
+    if ($config.exists) {
+        try {
+            $bytes = Read-SharedBytes $ManagedConfigPath
+            $config.size = $bytes.Length
+            $config.sha256 = Get-BytesSHA256 $bytes
+            $text = [Text.Encoding]::UTF8.GetString($bytes)
+            $config.hook_table = [regex]::IsMatch(
+                $text,
+                '(?m)^\[hooks\]\s*$'
+            )
+            $config.event_tables = [regex]::Matches(
+                $text,
+                '(?m)^\[\[hooks\.(PreToolUse|PermissionRequest|PostToolUse|SubagentStart|SubagentStop|PreCompact|PostCompact|SessionStart|UserPromptSubmit|Stop)\]\]\s*$'
+            ).Count
+            $config.command_windows = [regex]::Matches(
+                $text,
+                '(?m)^\s*command_windows\s*='
+            ).Count
+            $config.private_trusted_hashes = [regex]::Matches(
+                $text,
+                '(?m)^\s*trusted_hash\s*='
+            ).Count
+        } catch {
+            $config.error = ConvertTo-SanitizedNormalModeDiagnostic (
+                $_.Exception.Message
+            )
+        }
+    }
+    $snapshot['managed_config'] = [pscustomobject]$config
+    return [pscustomobject]$snapshot
 }
 
 function Read-PID([string]$Path) {
@@ -6792,6 +6883,8 @@ try {
     $watchdogPIDPath = Join-Path $dataRoot 'watchdog.pid'
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
     $baselineFingerprint = $null
+    $lastReadinessError = ''
+    $lastReadinessSnapshot = $null
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         try {
             $gatewayPID = Read-PID $gatewayPIDPath
@@ -6813,11 +6906,33 @@ try {
                 $baselineFingerprint = $candidateFingerprint
                 break
             }
-        } catch {}
+            $lastReadinessError = (
+                'gateway/watchdog executable identity does not match the ' +
+                'exact staged gateway'
+            )
+        } catch {
+            $lastReadinessError = ConvertTo-SanitizedNormalModeDiagnostic (
+                $_.Exception.Message
+            )
+        }
+        $lastReadinessSnapshot = Get-NormalModeReadinessSnapshot `
+            $gatewayPIDPath `
+            $watchdogPIDPath `
+            $managedConfig
         Start-Sleep -Milliseconds 100
     }
     if ($null -eq $baselineFingerprint) {
-        throw 'normal-mode gateway, watchdog, and Codex hook registration did not become ready'
+        $lastReadinessSnapshot = Get-NormalModeReadinessSnapshot `
+            $gatewayPIDPath `
+            $watchdogPIDPath `
+            $managedConfig
+        $snapshotJSON = $lastReadinessSnapshot |
+            ConvertTo-Json -Compress -Depth 6
+        throw (
+            'normal-mode gateway, watchdog, and Codex hook registration ' +
+            'did not become ready; last_error=' + $lastReadinessError +
+            '; final_snapshot=' + $snapshotJSON
+        )
     }
 
     Start-Sleep -Seconds 5

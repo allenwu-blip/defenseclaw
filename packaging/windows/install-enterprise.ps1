@@ -24,14 +24,8 @@ param(
     [string]$Config,
     [string]$Manifest,
 
-    [string]$InstallRoot = ([IO.Path]::Combine(
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
-        'Cisco\DefenseClaw'
-    )),
-    [string]$StateRoot = ([IO.Path]::Combine(
-        [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData),
-        'Cisco\DefenseClaw'
-    )),
+    [string]$InstallRoot,
+    [string]$StateRoot,
     [string]$GatewayServiceName = 'DefenseClawGateway',
     [string]$GuardianServiceName = 'DefenseClawHookGuardian',
     [string]$CertificationCodexHome,
@@ -51,9 +45,99 @@ param(
 Microsoft.PowerShell.Core\Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$trustedWindows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
-$trustedProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
-$trustedProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+function ConvertTo-DefenseClawTrustedMachineRoot {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        $Value -match '[\x00-\x1f%]' -or
+        -not [IO.Path]::IsPathRooted($Value)) {
+        throw "trusted $Label root is empty, relative, or contains an invalid character"
+    }
+    $full = [IO.Path]::GetFullPath($Value).TrimEnd('\')
+    $driveRoot = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($driveRoot) -or
+        $driveRoot -notmatch '^[A-Za-z]:\\$' -or
+        $full.StartsWith('\\') -or
+        $full.StartsWith('//') -or
+        $full.StartsWith('\\?\') -or
+        $full.StartsWith('\\.\') -or
+        -not [IO.Directory]::Exists($full)) {
+        throw "trusted $Label root is not an existing canonical local directory: $full"
+    }
+    return $full
+}
+
+function Get-DefenseClawTrustedMachineRoots {
+    # Environment.GetFolderPath can return an empty string when PowerShell is
+    # launched with the deliberately reduced native-bootstrap environment.
+    # Resolve machine roots from fixed HKLM registration plus the Win32-backed
+    # Environment.SystemDirectory property, without consulting process HOME,
+    # profile, ProgramFiles, ProgramData, SystemRoot, or windir variables.
+    $windows = ConvertTo-DefenseClawTrustedMachineRoot `
+        -Value ([IO.Path]::GetDirectoryName([Environment]::SystemDirectory)) `
+        -Label 'Windows'
+    $base = $null
+    $shell = $null
+    try {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64
+        )
+        $currentVersion = $base.OpenSubKey(
+            'SOFTWARE\Microsoft\Windows\CurrentVersion',
+            $false
+        )
+        if ($null -eq $currentVersion) {
+            throw 'trusted Program Files machine registration is missing'
+        }
+        try {
+            $programFilesRaw = [string]$currentVersion.GetValue(
+                'ProgramFilesDir',
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        } finally {
+            $currentVersion.Dispose()
+        }
+        $shell = $base.OpenSubKey(
+            'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders',
+            $false
+        )
+        if ($null -eq $shell) {
+            throw 'trusted ProgramData machine registration is missing'
+        }
+        $programDataRaw = [string]$shell.GetValue(
+            'Common AppData',
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+    } finally {
+        if ($null -ne $shell) { $shell.Dispose() }
+        if ($null -ne $base) { $base.Dispose() }
+    }
+    return [pscustomobject]@{
+        Windows = $windows
+        ProgramFiles = ConvertTo-DefenseClawTrustedMachineRoot `
+            -Value $programFilesRaw `
+            -Label 'Program Files'
+        ProgramData = ConvertTo-DefenseClawTrustedMachineRoot `
+            -Value $programDataRaw `
+            -Label 'ProgramData'
+    }
+}
+
+$trustedMachineRoots = Get-DefenseClawTrustedMachineRoots
+$trustedWindows = [string]$trustedMachineRoots.Windows
+$trustedProgramFiles = [string]$trustedMachineRoots.ProgramFiles
+$trustedProgramData = [string]$trustedMachineRoots.ProgramData
+$InstallRoot = if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
+    [IO.Path]::Combine($trustedProgramFiles, 'Cisco\DefenseClaw')
+} else { $InstallRoot }
+$StateRoot = if ([string]::IsNullOrWhiteSpace($StateRoot)) {
+    [IO.Path]::Combine($trustedProgramData, 'Cisco\DefenseClaw')
+} else { $StateRoot }
 $trustedSystem32 = [IO.Path]::Combine($trustedWindows, 'System32')
 [Environment]::SetEnvironmentVariable('SystemRoot', $trustedWindows, 'Process')
 [Environment]::SetEnvironmentVariable('windir', $trustedWindows, 'Process')

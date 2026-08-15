@@ -297,6 +297,14 @@ def setup(
         )
         ctx.exit(1)
 
+    if (
+        ctx.invoked_subcommand != "trusted-paths"
+        and app is not None
+        and app.setup_runtime_deferred
+    ):
+        _initialize_setup_runtime(app, ctx)
+        app.setup_runtime_deferred = False
+
     # Snapshot config.yaml's mtime before the subcommand runs. The
     # result callback below (``_auto_restart_sidecar_after_setup``)
     # compares this to the post-invocation mtime and only restarts the
@@ -327,6 +335,47 @@ def setup(
         restart=batch_restart,
         yes=batch_yes,
     )
+
+
+def _initialize_setup_runtime(app: AppContext | None, ctx: click.Context) -> None:
+    """Validate and initialize every setup path except trusted-paths.
+
+    Root command dispatch cannot see the nested setup child without guessing
+    from raw argv. Deferring this boundary until the setup callback keeps the
+    trusted-path bootstrap genuinely offline while retaining the original
+    fail-closed canonical validation for every other setup command.
+    """
+
+    if app is None or app.cfg is None:
+        ux.echo("DefenseClaw is not initialized — run 'defenseclaw init' first.", err=True)
+        ctx.exit(1)
+
+    from defenseclaw.commands.cmd_config import validate_config
+
+    result = validate_config()
+    if not result.ok:
+        ux.echo("Config validation failed:", err=True)
+        if result.parse_error:
+            ux.echo(f"  ✗ {result.parse_error}", err=True)
+        for issue in result.errors:
+            ux.echo(f"  ✗ {issue}", err=True)
+        ux.echo(
+            "  Run 'defenseclaw config validate' for details, or "
+            "'defenseclaw doctor --fix' to auto-repair.",
+            err=True,
+        )
+        ctx.exit(1)
+
+    from defenseclaw.db import Store
+    from defenseclaw.logger import Logger
+
+    try:
+        app.store = Store(app.cfg.audit_db)
+        app.store.init()
+    except Exception as exc:
+        ux.echo(f"Failed to open audit store: {exc}", err=True)
+        ctx.exit(1)
+    app.logger = Logger.from_config(app.cfg)
 
 
 # Register canonical v8 destination setup.
@@ -1998,7 +2047,7 @@ def trusted_paths(ctx: click.Context) -> None:
     if (
         app is not None
         and app.preinit_setup_bootstrap
-        and ctx.invoked_subcommand not in {"add", "list"}
+        and ctx.invoked_subcommand not in {"add", "list", "remove"}
     ):
         ux.echo(
             "DefenseClaw is not initialized — run 'defenseclaw init' first.",

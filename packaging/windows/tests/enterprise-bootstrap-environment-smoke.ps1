@@ -333,8 +333,84 @@ function Invoke-CollisionNoSeizeProbe {
     return $true
 }
 
+$expectedWindows = [IO.Path]::GetFullPath(
+    [IO.Path]::GetDirectoryName([Environment]::SystemDirectory)
+).TrimEnd('\')
+$registry = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+    [Microsoft.Win32.RegistryHive]::LocalMachine,
+    [Microsoft.Win32.RegistryView]::Registry64
+)
+try {
+    $currentVersion = $registry.OpenSubKey(
+        'SOFTWARE\Microsoft\Windows\CurrentVersion',
+        $false
+    )
+    $shellFolders = $registry.OpenSubKey(
+        'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders',
+        $false
+    )
+    if ($null -eq $currentVersion -or $null -eq $shellFolders) {
+        throw 'machine known-folder registration is unavailable to the smoke'
+    }
+    try {
+        $expectedProgramFiles = [IO.Path]::GetFullPath(
+            [string]$currentVersion.GetValue(
+                'ProgramFilesDir',
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        ).TrimEnd('\')
+        $expectedProgramData = [IO.Path]::GetFullPath(
+            [string]$shellFolders.GetValue(
+                'Common AppData',
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        ).TrimEnd('\')
+    } finally {
+        $currentVersion.Dispose()
+        $shellFolders.Dispose()
+    }
+} finally {
+    $registry.Dispose()
+}
+foreach ($name in @(
+    'ProgramData',
+    'ProgramFiles',
+    'ProgramFiles(x86)',
+    'SystemRoot',
+    'windir',
+    'HOME',
+    'USERPROFILE',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'APPDATA',
+    'LOCALAPPDATA'
+)) {
+    [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+}
+
 $productionDefinitions = Get-ProductionBootstrapDefinitions
 . $productionDefinitions
+if (-not [string]::Equals(
+        $trustedWindows,
+        $expectedWindows,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    -not [string]::Equals(
+        $trustedProgramFiles,
+        $expectedProgramFiles,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    -not [string]::Equals(
+        $trustedProgramData,
+        $expectedProgramData,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    -not [IO.Path]::IsPathRooted($InstallRoot) -or
+    -not [IO.Path]::IsPathRooted($StateRoot)) {
+    throw 'production bootstrap did not recover exact machine roots from an empty environment'
+}
 foreach ($name in @(
     'New-DefenseClawBootstrapEnvironment',
     'Remove-DefenseClawBootstrapEnvironment',
@@ -487,6 +563,7 @@ if ($legacyRelativeEnvironmentResidue.Count -ne 0) {
     engine = $PSVersionTable.PSVersion.ToString()
     elevated = [bool]$single.elevated
     exact_acl = [bool]$single.exact_acl
+    empty_environment_known_folders_recovered = $true
     all_environment_paths_pinned =
         [bool]$single.all_environment_paths_pinned
     module_analysis_cache_disabled =

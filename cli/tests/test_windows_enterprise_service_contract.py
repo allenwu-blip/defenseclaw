@@ -169,8 +169,16 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
 
     assert "DefenseClawGateway" in installer
     assert "DefenseClawHookGuardian" in installer
-    assert "[Environment+SpecialFolder]::ProgramFiles" in installer
-    assert "[Environment+SpecialFolder]::CommonApplicationData" in installer
+    assert "Get-DefenseClawTrustedMachineRoots" in installer
+    assert "[Environment]::SystemDirectory" in installer
+    assert "[Microsoft.Win32.RegistryHive]::LocalMachine" in installer
+    assert "[Microsoft.Win32.RegistryView]::Registry64" in installer
+    assert "[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames" in installer
+    assert "'ProgramFilesDir'" in installer
+    assert "'Common AppData'" in installer
+    assert "trusted $Label root is empty, relative" in installer
+    assert "[string]$InstallRoot," in installer
+    assert "[string]$StateRoot," in installer
     assert "$env:ProgramFiles" not in installer
     assert "$env:ProgramData" not in installer
     assert "[Environment+SpecialFolder]::ProgramFiles" in module
@@ -764,6 +772,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "engine",
                 "elevated",
                 "exact_acl",
+                "empty_environment_known_folders_recovered",
                 "all_environment_paths_pinned",
                 "module_analysis_cache_disabled",
                 "nested_cleanup_verified",
@@ -931,6 +940,7 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
         assert report["module_raw_whole_volume_alias_rejected"] is True
     if script == BOOTSTRAP_ENVIRONMENT_SMOKE:
         assert report["exact_acl"] is True
+        assert report["empty_environment_known_folders_recovered"] is True
         assert report["all_environment_paths_pinned"] is True
         assert report["module_analysis_cache_disabled"] is True
         assert report["nested_cleanup_verified"] is True
@@ -1811,6 +1821,13 @@ def test_certification_uses_fixed_clean_windows_powershell_bootstrap() -> None:
     assert "StrictWindowsBootstrapEnvironment" in harness
     assert "PSModulePath" in harness
     assert "-FilePath $script:BootstrapPowerShellExecutable" in harness
+    strict_environment = harness[
+        harness.index("if ($StrictWindowsBootstrapEnvironment)") : harness.index(
+            "foreach ($argument in $ArgumentList)"
+        )
+    ]
+    for poisoned_name in ("SystemRoot", "windir", "ProgramFiles", "ProgramData"):
+        assert f"{poisoned_name} =" not in strict_environment
 
 
 def test_enterprise_is_opt_in_without_disabling_normal_mode_repair() -> None:
@@ -1942,6 +1959,20 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "Select-Object events, trusted_hashes" not in live_repair
     assert "WriteAllText(\n        $managedConfig," in live_repair
     assert "wrote the managed hook matrix into user config.toml" in live_repair
+    assert "return ,$memory.ToArray()" in live_repair
+    assert "Get-NormalModeReadinessSnapshot" in live_repair
+    assert "last_error=" in live_repair
+    assert "final_snapshot=" in live_repair
+    for field in (
+        "gateway",
+        "watchdog",
+        "managed_config",
+        "event_tables",
+        "command_windows",
+        "private_trusted_hashes",
+        "sha256",
+    ):
+        assert field in live_repair
 
     preinstall_live = harness.index(
         "'preinstall-normal-mode-live-hook-auto-heal-is-no-op'"
@@ -1952,6 +1983,314 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
+@pytest.mark.parametrize(
+    "engine",
+    windows_powershell_engines() or (None,),
+    ids=lambda engine: Path(engine).stem if engine else "missing",
+)
+def test_normal_mode_shared_stream_reader_preserves_empty_byte_arrays(
+    engine: str | None,
+    tmp_path: Path,
+) -> None:
+    assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
+    harness = read(HARNESS)
+    functions = harness[
+        harness.index("function Read-SharedBytes") : harness.index(
+            "function Get-BytesSHA256"
+        )
+    ]
+    probe = tmp_path / f"shared-stream-{Path(engine).stem}.ps1"
+    probe.write_text(
+        functions
+        + r'''
+$root = [IO.Path]::Combine(
+    [IO.Path]::GetTempPath(),
+    "DefenseClaw-SharedStream-$([Guid]::NewGuid().ToString('N'))"
+)
+[IO.Directory]::CreateDirectory($root) | Out-Null
+try {
+    $empty = [IO.Path]::Combine($root, 'empty.log')
+    [IO.File]::WriteAllBytes($empty, [byte[]]::new(0))
+    $emptyBytes = Read-SharedBytes $empty
+    if ($emptyBytes -isnot [byte[]] -or $emptyBytes.Length -ne 0) {
+        throw 'zero-byte read did not preserve the byte[] contract'
+    }
+    if ((Read-SharedText $empty) -cne '') {
+        throw 'zero-byte text did not decode to the empty string'
+    }
+
+    $nonempty = [IO.Path]::Combine($root, 'nonempty.log')
+    [IO.File]::WriteAllText(
+        $nonempty,
+        'DefenseClaw stream probe',
+        [Text.UTF8Encoding]::new($false)
+    )
+    if ((Read-SharedText $nonempty) -cne 'DefenseClaw stream probe') {
+        throw 'non-empty redirected text changed during read'
+    }
+
+    $openPath = [IO.Path]::Combine($root, 'concurrently-open.log')
+    [IO.File]::WriteAllText(
+        $openPath,
+        'open stream probe',
+        [Text.UTF8Encoding]::new($false)
+    )
+    $open = [IO.FileStream]::new(
+        $openPath,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+    )
+    try {
+        if ((Read-SharedText $openPath) -cne 'open stream probe') {
+            throw 'concurrently-open redirected file could not be read'
+        }
+    } finally {
+        $open.Dispose()
+    }
+
+    $stdout = [IO.Path]::Combine($root, 'child.stdout.log')
+    $stderr = [IO.Path]::Combine($root, 'child.stderr.log')
+    $enginePath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $child = Start-Process `
+        -FilePath $enginePath `
+        -ArgumentList @(
+            '-NoLogo',
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            'exit 0'
+        ) `
+        -RedirectStandardOutput $stdout `
+        -RedirectStandardError $stderr `
+        -WindowStyle Hidden `
+        -PassThru
+    try {
+        if (-not $child.WaitForExit(30000)) {
+            try { $child.Kill() } catch {}
+            throw 'empty-output child exceeded its bounded timeout'
+        }
+        $child.Refresh()
+        if ($child.ExitCode -ne 0) {
+            throw "empty-output child exited $($child.ExitCode)"
+        }
+    } finally {
+        $child.Dispose()
+    }
+    if ((Read-SharedText $stdout) -cne '' -or
+        (Read-SharedText $stderr) -cne '') {
+        throw 'empty-output child produced unexpected redirected text'
+    }
+    [pscustomobject]@{
+        ok = $true
+        engine = $PSVersionTable.PSVersion.ToString()
+        zero_byte = $true
+        nonempty = $true
+        concurrently_open = $true
+        bounded_empty_child = $true
+    } | ConvertTo-Json -Compress
+} finally {
+    if ([IO.Directory]::Exists($root)) {
+        [IO.Directory]::Delete($root, $true)
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            engine,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8-sig",
+        errors="replace",
+        timeout=90,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["ok"] is True
+    assert result["zero_byte"] is True
+    assert result["nonempty"] is True
+    assert result["concurrently_open"] is True
+    assert result["bounded_empty_child"] is True
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
+@pytest.mark.parametrize(
+    "engine",
+    windows_powershell_engines() or (None,),
+    ids=lambda engine: Path(engine).stem if engine else "missing",
+)
+def test_normal_mode_readiness_diagnostics_cover_each_failure_boundary(
+    engine: str | None,
+    tmp_path: Path,
+) -> None:
+    assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
+    harness = read(HARNESS)
+    functions = harness[
+        harness.index("function Read-SharedBytes") : harness.index(
+            "function ConvertTo-NormalModeProcessArgument"
+        )
+    ]
+    probe = tmp_path / f"readiness-diagnostics-{Path(engine).stem}.ps1"
+    probe.write_text(
+        functions
+        + r'''
+function Get-ProcessExecutable([int]$PIDValue) {
+    if ($PIDValue -eq 424242) {
+        throw 'authorization: Bearer diagnostic-secret'
+    }
+    return "C:\fixture\gateway-$PIDValue.exe"
+}
+
+$root = [IO.Path]::Combine(
+    [IO.Path]::GetTempPath(),
+    "DefenseClaw-Readiness-$([Guid]::NewGuid().ToString('N'))"
+)
+[IO.Directory]::CreateDirectory($root) | Out-Null
+try {
+    $gatewayPID = [IO.Path]::Combine($root, 'gateway.pid')
+    $watchdogPID = [IO.Path]::Combine($root, 'watchdog.pid')
+    $managed = [IO.Path]::Combine($root, 'managed_config.toml')
+
+    $missing = Get-NormalModeReadinessSnapshot `
+        $gatewayPID $watchdogPID $managed
+    if ($missing.gateway.exists -or $missing.watchdog.exists -or
+        $missing.managed_config.exists) {
+        throw 'missing readiness components were not reported as absent'
+    }
+
+    [IO.File]::WriteAllText($gatewayPID, 'token=pid-secret')
+    [IO.File]::WriteAllText($watchdogPID, '{"pid":1234}')
+    $pidState = Get-NormalModeReadinessSnapshot `
+        $gatewayPID $watchdogPID $managed
+    if ([string]::IsNullOrWhiteSpace($pidState.gateway.error) -or
+        $pidState.gateway.content -match 'pid-secret' -or
+        $pidState.gateway.content -notmatch '<redacted>' -or
+        $pidState.watchdog.pid -ne 1234 -or
+        $pidState.watchdog.executable -cne 'C:\fixture\gateway-1234.exe') {
+        throw 'PID parsing or resolved process-path diagnostics are incomplete'
+    }
+
+    [IO.File]::WriteAllText($gatewayPID, '424242')
+    $processState = Get-NormalModeReadinessSnapshot `
+        $gatewayPID $watchdogPID $managed
+    if ($processState.gateway.error -match 'diagnostic-secret' -or
+        $processState.gateway.error -notmatch 'authorization=<redacted>') {
+        throw 'process-path lookup diagnostic was not safely retained'
+    }
+
+    $managedText = @'
+[hooks]
+[[hooks.PreToolUse]]
+command_windows = "private full command"
+trusted_hash = "private hash"
+[[hooks.Stop]]
+command_windows = "second private command"
+'@
+    [IO.File]::WriteAllText(
+        $managed,
+        $managedText,
+        [Text.UTF8Encoding]::new($false)
+    )
+    $configState = Get-NormalModeReadinessSnapshot `
+        $gatewayPID $watchdogPID $managed
+    if (-not $configState.managed_config.exists -or
+        $configState.managed_config.size -le 0 -or
+        $configState.managed_config.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        -not $configState.managed_config.hook_table -or
+        $configState.managed_config.event_tables -ne 2 -or
+        $configState.managed_config.command_windows -ne 2 -or
+        $configState.managed_config.private_trusted_hashes -ne 1) {
+        throw 'managed-config fingerprint counts are incomplete'
+    }
+    $snapshotJSON = $configState | ConvertTo-Json -Compress -Depth 6
+    if ($snapshotJSON -match 'private full command|private hash') {
+        throw 'readiness snapshot disclosed private hook registration data'
+    }
+
+    $fingerprintRejected = $false
+    try {
+        $null = Get-CodexManagedHookFingerprint 'not a hook table' 'fixture.exe'
+    } catch {
+        $fingerprintRejected = (
+            $_.Exception.Message -match 'has no owned \[hooks\] table'
+        )
+    }
+    if (-not $fingerprintRejected) {
+        throw 'hook fingerprint validation failure was not actionable'
+    }
+
+    function Read-SharedBytes([string]$Path) {
+        throw 'password=config-read-secret'
+    }
+    $configFailure = Get-NormalModeReadinessSnapshot `
+        ([IO.Path]::Combine($root, 'missing-gateway.pid')) `
+        ([IO.Path]::Combine($root, 'missing-watchdog.pid')) `
+        $managed
+    if ($configFailure.managed_config.error -match 'config-read-secret' -or
+        $configFailure.managed_config.error -notmatch 'password=<redacted>') {
+        throw 'config-read failure was not safely retained'
+    }
+
+    [pscustomobject]@{
+        ok = $true
+        missing = $true
+        pid_parse = $true
+        process_path = $true
+        config_read = $true
+        fingerprint = $true
+        redacted = $true
+    } | ConvertTo-Json -Compress
+} finally {
+    if ([IO.Directory]::Exists($root)) {
+        [IO.Directory]::Delete($root, $true)
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [
+            engine,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8-sig",
+        errors="replace",
+        timeout=90,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result == {
+        "ok": True,
+        "missing": True,
+        "pid_parse": True,
+        "process_path": True,
+        "config_read": True,
+        "fingerprint": True,
+        "redacted": True,
+    }
 
 
 def test_normal_mode_timeout_and_acl_cleanup_are_bounded_and_exact() -> None:
