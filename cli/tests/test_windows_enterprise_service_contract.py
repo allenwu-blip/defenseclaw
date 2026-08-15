@@ -878,6 +878,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "ambient_cmdlet_shadow_ignored",
                 "fixed_native_helper_spoof_ignored",
                 "certification_scope_rejections",
+                "lifecycle_file_lock_reuse_stable",
             ),
         ),
         (
@@ -1428,13 +1429,22 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
 
 def test_certification_inspects_actual_live_service_tokens() -> None:
     harness = read(HARNESS)
+    token_probe = harness[
+        harness.index("function Get-CertificationServiceTokenSnapshot") : harness.index(
+            "function Get-CertificationFailureActionContract"
+        )
+    ]
 
     assert "ServiceTokenNative" in harness
     assert "OpenProcessToken(TOKEN_QUERY) failed" in harness
     assert "TokenIntegrityLevel" in harness
     assert "TokenRestrictedSids" in harness
     assert "IsTokenRestricted" in harness
-    assert "S-1-16-16384" in harness
+    assert "'S-1-16-12288'" in token_probe
+    assert "'S-1-16-16384'" in token_probe
+    assert "$expectedIntegritySID = if ($gateway)" in token_probe
+    assert "integrity $($token.IntegritySid), want $expectedIntegrityName" in token_probe
+    assert "expected_integrity_sid = $expectedIntegritySID" in token_probe
     for privilege in (
         "SeChangeNotifyPrivilege",
         "SeTcbPrivilege",
@@ -1448,6 +1458,7 @@ def test_certification_inspects_actual_live_service_tokens() -> None:
     ):
         assert privilege in harness
     assert "live-service-token-least-privilege" in harness
+    assert "High gateway/System guardian integrity" in harness
     assert "service_tokens = @($serviceTokenSnapshot)" in harness
 
 
@@ -2178,12 +2189,21 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     ]
     assert "[switch]$RequireEnterpriseAbsent" in live_repair
     assert "Get-NormalModeEnterpriseMachineSnapshot" in live_repair
-    assert "requires an absent enterprise" in live_repair
-    assert "$script:LifecycleLockDirectory" in live_repair
+    assert "requires an absent run-scoped" in live_repair
+    assert "Get-CertificationPersistentLifecycleLockBaseline" in live_repair
+    absent_paths = live_repair[
+        live_repair.index("$requiredAbsentPaths = @(") : live_repair.index(
+            ") | ForEach-Object { ConvertTo-CanonicalPath $_ }"
+        )
+    ]
+    assert "$script:LifecycleLockDirectory" not in absent_paths
     assert "$script:CodexVendorDirectory" in live_repair
     assert "$script:ClaudeManagedPolicyPath" in live_repair
     assert "Assert-SameObjectJSON" in live_repair
     assert "enterprise_absent_before = [bool]$RequireEnterpriseAbsent" in live_repair
+    assert "run_scoped_enterprise_absent_before" in live_repair
+    assert "persistent_lifecycle_lock_allowed = $true" in live_repair
+    assert "persistent_lifecycle_lock_baseline = $persistentLockBaseline" in live_repair
     assert "machine_before = $machineBefore" in live_repair
     assert "machine_after = $machineAfter" in live_repair
     clear_environment = live_repair.index(
@@ -2268,6 +2288,52 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+def test_certification_accepts_only_the_canonical_persistent_lifecycle_lock() -> None:
+    harness = read(HARNESS)
+    module = read(MODULE)
+    baseline = harness[
+        harness.index(
+            "function Get-CertificationPersistentLifecycleLockBaseline"
+        ) : harness.index("function Test-NormalModePreinstallNoOp")
+    ]
+    for contract in (
+        "$children.Count -ne 1",
+        "[int64]$lockItem.Length -ne 0",
+        "[IO.FileAttributes]::ReparsePoint",
+        "$rules.Count -ne 2",
+        "'S-1-5-18'",
+        "'S-1-5-32-544'",
+        "[Security.AccessControl.FileSystemRights]::FullControl",
+        "exact_single_child = $true",
+        "zero_bytes = $true",
+        "canonical_acl = $true",
+    ):
+        assert contract in baseline
+
+    cleanup = harness[
+        harness.index("function Invoke-BoundedCleanup") : harness.index(
+            "function Write-FinalEvidence"
+        )
+    ]
+    assert "Get-CertificationPersistentLifecycleLockBaseline" in cleanup
+    assert "persistent lifecycle lock baseline" in cleanup
+    assert "persistent_lifecycle_lock_preinstall" in harness
+    assert "persistent_lifecycle_lock_cleanup" in harness
+
+    exit_lock = module[
+        module.index("function Exit-DefenseClawLifecycleLock") : module.index(
+            "function Test-DefenseClawWriteLikeRights"
+        )
+    ]
+    assert "lock identity intentionally persists across" in exit_lock
+    assert "deleting/recreating" in exit_lock
+
+    smoke = read(MODULE_SMOKE)
+    assert smoke.count("Enter-DefenseClawLifecycleLock `") >= 2
+    assert "persistent lifecycle file lock changed across consecutive acquisitions" in smoke
+    assert "lifecycle_file_lock_reuse_stable = $elevated" in smoke
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")

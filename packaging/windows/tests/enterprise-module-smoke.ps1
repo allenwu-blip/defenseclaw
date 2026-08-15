@@ -774,16 +774,63 @@ if ($elevated) {
             -Path $lockLayout.LifecycleLockDirectory `
             -Label 'smoke lifecycle lock' `
             -RequiredBase $script:ProgramData
-        $lock = Enter-DefenseClawLifecycleLock `
-            -Layout $lockLayout `
-            -TimeoutSeconds 2
         try {
-            if ($null -eq $lock) {
-                throw 'protected lifecycle file lock was not returned'
+            $lock = Enter-DefenseClawLifecycleLock `
+                -Layout $lockLayout `
+                -TimeoutSeconds 2
+            try {
+                if ($null -eq $lock) {
+                    throw 'protected lifecycle file lock was not returned'
+                }
+            }
+            finally {
+                Exit-DefenseClawLifecycleLock -Lock $lock
+            }
+            $sections = (
+                [Security.AccessControl.AccessControlSections]::Access -bor
+                [Security.AccessControl.AccessControlSections]::Owner -bor
+                [Security.AccessControl.AccessControlSections]::Group
+            )
+            $beforeItem = Get-Item `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -Force `
+                -ErrorAction Stop
+            $beforeSDDL = (Get-Acl `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -ErrorAction Stop).GetSecurityDescriptorSddlForm($sections)
+            $beforeHash = (Get-FileHash `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -Algorithm SHA256).Hash
+
+            $lock = Enter-DefenseClawLifecycleLock `
+                -Layout $lockLayout `
+                -TimeoutSeconds 2
+            try {
+                if ($null -eq $lock) {
+                    throw 'persistent lifecycle file lock was not reusable'
+                }
+            }
+            finally {
+                Exit-DefenseClawLifecycleLock -Lock $lock
+            }
+            $afterItem = Get-Item `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -Force `
+                -ErrorAction Stop
+            $afterSDDL = (Get-Acl `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -ErrorAction Stop).GetSecurityDescriptorSddlForm($sections)
+            $afterHash = (Get-FileHash `
+                -LiteralPath $lockLayout.LifecycleLockPath `
+                -Algorithm SHA256).Hash
+            if ([int64]$beforeItem.Length -ne 0 -or
+                [int64]$afterItem.Length -ne 0 -or
+                $afterHash -cne $beforeHash -or
+                $afterSDDL -cne $beforeSDDL) {
+                throw 'persistent lifecycle file lock changed across consecutive acquisitions'
             }
         }
         finally {
-            Exit-DefenseClawLifecycleLock -Lock $lock
             Remove-DefenseClawManagedTree `
                 -Path $SmokeStateRoot `
                 -RequiredBase $script:ProgramData `
@@ -819,6 +866,7 @@ else {
     elevated = $elevated
     windows_directory = $windowsDirectory
     lifecycle_file_lock_executed = $elevated
+    lifecycle_file_lock_reuse_stable = $elevated
     ambient_cmdlet_shadow_ignored = $true
     fixed_native_helper_spoof_ignored = $true
     production_codex_home_absent = $true

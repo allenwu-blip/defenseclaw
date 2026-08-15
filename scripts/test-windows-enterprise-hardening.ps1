@@ -168,6 +168,8 @@ $script:PowerShellSelection = $null
 $script:PowerShellPrerequisite = $null
 $script:FailureEvidence = $null
 $script:CertificationParentRoots = @()
+$script:LifecycleLockPreinstallBaseline = $null
+$script:LifecycleLockCleanupBaseline = $null
 $script:CodexSharedOwnedByHarness = $false
 $script:CodexSharedExpectedBeforeCleanup = $null
 $script:APIPort = 0
@@ -6085,6 +6087,109 @@ function Get-NormalModeEnterpriseMachineSnapshot {
     }
 }
 
+function Get-CertificationPersistentLifecycleLockBaseline {
+    $directory = ConvertTo-CanonicalPath $script:LifecycleLockDirectory
+    $path = Assert-PathBelow `
+        $script:LifecycleLockPath `
+        $script:KnownProgramData `
+        'persistent enterprise lifecycle lock'
+    $directoryExists = Test-Path -LiteralPath $directory
+    $pathExists = Test-Path -LiteralPath $path
+    if (-not $directoryExists -and -not $pathExists) {
+        return [pscustomobject]@{
+            present = $false
+            directory = $directory
+            path = $path
+            exact_single_child = $true
+            zero_bytes = $true
+            canonical_acl = $true
+        }
+    }
+    if (-not $directoryExists -or -not $pathExists) {
+        throw 'persistent lifecycle lock directory/file existence is inconsistent'
+    }
+
+    $directoryItem = Get-Item -LiteralPath $directory -Force -ErrorAction Stop
+    $lockItem = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if (-not $directoryItem.PSIsContainer -or
+        ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "persistent lifecycle lock root is not a regular directory: $directory"
+    }
+    if ($lockItem.PSIsContainer -or
+        ($lockItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        [int64]$lockItem.Length -ne 0) {
+        throw "persistent lifecycle lock is not an exact zero-byte regular file: $path"
+    }
+    $children = @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)
+    if ($children.Count -ne 1 -or
+        -not [string]::Equals(
+            [string]$children[0].FullName,
+            $path,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw (
+            'persistent lifecycle root contains objects other than the exact ' +
+            "lifecycle.lock: $directory"
+        )
+    }
+
+    $security = [ordered]@{}
+    foreach ($entry in @(
+        [pscustomobject]@{ path = $directory; directory = $true },
+        [pscustomobject]@{ path = $path; directory = $false }
+    )) {
+        $acl = Get-Acl -LiteralPath $entry.path -ErrorAction Stop
+        if ((ConvertTo-CertificationSID $acl.Owner) -cne 'S-1-5-32-544' -or
+            (ConvertTo-CertificationSID $acl.Group) -cne 'S-1-5-32-544' -or
+            -not $acl.AreAccessRulesProtected) {
+            throw "persistent lifecycle ACL owner/group/protection is noncanonical: $($entry.path)"
+        }
+        $rules = @($acl.Access)
+        if ($rules.Count -ne 2) {
+            throw "persistent lifecycle ACL has $($rules.Count) rules, expected two: $($entry.path)"
+        }
+        $expectedInheritance = if ([bool]$entry.directory) {
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit -bor
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit
+        } else {
+            [Security.AccessControl.InheritanceFlags]::None
+        }
+        foreach ($expectedSID in @('S-1-5-18', 'S-1-5-32-544')) {
+            $matches = @(
+                $rules | Where-Object {
+                    (ConvertTo-CertificationSID $_.IdentityReference) -ceq
+                        $expectedSID
+                }
+            )
+            if ($matches.Count -ne 1 -or
+                $matches[0].AccessControlType -ne
+                    [Security.AccessControl.AccessControlType]::Allow -or
+                $matches[0].FileSystemRights -ne
+                    [Security.AccessControl.FileSystemRights]::FullControl -or
+                $matches[0].InheritanceFlags -ne $expectedInheritance -or
+                $matches[0].PropagationFlags -ne
+                    [Security.AccessControl.PropagationFlags]::None -or
+                [bool]$matches[0].IsInherited) {
+                throw "persistent lifecycle ACL rule for $expectedSID is noncanonical: $($entry.path)"
+            }
+        }
+        $security[[string]$entry.path] = Get-ManagedUserPathSecurityFingerprint `
+            $entry.path
+    }
+
+    return [pscustomobject]@{
+        present = $true
+        directory = $directory
+        path = $path
+        exact_single_child = $true
+        zero_bytes = $true
+        canonical_acl = $true
+        lock_sha256 = Get-FileDigest $path
+        directory_security = $security[$directory]
+        lock_security = $security[$path]
+    }
+}
+
 function Test-NormalModePreinstallNoOp {
     $dataRoot = Assert-PathBelow `
         (Join-Path $script:FixtureRoot 'normal-mode-unmanaged-data') `
@@ -6186,13 +6291,17 @@ function Get-NormalModeServiceNames {
 
 function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
     $machineBefore = Get-NormalModeEnterpriseMachineSnapshot
+    $persistentLockBaseline =
+        Get-CertificationPersistentLifecycleLockBaseline
+    if ($RequireEnterpriseAbsent) {
+        $script:LifecycleLockPreinstallBaseline = $persistentLockBaseline
+    }
     if ($RequireEnterpriseAbsent) {
         $requiredAbsentPaths = @(
             $script:InstallRoot,
             $script:StateRoot,
             (Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'),
             (Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'),
-            $script:LifecycleLockDirectory,
             $script:CodexVendorDirectory,
             $script:ClaudeManagedPolicyPath,
             $script:ClaudeManagedStatePath,
@@ -6213,8 +6322,9 @@ function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
                     -Services @($machineBefore.services)
             )
             throw (
-                'normal-mode live auto-heal requires an absent enterprise ' +
-                "machine baseline; paths=[$($unexpectedPaths -join ',')]; " +
+                'normal-mode live auto-heal requires an absent run-scoped ' +
+                'enterprise baseline plus the canonical persistent lock; ' +
+                "unexpected paths=[$($unexpectedPaths -join ',')]; " +
                 "services=[$($unexpectedServices -join ',')]"
             )
         }
@@ -7460,6 +7570,9 @@ try {
         gateway_pid = [int]$result.gateway_pid
         watchdog_pid = [int]$result.watchdog_pid
         enterprise_absent_before = [bool]$RequireEnterpriseAbsent
+        run_scoped_enterprise_absent_before = [bool]$RequireEnterpriseAbsent
+        persistent_lifecycle_lock_allowed = $true
+        persistent_lifecycle_lock_baseline = $persistentLockBaseline
         protected_machine_state_unchanged = $true
         trusted_bin_prefix_exact = $true
         trusted_bin_prefix_persisted = $true
@@ -13549,6 +13662,14 @@ function Get-CertificationServiceTokenSnapshot {
                 'SeTcbPrivilege'
             )
         }
+        $expectedIntegritySID = if ($gateway) {
+            # A restricted virtual service account is expected to run High,
+            # not with LocalSystem's System integrity level.
+            'S-1-16-12288'
+        } else {
+            'S-1-16-16384'
+        }
+        $expectedIntegrityName = if ($gateway) { 'high' } else { 'system' }
         $serviceSID = [Security.Principal.NTAccount]::new(
             "NT SERVICE\$serviceName"
         ).Translate([Security.Principal.SecurityIdentifier]).Value
@@ -13558,8 +13679,8 @@ function Get-CertificationServiceTokenSnapshot {
         if ([string]$token.UserSid -ne $expectedUserSID) {
             throw "$serviceName PID $($process.process_id) TokenUser $($token.UserSid), want $expectedUserSID"
         }
-        if ([string]$token.IntegritySid -ne 'S-1-16-16384') {
-            throw "$serviceName PID $($process.process_id) integrity $($token.IntegritySid), want system S-1-16-16384"
+        if ([string]$token.IntegritySid -ne $expectedIntegritySID) {
+            throw "$serviceName PID $($process.process_id) integrity $($token.IntegritySid), want $expectedIntegrityName $expectedIntegritySID"
         }
         $actualPrivileges = @(
             $token.Privileges |
@@ -13642,6 +13763,7 @@ function Get-CertificationServiceTokenSnapshot {
             token_user_sid = [string]$token.UserSid
             token_user_name = [string]$token.UserName
             integrity_sid = [string]$token.IntegritySid
+            expected_integrity_sid = $expectedIntegritySID
             restricted = [bool]$token.IsRestricted
             required_privileges = @($wantedPrivileges)
             actual_privileges = @(
@@ -19079,6 +19201,15 @@ function Invoke-BoundedCleanup {
             )
         }
     }
+    try {
+        $script:LifecycleLockCleanupBaseline =
+            Get-CertificationPersistentLifecycleLockBaseline
+    } catch {
+        $script:CleanupErrors.Add(
+            'persistent lifecycle lock baseline: ' +
+            (Protect-SensitiveDisplayText $_.Exception.Message)
+        )
+    }
 }
 
 function Write-FinalEvidence([string]$Status, [string]$Failure) {
@@ -19146,6 +19277,10 @@ function Write-FinalEvidence([string]$Status, [string]$Failure) {
                 $script:PowerShellPrerequisite
             install_root = $script:InstallRoot
             state_root = $script:StateRoot
+            persistent_lifecycle_lock_preinstall =
+                $script:LifecycleLockPreinstallBaseline
+            persistent_lifecycle_lock_cleanup =
+                $script:LifecycleLockCleanupBaseline
         }
         certification = [ordered]@{
             profile = if ($ClaudeOnly) {
@@ -19983,7 +20118,7 @@ targets:
         Add-Result `
             'live-service-token-least-privilege' `
             'passed' `
-            'live gateway/guardian TokenUser, system integrity, privileges, service SID groups, and restricted-token semantics match the hardened contract' `
+            'live gateway/guardian TokenUser, High gateway/System guardian integrity, privileges, service SID groups, and restricted-token semantics match the hardened contract' `
             @{ service_tokens = @($serviceTokenSnapshot) }
     } catch {
         Add-Result `

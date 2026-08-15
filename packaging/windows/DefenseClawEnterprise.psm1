@@ -2329,6 +2329,10 @@ function Enter-DefenseClawLifecycleLock {
 
 function Exit-DefenseClawLifecycleLock {
     param([Parameter(Mandatory)]$Lock)
+    # The protected machine-wide lock identity intentionally persists across
+    # deployments. Only the handle is released here; deleting/recreating the
+    # predictable path would weaken cross-run serialization and reopen a
+    # squatting race between consecutive lifecycle processes.
     $Lock.Dispose()
 }
 
