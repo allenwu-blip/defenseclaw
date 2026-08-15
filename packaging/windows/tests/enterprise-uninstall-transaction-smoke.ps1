@@ -437,10 +437,20 @@ try {
                 )) {
                 throw 'generic restore changed the live managed-hook journal'
             }
-            $script:HarnessState.active_references = $true
-            Write-HarnessJournal `
-                -Path $Layout.ManagedHooksTeardownJournalPath `
-                -Phase 'rolled_back'
+            $phase = Get-HarnessJournalPhase `
+                -Path $Layout.ManagedHooksTeardownJournalPath
+            if ($phase -eq 'rolled_back') {
+                if (-not [bool]$script:HarnessState.active_references) {
+                    throw 'rolled-back journal has missing active references'
+                }
+                $script:HarnessState.rollback_verification_only++
+            }
+            else {
+                $script:HarnessState.active_references = $true
+                Write-HarnessJournal `
+                    -Path $Layout.ManagedHooksTeardownJournalPath `
+                    -Phase 'rolled_back'
+            }
             return [pscustomobject]@{ ok = $true }
         }
 
@@ -538,9 +548,12 @@ try {
                 expected_journal_bytes = $expectedBytes
                 binary_present = $BinaryPresent
                 services_running = $false
-                active_references = -not $LiveJournalExists
+                active_references = (
+                    -not $LiveJournalExists -or $LivePhase -eq 'rolled_back'
+                )
                 restore_calls = 0
                 rollback_calls = 0
+                rollback_verification_only = 0
                 start_calls = 0
             }
 
@@ -571,6 +584,13 @@ try {
                 Assert-Harness `
                     -Condition ($script:HarnessState.rollback_calls -eq 1) `
                     -Message "$Name did not run exactly one authenticated rollback"
+                if ($LivePhase -eq 'rolled_back') {
+                    Assert-Harness `
+                        -Condition (
+                            $script:HarnessState.rollback_verification_only -eq 1
+                        ) `
+                        -Message "$Name repeated an already-completed hook rollback"
+                }
                 Assert-Harness `
                     -Condition ([bool]$script:HarnessState.active_references) `
                     -Message "$Name did not restore machine hook references"
@@ -970,6 +990,18 @@ try {
                     if ($script:HarnessState.crash_at -eq 'captured') {
                         throw 'injected crash after captured journal publication'
                     }
+                    if ($script:HarnessState.crash_at -eq
+                            'failed-teardown-self-restored') {
+                        $script:HarnessState.active_references = $false
+                        $script:HarnessState.active_references = $true
+                        Write-HarnessJournal `
+                            -Path $Layout.ManagedHooksTeardownJournalPath `
+                            -Phase 'rolled_back'
+                        throw (
+                            'injected disconnected target teardown incomplete ' +
+                            'after exact self-rollback'
+                        )
+                    }
                     $script:HarnessState.active_references = $false
                     Write-HarnessJournal `
                         -Path $Layout.ManagedHooksTeardownJournalPath `
@@ -1008,10 +1040,18 @@ try {
                     if ($phase -notin @('captured', 'prepared', 'rolled_back')) {
                         throw "rollback received invalid journal phase: $phase"
                     }
-                    $script:HarnessState.active_references = $true
-                    Write-HarnessJournal `
-                        -Path $Layout.ManagedHooksTeardownJournalPath `
-                        -Phase 'rolled_back'
+                    if ($phase -eq 'rolled_back') {
+                        if (-not [bool]$script:HarnessState.active_references) {
+                            throw 'rolled-back journal has missing active references'
+                        }
+                        $script:HarnessState.rollback_verification_only++
+                    }
+                    else {
+                        $script:HarnessState.active_references = $true
+                        Write-HarnessJournal `
+                            -Path $Layout.ManagedHooksTeardownJournalPath `
+                            -Phase 'rolled_back'
+                    }
                     return [pscustomobject]@{ ok = $true }
                 }
             }
@@ -1588,6 +1628,7 @@ try {
                 prepare_calls = 0
                 verify_calls = 0
                 rollback_calls = 0
+                rollback_verification_only = 0
                 restore_calls = 0
                 complete_calls = 0
                 service_contract_checks = 0
@@ -1613,6 +1654,7 @@ try {
                 barrier_complete = $false
             }
             $failed = $false
+            $failureMessage = ''
             try {
                 [void](Invoke-DefenseClawUninstallLifecycle `
                     -Layout $layout `
@@ -1627,6 +1669,7 @@ try {
             }
             catch {
                 $failed = $true
+                $failureMessage = [string]$_.Exception.Message
                 if ($ExpectSuccess) {
                     throw
                 }
@@ -1707,6 +1750,21 @@ try {
                         -Condition ($script:HarnessState.removed_services -eq 0) `
                         -Message "$Name deleted a service after deletion-boundary drift"
                 }
+                if ($CrashAt -eq 'failed-teardown-self-restored') {
+                    Assert-Harness `
+                        -Condition (
+                            $script:HarnessState.rollback_verification_only -eq 1
+                        ) `
+                        -Message "$Name repeated an already-completed hook rollback"
+                    Assert-Harness `
+                        -Condition (
+                            $failureMessage -like
+                                '*disconnected target teardown incomplete*' -and
+                            $failureMessage -notmatch
+                                '(?i)rollback also failed|Replace|path exception'
+                        ) `
+                        -Message "$Name replaced the original teardown diagnostic: $failureMessage"
+                }
             }
             $transactionIndex = $script:HarnessState.events.IndexOf(
                 'transaction'
@@ -1766,6 +1824,7 @@ try {
                 no_surviving_reference_before_delete = (
                     -not [bool]$script:HarnessState.reheal_observed
                 )
+                failure = $failureMessage
             })
         }
 
@@ -2822,6 +2881,10 @@ targets:
         Invoke-HarnessUninstallCase `
             -Name 'captured' `
             -CrashAt 'captured' `
+            -ExpectSuccess:$false
+        Invoke-HarnessUninstallCase `
+            -Name 'failed-teardown-self-restored' `
+            -CrashAt 'failed-teardown-self-restored' `
             -ExpectSuccess:$false
         Invoke-HarnessUninstallCase `
             -Name 'prepared-before-marker' `

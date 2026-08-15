@@ -2447,10 +2447,46 @@ function Install-DefenseClawFileAtomic {
     param(
         [Parameter(Mandatory)][string]$Source,
         [Parameter(Mandatory)][string]$Destination,
-        [string]$ExpectedSHA256
+        [string]$ExpectedSHA256,
+        [switch]$SkipIfContentMatches
     )
     Assert-DefenseClawNoReparsePath -Path $Source
     Assert-DefenseClawNoReparsePath -Path $Destination -AllowMissingLeaf
+    if ($SkipIfContentMatches -and [IO.File]::Exists($Destination)) {
+        $sourceItem = Microsoft.PowerShell.Management\Get-Item `
+            -LiteralPath $Source `
+            -Force
+        $destinationItem = Microsoft.PowerShell.Management\Get-Item `
+            -LiteralPath $Destination `
+            -Force
+        if ([int64]$sourceItem.Length -eq [int64]$destinationItem.Length) {
+            $sourceHash = (
+                Microsoft.PowerShell.Utility\Get-FileHash `
+                    -LiteralPath $Source `
+                    -Algorithm SHA256
+            ).Hash
+            if (-not [string]::IsNullOrWhiteSpace($ExpectedSHA256) -and
+                -not [string]::Equals(
+                    $sourceHash,
+                    $ExpectedSHA256,
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "source changed while checking managed artifact: $Source"
+            }
+            $destinationHash = (
+                Microsoft.PowerShell.Utility\Get-FileHash `
+                    -LiteralPath $Destination `
+                    -Algorithm SHA256
+            ).Hash
+            if ([string]::Equals(
+                $sourceHash,
+                $destinationHash,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+                return
+            }
+        }
+    }
     New-DefenseClawDirectory -Path ([IO.Path]::GetDirectoryName($Destination))
     $temporary = "$Destination.new.$([Guid]::NewGuid().ToString('N'))"
     try {
@@ -5588,7 +5624,10 @@ function Restore-DefenseClawTransaction {
         if ([bool]$file.existed) {
             $backup = [string]$file.backup
             Assert-DefenseClawDescendant -Path $backup -Root $Layout.StateRoot -Label 'transaction backup' | Microsoft.PowerShell.Core\Out-Null
-            Install-DefenseClawFileAtomic -Source $backup -Destination $destination
+            Install-DefenseClawFileAtomic `
+                -Source $backup `
+                -Destination $destination `
+                -SkipIfContentMatches
             $securityProperty = $file.PSObject.Properties['security_descriptor']
             if ($isSharedCodexFile -and
                 $null -ne $securityProperty -and

@@ -1396,6 +1396,12 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
         )
     ]
     assert "[IO.File]::Replace($temporary, $Destination, $null, $true)" in atomic_install
+    assert "[switch]$SkipIfContentMatches" in atomic_install
+    assert "-SkipIfContentMatches" in module[
+        module.index("function Restore-DefenseClawTransaction") : module.index(
+            "function Assert-DefenseClawRestoredTransactionReadyForActivation"
+        )
+    ]
     assert (
         "Move-Item -LiteralPath $temporary -Destination $Destination -Force"
         not in atomic_install
@@ -2449,6 +2455,24 @@ try {
     if ([IO.File]::ReadAllText($destination) -cne 'second') {
         throw 'repeated existing-destination replacement was not exact'
     }
+    $sameContentHandle = [IO.File]::Open(
+        $destination,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        Install-DefenseClawFileAtomic `
+            -Source $source `
+            -Destination $destination `
+            -SkipIfContentMatches
+    }
+    finally {
+        $sameContentHandle.Dispose()
+    }
+    if ([IO.File]::ReadAllText($destination) -cne 'second') {
+        throw 'same-content rollback changed its protected destination'
+    }
     if (@([IO.Directory]::GetFiles($root, 'destination.txt.new.*')).Count -ne 0) {
         throw 'atomic replacement left a staged file behind'
     }
@@ -2829,6 +2853,10 @@ def test_normal_mode_timeout_and_acl_cleanup_are_bounded_and_exact() -> None:
 
 def test_uninstall_transaction_smoke_keeps_receipt_paths_powershell_51_compatible() -> None:
     smoke = read(UNINSTALL_TRANSACTION_SMOKE)
+
+    assert "failed-teardown-self-restored" in smoke
+    assert "rollback_verification_only" in smoke
+    assert "disconnected target teardown incomplete" in smoke
 
     assert "('dcut-' + [Guid]::NewGuid().ToString('N'))" in smoke
     assert "function New-HarnessCaseRoot" in smoke
