@@ -643,9 +643,28 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 
 	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
 	if !strings.Contains(restore, "$($Snapshot.name)-absent-cleanup-root-acl") ||
+		!strings.Contains(restore, "$descendantCleanupGrants") ||
+		!strings.Contains(restore, "Assert-CleanupTreeDirectFullControl") ||
 		!strings.Contains(restore, "Get-CertificationTreeEntriesNoFollow") ||
 		!strings.Contains(restore, "Remove-Item `\n                -LiteralPath $safe `") {
 		t.Fatal("absent user-tree baseline cannot remove the exact harness-created fixture")
+	}
+
+	liveAutoHeal := windowsPowerShellFunction(t, harness, "Test-NormalModeLiveAutoHeal")
+	if strings.Contains(liveAutoHeal, ".services.name") ||
+		!strings.Contains(liveAutoHeal, "Get-NormalModeServiceNames") {
+		t.Fatal("normal-mode baseline diagnostics are not safe for an empty service inventory")
+	}
+	fingerprint := windowsPowerShellFunction(t, harness, "Get-CodexManagedHookFingerprint")
+	for _, contract := range []string{
+		"Microsoft\\.PowerShell\\.Management\\\\Start-Process",
+		"$actualHook",
+		"$expectedCanonicalHook",
+		"[StringComparison]::OrdinalIgnoreCase",
+	} {
+		if !strings.Contains(fingerprint, contract) {
+			t.Fatalf("Codex managed hook fingerprint missing %q", contract)
+		}
 	}
 
 	protect := windowsPowerShellFunction(t, harness, "Protect-TreeFromRegisteredSecretLeak")
@@ -662,16 +681,20 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 
 func windowsPowerShellFunction(t *testing.T, module, name string) string {
 	t.Helper()
-	start := strings.Index(module, "function "+name+" {")
-	if start < 0 {
+	declaration := regexp.MustCompile(
+		`(?m)^function[ \t]+` + regexp.QuoteMeta(name) +
+			`(?:[ \t]*\([^\r\n)]*\))?[ \t]*\{`,
+	)
+	location := declaration.FindStringIndex(module)
+	if location == nil {
 		t.Fatalf("PowerShell function %s was not found", name)
 	}
-	remainder := module[start+len("function "+name+" {"):]
-	next := strings.Index(remainder, "\nfunction ")
-	if next < 0 {
-		return module[start:]
+	remainder := module[location[1]:]
+	next := regexp.MustCompile(`(?m)^function[ \t]+`).FindStringIndex(remainder)
+	if next == nil {
+		return module[location[0]:]
 	}
-	return module[start : start+len("function "+name+" {")+next]
+	return module[location[0] : location[1]+next[0]]
 }
 
 func readWindowsEnterpriseInstaller(t *testing.T) []byte {

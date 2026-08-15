@@ -8,6 +8,93 @@
 Microsoft.PowerShell.Core\Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function ConvertTo-DefenseClawTrustedMachineRoot {
+    param(
+        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][string]$Label
+    )
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        $Value -match '[\x00-\x1f%]' -or
+        -not [IO.Path]::IsPathRooted($Value)) {
+        throw "trusted $Label root is empty, relative, or contains an invalid character"
+    }
+    $provided = $Value.TrimEnd('\')
+    $full = [IO.Path]::GetFullPath($Value).TrimEnd('\')
+    $driveRoot = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($driveRoot) -or
+        $driveRoot -notmatch '^[A-Za-z]:\\$' -or
+        -not [string]::Equals(
+            $provided,
+            $full,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        $full.StartsWith('\\') -or
+        $full.StartsWith('//') -or
+        $full.StartsWith('\\?\') -or
+        $full.StartsWith('\\.\') -or
+        ($full.Length -gt 2 -and $full.Substring(2).Contains(':')) -or
+        -not [IO.Directory]::Exists($full)) {
+        throw "trusted $Label root is not an existing canonical local directory: $full"
+    }
+    return $full
+}
+
+function Get-DefenseClawTrustedMachineRoots {
+    # GetFolderPath can return an empty string when Windows PowerShell 5.1 is
+    # launched with the deliberately reduced certification environment. Read
+    # fixed machine registration instead of process-controlled environment.
+    $windows = ConvertTo-DefenseClawTrustedMachineRoot `
+        -Value ([IO.Path]::GetDirectoryName([Environment]::SystemDirectory)) `
+        -Label 'Windows'
+    $base = $null
+    $currentVersion = $null
+    $shell = $null
+    try {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::LocalMachine,
+            [Microsoft.Win32.RegistryView]::Registry64
+        )
+        $currentVersion = $base.OpenSubKey(
+            'SOFTWARE\Microsoft\Windows\CurrentVersion',
+            $false
+        )
+        if ($null -eq $currentVersion) {
+            throw 'trusted Program Files machine registration is missing'
+        }
+        $programFilesRaw = [string]$currentVersion.GetValue(
+            'ProgramFilesDir',
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+        $shell = $base.OpenSubKey(
+            'SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders',
+            $false
+        )
+        if ($null -eq $shell) {
+            throw 'trusted ProgramData machine registration is missing'
+        }
+        $programDataRaw = [string]$shell.GetValue(
+            'Common AppData',
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+    }
+    finally {
+        if ($null -ne $shell) { $shell.Dispose() }
+        if ($null -ne $currentVersion) { $currentVersion.Dispose() }
+        if ($null -ne $base) { $base.Dispose() }
+    }
+    return [pscustomobject]@{
+        Windows = $windows
+        ProgramFiles = ConvertTo-DefenseClawTrustedMachineRoot `
+            -Value $programFilesRaw `
+            -Label 'Program Files'
+        ProgramData = ConvertTo-DefenseClawTrustedMachineRoot `
+            -Value $programDataRaw `
+            -Label 'ProgramData'
+    }
+}
+
 # Bind privileged cmdlets to modules shipped with the current PowerShell
 # engine. Windows PowerShell 5.1 can otherwise auto-select an incompatible
 # PowerShell 7 module when a parent tool prepends its module directory; an
@@ -43,9 +130,10 @@ $script:SchemaVersion = 1
 $script:AgentApplicationControlAttestationSchemaVersion = 2
 $script:AgentApplicationControlPrerequisite = 'wdac_or_applocker_approved_agent_client_rules'
 $script:CodexTrustedHookLauncherPrerequisite = 'approved_fail_closed_fixed_hook_launcher'
-$script:ProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
-$script:ProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-$script:WindowsDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+$trustedMachineRoots = Get-DefenseClawTrustedMachineRoots
+$script:ProgramFiles = [string]$trustedMachineRoots.ProgramFiles
+$script:ProgramData = [string]$trustedMachineRoots.ProgramData
+$script:WindowsDirectory = [string]$trustedMachineRoots.Windows
 $script:System32 = [IO.Path]::GetFullPath(
     [IO.Path]::Combine($script:WindowsDirectory, 'System32')
 ).TrimEnd('\')
@@ -3572,7 +3660,8 @@ function Assert-DefenseClawLayoutVolumeIdentity {
     param(
         [Parameter(Mandatory)][hashtable]$Layout,
         [Parameter(Mandatory)][string]$GatewayServiceName,
-        [Parameter(Mandatory)][string]$GuardianServiceName
+        [Parameter(Mandatory)][string]$GuardianServiceName,
+        [switch]$AllowMissingCertificationCodexHome
     )
     $installRoot = Assert-DefenseClawSafeRoot `
         -Path ([string]$Layout.InstallRoot) `
@@ -3600,7 +3689,8 @@ function Assert-DefenseClawLayoutVolumeIdentity {
         $certificationHome = Resolve-DefenseClawCertificationCodexHome `
             -Path ([string]$Layout.CertificationCodexHome) `
             -GatewayServiceName $GatewayServiceName `
-            -GuardianServiceName $GuardianServiceName
+            -GuardianServiceName $GuardianServiceName `
+            -AllowMissing:$AllowMissingCertificationCodexHome
         if (-not [string]::Equals(
                 $certificationHome,
                 [string]$Layout.CertificationCodexHome,
@@ -11343,7 +11433,8 @@ function Invoke-DefenseClawEnterpriseLifecycle {
     Assert-DefenseClawLayoutVolumeIdentity `
         -Layout $layout `
         -GatewayServiceName $GatewayServiceName `
-        -GuardianServiceName $GuardianServiceName
+        -GuardianServiceName $GuardianServiceName `
+        -AllowMissingCertificationCodexHome:($Action -in @('Status', 'Verify'))
     if ((Microsoft.PowerShell.Management\Test-Path `
             -LiteralPath $layout.MetadataPath `
             -PathType Leaf) -and
@@ -11404,7 +11495,8 @@ function Invoke-DefenseClawEnterpriseLifecycle {
         Assert-DefenseClawLayoutVolumeIdentity `
             -Layout $layout `
             -GatewayServiceName $GatewayServiceName `
-            -GuardianServiceName $GuardianServiceName
+            -GuardianServiceName $GuardianServiceName `
+            -AllowMissingCertificationCodexHome
         return Get-DefenseClawLifecycleStatus `
             -Action $Action `
             -Layout $layout `
@@ -11415,7 +11507,8 @@ function Invoke-DefenseClawEnterpriseLifecycle {
         Assert-DefenseClawLayoutVolumeIdentity `
             -Layout $layout `
             -GatewayServiceName $GatewayServiceName `
-            -GuardianServiceName $GuardianServiceName
+            -GuardianServiceName $GuardianServiceName `
+            -AllowMissingCertificationCodexHome
         if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $layout.PendingPath -PathType Leaf) {
             throw 'cannot verify while a lifecycle transaction is pending; run Repair'
         }

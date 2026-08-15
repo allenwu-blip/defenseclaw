@@ -411,7 +411,7 @@ if (-not [string]::Equals(
     -not [IO.Path]::IsPathRooted($StateRoot)) {
     throw 'production bootstrap did not recover exact machine roots from an empty environment'
 }
-$certificationRunID = 'a1b2c3d4e5'
+$certificationRunID = [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $certificationInstallRoot = [IO.Path]::Combine(
     $expectedProgramFiles,
     'Cisco',
@@ -465,6 +465,63 @@ if ($Worker) {
         )
         exit 1
     }
+}
+
+$certificationCodexHome = [IO.Path]::Combine(
+    $PSScriptRoot,
+    ".codex-defenseclaw-cert-$certificationRunID"
+)
+$managedRootsExistedBeforeStatus = @{
+    install = [IO.Directory]::Exists($certificationInstallRoot)
+    state = [IO.Directory]::Exists($certificationStateRoot)
+    codex = [IO.Directory]::Exists($certificationCodexHome)
+}
+if ($managedRootsExistedBeforeStatus.install -or
+    $managedRootsExistedBeforeStatus.state -or
+    $managedRootsExistedBeforeStatus.codex) {
+    throw 'restricted-environment Status fixture collided with an existing root'
+}
+$enterpriseModule = $null
+try {
+    $enterpriseModule = Microsoft.PowerShell.Core\Import-Module `
+        -Name ([IO.Path]::GetFullPath(
+            (Join-Path $PSScriptRoot '..\DefenseClawEnterprise.psm1')
+        )) `
+        -Force `
+        -PassThru `
+        -ErrorAction Stop
+    $status = Invoke-DefenseClawEnterpriseLifecycle `
+        -Action Status `
+        -InstallRoot $certificationInstallRoot `
+        -StateRoot $certificationStateRoot `
+        -GatewayServiceName "DefenseClawCertGateway_$certificationRunID" `
+        -GuardianServiceName "DefenseClawCertGuardian_$certificationRunID" `
+        -CertificationCodexHome $certificationCodexHome `
+        -AllowUnsigned
+}
+finally {
+    if ($null -ne $enterpriseModule) {
+        Microsoft.PowerShell.Core\Remove-Module `
+            -ModuleInfo $enterpriseModule `
+            -Force `
+            -ErrorAction Stop
+    }
+}
+if (-not [bool]$status.ok -or [bool]$status.installed -or
+    -not [string]::Equals(
+        [string]$status.install_root,
+        $certificationInstallRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    -not [string]::Equals(
+        [string]$status.state_root,
+        $certificationStateRoot,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    [IO.Directory]::Exists($certificationInstallRoot) -or
+    [IO.Directory]::Exists($certificationStateRoot) -or
+    [IO.Directory]::Exists($certificationCodexHome)) {
+    throw 'module Status did not remain a read-only absent deployment under the restricted environment'
 }
 
 $single = Invoke-ProtectedEnvironmentProbe
@@ -585,6 +642,7 @@ if ($legacyRelativeEnvironmentResidue.Count -ne 0) {
     exact_acl = [bool]$single.exact_acl
     empty_environment_known_folders_recovered = $true
     restricted_environment_certification_status_scope = $true
+    restricted_environment_module_status = $true
     all_environment_paths_pinned =
         [bool]$single.all_environment_paths_pinned
     module_analysis_cache_disabled =

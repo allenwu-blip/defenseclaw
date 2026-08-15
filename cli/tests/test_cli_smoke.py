@@ -123,6 +123,10 @@ class CliSmokeTests(unittest.TestCase):
                     return_value=("codex-cli 0.144.3", ""),
                 ),
                 patch(
+                    "defenseclaw.inventory.agent_discovery._binary_candidates_for_agent",
+                    return_value=(),
+                ),
+                patch(
                     "defenseclaw.bootstrap._quiet_guardrail_setup",
                     return_value=StepResult("Guardrail", "pass", "fixture"),
                 ),

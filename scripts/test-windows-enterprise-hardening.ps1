@@ -611,6 +611,44 @@ function Get-PowerShellExecutable {
     )
 }
 
+function Stop-NativeProcessTree {
+    param(
+        [Parameter(Mandatory)][Diagnostics.Process]$Process,
+        [Parameter(Mandatory)][string]$Label
+    )
+    try { $Process.Refresh() } catch {}
+    if ($Process.HasExited) { return }
+
+    $killerStart = [Diagnostics.ProcessStartInfo]::new()
+    $killerStart.FileName = Join-Path $script:System32 'taskkill.exe'
+    $killerStart.Arguments = "/PID $($Process.Id) /T /F"
+    $killerStart.UseShellExecute = $false
+    $killerStart.CreateNoWindow = $true
+    $killerStart.RedirectStandardOutput = $true
+    $killerStart.RedirectStandardError = $true
+    $killer = [Diagnostics.Process]::new()
+    $killer.StartInfo = $killerStart
+    try {
+        if (-not $killer.Start()) {
+            throw "$Label taskkill did not start"
+        }
+        if (-not $killer.WaitForExit(10000)) {
+            try { $killer.Kill() } catch {}
+            throw "$Label taskkill timed out"
+        }
+        $killer.WaitForExit()
+    }
+    finally {
+        $killer.Dispose()
+    }
+    try { $Process.WaitForExit(10000) | Out-Null } catch {}
+    try { $Process.Refresh() } catch {}
+    if (-not $Process.HasExited) {
+        try { $Process.Kill() } catch {}
+        throw "$Label process tree did not terminate"
+    }
+}
+
 function Invoke-NativeProcess {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -646,6 +684,7 @@ function Invoke-NativeProcess {
             PSModulePath = Join-Path `
                 $script:System32 `
                 'WindowsPowerShell\v1.0\Modules'
+            SystemRoot = $script:WindowsDirectory
             TEMP = $script:WorkRoot
             TMP = $script:WorkRoot
         }
@@ -674,7 +713,7 @@ function Invoke-NativeProcess {
     try {
         if ($null -eq $DuringExecution) {
             if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-                try { $process.Kill($true) } catch {}
+                Stop-NativeProcessTree -Process $process -Label $Label
                 throw "$Label timed out after $TimeoutSeconds seconds"
             }
         } else {
@@ -686,18 +725,21 @@ function Invoke-NativeProcess {
                 $process.Refresh()
             }
             if (-not $process.HasExited) {
-                try { $process.Kill($true) } catch {}
+                Stop-NativeProcessTree -Process $process -Label $Label
                 throw "$Label timed out after $TimeoutSeconds seconds"
             }
-            $process.WaitForExit()
         }
+        # Windows PowerShell 5.1 requires the parameterless wait after a
+        # successful timed wait before redirected asynchronous streams and
+        # ExitCode are guaranteed to be published.
+        $process.WaitForExit()
         $stdoutText = $stdoutTask.GetAwaiter().GetResult()
         $stderrText = $stderrTask.GetAwaiter().GetResult()
         $exitCode = $process.ExitCode
     } catch {
         try {
             if (-not $process.HasExited) {
-                $process.Kill($true)
+                Stop-NativeProcessTree -Process $process -Label $Label
             }
         } catch {}
         throw
@@ -707,7 +749,12 @@ function Invoke-NativeProcess {
     [IO.File]::WriteAllText($stdout, $stdoutText, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($stderr, $stderrText, [Text.UTF8Encoding]::new($false))
     if ($AllowedExitCodes -notcontains $exitCode) {
-        throw "$Label exited $exitCode; expected $($AllowedExitCodes -join ', '). stderr: $(Protect-SensitiveDisplayText $stderrText)"
+        $failureText = if ([string]::IsNullOrWhiteSpace($stderrText)) {
+            $stdoutText
+        } else {
+            $stderrText
+        }
+        throw "$Label exited $exitCode; expected $($AllowedExitCodes -join ', '). output: $(Protect-SensitiveDisplayText $failureText)"
     }
     return [pscustomobject]@{
         ExitCode = $exitCode
@@ -4817,6 +4864,7 @@ public static class $probeClass
             -FilePath $compiler `
             -ArgumentList @(
                 '/nologo',
+                '/noconfig',
                 '/target:exe',
                 '/optimize+',
                 ("/out:$($script:HostileShellProbeBinary)"),
@@ -5486,6 +5534,78 @@ function Remove-ExactCanonicalUserTreeReparse(
     }
 }
 
+function Assert-CleanupTreeDirectFullControl {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Label
+    )
+    $safeRoot = ConvertTo-CanonicalPath $Root
+    $entries = [Collections.Generic.List[object]]::new()
+    $entries.Add((Get-Item -LiteralPath $safeRoot -Force -ErrorAction Stop))
+    foreach ($entry in @(
+        Get-CertificationTreeEntriesNoFollow `
+            -Root $safeRoot `
+            -Label "$Label ACL validation" `
+            -IncludeReparse
+    )) {
+        $entries.Add($entry)
+    }
+    $requiredSIDs = @(
+        'S-1-5-18',
+        'S-1-5-32-544',
+        [string]$script:PrimarySID
+    ) | Sort-Object -Unique
+    foreach ($entry in @($entries.ToArray())) {
+        if (($entry.Attributes -band
+                [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            continue
+        }
+        $entryPath = if ([string]::Equals(
+                $entry.FullName,
+                $safeRoot,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            $safeRoot
+        }
+        else {
+            Assert-PathBelow $entry.FullName $safeRoot "$Label ACL entry"
+        }
+        $acl = Microsoft.PowerShell.Security\Get-Acl `
+            -LiteralPath $entryPath `
+            -ErrorAction Stop
+        if (-not $acl.AreAccessRulesProtected) {
+            throw "$Label cleanup ACL still inherits at $entryPath"
+        }
+        foreach ($requiredSID in $requiredSIDs) {
+            $hasDirectFullControl = $false
+            foreach ($rule in @($acl.Access)) {
+                $ruleSID = ''
+                try {
+                    $ruleSID = $rule.IdentityReference.Translate(
+                        [Security.Principal.SecurityIdentifier]
+                    ).Value
+                }
+                catch {
+                    continue
+                }
+                if ($ruleSID -ceq $requiredSID -and
+                    -not $rule.IsInherited -and
+                    $rule.AccessControlType -eq
+                        [Security.AccessControl.AccessControlType]::Allow -and
+                    ($rule.FileSystemRights -band
+                        [Security.AccessControl.FileSystemRights]::FullControl) -eq
+                        [Security.AccessControl.FileSystemRights]::FullControl) {
+                    $hasDirectFullControl = $true
+                    break
+                }
+            }
+            if (-not $hasDirectFullControl) {
+                throw "$Label cleanup ACL lacks direct full control for $requiredSID at $entryPath"
+            }
+        }
+    }
+}
+
 function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
     $root = ConvertTo-CanonicalPath ([string]$Snapshot.path)
     $safe = Assert-PathBelow $root $script:PrimaryProfile "$($Snapshot.name) restore"
@@ -5532,17 +5652,25 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
                 '*S-1-5-32-544:(OI)(CI)F',
                 "*$($script:PrimarySID):(OI)(CI)F"
             )
+            $descendantCleanupGrants = @(
+                '*S-1-5-18:F',
+                '*S-1-5-32-544:F',
+                "*$($script:PrimarySID):F"
+            )
+            $null = Set-ICaclsOwnerAndDacl `
+                -Path $safe `
+                -Owner '*S-1-5-32-544' `
+                -Grants $descendantCleanupGrants `
+                -Options @('/T', '/C', '/L') `
+                -Label "$($Snapshot.name)-absent-cleanup-descendant-acl"
             $null = Set-ICaclsOwnerAndDacl `
                 -Path $safe `
                 -Owner '*S-1-5-32-544' `
                 -Grants $cleanupGrants `
                 -Label "$($Snapshot.name)-absent-cleanup-root-acl"
-            $null = Set-ICaclsOwnerAndDacl `
-                -Path $safe `
-                -Owner '*S-1-5-32-544' `
-                -Grants $cleanupGrants `
-                -Options @('/T', '/C', '/L') `
-                -Label "$($Snapshot.name)-absent-cleanup-descendant-acl"
+            Assert-CleanupTreeDirectFullControl `
+                -Root $safe `
+                -Label "$($Snapshot.name) absent cleanup"
             $nestedReparse = @(
                 Get-CertificationTreeEntriesNoFollow `
                     -Root $safe `
@@ -6045,6 +6173,17 @@ application_protection:
     return 'installer Status and candidate gateway reported an absent/disabled enterprise deployment; created no service/data/Codex-policy/machine root; canonical user-tree bytes and security metadata remained exact'
 }
 
+function Get-NormalModeServiceNames {
+    param(
+        [AllowEmptyCollection()]
+        [object[]]$Services = @()
+    )
+    return @(
+        $Services |
+            ForEach-Object { [string]$_.name }
+    )
+}
+
 function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
     $machineBefore = Get-NormalModeEnterpriseMachineSnapshot
     if ($RequireEnterpriseAbsent) {
@@ -6069,10 +6208,14 @@ function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
         )
         if ($unexpectedPaths.Count -ne 0 -or
             @($machineBefore.services).Count -ne 0) {
+            $unexpectedServices = @(
+                Get-NormalModeServiceNames `
+                    -Services @($machineBefore.services)
+            )
             throw (
                 'normal-mode live auto-heal requires an absent enterprise ' +
                 "machine baseline; paths=[$($unexpectedPaths -join ',')]; " +
-                "services=[$(@($machineBefore.services.name) -join ',')]"
+                "services=[$($unexpectedServices -join ',')]"
             )
         }
     }
@@ -6476,12 +6619,35 @@ function Get-CodexManagedHookFingerprint(
             $decoded = [Text.Encoding]::Unicode.GetString(
                 [Convert]::FromBase64String($encoded.Groups[1].Value)
             )
-            if ($decoded.IndexOf(
-                    $ExpectedHook,
+            $startProcess = [regex]::Match(
+                $decoded,
+                '(?i)\$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process\s+-FilePath\s+(?<file>''(?:''''|[^''])+'')\s+-ArgumentList\s+@\(''hook'',''--connector'',''codex''\)\s+-NoNewWindow\s+-Wait\s+-PassThru'
+            )
+            if (-not $startProcess.Success -or
+                $decoded -notmatch
+                    '(?i)(?:^|;\s*)exit\s+\$hookProcess\.ExitCode(?:;|$)' -or
+                $decoded -match '(?i)\$LASTEXITCODE') {
+                throw 'Codex Windows managed hook command does not use the exact synchronous launcher contract'
+            }
+            $fileLiteral = $startProcess.Groups['file'].Value
+            $actualHook = [IO.Path]::GetFullPath(
+                $fileLiteral.Substring(1, $fileLiteral.Length - 2).Replace(
+                    "''",
+                    "'"
+                )
+            ).TrimEnd('\')
+            $expectedCanonicalHook = [IO.Path]::GetFullPath(
+                $ExpectedHook
+            ).TrimEnd('\')
+            if (-not [string]::Equals(
+                    $actualHook,
+                    $expectedCanonicalHook,
                     [StringComparison]::OrdinalIgnoreCase
-                ) -lt 0 -or
-                $decoded -notmatch '(?i)\bhook\s+--connector\s+codex\b') {
-                throw 'Codex Windows managed hook command does not name the exact candidate hook'
+                )) {
+                throw (
+                    'Codex Windows managed hook command names an unexpected ' +
+                    "candidate: actual=$actualHook expected=$expectedCanonicalHook"
+                )
             }
             $decoded
         }
@@ -18611,17 +18777,25 @@ function Restore-ProtectedUserFixture {
                     '*S-1-5-32-544:(OI)(CI)F',
                     "*$($script:PrimarySID):(OI)(CI)F"
                 )
+                $descendantCleanupGrants = @(
+                    '*S-1-5-18:F',
+                    '*S-1-5-32-544:F',
+                    "*$($script:PrimarySID):F"
+                )
+                $null = Set-ICaclsOwnerAndDacl `
+                    -Path $safeNormalHome `
+                    -Owner '*S-1-5-32-544' `
+                    -Grants $descendantCleanupGrants `
+                    -Options @('/T', '/C', '/L') `
+                    -Label 'normal-mode-cleanup-descendant-acl'
                 $null = Set-ICaclsOwnerAndDacl `
                     -Path $safeNormalHome `
                     -Owner '*S-1-5-32-544' `
                     -Grants $cleanupGrants `
                     -Label 'normal-mode-cleanup-root-acl'
-                $null = Set-ICaclsOwnerAndDacl `
-                    -Path $safeNormalHome `
-                    -Owner '*S-1-5-32-544' `
-                    -Grants $cleanupGrants `
-                    -Options @('/T', '/C', '/L') `
-                    -Label 'normal-mode-cleanup-descendant-acl'
+                Assert-CleanupTreeDirectFullControl `
+                    -Root $safeNormalHome `
+                    -Label 'normal-mode synthetic-home cleanup'
                 Stop-NormalModeFixtureProcesses $safeNormalHome
                 $nestedReparse = @(
                     Get-ChildItem `

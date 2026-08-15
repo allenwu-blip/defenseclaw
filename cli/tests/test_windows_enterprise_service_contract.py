@@ -64,13 +64,40 @@ def read(path: Path) -> str:
 def windows_powershell_engines() -> list[str]:
     """Return each installed Windows PowerShell/Core engine exactly once."""
 
+    if os.name != "nt":
+        return []
+
+    system_buffer = ctypes.create_unicode_buffer(32768)
+    system_length = ctypes.windll.kernel32.GetSystemDirectoryW(
+        system_buffer,
+        len(system_buffer),
+    )
+    assert 0 < system_length < len(system_buffer), (
+        "GetSystemDirectoryW did not return a safe machine-wide PowerShell root"
+    )
+    system32 = Path(system_buffer.value).resolve()
+
+    import winreg
+
+    with winreg.OpenKey(
+        winreg.HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\Microsoft\Windows\CurrentVersion",
+        0,
+        winreg.KEY_READ | winreg.KEY_WOW64_64KEY,
+    ) as current_version:
+        program_files_raw, _ = winreg.QueryValueEx(current_version, "ProgramFilesDir")
+    program_files = Path(str(program_files_raw)).resolve()
+    assert program_files.is_absolute() and program_files.is_dir(), (
+        "64-bit Program Files registration is not an existing absolute directory"
+    )
+
+    # Certification must execute a fixed machine-wide engine. A per-user
+    # WindowsApps app-execution alias can resolve through PATH while failing
+    # before script startup in the deliberately restricted environment.
     candidates: list[str | None] = [
-        shutil.which("powershell.exe"),
-        shutil.which("pwsh.exe"),
+        str(system32 / "WindowsPowerShell" / "v1.0" / "powershell.exe"),
+        str(program_files / "PowerShell" / "7" / "pwsh.exe"),
     ]
-    windows_root = os.environ.get("SystemRoot")
-    if windows_root:
-        candidates.append(str(Path(windows_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"))
 
     engines: list[str] = []
     seen: set[str] = set()
@@ -108,6 +135,10 @@ def restricted_windows_bootstrap_environment(profile_root: str) -> dict[str, str
             )
         ),
         "PSModulePath": os.environ.get("PSModulePath", ""),
+        # Windows PowerShell 5.1 consumes SystemRoot during CLR/engine startup.
+        # Pin it to the root obtained through GetSystemDirectoryW rather than
+        # inheriting a caller-controlled environment value.
+        "SystemRoot": str(windows_root),
         "TEMP": profile_root,
         "TMP": profile_root,
     }
@@ -115,13 +146,13 @@ def restricted_windows_bootstrap_environment(profile_root: str) -> dict[str, str
         "ComSpec",
         "PATH",
         "PSModulePath",
+        "SystemRoot",
         "TEMP",
         "TMP",
     }
     assert not {
         "programdata",
         "programfiles",
-        "systemroot",
         "windir",
         "home",
         "userprofile",
@@ -226,8 +257,13 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
     assert "[string]$StateRoot," in installer
     assert "$env:ProgramFiles" not in installer
     assert "$env:ProgramData" not in installer
-    assert "[Environment+SpecialFolder]::ProgramFiles" in module
-    assert "[Environment+SpecialFolder]::CommonApplicationData" in module
+    assert "Get-DefenseClawTrustedMachineRoots" in module
+    assert "[Environment]::SystemDirectory" in module
+    assert "[Microsoft.Win32.RegistryHive]::LocalMachine" in module
+    assert "[Microsoft.Win32.RegistryView]::Registry64" in module
+    assert "'ProgramFilesDir'" in module
+    assert "'Common AppData'" in module
+    assert "[Environment+SpecialFolder]::CommonApplicationData" not in module
     assert "$env:ProgramFiles" not in module
     assert "$env:ProgramData" not in module
     assert "Assert-DefenseClawBootstrapModuleTrust" in installer
@@ -872,6 +908,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "exact_acl",
                 "empty_environment_known_folders_recovered",
                 "restricted_environment_certification_status_scope",
+                "restricted_environment_module_status",
                 "all_environment_paths_pinned",
                 "module_analysis_cache_disabled",
                 "nested_cleanup_verified",
@@ -927,10 +964,52 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
     required_fields: tuple[str, ...],
 ) -> None:
     assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
-    if script == BOOTSTRAP_SMOKE and os.environ.get("GITHUB_ACTIONS") == "true":
-        pytest.skip(
-            "the required public-bootstrap-acceptance job runs under a real "
-            "disposable standard user"
+    if script == BOOTSTRAP_SMOKE:
+        launcher_source = str(
+            ROOT / "scripts" / "windows-setup-standard-user-launcher.cs"
+        ).replace("'", "''")
+        capability = subprocess.run(
+            [
+                engine,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                (
+                    "$identity=[Security.Principal.WindowsIdentity]::GetCurrent();"
+                    "$principal=[Security.Principal.WindowsPrincipal]::new($identity);"
+                    "$whoami=[IO.Path]::Combine("
+                    "[Environment]::SystemDirectory,'whoami.exe');"
+                    "$groups=(& $whoami /groups /fo csv /nh 2>$null|Out-String);"
+                    "if((-not $principal.IsInRole("
+                    "[Security.Principal.WindowsBuiltInRole]::Administrator))"
+                    "-and $groups -match 'S-1-16-8192'){exit 0};"
+                    f"Add-Type -Path '{launcher_source}' -ErrorAction Stop;"
+                    "if([DefenseClaw.SetupStandardUserLauncher]::"
+                    "IsCurrentProcessElevated()-and "
+                    "[DefenseClaw.SetupStandardUserLauncher]::"
+                    "CurrentElevatedTokenHasLinkedLimitedToken())"
+                    "{exit 0};exit 3"
+                ),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8-sig",
+            errors="replace",
+            timeout=120,
+            check=False,
+        )
+        if capability.returncode == 3:
+            pytest.skip(
+                "bootstrap smoke requires a real medium standard-user token or "
+                "an elevated token with a linked limited half"
+            )
+        assert capability.returncode == 0, (
+            "could not verify bootstrap-smoke token capability\n"
+            f"stdout:\n{capability.stdout}\nstderr:\n{capability.stderr}"
         )
     repository_cache = ROOT / "Microsoft"
     assert not repository_cache.exists(), (
@@ -1928,14 +2007,58 @@ def test_certification_uses_fixed_clean_windows_powershell_bootstrap() -> None:
     assert "$start.Environment.Clear()" in harness
     assert "StrictWindowsBootstrapEnvironment" in harness
     assert "PSModulePath" in harness
+    assert "'/noconfig'" in harness
     assert "-FilePath $script:BootstrapPowerShellExecutable" in harness
+    native_runner = harness[
+        harness.index("function Invoke-NativeProcess") : harness.index(
+            "function Set-ICaclsOwnerAndDacl"
+        )
+    ]
+    assert "$process.WaitForExit()" in native_runner
+    assert "Stop-NativeProcessTree" in native_runner
+    assert "IsNullOrWhiteSpace($stderrText)" in native_runner
+    assert "Protect-SensitiveDisplayText $failureText" in native_runner
     strict_environment = harness[
         harness.index("if ($StrictWindowsBootstrapEnvironment)") : harness.index(
             "foreach ($argument in $ArgumentList)"
         )
     ]
-    for poisoned_name in ("SystemRoot", "windir", "ProgramFiles", "ProgramData"):
+    assert "SystemRoot = $script:WindowsDirectory" in strict_environment
+    for poisoned_name in ("windir", "ProgramFiles", "ProgramData"):
         assert f"{poisoned_name} =" not in strict_environment
+
+
+def test_restricted_environment_status_uses_trusted_machine_roots() -> None:
+    module = read(MODULE)
+    smoke = read(BOOTSTRAP_ENVIRONMENT_SMOKE)
+
+    resolver = module[
+        module.index("function Get-DefenseClawTrustedMachineRoots") : module.index(
+            "# Bind privileged cmdlets"
+        )
+    ]
+    assert "[Environment]::SystemDirectory" in resolver
+    assert "[Microsoft.Win32.RegistryView]::Registry64" in resolver
+    assert "'ProgramFilesDir'" in resolver
+    assert "'Common AppData'" in resolver
+    assert "DoNotExpandEnvironmentNames" in resolver
+    assert "[Environment]::GetFolderPath" not in resolver
+
+    volume_identity = module[
+        module.index("function Assert-DefenseClawLayoutVolumeIdentity") : module.index(
+            "function New-DefenseClawLayoutDirectories"
+        )
+    ]
+    assert "[switch]$AllowMissingCertificationCodexHome" in volume_identity
+    assert "-AllowMissing:$AllowMissingCertificationCodexHome" in volume_identity
+    assert "-AllowMissingCertificationCodexHome:($Action -in @('Status', 'Verify'))" in module
+
+    assert "Invoke-DefenseClawEnterpriseLifecycle" in smoke
+    assert "-Action Status" in smoke
+    assert "-CertificationCodexHome $certificationCodexHome" in smoke
+    assert "-AllowUnsigned" in smoke
+    assert "restricted_environment_module_status = $true" in smoke
+    assert "module Status did not remain a read-only absent deployment" in smoke
 
 
 def test_enterprise_is_opt_in_without_disabling_normal_mode_repair() -> None:
@@ -1997,6 +2120,16 @@ def test_enterprise_is_opt_in_without_disabling_normal_mode_repair() -> None:
 
 def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     harness = read(HARNESS)
+
+    service_names = harness[
+        harness.index("function Get-NormalModeServiceNames") : harness.index(
+            "function Test-NormalModeLiveAutoHeal"
+        )
+    ]
+    assert "[AllowEmptyCollection()]" in service_names
+    assert "$Services |" in service_names
+    assert "ForEach-Object { [string]$_.name }" in service_names
+    assert ".services.name" not in harness
 
     live_repair = harness[
         harness.index("function Test-NormalModeLiveAutoHeal") : harness.index(
@@ -2060,6 +2193,10 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "$managedConfig = Join-Path $codexHome 'managed_config.toml'" in live_repair
     assert "$baselineText = Read-SharedText $managedConfig" in live_repair
     assert "command_windows_count = $commandLiterals.Count" in live_repair
+    assert "Microsoft\\.PowerShell\\.Management\\\\Start-Process" in live_repair
+    assert "-ArgumentList\\s+@\\(''hook'',''--connector'',''codex''\\)" in live_repair
+    assert "$actualHook" in live_repair
+    assert "$expectedCanonicalHook" in live_repair
     assert "$privateTrustHashes.Count -ne 0" in live_repair
     assert "synthesized private trusted_hash state" in live_repair
     assert "trust_model = 'managed_source'" in live_repair
@@ -2091,6 +2228,59 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
+@pytest.mark.parametrize(
+    "engine",
+    windows_powershell_engines() or (None,),
+    ids=lambda engine: Path(engine).stem if engine else "missing",
+)
+def test_normal_mode_empty_service_inventory_is_strict_mode_safe(
+    engine: str | None,
+    tmp_path: Path,
+) -> None:
+    assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
+    harness = read(HARNESS)
+    helper = harness[
+        harness.index("function Get-NormalModeServiceNames") : harness.index(
+            "function Test-NormalModeLiveAutoHeal"
+        )
+    ]
+    probe = tmp_path / f"empty-service-inventory-{Path(engine).stem}.ps1"
+    probe.write_text(
+        "Set-StrictMode -Version Latest\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        + helper
+        + "\n$names = @(Get-NormalModeServiceNames -Services @())\n"
+        + "if ($names.Count -ne 0) { throw 'empty inventory produced a name' }\n"
+        + "'ok'\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            engine,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8-sig",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"empty service inventory failed under {engine}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "ok"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
@@ -2181,6 +2371,7 @@ try {
             try { $child.Kill() } catch {}
             throw 'empty-output child exceeded its bounded timeout'
         }
+        $child.WaitForExit()
         $child.Refresh()
         if ($child.ExitCode -ne 0) {
             throw "empty-output child exited $($child.ExitCode)"
