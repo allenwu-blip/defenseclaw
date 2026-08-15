@@ -1716,6 +1716,9 @@ def test_claude_only_standard_user_probe_targets_only_live_artifacts() -> None:
     for artifact in ("policy", "state", "lock"):
         assert f"name = '{artifact}'" in probe
         assert "write_claude_machine_' + $name" in probe
+    assert "present = Test-Path" in probe
+    assert "requires WTSActive guardian reconciliation" in probe
+    assert "Add-NotApplicableProbe" in probe
     assert "Test-ChangeACLDenied" in probe
     assert "want ERROR_ACCESS_DENIED=5" in probe
     assert "--connector ([string]$input.connector)" in probe
@@ -2964,6 +2967,36 @@ def test_non_admin_file_denials_require_access_denied_not_generic_io() -> None:
     assert "writable key returned null without an ACCESS_DENIED exception" in probe
     assert "Add-Probe $Name $true $_.Exception.Message" not in probe
     assert "Add-Probe 'read_service_scoped_credential' $true" not in probe
+
+
+def test_stricter_process_query_denial_is_a_secure_probe_result() -> None:
+    harness = read(HARNESS)
+    probe = harness[
+        harness.index("function Invoke-StandardUserControlProbe") : harness.index(
+            "function Assert-ProtectedUserTamperToken"
+        )
+    ]
+    process_checks = probe[
+        probe.index("foreach ($process in @(") : probe.index(
+            "foreach ($service in @(",
+            probe.index("foreach ($process in @("),
+        )
+    ]
+
+    assert "$queryDenied = $queryError -eq 5" in process_checks
+    assert "the service process DACL provides stronger isolation" in process_checks
+    assert "Add-NotApplicableProbe" in process_checks
+    assert "the process DACL denied the prerequisite" in process_checks
+    assert "foreach ($tokenAccess in $tokenAccesses)" in process_checks
+    assert "name = 'terminate'" in process_checks
+    assert "name = 'inject_thread_vm'" in process_checks
+    assert "name = 'vm_write'" in process_checks
+    assert "name = 'suspend_resume'" in process_checks
+    assert "name = 'write_dac'" in process_checks
+    assert "name = 'write_owner'" in process_checks
+    assert "name = 'all_access'" in process_checks
+    assert "standard user crossed protected boundary" not in probe
+    assert "standard-user boundary probe failed or was incomplete" in probe
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")

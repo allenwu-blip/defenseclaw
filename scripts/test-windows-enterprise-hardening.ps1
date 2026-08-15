@@ -14394,14 +14394,23 @@ function Invoke-StandardUserControlProbe {
             [ordered]@{
                 name = 'policy'
                 path = $script:ClaudeManagedPolicyPath
+                present = Test-Path `
+                    -LiteralPath $script:ClaudeManagedPolicyPath `
+                    -PathType Leaf
             },
             [ordered]@{
                 name = 'state'
                 path = $script:ClaudeManagedStatePath
+                present = Test-Path `
+                    -LiteralPath $script:ClaudeManagedStatePath `
+                    -PathType Leaf
             },
             [ordered]@{
                 name = 'lock'
                 path = $script:ClaudeManagedLockPath
+                present = Test-Path `
+                    -LiteralPath $script:ClaudeManagedLockPath `
+                    -PathType Leaf
             }
         )
         connector = if ($ClaudeOnly) { 'claudecode' } else { 'codex' }
@@ -14424,8 +14433,21 @@ $ErrorActionPreference = 'Stop'
 $inputJSON = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__INPUT__'))
 $input = $inputJSON | ConvertFrom-Json -ErrorAction Stop
 $checks = [Collections.Generic.List[object]]::new()
-function Add-Probe([string]$Name, [bool]$Denied, [string]$Detail) {
-    $checks.Add([pscustomobject]@{ name = $Name; denied = $Denied; detail = $Detail })
+function Add-Probe(
+    [string]$Name,
+    [bool]$Denied,
+    [string]$Detail,
+    [bool]$Applicable = $true
+) {
+    $checks.Add([pscustomobject]@{
+        name = $Name
+        denied = $Denied
+        applicable = $Applicable
+        detail = $Detail
+    })
+}
+function Add-NotApplicableProbe([string]$Name, [string]$Detail) {
+    Add-Probe $Name $true $Detail $false
 }
 Add-Type -TypeDefinition @"
 using System;
@@ -14644,6 +14666,20 @@ foreach ($entry in @(
 foreach ($entry in @($input.claude_machine_paths)) {
     $name = [string]$entry.name
     $path = [string]$entry.path
+    if (-not [bool]$entry.present -and
+        -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        $detail = (
+            'not applicable: the administrator observed this Claude machine ' +
+            'artifact absent before the hostile probe; its access boundary ' +
+            'requires WTSActive guardian reconciliation'
+        )
+        foreach ($operation in @('write', 'delete', 'change_acl')) {
+            Add-NotApplicableProbe `
+                ($operation + '_claude_machine_' + $name) `
+                $detail
+        }
+        continue
+    }
     Test-WriteHandle ('write_claude_machine_' + $name) $path
     Test-DeleteHandle ('delete_claude_machine_' + $name) $path
     Test-ChangeACLDenied ('change_acl_claude_machine_' + $name) $path
@@ -14730,6 +14766,17 @@ foreach ($process in @(
             }
         }
     }
+    $tokenAccesses = @(
+        [pscustomobject]@{ name = 'assign_primary'; mask = [uint32]0x00000001 },
+        [pscustomobject]@{ name = 'duplicate'; mask = [uint32]0x00000002 },
+        [pscustomobject]@{ name = 'impersonate'; mask = [uint32]0x00000004 },
+        [pscustomobject]@{ name = 'adjust_privileges'; mask = [uint32]0x00000020 },
+        [pscustomobject]@{ name = 'adjust_groups'; mask = [uint32]0x00000040 },
+        [pscustomobject]@{ name = 'adjust_default'; mask = [uint32]0x00000080 },
+        [pscustomobject]@{ name = 'write_dac'; mask = [uint32]0x00040000 },
+        [pscustomobject]@{ name = 'write_owner'; mask = [uint32]0x00080000 },
+        [pscustomobject]@{ name = 'all_mutation'; mask = [uint32]0x000C00E7 }
+    )
     $queryHandle = [DefenseClawHostileNative]::OpenProcess(
         [DefenseClawHostileNative]::PROCESS_QUERY_LIMITED_INFORMATION,
         $false,
@@ -14737,27 +14784,36 @@ foreach ($process in @(
     )
     if ($queryHandle -eq [IntPtr]::Zero) {
         $queryError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $queryDenied = $queryError -eq 5
+        $queryDetail = if ($queryDenied) {
+            'access denied; the service process DACL provides stronger isolation'
+        } else {
+            'unexpected OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) error ' +
+                $queryError
+        }
         Add-Probe `
             ('open_process_query_limited_' + [string]$process.service) `
-            $false `
-            ("OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) error " + $queryError)
+            $queryDenied `
+            $queryDetail
+        foreach ($tokenAccess in $tokenAccesses) {
+            Add-NotApplicableProbe `
+                ('open_process_token_' + [string]$tokenAccess.name + '_' +
+                    [string]$process.service) `
+                $(if ($queryDenied) {
+                    'not applicable: the process DACL denied the prerequisite ' +
+                        'query-limited process handle'
+                } else {
+                    'not evaluated: the prerequisite query-limited process ' +
+                        "handle failed with Win32 error $queryError"
+                })
+        }
     } else {
         try {
             Add-Probe `
                 ('open_process_query_limited_' + [string]$process.service) `
                 $true `
                 'query-limited handle granted as expected'
-            foreach ($tokenAccess in @(
-                [pscustomobject]@{ name = 'assign_primary'; mask = [uint32]0x00000001 },
-                [pscustomobject]@{ name = 'duplicate'; mask = [uint32]0x00000002 },
-                [pscustomobject]@{ name = 'impersonate'; mask = [uint32]0x00000004 },
-                [pscustomobject]@{ name = 'adjust_privileges'; mask = [uint32]0x00000020 },
-                [pscustomobject]@{ name = 'adjust_groups'; mask = [uint32]0x00000040 },
-                [pscustomobject]@{ name = 'adjust_default'; mask = [uint32]0x00000080 },
-                [pscustomobject]@{ name = 'write_dac'; mask = [uint32]0x00040000 },
-                [pscustomobject]@{ name = 'write_owner'; mask = [uint32]0x00080000 },
-                [pscustomobject]@{ name = 'all_mutation'; mask = [uint32]0x000C00E7 }
-            )) {
+            foreach ($tokenAccess in $tokenAccesses) {
                 $tokenHandle = [IntPtr]::Zero
                 $opened = [DefenseClawHostileNative]::OpenProcessToken(
                     $queryHandle,
@@ -14886,9 +14942,17 @@ if ($failed.Count -ne 0) { exit 17 }
         -TimeoutSeconds 180
     $json = ConvertFrom-SingleJSONDocument $result.StdOut 'standard-user-control-probe'
     if (-not [bool]$json.ok -or $result.ExitCode -ne 0) {
-        throw "standard user crossed protected boundary: $(@($json.failed) -join ', ')"
+        throw (
+            'standard-user boundary probe failed or was incomplete: ' +
+            "$(@($json.failed) -join ', ')"
+        )
     }
-    return "all $(@($json.checks).Count) protected operations were denied"
+    $applicable = @($json.checks | Where-Object { [bool]$_.applicable }).Count
+    $notApplicable = @($json.checks).Count - $applicable
+    return (
+        "all $applicable applicable standard-user boundary checks passed; " +
+        "$notApplicable checks were not applicable"
+    )
 }
 
 function Assert-ProtectedUserTamperToken {
