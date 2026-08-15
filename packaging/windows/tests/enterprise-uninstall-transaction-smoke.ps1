@@ -14,7 +14,7 @@ $modulePath = [IO.Path]::GetFullPath(
 )
 $testRoot = Microsoft.PowerShell.Management\Join-Path `
     ([IO.Path]::GetTempPath()) `
-    ('defenseclaw-uninstall-transaction-' + [Guid]::NewGuid().ToString('N'))
+    ('dcut-' + [Guid]::NewGuid().ToString('N'))
 Microsoft.PowerShell.Management\New-Item `
     -ItemType Directory `
     -Path $testRoot `
@@ -51,6 +51,28 @@ try {
             if (-not $Condition) {
                 throw $Message
             }
+        }
+
+        # Windows PowerShell 5.1 runs on .NET Framework and still reaches the
+        # legacy MAX_PATH boundary for ordinary file APIs. Keep filesystem
+        # fixture names compact; retain descriptive case names in the report.
+        $script:HarnessCaseSequence = 0
+        function New-HarnessCaseRoot {
+            param(
+                [Parameter(Mandatory)][string]$Parent,
+                [Parameter(Mandatory)][string]$Label
+            )
+            $script:HarnessCaseSequence++
+            $root = Microsoft.PowerShell.Management\Join-Path `
+                $Parent `
+                ('c{0:d3}' -f $script:HarnessCaseSequence)
+            $receiptProbe = Microsoft.PowerShell.Management\Join-Path `
+                (Microsoft.PowerShell.Management\Join-Path $root 'lifecycle') `
+                ('purge-' + ('1' * 64) + '.json')
+            if ($receiptProbe.Length -ge 240) {
+                throw "PowerShell 5.1 fixture path is too long for ${Label}: $receiptProbe"
+            }
+            return $root
         }
 
         function Get-HarnessSHA256 {
@@ -476,7 +498,7 @@ try {
                 [bool]$ServicesRunning = $true,
                 [bool]$ExpectFailure = $false
             )
-            $root = Microsoft.PowerShell.Management\Join-Path $TestRoot $Name
+            $root = New-HarnessCaseRoot -Parent $TestRoot -Label $Name
             $layout = New-HarnessLayout -Root $root
             $journalPath = [string]$layout.ManagedHooksTeardownJournalPath
             $preimageBytes = $null
@@ -642,9 +664,9 @@ try {
             -LivePhase '' `
             -ExpectRollback:$true `
             -ExpectFailure:$true
-        $invalidCoreRoot = Microsoft.PowerShell.Management\Join-Path `
-            $TestRoot `
-            'snapshot-core-without-scope'
+        $invalidCoreRoot = New-HarnessCaseRoot `
+            -Parent $TestRoot `
+            -Label 'snapshot-core-without-scope'
         $invalidCoreLayout = New-HarnessLayout -Root $invalidCoreRoot
         $invalidCoreSnapshot = Microsoft.PowerShell.Management\Join-Path `
             $invalidCoreLayout.StateRoot `
@@ -1527,9 +1549,9 @@ try {
                 [bool]$Purge = $false,
                 [bool]$SelfUninstall = $false
             )
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                ('uninstall-' + $Name)
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label ('uninstall-' + $Name)
             $layout = New-HarnessLayout -Root $root
             [IO.File]::WriteAllText(
                 $layout.CodexTrustedShellAttestationPath,
@@ -1748,9 +1770,9 @@ try {
         }
 
         function Invoke-HarnessDirectReinstallSequence {
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                'direct-reinstall-after-committed-crash'
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label 'direct-reinstall-after-committed-crash'
             $layout = New-HarnessLayout -Root $root
             $oldJournal = [ordered]@{
                 schema_version = 1
@@ -1905,9 +1927,9 @@ targets:
                 [Parameter(Mandatory)][string]$Name,
                 [string]$CrashAt = ''
             )
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                ('purge-' + $Name)
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label ('purge-' + $Name)
             $layout = New-HarnessLayout -Root $root
             [IO.File]::WriteAllText(
                 $layout.MetadataPath,
@@ -2396,9 +2418,9 @@ targets:
                 )]
                 [string]$InvalidMode = ''
             )
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                ('quiescing-' + $Name)
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label ('quiescing-' + $Name)
             $layout = New-HarnessLayout -Root $root
             $id = [Guid]::NewGuid().ToString('N')
             $transactionDirectory = Microsoft.PowerShell.Management\Join-Path `
@@ -3002,9 +3024,9 @@ targets:
                 [string]$ForeignFile = '',
                 [bool]$ExpectFailure = $false
             )
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                ('shared-rollback-' + $Name)
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label ('shared-rollback-' + $Name)
             $layout = New-HarnessLayout -Root $root
             foreach ($directory in @(
                 $layout.CodexVendorDirectory,
@@ -3107,9 +3129,9 @@ targets:
                 [bool]$ExpectEvidence = $false,
                 [string[]]$ExpectedEventOrder = @()
             )
-            $root = Microsoft.PowerShell.Management\Join-Path `
-                $TestRoot `
-                ('self-recovery-' + $Name)
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label ('self-recovery-' + $Name)
             $layout = New-HarnessLayout -Root $root
             $retiredRoot = "$($layout.InstallRoot).retired-$(
                 [Guid]::NewGuid().ToString('N')

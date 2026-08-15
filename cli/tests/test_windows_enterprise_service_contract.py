@@ -781,6 +781,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "recovery_cases",
                 "quiescing_cases",
                 "uninstall_cases",
+                "purge_cases",
                 "shared_directory_cases",
             ),
         ),
@@ -893,6 +894,7 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
         assert report["recovery_cases"]
         assert report["quiescing_cases"]
         assert report["uninstall_cases"]
+        assert report["purge_cases"]
         shared_directory_cases = {
             case["name"]: case for case in report["shared_directory_cases"]
         }
@@ -1890,7 +1892,7 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
         "[Environment]::GetEnvironmentVariables('Process').Keys"
     )
     exact_trust = live_repair.index(
-        "$env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $runtimeRoot"
+        "& $cli setup trusted-paths add $runtimeRoot --json"
     )
     init = live_repair.index("& $cli init")
     assert clear_environment < exact_trust < init
@@ -1899,7 +1901,13 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "trusted runtime root escaped the exact synthetic" in live_repair
     assert "trusted_prefix_escape_rejections = $trustedPrefixEscapeRejections" in live_repair
     assert "trusted_prefix_escape_rejections -ne 3" in live_repair
-    assert "$env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $syntheticHome" not in live_repair
+    assert "$env:DEFENSECLAW_TRUSTED_BIN_PREFIXES" not in live_repair
+    assert "config.yaml does not contain exactly the canonical runtime root" in live_repair
+    assert "[string]$_.source -ceq 'config'" in live_repair
+    assert "agent_selection.json does not contain exactly one Codex selection" in live_repair
+    assert "expected Codex path, version, and SHA-256" in live_repair
+    assert "trusted_bin_prefix_persisted = $true" in live_repair
+    assert "agent_selection_verified = $true" in live_repair
     assert "Assert-NormalModeRuntimeFileSecurity" in live_repair
     assert '-Owner "*$($script:PrimarySID)"' in live_repair
     assert '"*$($script:PrimarySID):F"' in live_repair
@@ -1915,6 +1923,17 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+def test_uninstall_transaction_smoke_keeps_receipt_paths_powershell_51_compatible() -> None:
+    smoke = read(UNINSTALL_TRANSACTION_SMOKE)
+
+    assert "('dcut-' + [Guid]::NewGuid().ToString('N'))" in smoke
+    assert "function New-HarnessCaseRoot" in smoke
+    assert "$receiptProbe.Length -ge 240" in smoke
+    assert "legacy MAX_PATH boundary" in smoke
+    assert smoke.count("New-HarnessCaseRoot") == 9
+    assert "purge_cases = @($purgeResults)" in smoke
 
 
 def test_certification_cleanup_handles_partial_profiles_and_empty_parents() -> None:

@@ -6101,6 +6101,7 @@ function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
         gateway_sha256 = [string]$runtimeFiles.gateway.sha256
         hook_sha256 = [string]$runtimeFiles.hook.sha256
         codex_sha256 = [string]$runtimeFiles.codex.sha256
+        codex_version = Get-ApprovedCodexVersionText
         api_port = Get-FreeLoopbackPort
     }
     $inputBase64 = [Convert]::ToBase64String(
@@ -6353,6 +6354,11 @@ $fingerprintSHA256 = ''
 $repairMilliseconds = 0
 $gatewayPID = 0
 $watchdogPID = 0
+$trustedConfigPath = ''
+$agentSelectionPath = ''
+$agentSelectionRawVersion = ''
+$agentSelectionNormalizedVersion = ''
+$agentSelectionSHA256 = ''
 try {
     foreach ($entry in @(
     [pscustomobject]@{ role = 'cli'; path = $cli; sha256 = [string]$inputObject.cli_sha256 },
@@ -6384,16 +6390,72 @@ try {
             )
         }
     }
-    $env:DEFENSECLAW_TRUSTED_BIN_PREFIXES = $runtimeRoot
-    if ([Environment]::GetEnvironmentVariable(
-            'DEFENSECLAW_TRUSTED_BIN_PREFIXES',
-            'Process'
-        ) -cne $runtimeRoot) {
-        throw 'normal-mode trusted runtime prefix is not the exact runtime root'
-    }
     $env:DEFENSECLAW_HOME = $dataRoot
     $env:DEFENSECLAW_CONFIG = Join-Path $dataRoot 'config.yaml'
     $env:DEFENSECLAW_DEPLOYMENT_MODE = 'unmanaged_byod'
+    $trustedPathAddOutput = (
+        & $cli setup trusted-paths add $runtimeRoot --json 2>&1 |
+            Out-String
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            'normal-mode trusted runtime persistence failed: ' +
+            $trustedPathAddOutput
+        )
+    }
+    $trustedPathAdd = $trustedPathAddOutput |
+        ConvertFrom-Json -ErrorAction Stop
+    if (-not [bool]$trustedPathAdd.ok -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$trustedPathAdd.path).TrimEnd('\'),
+            $runtimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'normal-mode trusted-paths add did not persist the exact canonical runtime root'
+    }
+    $configPath = Join-Path $dataRoot 'config.yaml'
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw 'normal-mode trusted-paths add did not create config.yaml'
+    }
+    $trustedPathListOutput = (
+        & $cli setup trusted-paths list --json 2>&1 |
+            Out-String
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw (
+            'normal-mode persisted trusted-path verification failed: ' +
+            $trustedPathListOutput
+        )
+    }
+    $trustedPathRows = @(
+        $trustedPathListOutput | ConvertFrom-Json -ErrorAction Stop
+    )
+    $configTrustedRows = @(
+        $trustedPathRows |
+            Where-Object { [string]$_.source -ceq 'config' }
+    )
+    if ($configTrustedRows.Count -ne 1 -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath(
+                [string]$configTrustedRows[0].path
+            ).TrimEnd('\'),
+            $runtimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath(
+                [string]$configTrustedRows[0].resolved
+            ).TrimEnd('\'),
+            $runtimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'normal-mode config.yaml does not contain exactly the canonical runtime root'
+    }
+    $trustedConfigPath = [IO.Path]::GetFullPath(
+        [string]$configTrustedRows[0].resolved
+    ).TrimEnd('\')
+    $logs.Add($trustedPathAddOutput.Trim())
+    $logs.Add($trustedPathListOutput.Trim())
     $env:CODEX_HOME = $codexHome
     $env:CLAUDE_CONFIG_DIR = $claudeHome
     $env:USERPROFILE = $syntheticHome
@@ -6416,6 +6478,25 @@ try {
     ) -join [IO.Path]::PathSeparator
     Set-Location -LiteralPath $workRoot
 
+    $expectedCodexRawVersion = [string]$inputObject.codex_version
+    $versionMatch = [regex]::Match(
+        $expectedCodexRawVersion,
+        '(?i)(?:^|[^0-9])v?([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?'
+    )
+    if (-not $versionMatch.Success) {
+        throw "normal-mode Codex version is not normalizable: $expectedCodexRawVersion"
+    }
+    $expectedCodexNormalizedVersion = @(
+        foreach ($index in 1..3) {
+            $value = $versionMatch.Groups[$index].Value
+            if ([string]::IsNullOrWhiteSpace($value)) {
+                '0'
+            } else {
+                [string][int]$value
+            }
+        }
+    ) -join '.'
+
     $initOutput = (
         & $cli init `
             --skip-install `
@@ -6432,7 +6513,43 @@ try {
     }
     $logs.Add($initOutput.Trim())
 
-    $configPath = Join-Path $dataRoot 'config.yaml'
+    $agentSelectionReceiptPath = Join-Path $dataRoot 'agent_selection.json'
+    if (-not (Test-Path -LiteralPath $agentSelectionReceiptPath -PathType Leaf)) {
+        throw 'normal-mode init did not publish agent_selection.json'
+    }
+    $agentSelectionReceipt = Read-SharedText $agentSelectionReceiptPath |
+        ConvertFrom-Json -ErrorAction Stop
+    $selectionProperties = @(
+        $agentSelectionReceipt.selections.PSObject.Properties
+    )
+    if ([int]$agentSelectionReceipt.schema_version -ne 1 -or
+        $selectionProperties.Count -ne 1 -or
+        [string]$selectionProperties[0].Name -cne 'codex') {
+        throw 'normal-mode agent_selection.json does not contain exactly one Codex selection'
+    }
+    $codexSelection = $agentSelectionReceipt.selections.codex
+    $agentSelectionPath = [IO.Path]::GetFullPath(
+        [string]$codexSelection.executable
+    )
+    $agentSelectionRawVersion = [string]$codexSelection.raw_version
+    $agentSelectionNormalizedVersion =
+        [string]$codexSelection.normalized_version
+    $agentSelectionSHA256 = [string]$codexSelection.sha256
+    if ([string]$codexSelection.connector -cne 'codex' -or
+        [string]$codexSelection.source -cne 'setup-selected' -or
+        -not [string]::Equals(
+            $agentSelectionPath,
+            $codex,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        $agentSelectionRawVersion -cne $expectedCodexRawVersion -or
+        $agentSelectionNormalizedVersion -cne
+            $expectedCodexNormalizedVersion -or
+        $agentSelectionSHA256 -cne
+            ([string]$inputObject.codex_sha256).ToLowerInvariant()) {
+        throw 'normal-mode agent_selection.json did not bind the expected Codex path, version, and SHA-256'
+    }
+
     $config = [IO.File]::ReadAllText($configPath)
     $apiPortMatches = [regex]::Matches(
         $config,
@@ -6632,7 +6749,13 @@ try {
     gateway_pid = $gatewayPID
     watchdog_pid = $watchdogPID
     gateway_port = [int]$inputObject.api_port
-    trusted_bin_prefix = $env:DEFENSECLAW_TRUSTED_BIN_PREFIXES
+    trusted_bin_prefix = $trustedConfigPath
+    trusted_bin_prefix_persisted = $true
+    agent_selection_verified = $true
+    agent_selection_path = $agentSelectionPath
+    agent_selection_raw_version = $agentSelectionRawVersion
+    agent_selection_normalized_version = $agentSelectionNormalizedVersion
+    agent_selection_sha256 = $agentSelectionSHA256
     trusted_prefix_escape_rejections = $trustedPrefixEscapeRejections
     runtime_file_count = 5
     log_count = $logs.Count
@@ -6655,6 +6778,21 @@ try {
             [string]$result.trusted_bin_prefix,
             $runtimeRoot,
             [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        -not [bool]$result.trusted_bin_prefix_persisted -or
+        -not [bool]$result.agent_selection_verified -or
+        -not [string]::Equals(
+            [string]$result.agent_selection_path,
+            [string]$runtimeFiles.codex.destination,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]$result.agent_selection_sha256 -cne
+            [string]$runtimeFiles.codex.sha256 -or
+        [string]::IsNullOrWhiteSpace(
+            [string]$result.agent_selection_raw_version
+        ) -or
+        [string]::IsNullOrWhiteSpace(
+            [string]$result.agent_selection_normalized_version
         ) -or
         [int]$result.trusted_prefix_escape_rejections -ne 3 -or
         [int]$result.runtime_file_count -ne $runtimeFiles.Count) {
@@ -6685,6 +6823,14 @@ try {
         enterprise_absent_before = [bool]$RequireEnterpriseAbsent
         protected_machine_state_unchanged = $true
         trusted_bin_prefix_exact = $true
+        trusted_bin_prefix_persisted = $true
+        agent_selection_verified = $true
+        agent_selection_path = [string]$result.agent_selection_path
+        agent_selection_raw_version =
+            [string]$result.agent_selection_raw_version
+        agent_selection_normalized_version =
+            [string]$result.agent_selection_normalized_version
+        agent_selection_sha256 = [string]$result.agent_selection_sha256
         runtime_files_target_owned = $true
         fixture_cleanup_exact = $true
         machine_before = $machineBefore
