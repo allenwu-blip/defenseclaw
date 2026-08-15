@@ -14,6 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import sys
 import unittest
@@ -23,6 +24,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import yaml
 from click.testing import CliRunner
 
 
@@ -52,6 +54,121 @@ class CliSmokeTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("Initialize DefenseClaw environment", result.output)
+
+    def test_trusted_paths_add_bootstraps_exact_v8_config_before_init(self):
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            config_file = home / "config.yaml"
+            runtime_root = Path.cwd() / "staged-runtime"
+            runtime_root.mkdir()
+            expected = str(runtime_root.resolve())
+            with patch.dict(
+                os.environ,
+                {
+                    "DEFENSECLAW_HOME": str(home),
+                    "DEFENSECLAW_CONFIG": str(config_file),
+                    "DEFENSECLAW_TRUSTED_BIN_PREFIXES": "",
+                },
+            ):
+                result = runner.invoke(
+                    cli,
+                    ["setup", "trusted-paths", "add", expected, "--json"],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            payload = json.loads(result.output)
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["path"], expected)
+            document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(document["config_version"], 8)
+            self.assertEqual(
+                document["ai_discovery"]["trusted_binary_prefixes"],
+                [expected],
+            )
+            self.assertFalse((home / "audit.db").exists())
+
+    def test_preinit_setup_rejects_non_trusted_paths_subcommand(self):
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            config_file = home / "config.yaml"
+            with patch.dict(
+                os.environ,
+                {
+                    "DEFENSECLAW_HOME": str(home),
+                    "DEFENSECLAW_CONFIG": str(config_file),
+                },
+            ):
+                result = runner.invoke(cli, ["setup", "codex", "--yes"])
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("DefenseClaw is not initialized", result.output)
+            self.assertFalse(config_file.exists())
+            self.assertFalse((home / "audit.db").exists())
+
+    def test_preinit_setup_rejects_non_add_trusted_paths_subcommand(self):
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            config_file = home / "config.yaml"
+            with patch.dict(
+                os.environ,
+                {
+                    "DEFENSECLAW_HOME": str(home),
+                    "DEFENSECLAW_CONFIG": str(config_file),
+                },
+            ):
+                result = runner.invoke(
+                    cli,
+                    ["setup", "trusted-paths", "remove", str(Path.cwd())],
+                )
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("DefenseClaw is not initialized", result.output)
+            self.assertFalse(config_file.exists())
+            self.assertFalse((home / "audit.db").exists())
+
+    def test_trusted_paths_bootstrap_rejects_existing_legacy_config(self):
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            home.mkdir()
+            config_file = home / "config.yaml"
+            original = "config_version: 7\n"
+            config_file.write_text(original, encoding="utf-8")
+            runtime_root = Path.cwd() / "staged-runtime"
+            runtime_root.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "DEFENSECLAW_HOME": str(home),
+                    "DEFENSECLAW_CONFIG": str(config_file),
+                },
+            ):
+                result = runner.invoke(
+                    cli,
+                    [
+                        "setup",
+                        "trusted-paths",
+                        "add",
+                        str(runtime_root.resolve()),
+                        "--json",
+                    ],
+                )
+
+            self.assertEqual(result.exit_code, 1, result.output)
+            self.assertIn("Configuration schema v8 is required", result.output)
+            self.assertEqual(config_file.read_text(encoding="utf-8"), original)
+            self.assertFalse((home / "audit.db").exists())
 
     def test_direct_upgrade_refuses_active_recovery_and_points_to_resolver(self):
         from defenseclaw.main import cli

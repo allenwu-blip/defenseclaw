@@ -188,7 +188,18 @@ def cli(ctx: click.Context) -> None:
                 raise SystemExit(1) from exc
         return
 
-    if invoked not in SKIP_AUTO_VALIDATE:
+    if invoked == "setup":
+        # ``setup trusted-paths`` is the public bootstrap for a custom agent
+        # runtime that first-run selection must trust. Permit a missing v8
+        # document here, then let the setup group admit only that narrow
+        # subcommand. Existing legacy/malformed documents still fail before
+        # compatibility loading or mutation.
+        try:
+            cfg_mod.require_v8_config(allow_missing=True)
+        except cfg_mod.ConfigVersionError as exc:
+            ux.echo(str(exc), err=True)
+            raise SystemExit(1) from exc
+    elif invoked not in SKIP_AUTO_VALIDATE:
         try:
             cfg_mod.require_v8_config()
         except cfg_mod.ConfigVersionError as exc:
@@ -214,6 +225,14 @@ def cli(ctx: click.Context) -> None:
     from defenseclaw.logger import Logger
 
     source_is_v8 = getattr(app.cfg, "_source_config_version", None) == 8
+
+    if invoked == "setup" and not source_is_v8:
+        # A missing config is represented by an in-memory source version of
+        # zero. Do not create audit/runtime state before the setup group proves
+        # that the requested child is the trusted-paths bootstrap. Config.save
+        # will promote this fresh document to v8 while holding its file lock.
+        app.preinit_setup_bootstrap = True
+        return
 
     # Fast-fail on config errors before any command runs, so operators
     # see a clear diagnostic instead of a deep stack trace. Skipped for

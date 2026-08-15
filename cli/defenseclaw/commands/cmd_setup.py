@@ -284,6 +284,18 @@ def setup(
       connectors with repeatable '-c/--connector', '--detected', and/or
       '--all' (e.g. 'defenseclaw setup -c hermes -c codex --mode action').
     """
+    app = ctx.find_object(AppContext)
+    if (
+        app is not None
+        and app.preinit_setup_bootstrap
+        and ctx.invoked_subcommand != "trusted-paths"
+    ):
+        ux.echo(
+            "DefenseClaw is not initialized — run 'defenseclaw init' first.",
+            err=True,
+        )
+        ctx.exit(1)
+
     # Snapshot config.yaml's mtime before the subcommand runs. The
     # result callback below (``_auto_restart_sidecar_after_setup``)
     # compares this to the post-invocation mtime and only restarts the
@@ -306,7 +318,7 @@ def setup(
     # help" to an interactive multi-connector picker (+ scripting flags).
     _dispatch_bare_setup(
         ctx,
-        ctx.find_object(AppContext),
+        app,
         connectors=list(batch_connectors),
         detected=batch_detected,
         all_connectors=batch_all,
@@ -1970,7 +1982,8 @@ def _emit_trusted_path_result(as_json: bool, *, ok: bool, path: str, message: st
 
 
 @setup.group("trusted-paths")
-def trusted_paths() -> None:
+@click.pass_context
+def trusted_paths(ctx: click.Context) -> None:
     """Manage directories DefenseClaw trusts for connector-binary discovery.
 
     Legacy examples:
@@ -1980,6 +1993,17 @@ def trusted_paths() -> None:
     Homebrew locations; trust additional roots here for bespoke installs.
     Additions persist to ~/.defenseclaw/config.yaml under ai_discovery.trusted_binary_prefixes.
     """
+    app = ctx.find_object(AppContext)
+    if (
+        app is not None
+        and app.preinit_setup_bootstrap
+        and ctx.invoked_subcommand != "add"
+    ):
+        ux.echo(
+            "DefenseClaw is not initialized — run 'defenseclaw init' first.",
+            err=True,
+        )
+        ctx.exit(1)
 
 
 @trusted_paths.command("list")
@@ -9186,6 +9210,9 @@ def _auto_restart_sidecar_after_setup(ctx: click.Context, *_args, **_kwargs) -> 
     Skip conditions:
       * ``app.cfg`` isn't loaded (e.g. ``setup --help``, or a recovery
         invocation that bypassed the loader) — nothing to do.
+      * ``setup trusted-paths`` updates CLI discovery policy, not live gateway
+        state. Skipping also preserves the command's exact ``--json`` output
+        contract for bootstrap automation.
       * config.yaml mtime unchanged — the subcommand was read-only
         (``setup llm --show``, etc.). The bare connector batch is the narrow
         exception: its explicit readiness marker always runs the gate.
@@ -9196,6 +9223,9 @@ def _auto_restart_sidecar_after_setup(ctx: click.Context, *_args, **_kwargs) -> 
     """
     app = ctx.find_object(AppContext)
     if app is None or app.cfg is None:
+        return
+
+    if ctx.invoked_subcommand == "trusted-paths":
         return
 
     # Subcommand already handled the restart itself (e.g. `setup
