@@ -368,8 +368,8 @@ def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
     ]
     assert "[AllowEmptyString()]" in command_line_encoder
     assert "[ValidateNotNull()]" in command_line_encoder
-    assert "[string[]]$Arguments" in command_line_encoder
-    assert "$null -eq $argument" in command_line_encoder
+    assert "[object[]]$Arguments" in command_line_encoder
+    assert "$null -eq $argument -or $argument -isnot [string]" in command_line_encoder
     assert "CharSet = CharSet.Unicode" in module_smoke
     assert "ExactSpelling = true" in module_smoke
     assert module.count("Assert-DefenseClawServiceImagePath `") == 2
@@ -1408,7 +1408,9 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
             "function Write-DefenseClawJsonAtomic"
         )
     ]
-    assert "[IO.File]::Replace($temporary, $Destination, $null, $true)" in atomic_install
+    assert "[IO.File]::Replace($temporary, $Destination, $backup, $true)" in atomic_install
+    assert "[IO.File]::Replace($temporary, $Destination, $null, $true)" not in atomic_install
+    assert "atomic replacement verification failed" in atomic_install
     assert "[switch]$SkipIfContentMatches" in atomic_install
     assert "-SkipIfContentMatches" in module[
         module.index("function Restore-DefenseClawTransaction") : module.index(
@@ -2458,6 +2460,11 @@ try {
     $source = [IO.Path]::Combine($root, 'source.txt')
     $destination = [IO.Path]::Combine($root, 'destination.txt')
     [IO.File]::WriteAllText($source, 'first')
+    $created = [IO.Path]::Combine($root, 'created.txt')
+    Install-DefenseClawFileAtomic -Source $source -Destination $created
+    if ([IO.File]::ReadAllText($created) -cne 'first') {
+        throw 'initial destination creation was not exact'
+    }
     [IO.File]::WriteAllText($destination, 'old')
     Install-DefenseClawFileAtomic -Source $source -Destination $destination
     if ([IO.File]::ReadAllText($destination) -cne 'first') {
@@ -2486,8 +2493,9 @@ try {
     if ([IO.File]::ReadAllText($destination) -cne 'second') {
         throw 'same-content rollback changed its protected destination'
     }
-    if (@([IO.Directory]::GetFiles($root, 'destination.txt.new.*')).Count -ne 0) {
-        throw 'atomic replacement left a staged file behind'
+    if (@([IO.Directory]::GetFiles($root, '*.new.*')).Count -ne 0 -or
+        @([IO.Directory]::GetFiles($root, '*.backup.*')).Count -ne 0) {
+        throw 'atomic replacement left a staging or backup file behind'
     }
     'ok'
 }
@@ -2595,35 +2603,52 @@ try {
     $stdout = [IO.Path]::Combine($root, 'child.stdout.log')
     $stderr = [IO.Path]::Combine($root, 'child.stderr.log')
     $enginePath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $child = Start-Process `
-        -FilePath $enginePath `
-        -ArgumentList @(
-            '-NoLogo',
-            '-NoProfile',
-            '-NonInteractive',
-            '-Command',
-            'exit 0'
-        ) `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr `
-        -WindowStyle Hidden `
-        -PassThru
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $enginePath
+    $start.Arguments = '-NoLogo -NoProfile -NonInteractive -Command "exit 0"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $start
     try {
+        if (-not $child.Start()) {
+            throw 'empty-output child did not start'
+        }
+        $stdoutTask = $child.StandardOutput.ReadToEndAsync()
+        $stderrTask = $child.StandardError.ReadToEndAsync()
         if (-not $child.WaitForExit(30000)) {
             try { $child.Kill() } catch {}
             throw 'empty-output child exceeded its bounded timeout'
         }
         $child.WaitForExit()
-        $child.Refresh()
-        if ($child.ExitCode -ne 0) {
-            throw "empty-output child exited $($child.ExitCode)"
+        $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+        $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+        $exitCode = $child.ExitCode
+        if ($exitCode -isnot [int] -or [int]$exitCode -ne 0) {
+            throw "empty-output child exited $exitCode"
         }
     } finally {
         $child.Dispose()
     }
-    if ((Read-SharedText $stdout) -cne '' -or
-        (Read-SharedText $stderr) -cne '') {
-        throw 'empty-output child produced unexpected redirected text'
+    [IO.File]::WriteAllText(
+        $stdout,
+        $stdoutText,
+        [Text.UTF8Encoding]::new($false)
+    )
+    [IO.File]::WriteAllText(
+        $stderr,
+        $stderrText,
+        [Text.UTF8Encoding]::new($false)
+    )
+    foreach ($redirectedPath in @($stdout, $stderr)) {
+        $redirectedBytes = Read-SharedBytes $redirectedPath
+        if ($redirectedBytes -isnot [byte[]] -or
+            $redirectedBytes.Length -ne 0 -or
+            (Read-SharedText $redirectedPath) -cne '') {
+            throw 'empty-output child produced unexpected redirected bytes'
+        }
     }
     [pscustomobject]@{
         ok = $true
@@ -2632,6 +2657,7 @@ try {
         nonempty = $true
         concurrently_open = $true
         bounded_empty_child = $true
+        exact_exit_code = [int]$exitCode
     } | ConvertTo-Json -Compress
 } finally {
     if ([IO.Directory]::Exists($root)) {
@@ -2666,6 +2692,7 @@ try {
     assert result["nonempty"] is True
     assert result["concurrently_open"] is True
     assert result["bounded_empty_child"] is True
+    assert result["exact_exit_code"] == 0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")

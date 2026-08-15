@@ -127,6 +127,10 @@ class CliSmokeTests(unittest.TestCase):
                     return_value=(),
                 ),
                 patch(
+                    "defenseclaw.agent_selection._builtin_setup_trusted_prefixes",
+                    return_value=(),
+                ),
+                patch(
                     "defenseclaw.bootstrap._quiet_guardrail_setup",
                     return_value=StepResult("Guardrail", "pass", "fixture"),
                 ),
@@ -155,6 +159,9 @@ class CliSmokeTests(unittest.TestCase):
                         "--json-summary",
                     ],
                 )
+                initialized_receipt = json.loads(
+                    (home / "agent_selection.json").read_text()
+                )
                 configured = runner.invoke(
                     cli,
                     [
@@ -182,6 +189,8 @@ class CliSmokeTests(unittest.TestCase):
             )
             self.assertEqual(document["gateway"]["api_port"], 19091)
             self.assertEqual(json.loads(shown.output)["gateway"]["api_port"], 19091)
+            initialized_selection = initialized_receipt["selections"]["codex"]
+            self.assertEqual(initialized_selection["executable"], expected_codex)
             receipt = json.loads((home / "agent_selection.json").read_text())
             self.assertEqual(list(receipt["selections"]), ["codex"])
             selection = receipt["selections"]["codex"]

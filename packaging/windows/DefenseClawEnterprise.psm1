@@ -1600,14 +1600,14 @@ function ConvertTo-DefenseClawWindowsCommandLine {
         [Parameter(Mandatory)]
         [ValidateNotNull()]
         [AllowEmptyString()]
-        [string[]]$Arguments
+        [object[]]$Arguments
     )
     $encoded = [Collections.Generic.List[string]]::new()
     foreach ($argument in $Arguments) {
-        # Validate the collection element before PowerShell binds it to the
-        # scalar [string] parameter, which would coerce $null to ''.
-        if ($null -eq $argument) {
-            throw 'native process argument is null or contains NUL'
+        # Preserve and authenticate the element before scalar [string]
+        # binding can coerce $null to ''. Empty strings remain valid argv.
+        if ($null -eq $argument -or $argument -isnot [string]) {
+            throw 'native process arguments must be non-null strings'
         }
         $encoded.Add((
             ConvertTo-DefenseClawWindowsCommandLineArgument `
@@ -2499,11 +2499,16 @@ function Install-DefenseClawFileAtomic {
     }
     New-DefenseClawDirectory -Path ([IO.Path]::GetDirectoryName($Destination))
     $temporary = "$Destination.new.$([Guid]::NewGuid().ToString('N'))"
+    $backup = ''
     try {
         Microsoft.PowerShell.Management\Copy-Item -LiteralPath $Source -Destination $temporary -Force
         Assert-DefenseClawNoReparsePath -Path $temporary
+        $copiedHash = (
+            Microsoft.PowerShell.Utility\Get-FileHash `
+                -LiteralPath $temporary `
+                -Algorithm SHA256
+        ).Hash
         if (-not [string]::IsNullOrWhiteSpace($ExpectedSHA256)) {
-            $copiedHash = (Microsoft.PowerShell.Utility\Get-FileHash -LiteralPath $temporary -Algorithm SHA256).Hash
             if (-not [string]::Equals(
                 $copiedHash,
                 $ExpectedSHA256,
@@ -2514,12 +2519,39 @@ function Install-DefenseClawFileAtomic {
         }
         if ([IO.File]::Exists($Destination)) {
             # Move-Item -Force does not reliably replace an existing file on
-            # Windows PowerShell 5.1. File.Replace keeps rollback and repair
-            # idempotent without introducing a delete-before-move gap.
-            [IO.File]::Replace($temporary, $Destination, $null, $true)
+            # Windows PowerShell 5.1. File.Replace requires a non-empty backup
+            # path on both .NET Framework and modern .NET. Keep the prior file
+            # beside the protected destination until the replacement hash is
+            # verified, then retire only that unique recovery artifact.
+            $backup = "$Destination.backup.$([Guid]::NewGuid().ToString('N'))"
+            Assert-DefenseClawNoReparsePath -Path $backup -AllowMissingLeaf
+            if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $backup) {
+                throw "atomic replacement backup path unexpectedly exists: $backup"
+            }
+            [IO.File]::Replace($temporary, $Destination, $backup, $true)
         }
         else {
             [IO.File]::Move($temporary, $Destination)
+        }
+        Assert-DefenseClawNoReparsePath -Path $Destination
+        $installedHash = (
+            Microsoft.PowerShell.Utility\Get-FileHash `
+                -LiteralPath $Destination `
+                -Algorithm SHA256
+        ).Hash
+        if (-not [string]::Equals(
+            $installedHash,
+            $copiedHash,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw "atomic replacement verification failed: $Destination"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($backup)) {
+            Assert-DefenseClawNoReparsePath -Path $backup
+            Microsoft.PowerShell.Management\Remove-Item `
+                -LiteralPath $backup `
+                -Force
+            $backup = ''
         }
     }
     finally {
