@@ -411,6 +411,26 @@ if (-not [string]::Equals(
     -not [IO.Path]::IsPathRooted($StateRoot)) {
     throw 'production bootstrap did not recover exact machine roots from an empty environment'
 }
+$certificationRunID = 'a1b2c3d4e5'
+$certificationInstallRoot = [IO.Path]::Combine(
+    $expectedProgramFiles,
+    'Cisco',
+    'DefenseClaw-Cert',
+    $certificationRunID
+)
+$certificationStateRoot = [IO.Path]::Combine(
+    $expectedProgramData,
+    'Cisco',
+    'DefenseClaw-Cert',
+    $certificationRunID
+)
+Assert-DefenseClawBootstrapLifecycleScope `
+    -LifecycleAction 'Status' `
+    -RequestedInstallRoot $certificationInstallRoot `
+    -RequestedStateRoot $certificationStateRoot `
+    -RequestedGatewayServiceName "DefenseClawCertGateway_$certificationRunID" `
+    -RequestedGuardianServiceName "DefenseClawCertGuardian_$certificationRunID" `
+    -AllowUnsignedLifecycle $false
 foreach ($name in @(
     'New-DefenseClawBootstrapEnvironment',
     'Remove-DefenseClawBootstrapEnvironment',
@@ -564,6 +584,7 @@ if ($legacyRelativeEnvironmentResidue.Count -ne 0) {
     elevated = [bool]$single.elevated
     exact_acl = [bool]$single.exact_acl
     empty_environment_known_folders_recovered = $true
+    restricted_environment_certification_status_scope = $true
     all_environment_paths_pinned =
         [bool]$single.all_environment_paths_pinned
     module_analysis_cache_disabled =

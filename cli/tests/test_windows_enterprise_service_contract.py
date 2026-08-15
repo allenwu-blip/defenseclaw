@@ -10,6 +10,7 @@ operator and trust-boundary wiring visible in ordinary Linux/macOS/Windows CI.
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import re
@@ -84,6 +85,48 @@ def windows_powershell_engines() -> list[str]:
         seen.add(key)
         engines.append(resolved)
     return engines
+
+
+def restricted_windows_bootstrap_environment(profile_root: str) -> dict[str, str]:
+    """Mirror the certification launcher's minimal native environment."""
+
+    assert os.name == "nt"
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = ctypes.windll.kernel32.GetSystemDirectoryW(buffer, len(buffer))
+    assert 0 < length < len(buffer), "GetSystemDirectoryW did not return a safe path"
+    system32 = Path(buffer.value).resolve()
+    windows_root = system32.parent
+    environment = {
+        "ComSpec": str(system32 / "cmd.exe"),
+        "PATH": os.pathsep.join(
+            (
+                str(system32),
+                str(system32 / "WindowsPowerShell" / "v1.0"),
+                str(windows_root),
+            )
+        ),
+        "PSModulePath": os.environ.get("PSModulePath", ""),
+        "TEMP": profile_root,
+        "TMP": profile_root,
+    }
+    assert set(environment) == {
+        "ComSpec",
+        "PATH",
+        "PSModulePath",
+        "TEMP",
+        "TMP",
+    }
+    assert not {
+        "programdata",
+        "programfiles",
+        "systemroot",
+        "windir",
+        "home",
+        "userprofile",
+        "appdata",
+        "localappdata",
+    }.intersection(name.casefold() for name in environment)
+    return environment
 
 
 def test_public_installer_exposes_complete_truthful_lifecycle() -> None:
@@ -773,6 +816,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
                 "elevated",
                 "exact_acl",
                 "empty_environment_known_folders_recovered",
+                "restricted_environment_certification_status_scope",
                 "all_environment_paths_pinned",
                 "module_analysis_cache_disabled",
                 "nested_cleanup_verified",
@@ -843,25 +887,30 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
     ) as temporary_profile:
         profile_root = str(Path(temporary_profile).resolve())
         volume, home_path = os.path.splitdrive(profile_root)
-        smoke_environment = os.environ.copy()
-        for name in (
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "LOCALAPPDATA",
-            "APPDATA",
-            "USERPROFILE",
-            "HOME",
-            "XDG_CACHE_HOME",
-            "XDG_CONFIG_HOME",
-            "XDG_DATA_HOME",
-            "DOTNET_CLI_HOME",
-            "NUGET_PACKAGES",
-        ):
-            smoke_environment[name] = profile_root
-        smoke_environment["HOMEDRIVE"] = volume
-        smoke_environment["HOMEPATH"] = home_path
-        smoke_environment["PSModuleAnalysisCachePath"] = "NUL"
+        if script == BOOTSTRAP_ENVIRONMENT_SMOKE:
+            smoke_environment = restricted_windows_bootstrap_environment(
+                profile_root
+            )
+        else:
+            smoke_environment = os.environ.copy()
+            for name in (
+                "TEMP",
+                "TMP",
+                "TMPDIR",
+                "LOCALAPPDATA",
+                "APPDATA",
+                "USERPROFILE",
+                "HOME",
+                "XDG_CACHE_HOME",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "DOTNET_CLI_HOME",
+                "NUGET_PACKAGES",
+            ):
+                smoke_environment[name] = profile_root
+            smoke_environment["HOMEDRIVE"] = volume
+            smoke_environment["HOMEPATH"] = home_path
+            smoke_environment["PSModuleAnalysisCachePath"] = "NUL"
         completed = subprocess.run(
             [
                 engine,
@@ -941,6 +990,7 @@ def test_windows_packaging_smokes_run_on_every_available_engine(
     if script == BOOTSTRAP_ENVIRONMENT_SMOKE:
         assert report["exact_acl"] is True
         assert report["empty_environment_known_folders_recovered"] is True
+        assert report["restricted_environment_certification_status_scope"] is True
         assert report["all_environment_paths_pinned"] is True
         assert report["module_analysis_cache_disabled"] is True
         assert report["nested_cleanup_verified"] is True
@@ -1026,6 +1076,9 @@ def test_bootstrap_compiler_environment_is_one_shot_and_protected() -> None:
     assert "function New-DefenseClawBootstrapEnvironment" in bootstrap
     assert "function Remove-DefenseClawBootstrapEnvironment" in bootstrap
     assert "function Restore-DefenseClawBootstrapEnvironment" in bootstrap
+    assert "Assert-DefenseClawBootstrapLifecycleScope" in smoke
+    assert "-LifecycleAction 'Status'" in smoke
+    assert "restricted_environment_certification_status_scope = $true" in smoke
     assert "DefenseClaw-Bootstrap-$capability" in bootstrap
     assert "[Security.Cryptography.RandomNumberGenerator]::Create()" in bootstrap
     assert "$bytes = [byte[]]::new(16)" in bootstrap
