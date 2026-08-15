@@ -714,10 +714,10 @@ func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error
 		"windir":          windowsDirectory,
 		"SystemDrive":     filepath.VolumeName(windowsDirectory),
 		"ComSpec":         filepath.Join(system32, "cmd.exe"),
-		"ProgramFiles":    machineRoots.programFiles,
-		"ProgramW6432":    machineRoots.programFiles,
-		"ProgramData":     machineRoots.programData,
-		"ALLUSERSPROFILE": machineRoots.programData,
+		"ProgramFiles":    machineRoots.ProgramFiles,
+		"ProgramW6432":    machineRoots.ProgramFiles,
+		"ProgramData":     machineRoots.ProgramData,
+		"ALLUSERSPROFILE": machineRoots.ProgramData,
 		"TEMP":            powerShellTemp,
 		"TMP":             powerShellTemp,
 		"LOCALAPPDATA":    powerShellTemp,
@@ -739,7 +739,7 @@ func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error
 			filepath.Join(system32, "WindowsPowerShell", "v1.0"),
 		}, string(os.PathListSeparator)),
 	}
-	allowed["ProgramFiles(x86)"] = machineRoots.programFilesX86
+	allowed["ProgramFiles(x86)"] = machineRoots.ProgramFilesX86
 
 	environment := make([]string, 0, len(allowed))
 	for key, value := range allowed {

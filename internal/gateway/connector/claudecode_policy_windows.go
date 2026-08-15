@@ -11,30 +11,22 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/sys/windows"
+	"github.com/defenseclaw/defenseclaw/internal/winpath"
 	"golang.org/x/sys/windows/registry"
 )
 
 const claudeCodeWindowsPolicyKey = `SOFTWARE\Policies\ClaudeCode`
 
-var claudeCodeWindowsProgramFilesRoot = func() (string, error) {
-	// Program Files is machine-wide. An explicit current-process token adds
-	// user-token impersonation rights that a hardened LocalSystem token does
-	// not need and may not grant.
-	return windows.KnownFolderPath(
-		windows.FOLDERID_ProgramFiles,
-		windows.KF_FLAG_DEFAULT,
-	)
-}
+var claudeCodeWindowsProgramFilesRoot = winpath.TrustedProgramFiles
 
 func claudeCodePlatformManagedSettingsRoot() (string, error) {
 	root, err := claudeCodeWindowsProgramFilesRoot()
 	if err != nil {
-		return "", fmt.Errorf("resolve Windows Program Files Known Folder for Claude Code managed policy: %w", err)
+		return "", fmt.Errorf("resolve trusted Windows Program Files for Claude Code managed policy: %w", err)
 	}
 	root = strings.TrimSpace(root)
 	if root == "" || !filepath.IsAbs(root) {
-		return "", fmt.Errorf("resolve Windows Program Files Known Folder for Claude Code managed policy: invalid path %q", root)
+		return "", fmt.Errorf("resolve trusted Windows Program Files for Claude Code managed policy: invalid path %q", root)
 	}
 	return filepath.Join(filepath.Clean(root), "ClaudeCode"), nil
 }

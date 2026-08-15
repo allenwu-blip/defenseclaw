@@ -102,9 +102,9 @@ func TestWindowsEnterpriseEmbeddedPayloadStagingWithRestrictedEnvironment(t *tes
 			t.Fatalf("resolve roots for trusted child environment assertion: %v", err)
 		}
 		for name, want := range map[string]string{
-			"programdata":       roots.programData,
-			"programfiles":      roots.programFiles,
-			"programfiles(x86)": roots.programFilesX86,
+			"programdata":       roots.ProgramData,
+			"programfiles":      roots.ProgramFiles,
+			"programfiles(x86)": roots.ProgramFilesX86,
 			"temp":              powerShellTemp,
 			"tmp":               powerShellTemp,
 		} {
@@ -170,9 +170,9 @@ func TestResolveWindowsEnterpriseMachineRootsIgnoresProcessEnvironment(t *testin
 		t.Fatalf("resolve fixed machine roots: %v", err)
 	}
 	for label, root := range map[string]string{
-		"ProgramData":       roots.programData,
-		"Program Files":     roots.programFiles,
-		"Program Files x86": roots.programFilesX86,
+		"ProgramData":       roots.ProgramData,
+		"Program Files":     roots.ProgramFiles,
+		"Program Files x86": roots.ProgramFilesX86,
 	} {
 		if strings.EqualFold(root, poison) || !filepath.IsAbs(root) {
 			t.Fatalf("%s machine root = %q, want absolute non-environment value", label, root)

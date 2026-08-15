@@ -19,8 +19,8 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/enterprisehooks"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/managed"
+	"github.com/defenseclaw/defenseclaw/internal/winpath"
 	"github.com/spf13/cobra"
-	"golang.org/x/sys/windows"
 )
 
 var (
@@ -223,9 +223,9 @@ func resolveWindowsCodexRequirementsLayout(
 		return opts, err
 	}
 
-	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, windows.KF_FLAG_DEFAULT)
+	programData, err := winpath.TrustedProgramData()
 	if err != nil {
-		return opts, fmt.Errorf("resolve ProgramData: %w", err)
+		return opts, fmt.Errorf("resolve trusted ProgramData: %w", err)
 	}
 	requirementsPath := filepath.Join(programData, "OpenAI", "Codex", "requirements.toml")
 	enterpriseTargetEnabled, codexTargetEnabled, claudeTargetEnabled, err :=

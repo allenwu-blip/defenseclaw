@@ -420,6 +420,7 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 	guardianWait := windowsPowerShellFunction(t, module, "Wait-DefenseClawFreshGuardianReconcile")
 	services := windowsPowerShellFunction(t, module, "Set-DefenseClawManagedServices")
 	requirements := windowsPowerShellFunction(t, module, "Invoke-DefenseClawCodexRequirementsCommand")
+	teardown := windowsPowerShellFunction(t, module, "Invoke-DefenseClawManagedHooksTeardownCommand")
 
 	for label, body := range map[string]string{"native": native, "gateway": gateway} {
 		if strings.Contains(body, "$LASTEXITCODE") ||
@@ -471,6 +472,13 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 	firstSuccessPath := strings.Index(requirements, "@('requirements_path'")
 	if failureCheck < 0 || firstSuccessPath < 0 || failureCheck > firstSuccessPath {
 		t.Fatal("Codex requirements failure is masked by success-layout validation")
+	}
+	teardownFailureCheck := strings.Index(teardown, "if ([int]$probe.exit_code -ne 0")
+	teardownFirstSuccessPath := strings.Index(teardown, "@('manifest_path'")
+	if teardownFailureCheck < 0 || teardownFirstSuccessPath < 0 ||
+		teardownFailureCheck > teardownFirstSuccessPath ||
+		!strings.Contains(teardown, "ConvertTo-DefenseClawBoundedDiagnostic -Value $detail") {
+		t.Fatal("managed-hook teardown failure is masked by success-layout validation")
 	}
 }
 

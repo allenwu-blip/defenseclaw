@@ -873,9 +873,9 @@ func windowsClaudeManagedPolicyPath() (string, error) {
 }
 
 func defaultWindowsClaudeManagedPolicyPath() (string, error) {
-	programFiles, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, windows.KF_FLAG_DEFAULT)
+	programFiles, err := winpath.TrustedProgramFiles()
 	if err != nil {
-		return "", fmt.Errorf("enterprise hooks: resolve Program Files known folder: %w", err)
+		return "", fmt.Errorf("enterprise hooks: resolve trusted Program Files: %w", err)
 	}
 	return filepath.Join(programFiles, "ClaudeCode", "managed-settings.d", windowsClaudeManagedPolicyFile), nil
 }

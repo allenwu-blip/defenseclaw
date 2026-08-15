@@ -54,6 +54,10 @@ WINDOWS_CODEX_REQUIREMENTS = ROOT / "internal" / "cli" / "windows_codex_requirem
 WINDOWS_CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_machine_requirements_windows.go"
 CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_machine_requirements.go"
 WINDOWS_CLAUDE_POLICY = ROOT / "internal" / "gateway" / "connector" / "claudecode_policy_windows.go"
+WINDOWS_MACHINE_ROOTS = ROOT / "internal" / "winpath" / "machine_roots_windows.go"
+WINDOWS_CODEX_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_policy_windows.go"
+WINDOWS_MANAGED_RUNTIME = ROOT / "internal" / "enterprisehooks" / "managed_runtime_windows.go"
+WINDOWS_MANAGED_POLICY = ROOT / "internal" / "enterprisehooks" / "managed_policy_windows.go"
 POWERSHELL = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
 
 
@@ -345,11 +349,12 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
     assert "'sdset', $service, $script:ServiceSDDL" in module
 
 
-def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
+def test_enterprise_process_json_and_machine_root_contracts() -> None:
     module = read(MODULE)
     module_smoke = read(MODULE_SMOKE)
     codex_requirements = read(WINDOWS_CODEX_REQUIREMENTS)
     claude_policy = read(WINDOWS_CLAUDE_POLICY)
+    machine_roots = read(WINDOWS_MACHINE_ROOTS)
 
     assert "$LASTEXITCODE" not in module
     for contract in (
@@ -382,12 +387,33 @@ def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
     assert requirements_report.index("if ([int]$probe.exit_code -ne 0") < requirements_report.index(
         "@('requirements_path'"
     )
+    teardown_report = module[
+        module.index("function Invoke-DefenseClawManagedHooksTeardownCommand") :
+        module.index("function Assert-DefenseClawInstalledConfig")
+    ]
+    assert teardown_report.index("if ([int]$probe.exit_code -ne 0") < teardown_report.index(
+        "@('manifest_path'"
+    )
+    assert "ConvertTo-DefenseClawBoundedDiagnostic -Value $detail" in teardown_report
     assert "body = trimWindowsJSONBOM(body)" in codex_requirements
     assert "bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf})" in codex_requirements
 
-    assert "windows.KnownFolderPath(" in claude_policy
-    assert "windows.FOLDERID_ProgramFiles" in claude_policy
-    assert "windows.KF_FLAG_DEFAULT" in claude_policy
+    for contract in (
+        "registry.QUERY_VALUE|registry.WOW64_64KEY",
+        '"Common AppData"',
+        "valueType != registry.SZ",
+        "ValidateFixedNTFSMountedPath(clean)",
+        "windows.FILE_ATTRIBUTE_REPARSE_POINT",
+    ):
+        assert contract in machine_roots
+    assert "winpath.TrustedProgramData()" in codex_requirements
+    assert "winpath.TrustedProgramData()" in read(WINDOWS_CODEX_POLICY)
+    assert "winpath.TrustedProgramData()" in read(WINDOWS_MANAGED_RUNTIME)
+    assert "winpath.TrustedProgramFiles()" in read(WINDOWS_MANAGED_POLICY)
+    assert "winpath.TrustedProgramData" in read(WINDOWS_CODEX_MACHINE_POLICY)
+
+    assert "winpath.TrustedProgramFiles" in claude_policy
+    assert "windows.KnownFolderPath(" not in claude_policy
     assert "CurrentUserKnownFolderPath" not in claude_policy
 
 

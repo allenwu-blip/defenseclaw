@@ -885,6 +885,48 @@ else {
     }
 }
 
+$teardownFailurePreserved = & $module {
+    function script:Assert-DefenseClawAdministrator {}
+    function script:Invoke-DefenseClawGatewayCommand {
+        param(
+            [hashtable]$Layout,
+            [string]$GatewayServiceName,
+            [object[]]$Arguments,
+            [switch]$Capture,
+            [switch]$AllowFailure
+        )
+        return [pscustomobject]@{
+            exit_code = 1
+            output = @(
+                '{"schema_version":1,"action":"prepare","ok":false,"error":"resolve trusted ProgramData: restricted fixture"}'
+            )
+        }
+    }
+    $failureLayout = @{
+        ManifestPath = 'C:\missing\targets.yaml'
+        ManagedHooksTeardownJournalPath = 'C:\missing\managed-hooks-teardown.json'
+    }
+    $caught = $null
+    try {
+        [void](Invoke-DefenseClawManagedHooksTeardownCommand `
+            -Layout $failureLayout `
+            -GatewayServiceName 'DefenseClawGateway' `
+            -Action prepare)
+    }
+    catch {
+        $caught = [string]$_.Exception.Message
+    }
+    if ([string]::IsNullOrWhiteSpace($caught) -or
+        $caught -notmatch 'resolve trusted ProgramData: restricted fixture' -or
+        $caught -match 'missing (manifest_path|journal_path)') {
+        throw "failed managed-hook teardown masked its original error: $caught"
+    }
+    return $true
+}
+if (-not [bool]$teardownFailurePreserved) {
+    throw 'failed managed-hook teardown diagnostic regression did not execute'
+}
+
 [pscustomobject]@{
     schema_version = 1
     ok = $true
@@ -897,6 +939,7 @@ else {
     fixed_native_helper_spoof_ignored = $true
     command_line_empty_argument_round_trip = $true
     command_line_invalid_arguments_rejected = $true
+    teardown_failure_diagnostic_preserved = $teardownFailurePreserved
     production_codex_home_absent = $true
     certification_codex_home_exact = $true
     certification_scope_rejections = $true

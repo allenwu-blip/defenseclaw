@@ -6850,6 +6850,23 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
     if ([string]$report.action -cne $Action) {
         throw "managed-hook teardown report action mismatch: $($report.action)"
     }
+    $reportOK = $report.PSObject.Properties['ok']
+    if ($null -eq $reportOK -or $reportOK.Value -isnot [bool]) {
+        throw 'managed-hook teardown report is missing boolean ok'
+    }
+    # Failure reports cannot safely attest success-only paths or counts. Surface
+    # their bounded original diagnostic before validating those fields so a
+    # bootstrap/layout failure is not replaced by a secondary schema complaint.
+    if ([int]$probe.exit_code -ne 0 -or -not [bool]$reportOK.Value) {
+        $detail = if (-not [string]::IsNullOrWhiteSpace([string]$report.error)) {
+            [string]$report.error
+        }
+        else {
+            $probe.output
+        }
+        $detail = ConvertTo-DefenseClawBoundedDiagnostic -Value $detail
+        throw "managed-hook teardown $Action failed: $detail"
+    }
     foreach ($pair in @(
         @('manifest_path', $Layout.ManifestPath),
         @('journal_path', $Layout.ManagedHooksTeardownJournalPath)
@@ -6923,15 +6940,6 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
             }
             throw "managed-hook teardown did not complete target $($row.connector)@$($row.sid)$rowDetail"
         }
-    }
-    if ([int]$probe.exit_code -ne 0 -or -not [bool]$report.ok) {
-        $detail = if (-not [string]::IsNullOrWhiteSpace([string]$report.error)) {
-            [string]$report.error
-        }
-        else {
-            (($probe.output | Microsoft.PowerShell.Utility\Out-String).Trim())
-        }
-        throw "managed-hook teardown $Action failed: $detail"
     }
     if ($counts.failed_count -ne 0 -or
         $counts.succeeded_count -ne $counts.target_count) {
