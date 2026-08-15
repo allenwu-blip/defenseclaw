@@ -1604,6 +1604,11 @@ function ConvertTo-DefenseClawWindowsCommandLine {
     )
     $encoded = [Collections.Generic.List[string]]::new()
     foreach ($argument in $Arguments) {
+        # Validate the collection element before PowerShell binds it to the
+        # scalar [string] parameter, which would coerce $null to ''.
+        if ($null -eq $argument) {
+            throw 'native process argument is null or contains NUL'
+        }
         $encoded.Add((
             ConvertTo-DefenseClawWindowsCommandLineArgument `
                 -Argument $argument

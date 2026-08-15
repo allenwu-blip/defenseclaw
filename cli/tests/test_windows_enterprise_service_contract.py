@@ -369,6 +369,7 @@ def test_enterprise_process_json_and_machine_known_folder_contracts() -> None:
     assert "[AllowEmptyString()]" in command_line_encoder
     assert "[ValidateNotNull()]" in command_line_encoder
     assert "[string[]]$Arguments" in command_line_encoder
+    assert "$null -eq $argument" in command_line_encoder
     assert "CharSet = CharSet.Unicode" in module_smoke
     assert "ExactSpelling = true" in module_smoke
     assert module.count("Assert-DefenseClawServiceImagePath `") == 2
