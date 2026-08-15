@@ -2462,7 +2462,15 @@ function Install-DefenseClawFileAtomic {
                 throw "source changed while staging managed artifact: $Source"
             }
         }
-        Microsoft.PowerShell.Management\Move-Item -LiteralPath $temporary -Destination $Destination -Force
+        if ([IO.File]::Exists($Destination)) {
+            # Move-Item -Force does not reliably replace an existing file on
+            # Windows PowerShell 5.1. File.Replace keeps rollback and repair
+            # idempotent without introducing a delete-before-move gap.
+            [IO.File]::Replace($temporary, $Destination, $null, $true)
+        }
+        else {
+            [IO.File]::Move($temporary, $Destination)
+        }
     }
     finally {
         if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $temporary) {
@@ -7945,6 +7953,25 @@ function Get-DefenseClawServiceState {
     return $service.Status.ToString().ToLowerInvariant()
 }
 
+function ConvertTo-DefenseClawBoundedDiagnostic {
+    param(
+        [AllowNull()]$Value,
+        [ValidateRange(64, 4096)][int]$MaxLength = 2048
+    )
+    $text = (($Value | Microsoft.PowerShell.Utility\Out-String).Trim())
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return 'unavailable'
+    }
+    $text = $text -replace '[\x00-\x1f\x7f]+', ' '
+    $text = $text -replace '(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+', 'Bearer <redacted>'
+    $text = $text -replace '(?i)\b(password|passwd|secret|token|api[_-]?key)\s*[:=]\s*(?:"[^"]*"|''[^'']*''|[^,;\s]+)', '$1=<redacted>'
+    $text = $text.Trim()
+    if ($text.Length -gt $MaxLength) {
+        return $text.Substring(0, $MaxLength - 3) + '...'
+    }
+    return $text
+}
+
 function Get-DefenseClawGuardianStatusReport {
     param(
         [Parameter(Mandatory)][hashtable]$Layout,
@@ -7971,9 +7998,19 @@ function Get-DefenseClawGuardianStatusReport {
         }
     }
     catch {
-        return $null
+        return [pscustomobject][ordered]@{
+            ok = $false
+            errors = @(
+                "guardian status command failed: $(ConvertTo-DefenseClawBoundedDiagnostic -Value $_.Exception.Message)"
+            )
+        }
     }
-    return $null
+    return [pscustomobject][ordered]@{
+        ok = $false
+        errors = @(
+            "guardian status command exited $($probe.exit_code) without a valid JSON report: $(ConvertTo-DefenseClawBoundedDiagnostic -Value $probe.output)"
+        )
+    }
 }
 
 function Get-DefenseClawLifecycleStatus {
@@ -8160,6 +8197,7 @@ function Wait-DefenseClawFreshGuardianReconcile {
     Start-DefenseClawService -Name $GuardianServiceName
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $lastStatus = 'guardian status report unavailable'
     do {
         $report = Get-DefenseClawGuardianStatusReport `
             -Layout $Layout `
@@ -8168,6 +8206,26 @@ function Wait-DefenseClawFreshGuardianReconcile {
             $null -ne $report.PSObject.Properties['ok'] -and
             [bool]$report.ok
         $generation = if ($reportOK) { Get-DefenseClawGuardianGeneration -Report $report } else { $null }
+        if (-not $reportOK) {
+            $issues = [Collections.Generic.List[string]]::new()
+            if ($null -ne $report -and $null -ne $report.PSObject.Properties['errors']) {
+                foreach ($issue in @($report.PSObject.Properties['errors'].Value)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$issue)) {
+                        $issues.Add([string]$issue)
+                    }
+                }
+            }
+            if ($issues.Count -eq 0) {
+                $issues.Add('guardian status reported ok=false without an error')
+            }
+            $lastStatus = ConvertTo-DefenseClawBoundedDiagnostic -Value ($issues -join '; ')
+        }
+        elseif ($null -eq $generation) {
+            $lastStatus = 'guardian status reported ok=true without a generation'
+        }
+        else {
+            $lastStatus = "guardian status generation '$generation' is not fresh"
+        }
         if ($null -ne $generation) {
             try {
                 $generationTime = [DateTime]::Parse(
@@ -8182,11 +8240,13 @@ function Wait-DefenseClawFreshGuardianReconcile {
             }
             catch {
                 # Keep waiting for a complete, parseable guardian record.
+                $lastStatus = ConvertTo-DefenseClawBoundedDiagnostic `
+                    -Value "guardian status generation '$generation' is invalid: $($_.Exception.Message)"
             }
         }
         Microsoft.PowerShell.Utility\Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw "LocalSystem guardian restarted but did not publish a fresh reconcile within $TimeoutSeconds seconds"
+    throw "LocalSystem guardian restarted but did not publish a fresh reconcile within $TimeoutSeconds seconds; last_status=$lastStatus"
 }
 
 function Assert-DefenseClawManagedInstallTree {

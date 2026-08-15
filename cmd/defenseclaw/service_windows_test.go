@@ -413,7 +413,11 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 	native := windowsPowerShellFunction(t, module, "Invoke-DefenseClawNative")
 	gateway := windowsPowerShellFunction(t, module, "Invoke-DefenseClawGatewayCommand")
 	process := windowsPowerShellFunction(t, module, "Invoke-DefenseClawProcess")
+	installer := windowsPowerShellFunction(t, module, "Install-DefenseClawFileAtomic")
 	writer := windowsPowerShellFunction(t, module, "Write-DefenseClawJsonAtomic")
+	diagnostic := windowsPowerShellFunction(t, module, "ConvertTo-DefenseClawBoundedDiagnostic")
+	guardianStatus := windowsPowerShellFunction(t, module, "Get-DefenseClawGuardianStatusReport")
+	guardianWait := windowsPowerShellFunction(t, module, "Wait-DefenseClawFreshGuardianReconcile")
 	services := windowsPowerShellFunction(t, module, "Set-DefenseClawManagedServices")
 	requirements := windowsPowerShellFunction(t, module, "Invoke-DefenseClawCodexRequirementsCommand")
 
@@ -438,6 +442,24 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 	if !strings.Contains(writer, "[Text.UTF8Encoding]::new($false)") ||
 		strings.Contains(writer, "Set-Content") {
 		t.Fatal("atomic JSON writer is not pinned to BOM-less UTF-8")
+	}
+	if !strings.Contains(installer, "[IO.File]::Replace($temporary, $Destination, $null, $true)") ||
+		strings.Contains(installer, "Move-Item -LiteralPath $temporary -Destination $Destination -Force") {
+		t.Fatal("managed artifact replacement is not atomic and idempotent")
+	}
+	if !strings.Contains(guardianStatus, "without a valid JSON report") ||
+		!strings.Contains(guardianWait, "last_status=$lastStatus") ||
+		!strings.Contains(guardianWait, "PSObject.Properties['errors']") {
+		t.Fatal("fresh guardian wait discards the bounded status failure diagnostic")
+	}
+	for _, contract := range []string{
+		"[ValidateRange(64, 4096)][int]$MaxLength = 2048",
+		"Bearer <redacted>",
+		"$text.Substring(0, $MaxLength - 3) + '...'",
+	} {
+		if !strings.Contains(diagnostic, contract) {
+			t.Fatalf("guardian failure diagnostic missing safety contract %q", contract)
+		}
 	}
 	if strings.Count(services, "Assert-DefenseClawServiceImagePath `") != 2 {
 		t.Fatal("service creation does not immediately verify both ImagePath values")

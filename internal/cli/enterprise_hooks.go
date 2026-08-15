@@ -59,11 +59,14 @@ var (
 	enterpriseHookWatchDebounce time.Duration
 	enterpriseHookWatchSettle   time.Duration
 
-	enterpriseHooksRuntimeGOOS                 = func() string { return runtime.GOOS }
-	enterpriseHooksPlatformPreflight           = enterpriseHooksNativePlatformPreflight
-	enterpriseHooksMutationIdentityPreflight   = enterpriseHooksNativeMutationIdentityPreflight
-	enterpriseHooksRootPersistentPreRun        = enterpriseHooksNativePersistentPreRun
-	enterpriseHooksFullRootPersistentPreRun    = rootPersistentPreRunE
+	enterpriseHooksRuntimeGOOS                = func() string { return runtime.GOOS }
+	enterpriseHooksPlatformPreflight          = enterpriseHooksNativePlatformPreflight
+	enterpriseHooksMutationIdentityPreflight  = enterpriseHooksNativeMutationIdentityPreflight
+	enterpriseHooksRootPersistentPreRun       = enterpriseHooksNativePersistentPreRun
+	enterpriseHooksFullRootPersistentPreRun   = rootPersistentPreRunE
+	enterpriseHooksConfigOnlyPersistentPreRun = func(*cobra.Command, []string) error {
+		return loadGatewayCommandConfigOnly()
+	}
 	enterpriseHooksPluginRegistryFactory       = newConnectorRegistryWithPlugins
 	enterpriseHooksCertifiedRegistryFactory    = newWindowsEnterpriseCertifiedConnectorRegistry
 	enterpriseHooksInstallRunE                 = runEnterpriseHooksInstall

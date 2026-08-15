@@ -1386,6 +1386,46 @@ def test_lifecycle_reauthenticates_volumes_and_sources_at_last_use() -> None:
     )
 
 
+def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> None:
+    module = read(MODULE)
+    atomic_install = module[
+        module.index("function Install-DefenseClawFileAtomic") : module.index(
+            "function Write-DefenseClawJsonAtomic"
+        )
+    ]
+    assert "[IO.File]::Replace($temporary, $Destination, $null, $true)" in atomic_install
+    assert (
+        "Move-Item -LiteralPath $temporary -Destination $Destination -Force"
+        not in atomic_install
+    )
+
+    diagnostic = module[
+        module.index("function ConvertTo-DefenseClawBoundedDiagnostic") : module.index(
+            "function Get-DefenseClawGuardianStatusReport"
+        )
+    ]
+    for contract in (
+        "[ValidateRange(64, 4096)][int]$MaxLength = 2048",
+        "Bearer <redacted>",
+        "$text.Substring(0, $MaxLength - 3) + '...'",
+    ):
+        assert contract in diagnostic
+
+    report = module[
+        module.index("function Get-DefenseClawGuardianStatusReport") : module.index(
+            "function Get-DefenseClawLifecycleStatus"
+        )
+    ]
+    wait = module[
+        module.index("function Wait-DefenseClawFreshGuardianReconcile") : module.index(
+            "function Assert-DefenseClawManagedInstallTree"
+        )
+    ]
+    assert "without a valid JSON report" in report
+    assert "PSObject.Properties['errors']" in wait
+    assert "last_status=$lastStatus" in wait
+
+
 def test_certification_inspects_actual_live_service_tokens() -> None:
     harness = read(HARNESS)
 
@@ -2278,6 +2318,95 @@ def test_normal_mode_empty_service_inventory_is_strict_mode_safe(
     )
     assert result.returncode == 0, (
         f"empty service inventory failed under {engine}\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "ok"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
+@pytest.mark.parametrize(
+    "engine",
+    windows_powershell_engines() or (None,),
+    ids=lambda engine: Path(engine).stem if engine else "missing",
+)
+def test_atomic_managed_file_replacement_is_idempotent_on_every_engine(
+    engine: str | None,
+    tmp_path: Path,
+) -> None:
+    assert engine, "Windows CI must provide Windows PowerShell 5.1 or PowerShell 7"
+    module = read(MODULE)
+    atomic_install = module[
+        module.index("function Install-DefenseClawFileAtomic") : module.index(
+            "function Write-DefenseClawJsonAtomic"
+        )
+    ]
+    probe = tmp_path / f"atomic-file-replacement-{Path(engine).stem}.ps1"
+    probe.write_text(
+        "Set-StrictMode -Version Latest\n"
+        "$ErrorActionPreference = 'Stop'\n"
+        "function Assert-DefenseClawNoReparsePath {\n"
+        "    param([Parameter(Mandatory)][string]$Path, "
+        "[switch]$AllowMissingLeaf)\n"
+        "}\n"
+        "function New-DefenseClawDirectory {\n"
+        "    param([Parameter(Mandatory)][string]$Path)\n"
+        "    [void][IO.Directory]::CreateDirectory($Path)\n"
+        "}\n"
+        + atomic_install
+        + r'''
+$root = [IO.Path]::Combine(
+    [IO.Path]::GetTempPath(),
+    "DefenseClaw-AtomicFile-$([Guid]::NewGuid().ToString('N'))"
+)
+[void][IO.Directory]::CreateDirectory($root)
+try {
+    $source = [IO.Path]::Combine($root, 'source.txt')
+    $destination = [IO.Path]::Combine($root, 'destination.txt')
+    [IO.File]::WriteAllText($source, 'first')
+    [IO.File]::WriteAllText($destination, 'old')
+    Install-DefenseClawFileAtomic -Source $source -Destination $destination
+    if ([IO.File]::ReadAllText($destination) -cne 'first') {
+        throw 'first existing-destination replacement was not exact'
+    }
+    [IO.File]::WriteAllText($source, 'second')
+    Install-DefenseClawFileAtomic -Source $source -Destination $destination
+    if ([IO.File]::ReadAllText($destination) -cne 'second') {
+        throw 'repeated existing-destination replacement was not exact'
+    }
+    if (@([IO.Directory]::GetFiles($root, 'destination.txt.new.*')).Count -ne 0) {
+        throw 'atomic replacement left a staged file behind'
+    }
+    'ok'
+}
+finally {
+    if ([IO.Directory]::Exists($root)) {
+        [IO.Directory]::Delete($root, $true)
+    }
+}
+''',
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            engine,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(probe),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8-sig",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"atomic managed file replacement failed under {engine}\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     assert result.stdout.strip() == "ok"
