@@ -6218,70 +6218,98 @@ function Read-PID([string]$Path) {
     return [int]$record.pid
 }
 
-function Get-CodexHookFingerprint([string]$Text, [string]$ExpectedHook) {
+function Get-CodexManagedHookFingerprint(
+    [string]$Text,
+    [string]$ExpectedHook
+) {
     $hookTable = [regex]::Match(
         $Text,
         '(?ms)^\[hooks\]\s*\r?\n.*?(?=^\[(?!hooks(?:\.|\]))[^\]]+\]\s*$|\z)'
     )
     if (-not $hookTable.Success) {
-        throw 'Codex registration has no owned [hooks] table'
+        throw 'Codex managed registration has no owned [hooks] table'
     }
-    $commandLiteral = [regex]::Match(
+    $eventMatches = @([regex]::Matches(
         $hookTable.Value,
-        'command_windows\s*=\s*(?<literal>"(?:\\.|[^"\\])*"|''[^'']*'')'
-    )
-    if (-not $commandLiteral.Success) {
-        throw 'Codex registration has no Windows hook command'
-    }
-    $literal = $commandLiteral.Groups['literal'].Value
-    if ($literal.StartsWith("'", [StringComparison]::Ordinal)) {
-        $command = $literal.Substring(1, $literal.Length - 2)
-    } else {
-        $command = $literal | ConvertFrom-Json -ErrorAction Stop
-    }
-    $encoded = [regex]::Match(
-        $command,
-        '(?i)(?:^|\s)-EncodedCommand\s+([A-Za-z0-9+/=]+)(?:\s|$)'
-    )
-    if (-not $encoded.Success) {
-        throw 'Codex Windows hook command is not encoded'
-    }
-    $decoded = [Text.Encoding]::Unicode.GetString(
-        [Convert]::FromBase64String($encoded.Groups[1].Value)
-    )
-    if ($decoded.IndexOf(
-            $ExpectedHook,
-            [StringComparison]::OrdinalIgnoreCase
-        ) -lt 0 -or
-        $decoded -notmatch '(?i)\bhook\s+--connector\s+codex\b') {
-        throw 'Codex Windows hook command does not name the exact candidate hook'
-    }
+        '(?m)^\[\[hooks\.(PreToolUse|PermissionRequest|PostToolUse|SubagentStart|SubagentStop|PreCompact|PostCompact|SessionStart|UserPromptSubmit|Stop)\]\]\s*$'
+    ))
     $events = @(
-        [regex]::Matches(
-            $hookTable.Value,
-            '(?m)^\[\[hooks\.(PreToolUse|PermissionRequest|PostToolUse|SubagentStart|SubagentStop|PreCompact|PostCompact|SessionStart|UserPromptSubmit|Stop)\]\]\s*$'
-        ) |
+        $eventMatches |
             ForEach-Object { $_.Groups[1].Value } |
             Sort-Object -Unique
     )
-    $hashes = @(
-        [regex]::Matches(
-            $hookTable.Value,
-            '(?m)^\s*trusted_hash\s*=\s*[''"](?<hash>sha256:[0-9a-fA-F]{64})[''"]\s*$'
-        ) |
-            ForEach-Object { $_.Groups['hash'].Value.ToLowerInvariant() } |
-            Sort-Object
-    )
-    if ($events.Count -ne 10 -or $hashes.Count -ne 10) {
+    if ($eventMatches.Count -ne 10 -or $events.Count -ne 10) {
         throw (
-            'Codex owned registration is incomplete: ' +
-            "events=$($events.Count) trusted_hashes=$($hashes.Count)"
+            'Codex managed registration is incomplete: ' +
+            "event_tables=$($eventMatches.Count) unique_events=$($events.Count)"
         )
     }
+    $commandLiterals = @(
+        for ($eventIndex = 0; $eventIndex -lt $eventMatches.Count; $eventIndex++) {
+            $segmentStart = $eventMatches[$eventIndex].Index
+            $segmentEnd = if ($eventIndex + 1 -lt $eventMatches.Count) {
+                $eventMatches[$eventIndex + 1].Index
+            } else {
+                $hookTable.Value.Length
+            }
+            $segment = $hookTable.Value.Substring(
+                $segmentStart,
+                $segmentEnd - $segmentStart
+            )
+            $segmentCommands = @([regex]::Matches(
+                $segment,
+                'command_windows\s*=\s*(?<literal>"(?:\\.|[^"\\])*"|''[^'']*'')'
+            ))
+            if ($segmentCommands.Count -ne 1) {
+                throw (
+                    'Codex managed registration has the wrong Windows ' +
+                    "handler count for $($eventMatches[$eventIndex].Groups[1].Value): " +
+                    $segmentCommands.Count
+                )
+            }
+            $segmentCommands[0]
+        }
+    )
+    $privateTrustHashes = @([regex]::Matches(
+        $hookTable.Value,
+        '(?m)^\s*trusted_hash\s*='
+    ))
+    if ($privateTrustHashes.Count -ne 0) {
+        throw 'Codex managed registration synthesized private trusted_hash state'
+    }
+    $decodedCommands = @(
+        foreach ($commandLiteral in $commandLiterals) {
+            $literal = $commandLiteral.Groups['literal'].Value
+            if ($literal.StartsWith("'", [StringComparison]::Ordinal)) {
+                $command = $literal.Substring(1, $literal.Length - 2)
+            } else {
+                $command = $literal | ConvertFrom-Json -ErrorAction Stop
+            }
+            $encoded = [regex]::Match(
+                $command,
+                '(?i)(?:^|\s)-EncodedCommand\s+([A-Za-z0-9+/=]+)(?:\s|$)'
+            )
+            if (-not $encoded.Success) {
+                throw 'Codex Windows managed hook command is not encoded'
+            }
+            $decoded = [Text.Encoding]::Unicode.GetString(
+                [Convert]::FromBase64String($encoded.Groups[1].Value)
+            )
+            if ($decoded.IndexOf(
+                    $ExpectedHook,
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -lt 0 -or
+                $decoded -notmatch '(?i)\bhook\s+--connector\s+codex\b') {
+                throw 'Codex Windows managed hook command does not name the exact candidate hook'
+            }
+            $decoded
+        }
+    )
     return [pscustomobject]@{
         events = $events
-        trusted_hashes = $hashes
-        decoded_command = $decoded
+        command_windows_count = $commandLiterals.Count
+        decoded_commands = $decodedCommands
+        trust_model = 'managed_source'
         table_index = $hookTable.Index
         table_length = $hookTable.Length
     }
@@ -6758,7 +6786,8 @@ try {
     $setupOutput = [string]$setupProcess.StdOut
     $logs.Add($setupOutput.Trim())
 
-    $nativeConfig = Join-Path $codexHome 'config.toml'
+    $userConfig = Join-Path $codexHome 'config.toml'
+    $managedConfig = Join-Path $codexHome 'managed_config.toml'
     $gatewayPIDPath = Join-Path $dataRoot 'gateway.pid'
     $watchdogPIDPath = Join-Path $dataRoot 'watchdog.pid'
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(60)
@@ -6769,9 +6798,9 @@ try {
             $watchdogPID = Read-PID $watchdogPIDPath
             $gatewayExecutable = Get-ProcessExecutable $gatewayPID
             $watchdogExecutable = Get-ProcessExecutable $watchdogPID
-            $nativeText = Read-SharedText $nativeConfig
-            $candidateFingerprint = Get-CodexHookFingerprint `
-                $nativeText `
+            $managedText = Read-SharedText $managedConfig
+            $candidateFingerprint = Get-CodexManagedHookFingerprint `
+                $managedText `
                 $hook
             if ($gatewayExecutable.Equals(
                     $gateway,
@@ -6792,10 +6821,16 @@ try {
     }
 
     Start-Sleep -Seconds 5
-    $baselineText = Read-SharedText $nativeConfig
-    $baselineFingerprint = Get-CodexHookFingerprint $baselineText $hook
+    $userText = Read-SharedText $userConfig
+    if ($userText -match '(?m)^\[hooks\]\s*$') {
+        throw 'normal-mode setup wrote the managed hook matrix into user config.toml'
+    }
+    $baselineText = Read-SharedText $managedConfig
+    $baselineFingerprint = Get-CodexManagedHookFingerprint `
+        $baselineText `
+        $hook
     $fingerprintJSON = $baselineFingerprint |
-        Select-Object events, trusted_hashes, decoded_command |
+        Select-Object events, command_windows_count, decoded_commands, trust_model |
         ConvertTo-Json -Compress -Depth 4
     $fingerprintSHA256 = Get-BytesSHA256 (
         [Text.Encoding]::UTF8.GetBytes($fingerprintJSON)
@@ -6812,18 +6847,18 @@ try {
         $hookTable.Length
     )
     [IO.File]::WriteAllText(
-        $nativeConfig,
+        $managedConfig,
         $outsideBefore,
         [Text.UTF8Encoding]::new($false)
     )
     try {
-        $null = Get-CodexHookFingerprint `
-            (Read-SharedText $nativeConfig) `
+        $null = Get-CodexManagedHookFingerprint `
+            (Read-SharedText $managedConfig) `
             $hook
         throw 'normal-mode hook removal did not remove the owned registration'
     } catch {
         if ($_.Exception.Message -notlike
-            'Codex registration has no owned*') {
+            'Codex managed registration has no owned*') {
             throw
         }
     }
@@ -6832,12 +6867,12 @@ try {
     $deadline = $repairStarted.AddSeconds(60)
     while ([DateTimeOffset]::UtcNow -lt $deadline) {
         try {
-            $restoredText = Read-SharedText $nativeConfig
-            $restoredFingerprint = Get-CodexHookFingerprint `
+            $restoredText = Read-SharedText $managedConfig
+            $restoredFingerprint = Get-CodexManagedHookFingerprint `
                 $restoredText `
                 $hook
             $restoredJSON = $restoredFingerprint |
-                Select-Object events, trusted_hashes, decoded_command |
+                Select-Object events, command_windows_count, decoded_commands, trust_model |
                 ConvertTo-Json -Compress -Depth 4
             $restoredTable = [regex]::Match(
                 $restoredText,
@@ -6862,7 +6897,7 @@ try {
     if (-not $healed) {
         throw (
             'normal-mode hook self-heal did not restore the exact owned ' +
-            'Codex event/hash contract while preserving unrelated settings'
+            'Codex managed event/command contract while preserving unrelated settings'
         )
     }
 } finally {
@@ -6966,6 +7001,9 @@ try {
     sid = $sid
     deployment_mode = 'unmanaged_byod'
     hook_self_heal = $healed
+    hook_registration_path = $managedConfig
+    hook_registration_source = 'managed_config.toml'
+    hook_trust_model = 'managed_source'
     owned_hook_fingerprint_sha256 = $fingerprintSHA256
     repair_milliseconds = $repairMilliseconds
     gateway_pid = $gatewayPID
@@ -6995,6 +7033,14 @@ try {
         -not [bool]$result.hook_self_heal -or
         [string]::IsNullOrWhiteSpace(
             [string]$result.owned_hook_fingerprint_sha256
+        ) -or
+        [string]$result.hook_registration_source -cne
+            'managed_config.toml' -or
+        [string]$result.hook_trust_model -cne 'managed_source' -or
+        -not [string]::Equals(
+            [string]$result.hook_registration_path,
+            (Join-Path $codexHome 'managed_config.toml'),
+            [StringComparison]::OrdinalIgnoreCase
         ) -or
         -not [string]::Equals(
             [string]$result.trusted_bin_prefix,

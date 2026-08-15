@@ -1931,6 +1931,17 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "'config', 'show', '--source', '--format', 'json'" in live_repair
     assert "apiPortMatches" not in live_repair
     assert "hook_self_heal:" not in live_repair
+    assert "function Get-CodexManagedHookFingerprint" in live_repair
+    assert "$managedConfig = Join-Path $codexHome 'managed_config.toml'" in live_repair
+    assert "$baselineText = Read-SharedText $managedConfig" in live_repair
+    assert "command_windows_count = $commandLiterals.Count" in live_repair
+    assert "$privateTrustHashes.Count -ne 0" in live_repair
+    assert "synthesized private trusted_hash state" in live_repair
+    assert "trust_model = 'managed_source'" in live_repair
+    assert "hook_registration_source = 'managed_config.toml'" in live_repair
+    assert "Select-Object events, trusted_hashes" not in live_repair
+    assert "WriteAllText(\n        $managedConfig," in live_repair
+    assert "wrote the managed hook matrix into user config.toml" in live_repair
 
     preinstall_live = harness.index(
         "'preinstall-normal-mode-live-hook-auto-heal-is-no-op'"
