@@ -14431,6 +14431,14 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 public static class DefenseClawHostileNative {
+    public const UInt32 GENERIC_READ = 0x80000000U;
+    public const UInt32 GENERIC_WRITE = 0x40000000U;
+    public const UInt32 DELETE_ACCESS = 0x00010000U;
+    public const UInt32 FILE_SHARE_ALL = 0x00000007U;
+    public const UInt32 OPEN_EXISTING = 3U;
+    public const UInt32 FILE_FLAG_BACKUP_SEMANTICS = 0x02000000U;
+    public const UInt32 PROCESS_QUERY_LIMITED_INFORMATION = 0x00001000U;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern IntPtr OpenProcess(
         UInt32 desiredAccess,
@@ -14480,11 +14488,11 @@ function Test-WriteHandle([string]$Name, [string]$Path) {
     $invalid = [IntPtr]::new(-1)
     $handle = [DefenseClawHostileNative]::CreateFileW(
         $Path,
-        0x40000000,
-        0x00000007,
+        [DefenseClawHostileNative]::GENERIC_WRITE,
+        [DefenseClawHostileNative]::FILE_SHARE_ALL,
         [IntPtr]::Zero,
-        3,
-        0,
+        [DefenseClawHostileNative]::OPEN_EXISTING,
+        [uint32]0,
         [IntPtr]::Zero
     )
     if ($handle -eq $invalid) {
@@ -14508,13 +14516,17 @@ function Test-DeleteHandle(
     [bool]$Directory = $false
 ) {
     $invalid = [IntPtr]::new(-1)
-    $flags = if ($Directory) { 0x02000000 } else { 0 }
+    $flags = if ($Directory) {
+        [DefenseClawHostileNative]::FILE_FLAG_BACKUP_SEMANTICS
+    } else {
+        [uint32]0
+    }
     $handle = [DefenseClawHostileNative]::CreateFileW(
         $Path,
-        0x00010000,
-        0x00000007,
+        [DefenseClawHostileNative]::DELETE_ACCESS,
+        [DefenseClawHostileNative]::FILE_SHARE_ALL,
         [IntPtr]::Zero,
-        3,
+        [DefenseClawHostileNative]::OPEN_EXISTING,
         $flags,
         [IntPtr]::Zero
     )
@@ -14643,11 +14655,11 @@ foreach ($entry in @($input.service_tokens)) {
     Test-DeleteHandle ('delete_service_token_' + $tokenName) $tokenPath
     $credentialHandle = [DefenseClawHostileNative]::CreateFileW(
         $tokenPath,
-        0x80000000,
-        0x00000007,
+        [DefenseClawHostileNative]::GENERIC_READ,
+        [DefenseClawHostileNative]::FILE_SHARE_ALL,
         [IntPtr]::Zero,
-        3,
-        0,
+        [DefenseClawHostileNative]::OPEN_EXISTING,
+        [uint32]0,
         [IntPtr]::Zero
     )
     $invalid = [IntPtr]::new(-1)
@@ -14719,7 +14731,7 @@ foreach ($process in @(
         }
     }
     $queryHandle = [DefenseClawHostileNative]::OpenProcess(
-        0x00001000,
+        [DefenseClawHostileNative]::PROCESS_QUERY_LIMITED_INFORMATION,
         $false,
         [uint32]$process.pid
     )

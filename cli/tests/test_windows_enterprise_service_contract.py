@@ -10,6 +10,7 @@ operator and trust-boundary wiring visible in ordinary Linux/macOS/Windows CI.
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import json
 import os
@@ -2954,12 +2955,140 @@ def test_non_admin_file_denials_require_access_denied_not_generic_io() -> None:
 
     assert "CreateFileW GENERIC_WRITE error" in probe
     assert "CreateFileW GENERIC_READ error" in probe
+    assert "public const UInt32 GENERIC_READ = 0x80000000U;" in probe
+    assert "[DefenseClawHostileNative]::GENERIC_READ" in probe
+    assert "\n        0x80000000," not in probe
     assert probe.count("($errorCode -eq 5)") >= 2
     assert "($credentialError -eq 5)" in probe
     assert "non-authorization I/O failure" in probe
     assert "writable key returned null without an ACCESS_DENIED exception" in probe
     assert "Add-Probe $Name $true $_.Exception.Message" not in probe
     assert "Add-Probe 'read_service_scoped_credential' $true" not in probe
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
+@pytest.mark.parametrize(
+    "engine",
+    tuple(
+        engine
+        for engine in windows_powershell_engines()
+        if Path(engine).name.casefold() == "pwsh.exe"
+    )
+    or (None,),
+    ids=lambda engine: Path(engine).stem if engine else "missing-pwsh7",
+)
+def test_generated_standard_user_native_calls_bind_under_powershell_7(
+    engine: str | None,
+    tmp_path: Path,
+) -> None:
+    assert engine, "Windows CI must provide PowerShell 7"
+    harness = read(HARNESS)
+    function = harness[
+        harness.index("function Invoke-StandardUserControlProbe") : harness.index(
+            "function Assert-ProtectedUserTamperToken"
+        )
+    ]
+    start_marker = "    $probe = @'\n"
+    end_marker = "\n'@.Replace('__INPUT__', $inputBase64)"
+    start = function.index(start_marker) + len(start_marker)
+    generated_probe = function[start : function.index(end_marker, start)]
+
+    fixture_paths: dict[str, str] = {}
+    for name in ("gateway", "hook", "config", "manifest", "ledger", "token"):
+        path = tmp_path / f"{name}.fixture"
+        path.write_text(f"{name}\n", encoding="utf-8")
+        fixture_paths[name] = str(path)
+    fake_gateway = tmp_path / "gateway.cmd"
+    fake_gateway.write_text("@exit /b 1\r\n", encoding="ascii")
+    fixture_paths["gateway"] = str(fake_gateway)
+
+    sleeper_arguments = [
+        engine,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Sleep -Seconds 120",
+    ]
+    sleepers = [
+        subprocess.Popen(
+            sleeper_arguments,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        for _ in range(2)
+    ]
+    try:
+        input_object = {
+            "gateway_service": "DefenseClawNativeBindingGatewayMissing",
+            "guardian_service": "DefenseClawNativeBindingGuardianMissing",
+            "gateway_binary": fixture_paths["gateway"],
+            "hook_binary": fixture_paths["hook"],
+            "config": fixture_paths["config"],
+            "manifest": fixture_paths["manifest"],
+            "ledger": fixture_paths["ledger"],
+            "service_tokens": [
+                {"name": "binding", "path": fixture_paths["token"]}
+            ],
+            "claude_machine_paths": [],
+            "connector": "codex",
+            "codex_target_enabled": False,
+            "codex_vendor_directory": str(tmp_path),
+            "codex_machine_policy_directory": str(tmp_path),
+            "probe_nonce": "native-binding",
+            "probe_sid": "S-1-5-21-0-0-0-1000",
+            "target_user": "binding-user",
+            "target_home": str(tmp_path),
+            "target_sid": "S-1-5-21-0-0-0-1000",
+            "gateway_pid": sleepers[0].pid,
+            "guardian_pid": sleepers[1].pid,
+        }
+        encoded_input = base64.b64encode(
+            json.dumps(input_object, separators=(",", ":")).encode("utf-8")
+        ).decode("ascii")
+        probe = tmp_path / "standard-user-native-binding-pwsh7.ps1"
+        probe.write_text(
+            generated_probe.replace("__INPUT__", encoded_input),
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [
+                engine,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(probe),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8-sig",
+            errors="replace",
+            timeout=90,
+            check=False,
+        )
+    finally:
+        for sleeper in sleepers:
+            if sleeper.poll() is None:
+                sleeper.terminate()
+            try:
+                sleeper.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                sleeper.kill()
+                sleeper.wait(timeout=10)
+
+    assert completed.returncode == 17, (
+        "the generated standard-user probe stopped before completing its native "
+        f"call matrix under {engine}\nstdout:\n{completed.stdout}\n"
+        f"stderr:\n{completed.stderr}"
+    )
+    assert "Cannot convert value \"-2147483648\" to type \"System.UInt32\"" not in (
+        completed.stderr
+    )
 
 
 def test_certification_separates_core_health_from_production_security() -> None:
