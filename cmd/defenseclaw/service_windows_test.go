@@ -443,7 +443,10 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 		strings.Contains(writer, "Set-Content") {
 		t.Fatal("atomic JSON writer is not pinned to BOM-less UTF-8")
 	}
-	if !strings.Contains(installer, "[IO.File]::Replace($temporary, $Destination, $null, $true)") ||
+	if !strings.Contains(installer, "[IO.File]::Replace($temporary, $Destination, $backup, $true)") ||
+		strings.Contains(installer, "[IO.File]::Replace($temporary, $Destination, $null, $true)") ||
+		!strings.Contains(installer, "atomic replacement verification failed") ||
+		!strings.Contains(installer, "-LiteralPath $backup `") ||
 		strings.Contains(installer, "Move-Item -LiteralPath $temporary -Destination $Destination -Force") {
 		t.Fatal("managed artifact replacement is not atomic and idempotent")
 	}

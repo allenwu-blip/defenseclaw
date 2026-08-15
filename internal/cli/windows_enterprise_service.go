@@ -97,12 +97,9 @@ var (
 	windowsEnterprisePayloadStager        = stageWindowsEnterprisePayload
 	windowsEnterpriseTrustValidator       = validateWindowsEnterpriseInstallerTrust
 	windowsEnterpriseExecutableResolver   = os.Executable
-	windowsEnterpriseProgramFilesResolver = func() (string, error) {
-		return windows.KnownFolderPath(
-			windows.FOLDERID_ProgramFiles,
-			windows.KF_FLAG_DEFAULT,
-		)
-	}
+	windowsEnterpriseProgramFilesResolver = trustedWindowsEnterpriseProgramFiles
+	windowsEnterpriseProgramDataResolver  = trustedWindowsEnterpriseProgramData
+	windowsEnterpriseMachineRootsResolver = resolveWindowsEnterpriseMachineRoots
 )
 
 type windowsEnterprisePowerShellTempOps struct {
@@ -700,15 +697,10 @@ func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error
 	if err != nil {
 		return nil, fmt.Errorf("resolve the trusted Windows directory: %w", err)
 	}
-	programFiles, err := windows.KnownFolderPath(windows.FOLDERID_ProgramFiles, 0)
+	machineRoots, err := windowsEnterpriseMachineRootsResolver()
 	if err != nil {
-		return nil, fmt.Errorf("resolve the trusted Program Files folder: %w", err)
+		return nil, fmt.Errorf("resolve trusted Windows machine roots: %w", err)
 	}
-	programData, err := windows.KnownFolderPath(windows.FOLDERID_ProgramData, 0)
-	if err != nil {
-		return nil, fmt.Errorf("resolve the trusted ProgramData folder: %w", err)
-	}
-	programFilesX86, _ := windows.KnownFolderPath(windows.FOLDERID_ProgramFilesX86, 0)
 	if strings.TrimSpace(powerShellTemp) == "" {
 		return nil, errors.New("trusted Windows enterprise PowerShell temporary directory is empty")
 	}
@@ -722,10 +714,10 @@ func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error
 		"windir":          windowsDirectory,
 		"SystemDrive":     filepath.VolumeName(windowsDirectory),
 		"ComSpec":         filepath.Join(system32, "cmd.exe"),
-		"ProgramFiles":    programFiles,
-		"ProgramW6432":    programFiles,
-		"ProgramData":     programData,
-		"ALLUSERSPROFILE": programData,
+		"ProgramFiles":    machineRoots.programFiles,
+		"ProgramW6432":    machineRoots.programFiles,
+		"ProgramData":     machineRoots.programData,
+		"ALLUSERSPROFILE": machineRoots.programData,
 		"TEMP":            powerShellTemp,
 		"TMP":             powerShellTemp,
 		"LOCALAPPDATA":    powerShellTemp,
@@ -747,9 +739,7 @@ func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error
 			filepath.Join(system32, "WindowsPowerShell", "v1.0"),
 		}, string(os.PathListSeparator)),
 	}
-	if strings.TrimSpace(programFilesX86) != "" {
-		allowed["ProgramFiles(x86)"] = programFilesX86
-	}
+	allowed["ProgramFiles(x86)"] = machineRoots.programFilesX86
 
 	environment := make([]string, 0, len(allowed))
 	for key, value := range allowed {
@@ -768,10 +758,7 @@ func prepareWindowsEnterprisePowerShellTemp() (string, func() error, error) {
 			elevatedTempRoot: func() (string, error) {
 				// ProgramData permits create-only access at its root without
 				// granting unprivileged callers replacement access to this child.
-				return windows.KnownFolderPath(
-					windows.FOLDERID_ProgramData,
-					windows.KF_FLAG_DEFAULT,
-				)
+				return windowsEnterpriseProgramDataResolver()
 			},
 			randomRead:      rand.Read,
 			createDirectory: windows.CreateDirectory,

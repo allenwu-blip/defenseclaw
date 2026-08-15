@@ -1420,10 +1420,7 @@ func TestPrepareWindowsEnterprisePowerShellTempElevatedDescriptorAndCleanupRefus
 		_ = os.RemoveAll(path)
 	})
 
-	programData, err := windows.KnownFolderPath(
-		windows.FOLDERID_ProgramData,
-		windows.KF_FLAG_DEFAULT,
-	)
+	programData, err := trustedWindowsEnterpriseProgramData()
 	if err != nil {
 		t.Fatalf("resolve ProgramData: %v", err)
 	}

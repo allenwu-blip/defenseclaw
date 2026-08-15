@@ -81,10 +81,7 @@ func stageWindowsEnterprisePayloadIn(
 // the read PowerShell makes.
 func newWindowsEnterprisePayloadDirectory() (string, error) {
 	if windows.GetCurrentProcessToken().IsElevated() {
-		parent, err := windows.KnownFolderPath(
-			windows.FOLDERID_ProgramData,
-			windows.KF_FLAG_DEFAULT,
-		)
+		parent, err := windowsEnterpriseProgramDataResolver()
 		if err != nil {
 			return "", fmt.Errorf("resolve the trusted ProgramData directory: %w", err)
 		}
