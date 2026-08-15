@@ -90,6 +90,101 @@ class CliSmokeTests(unittest.TestCase):
             )
             self.assertFalse((home / "audit.db").exists())
 
+    def test_trusted_path_bootstrap_survives_init_and_authorizes_codex_receipt(self):
+        from defenseclaw.bootstrap import StepResult
+        from defenseclaw.commands.cmd_config import ValidationResult
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            config_file = home / "config.yaml"
+            runtime_root = Path.cwd() / "staged-runtime"
+            runtime_root.mkdir()
+            codex = runtime_root / "codex.exe"
+            codex.write_bytes(b"synthetic approved Codex executable\n")
+            codex.chmod(0o700)
+            expected_root = str(runtime_root.resolve())
+            expected_codex = str(codex.resolve())
+            environment = {
+                "DEFENSECLAW_HOME": str(home),
+                "DEFENSECLAW_CONFIG": str(config_file),
+                "DEFENSECLAW_TRUSTED_BIN_PREFIXES": expected_root,
+            }
+            with (
+                patch.dict(os.environ, environment),
+                patch(
+                    "defenseclaw.commands.cmd_init.platform_support.host_os",
+                    return_value="windows",
+                ),
+                patch(
+                    "defenseclaw.inventory.agent_discovery._version_for_agent_binary",
+                    return_value=("codex-cli 0.144.3", ""),
+                ),
+                patch(
+                    "defenseclaw.bootstrap._quiet_guardrail_setup",
+                    return_value=StepResult("Guardrail", "pass", "fixture"),
+                ),
+                patch(
+                    "defenseclaw.commands.cmd_config.validate_config",
+                    return_value=ValidationResult(),
+                ),
+            ):
+                added = runner.invoke(
+                    cli,
+                    ["setup", "trusted-paths", "add", expected_root, "--json"],
+                )
+                initialized = runner.invoke(
+                    cli,
+                    [
+                        "init",
+                        "--skip-install",
+                        "--non-interactive",
+                        "--yes",
+                        "--connector",
+                        "codex",
+                        "--profile",
+                        "observe",
+                        "--no-start-gateway",
+                        "--no-verify",
+                        "--json-summary",
+                    ],
+                )
+                configured = runner.invoke(
+                    cli,
+                    [
+                        "setup",
+                        "gateway",
+                        "--api-port",
+                        "19091",
+                        "--non-interactive",
+                        "--no-verify",
+                    ],
+                )
+                shown = runner.invoke(
+                    cli,
+                    ["config", "show", "--source", "--format", "json"],
+                )
+
+            self.assertEqual(added.exit_code, 0, added.output)
+            self.assertEqual(initialized.exit_code, 0, initialized.output)
+            self.assertEqual(configured.exit_code, 0, configured.output)
+            self.assertEqual(shown.exit_code, 0, shown.output)
+            document = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+            self.assertEqual(
+                document["ai_discovery"]["trusted_binary_prefixes"],
+                [expected_root],
+            )
+            self.assertEqual(document["gateway"]["api_port"], 19091)
+            self.assertEqual(json.loads(shown.output)["gateway"]["api_port"], 19091)
+            receipt = json.loads((home / "agent_selection.json").read_text())
+            self.assertEqual(list(receipt["selections"]), ["codex"])
+            selection = receipt["selections"]["codex"]
+            self.assertEqual(selection["executable"], expected_codex)
+            self.assertEqual(selection["raw_version"], "codex-cli 0.144.3")
+            self.assertEqual(selection["normalized_version"], "0.144.3")
+            self.assertEqual(len(selection["sha256"]), 64)
+
     def test_preinit_setup_rejects_non_trusted_paths_subcommand(self):
         from defenseclaw.main import cli
 
@@ -111,7 +206,32 @@ class CliSmokeTests(unittest.TestCase):
             self.assertFalse(config_file.exists())
             self.assertFalse((home / "audit.db").exists())
 
-    def test_preinit_setup_rejects_non_add_trusted_paths_subcommand(self):
+    def test_preinit_trusted_paths_list_is_read_only_and_available(self):
+        from defenseclaw.main import cli
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            home = Path.cwd() / ".defenseclaw"
+            config_file = home / "config.yaml"
+            with patch.dict(
+                os.environ,
+                {
+                    "DEFENSECLAW_HOME": str(home),
+                    "DEFENSECLAW_CONFIG": str(config_file),
+                    "DEFENSECLAW_TRUSTED_BIN_PREFIXES": "",
+                },
+            ):
+                result = runner.invoke(
+                    cli,
+                    ["setup", "trusted-paths", "list", "--json"],
+                )
+
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIsInstance(json.loads(result.output), list)
+            self.assertFalse(config_file.exists())
+            self.assertFalse((home / "audit.db").exists())
+
+    def test_preinit_setup_rejects_mutating_trusted_paths_subcommand(self):
         from defenseclaw.main import cli
 
         runner = CliRunner()

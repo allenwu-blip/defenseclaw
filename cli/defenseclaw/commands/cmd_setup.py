@@ -163,9 +163,10 @@ def _log_setup_action(
     """Audit a setup mutation without breaking explicit offline staging.
 
     Canonical admission and server responses remain fail-closed.  The only
-    exception is a setup command that explicitly selected ``--no-restart``
-    while the gateway runtime is absent or unreachable; that mode stages
-    configuration for the next gateway start.
+    exception is a setup command that explicitly selected an offline staging
+    option such as ``--no-restart`` or ``--no-verify`` while the gateway
+    runtime is absent or unreachable; those modes stage configuration for the
+    next gateway start.
     """
 
     if not app.logger:
@@ -1997,7 +1998,7 @@ def trusted_paths(ctx: click.Context) -> None:
     if (
         app is not None
         and app.preinit_setup_bootstrap
-        and ctx.invoked_subcommand != "add"
+        and ctx.invoked_subcommand not in {"add", "list"}
     ):
         ux.echo(
             "DefenseClaw is not initialized — run 'defenseclaw init' first.",
@@ -2972,9 +2973,17 @@ def setup_gateway(
             click.echo("  Tip: fix the issues above, then run 'defenseclaw doctor' to re-check.")
             click.echo()
 
-    if app.logger:
-        mode = "remote" if (remote or gw.resolved_token()) else "local"
-        app.logger.log_action(ACTION_SETUP_GATEWAY, "config", f"mode={mode} host={gw.host} port={gw.port}")
+    mode = "remote" if (remote or gw.resolved_token()) else "local"
+    _log_setup_action(
+        app,
+        ACTION_SETUP_GATEWAY,
+        f"mode={mode} host={gw.host} port={gw.port}",
+        # ``--no-verify`` is the explicit offline bootstrap mode used before
+        # the sidecar has started. Suppress only definite runtime
+        # unavailability; server rejections and every other admission failure
+        # remain fatal through _log_setup_action.
+        allow_offline=not verify,
+    )
 
 
 def _interactive_gateway_local(gw, openclaw_config_file: str, data_dir: str) -> None:

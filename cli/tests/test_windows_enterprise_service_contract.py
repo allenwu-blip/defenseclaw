@@ -1891,11 +1891,14 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     clear_environment = live_repair.index(
         "[Environment]::GetEnvironmentVariables('Process').Keys"
     )
-    exact_trust = live_repair.index(
-        "& $cli setup trusted-paths add $runtimeRoot --json"
-    )
-    init = live_repair.index("& $cli init")
+    exact_trust = live_repair.index("-Label 'trusted-path-add'")
+    init = live_repair.index("-Label 'init'")
     assert clear_environment < exact_trust < init
+    assert "'setup', 'trusted-paths', 'add', $runtimeRoot, '--json'" in live_repair
+    assert "-Label 'trusted-path-list-before-init'" in live_repair
+    assert "-Label 'trusted-path-list-after-init'" in live_repair
+    assert live_repair.index("-Label 'trusted-path-list-after-init'") > init
+    assert "init did not retain exactly the canonical trusted runtime root" in live_repair
     assert "Join-Path $syntheticHome '.local\\bin'" in live_repair
     assert "Assert-ExactNormalModeRuntimeRoot" in live_repair
     assert "trusted runtime root escaped the exact synthetic" in live_repair
@@ -1913,6 +1916,21 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert '"*$($script:PrimarySID):F"' in live_repair
     assert "runtime_files_target_owned = $true" in live_repair
     assert "trusted_bin_prefix_exact = $true" in live_repair
+    assert "function Invoke-NormalModeProcess" in live_repair
+    assert "function Stop-NormalModeProcessTree" in live_repair
+    assert "timed out after $TimeoutSeconds seconds" in live_repair
+    assert "diagnostics: stdout=$stdoutPath stderr=$stderrPath" in live_repair
+    assert "[normal-mode] starting $Label" in live_repair
+    assert "[normal-mode] completed $Label" in live_repair
+    gateway_setup = live_repair.index("-Label 'gateway-config-offline'")
+    assert gateway_setup > init
+    assert "'gateway'," in live_repair[gateway_setup - 400 : gateway_setup]
+    assert "'--api-port'," in live_repair[gateway_setup - 400 : gateway_setup]
+    assert "'--non-interactive'," in live_repair[gateway_setup - 400 : gateway_setup]
+    assert "'--no-verify'" in live_repair[gateway_setup - 400 : gateway_setup]
+    assert "'config', 'show', '--source', '--format', 'json'" in live_repair
+    assert "apiPortMatches" not in live_repair
+    assert "hook_self_heal:" not in live_repair
 
     preinstall_live = harness.index(
         "'preinstall-normal-mode-live-hook-auto-heal-is-no-op'"
@@ -1923,6 +1941,36 @@ def test_normal_mode_live_repair_uses_an_absent_enterprise_baseline() -> None:
     assert "-RequireEnterpriseAbsent" in harness[
         preinstall_live - 300 : preinstall_live + 300
     ]
+
+
+def test_normal_mode_timeout_and_acl_cleanup_are_bounded_and_exact() -> None:
+    harness = read(HARNESS)
+
+    active_user = harness[
+        harness.index("function Invoke-ActiveUserPowerShell") : harness.index(
+            "function Start-ActiveUserFakeGatewayListener"
+        )
+    ]
+    assert "function Stop-CaptureDescendantTree" in active_user
+    assert 'killerStart.Arguments = "/PID $($Target.Id) /T /F"' in active_user
+    assert active_user.count("Stop-CaptureDescendantTree $process") == 2
+
+    cleanup = harness[
+        harness.index("function Get-NormalModeProcessStartIdentity") : harness.index(
+            "function Write-FinalEvidence"
+        )
+    ]
+    assert "function Stop-NormalModeFixtureProcesses" in cleanup
+    assert "@('gateway.pid', 'watchdog.pid')" in cleanup
+    assert "start_identity" in cleanup
+    assert "live identity does not match the protected PID record" in cleanup
+    assert "@('/PID', [string]$processID, '/T', '/F')" in cleanup
+    assert "-TimeoutSeconds 20" in cleanup
+    assert "normal-mode cleanup target is not the exact registered" in cleanup
+    assert "-Owner '*S-1-5-32-544'" in cleanup
+    assert "-Options @('/T', '/C', '/L')" in cleanup
+    stop_fixture = cleanup.index("Stop-NormalModeFixtureProcesses $safeNormalHome")
+    assert stop_fixture < cleanup.index("Remove-Item `", stop_fixture)
 
 
 def test_uninstall_transaction_smoke_keeps_receipt_paths_powershell_51_compatible() -> None:

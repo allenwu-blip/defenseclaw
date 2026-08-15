@@ -1761,6 +1761,38 @@ $errorLine = 0
 $errorPosition = ''
 $stdoutText = ''
 $stderrText = ''
+function Stop-CaptureDescendantTree([Diagnostics.Process]$Target) {
+    if ($null -eq $Target) { return }
+    try { $Target.Refresh() } catch {}
+    if ($Target.HasExited) { return }
+    $killerStart = [Diagnostics.ProcessStartInfo]::new()
+    $killerStart.FileName = Join-Path (
+        [Environment]::SystemDirectory
+    ) 'taskkill.exe'
+    $killerStart.Arguments = "/PID $($Target.Id) /T /F"
+    $killerStart.UseShellExecute = $false
+    $killerStart.CreateNoWindow = $true
+    $killerStart.RedirectStandardOutput = $true
+    $killerStart.RedirectStandardError = $true
+    $killer = [Diagnostics.Process]::new()
+    $killer.StartInfo = $killerStart
+    try {
+        if (-not $killer.Start()) {
+            throw 'taskkill did not start'
+        }
+        if (-not $killer.WaitForExit(10000)) {
+            try { $killer.Kill() } catch {}
+            throw 'taskkill timed out'
+        }
+    } finally {
+        $killer.Dispose()
+    }
+    try { $Target.WaitForExit(10000) | Out-Null } catch {}
+    try { $Target.Refresh() } catch {}
+    if (-not $Target.HasExited) {
+        try { $Target.Kill() } catch {}
+    }
+}
 try {
     $pipe = [IO.Pipes.NamedPipeClientStream]::new(
         '.',
@@ -1907,7 +1939,7 @@ try {
         }
         if ($timedOut -or $captureExceeded -or
             -not [string]::IsNullOrWhiteSpace($readError)) {
-            try { $process.Kill() } catch {}
+            try { Stop-CaptureDescendantTree $process } catch {}
             try { $process.WaitForExit(10000) | Out-Null } catch {}
             if ($captureExceeded) {
                 $exitCode = 253
@@ -1924,7 +1956,7 @@ try {
                 ($deadline - [DateTimeOffset]::UtcNow).TotalMilliseconds
             )
             if ($remaining -le 0 -or -not $process.WaitForExit($remaining)) {
-                try { $process.Kill() } catch {}
+                try { Stop-CaptureDescendantTree $process } catch {}
                 try { $process.WaitForExit(10000) | Out-Null } catch {}
                 $exitCode = 254
                 $errorText = 'nested active-user probe timed out'
@@ -5857,7 +5889,6 @@ guardrail:
   enabled: true
   mode: observe
   scanner_mode: local
-  hook_self_heal: true
 application_protection:
   enabled: false
 "@
@@ -6265,6 +6296,124 @@ function Get-ProcessExecutable([int]$PIDValue) {
     return [IO.Path]::GetFullPath([string]$process.ExecutablePath)
 }
 
+function ConvertTo-NormalModeProcessArgument([string]$Value) {
+    if ($null -eq $Value) { $Value = '' }
+    if ($Value.IndexOf([char]0) -ge 0 -or
+        $Value.IndexOf("`r") -ge 0 -or
+        $Value.IndexOf("`n") -ge 0) {
+        throw 'normal-mode process argument contains a control character'
+    }
+    if ($Value -notmatch '[\s"]') { return $Value }
+    $escaped = $Value -replace '(\\*)"', '$1$1\"'
+    $escaped = $escaped -replace '(\\+)$', '$1$1'
+    return '"' + $escaped + '"'
+}
+
+function Stop-NormalModeProcessTree(
+    [Diagnostics.Process]$Process,
+    [string]$Label
+) {
+    if ($null -eq $Process) { return }
+    try { $Process.Refresh() } catch {}
+    if ($Process.HasExited) { return }
+    $taskkill = Join-Path ([Environment]::SystemDirectory) 'taskkill.exe'
+    $killer = Start-Process `
+        -FilePath $taskkill `
+        -ArgumentList ("/PID $($Process.Id) /T /F") `
+        -WindowStyle Hidden `
+        -PassThru
+    try {
+        if (-not $killer.WaitForExit(10000)) {
+            try { $killer.Kill() } catch {}
+            throw "$Label taskkill did not finish within 10 seconds"
+        }
+    } finally {
+        $killer.Dispose()
+    }
+    try { $Process.WaitForExit(10000) | Out-Null } catch {}
+    try { $Process.Refresh() } catch {}
+    if (-not $Process.HasExited) {
+        try { $Process.Kill() } catch {}
+        throw "$Label process tree did not terminate"
+    }
+}
+
+function Invoke-NormalModeProcess {
+    param(
+        [Parameter(Mandatory)][string]$Executable,
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][int]$TimeoutSeconds,
+        [int[]]$AllowedExitCodes = @(0)
+    )
+    $safeLabel = $Label -replace '[^A-Za-z0-9_.-]', '_'
+    $stdoutPath = Join-Path $workRoot ($safeLabel + '.stdout.log')
+    $stderrPath = Join-Path $workRoot ($safeLabel + '.stderr.log')
+    $argumentLine = @(
+        $Arguments |
+            ForEach-Object {
+                ConvertTo-NormalModeProcessArgument ([string]$_)
+            }
+    ) -join ' '
+    [Console]::Error.WriteLine(
+        "[normal-mode] starting $Label (timeout=${TimeoutSeconds}s)"
+    )
+    $started = [DateTimeOffset]::UtcNow
+    $process = Start-Process `
+        -FilePath $Executable `
+        -ArgumentList $argumentLine `
+        -WorkingDirectory $workRoot `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath `
+        -PassThru
+    try {
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            $terminationError = ''
+            try {
+                Stop-NormalModeProcessTree $process $Label
+            } catch {
+                $terminationError = '; termination error: ' +
+                    $_.Exception.Message
+            }
+            throw (
+                "$Label timed out after $TimeoutSeconds seconds; " +
+                "diagnostics: stdout=$stdoutPath stderr=$stderrPath" +
+                $terminationError
+            )
+        }
+        $process.Refresh()
+        $exitCode = $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+    $stdoutText = if (Test-Path -LiteralPath $stdoutPath -PathType Leaf) {
+        Read-SharedText $stdoutPath
+    } else { '' }
+    $stderrText = if (Test-Path -LiteralPath $stderrPath -PathType Leaf) {
+        Read-SharedText $stderrPath
+    } else { '' }
+    $elapsed = [Math]::Round(
+        ([DateTimeOffset]::UtcNow - $started).TotalMilliseconds,
+        0
+    )
+    [Console]::Error.WriteLine(
+        "[normal-mode] completed $Label exit=$exitCode elapsed_ms=$elapsed"
+    )
+    if ($AllowedExitCodes -notcontains $exitCode) {
+        throw (
+            "$Label exited $exitCode; expected " +
+            "$($AllowedExitCodes -join ', '). stderr: $stderrText"
+        )
+    }
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        StdOut = $stdoutText
+        StdErr = $stderrText
+        ElapsedMilliseconds = $elapsed
+    }
+}
+
 function Remove-FixtureTree([string]$Path, [string]$ExpectedParent) {
     $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
     if (-not [string]::Equals(
@@ -6393,16 +6542,12 @@ try {
     $env:DEFENSECLAW_HOME = $dataRoot
     $env:DEFENSECLAW_CONFIG = Join-Path $dataRoot 'config.yaml'
     $env:DEFENSECLAW_DEPLOYMENT_MODE = 'unmanaged_byod'
-    $trustedPathAddOutput = (
-        & $cli setup trusted-paths add $runtimeRoot --json 2>&1 |
-            Out-String
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw (
-            'normal-mode trusted runtime persistence failed: ' +
-            $trustedPathAddOutput
-        )
-    }
+    $trustedPathAddProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @('setup', 'trusted-paths', 'add', $runtimeRoot, '--json') `
+        -Label 'trusted-path-add' `
+        -TimeoutSeconds 30
+    $trustedPathAddOutput = [string]$trustedPathAddProcess.StdOut
     $trustedPathAdd = $trustedPathAddOutput |
         ConvertFrom-Json -ErrorAction Stop
     if (-not [bool]$trustedPathAdd.ok -or
@@ -6417,16 +6562,12 @@ try {
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         throw 'normal-mode trusted-paths add did not create config.yaml'
     }
-    $trustedPathListOutput = (
-        & $cli setup trusted-paths list --json 2>&1 |
-            Out-String
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw (
-            'normal-mode persisted trusted-path verification failed: ' +
-            $trustedPathListOutput
-        )
-    }
+    $trustedPathListProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @('setup', 'trusted-paths', 'list', '--json') `
+        -Label 'trusted-path-list-before-init' `
+        -TimeoutSeconds 30
+    $trustedPathListOutput = [string]$trustedPathListProcess.StdOut
     $trustedPathRows = @(
         $trustedPathListOutput | ConvertFrom-Json -ErrorAction Stop
     )
@@ -6497,20 +6638,23 @@ try {
         }
     ) -join '.'
 
-    $initOutput = (
-        & $cli init `
-            --skip-install `
-            --non-interactive `
-            --yes `
-            --connector codex `
-            --profile observe `
-            --no-start-gateway `
-            --no-verify 2>&1 |
-            Out-String
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw "normal-mode init failed: $initOutput"
-    }
+    $initProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @(
+            'init',
+            '--skip-install',
+            '--non-interactive',
+            '--yes',
+            '--connector',
+            'codex',
+            '--profile',
+            'observe',
+            '--no-start-gateway',
+            '--no-verify'
+        ) `
+        -Label 'init' `
+        -TimeoutSeconds 90
+    $initOutput = [string]$initProcess.StdOut
     $logs.Add($initOutput.Trim())
 
     $agentSelectionReceiptPath = Join-Path $dataRoot 'agent_selection.json'
@@ -6550,57 +6694,68 @@ try {
         throw 'normal-mode agent_selection.json did not bind the expected Codex path, version, and SHA-256'
     }
 
-    $config = [IO.File]::ReadAllText($configPath)
-    $apiPortMatches = [regex]::Matches(
-        $config,
-        '(?m)^(?<indent>\s*)api_port:\s*\d+\s*$'
+    $postInitTrustProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @('setup', 'trusted-paths', 'list', '--json') `
+        -Label 'trusted-path-list-after-init' `
+        -TimeoutSeconds 30
+    $postInitTrustedRows = @(
+        ([string]$postInitTrustProcess.StdOut) |
+            ConvertFrom-Json -ErrorAction Stop |
+            Where-Object { [string]$_.source -ceq 'config' }
     )
-    if ($apiPortMatches.Count -ne 1) {
-        throw (
-            'normal-mode fixture requires exactly one gateway api_port; ' +
-            "observed $($apiPortMatches.Count)"
-        )
+    if ($postInitTrustedRows.Count -ne 1 -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath(
+                [string]$postInitTrustedRows[0].resolved
+            ).TrimEnd('\'),
+            $runtimeRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'normal-mode init did not retain exactly the canonical trusted runtime root'
     }
-    $updated = [regex]::Replace(
-        $config,
-        '(?m)^(?<indent>\s*)api_port:\s*\d+\s*$',
-        ('${indent}api_port: ' + [string]$inputObject.api_port),
-        1
-    )
-    if ($updated -notmatch '(?m)^\s*hook_self_heal:\s*true\s*$') {
-        $guardrailMatches = [regex]::Matches(
-            $updated,
-            '(?m)^guardrail:\s*$'
-        )
-        if ($guardrailMatches.Count -ne 1) {
-            throw (
-                'normal-mode fixture requires exactly one guardrail block; ' +
-                "observed $($guardrailMatches.Count)"
-            )
-        }
-        $updated = [regex]::Replace(
-            $updated,
-            '(?m)^guardrail:\s*$',
-            "guardrail:`r`n  hook_self_heal: true",
-            1
-        )
-    }
-    if ($updated -notmatch '(?m)^\s*hook_self_heal:\s*true\s*$') {
-        throw 'normal-mode fixture did not set explicit hook self-heal'
-    }
-    [IO.File]::WriteAllText(
-        $configPath,
-        $updated,
-        [Text.UTF8Encoding]::new($false)
-    )
+    $logs.Add(([string]$postInitTrustProcess.StdOut).Trim())
 
-    $setupOutput = (
-        & $cli setup codex --yes --mode observe --restart 2>&1 |
-            Out-String
-    )
-    if ($LASTEXITCODE -ne 0) {
-        throw "normal-mode setup failed: $setupOutput"
+    $gatewaySetupProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @(
+            'setup',
+            'gateway',
+            '--api-port',
+            [string]$inputObject.api_port,
+            '--non-interactive',
+            '--no-verify'
+        ) `
+        -Label 'gateway-config-offline' `
+        -TimeoutSeconds 30
+    $gatewaySetupOutput = [string]$gatewaySetupProcess.StdOut
+    if ($gatewaySetupOutput -notmatch (
+            '(?m)^\s*gateway\.api_port:\s+' +
+            [regex]::Escape([string]$inputObject.api_port) +
+            '\s*$'
+        )) {
+        throw 'normal-mode public gateway setup did not report the requested effective API port'
     }
+    $logs.Add($gatewaySetupOutput.Trim())
+    $gatewayConfigProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @('config', 'show', '--source', '--format', 'json') `
+        -Label 'gateway-config-source-verification' `
+        -TimeoutSeconds 30
+    $gatewayConfigSource = ([string]$gatewayConfigProcess.StdOut) |
+        ConvertFrom-Json -ErrorAction Stop
+    if ([int]$gatewayConfigSource.gateway.api_port -ne
+        [int]$inputObject.api_port) {
+        throw 'normal-mode canonical config source did not retain the requested API port'
+    }
+    $logs.Add(([string]$gatewayConfigProcess.StdOut).Trim())
+
+    $setupProcess = Invoke-NormalModeProcess `
+        -Executable $cli `
+        -Arguments @('setup', 'codex', '--yes', '--mode', 'observe', '--restart') `
+        -Label 'codex-setup-restart' `
+        -TimeoutSeconds 120
+    $setupOutput = [string]$setupProcess.StdOut
     $logs.Add($setupOutput.Trim())
 
     $nativeConfig = Join-Path $codexHome 'config.toml'
@@ -6712,12 +6867,37 @@ try {
     }
 } finally {
     Set-Location -LiteralPath $profile
-    try { & $gateway stop 1>$null 2>$null } catch {}
     try {
-        & $gateway connector teardown `
-            --connector codex `
-            --data-dir $dataRoot 1>$null 2>$null
-    } catch {}
+        $null = Invoke-NormalModeProcess `
+            -Executable $gateway `
+            -Arguments @('stop') `
+            -Label 'gateway-stop-cleanup' `
+            -TimeoutSeconds 20
+    } catch {
+        [Console]::Error.WriteLine(
+            '[normal-mode] gateway stop cleanup failed: ' +
+            $_.Exception.Message
+        )
+    }
+    try {
+        $null = Invoke-NormalModeProcess `
+            -Executable $gateway `
+            -Arguments @(
+                'connector',
+                'teardown',
+                '--connector',
+                'codex',
+                '--data-dir',
+                $dataRoot
+            ) `
+            -Label 'codex-teardown-cleanup' `
+            -TimeoutSeconds 30
+    } catch {
+        [Console]::Error.WriteLine(
+            '[normal-mode] connector teardown cleanup failed: ' +
+            $_.Exception.Message
+        )
+    }
     $deadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
     do {
         $alive = @(
@@ -6736,7 +6916,49 @@ try {
         Start-Sleep -Milliseconds 100
     } while ([DateTimeOffset]::UtcNow -lt $deadline)
     if ($alive.Count -ne 0) {
-        throw "normal-mode fixture processes did not stop: $($alive -join ',')"
+        foreach ($candidatePID in $alive) {
+            $candidateExecutable = Get-ProcessExecutable $candidatePID
+            if (-not [string]::Equals(
+                    $candidateExecutable,
+                    $gateway,
+                    [StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw (
+                    "refusing to terminate unexpected normal-mode PID " +
+                    "$candidatePID at $candidateExecutable"
+                )
+            }
+            $candidateProcess = Get-Process `
+                -Id $candidatePID `
+                -ErrorAction SilentlyContinue
+            if ($null -ne $candidateProcess) {
+                try {
+                    Stop-NormalModeProcessTree `
+                        $candidateProcess `
+                        "normal-mode forced cleanup PID $candidatePID"
+                } finally {
+                    $candidateProcess.Dispose()
+                }
+            }
+        }
+    }
+    $stillAlive = @(
+        foreach ($candidatePID in @($gatewayPID, $watchdogPID)) {
+            if ($candidatePID -gt 0 -and
+                $null -ne (
+                    Get-Process `
+                        -Id $candidatePID `
+                        -ErrorAction SilentlyContinue
+                )) {
+                $candidatePID
+            }
+        }
+    )
+    if ($stillAlive.Count -ne 0) {
+        throw (
+            'normal-mode fixture processes survived forced cleanup: ' +
+            ($stillAlive -join ',')
+        )
     }
     Remove-FixtureTree $syntheticHome $profile
 }
@@ -6892,7 +7114,6 @@ guardrail:
   enabled: true
   mode: observe
   scanner_mode: local
-  hook_self_heal: true
 application_protection:
   enabled: false
 "@ `
@@ -17770,11 +17991,120 @@ function Copy-WorkEvidence {
     Protect-TreeFromRegisteredSecretLeak $logRoot 'copied evidence logs'
 }
 
+function Get-NormalModeProcessStartIdentity(
+    [Diagnostics.Process]$Process
+) {
+    try {
+        $unixEpoch = [DateTime]::new(
+            1970,
+            1,
+            1,
+            0,
+            0,
+            0,
+            [DateTimeKind]::Utc
+        )
+        $unixTicks = [long](
+            $Process.StartTime.ToUniversalTime().Ticks - $unixEpoch.Ticks
+        )
+        return ([long]($unixTicks * 100)).ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+    } catch {
+        return ''
+    }
+}
+
+function Stop-NormalModeFixtureProcesses([string]$SafeNormalHome) {
+    $dataRoot = Join-Path $SafeNormalHome '.defenseclaw'
+    $expectedGateway = ConvertTo-CanonicalPath (
+        Join-Path $SafeNormalHome '.local\bin\defenseclaw-gateway.exe'
+    )
+    $observed = [Collections.Generic.List[object]]::new()
+    foreach ($pidFileName in @('gateway.pid', 'watchdog.pid')) {
+        $pidPath = Join-Path $dataRoot $pidFileName
+        if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
+            continue
+        }
+        $record = [IO.File]::ReadAllText($pidPath) |
+            ConvertFrom-Json -ErrorAction Stop
+        $processID = [int]$record.pid
+        $recordedExecutable = ConvertTo-CanonicalPath (
+            [string]$record.executable
+        )
+        $recordedIdentity = [string]$record.start_identity
+        if ($processID -le 0 -or
+            [string]::IsNullOrWhiteSpace($recordedIdentity) -or
+            -not $recordedExecutable.Equals(
+                $expectedGateway,
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw (
+                "refusing unsafe normal-mode process record $pidFileName"
+            )
+        }
+        $native = $null
+        try {
+            try {
+                $native = [Diagnostics.Process]::GetProcessById($processID)
+            } catch [ArgumentException] {
+                continue
+            }
+            $liveExecutable = ConvertTo-CanonicalPath (
+                [string]$native.MainModule.FileName
+            )
+            $liveIdentity = Get-NormalModeProcessStartIdentity $native
+            if (-not $liveExecutable.Equals(
+                    $expectedGateway,
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -or
+                $liveIdentity -cne $recordedIdentity) {
+                throw (
+                    "refusing to terminate PID $processID because its " +
+                    'live identity does not match the protected PID record'
+                )
+            }
+            $observed.Add([pscustomobject]@{
+                pid = $processID
+                start_identity = $recordedIdentity
+            })
+        } finally {
+            if ($null -ne $native) { $native.Dispose() }
+        }
+        $null = Invoke-NativeProcess `
+            -FilePath (Join-Path $script:System32 'taskkill.exe') `
+            -ArgumentList @('/PID', [string]$processID, '/T', '/F') `
+            -AllowedExitCodes @(0, 128) `
+            -TimeoutSeconds 20 `
+            -Label "cleanup-normal-mode-$pidFileName"
+    }
+    foreach ($identity in @($observed.ToArray())) {
+        $survivor = $null
+        try {
+            try {
+                $survivor = [Diagnostics.Process]::GetProcessById(
+                    [int]$identity.pid
+                )
+            } catch [ArgumentException] {
+                continue
+            }
+            if ((Get-NormalModeProcessStartIdentity $survivor) -ceq
+                [string]$identity.start_identity) {
+                throw (
+                    "normal-mode PID $($identity.pid) survived bounded " +
+                    'descendant-process cleanup'
+                )
+            }
+        } finally {
+            if ($null -ne $survivor) { $survivor.Dispose() }
+        }
+    }
+}
+
 function Restore-ProtectedUserFixture {
     if (-not [string]::IsNullOrWhiteSpace(
             $script:NormalModeSyntheticHome
-        ) -and
-        (Test-Path -LiteralPath $script:NormalModeSyntheticHome)) {
+        )) {
         $safeNormalHome = Assert-PathBelow `
             $script:NormalModeSyntheticHome `
             $script:PrimaryProfile `
@@ -17790,31 +18120,70 @@ function Restore-ProtectedUserFixture {
                 "synthetic home: $safeNormalHome"
             )
         }
-        $item = Get-Item -LiteralPath $safeNormalHome -Force
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            [IO.Directory]::Delete($safeNormalHome, $false)
-        } else {
-            $nestedReparse = @(
-                Get-ChildItem `
-                    -LiteralPath $safeNormalHome `
-                    -Force `
-                    -Recurse |
-                    Where-Object {
-                        ($_.Attributes -band
-                            [IO.FileAttributes]::ReparsePoint) -ne 0
-                    }
-            )
-            if ($nestedReparse.Count -ne 0) {
-                throw (
-                    'normal-mode synthetic home contains an unexpected ' +
-                    "reparse point: $($nestedReparse[0].FullName)"
-                )
-            }
-            Remove-Item `
-                -LiteralPath $safeNormalHome `
-                -Recurse `
+        $entries = @(
+            Get-ChildItem `
+                -LiteralPath $script:PrimaryProfile `
                 -Force `
-                -ErrorAction Stop
+                -ErrorAction Stop |
+                Where-Object {
+                    [string]::Equals(
+                        $_.FullName,
+                        $safeNormalHome,
+                        [StringComparison]::OrdinalIgnoreCase
+                    )
+                }
+        )
+        if ($entries.Count -gt 1) {
+            throw 'normal-mode cleanup found duplicate exact synthetic homes'
+        }
+        if ($entries.Count -eq 0) {
+            $script:NormalModeSyntheticHome = ''
+        } else {
+            $item = $entries[0]
+            if (($item.Attributes -band
+                    [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                [IO.Directory]::Delete($safeNormalHome, $false)
+            } else {
+                $cleanupGrants = @(
+                    '*S-1-5-18:(OI)(CI)F',
+                    '*S-1-5-32-544:(OI)(CI)F',
+                    "*$($script:PrimarySID):(OI)(CI)F"
+                )
+                $null = Set-ICaclsOwnerAndDacl `
+                    -Path $safeNormalHome `
+                    -Owner '*S-1-5-32-544' `
+                    -Grants $cleanupGrants `
+                    -Label 'normal-mode-cleanup-root-acl'
+                $null = Set-ICaclsOwnerAndDacl `
+                    -Path $safeNormalHome `
+                    -Owner '*S-1-5-32-544' `
+                    -Grants $cleanupGrants `
+                    -Options @('/T', '/C', '/L') `
+                    -Label 'normal-mode-cleanup-descendant-acl'
+                Stop-NormalModeFixtureProcesses $safeNormalHome
+                $nestedReparse = @(
+                    Get-ChildItem `
+                        -LiteralPath $safeNormalHome `
+                        -Force `
+                        -Recurse `
+                        -ErrorAction Stop |
+                        Where-Object {
+                            ($_.Attributes -band
+                                [IO.FileAttributes]::ReparsePoint) -ne 0
+                        }
+                )
+                if ($nestedReparse.Count -ne 0) {
+                    throw (
+                        'normal-mode synthetic home contains an unexpected ' +
+                        "reparse point: $($nestedReparse[0].FullName)"
+                    )
+                }
+                Remove-Item `
+                    -LiteralPath $safeNormalHome `
+                    -Recurse `
+                    -Force `
+                    -ErrorAction Stop
+            }
         }
     }
     $script:NormalModeSyntheticHome = ''
@@ -18853,7 +19222,6 @@ guardrail:
   scanner_mode: local
   host: 127.0.0.1
   port: $proxyPort
-  hook_self_heal: true
 application_protection:
   enabled: false
 "@
