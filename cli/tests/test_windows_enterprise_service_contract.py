@@ -294,10 +294,16 @@ def test_packaging_defaults_to_protected_scm_identities_and_roots() -> None:
         "        $Layout.ManifestPath,\n"
         "        $Layout.LogDirectory,\n"
         "        $Layout.GuardianLogDirectory,\n"
-        "        $Layout.MetadataPath,\n"
-        "        $Layout.CodexTrustedShellAttestationPath\n"
+        "        $Layout.MetadataPath\n"
         "    )) {" in module
     )
+    assert (
+        "Microsoft.PowerShell.Management\\Test-Path `\n"
+        "        -LiteralPath $Layout.CodexTrustedShellAttestationPath `\n"
+        "        -PathType Leaf" in module
+    )
+    assert "core-hardening certification must not publish external application-control attestation evidence" in module
+    assert "core-hardening deployment retains false external application-control evidence" in module
     assert "Initialize-DefenseClawCodexMachinePolicyParent" in module
     assert "Invoke-DefenseClawCodexRequirementsCommand" in module
     assert "codex-requirements-ownership.json" in module
@@ -868,6 +874,12 @@ def test_certification_exercises_tamper_and_full_scm_denial_surface() -> None:
 def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     harness = read(HARNESS)
 
+    sparse = harness[
+        harness.index("function Start-ActiveUserSparseArtifactAttack") : harness.index(
+            "function Stop-ActiveUserSparseArtifactAttack"
+        )
+    ]
+
     assert "Test-ManagedSparseOversizedArtifactRecovery" in harness
     assert "Start-ActiveUserSparseArtifactAttack" in harness
     assert "Stop-ActiveUserSparseArtifactAttack" in harness
@@ -878,8 +890,11 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "PeakWorkingSet64" in harness
     assert "guardian_lifetime_peak_working_set_growth_bytes" in harness
     assert "guardian_lifetime_peak_working_set_growth_limit_bytes" in harness
-    assert "$encoded.Length -gt 30000" in harness
-    assert "Task Scheduler argument budget" in harness
+    assert "$taskArguments.Length -gt 30000" in sparse
+    assert "Task Scheduler argument budget" in sparse
+    assert "-File \"' + $payload" in sparse
+    assert "$payloadSHA256 = Get-FileDigest $payload" in sparse
+    assert "$encoded" not in sparse
     for artifact in (
         "managed_token",
         "hookcfg_json",
@@ -904,6 +919,86 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "$ClaudeOnly" in hardlink_probe
     assert "'hooks\\.hook-claudecode.token'" in hardlink_probe
     assert "'hooks\\.hook-codex.token'" in hardlink_probe
+
+
+def test_latest_windows_retest_harness_repairs_are_scoped_and_fail_closed() -> None:
+    harness = read(HARNESS)
+
+    def function(name: str) -> str:
+        match = re.search(
+            rf"(?ms)^function {re.escape(name)}\b.*?(?=^function |\Z)",
+            harness,
+        )
+        assert match is not None, name
+        return match.group(0)
+
+    acl_denial = function("Test-ChangeACLDenied")
+    assert "$code -ne 0 -and $beforeSDDL -ceq $afterSDDL" in acl_denial
+    assert "want nonzero denial" in acl_denial
+    assert "$code -eq 5" not in acl_denial
+
+    managed_environment = function("Get-ManagedCLIEnvironment")
+    assert "DEFENSECLAW_HOME = Join-Path $script:StateRoot 'runtime'" in managed_environment
+    assert 'DEFENSECLAW_WINDOWS_SERVICE_ACCOUNT = "NT SERVICE\\$($script:GatewayServiceName)"' in managed_environment
+    assert "DEFENSECLAW_WINDOWS_GATEWAY_SERVICE_NAME = $script:GatewayServiceName" in managed_environment
+    assert "DEFENSECLAW_WINDOWS_SERVICE_NAME = $script:GatewayServiceName" in managed_environment
+
+    temp_observer = function("Update-EnterprisePowerShellTempObservation")
+    assert "catch [IO.DirectoryNotFoundException]" in temp_observer
+    assert "catch [Management.Automation.ItemNotFoundException]" in temp_observer
+    assert "if (-not (Test-Path -LiteralPath $child.FullName))" in temp_observer
+
+    healthy = function("Assert-HealthyGuardianJSON")
+    assert "$result.JSON.PSObject.Properties['manifest']" in healthy
+
+    access = function("Assert-NoStandardUserAccess")
+    for mutation_right in (
+        "WriteData",
+        "AppendData",
+        "WriteAttributes",
+        "WriteExtendedAttributes",
+        "DeleteSubdirectoriesAndFiles",
+        "ChangePermissions",
+        "TakeOwnership",
+    ):
+        assert f"FileSystemRights]::{mutation_right}" in access
+    assert "FileSystemRights]::Modify" not in access
+    assert "FileSystemRights]::FullControl" not in access
+
+    lock_probe = function("Test-ProtectedLifecycleLockSquattingDenied")
+    assert "while ($null -ne $rootException.InnerException)" in lock_probe
+    assert "$rootException.GetType().FullName" in lock_probe
+    assert "-notin @(5, 32, 33)" in lock_probe
+
+    credential_output = function("Read-CredentialedProcessOutputFile")
+    assert "AddMilliseconds" in credential_output
+    assert "catch [IO.IOException]" in credential_output
+    assert "Start-Sleep -Milliseconds 50" in credential_output
+
+    unregistered = function("Test-UnregisteredInteractiveSIDFailsClosed")
+    assert "[Diagnostics.ProcessStartInfo]::new()" in unregistered
+    assert "$hookProcess.ExitCode" in unregistered
+    assert "$LASTEXITCODE" not in unregistered
+    assert "enterprise_managed_sid_(?:not_enrolled|unregistered)" in unregistered
+
+    audit = function("Get-ClaudeHookAuditRows")
+    assert "Invoke-GatewayCommand" in audit
+    assert "Invoke-GatewayProcess" not in audit
+
+    service_snapshot = function("Get-CertificationServiceProcessSnapshot")
+    assert "process_created_at = $process.StartTime.ToUniversalTime().ToString('o')" in service_snapshot
+    assert "$hostileProcessBaseline = Get-CertificationServiceProcessSnapshot" in harness
+    assert "$hostileProcessAfter = Get-CertificationServiceProcessSnapshot" in harness
+
+    restore = function("Restore-ProtectedUserTreeSnapshot")
+    assert "'/save'" in function("New-ProtectedUserTreeSnapshot")
+    assert "'/restore'" in restore
+    assert "$Snapshot.acl_backup" in restore
+
+    self_deny = function("Test-GuardianRepairsPreexistingSelfDenyDACL")
+    assert "if ($ClaudeOnly)" in self_deny
+    assert "'hookcfg_claudecode'" in self_deny
+    assert "'hookcfg_codex'" in self_deny
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell")
@@ -1770,7 +1865,10 @@ def test_claude_only_standard_user_probe_targets_only_live_artifacts() -> None:
     assert "want ERROR_ACCESS_DENIED=5" in probe
     assert "--connector ([string]$input.connector)" in probe
     assert "connector = if ($ClaudeOnly) { 'claudecode' } else { 'codex' }" in probe
-    assert "--connector ([string]$inputObject.connector)" in unregistered
+    assert "[Diagnostics.ProcessStartInfo]::new()" in unregistered
+    assert "'hook --connector ' + [string]$inputObject.connector" in unregistered
+    assert "$hookProcess.ExitCode" in unregistered
+    assert "$LASTEXITCODE" not in unregistered
 
 
 def test_certification_purges_through_installed_cli_without_retirement_leaks() -> None:
@@ -2985,7 +3083,7 @@ def test_certification_restores_user_tree_security_without_root_recreation_drift
 
     assert "'/MIR'" in restore
     assert "'/COPY:DAT'" in restore
-    assert "Applying the root last can rewrite descendant" in restore
+    assert "Restore owner/group without rewriting the DACL" in restore
     assert "$securityRows" in restore
     assert "$metadataRows" in restore
     assert restore.index("foreach ($row in $securityRows)") < restore.index(
@@ -2993,6 +3091,9 @@ def test_certification_restores_user_tree_security_without_root_recreation_drift
     )
     assert "Remove-Item -LiteralPath $safe -Recurse" not in restore
     assert "SetSecurityDescriptorSddlForm" in restore
+    assert "$ownerGroupSections" in restore
+    assert "'/restore'" in restore
+    assert "$Snapshot.acl_backup" in restore
     assert "Assert-SameUserTreeInventory" in restore
 
     matrix = harness[

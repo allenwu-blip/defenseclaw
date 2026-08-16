@@ -3998,16 +3998,24 @@ function New-DefenseClawDeploymentMetadata {
                     -Algorithm SHA256
             ).Hash.ToLowerInvariant()
         }
-        [void](Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout)
         if ([bool]$Layout.CodexTrustedHookLauncherVerified) {
             $codexLauncherIdentity =
                 Get-DefenseClawCodexTrustedHookLauncherIdentity -Layout $Layout
         }
-        $codexTrustedShellAttestationSha256 = (
-            Microsoft.PowerShell.Utility\Get-FileHash `
-                -LiteralPath $Layout.CodexTrustedShellAttestationPath `
-                -Algorithm SHA256
-        ).Hash.ToLowerInvariant()
+        if ([bool]$Layout.CoreHardeningCertification) {
+            if (Microsoft.PowerShell.Management\Test-Path `
+                -LiteralPath $Layout.CodexTrustedShellAttestationPath) {
+                throw 'core-hardening certification cannot retain external application-control attestation evidence'
+            }
+        }
+        else {
+            [void](Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout)
+            $codexTrustedShellAttestationSha256 = (
+                Microsoft.PowerShell.Utility\Get-FileHash `
+                    -LiteralPath $Layout.CodexTrustedShellAttestationPath `
+                    -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+        }
     }
     $metadata = [ordered]@{
         schema_version = $script:SchemaVersion
@@ -4082,6 +4090,8 @@ function New-DefenseClawDeploymentMetadata {
         agent_application_control_prerequisite = $script:AgentApplicationControlPrerequisite
         external_security_prerequisites_satisfied = [bool](
             $Installed -and
+            ($Layout.ClaudeTargetEnabled -or
+                $Layout.CodexTargetEnabled) -and
             $Layout.AgentApplicationControlAttested -and
             (-not $Layout.ClaudeTargetEnabled -or
                 $Layout.ClaudeEffectivePolicyVerified) -and
@@ -4090,6 +4100,8 @@ function New-DefenseClawDeploymentMetadata {
         )
         security_complete = [bool](
             $Installed -and
+            ($Layout.ClaudeTargetEnabled -or
+                $Layout.CodexTargetEnabled) -and
             $Layout.AgentApplicationControlAttested -and
             (-not $Layout.ClaudeTargetEnabled -or
                 $Layout.ClaudeEffectivePolicyVerified) -and
@@ -5336,8 +5348,10 @@ function Get-DefenseClawCodexTrustedShellAttestation {
 
 function Write-DefenseClawCodexTrustedShellAttestation {
     param([Parameter(Mandatory)][hashtable]$Layout)
-    if (-not [bool]$Layout.AgentApplicationControlAttested -and
-        -not [bool]$Layout.CoreHardeningCertification) {
+    if ([bool]$Layout.CoreHardeningCertification) {
+        throw 'core-hardening certification must not publish external application-control attestation evidence'
+    }
+    if (-not [bool]$Layout.AgentApplicationControlAttested) {
         throw 'managed-enterprise mode requires explicit agent application-control attestation'
     }
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -6621,6 +6635,8 @@ function Invoke-DefenseClawCodexRequirementsCommand {
             throw "Codex requirements $Action Claude effective-policy evidence does not match the protected live verification result"
         }
         $expectedSecurityComplete = [bool](
+            ([bool]$report.claude_target_enabled -or
+                [bool]$report.codex_target_enabled) -and
             $Layout.AgentApplicationControlAttested -and
             (-not [bool]$report.claude_target_enabled -or
                 [bool]$Layout.ClaudeEffectivePolicyVerified) -and
@@ -7533,6 +7549,8 @@ function Assert-DefenseClawEnterpriseDeployment {
         'external_security_prerequisites_satisfied'
     ]
     $expectedSecurityComplete = [bool](
+        ([bool]$claudeTargetProperty.Value -or
+            $codexTargetEnabled) -and
         [bool]$applicationControlProperty.Value -and
         (-not [bool]$claudeTargetProperty.Value -or
             [bool]$claudeEffectiveProperty.Value) -and
@@ -7550,41 +7568,54 @@ function Assert-DefenseClawEnterpriseDeployment {
             [bool]$Layout.CoreHardeningCertification)) {
         throw 'deployment metadata has an invalid aggregate Windows enterprise security result'
     }
-    $attestation = Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout
-    if ([bool]$attestation.agent_application_control_enforced -ne
-        [bool]$metadata.agent_application_control_enforced) {
-        throw 'protected application-control evidence disagrees with deployment metadata'
-    }
-    if ([bool]$attestation.codex_trusted_hook_launcher_verified -ne
-        [bool]$metadata.codex_trusted_hook_launcher_verified) {
-        throw 'protected Codex trusted-hook-launcher evidence disagrees with deployment metadata'
-    }
-    if ([bool]$attestation.claude_effective_policy_verified -ne
-        [bool]$metadata.claude_effective_policy_verified) {
-        throw 'protected Claude effective-policy evidence disagrees with deployment metadata'
-    }
     $Layout.AgentApplicationControlAttested = [bool](
         $applicationControlProperty.Value
     )
     $Layout.ClaudeTargetEnabled = [bool]$claudeTargetProperty.Value
-    $Layout.ClaudeEffectivePolicyVerified = [bool](
-        $attestation.claude_effective_policy_verified
-    )
-    $Layout.CodexTrustedHookLauncherVerified = [bool](
-        $attestation.codex_trusted_hook_launcher_verified
-    )
     $Layout.CodexTargetEnabled = $codexTargetEnabled
     $recordedAttestationHash = [string]$metadata.agent_application_control_attestation_sha256
-    if ($recordedAttestationHash -cnotmatch '^[0-9a-f]{64}$') {
-        throw 'deployment metadata contains an invalid agent application-control attestation SHA-256'
+    if ([bool]$Layout.CoreHardeningCertification) {
+        if ((Microsoft.PowerShell.Management\Test-Path `
+                -LiteralPath $Layout.CodexTrustedShellAttestationPath) -or
+            -not [string]::IsNullOrEmpty($recordedAttestationHash)) {
+            throw 'core-hardening deployment retains false external application-control evidence'
+        }
+        $Layout.ClaudeEffectivePolicyVerified = [bool](
+            $metadata.claude_effective_policy_verified
+        )
+        $Layout.CodexTrustedHookLauncherVerified = $false
     }
-    $actualAttestationHash = (
-        Microsoft.PowerShell.Utility\Get-FileHash `
-            -LiteralPath $Layout.CodexTrustedShellAttestationPath `
-            -Algorithm SHA256
-    ).Hash.ToLowerInvariant()
-    if ($actualAttestationHash -cne $recordedAttestationHash) {
-        throw 'agent application-control attestation hash drift'
+    else {
+        $attestation = Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout
+        if ([bool]$attestation.agent_application_control_enforced -ne
+            [bool]$metadata.agent_application_control_enforced) {
+            throw 'protected application-control evidence disagrees with deployment metadata'
+        }
+        if ([bool]$attestation.codex_trusted_hook_launcher_verified -ne
+            [bool]$metadata.codex_trusted_hook_launcher_verified) {
+            throw 'protected Codex trusted-hook-launcher evidence disagrees with deployment metadata'
+        }
+        if ([bool]$attestation.claude_effective_policy_verified -ne
+            [bool]$metadata.claude_effective_policy_verified) {
+            throw 'protected Claude effective-policy evidence disagrees with deployment metadata'
+        }
+        $Layout.ClaudeEffectivePolicyVerified = [bool](
+            $attestation.claude_effective_policy_verified
+        )
+        $Layout.CodexTrustedHookLauncherVerified = [bool](
+            $attestation.codex_trusted_hook_launcher_verified
+        )
+        if ($recordedAttestationHash -cnotmatch '^[0-9a-f]{64}$') {
+            throw 'deployment metadata contains an invalid agent application-control attestation SHA-256'
+        }
+        $actualAttestationHash = (
+            Microsoft.PowerShell.Utility\Get-FileHash `
+                -LiteralPath $Layout.CodexTrustedShellAttestationPath `
+                -Algorithm SHA256
+        ).Hash.ToLowerInvariant()
+        if ($actualAttestationHash -cne $recordedAttestationHash) {
+            throw 'agent application-control attestation hash drift'
+        }
     }
     if ($codexTargetEnabled) {
         Assert-DefenseClawCodexMachinePolicyDirectory `
@@ -7679,10 +7710,16 @@ function Assert-DefenseClawEnterpriseDeployment {
         $Layout.ManifestPath,
         $Layout.LogDirectory,
         $Layout.GuardianLogDirectory,
-        $Layout.MetadataPath,
-        $Layout.CodexTrustedShellAttestationPath
+        $Layout.MetadataPath
     )) {
         $adminOnlyPaths.Add([string]$path)
+    }
+    if (Microsoft.PowerShell.Management\Test-Path `
+        -LiteralPath $Layout.CodexTrustedShellAttestationPath `
+        -PathType Leaf) {
+        $adminOnlyPaths.Add(
+            [string]$Layout.CodexTrustedShellAttestationPath
+        )
     }
     if ($codexTargetEnabled) {
         $adminOnlyPaths.Add([string]$Layout.CodexRequirementsOwnershipPath)
@@ -8214,6 +8251,7 @@ function Get-DefenseClawLifecycleStatus {
     }
     $externalSecuritySatisfied = [bool](
         $installed -and
+        ($claudeTargetEnabled -or $codexTargetEnabled) -and
         $Layout.AgentApplicationControlAttested -and
         (-not $claudeTargetEnabled -or
             $claudeEffectivePolicyVerified) -and
@@ -10787,7 +10825,18 @@ function Invoke-DefenseClawInstallLikeLifecycle {
         $attestationExists = Microsoft.PowerShell.Management\Test-Path `
             -LiteralPath $Layout.CodexTrustedShellAttestationPath `
             -PathType Leaf
-        if (-not $attestationNeedsRefresh -and $attestationExists) {
+        if ([bool]$Layout.CoreHardeningCertification -and $attestationExists) {
+            $staleAttestation =
+                Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout
+            if ([bool]$staleAttestation.agent_application_control_enforced) {
+                throw 'core-hardening migration refuses to discard genuine application-control attestation evidence'
+            }
+            Microsoft.PowerShell.Management\Remove-Item `
+                -LiteralPath $Layout.CodexTrustedShellAttestationPath `
+                -Force
+            $attestationExists = $false
+        }
+        elseif (-not $attestationNeedsRefresh -and $attestationExists) {
             [void](Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout)
         }
         Set-DefenseClawManagedServices `
@@ -10859,7 +10908,8 @@ function Invoke-DefenseClawInstallLikeLifecycle {
                     -Force
             }
         }
-        if ($attestationNeedsRefresh -or -not $attestationExists) {
+        if (-not [bool]$Layout.CoreHardeningCertification -and
+            ($attestationNeedsRefresh -or -not $attestationExists)) {
             Write-DefenseClawCodexTrustedShellAttestation -Layout $Layout
             Set-DefenseClawManagedCoreAcls `
                 -Layout $Layout `
@@ -11145,9 +11195,13 @@ function Invoke-DefenseClawUninstallLifecycle {
                 -GatewayServiceName $GatewayServiceName `
                 -Report $codexRemoval
         }
-        Microsoft.PowerShell.Management\Remove-Item `
+        if (Microsoft.PowerShell.Management\Test-Path `
             -LiteralPath $Layout.CodexTrustedShellAttestationPath `
-            -Force
+            -PathType Leaf) {
+            Microsoft.PowerShell.Management\Remove-Item `
+                -LiteralPath $Layout.CodexTrustedShellAttestationPath `
+                -Force
+        }
         # Re-authenticate every service field and both ACL surfaces at the
         # deletion boundary. A concurrent administrative drift or same-name
         # takeover fails closed before either sc.exe delete.

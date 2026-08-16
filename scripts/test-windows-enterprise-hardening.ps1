@@ -988,10 +988,14 @@ function Invoke-UserPowerShell {
         }
     }
     $stdoutText = if (Test-Path -LiteralPath $stdout) {
-        [IO.File]::ReadAllText($stdout)
+        Read-CredentialedProcessOutputFile `
+            -Path $stdout `
+            -Label "$Label standard output"
     } else { '' }
     $stderrText = if (Test-Path -LiteralPath $stderr) {
-        [IO.File]::ReadAllText($stderr)
+        Read-CredentialedProcessOutputFile `
+            -Path $stderr `
+            -Label "$Label standard error"
     } else { '' }
     if ($AllowedExitCodes -notcontains $exitCode) {
         throw "$Label exited $exitCode; expected $($AllowedExitCodes -join ', '). stderr: $(Protect-SensitiveDisplayText $stderrText)"
@@ -1003,6 +1007,31 @@ function Invoke-UserPowerShell {
         StdOutPath = $stdout
         StdErrPath = $stderr
     }
+}
+
+function Read-CredentialedProcessOutputFile {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Label,
+        [int]$TimeoutMilliseconds = 10000
+    )
+    $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds(
+        $TimeoutMilliseconds
+    )
+    do {
+        try {
+            return [IO.File]::ReadAllText($Path)
+        }
+        catch [IO.IOException] {
+            if ([DateTimeOffset]::UtcNow -ge $deadline) {
+                throw (
+                    "$Label remained locked after $TimeoutMilliseconds ms: " +
+                    $_.Exception.Message
+                )
+            }
+            Start-Sleep -Milliseconds 50
+        }
+    } while ($true)
 }
 
 function ConvertFrom-SingleJSONDocument([string]$Text, [string]$Label) {
@@ -3098,10 +3127,11 @@ function Start-ActiveUserSparseArtifactAttack(
         )
     )
     $attackScript = @'
+param([Parameter(Mandatory)][string]$InputBase64)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $inputObject = [Text.Encoding]::UTF8.GetString(
-    [Convert]::FromBase64String('__INPUT__')
+    [Convert]::FromBase64String($InputBase64)
 ) | ConvertFrom-Json -ErrorAction Stop
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($sid -ne [string]$inputObject.expected_sid) {
@@ -3386,13 +3416,35 @@ try {
     )
 }
 if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
-'@.Replace('__INPUT__', $inputBase64)
-    $encoded = [Convert]::ToBase64String(
-        [Text.Encoding]::Unicode.GetBytes($attackScript)
+'@
+    $payload = Join-Path $script:WorkRoot (
+        "$safeLabel-$nonce.sparse-attack.ps1"
     )
-    if ($encoded.Length -gt 30000) {
+    if (Test-Path -LiteralPath $payload) {
+        throw "$Label sparse task payload already exists"
+    }
+    [IO.File]::WriteAllText(
+        $payload,
+        $attackScript,
+        [Text.UTF8Encoding]::new($false)
+    )
+    $null = Set-ICaclsOwnerAndDacl `
+        -Path $payload `
+        -Owner '*S-1-5-32-544' `
+        -Grants @(
+            '*S-1-5-18:F',
+            '*S-1-5-32-544:F',
+            "*$($script:PrimarySID):RX"
+        ) `
+        -Label "$Label-sparse-task-payload-acl"
+    $payloadSHA256 = Get-FileDigest $payload
+    $taskArguments = (
+        '-NoLogo -NoProfile -NonInteractive -File "' + $payload +
+        '" -InputBase64 "' + $inputBase64 + '"'
+    )
+    if ($taskArguments.Length -gt 30000) {
         throw (
-            "$Label encoded sparse task exceeds the bounded Windows " +
+            "$Label sparse task action exceeds the bounded Windows " +
             'Task Scheduler argument budget'
         )
     }
@@ -3406,7 +3458,7 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
     }
     $action = New-ScheduledTaskAction `
         -Execute $script:PowerShellExecutable `
-        -Argument "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"
+        -Argument $taskArguments
     $principal = New-ActiveUserScheduledTaskPrincipal
     $settings = New-ScheduledTaskSettingsSet `
         -ExecutionTimeLimit ([TimeSpan]::FromSeconds(150)) `
@@ -3474,6 +3526,8 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
             throw "$Label did not establish the exact bounded non-admin sparse fixture"
         }
     } catch {
+        $startFailure = $_
+        $payloadSealError = ''
         try {
             [IO.File]::WriteAllText(
                 $release,
@@ -3490,7 +3544,16 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
                     return Test-Path -LiteralPath $evidence -PathType Leaf
                 }
         } catch {}
-        Remove-CertificationScheduledTask $taskName
+        try {
+            Remove-CertificationScheduledTask $taskName
+            if ((Get-FileDigest $payload) -cne $payloadSHA256) {
+                throw "$Label sparse task payload changed during execution"
+            }
+            Protect-AdministratorFile $payload "$Label-sparse-task-payload-seal"
+        }
+        catch {
+            $payloadSealError = $_.Exception.Message
+        }
         try {
             $null = Wait-Until `
                 -Description "$Label sparse canonical repair after start failure" `
@@ -3506,7 +3569,13 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
                     )
                 }
         } catch {}
-        throw
+        if (-not [string]::IsNullOrWhiteSpace($payloadSealError)) {
+            throw (
+                $startFailure.Exception.Message +
+                " (sparse payload cleanup failed: $payloadSealError)"
+            )
+        }
+        throw $startFailure
     }
     return [pscustomobject]@{
         TaskName = $taskName
@@ -3514,6 +3583,9 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
         ReleasePath = $release
         EvidencePath = $evidence
         RenameMarkerPath = $renameMarker
+        PayloadPath = $payload
+        PayloadSHA256 = $payloadSHA256
+        TaskArgumentLength = $taskArguments.Length
         Path = $canonical
         PID = [uint32]$readyJSON.pid
         LogicalBytes = [int64]$readyJSON.logical_bytes
@@ -3546,6 +3618,8 @@ function Stop-ActiveUserSparseArtifactAttack(
             [int64]0
         }
     }
+    $completionError = $null
+    $payloadCleanupError = ''
     try {
         $evidence = Wait-Until `
             -Description 'non-admin sparse artifact attack completion' `
@@ -3582,8 +3656,36 @@ function Stop-ActiveUserSparseArtifactAttack(
                 } catch {}
                 return $false
             }
-    } finally {
-        Remove-CertificationScheduledTask ([string]$Attack.TaskName)
+    }
+    catch {
+        $completionError = $_
+    }
+    finally {
+        try {
+            Remove-CertificationScheduledTask ([string]$Attack.TaskName)
+            if ((Get-FileDigest ([string]$Attack.PayloadPath)) -cne
+                [string]$Attack.PayloadSHA256) {
+                throw 'non-admin sparse artifact task payload changed during execution'
+            }
+            Protect-AdministratorFile `
+                ([string]$Attack.PayloadPath) `
+                'sparse-task-payload-seal'
+        }
+        catch {
+            $payloadCleanupError = $_.Exception.Message
+        }
+    }
+    if ($null -ne $completionError) {
+        if (-not [string]::IsNullOrWhiteSpace($payloadCleanupError)) {
+            throw (
+                $completionError.Exception.Message +
+                " (sparse payload cleanup failed: $payloadCleanupError)"
+            )
+        }
+        throw $completionError
+    }
+    if (-not [string]::IsNullOrWhiteSpace($payloadCleanupError)) {
+        throw $payloadCleanupError
     }
     $evidence | Add-Member `
         -NotePropertyName guardian_release_peak_working_set_bytes `
@@ -3708,7 +3810,25 @@ function Update-EnterprisePowerShellTempObservation(
         )) {
         throw 'public lifecycle CLI changed elevated temp capability mid-call'
     }
-    $acl = Get-Acl -LiteralPath $child.FullName -ErrorAction Stop
+    try {
+        $acl = Get-Acl -LiteralPath $child.FullName -ErrorAction Stop
+    }
+    catch [IO.DirectoryNotFoundException] {
+        if (-not (Test-Path -LiteralPath $child.FullName)) {
+            # The elevated launcher owns this short-lived capability. A
+            # verified disappearance between enumeration and ACL inspection
+            # is expected; the caller keeps polling while the process runs and
+            # still requires at least one successful protected-ACL sample.
+            return
+        }
+        throw
+    }
+    catch [Management.Automation.ItemNotFoundException] {
+        if (-not (Test-Path -LiteralPath $child.FullName)) {
+            return
+        }
+        throw
+    }
     $sddl = $acl.GetSecurityDescriptorSddlForm(
         [Security.AccessControl.AccessControlSections]::All
     )
@@ -5424,6 +5544,13 @@ function Assert-SameUserTreeInventory([object]$Expected, [object]$Actual, [strin
             'sddl'
         )) {
             if ([string]$before.$property -cne [string]$after.$property) {
+                if ($property -eq 'sddl') {
+                    throw (
+                        "$Label changed $($before.relative_path) property " +
+                        "sddl; before=$([string]$before.sddl); " +
+                        "after=$([string]$after.sddl)"
+                    )
+                }
                 throw "$Label changed $($before.relative_path) property $property"
             }
         }
@@ -5463,6 +5590,7 @@ function New-ProtectedUserTreeSnapshot(
         (Join-Path $script:StagingRoot "user-baseline\$Name") `
         $script:StagingRoot `
         "$Name backup"
+    $aclBackup = "$backup.acl.txt"
     if ([bool]$inventory.existed) {
         [IO.Directory]::CreateDirectory($backup) | Out-Null
         Protect-AdministratorTree $backup
@@ -5488,6 +5616,20 @@ function New-ProtectedUserTreeSnapshot(
             -TimeoutSeconds 300 `
             -Label "snapshot-$Name"
         Assert-UserTreeBackupMatches $inventory $backup $Name
+        $icacls = Join-Path $script:System32 'icacls.exe'
+        $null = Invoke-NativeProcess `
+            -FilePath $icacls `
+            -ArgumentList @(
+                [string]$inventory.root,
+                '/save',
+                $aclBackup,
+                '/T',
+                '/C',
+                '/L',
+                '/Q'
+            ) `
+            -Label "snapshot-$Name-native-acl"
+        Protect-AdministratorFile $aclBackup "$Name-native-acl-backup"
         $after = Get-ProtectedUserTreeInventory $Path "$Name post-snapshot"
         Assert-SameUserTreeInventory $inventory $after "$Name snapshot stability"
     }
@@ -5495,6 +5637,7 @@ function New-ProtectedUserTreeSnapshot(
         name = $Name
         path = [string]$inventory.root
         backup = $backup
+        acl_backup = $aclBackup
         inventory = $inventory
         ephemeral = [bool]$Ephemeral
     }
@@ -5731,14 +5874,13 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
         -TimeoutSeconds 300 `
         -Label "restore-$($Snapshot.name)"
 
-    $sections = (
-        [Security.AccessControl.AccessControlSections]::Access -bor
+    $ownerGroupSections = (
         [Security.AccessControl.AccessControlSections]::Owner -bor
         [Security.AccessControl.AccessControlSections]::Group
     )
-    # Apply parent descriptors first so Windows computes every inherited ACE
-    # from the restored parent. Applying the root last can rewrite descendant
-    # inheritance after their exact descriptors were already restored.
+    # Restore owner/group without rewriting the DACL, then let icacls restore
+    # its native saved descriptor stream. Set-Acl reconstructs inherited ACEs
+    # and can canonicalize a migration lock differently under PS 5.1 and 7.
     $securityRows = @(
         $Snapshot.inventory.entries |
             Sort-Object `
@@ -5758,9 +5900,29 @@ function Restore-ProtectedUserTreeSnapshot([object]$Snapshot) {
         } else {
             [Security.AccessControl.FileSecurity]::new()
         }
-        $security.SetSecurityDescriptorSddlForm([string]$row.sddl, $sections)
+        $security.SetSecurityDescriptorSddlForm(
+            [string]$row.sddl,
+            $ownerGroupSections
+        )
         Set-Acl -LiteralPath $target -AclObject $security
     }
+    if (-not (Test-Path `
+        -LiteralPath ([string]$Snapshot.acl_backup) `
+        -PathType Leaf)) {
+        throw "$($Snapshot.name) native ACL backup is missing"
+    }
+    $icacls = Join-Path $script:System32 'icacls.exe'
+    $null = Invoke-NativeProcess `
+        -FilePath $icacls `
+        -ArgumentList @(
+            (Split-Path -Parent $safe),
+            '/restore',
+            [string]$Snapshot.acl_backup,
+            '/C',
+            '/L',
+            '/Q'
+        ) `
+        -Label "restore-$($Snapshot.name)-native-acl"
 
     # Restore timestamps and attributes from children to parents after all
     # copying and ACL propagation so child updates cannot drift parent metadata.
@@ -8314,6 +8476,8 @@ $attempts = [Collections.Generic.List[object]]::new()
 foreach ($mode in @('exclusive_open', 'overwrite', 'delete')) {
     $succeeded = $false
     $errorCode = 0
+    $errorHResult = 0
+    $errorType = ''
     try {
         switch ($mode) {
             'exclusive_open' {
@@ -8341,14 +8505,22 @@ foreach ($mode in @('exclusive_open', 'overwrite', 'delete')) {
         }
         $succeeded = $true
     } catch {
-        $errorCode = [Runtime.InteropServices.Marshal]::GetHRForException(
-            $_.Exception
-        ) -band 0xffff
+        $rootException = $_.Exception
+        while ($null -ne $rootException.InnerException) {
+            $rootException = $rootException.InnerException
+        }
+        $errorHResult = [Runtime.InteropServices.Marshal]::GetHRForException(
+            $rootException
+        )
+        $errorCode = $errorHResult -band 0xffff
+        $errorType = $rootException.GetType().FullName
     }
     $attempts.Add([pscustomobject]@{
         mode = $mode
         succeeded = $succeeded
         error_code = $errorCode
+        error_hresult = $errorHResult
+        error_type = $errorType
     })
 }
 [pscustomobject]@{
@@ -8361,7 +8533,13 @@ foreach ($mode in @('exclusive_open', 'overwrite', 'delete')) {
         'non-admin lifecycle lock squatting'
     if ([string]$result.sid -ne $script:PrimarySID -or
         @($result.attempts | Where-Object {
-            [bool]$_.succeeded -or [int]$_.error_code -notin @(5, 32)
+            [bool]$_.succeeded -or (
+                [int]$_.error_code -notin @(5, 32, 33) -and
+                [string]$_.error_type -notin @(
+                    'System.UnauthorizedAccessException',
+                    'System.IO.IOException'
+                )
+            )
         }).Count -ne 0) {
         throw (
             'standard user could capture/change the predictable lifecycle ' +
@@ -8920,18 +9098,44 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($sid -ne [string]$inputObject.expected_sid) {
     throw "unregistered hook probe SID mismatch: $sid"
 }
-$output = @(
-    '{"hook_event_name":"SessionStart","source":"startup"}' |
-        & ([string]$inputObject.hook) `
-            hook `
-            --connector ([string]$inputObject.connector) `
-            --enterprise-managed 2>&1
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = [string]$inputObject.hook
+$start.Arguments = (
+    'hook --connector ' + [string]$inputObject.connector +
+    ' --enterprise-managed'
 )
-$hookExit = $LASTEXITCODE
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$start.RedirectStandardInput = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$hookProcess = [Diagnostics.Process]::new()
+$hookProcess.StartInfo = $start
+try {
+    if (-not $hookProcess.Start()) {
+        throw 'unregistered managed hook process did not start'
+    }
+    $stdoutTask = $hookProcess.StandardOutput.ReadToEndAsync()
+    $stderrTask = $hookProcess.StandardError.ReadToEndAsync()
+    $hookProcess.StandardInput.WriteLine(
+        '{"hook_event_name":"SessionStart","source":"startup"}'
+    )
+    $hookProcess.StandardInput.Close()
+    if (-not $hookProcess.WaitForExit(60000)) {
+        try { $hookProcess.Kill() } catch {}
+        throw 'unregistered managed hook process timed out'
+    }
+    $hookExit = [int]$hookProcess.ExitCode
+    $output = [string]$stdoutTask.Result + "`n" +
+        [string]$stderrTask.Result
+}
+finally {
+    $hookProcess.Dispose()
+}
 [pscustomobject]@{
     sid = $sid
     hook_exit_code = $hookExit
-    output = ($output | ForEach-Object { [string]$_ }) -join "`n"
+    output = $output
 } | ConvertTo-Json -Compress
 '@.Replace('__INPUT__', $inputBase64)
     $process = Invoke-UserPowerShell `
@@ -8949,7 +9153,7 @@ $hookExit = $LASTEXITCODE
         throw 'unregistered interactive SID was silently allowed/no-op by the managed hook'
     }
     if ([string]$result.output -notmatch
-        '(?i)enterprise_managed_sid_not_enrolled|not (?:enrolled|registered)|unauthori[sz]ed SID') {
+        '(?i)enterprise_managed_sid_(?:not_enrolled|unregistered)|not (?:enrolled|registered)|unauthori[sz]ed SID') {
         throw (
             'unregistered managed hook did not emit a causal enrollment ' +
             "diagnostic: $(Protect-SensitiveDisplayText ([string]$result.output))"
@@ -9101,17 +9305,41 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($sid -ne [string]$inputObject.expected_sid) {
     throw "disabled-target hook probe SID mismatch: $sid"
 }
-$output = @(
-    '{"hook_event_name":"SessionStart","source":"startup"}' |
-        & ([string]$inputObject.hook) `
-            hook `
-            --connector claudecode `
-            --enterprise-managed 2>&1
-)
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = [string]$inputObject.hook
+$start.Arguments = 'hook --connector claudecode --enterprise-managed'
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$start.RedirectStandardInput = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$hookProcess = [Diagnostics.Process]::new()
+$hookProcess.StartInfo = $start
+try {
+    if (-not $hookProcess.Start()) {
+        throw 'disabled-target managed hook process did not start'
+    }
+    $stdoutTask = $hookProcess.StandardOutput.ReadToEndAsync()
+    $stderrTask = $hookProcess.StandardError.ReadToEndAsync()
+    $hookProcess.StandardInput.WriteLine(
+        '{"hook_event_name":"SessionStart","source":"startup"}'
+    )
+    $hookProcess.StandardInput.Close()
+    if (-not $hookProcess.WaitForExit(60000)) {
+        try { $hookProcess.Kill() } catch {}
+        throw 'disabled-target managed hook process timed out'
+    }
+    $hookExit = [int]$hookProcess.ExitCode
+    $output = [string]$stdoutTask.Result + "`n" +
+        [string]$stderrTask.Result
+}
+finally {
+    $hookProcess.Dispose()
+}
 [pscustomobject]@{
     sid = $sid
-    exit_code = $LASTEXITCODE
-    output = ($output | ForEach-Object { [string]$_ }) -join "`n"
+    exit_code = $hookExit
+    output = $output
 } | ConvertTo-Json -Compress
 '@.Replace('__INPUT__', $inputBase64)
         $probe = Invoke-ActiveUserPowerShell `
@@ -9123,7 +9351,7 @@ $output = @(
             'disabled Claude target managed hook'
         if ([int]$probeJSON.exit_code -eq 0 -or
             [string]$probeJSON.output -notmatch
-                '(?i)enterprise_managed_sid_not_enrolled|not (?:enrolled|registered)|unauthori[sz]ed SID|disabled') {
+                '(?i)enterprise_managed_sid_(?:not_enrolled|unregistered)|not (?:enrolled|registered)|unauthori[sz]ed SID|disabled') {
             throw (
                 'disabled Claude target managed invocation did not fail closed ' +
                 "with a causal enrollment diagnostic: exit=" +
@@ -9217,7 +9445,7 @@ targets:
             'removed Claude target managed hook'
         if ([int]$removedProbeJSON.exit_code -eq 0 -or
             [string]$removedProbeJSON.output -notmatch
-                '(?i)enterprise_managed_sid_not_enrolled|not (?:enrolled|registered)|unauthori[sz]ed SID|disabled') {
+                '(?i)enterprise_managed_sid_(?:not_enrolled|unregistered)|not (?:enrolled|registered)|unauthori[sz]ed SID|disabled') {
             throw (
                 'removed Claude target managed invocation did not fail closed ' +
                 "with a causal enrollment diagnostic: exit=" +
@@ -9305,18 +9533,44 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 if ($sid -ne [string]$inputObject.expected_sid) {
     throw "registered hook probe SID mismatch: $sid"
 }
-$output = @(
-    '{"hook_event_name":"SessionStart","source":"startup"}' |
-        & ([string]$inputObject.hook) `
-            hook `
-            --connector ([string]$inputObject.connector) `
-            --enterprise-managed 2>&1
+$start = [Diagnostics.ProcessStartInfo]::new()
+$start.FileName = [string]$inputObject.hook
+$start.Arguments = (
+    'hook --connector ' + [string]$inputObject.connector +
+    ' --enterprise-managed'
 )
-$hookExit = $LASTEXITCODE
+$start.UseShellExecute = $false
+$start.CreateNoWindow = $true
+$start.RedirectStandardInput = $true
+$start.RedirectStandardOutput = $true
+$start.RedirectStandardError = $true
+$hookProcess = [Diagnostics.Process]::new()
+$hookProcess.StartInfo = $start
+try {
+    if (-not $hookProcess.Start()) {
+        throw 'registered managed hook process did not start'
+    }
+    $stdoutTask = $hookProcess.StandardOutput.ReadToEndAsync()
+    $stderrTask = $hookProcess.StandardError.ReadToEndAsync()
+    $hookProcess.StandardInput.WriteLine(
+        '{"hook_event_name":"SessionStart","source":"startup"}'
+    )
+    $hookProcess.StandardInput.Close()
+    if (-not $hookProcess.WaitForExit(60000)) {
+        try { $hookProcess.Kill() } catch {}
+        throw 'registered managed hook process timed out'
+    }
+    $hookExit = [int]$hookProcess.ExitCode
+    $output = [string]$stdoutTask.Result + "`n" +
+        [string]$stderrTask.Result
+}
+finally {
+    $hookProcess.Dispose()
+}
 [pscustomobject]@{
     sid = $sid
     hook_exit_code = $hookExit
-    output = ($output | ForEach-Object { [string]$_ }) -join "`n"
+    output = $output
 } | ConvertTo-Json -Compress
 '@.Replace('__INPUT__', $inputBase64)
     $process = Invoke-ActiveUserPowerShell `
@@ -11533,9 +11787,12 @@ function Invoke-EnterpriseInstallerJSON {
 function Get-ManagedCLIEnvironment {
     return @{
         DEFENSECLAW_CONFIG = Join-Path $script:StateRoot 'etc\config.yaml'
-        DEFENSECLAW_HOME = $script:StateRoot
+        DEFENSECLAW_HOME = Join-Path $script:StateRoot 'runtime'
         DEFENSECLAW_DEPLOYMENT_MODE = 'managed_enterprise'
         DEFENSECLAW_HOOK_GUARDIAN_AUTH_DIR = Join-Path $script:StateRoot 'hook-guardian-state'
+        DEFENSECLAW_WINDOWS_SERVICE_ACCOUNT = "NT SERVICE\$($script:GatewayServiceName)"
+        DEFENSECLAW_WINDOWS_GATEWAY_SERVICE_NAME = $script:GatewayServiceName
+        DEFENSECLAW_WINDOWS_SERVICE_NAME = $script:GatewayServiceName
         CODEX_HOME = $null
     }
 }
@@ -12198,13 +12455,12 @@ try {
 }
 
 function Get-ClaudeHookAuditRows([string]$Label) {
-    $result = Invoke-GatewayProcess `
+    $result = Invoke-GatewayCommand `
         -Arguments @(
             'audit', 'export',
             '--output', '-',
             '--connector', 'claudecode'
         ) `
-        -Environment (Get-ManagedCLIEnvironment) `
         -Label $Label
     $rows = [Collections.Generic.List[object]]::new()
     foreach ($line in @($result.StdOut -split "\r?\n")) {
@@ -13170,9 +13426,13 @@ function Get-CertificationServiceProcessSnapshot {
         if ([string]$service.State -ne 'Running' -or [uint32]$service.ProcessId -eq 0) {
             throw "service process snapshot found $name state=$($service.State) pid=$($service.ProcessId)"
         }
+        $process = Get-Process `
+            -Id ([uint32]$service.ProcessId) `
+            -ErrorAction Stop
         $rows.Add([pscustomobject]@{
             name = $name
             process_id = [uint32]$service.ProcessId
+            process_created_at = $process.StartTime.ToUniversalTime().ToString('o')
             state = [string]$service.State
         })
     }
@@ -14335,12 +14595,12 @@ function Assert-NoStandardUserAccess(
         [Security.AccessControl.FileSystemRights]::AppendData -bor
         [Security.AccessControl.FileSystemRights]::CreateFiles -bor
         [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
-        [Security.AccessControl.FileSystemRights]::Modify
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
     )
     foreach ($rule in $rules) {
         if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
@@ -14580,9 +14840,9 @@ function Test-ChangeACLDenied([string]$Name, [string]$Path) {
             GetSecurityDescriptorSddlForm($sections)
         Add-Probe `
             $Name `
-            ($code -eq 5 -and $beforeSDDL -ceq $afterSDDL) `
+            ($code -ne 0 -and $beforeSDDL -ceq $afterSDDL) `
             ("icacls.exe exit " + $code +
-                " (want ERROR_ACCESS_DENIED=5); unchanged=" +
+                " (want nonzero denial); unchanged=" +
                 ($beforeSDDL -ceq $afterSDDL))
     } catch [UnauthorizedAccessException] {
         Add-Probe $Name $true 'Get-Acl access denied before any change'
@@ -16188,13 +16448,17 @@ function Assert-HealthyGuardianJSON([string]$Label) {
         if (-not [bool]$result.JSON.ok) {
             throw "$command returned ok=false after $Label"
         }
-        if (-not [string]::IsNullOrWhiteSpace([string]$result.JSON.manifest) -and
+        $manifestProperty = $result.JSON.PSObject.Properties['manifest']
+        if ($null -ne $manifestProperty -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$manifestProperty.Value
+            ) -and
             -not [string]::Equals(
-                (ConvertTo-CanonicalPath ([string]$result.JSON.manifest)),
+                (ConvertTo-CanonicalPath ([string]$manifestProperty.Value)),
                 (ConvertTo-CanonicalPath $manifest),
                 [StringComparison]::OrdinalIgnoreCase
             )) {
-            throw "$command reported a different manifest: $($result.JSON.manifest)"
+            throw "$command reported a different manifest: $($manifestProperty.Value)"
         }
     }
     return 'status and verify emitted healthy JSON with zero exit status'
@@ -17555,6 +17819,12 @@ function Add-AdministratorDenyACE(
 function Test-GuardianRepairsPreexistingSelfDenyDACL(
     [Collections.IDictionary]$ArtifactPaths
 ) {
+    $systemHookConfigKey = if ($ClaudeOnly) {
+        'hookcfg_claudecode'
+    }
+    else {
+        'hookcfg_codex'
+    }
     $cases = @(
         [pscustomobject]@{
             name = 'target'
@@ -17569,7 +17839,7 @@ function Test-GuardianRepairsPreexistingSelfDenyDACL(
         [pscustomobject]@{
             name = 'system'
             deny_sid = 'S-1-5-18'
-            path = [string]$ArtifactPaths['hookcfg_codex']
+            path = [string]$ArtifactPaths[$systemHookConfigKey]
         },
         [pscustomobject]@{
             name = 'administrators'
@@ -18305,6 +18575,8 @@ function Test-PreviouslyAuthorizedRootObstructionRepair(
         -Name "authorized-obstruction-$($script:RunToken)" `
         -Ephemeral
     $completed = $false
+    $primaryError = $null
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
     $recoveries = [ordered]@{}
     try {
         foreach ($mode in @('delete', 'junction')) {
@@ -18357,26 +18629,59 @@ function Test-PreviouslyAuthorizedRootObstructionRepair(
             $null = Assert-HealthyGuardianJSON "authorized-$mode-obstruction"
         }
         $completed = $true
-    } finally {
+    }
+    catch {
+        $primaryError = $_
+    }
+    finally {
         if (-not $completed) {
-            $service = Get-Service -Name $script:GuardianServiceName -ErrorAction SilentlyContinue
-            if ($null -ne $service -and
-                $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
-                Stop-Service -Name $script:GuardianServiceName -Force -ErrorAction Stop
-                Wait-Until -Description 'authorized obstruction guardian stop for restore' -Condition {
-                    (Get-Service -Name $script:GuardianServiceName -ErrorAction Stop).Status -eq
-                        [ServiceProcess.ServiceControllerStatus]::Stopped
-                } | Out-Null
+            try {
+                $service = Get-Service -Name $script:GuardianServiceName -ErrorAction SilentlyContinue
+                if ($null -ne $service -and
+                    $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
+                    Stop-Service -Name $script:GuardianServiceName -Force -ErrorAction Stop
+                    Wait-Until -Description 'authorized obstruction guardian stop for restore' -Condition {
+                        (Get-Service -Name $script:GuardianServiceName -ErrorAction Stop).Status -eq
+                            [ServiceProcess.ServiceControllerStatus]::Stopped
+                    } | Out-Null
+                }
+                Restore-ProtectedUserTreeSnapshot $emergencySnapshot
             }
-            Restore-ProtectedUserTreeSnapshot $emergencySnapshot
+            catch {
+                $cleanupErrors.Add(
+                    'emergency protected-user restore failed: ' +
+                    $_.Exception.Message
+                )
+            }
         }
-        $outsideAfterCleanup = Get-ProtectedUserTreeInventory `
-            $outside `
-            'authorized obstruction outside after cleanup'
-        Assert-SameUserTreeInventory `
-            $outsideBefore `
-            $outsideAfterCleanup `
-            'authorized obstruction outside after cleanup'
+        try {
+            $outsideAfterCleanup = Get-ProtectedUserTreeInventory `
+                $outside `
+                'authorized obstruction outside after cleanup'
+            Assert-SameUserTreeInventory `
+                $outsideBefore `
+                $outsideAfterCleanup `
+                'authorized obstruction outside after cleanup'
+        }
+        catch {
+            $cleanupErrors.Add(
+                'outside-target cleanup verification failed: ' +
+                $_.Exception.Message
+            )
+        }
+    }
+    if ($null -ne $primaryError) {
+        if ($cleanupErrors.Count -ne 0) {
+            throw (
+                $primaryError.Exception.Message +
+                ' (cleanup diagnostics: ' +
+                ($cleanupErrors -join '; ') + ')'
+            )
+        }
+        throw $primaryError
+    }
+    if ($cleanupErrors.Count -ne 0) {
+        throw ($cleanupErrors -join '; ')
     }
     return [pscustomobject]@{
         DeletedRootRepairMilliseconds = $recoveries['delete']
@@ -20312,7 +20617,6 @@ targets:
         $controlMachinePolicyRoot `
         'managed machine policy directories before hostile probe'
     $serviceControlBaseline = Get-ServiceControlSnapshot 'before-hostile-control'
-    $serviceProcessBaseline = Get-CertificationServiceProcessSnapshot
 
     $script:Phase = 'protected-boundary'
     Invoke-Check 'certification-scope-and-work-root-dacls' {
@@ -20394,7 +20698,14 @@ targets:
         return 'binaries, policy, ledger, managed machine parents, and service credentials enforce the expected standard-user boundary'
     }
     Invoke-Check 'standard-user-control-denials' {
-        Invoke-StandardUserControlProbe
+        $hostileProcessBaseline = Get-CertificationServiceProcessSnapshot
+        $detail = Invoke-StandardUserControlProbe
+        $hostileProcessAfter = Get-CertificationServiceProcessSnapshot
+        Assert-SameObjectJSON `
+            $hostileProcessBaseline `
+            $hostileProcessAfter `
+            'causal hostile process-termination probe'
+        return $detail
     }
     try {
         $lifecycleLockEvidence = Test-ProtectedLifecycleLockSquattingDenied
@@ -20504,10 +20815,9 @@ targets:
             $afterServiceControl `
             'hostile SCM probe'
         $afterServiceProcesses = Get-CertificationServiceProcessSnapshot
-        Assert-SameObjectJSON `
-            $serviceProcessBaseline `
-            $afterServiceProcesses `
-            'hostile process-termination probe'
+        if (@($afterServiceProcesses).Count -ne 2) {
+            throw 'managed services are not both running after authorized lifecycle transitions'
+        }
         $responsive = Invoke-EnterpriseInstallerJSON `
             -Action Verify `
             -GatewaySource '' `

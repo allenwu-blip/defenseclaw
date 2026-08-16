@@ -677,6 +677,52 @@ func TestInstallWindowsClaudeManagedPolicySurvivesManagedOnlyHooks(t *testing.T)
 	}
 }
 
+func TestInstallWindowsClaudeRebuildsDeletedRuntimeBytesAndSecurityExactly(t *testing.T) {
+	fixture := newWindowsManagedInstallFixture(
+		t,
+		map[string]interface{}{"allowManagedHooksOnly": true},
+	)
+	opts := windowsManagedInstallOptions(fixture)
+	result, err := Install(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HookContractLockUpdatedAt == "" ||
+		result.HookContractEntryUpdatedAt == "" {
+		t.Fatalf("install omitted protected recovery timestamps: %+v", result)
+	}
+	dataDir := filepath.Join(fixture.home, ".defenseclaw")
+	want := snapshotWindowsRuntimeContentAndSecurity(t, dataDir)
+	if err := os.RemoveAll(dataDir); err != nil {
+		t.Fatal(err)
+	}
+	opts.AllowMissingHookConfigRepair = true
+	opts.RecoveryHookContractLockUpdatedAt = result.HookContractLockUpdatedAt
+	opts.RecoveryHookContractEntryUpdatedAt = result.HookContractEntryUpdatedAt
+	rebuilt, err := Install(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt.HookContractLockUpdatedAt != result.HookContractLockUpdatedAt ||
+		rebuilt.HookContractEntryUpdatedAt != result.HookContractEntryUpdatedAt {
+		t.Fatalf("rebuilt recovery timestamps drifted: %+v", rebuilt)
+	}
+	got := snapshotWindowsRuntimeContentAndSecurity(t, dataDir)
+	if len(got) != len(want) {
+		t.Fatalf("rebuilt runtime entries = %d, want %d", len(got), len(want))
+	}
+	for path, expected := range want {
+		if actual, ok := got[path]; !ok || actual != expected {
+			t.Fatalf(
+				"rebuilt runtime drift at %s\nwant: %s\n got: %s",
+				path,
+				expected,
+				actual,
+			)
+		}
+	}
+}
+
 func TestInstallWindowsClaudeAutoHealsDeletedManagedPolicyFromExactState(t *testing.T) {
 	fixture := newWindowsManagedInstallFixture(
 		t,
@@ -2168,6 +2214,44 @@ func snapshotWindowsTestTree(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return snapshot.String()
+}
+
+func snapshotWindowsRuntimeContentAndSecurity(
+	t *testing.T,
+	root string,
+) map[string]string {
+	t.Helper()
+	snapshot := make(map[string]string)
+	err := filepath.WalkDir(root, func(
+		path string,
+		entry os.DirEntry,
+		walkErr error,
+	) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		descriptor := windowsTestSecurityDescriptorString(t, path)
+		kind := "directory"
+		body := ""
+		if !entry.IsDir() {
+			kind = "file"
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			body = fmt.Sprintf("%x", data)
+		}
+		snapshot[relative] = kind + "|" + descriptor + "|" + body
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return snapshot
 }
 
 func TestWindowsEnterpriseManagedAgentVersionMinimums(t *testing.T) {

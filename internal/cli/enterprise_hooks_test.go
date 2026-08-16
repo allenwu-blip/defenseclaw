@@ -153,8 +153,10 @@ func TestWriteEnterpriseHookGuardianStatePreservesProtectedTargets(t *testing.T)
 		Connector: "codex",
 		OK:        true,
 		Result: &enterprisehooks.InstallResult{
-			Connector: "codex",
-			UserHome:  "/home/alice",
+			Connector:                  "codex",
+			UserHome:                   "/home/alice",
+			HookContractLockUpdatedAt:  "2026-08-16T12:34:56.987654321Z",
+			HookContractEntryUpdatedAt: "2026-08-16T12:34:55.123456789Z",
 		},
 	}}
 	if err := writeEnterpriseHookGuardianState(dir, "manifest.yaml", successRows, 0); err != nil {
@@ -166,6 +168,21 @@ func TestWriteEnterpriseHookGuardianStatePreservesProtectedTargets(t *testing.T)
 	}
 	if !protected {
 		t.Fatal("previousEnterpriseHookSuccess = false after successful state")
+	}
+	protection, err := previousEnterpriseHookProtection(
+		dir,
+		"alice",
+		"/home/alice",
+		"",
+		"codex",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !protection.PreviouslyProtected ||
+		protection.HookContractLockUpdatedAt != "2026-08-16T12:34:56.987654321Z" ||
+		protection.HookContractEntryUpdatedAt != "2026-08-16T12:34:55.123456789Z" {
+		t.Fatalf("protected recovery evidence = %+v", protection)
 	}
 
 	failureRows := []enterpriseHookReconcileRow{{
@@ -680,6 +697,24 @@ func TestEnterpriseHookWatchEventInSettleWindow(t *testing.T) {
 				t.Fatalf("enterpriseHookWatchEventInSettleWindow(now=%v settleUntil=%v op=%v) = %v, want %v", tc.now, tc.settleUntil, tc.op, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEnterpriseHookWatchNextRepairRetryDelayIsBounded(t *testing.T) {
+	delay := time.Duration(0)
+	want := []time.Duration{
+		time.Second,
+		2 * time.Second,
+		4 * time.Second,
+		8 * time.Second,
+		15 * time.Second,
+		15 * time.Second,
+	}
+	for i, expected := range want {
+		delay = enterpriseHookWatchNextRepairRetryDelay(delay)
+		if delay != expected {
+			t.Fatalf("retry delay %d = %s, want %s", i, delay, expected)
+		}
 	}
 }
 
