@@ -73,6 +73,7 @@ func TestEnterpriseWorkflowPublishesTheExactUnsignedCertificationArtifact(t *tes
 		"needs.managed-gateway.outputs.source_commit",
 		"GIT_CONFIG_COUNT: 1",
 		"GIT_TERMINAL_PROMPT: 0",
+		"inputs.ai_common_ref || 'develop'",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("enterprise workflow is missing %q", required)
