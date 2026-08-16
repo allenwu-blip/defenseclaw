@@ -948,6 +948,7 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "$script:SparseAttackLogicalBytes = [int64]1099511627776" in harness
     assert "$script:SparseAttackMaxAllocatedBytes = [int64]1048576" in harness
     assert "$script:SparseAttackMaxGuardianWorkingSetGrowthBytes = [int64]268435456" in harness
+    assert "$script:ManagedArtifactDigestMaxBytes = [int64]4194304" in harness
     assert "PeakWorkingSet64" in harness
     assert "guardian_lifetime_peak_working_set_growth_bytes" in harness
     assert "guardian_lifetime_peak_working_set_growth_limit_bytes" in harness
@@ -983,6 +984,21 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "exact_owner_and_dacl_restored = $true" in harness
     assert "secret_material_recorded = $false" in harness
     assert "guardian-sparse-oversized-runtime-auto-heal" in harness
+    bounded_match = harness[
+        harness.index("function Test-BoundedArtifactSnapshotMatch") : harness.index(
+            "function Assert-SameArtifactSnapshots"
+        )
+    ]
+    repair_wait = harness[
+        harness.index("function Wait-ForArtifactRepair") : harness.index(
+            "function Assert-ArtifactSetSettles"
+        )
+    ]
+    assert "$stream.Length -gt $script:ManagedArtifactDigestMaxBytes" in bounded_match
+    assert "$total -gt $script:ManagedArtifactDigestMaxBytes" in bounded_match
+    assert "$sha256.TransformBlock(" in bounded_match
+    assert "Test-BoundedArtifactSnapshotMatch $snapshot" in repair_wait
+    assert "Get-FileDigest" not in repair_wait
     hardlink_probe = harness[
         harness.index("function Test-GuardianRepairsManagedHardLink") : harness.index(
             "function Get-GuardianResourceObservation"

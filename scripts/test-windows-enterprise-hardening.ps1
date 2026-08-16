@@ -184,6 +184,7 @@ $script:SparseAttackLogicalBytes = [int64]1099511627776
 $script:SparseAttackInitialGrowBytes = [int64]8388608
 $script:SparseAttackMaxAllocatedBytes = [int64]1048576
 $script:SparseAttackMaxGuardianWorkingSetGrowthBytes = [int64]268435456
+$script:ManagedArtifactDigestMaxBytes = [int64]4194304
 
 function Protect-DisplayText([string]$Value) {
     if ($null -eq $Value) { return '' }
@@ -15890,6 +15891,77 @@ function Get-ArtifactSnapshots([Collections.IDictionary]$Paths) {
     return [pscustomobject]$out
 }
 
+function Test-BoundedArtifactSnapshotMatch([object]$Snapshot) {
+    if ($null -eq $Snapshot -or
+        [string]::IsNullOrWhiteSpace([string]$Snapshot.path) -or
+        [string]$Snapshot.sha256 -notmatch '^[a-f0-9]{64}$') {
+        return $false
+    }
+    $expectedLength = [int64]$Snapshot.length
+    if ($expectedLength -lt 0 -or
+        $expectedLength -gt $script:ManagedArtifactDigestMaxBytes) {
+        return $false
+    }
+
+    $stream = $null
+    $sha256 = $null
+    try {
+        $share = (
+            [IO.FileShare]::ReadWrite -bor
+            [IO.FileShare]::Delete
+        )
+        $stream = [IO.File]::Open(
+            [string]$Snapshot.path,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            $share
+        )
+        if ($stream.Length -ne $expectedLength -or
+            $stream.Length -gt $script:ManagedArtifactDigestMaxBytes) {
+            return $false
+        }
+
+        # Hash only the already-open, size-validated handle and enforce the
+        # same byte ceiling while reading. A concurrent sparse grow can no
+        # longer make one polling condition run past Wait-Until's deadline.
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        $buffer = [byte[]]::new(65536)
+        $total = [int64]0
+        while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+            $total += [int64]$read
+            if ($total -gt $expectedLength -or
+                $total -gt $script:ManagedArtifactDigestMaxBytes) {
+                return $false
+            }
+            $null = $sha256.TransformBlock(
+                $buffer,
+                0,
+                $read,
+                $buffer,
+                0
+            )
+        }
+        if ($total -ne $expectedLength -or
+            $stream.Length -ne $expectedLength) {
+            return $false
+        }
+        $empty = [byte[]]::new(0)
+        $null = $sha256.TransformFinalBlock($empty, 0, 0)
+        $actual = [BitConverter]::ToString($sha256.Hash)
+        $actual = $actual.Replace('-', '').ToLowerInvariant()
+        return [string]::Equals(
+            $actual,
+            [string]$Snapshot.sha256,
+            [StringComparison]::Ordinal
+        )
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $sha256) { $sha256.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Assert-SameArtifactSnapshots([object]$Before, [object]$After, [string]$Label) {
     foreach ($property in $Before.PSObject.Properties) {
         $name = $property.Name
@@ -16102,14 +16174,7 @@ function Wait-ForArtifactRepair(
     Wait-Until -Description "$Label artifact repair" -Condition {
         foreach ($property in $Baseline.PSObject.Properties) {
             $snapshot = $property.Value
-            if (-not (Test-Path -LiteralPath $snapshot.path -PathType Leaf)) {
-                return $false
-            }
-            if (-not [string]::Equals(
-                (Get-FileDigest $snapshot.path),
-                [string]$snapshot.sha256,
-                [StringComparison]::Ordinal
-            )) {
+            if (-not (Test-BoundedArtifactSnapshotMatch $snapshot)) {
                 return $false
             }
         }

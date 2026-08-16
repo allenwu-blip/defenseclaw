@@ -1294,6 +1294,93 @@ if (-not $rejected) {
 	}
 }
 
+func TestWindowsCertificationArtifactRepairDigestIsSizeBounded(t *testing.T) {
+	harness := strings.ReplaceAll(
+		string(readWindowsEnterpriseHarness(t)),
+		"\r\n",
+		"\n",
+	)
+	matcher := windowsPowerShellFunction(
+		t,
+		harness,
+		"Test-BoundedArtifactSnapshotMatch",
+	)
+	root := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "bounded-artifact-digest.ps1")
+	script := `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$script:ManagedArtifactDigestMaxBytes = [int64]4194304
+function Get-FileDigest { throw 'unbounded digest helper must not run' }
+` + matcher + `
+$root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_BOUNDED_DIGEST_ROOT')
+$path = [IO.Path]::Combine($root, 'managed.token')
+[IO.File]::WriteAllText(
+    $path,
+    ("canonical" + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false)
+)
+$item = Get-Item -LiteralPath $path -Force
+$digest = Get-FileHash -LiteralPath $path -Algorithm SHA256
+$snapshot = [pscustomobject]@{
+    path = $path
+    length = [int64]$item.Length
+    sha256 = $digest.Hash.ToLowerInvariant()
+}
+if (-not (Test-BoundedArtifactSnapshotMatch $snapshot)) {
+    throw 'bounded matcher rejected the canonical baseline'
+}
+$stream = [IO.File]::Open(
+    $path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::ReadWrite
+)
+try {
+    $stream.SetLength([int64]8388608)
+} finally {
+    $stream.Dispose()
+}
+$timer = [Diagnostics.Stopwatch]::StartNew()
+$matched = Test-BoundedArtifactSnapshotMatch $snapshot
+$timer.Stop()
+if ($matched) {
+    throw 'bounded matcher accepted an oversized managed artifact'
+}
+if ($timer.Elapsed.TotalSeconds -gt 2) {
+    throw "oversized managed artifact check took $($timer.Elapsed.TotalSeconds) seconds"
+}
+Remove-Item -LiteralPath $path -Force
+if (Test-Path -LiteralPath $path) {
+    throw 'bounded digest fixture cleanup failed'
+}
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
+	command.Env = append(
+		os.Environ(),
+		"DEFENSECLAW_BOUNDED_DIGEST_ROOT="+root,
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("bounded artifact digest contract failed: %v\n%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("bounded artifact digest contract timed out: %v", ctx.Err())
+	}
+}
+
 func readWindowsEnterpriseInstaller(t *testing.T) []byte {
 	t.Helper()
 	installerPath := filepath.Join("..", "..", "packaging", "windows", "install-enterprise.ps1")

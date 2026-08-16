@@ -1296,15 +1296,35 @@ func runEnterpriseHooksWatch(cmd *cobra.Command, _ []string) error {
 	}
 	debouncePending := false
 	debounceReason := ""
+	repairRetry := time.NewTimer(time.Hour)
+	if !repairRetry.Stop() {
+		<-repairRetry.C
+	}
+	defer repairRetry.Stop()
+	repairRetryPending := false
+	// Keep failed-repair backoff independent from filesystem debounce. A
+	// target that can generate owned-file events must not be able to postpone
+	// the retry that replaces a released locked or oversized artifact.
 	scheduleRepairRetry := func() {
-		if !repairRetryNeeded || debouncePending {
+		if !repairRetryNeeded || repairRetryPending {
 			return
 		}
 		repairRetryDelay = enterpriseHookWatchNextRepairRetryDelay(repairRetryDelay)
-		resetEnterpriseHookWatchTimer(debounce, repairRetryDelay)
-		debouncePending = true
-		debounceReason = "retry"
+		resetEnterpriseHookWatchTimer(repairRetry, repairRetryDelay)
+		repairRetryPending = true
 		fmt.Fprintf(cmd.ErrOrStderr(), "[hook-guardian] repair incomplete; retrying in %s\n", repairRetryDelay)
+	}
+	cancelRepairRetry := func() {
+		if !repairRetryPending {
+			return
+		}
+		if !repairRetry.Stop() {
+			select {
+			case <-repairRetry.C:
+			default:
+			}
+		}
+		repairRetryPending = false
 	}
 	cancelPendingDebounce := func() {
 		if !debouncePending {
@@ -1392,7 +1412,6 @@ func runEnterpriseHooksWatch(cmd *cobra.Command, _ []string) error {
 			resetEnterpriseHookWatchTimer(debounce, enterpriseHookWatchDebounce)
 			debouncePending = true
 			debounceReason = "fsnotify"
-			repairRetryDelay = 0
 		case err, ok := <-fsw.Errors:
 			if !ok {
 				if contextErr := cmd.Context().Err(); contextErr != nil {
@@ -1412,7 +1431,21 @@ func runEnterpriseHooksWatch(cmd *cobra.Command, _ []string) error {
 				if _, err := reconcile(reason); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "[hook-guardian] reconcile after %s failed: %s\n", reason, err)
 				}
+				if repairRetryNeeded {
+					scheduleRepairRetry()
+				} else {
+					cancelRepairRetry()
+				}
+			}
+		case <-repairRetry.C:
+			repairRetryPending = false
+			if _, err := reconcile("retry"); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "[hook-guardian] reconcile after retry failed: %s\n", err)
+			}
+			if repairRetryNeeded {
 				scheduleRepairRetry()
+			} else {
+				cancelRepairRetry()
 			}
 		case <-ticker.C:
 			if _, err := reconcile("interval"); err != nil {
@@ -1421,6 +1454,7 @@ func runEnterpriseHooksWatch(cmd *cobra.Command, _ []string) error {
 			if repairRetryNeeded {
 				scheduleRepairRetry()
 			} else {
+				cancelRepairRetry()
 				cancelPendingDebounce()
 			}
 		}

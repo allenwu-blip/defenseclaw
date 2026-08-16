@@ -747,6 +747,132 @@ func TestInstallWindowsClaudeRebuildsDeletedRuntimeBytesAndSecurityExactly(t *te
 	}
 }
 
+func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
+	fixture := newWindowsManagedInstallFixture(
+		t,
+		map[string]interface{}{"allowManagedHooksOnly": true},
+	)
+	opts := windowsManagedInstallOptions(fixture)
+	installed, err := Install(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(
+		fixture.home,
+		".defenseclaw",
+		"hooks",
+		".hook-claudecode.token",
+	)
+	expected, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.OpenFile(tokenPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.DeviceIoControl(
+		windows.Handle(file.Fd()),
+		windows.FSCTL_SET_SPARSE,
+		nil,
+		0,
+		nil,
+		0,
+		nil,
+		nil,
+	); err != nil {
+		_ = file.Close()
+		if errors.Is(err, windows.ERROR_INVALID_FUNCTION) ||
+			errors.Is(err, windows.ERROR_NOT_SUPPORTED) {
+			t.Skipf("test volume does not support sparse files: %v", err)
+		}
+		t.Fatal(err)
+	}
+	const sparseSize = int64(1) << 40
+	if err := file.Truncate(sparseSize); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	extended, err := winpath.Extended(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ptr, err := windows.UTF16PtrFromString(extended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := windows.CreateFile(
+		ptr,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	opts.AllowMissingHookConfigRepair = true
+	opts.RecoveryHookContractLockUpdatedAt =
+		installed.HookContractLockUpdatedAt
+	opts.RecoveryHookContractEntryUpdatedAt =
+		installed.HookContractEntryUpdatedAt
+	if _, err := Install(context.Background(), opts); err == nil ||
+		!strings.Contains(strings.ToLower(err.Error()), "quarantine") {
+		_ = windows.CloseHandle(held)
+		t.Fatalf("locked sparse token Install error = %v, want bounded quarantine retry", err)
+	}
+	if err := windows.CloseHandle(held); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatalf("repair released sparse token: %v", err)
+	}
+	actual, err := os.ReadFile(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(actual) != string(expected) {
+		t.Fatal("repaired sparse token does not match the exact protected token")
+	}
+	repaired, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.Size() > windowsEnterpriseTokenMaxBytes {
+		t.Fatalf("repaired token remains oversized: %d", repaired.Size())
+	}
+	if os.SameFile(original, repaired) {
+		t.Fatal("sparse token repair retained the attacker-grown file identity")
+	}
+	if err := validateWindowsUserPathElement(
+		tokenPath,
+		fixture.targetSID,
+		false,
+		false,
+		true,
+	); err != nil {
+		t.Fatalf("repaired sparse token protection: %v", err)
+	}
+	if _, err := os.Lstat(
+		windowsManagedObstructionQuarantinePath(tokenPath),
+	); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sparse token quarantine survived repair: %v", err)
+	}
+}
+
 func TestInstallWindowsClaudeAutoHealsDeletedManagedPolicyFromExactState(t *testing.T) {
 	fixture := newWindowsManagedInstallFixture(
 		t,
