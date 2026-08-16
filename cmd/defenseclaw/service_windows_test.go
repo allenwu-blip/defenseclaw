@@ -738,6 +738,24 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 			t.Fatalf("enterprise temp ACL sampler missing disappearance-race contract %q", contract)
 		}
 	}
+	attribution := windowsPowerShellFunction(t, harness, "Get-NormalModeEnterpriseAttributionSnapshot")
+	for _, contract := range []string{
+		"hook-guardian\\targets.yaml",
+		"hook-guardian-state\\protected_targets.json",
+		"$script:ClaudeManagedPolicyPath",
+		"$script:ClaudeManagedStatePath",
+		"last_write_utc_ticks = if ($liveGuardianOutputs.Contains($path))",
+		"-not $liveGuardianOutputs.Contains(",
+		"sddl = [string]$row.sddl",
+		"services = @($Snapshot.services)",
+	} {
+		if !strings.Contains(attribution, contract) {
+			t.Fatalf("normal-mode guardian attribution missing bounded contract %q", contract)
+		}
+	}
+	if strings.Contains(attribution, "$script:ClaudeManagedLockPath") {
+		t.Fatal("normal-mode guardian attribution excludes the transaction lock")
+	}
 
 	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
 	if !strings.Contains(restore, "$($Snapshot.name)-absent-cleanup-root-acl") ||
@@ -857,6 +875,113 @@ if (-not $rejected) {
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("forced PowerShell temp disappearance race timed out: %v", ctx.Err())
+	}
+}
+
+func TestWindowsCertificationNormalModeAttributionExcludesOnlyLiveGuardianBytes(t *testing.T) {
+	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
+	attributionFunction := windowsPowerShellFunction(
+		t,
+		harness,
+		"Get-NormalModeEnterpriseAttributionSnapshot",
+	)
+	root := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "normal-mode-attribution.ps1")
+	script := `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+function ConvertTo-CanonicalPath([string]$Path) {
+    return [IO.Path]::GetFullPath($Path).TrimEnd('\')
+}
+` + attributionFunction + `
+$root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_ATTRIBUTION_ROOT')
+$script:StateRoot = [IO.Path]::Combine($root, 'state')
+$script:ClaudeManagedPolicyPath = [IO.Path]::Combine($root, 'claude', 'policy.json')
+$script:ClaudeManagedStatePath = [IO.Path]::Combine($root, 'claude', 'state.json')
+$live = @(
+    [IO.Path]::Combine($script:StateRoot, 'hook-guardian', 'targets.yaml'),
+    [IO.Path]::Combine($script:StateRoot, 'hook-guardian-state', 'protected_targets.json'),
+    $script:ClaudeManagedPolicyPath,
+    $script:ClaudeManagedStatePath
+)
+$immutable = [IO.Path]::Combine($script:StateRoot, 'etc', 'config.yaml')
+$rows = @(
+    foreach ($path in @($live + $immutable)) {
+        [pscustomobject]@{
+            path = $path
+            existed = $true
+            kind = 'file'
+            attributes = 32
+            last_write_utc_ticks = 987654321
+            sddl = 'O:BAG:BAD:P'
+        }
+    }
+)
+$digests = @(
+    foreach ($path in @($live + $immutable)) {
+        [pscustomobject]@{ path = $path; sha256 = ('hash-' + $path) }
+    }
+)
+$snapshot = [pscustomobject]@{
+    paths = $rows
+    file_digests = $digests
+    services = @([pscustomobject]@{ name = 'guardian'; state = 'Running' })
+}
+$normalized = Get-NormalModeEnterpriseAttributionSnapshot $snapshot
+if (@($normalized.paths).Count -ne 5) {
+    throw 'attribution removed protected path identity rows'
+}
+foreach ($path in $live) {
+    $row = @($normalized.paths | Where-Object {
+        [string]::Equals([string]$_.path, $path, [StringComparison]::OrdinalIgnoreCase)
+    })
+    if ($row.Count -ne 1 -or
+        [long]$row[0].last_write_utc_ticks -ne 0 -or
+        [string]$row[0].sddl -cne 'O:BAG:BAD:P' -or
+        -not [bool]$row[0].existed) {
+        throw "live guardian path identity/ACL normalization is wrong: $path"
+    }
+    if (@($normalized.file_digests | Where-Object {
+        [string]::Equals([string]$_.path, $path, [StringComparison]::OrdinalIgnoreCase)
+    }).Count -ne 0) {
+        throw "live guardian digest was retained: $path"
+    }
+}
+$immutableRow = @($normalized.paths | Where-Object {
+    [string]::Equals([string]$_.path, $immutable, [StringComparison]::OrdinalIgnoreCase)
+})
+if ($immutableRow.Count -ne 1 -or
+    [long]$immutableRow[0].last_write_utc_ticks -ne 987654321 -or
+    @($normalized.file_digests).Count -ne 1 -or
+    -not [string]::Equals(
+        [string]$normalized.file_digests[0].path,
+        $immutable,
+        [StringComparison]::OrdinalIgnoreCase
+    ) -or
+    @($normalized.services).Count -ne 1) {
+    throw 'attribution weakened an immutable path, digest, or service check'
+}
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
+	command.Env = append(os.Environ(), "DEFENSECLAW_ATTRIBUTION_ROOT="+root)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("normal-mode guardian attribution contract failed: %v\n%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("normal-mode guardian attribution contract timed out: %v", ctx.Err())
 	}
 }
 

@@ -6254,6 +6254,62 @@ function Get-NormalModeEnterpriseMachineSnapshot {
     }
 }
 
+function Get-NormalModeEnterpriseAttributionSnapshot([object]$Snapshot) {
+    # These four outputs are periodically republished by the active guardian.
+    # The normal-mode test is attributing user-initiated machine mutations, so
+    # it must not treat authenticated guardian refresh bytes/timestamps as
+    # normal-mode writes. Their existence, type, attributes, and ACL remain in
+    # the comparison, and dedicated guardian status/repair phases validate
+    # their content and authorization contracts.
+    $liveGuardianOutputs = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($path in @(
+        (Join-Path $script:StateRoot 'hook-guardian\targets.yaml'),
+        (Join-Path $script:StateRoot 'hook-guardian-state\protected_targets.json'),
+        $script:ClaudeManagedPolicyPath,
+        $script:ClaudeManagedStatePath
+    )) {
+        [void]$liveGuardianOutputs.Add((ConvertTo-CanonicalPath $path))
+    }
+    $paths = @(
+        foreach ($row in @($Snapshot.paths)) {
+            $path = ConvertTo-CanonicalPath ([string]$row.path)
+            [pscustomobject]@{
+                path = $path
+                existed = [bool]$row.existed
+                kind = [string]$row.kind
+                attributes = [int]$row.attributes
+                last_write_utc_ticks = if ($liveGuardianOutputs.Contains($path)) {
+                    0
+                } else {
+                    [long]$row.last_write_utc_ticks
+                }
+                sddl = [string]$row.sddl
+            }
+        }
+    )
+    $fileDigests = @(
+        $Snapshot.file_digests |
+            Where-Object {
+                -not $liveGuardianOutputs.Contains(
+                    (ConvertTo-CanonicalPath ([string]$_.path))
+                )
+            } |
+            ForEach-Object {
+                [pscustomobject]@{
+                    path = ConvertTo-CanonicalPath ([string]$_.path)
+                    sha256 = [string]$_.sha256
+                }
+            }
+    )
+    return [pscustomobject]@{
+        paths = $paths
+        file_digests = $fileDigests
+        services = @($Snapshot.services)
+    }
+}
+
 function Get-CertificationPersistentLifecycleLockBaseline {
     $directory = ConvertTo-CanonicalPath $script:LifecycleLockDirectory
     $path = Assert-PathBelow `
@@ -6458,6 +6514,8 @@ function Get-NormalModeServiceNames {
 
 function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
     $machineBefore = Get-NormalModeEnterpriseMachineSnapshot
+    $attributionBefore =
+        Get-NormalModeEnterpriseAttributionSnapshot $machineBefore
     $persistentLockBaseline =
         Get-CertificationPersistentLifecycleLockBaseline
     if ($RequireEnterpriseAbsent) {
@@ -7723,9 +7781,11 @@ try {
         'normal-mode synthetic fixture cleanup'
     $script:NormalModeSyntheticHome = ''
     $machineAfter = Get-NormalModeEnterpriseMachineSnapshot
+    $attributionAfter =
+        Get-NormalModeEnterpriseAttributionSnapshot $machineAfter
     Assert-SameObjectJSON `
-        $machineBefore `
-        $machineAfter `
+        $attributionBefore `
+        $attributionAfter `
         'normal-mode enterprise-protected machine state'
     return [pscustomobject]@{
         target_sid = $script:PrimarySID
@@ -7752,6 +7812,7 @@ try {
         agent_selection_sha256 = [string]$result.agent_selection_sha256
         runtime_files_target_owned = $true
         fixture_cleanup_exact = $true
+        live_guardian_output_attribution_bounded = $true
         machine_before = $machineBefore
         machine_after = $machineAfter
     }
