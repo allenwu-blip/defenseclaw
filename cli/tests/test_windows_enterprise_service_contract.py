@@ -194,6 +194,8 @@ def test_public_installer_exposes_complete_truthful_lifecycle() -> None:
     assert "if ($exitCode -ne 0)" in installer
     assert "exit $exitCode" in installer
     assert "ok = $false" in installer
+    assert "error = $failureMessage" in installer
+    assert "errors = @($failureMessage)" in installer
 
 
 def test_public_windows_lifecycle_cli_preserves_every_security_option() -> None:
@@ -1524,6 +1526,11 @@ def test_lifecycle_reauthenticates_volumes_and_sources_at_last_use() -> None:
 
 def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> None:
     module = read(MODULE)
+    restore = module[
+        module.index("function Restore-DefenseClawTransaction") : module.index(
+            "function Assert-DefenseClawRestoredTransactionReadyForActivation"
+        )
+    ]
     atomic_install = module[
         module.index("function Install-DefenseClawFileAtomic") : module.index(
             "function Write-DefenseClawJsonAtomic"
@@ -1533,11 +1540,7 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
     assert "[IO.File]::Replace($temporary, $Destination, $null, $true)" not in atomic_install
     assert "atomic replacement verification failed" in atomic_install
     assert "[switch]$SkipIfContentMatches" in atomic_install
-    assert "-SkipIfContentMatches" in module[
-        module.index("function Restore-DefenseClawTransaction") : module.index(
-            "function Assert-DefenseClawRestoredTransactionReadyForActivation"
-        )
-    ]
+    assert "-SkipIfContentMatches" in restore
     assert (
         "Move-Item -LiteralPath $temporary -Destination $Destination -Force"
         not in atomic_install
@@ -1568,6 +1571,22 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
     assert "without a valid JSON report" in report
     assert "PSObject.Properties['errors']" in wait
     assert "last_status=$lastStatus" in wait
+
+    install_like = module[
+        module.index("function Invoke-DefenseClawInstallLikeLifecycle") : module.index(
+            "function Invoke-DefenseClawUninstallLifecycle"
+        )
+    ]
+    assert "ManagedHooksLifecycleJournalPath" in module
+    assert "managed-hooks-lifecycle-snapshot" in module
+    assert restore.index("-Action restore") < restore.index("foreach ($file in $snapshot.files)")
+    assert restore.index("-Action retire") < restore.index("foreach ($file in $snapshot.files)")
+    assert "$deferredPolicySources" in install_like
+    assert install_like.index("-Action capture") < install_like.index(
+        "$attestationNeedsRefresh"
+    )
+    assert "the exact prior machine enrollment was restored" in install_like
+    assert "could not be retired" in install_like
 
 
 def test_certification_inspects_actual_live_service_tokens() -> None:
@@ -3026,7 +3045,11 @@ def test_uninstall_transaction_smoke_keeps_receipt_paths_powershell_51_compatibl
     assert "function New-HarnessCaseRoot" in smoke
     assert "$receiptProbe.Length -ge 240" in smoke
     assert "legacy MAX_PATH boundary" in smoke
-    assert smoke.count("New-HarnessCaseRoot") == 9
+    assert smoke.count("New-HarnessCaseRoot") == 10
+    assert "repeated-first-activation-failure-exact-rollback" in smoke
+    assert "lifecycle-snapshot:capture" in smoke
+    assert "lifecycle-snapshot:restore" in smoke
+    assert "lifecycle-snapshot:retire" in smoke
     assert "purge_cases = @($purgeResults)" in smoke
 
 

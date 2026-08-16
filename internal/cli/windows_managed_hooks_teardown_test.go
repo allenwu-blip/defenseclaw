@@ -183,12 +183,13 @@ func TestValidateWindowsManagedHooksTeardownJournalRejectsIdentityChanges(t *tes
 
 func TestWindowsManagedHooksTeardownReportJSONContract(t *testing.T) {
 	report := windowsManagedHooksTeardownReport{
-		SchemaVersion:                1,
+		SchemaVersion:                windowsManagedHooksTeardownSchema,
 		Action:                       "prepare",
 		OK:                           true,
 		ManifestPath:                 `C:\ProgramData\DefenseClaw\hook-guardian\targets.yaml`,
 		JournalPath:                  `C:\ProgramData\DefenseClaw\install\managed-hooks-teardown-journal.json`,
 		TargetCount:                  1,
+		EnrollmentTargetCount:        1,
 		SucceededCount:               1,
 		VerifiedCleanCount:           1,
 		VerifiedInstalledCount:       0,
@@ -212,6 +213,7 @@ func TestWindowsManagedHooksTeardownReportJSONContract(t *testing.T) {
 	}
 	for _, numeric := range []string{
 		"target_count",
+		"enrollment_target_count",
 		"succeeded_count",
 		"verified_clean_count",
 		"failed_count",

@@ -861,6 +861,53 @@ func TestRunWindowsEnterpriseLifecyclePreflightAndRunnerJSONBoundaries(t *testin
 	})
 }
 
+func TestWindowsEnterpriseInstallerFailureDiagnosticPreservesCausalJSON(t *testing.T) {
+	body := []byte(`{"schema_version":1,"ok":false,"action":"repair","error":"guardian activation failed\npolicy incomplete","errors":["guardian activation failed"]}`)
+	action, detail, ok := windowsEnterpriseInstallerFailureDiagnostic(body, false)
+	if !ok || action != "repair" ||
+		detail != "guardian activation failed policy incomplete" {
+		t.Fatalf("diagnostic = (%q, %q, %t)", action, detail, ok)
+	}
+	legacy := append([]byte{0xef, 0xbb, 0xbf}, body...)
+	if action, detail, ok := windowsEnterpriseInstallerFailureDiagnostic(
+		legacy,
+		false,
+	); !ok || action != "repair" || detail == "" {
+		t.Fatalf("PowerShell 5.1 BOM diagnostic = (%q, %q, %t)", action, detail, ok)
+	}
+	errorsOnly := []byte(`{"schema_version":1,"ok":false,"action":"repair","errors":["readiness timeout"]}`)
+	if _, detail, ok := windowsEnterpriseInstallerFailureDiagnostic(
+		errorsOnly,
+		false,
+	); !ok || detail != "readiness timeout" {
+		t.Fatalf("errors-only diagnostic = (%q, %t)", detail, ok)
+	}
+	for name, test := range map[string]struct {
+		body      []byte
+		truncated bool
+	}{
+		"success report": {
+			body: []byte(`{"schema_version":1,"ok":true,"action":"repair","error":"unexpected"}`),
+		},
+		"non-json prefix": {
+			body: []byte("warning\n" + string(body)),
+		},
+		"truncated": {
+			body:      body,
+			truncated: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, ok := windowsEnterpriseInstallerFailureDiagnostic(
+				test.body,
+				test.truncated,
+			); ok {
+				t.Fatal("untrusted installer output was promoted to a public diagnostic")
+			}
+		})
+	}
+}
+
 func assertWindowsEnterprisePreflightFailureJSON(
 	t *testing.T,
 	output string,

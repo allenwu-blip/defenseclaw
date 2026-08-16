@@ -255,7 +255,7 @@ func resolveWindowsCodexRequirementsLayout(
 		return connector.WindowsCodexMachineRequirementsOptions{}, err
 	}
 	if !exists {
-		if action != "reconcile" && action != "inspect" {
+		if action != "reconcile" && action != "inspect" && action != "lifecycle" {
 			return connector.WindowsCodexMachineRequirementsOptions{}, fmt.Errorf(
 				"Codex requirements %s requires protected deployment metadata",
 				action,
@@ -271,7 +271,8 @@ func resolveWindowsCodexRequirementsLayout(
 			"protected deployment metadata does not match the running gateway and strict service environment",
 		)
 	}
-	if metadata.Installed != nil && !*metadata.Installed && action != "remove" {
+	if metadata.Installed != nil && !*metadata.Installed &&
+		action != "remove" && action != "lifecycle" {
 		return connector.WindowsCodexMachineRequirementsOptions{}, errors.New(
 			"protected deployment metadata marks this installation inactive",
 		)

@@ -1494,6 +1494,7 @@ if (-not [string]::IsNullOrWhiteSpace($failureMessage)) {
             ok = $false
             action = $Action.ToLowerInvariant()
             error = $failureMessage
+            errors = @($failureMessage)
         } | Microsoft.PowerShell.Utility\ConvertTo-Json -Depth 6 -Compress
     }
     else {

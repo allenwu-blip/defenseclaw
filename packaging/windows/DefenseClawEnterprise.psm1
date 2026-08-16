@@ -3736,6 +3736,7 @@ function Get-DefenseClawLayout {
         CodexRequirementsAclBackupPath = (Microsoft.PowerShell.Management\Join-Path $installState 'codex-requirements-acl-backup.json')
         CodexTrustedShellAttestationPath = (Microsoft.PowerShell.Management\Join-Path $installState 'agent-application-control-attestation.json')
         ManagedHooksTeardownJournalPath = (Microsoft.PowerShell.Management\Join-Path $installState 'managed-hooks-teardown-journal.json')
+        ManagedHooksLifecycleJournalPath = (Microsoft.PowerShell.Management\Join-Path $installState 'managed-hooks-lifecycle-journal.json')
         CoreHardeningCertification = [bool]$CoreHardeningCertification
         AgentApplicationControlAttested = [bool]$AgentApplicationControlAttested
         ClaudeEffectivePolicyVerified = $false
@@ -5646,6 +5647,26 @@ function Restore-DefenseClawTransaction {
         -Path $SnapshotPath `
         -Phase quiesced `
         -ServicesQuiescedAt $restoreQuiescedAt
+    if ($Layout.ContainsKey('ManagedHooksLifecycleJournalPath') -and
+        (Microsoft.PowerShell.Management\Test-Path `
+            -LiteralPath $Layout.ManagedHooksLifecycleJournalPath `
+            -PathType Leaf)) {
+        # Restore the authenticated machine-policy preimage while the staged
+        # gateway still implements this transaction's hidden command. Generic
+        # file rollback may replace that gateway with an older release.
+        [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+            -Layout $Layout `
+            -GatewayServiceName ([string]$snapshot.gateway_service) `
+            -Action restore)
+        # Retire while the staged gateway still implements this command. The
+        # Claude preimage is already exact and services remain disabled, so a
+        # crash after retirement resumes safely through the generic pending
+        # transaction without requiring this journal again.
+        [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+            -Layout $Layout `
+            -GatewayServiceName ([string]$snapshot.gateway_service) `
+            -Action retire)
+    }
     foreach ($file in $snapshot.files) {
         $destination = [IO.Path]::GetFullPath([string]$file.path)
         $inInstall = $destination.StartsWith($Layout.InstallRoot + '\', [StringComparison]::OrdinalIgnoreCase)
@@ -6860,7 +6881,7 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         throw "managed-hook teardown command emitted $($reports.Count) JSON reports; expected exactly one"
     }
     $report = $reports[0]
-    if ([int]$report.schema_version -ne 1) {
+    if ([int]$report.schema_version -ne 2) {
         throw "unsupported managed-hook teardown report schema: $($report.schema_version)"
     }
     if ([string]$report.action -cne $Action) {
@@ -6905,6 +6926,7 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
     $counts = @{}
     foreach ($name in @(
         'target_count',
+        'enrollment_target_count',
         'succeeded_count',
         'verified_clean_count',
         'failed_count',
@@ -6988,8 +7010,8 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
             $null -eq $verifiedInstalled -or
             $verifiedInstalled.Value -is [bool] -or
             [Convert]::ToInt64($verifiedInstalled.Value) -ne
-                $counts.target_count) {
-            throw 'managed-hook teardown rollback did not reinstall and verify every original target'
+                $counts.enrollment_target_count) {
+            throw 'managed-hook teardown rollback did not restore and verify the exact pre-teardown enrollment'
         }
     }
     if (-not (Microsoft.PowerShell.Management\Test-Path `
@@ -7020,6 +7042,93 @@ function Invoke-DefenseClawManagedHooksTeardownCommand {
         -RequiredRights (New-DefenseClawRequiredRights -Kind Admin) `
         -AllowInheritance `
         -RejectUntrustedRead
+    return $report
+}
+
+function Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand {
+    param(
+        [Parameter(Mandatory)][hashtable]$Layout,
+        [Parameter(Mandatory)][string]$GatewayServiceName,
+        [Parameter(Mandatory)]
+        [ValidateSet('capture', 'restore', 'retire')]
+        [string]$Action
+    )
+    Assert-DefenseClawAdministrator
+    $probe = Invoke-DefenseClawGatewayCommand `
+        -Layout $Layout `
+        -GatewayServiceName $GatewayServiceName `
+        -Arguments @(
+            'enterprise',
+            'windows',
+            'managed-hooks-lifecycle-snapshot',
+            $Action,
+            '--json'
+        ) `
+        -Capture `
+        -AllowFailure
+    $reports = [Collections.Generic.List[object]]::new()
+    foreach ($line in @($probe.output)) {
+        $text = ([string]$line).Trim()
+        if (-not $text.StartsWith('{', [StringComparison]::Ordinal)) {
+            continue
+        }
+        try {
+            $reports.Add(
+                ($text | Microsoft.PowerShell.Utility\ConvertFrom-Json)
+            )
+        }
+        catch {
+            throw "managed-hook lifecycle snapshot emitted malformed JSON: $text"
+        }
+    }
+    if ($reports.Count -ne 1) {
+        throw "managed-hook lifecycle snapshot emitted $($reports.Count) JSON reports; expected exactly one"
+    }
+    $report = $reports[0]
+    if ([int]$report.schema_version -ne 1) {
+        throw "unsupported managed-hook lifecycle snapshot schema: $($report.schema_version)"
+    }
+    if ([string]$report.action -cne $Action) {
+        throw "managed-hook lifecycle snapshot action mismatch: $($report.action)"
+    }
+    $ok = $report.PSObject.Properties['ok']
+    if ($null -eq $ok -or $ok.Value -isnot [bool]) {
+        throw 'managed-hook lifecycle snapshot is missing boolean ok'
+    }
+    if ([int]$probe.exit_code -ne 0 -or -not [bool]$ok.Value) {
+        $detail = if (-not [string]::IsNullOrWhiteSpace([string]$report.error)) {
+            [string]$report.error
+        }
+        else {
+            $probe.output
+        }
+        $detail = ConvertTo-DefenseClawBoundedDiagnostic -Value $detail
+        throw "managed-hook lifecycle snapshot $Action failed: $detail"
+    }
+    $journal = $report.PSObject.Properties['journal_path']
+    if ($null -eq $journal -or
+        [string]::IsNullOrWhiteSpace([string]$journal.Value)) {
+        throw 'managed-hook lifecycle snapshot is missing journal_path'
+    }
+    $actual = [IO.Path]::GetFullPath([string]$journal.Value).TrimEnd('\')
+    $expected = [IO.Path]::GetFullPath(
+        [string]$Layout.ManagedHooksLifecycleJournalPath
+    ).TrimEnd('\')
+    if (-not [string]::Equals(
+        $actual,
+        $expected,
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw "managed-hook lifecycle snapshot journal is outside the exact protected layout: $actual"
+    }
+    $expectedPhase = switch ($Action) {
+        'capture' { 'captured' }
+        'restore' { 'restored' }
+        'retire' { @('absent', 'retired') }
+    }
+    if ([string]$report.phase -notin @($expectedPhase)) {
+        throw "managed-hook lifecycle snapshot $Action returned invalid phase: $($report.phase)"
+    }
     return $report
 }
 
@@ -7733,15 +7842,20 @@ function Assert-DefenseClawEnterpriseDeployment {
             -RequiredRights $adminRights `
             -RejectUntrustedRead
     }
-    if (Microsoft.PowerShell.Management\Test-Path `
-        -LiteralPath $Layout.ManagedHooksTeardownJournalPath `
-        -PathType Leaf) {
-        Assert-DefenseClawPathAcl `
-            -Path $Layout.ManagedHooksTeardownJournalPath `
-            -AllowedWriterSIDs $adminWriters `
-            -AllowedReaderSIDs $adminReaders `
-            -RequiredRights $adminRights `
-            -RejectUntrustedRead
+    foreach ($journalPath in @(
+        $Layout.ManagedHooksLifecycleJournalPath,
+        $Layout.ManagedHooksTeardownJournalPath
+    )) {
+        if (Microsoft.PowerShell.Management\Test-Path `
+            -LiteralPath $journalPath `
+            -PathType Leaf) {
+            Assert-DefenseClawPathAcl `
+                -Path $journalPath `
+                -AllowedWriterSIDs $adminWriters `
+                -AllowedReaderSIDs $adminReaders `
+                -RequiredRights $adminRights `
+                -RejectUntrustedRead
+        }
     }
     foreach ($ancestor in @($Layout.StateRootAncestors)) {
         Assert-DefenseClawStateAncestorTraverse `
@@ -10794,6 +10908,17 @@ function Invoke-DefenseClawInstallLikeLifecycle {
         Assert-DefenseClawCodexMachinePolicyFilePreflight -Layout $Layout
         Assert-DefenseClawCodexManagedHooksStateFilePreflight -Layout $Layout
     }
+    if (Microsoft.PowerShell.Management\Test-Path `
+        -LiteralPath $Layout.ManagedHooksLifecycleJournalPath `
+        -PathType Leaf) {
+        # A crash after transaction commit but before journal retirement is
+        # harmless. Authenticate and retire that stale preimage before a new
+        # lifecycle transaction is allowed to replace it.
+        [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+            -Layout $Layout `
+            -GatewayServiceName $GatewayServiceName `
+            -Action retire)
+    }
     $snapshot = New-DefenseClawTransaction `
         -Layout $Layout `
         -GatewayServiceName $GatewayServiceName `
@@ -10802,7 +10927,19 @@ function Invoke-DefenseClawInstallLikeLifecycle {
     try {
         Stop-DefenseClawService -Name $GuardianServiceName
         Stop-DefenseClawService -Name $GatewayServiceName
-        foreach ($name in $Sources.Keys) {
+        # Upgrade/Repair must capture the old machine-policy identity before a
+        # replacement config or manifest changes its endpoint/target set. New
+        # gateway/hook bytes are staged first so even an upgrade from a release
+        # without the snapshot command can open the protected journal.
+        $deferredPolicySources = if ($Action -eq 'Install') {
+            @()
+        }
+        else {
+            @('config', 'manifest')
+        }
+        foreach ($name in @($Sources.Keys | Microsoft.PowerShell.Core\Where-Object {
+            $_ -notin $deferredPolicySources
+        })) {
             $destination = Get-DefenseClawArtifactPath -Layout $Layout -Name $name
             Install-DefenseClawSourceDescriptor `
                 -Source $Sources[$name] `
@@ -10819,6 +10956,40 @@ function Invoke-DefenseClawInstallLikeLifecycle {
             if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
                 throw "required managed artifact is missing after $Action staging: $requiredPath"
             }
+        }
+        if ($Action -ne 'Install') {
+            [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+                -Layout $Layout `
+                -GatewayServiceName $GatewayServiceName `
+                -Action capture)
+        }
+        foreach ($name in @($deferredPolicySources | Microsoft.PowerShell.Core\Where-Object {
+            $Sources.ContainsKey($_)
+        })) {
+            $destination = Get-DefenseClawArtifactPath -Layout $Layout -Name $name
+            Install-DefenseClawSourceDescriptor `
+                -Source $Sources[$name] `
+                -Destination $destination
+        }
+        foreach ($requiredPath in @(
+            $Layout.GatewayPath,
+            $Layout.HookPath,
+            $Layout.ConfigPath,
+            $Layout.ManifestPath,
+            $Layout.InstallerPath,
+            $Layout.ModulePath
+        )) {
+            if (-not (Microsoft.PowerShell.Management\Test-Path `
+                -LiteralPath $requiredPath `
+                -PathType Leaf)) {
+                throw "required managed artifact is missing after $Action policy staging: $requiredPath"
+            }
+        }
+        if ($Action -eq 'Install') {
+            [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+                -Layout $Layout `
+                -GatewayServiceName $GatewayServiceName `
+                -Action capture)
         }
 
         $attestationNeedsRefresh = [bool]$RefreshApplicationControlAttestation
@@ -11094,7 +11265,36 @@ function Invoke-DefenseClawInstallLikeLifecycle {
         catch {
             throw "$Action failed ($($operationError.Exception.Message)); rollback also failed and pending recovery was retained: $($_.Exception.Message)"
         }
+        try {
+            if (Microsoft.PowerShell.Management\Test-Path `
+                -LiteralPath $Layout.ManagedHooksLifecycleJournalPath `
+                -PathType Leaf) {
+                [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+                    -Layout $Layout `
+                    -GatewayServiceName $GatewayServiceName `
+                    -Action retire)
+            }
+        }
+        catch {
+            throw (
+                "$Action failed ($($operationError.Exception.Message)); " +
+                'the exact prior machine enrollment was restored, but its ' +
+                "completed lifecycle journal could not be retired: $($_.Exception.Message)"
+            )
+        }
         throw $operationError
+    }
+    try {
+        [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+            -Layout $Layout `
+            -GatewayServiceName $GatewayServiceName `
+            -Action retire)
+    }
+    catch {
+        throw (
+            "$Action committed, but its protected managed-hook lifecycle " +
+            "journal could not be retired: $($_.Exception.Message)"
+        )
     }
     $result = Get-DefenseClawLifecycleStatus `
         -Action $Action `
@@ -11151,6 +11351,14 @@ function Invoke-DefenseClawUninstallLifecycle {
         -Metadata $metadata `
         -Layout $Layout `
         -Action 'Uninstall'
+    if (Microsoft.PowerShell.Management\Test-Path `
+        -LiteralPath $Layout.ManagedHooksLifecycleJournalPath `
+        -PathType Leaf) {
+        [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
+            -Layout $Layout `
+            -GatewayServiceName $GatewayServiceName `
+            -Action retire)
+    }
     $selfUninstallCallerIdentity = $null
     if ($SelfUninstallCallerPID -gt 0) {
         $selfUninstallCallerIdentity =

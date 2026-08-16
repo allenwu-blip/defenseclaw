@@ -421,6 +421,7 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 	services := windowsPowerShellFunction(t, module, "Set-DefenseClawManagedServices")
 	requirements := windowsPowerShellFunction(t, module, "Invoke-DefenseClawCodexRequirementsCommand")
 	teardown := windowsPowerShellFunction(t, module, "Invoke-DefenseClawManagedHooksTeardownCommand")
+	lifecycleSnapshot := windowsPowerShellFunction(t, module, "Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand")
 
 	for label, body := range map[string]string{"native": native, "gateway": gateway} {
 		if strings.Contains(body, "$LASTEXITCODE") ||
@@ -479,6 +480,14 @@ func TestWindowsEnterpriseModuleUsesBoundedProcessAndCanonicalJSONContracts(t *t
 		teardownFailureCheck > teardownFirstSuccessPath ||
 		!strings.Contains(teardown, "ConvertTo-DefenseClawBoundedDiagnostic -Value $detail") {
 		t.Fatal("managed-hook teardown failure is masked by success-layout validation")
+	}
+	lifecycleFailureCheck := strings.Index(lifecycleSnapshot, "if ([int]$probe.exit_code -ne 0")
+	lifecycleFirstSuccessPath := strings.Index(lifecycleSnapshot, "journal_path")
+	if lifecycleFailureCheck < 0 || lifecycleFirstSuccessPath < 0 ||
+		lifecycleFailureCheck > lifecycleFirstSuccessPath ||
+		!strings.Contains(lifecycleSnapshot, "managed-hooks-lifecycle-snapshot") ||
+		!strings.Contains(lifecycleSnapshot, "ConvertTo-DefenseClawBoundedDiagnostic -Value $detail") {
+		t.Fatal("managed-hook lifecycle snapshot masks failures or escapes its hidden command contract")
 	}
 }
 

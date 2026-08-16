@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,8 +35,10 @@ import (
 )
 
 const (
-	windowsEnterpriseInstallerEnv = "DEFENSECLAW_WINDOWS_ENTERPRISE_INSTALLER"
-	windowsEnterpriseTempSDDL     = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	windowsEnterpriseInstallerEnv     = "DEFENSECLAW_WINDOWS_ENTERPRISE_INSTALLER"
+	windowsEnterpriseTempSDDL         = "O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+	windowsEnterpriseOutputCaptureMax = 1 << 20
+	windowsEnterpriseDiagnosticMax    = 4096
 	// 1603 is the fatal-install result Windows deployment systems act on.
 	// Never report 3010 from a failure: that means installed and awaiting a
 	// reboot, and it would mark an incomplete deployment as done.
@@ -79,6 +82,26 @@ type windowsEnterpriseLifecyclePreflightFailure struct {
 	OK            bool     `json:"ok"`
 	Error         string   `json:"error"`
 	Errors        []string `json:"errors"`
+}
+
+type windowsEnterpriseOutputCapture struct {
+	buffer    bytes.Buffer
+	truncated bool
+}
+
+func (capture *windowsEnterpriseOutputCapture) Write(body []byte) (int, error) {
+	written := len(body)
+	remaining := windowsEnterpriseOutputCaptureMax - capture.buffer.Len()
+	if remaining <= 0 {
+		capture.truncated = true
+		return written, nil
+	}
+	if len(body) > remaining {
+		body = body[:remaining]
+		capture.truncated = true
+	}
+	_, _ = capture.buffer.Write(body)
+	return written, nil
 }
 
 type windowsServiceConfigValidation struct {
@@ -134,6 +157,7 @@ func init() {
 	enterpriseWindowsCmd.AddCommand(newWindowsServiceConfigValidationCommand())
 	enterpriseWindowsCmd.AddCommand(newWindowsCodexRequirementsCommand())
 	enterpriseWindowsCmd.AddCommand(newWindowsManagedHooksTeardownCommand())
+	enterpriseWindowsCmd.AddCommand(newWindowsManagedHooksLifecycleCommand())
 	enterpriseCmd.AddCommand(enterpriseWindowsCmd)
 }
 
@@ -664,7 +688,8 @@ func runWindowsEnterprisePowerShell(
 	child.Env = childEnvironment
 	child.Dir = workingDirectory
 	child.Stdin = cmd.InOrStdin()
-	child.Stdout = cmd.OutOrStdout()
+	var childOutput windowsEnterpriseOutputCapture
+	child.Stdout = io.MultiWriter(cmd.OutOrStdout(), &childOutput)
 	child.Stderr = cmd.ErrOrStderr()
 	runErr := child.Run()
 	cleanupErr := cleanupTemp()
@@ -676,10 +701,22 @@ func runWindowsEnterprisePowerShell(
 			// "exit status N" alone does not say who exited.
 			var exit *exec.ExitError
 			if errors.As(runErr, &exit) {
-				failures = append(failures, fmt.Errorf(
-					"Windows enterprise installer exited with code %d",
-					exit.ExitCode(),
-				))
+				if action, detail, ok := windowsEnterpriseInstallerFailureDiagnostic(
+					childOutput.buffer.Bytes(),
+					childOutput.truncated,
+				); ok {
+					failures = append(failures, fmt.Errorf(
+						"Windows enterprise installer %s failed: %s (exit code %d)",
+						action,
+						detail,
+						exit.ExitCode(),
+					))
+				} else {
+					failures = append(failures, fmt.Errorf(
+						"Windows enterprise installer exited with code %d",
+						exit.ExitCode(),
+					))
+				}
 			} else {
 				failures = append(failures, fmt.Errorf("Windows enterprise installer: %w", runErr))
 			}
@@ -690,6 +727,55 @@ func runWindowsEnterprisePowerShell(
 		return errors.Join(failures...)
 	}
 	return nil
+}
+
+func windowsEnterpriseInstallerFailureDiagnostic(
+	body []byte,
+	truncated bool,
+) (action, detail string, ok bool) {
+	if truncated {
+		return "", "", false
+	}
+	var report struct {
+		SchemaVersion int      `json:"schema_version"`
+		Action        string   `json:"action"`
+		OK            bool     `json:"ok"`
+		Error         string   `json:"error"`
+		Errors        []string `json:"errors"`
+	}
+	trimmed := trimWindowsJSONBOM(bytes.TrimSpace(body))
+	if len(trimmed) == 0 || len(trimmed) > windowsEnterpriseOutputCaptureMax ||
+		json.Unmarshal(trimmed, &report) != nil || report.SchemaVersion != 1 ||
+		report.OK {
+		return "", "", false
+	}
+	rawDetail := strings.TrimSpace(report.Error)
+	if rawDetail == "" {
+		for _, candidate := range report.Errors {
+			if rawDetail = strings.TrimSpace(candidate); rawDetail != "" {
+				break
+			}
+		}
+	}
+	if rawDetail == "" {
+		return "", "", false
+	}
+	action = strings.ToLower(strings.TrimSpace(report.Action))
+	if action == "" || strings.IndexFunc(action, func(value rune) bool {
+		return value < 'a' || value > 'z'
+	}) >= 0 {
+		action = "lifecycle"
+	}
+	detail = strings.Map(func(value rune) rune {
+		if value < 0x20 || value == 0x7f {
+			return ' '
+		}
+		return value
+	}, rawDetail)
+	if len(detail) > windowsEnterpriseDiagnosticMax {
+		detail = detail[:windowsEnterpriseDiagnosticMax] + "..."
+	}
+	return action, detail, true
 }
 
 func trustedWindowsEnterpriseEnvironment(powerShellTemp string) ([]string, error) {
