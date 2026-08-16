@@ -503,7 +503,7 @@ func TestAllowUnsignedIsRestrictedBeforeImportAndArtifactValidation(t *testing.T
 			"-AllowUnsigned is restricted to exact disposable DefenseClaw certification scope",
 			"^DefenseClawCertGateway_([a-f0-9]{10})$",
 			"DefenseClawCertGuardian_$runID",
-			"'Cisco',\n        'DefenseClaw-Cert',\n        $runID",
+			"'Cisco',\n        'Cisco Secure Client',\n        'DefenseClaw-Cert',\n        $runID",
 			".codex-defenseclaw-cert-$runID",
 		} {
 			if !strings.Contains(script, contract) {

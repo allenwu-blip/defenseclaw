@@ -155,10 +155,10 @@ mutations to:
 - short-lived `\\.\pipe\DefenseClawCert.<id>.<nonce>` capture channels owned
   by Administrators, with bounded target-SID data access and exact Task
   Scheduler `RunEx` `EnginePID` binding;
-- `C:\Program Files\Cisco\DefenseClaw-Cert\<id>`;
-- `C:\ProgramData\Cisco\DefenseClaw-Cert\<id>`;
-- `C:\ProgramData\Cisco\DefenseClaw-Cert-Staging\<id>`;
-- `C:\ProgramData\Cisco\DefenseClaw-Cert-Work\<id>`.
+- `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>`;
+- `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>`;
+- `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert-Staging\<id>`;
+- `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert-Work\<id>`.
 - the exact direct child
   `<active-WTS-profile>\.codex-defenseclaw-cert-<id>`.
 
@@ -713,13 +713,13 @@ sc.exe sdshow DefenseClawCertGateway_<id>
 sc.exe sdshow DefenseClawCertGuardian_<id>
 sc.exe qfailure DefenseClawCertGateway_<id>
 
-Get-Acl 'C:\Program Files\Cisco\DefenseClaw-Cert\<id>\bin\defenseclaw-gateway.exe' |
+Get-Acl 'C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>\bin\defenseclaw-gateway.exe' |
   Format-List Owner, Sddl
-Get-Acl 'C:\ProgramData\Cisco\DefenseClaw-Cert\<id>\etc\config.yaml' |
+Get-Acl 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>\etc\config.yaml' |
   Format-List Owner, Sddl
-Get-Acl 'C:\ProgramData\Cisco\DefenseClaw-Cert\<id>\hook-guardian\targets.yaml' |
+Get-Acl 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>\hook-guardian\targets.yaml' |
   Format-List Owner, Sddl
-Get-Acl 'C:\ProgramData\Cisco\DefenseClaw-Cert\<id>\hook-guardian-state\protected_targets.json' |
+Get-Acl 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert\<id>\hook-guardian-state\protected_targets.json' |
   Format-List Owner, Sddl
 ```
 
@@ -812,10 +812,10 @@ Get-ScheduledTask -TaskName 'DefenseClawCert_*' -ErrorAction SilentlyContinue
 Get-LocalUser | Where-Object Name -like 'DCEH*'
 Get-CimInstance Win32_UserProfile |
   Where-Object LocalPath -match '\\Users\\DCEH[a-f0-9]{8}$'
-Get-ChildItem 'C:\Program Files\Cisco\DefenseClaw-Cert' -Force -ErrorAction SilentlyContinue
-Get-ChildItem 'C:\ProgramData\Cisco\DefenseClaw-Cert' -Force -ErrorAction SilentlyContinue
-Get-ChildItem 'C:\ProgramData\Cisco\DefenseClaw-Cert-Staging' -Force -ErrorAction SilentlyContinue
-Get-ChildItem 'C:\ProgramData\Cisco\DefenseClaw-Cert-Work' -Force -ErrorAction SilentlyContinue
+Get-ChildItem 'C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw-Cert' -Force -ErrorAction SilentlyContinue
+Get-ChildItem 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert' -Force -ErrorAction SilentlyContinue
+Get-ChildItem 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert-Staging' -Force -ErrorAction SilentlyContinue
+Get-ChildItem 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw-Cert-Work' -Force -ErrorAction SilentlyContinue
 ```
 
 If cleanup fails, preserve the evidence, use the exact identifiers recorded in

@@ -1311,12 +1311,14 @@ function Assert-DefenseClawUnsignedCertificationScope {
     $expectedInstall = [IO.Path]::Combine(
         $script:ProgramFiles,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw-Cert',
         $runID
     ).TrimEnd('\')
     $expectedState = [IO.Path]::Combine(
         $script:ProgramData,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw-Cert',
         $runID
     ).TrimEnd('\')
@@ -3584,12 +3586,14 @@ function Get-DefenseClawLayout {
         $expectedInstallRoot = [IO.Path]::Combine(
             $script:ProgramFiles,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw-Cert',
             $certificationRunID
         ).TrimEnd('\')
         $expectedStateRoot = [IO.Path]::Combine(
             $script:ProgramData,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw-Cert',
             $certificationRunID
         ).TrimEnd('\')
@@ -3627,11 +3631,13 @@ function Get-DefenseClawLayout {
         $expectedInstallRoot = [IO.Path]::Combine(
             $script:ProgramFiles,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw'
         ).TrimEnd('\')
         $expectedStateRoot = [IO.Path]::Combine(
             $script:ProgramData,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw'
         ).TrimEnd('\')
         if (-not [string]::Equals(
@@ -3661,7 +3667,7 @@ function Get-DefenseClawLayout {
     $guardianLogDirectory = Microsoft.PowerShell.Management\Join-Path $logDirectory 'guardian'
     $lifecycleLockDirectory = Microsoft.PowerShell.Management\Join-Path `
         $script:ProgramData `
-        'Cisco\DefenseClaw-Lifecycle'
+        'Cisco\Cisco Secure Client\DefenseClaw-Lifecycle'
     $stateBoundary = $fullStateRoot + '\'
     $lifecycleBoundary = [IO.Path]::GetFullPath(
         $lifecycleLockDirectory
@@ -10184,6 +10190,7 @@ function Complete-DefenseClawSelfUninstallRetirement {
     $expectedLifecycleDirectory = [IO.Path]::Combine(
         $script:ProgramData,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw-Lifecycle'
     ).TrimEnd('\')
     if (-not [string]::Equals(
@@ -11754,8 +11761,8 @@ function Invoke-DefenseClawEnterpriseLifecycle {
         [string]$CodexTrustedHookLauncherBinary,
         [string]$Config,
         [string]$Manifest,
-        [string]$InstallRoot = (Microsoft.PowerShell.Management\Join-Path $script:ProgramFiles 'Cisco\DefenseClaw'),
-        [string]$StateRoot = (Microsoft.PowerShell.Management\Join-Path $script:ProgramData 'Cisco\DefenseClaw'),
+        [string]$InstallRoot = (Microsoft.PowerShell.Management\Join-Path $script:ProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'),
+        [string]$StateRoot = (Microsoft.PowerShell.Management\Join-Path $script:ProgramData 'Cisco\Cisco Secure Client\DefenseClaw'),
         [string]$GatewayServiceName = 'DefenseClawGateway',
         [string]$GuardianServiceName = 'DefenseClawHookGuardian',
         [string]$CertificationCodexHome,

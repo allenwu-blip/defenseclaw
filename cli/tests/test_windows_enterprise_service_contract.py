@@ -55,6 +55,7 @@ WINDOWS_CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "co
 CODEX_MACHINE_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_machine_requirements.go"
 WINDOWS_CLAUDE_POLICY = ROOT / "internal" / "gateway" / "connector" / "claudecode_policy_windows.go"
 WINDOWS_MACHINE_ROOTS = ROOT / "internal" / "winpath" / "machine_roots_windows.go"
+WINDOWS_ENV_CONFIG = ROOT / "internal" / "config" / "env_config_windows.go"
 WINDOWS_CODEX_POLICY = ROOT / "internal" / "gateway" / "connector" / "codex_policy_windows.go"
 WINDOWS_MANAGED_RUNTIME = ROOT / "internal" / "enterprisehooks" / "managed_runtime_windows.go"
 WINDOWS_MANAGED_POLICY = ROOT / "internal" / "enterprisehooks" / "managed_policy_windows.go"
@@ -64,6 +65,37 @@ POWERSHELL = shutil.which("pwsh.exe") or shutil.which("powershell.exe")
 def read(path: Path) -> str:
     assert path.is_file(), f"required Windows enterprise artifact is missing: {path}"
     return path.read_text(encoding="utf-8")
+
+
+def test_windows_enterprise_uses_cisco_secure_client_roots() -> None:
+    installer = read(INSTALLER)
+    module = read(MODULE)
+    harness = read(HARNESS)
+    smoke = read(MODULE_SMOKE)
+    documentation = read(DEPLOYMENT_DOC)
+    env_config = read(WINDOWS_ENV_CONFIG)
+
+    production_suffix = r"Cisco\Cisco Secure Client\DefenseClaw"
+    lifecycle_suffix = r"Cisco\Cisco Secure Client\DefenseClaw-Lifecycle"
+    certification_suffix = r"Cisco\Cisco Secure Client\DefenseClaw-Cert"
+
+    for source in (installer, module, harness, smoke, documentation):
+        assert r"Cisco\DefenseClaw" not in source
+    for source in (installer, module, harness, smoke):
+        assert "Cisco Secure Client" in source
+    assert production_suffix in installer
+    assert production_suffix in module
+    assert production_suffix in harness
+    assert production_suffix in smoke
+    assert lifecycle_suffix in module
+    assert lifecycle_suffix in harness
+    assert certification_suffix in harness
+
+    assert "winpath.TrustedProgramData()" in env_config
+    assert '"Cisco Secure Client"' in env_config
+    assert "const DefaultEnvConfigPath" not in env_config
+    assert r"C:\ProgramData\Cisco" not in env_config
+    assert 'os.Getenv("DEFENSECLAW_ENV_CONFIG_SKIP_TRUST") != "1"' in env_config
 
 
 def windows_powershell_engines() -> list[str]:
@@ -496,8 +528,14 @@ def test_poisoned_program_root_environment_cannot_redirect_defaults(
     )
     if installer_status.returncode == 0:
         status = json.loads(installer_status.stdout)
-        assert Path(status["install_root"]) == (Path(expected["program_files"]) / "Cisco" / "DefenseClaw")
-        assert Path(status["state_root"]) == (Path(expected["program_data"]) / "Cisco" / "DefenseClaw")
+        secure_client_program_files = (
+            Path(expected["program_files"]) / "Cisco" / "Cisco Secure Client"
+        )
+        secure_client_program_data = (
+            Path(expected["program_data"]) / "Cisco" / "Cisco Secure Client"
+        )
+        assert Path(status["install_root"]) == secure_client_program_files / "DefenseClaw"
+        assert Path(status["state_root"]) == secure_client_program_data / "DefenseClaw"
     else:
         # A repository checkout is normally user-writable and unsigned. The
         # bootstrap must reject that adjacent module before import; production
@@ -539,10 +577,24 @@ def test_poisoned_program_root_environment_cannot_redirect_defaults(
     )
     assert harness_plan.returncode == 0, harness_plan.stderr
     plan = json.loads(harness_plan.stdout)
-    assert Path(plan["install_root"]).parent == (Path(expected["program_files"]) / "Cisco" / "DefenseClaw-Cert")
-    assert Path(plan["state_root"]).parent == (Path(expected["program_data"]) / "Cisco" / "DefenseClaw-Cert")
-    assert Path(plan["staging_root"]).parent == (Path(expected["program_data"]) / "Cisco" / "DefenseClaw-Cert-Staging")
-    assert Path(plan["work_root"]).parent == (Path(expected["program_data"]) / "Cisco" / "DefenseClaw-Cert-Work")
+    secure_client_program_files = (
+        Path(expected["program_files"]) / "Cisco" / "Cisco Secure Client"
+    )
+    secure_client_program_data = (
+        Path(expected["program_data"]) / "Cisco" / "Cisco Secure Client"
+    )
+    assert Path(plan["install_root"]).parent == (
+        secure_client_program_files / "DefenseClaw-Cert"
+    )
+    assert Path(plan["state_root"]).parent == (
+        secure_client_program_data / "DefenseClaw-Cert"
+    )
+    assert Path(plan["staging_root"]).parent == (
+        secure_client_program_data / "DefenseClaw-Cert-Staging"
+    )
+    assert Path(plan["work_root"]).parent == (
+        secure_client_program_data / "DefenseClaw-Cert-Work"
+    )
     assert Path(plan["codex_vendor_directory"]) == (Path(expected["program_data"]) / "OpenAI")
     assert Path(plan["codex_machine_policy_directory"]) == (Path(expected["program_data"]) / "OpenAI" / "Codex")
     assert plan["lifecycle_scope_matrix"] == {

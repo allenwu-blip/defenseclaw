@@ -205,23 +205,27 @@ $scopeGuardianService = "DefenseClawCertGuardian_$scopeToken"
 $scopeInstallRoot = [IO.Path]::Combine(
     [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw-Cert',
     $scopeToken
 )
 $scopeStateRoot = [IO.Path]::Combine(
     [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData),
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw-Cert',
     $scopeToken
 )
 $productionInstallRoot = [IO.Path]::Combine(
     [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw'
 )
 $productionStateRoot = [IO.Path]::Combine(
     [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData),
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw'
 )
 $scopeCertificationCodexHome = Join-Path (

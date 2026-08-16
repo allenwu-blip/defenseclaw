@@ -160,11 +160,10 @@ and re-reads `cisco_ai_defense_endpoint` on every change, so no
 DefenseClaw restart is needed for a region flip.
 
 - **Path:** `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw\env_config.json`
-  (see [`internal/config/env_config_windows.go`](../internal/config/env_config_windows.go) — `DefaultEnvConfigPath`).
+  (see [`internal/config/env_config_windows.go`](../internal/config/env_config_windows.go) — `ResolveDefaultEnvConfigPath`).
   Mirrors the macOS `/opt/cisco/secureclient/defenseclaw/env_config.json`
-  convention: the file lives under the Secure Client per-machine data
-  root, separate from DefenseClaw's own `%ProgramData%\Cisco\DefenseClaw\`
-  tree.
+  convention: the file and DefenseClaw's managed state share the canonical
+  Secure Client per-machine data root.
 
 - **Owner / ACL:** the parent directory and the file itself must be
   administrator-owned with **no** non-admin write ACEs. The gateway

@@ -2863,7 +2863,7 @@ targets:
                 else {
                     Microsoft.PowerShell.Management\Join-Path `
                         $script:ProgramData `
-                        'Cisco\DefenseClaw-Lifecycle\DefenseClaw'
+                        'Cisco\Cisco Secure Client\DefenseClaw-Lifecycle\DefenseClaw'
                 }
                 [void](Get-DefenseClawLayout `
                     -InstallRoot (

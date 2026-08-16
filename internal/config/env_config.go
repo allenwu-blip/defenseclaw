@@ -26,18 +26,17 @@ import (
 	"strings"
 )
 
-// DefaultEnvConfigPath is the canonical location AVC drops the DefenseClaw
-// env config for each managed install. The file is authored (and re-
+// ResolveDefaultEnvConfigPath returns the canonical location AVC drops the
+// DefenseClaw env config for each managed install. The file is authored (and re-
 // authored, on upgrades and region changes) by the Cisco Secure Client
 // AVC packaging pipeline. The installer reads it at install time; the
 // gateway sidecar's ConfigManager re-reads it at every wake so region
 // changes that arrive AFTER install take effect without a process
 // restart.
 //
-// The concrete value is defined per-platform in env_config_unix.go and
-// env_config_windows.go so each OS gets the AVC directory convention
-// native to that platform (Unix path under /opt/cisco/... vs Windows
-// path under %ProgramData%\Cisco\Cisco Secure Client\...).
+// The implementation is defined per-platform in env_config_unix.go and
+// env_config_windows.go. Windows resolves the protected ProgramData machine
+// registration at runtime rather than assuming the system drive.
 
 // envConfigEndpointKey is the JSON key that carries the AI Defense inspect
 // origin. Kept in one place so it stays aligned with the shell installer's

@@ -447,10 +447,10 @@ function Assert-CertificationScope {
     }
 
     $productionInstall = ConvertTo-CanonicalPath (
-        Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'
+        Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'
     )
     $productionState = ConvertTo-CanonicalPath (
-        Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'
+        Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw'
     )
     if ($script:GatewayServiceName -eq 'DefenseClawGateway' -or
         $script:GuardianServiceName -eq 'DefenseClawHookGuardian' -or
@@ -6210,8 +6210,8 @@ function Get-NormalModeEnterpriseMachineSnapshot {
     $paths = @(
         $script:InstallRoot,
         $script:StateRoot,
-        (Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'),
-        (Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'),
+        (Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'),
+        (Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw'),
         $script:LifecycleLockDirectory,
         $script:LifecycleLockPath,
         (Join-Path $script:InstallRoot 'bin\defenseclaw-gateway.exe'),
@@ -6387,8 +6387,8 @@ application_protection:
     $machineRoots = @(
         $script:InstallRoot,
         $script:StateRoot,
-        (Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'),
-        (Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'),
+        (Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'),
+        (Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw'),
         $script:CodexVendorDirectory,
         $script:CodexMachinePolicyDirectory
     )
@@ -6462,8 +6462,8 @@ function Test-NormalModeLiveAutoHeal([switch]$RequireEnterpriseAbsent) {
         $requiredAbsentPaths = @(
             $script:InstallRoot,
             $script:StateRoot,
-            (Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'),
-            (Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'),
+            (Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'),
+            (Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw'),
             $script:CodexVendorDirectory,
             $script:ClaudeManagedPolicyPath,
             $script:ClaudeManagedStatePath,
@@ -10029,7 +10029,7 @@ function Get-CertificationLifecycleScopeSHA256 {
 function Get-CertificationLifecycleReceiptPaths {
     $scope = Get-CertificationLifecycleScopeSHA256
     $lifecycleRoot = Assert-PathBelow `
-        (Join-Path $script:KnownProgramData 'Cisco\DefenseClaw-Lifecycle') `
+        (Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw-Lifecycle') `
         $script:KnownProgramData `
         'certification lifecycle receipt directory'
     return [pscustomobject]@{
@@ -11575,8 +11575,8 @@ function Test-AllowUnsignedHarnessContract {
             name = 'production-defaults'
             gateway = 'DefenseClawGateway'
             guardian = 'DefenseClawHookGuardian'
-            install = Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw'
-            state = Join-Path $script:KnownProgramData 'Cisco\DefenseClaw'
+            install = Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw'
+            state = Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw'
             codex_home = [string]$saved.codex_home
         },
         [pscustomobject]@{
@@ -19933,7 +19933,7 @@ $script:CodexVendorDirectory = ConvertTo-CanonicalPath (
     Join-Path $script:KnownProgramData 'OpenAI'
 )
 $script:LifecycleLockDirectory = ConvertTo-CanonicalPath (
-    Join-Path $script:KnownProgramData 'Cisco\DefenseClaw-Lifecycle'
+    Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw-Lifecycle'
 )
 $script:LifecycleLockPath = Assert-PathBelow `
     (Join-Path $script:LifecycleLockDirectory 'lifecycle.lock') `
@@ -19981,16 +19981,16 @@ if (-not (Test-Path -LiteralPath $script:BootstrapPowerShellExecutable -PathType
     throw "fixed Windows PowerShell bootstrap is missing: $($script:BootstrapPowerShellExecutable)"
 }
 $script:ProgramFilesCertificationRoot = ConvertTo-CanonicalPath (
-    Join-Path $script:KnownProgramFiles 'Cisco\DefenseClaw-Cert'
+    Join-Path $script:KnownProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw-Cert'
 )
 $script:ProgramDataCertificationRoot = ConvertTo-CanonicalPath (
-    Join-Path $script:KnownProgramData 'Cisco\DefenseClaw-Cert'
+    Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw-Cert'
 )
 $script:ProgramDataStagingRoot = ConvertTo-CanonicalPath (
-    Join-Path $script:KnownProgramData 'Cisco\DefenseClaw-Cert-Staging'
+    Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw-Cert-Staging'
 )
 $script:ProgramDataWorkRoot = ConvertTo-CanonicalPath (
-    Join-Path $script:KnownProgramData 'Cisco\DefenseClaw-Cert-Work'
+    Join-Path $script:KnownProgramData 'Cisco\Cisco Secure Client\DefenseClaw-Cert-Work'
 )
 $script:InstallRoot = Assert-PathBelow `
     (Join-Path $script:ProgramFilesCertificationRoot $script:RunToken) `

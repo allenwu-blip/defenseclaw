@@ -705,7 +705,11 @@ func (s *Sidecar) Run(ctx context.Context) (runErr error) {
 	// drop the file AFTER DefenseClaw is installed). OSS installs skip
 	// this call and get the pre-overlay behavior verbatim.
 	if managed.IsManagedEnterprise(s.currentConfig().DeploymentMode) {
-		s.configMgr.SetEnvConfigPath(config.DefaultEnvConfigPath)
+		envConfigPath, err := config.ResolveDefaultEnvConfigPath()
+		if err != nil {
+			return fmt.Errorf("resolve managed env_config path: %w", err)
+		}
+		s.configMgr.SetEnvConfigPath(envConfigPath)
 	}
 	configStartupReady := make(chan error, 1)
 	wg.Add(1)

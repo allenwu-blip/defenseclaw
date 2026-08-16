@@ -20,20 +20,29 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/defenseclaw/defenseclaw/internal/managed"
-	"golang.org/x/sys/windows"
+	"github.com/defenseclaw/defenseclaw/internal/winpath"
 )
 
-// DefaultEnvConfigPath is the AVC drop location on Windows managed
-// installs. Mirrors the macOS `/opt/cisco/secureclient/defenseclaw/...`
-// convention — the file is authored by Cisco Secure Client's AVC
-// packaging pipeline under the Secure Client per-machine data root,
-// separate from DefenseClaw's own %ProgramData%\Cisco\DefenseClaw\
-// tree. Keeping AVC-owned artifacts under the AVC-owned tree keeps
-// ACL ownership unambiguous: AVC gets Write, the gateway service
-// account gets Read.
-const DefaultEnvConfigPath = `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw\env_config.json`
+// ResolveDefaultEnvConfigPath returns the AVC drop location for Windows
+// managed installs. ProgramData is resolved from protected 64-bit HKLM
+// registration rather than assumed to be C:\ProgramData or inherited from an
+// attacker-controlled process environment.
+func ResolveDefaultEnvConfigPath() (string, error) {
+	programData, err := winpath.TrustedProgramData()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(
+		programData,
+		"Cisco",
+		"Cisco Secure Client",
+		"DefenseClaw",
+		"env_config.json",
+	), nil
+}
 
 // openEnvConfig on Windows validates path-level trust up front (owner,
 // no world/non-admin write, no reparse point, ancestor chain
@@ -48,12 +57,9 @@ const DefaultEnvConfigPath = `C:\ProgramData\Cisco\Cisco Secure Client\DefenseCl
 // cannot swap the file between validation and open, and an attacker
 // WITH admin is inside the trust boundary of this check to begin with.
 //
-// The trust check is skipped when the process is not running as an
-// administrator (dev boxes, unit tests, opensource local runs) — same
-// escape valve the Unix trustEnvConfigFilePlatform applies when
-// os.Geteuid() != 0. DEFENSECLAW_ENV_CONFIG_SKIP_TRUST=1 also disables
-// the check for tests that need to exercise the parse path without
-// touching an admin-owned directory.
+// The trust check applies to the restricted gateway virtual service account
+// as well as elevated callers. DEFENSECLAW_ENV_CONFIG_SKIP_TRUST=1 is reserved
+// for parser tests whose temporary fixtures cannot carry the production ACL.
 //
 // A missing file surfaces as os.ErrNotExist so LoadEnvConfigEndpoint
 // can convert it to ErrEnvConfigMissing (the pre-arrival case). Trust
@@ -86,39 +92,10 @@ func trustEnvConfigFilePlatform(_ os.FileInfo) error {
 	return nil
 }
 
-// shouldEnforceEnvConfigTrust reports whether the caller is running in a
-// posture that can actually satisfy the managed-install trust invariants
-// (running as SYSTEM or a member of Administrators, with the file under
-// an admin-owned tree). When the caller is a normal user (dev boxes,
-// unit tests, opensource local runs) the invariants cannot hold, so we
-// return false and let LoadEnvConfigEndpoint parse the file for
-// correctness only. Matches the Unix os.Geteuid() != 0 escape.
-//
-// DEFENSECLAW_ENV_CONFIG_SKIP_TRUST=1 is honored regardless of
-// elevation — tests set it to exercise the parse path deterministically
-// without depending on how the process was launched.
+// shouldEnforceEnvConfigTrust is fail-closed for every production caller. The
+// gateway intentionally runs as a restricted virtual service account, whose
+// token is not elevated; elevation therefore cannot define this trust
+// boundary. Tests explicitly opt out for parser-only temporary fixtures.
 func shouldEnforceEnvConfigTrust() bool {
-	if os.Getenv("DEFENSECLAW_ENV_CONFIG_SKIP_TRUST") == "1" {
-		return false
-	}
-	return currentProcessIsElevated()
-}
-
-// currentProcessIsElevated returns true when the process token reports
-// TokenElevation.TokenIsElevated. This is the same check `whoami /priv`
-// and MSDN's "Determining whether the User is a Member of Administrators"
-// example use. A failure to query the token is treated as "not
-// elevated" so a broken environment fails toward the permissive path
-// (parse-only), which is safer for tests than a hard error.
-func currentProcessIsElevated() bool {
-	var token windows.Token
-	if err := windows.OpenProcessToken(
-		windows.CurrentProcess(),
-		windows.TOKEN_QUERY,
-		&token,
-	); err != nil {
-		return false
-	}
-	defer token.Close()
-	return token.IsElevated()
+	return os.Getenv("DEFENSECLAW_ENV_CONFIG_SKIP_TRUST") != "1"
 }

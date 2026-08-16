@@ -117,8 +117,8 @@ lifecycle and use the generic enterprise-hook commands only for read-only
 target diagnostics:
 
 ```powershell
-$Gateway = 'C:\Program Files\Cisco\DefenseClaw\bin\defenseclaw-gateway.exe'
-$Manifest = 'C:\ProgramData\Cisco\DefenseClaw\hook-guardian\targets.yaml'
+$Gateway = 'C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\bin\defenseclaw-gateway.exe'
+$Manifest = 'C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw\hook-guardian\targets.yaml'
 
 & $Gateway enterprise windows reconcile --json
 & $Gateway enterprise hooks status --manifest $Manifest --json

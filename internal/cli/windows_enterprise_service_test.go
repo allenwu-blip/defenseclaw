@@ -30,8 +30,8 @@ func TestWindowsEnterprisePowerShellArgsLifecycleParity(t *testing.T) {
 		cliBinary:                      `C:\stage\defenseclaw.exe`,
 		configPath:                     `C:\stage\config.yaml`,
 		manifestPath:                   `C:\stage\targets.yaml`,
-		installRoot:                    `C:\Program Files\Cisco\DefenseClaw`,
-		stateRoot:                      `C:\ProgramData\Cisco\DefenseClaw`,
+		installRoot:                    `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw`,
+		stateRoot:                      `C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw`,
 		gatewayServiceName:             "DefenseClawGateway",
 		guardianServiceName:            "DefenseClawHookGuardian",
 		certificationCodexHome:         `C:\certification\codex-home`,
@@ -292,8 +292,8 @@ func TestWindowsEnterprisePowerShellArgsPurgeIsExplicit(t *testing.T) {
 
 func TestWindowsEnterpriseSelfUninstallCallerRequiresExactInstalledLayout(t *testing.T) {
 	const processID = 4242
-	installer := `C:\Program Files\Cisco\DefenseClaw\libexec\install-enterprise.ps1`
-	executable := `C:\Program Files\Cisco\DefenseClaw\bin\defenseclaw.exe`
+	installer := `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\libexec\install-enterprise.ps1`
+	executable := `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\bin\defenseclaw.exe`
 	got, ok := windowsEnterpriseSelfUninstallCaller(
 		"uninstall",
 		installer,
@@ -329,20 +329,20 @@ func TestWindowsEnterpriseSelfUninstallCallerRequiresExactInstalledLayout(t *tes
 			name:       "near-prefix install root",
 			action:     "uninstall",
 			installer:  installer,
-			executable: `C:\Program Files\Cisco\DefenseClaw2\bin\defenseclaw.exe`,
+			executable: `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw2\bin\defenseclaw.exe`,
 			processID:  processID,
 		},
 		{
 			name:       "wrong installer directory",
 			action:     "uninstall",
-			installer:  `C:\Program Files\Cisco\DefenseClaw\libexec2\install-enterprise.ps1`,
+			installer:  `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\libexec2\install-enterprise.ps1`,
 			executable: executable,
 			processID:  processID,
 		},
 		{
 			name:       "wrong installer name",
 			action:     "uninstall",
-			installer:  `C:\Program Files\Cisco\DefenseClaw\libexec\other.ps1`,
+			installer:  `C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\libexec\other.ps1`,
 			executable: executable,
 			processID:  processID,
 		},
@@ -500,7 +500,7 @@ func TestWindowsEnterpriseSelfUpgradeResolutionErrorsFailClosed(t *testing.T) {
 
 	if conflict, err := windowsEnterpriseSelfUpgradeConflict(
 		"upgrade",
-		`..\..\Program Files\Cisco\DefenseClaw`,
+		`..\..\Program Files\Cisco\Cisco Secure Client\DefenseClaw`,
 		`C:\stage\defenseclaw.exe`,
 		`C:\release\defenseclaw.exe`,
 	); err == nil || conflict ||
@@ -664,7 +664,7 @@ func TestRunWindowsEnterpriseLifecycleResolutionErrorsFailClosedJSON(t *testing.
 	}{
 		{
 			name:        "relative explicit install root",
-			installRoot: `..\..\Program Files\Cisco\DefenseClaw`,
+			installRoot: `..\..\Program Files\Cisco\Cisco Secure Client\DefenseClaw`,
 			executable: func() (string, error) {
 				return `C:\release\defenseclaw.exe`, nil
 			},

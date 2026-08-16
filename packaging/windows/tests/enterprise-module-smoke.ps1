@@ -14,16 +14,16 @@ $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::Progra
 $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $modulePath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\DefenseClawEnterprise.psm1'))
 $token = ([Guid]::NewGuid().ToString('N')).Substring(0, 10)
-$installRoot = Join-Path $programFiles 'Cisco\DefenseClaw'
-$stateRoot = Join-Path $programData 'Cisco\DefenseClaw'
+$installRoot = Join-Path $programFiles 'Cisco\Cisco Secure Client\DefenseClaw'
+$stateRoot = Join-Path $programData 'Cisco\Cisco Secure Client\DefenseClaw'
 $gatewayService = 'DefenseClawGateway'
 $guardianService = 'DefenseClawHookGuardian'
 $customInstallRoot = Join-Path `
     $programFiles `
-    "Cisco\DefenseClaw-ModuleSmoke-$token\DefenseClaw"
+    "Cisco\Cisco Secure Client\DefenseClaw-ModuleSmoke-$token\DefenseClaw"
 $customStateRoot = Join-Path `
     $programData `
-    "Cisco\DefenseClaw-ModuleSmoke-$token\DefenseClaw"
+    "Cisco\Cisco Secure Client\DefenseClaw-ModuleSmoke-$token\DefenseClaw"
 $customGatewayService = "DefenseClawGatewaySmoke_$token"
 $customGuardianService = "DefenseClawGuardianSmoke_$token"
 $codexMachinePolicyDirectory = Join-Path $programData 'OpenAI\Codex'
@@ -163,10 +163,10 @@ $wrongCertificationCodexHome = Join-Path (
 ) ".codex-defenseclaw-cert-$token-wrong"
 $certificationInstallRoot = Join-Path `
     $programFiles `
-    "Cisco\DefenseClaw-Cert\$token"
+    "Cisco\Cisco Secure Client\DefenseClaw-Cert\$token"
 $certificationStateRoot = Join-Path `
     $programData `
-    "Cisco\DefenseClaw-Cert\$token"
+    "Cisco\Cisco Secure Client\DefenseClaw-Cert\$token"
 try {
     $missingCertificationStatus = Invoke-DefenseClawEnterpriseLifecycle `
         -Action Status `
@@ -306,7 +306,7 @@ namespace DefenseClaw.Windows.Tests
         'config',
         'DefenseClawGateway',
         'binPath=',
-        '"C:\Program Files\Cisco\DefenseClaw\defenseclaw-gateway.exe" enterprise hooks watch --manifest "C:\ProgramData\Cisco\DefenseClaw\targets.yaml" --interval 1m',
+        '"C:\Program Files\Cisco\Cisco Secure Client\DefenseClaw\defenseclaw-gateway.exe" enterprise hooks watch --manifest "C:\ProgramData\Cisco\Cisco Secure Client\DefenseClaw\targets.yaml" --interval 1m',
         'trailing-slash\',
         ''
     )
@@ -457,8 +457,8 @@ namespace DefenseClaw.Windows.Tests
         throw 'failure actions do not encode three repeating restarts'
     }
     $layout = Get-DefenseClawLayout `
-        -InstallRoot (Join-Path $script:ProgramFiles 'Cisco\DefenseClaw') `
-        -StateRoot (Join-Path $script:ProgramData 'Cisco\DefenseClaw')
+        -InstallRoot (Join-Path $script:ProgramFiles 'Cisco\Cisco Secure Client\DefenseClaw') `
+        -StateRoot (Join-Path $script:ProgramData 'Cisco\Cisco Secure Client\DefenseClaw')
     $expectedCodexParent = Join-Path $script:ProgramData 'OpenAI\Codex'
     if (-not [string]::Equals(
         [string]$layout.CodexMachinePolicyDirectory,
@@ -497,10 +497,10 @@ namespace DefenseClaw.Windows.Tests
     $unsignedGuardian = "DefenseClawCertGuardian_$unsignedRunID"
     $unsignedInstallRoot = Join-Path `
         $script:ProgramFiles `
-        "Cisco\DefenseClaw-Cert\$unsignedRunID"
+        "Cisco\Cisco Secure Client\DefenseClaw-Cert\$unsignedRunID"
     $unsignedStateRoot = Join-Path `
         $script:ProgramData `
-        "Cisco\DefenseClaw-Cert\$unsignedRunID"
+        "Cisco\Cisco Secure Client\DefenseClaw-Cert\$unsignedRunID"
     $unsignedCodexHome = "C:\Users\Certification\.codex-defenseclaw-cert-$unsignedRunID"
     Assert-DefenseClawUnsignedCertificationScope `
         -Action Install `

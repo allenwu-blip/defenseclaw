@@ -133,10 +133,16 @@ $trustedWindows = [string]$trustedMachineRoots.Windows
 $trustedProgramFiles = [string]$trustedMachineRoots.ProgramFiles
 $trustedProgramData = [string]$trustedMachineRoots.ProgramData
 $InstallRoot = if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
-    [IO.Path]::Combine($trustedProgramFiles, 'Cisco\DefenseClaw')
+    [IO.Path]::Combine(
+        $trustedProgramFiles,
+        'Cisco\Cisco Secure Client\DefenseClaw'
+    )
 } else { $InstallRoot }
 $StateRoot = if ([string]::IsNullOrWhiteSpace($StateRoot)) {
-    [IO.Path]::Combine($trustedProgramData, 'Cisco\DefenseClaw')
+    [IO.Path]::Combine(
+        $trustedProgramData,
+        'Cisco\Cisco Secure Client\DefenseClaw'
+    )
 } else { $StateRoot }
 $trustedSystem32 = [IO.Path]::Combine($trustedWindows, 'System32')
 [Environment]::SetEnvironmentVariable('SystemRoot', $trustedWindows, 'Process')
@@ -444,12 +450,14 @@ function Assert-DefenseClawBootstrapUnsignedCertificationScope {
     $expectedInstall = [IO.Path]::Combine(
         $trustedProgramFiles,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw-Cert',
         $runID
     ).TrimEnd('\')
     $expectedState = [IO.Path]::Combine(
         $trustedProgramData,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw-Cert',
         $runID
     ).TrimEnd('\')
@@ -567,12 +575,14 @@ function Assert-DefenseClawBootstrapLifecycleScope {
         $expectedInstall = [IO.Path]::Combine(
             $trustedProgramFiles,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw-Cert',
             $runID
         ).TrimEnd('\')
         $expectedState = [IO.Path]::Combine(
             $trustedProgramData,
             'Cisco',
+            'Cisco Secure Client',
             'DefenseClaw-Cert',
             $runID
         ).TrimEnd('\')
@@ -615,11 +625,13 @@ function Assert-DefenseClawBootstrapLifecycleScope {
     $expectedInstall = [IO.Path]::Combine(
         $trustedProgramFiles,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw'
     ).TrimEnd('\')
     $expectedState = [IO.Path]::Combine(
         $trustedProgramData,
         'Cisco',
+        'Cisco Secure Client',
         'DefenseClaw'
     ).TrimEnd('\')
     if (-not [string]::Equals(

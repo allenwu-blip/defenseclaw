@@ -415,12 +415,14 @@ $certificationRunID = [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $certificationInstallRoot = [IO.Path]::Combine(
     $expectedProgramFiles,
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw-Cert',
     $certificationRunID
 )
 $certificationStateRoot = [IO.Path]::Combine(
     $expectedProgramData,
     'Cisco',
+    'Cisco Secure Client',
     'DefenseClaw-Cert',
     $certificationRunID
 )
