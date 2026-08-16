@@ -3535,6 +3535,31 @@ function Set-DefenseClawManagedCoreAcls {
         -SkipCodexMachineState
 }
 
+function Set-DefenseClawManagedServicesForTransaction {
+    param(
+        [Parameter(Mandatory)][hashtable]$Layout,
+        [Parameter(Mandatory)][string]$GatewayServiceName,
+        [Parameter(Mandatory)][string]$GuardianServiceName
+    )
+    Set-DefenseClawManagedServices `
+        -GatewayServiceName $GatewayServiceName `
+        -GuardianServiceName $GuardianServiceName `
+        -GatewayPath $Layout.GatewayPath `
+        -ManifestPath $Layout.ManifestPath `
+        -RuntimeDirectory $Layout.RuntimeDirectory `
+        -ConfigPath $Layout.ConfigPath `
+        -AuthorizationDirectory $Layout.AuthorizationDirectory `
+        -GatewayLogPath $Layout.GatewayLogPath `
+        -GuardianLogPath $Layout.GuardianLogPath `
+        -AgentApplicationControlAttested:$Layout.AgentApplicationControlAttested `
+        -ClaudeEffectivePolicyVerified:$Layout.ClaudeEffectivePolicyVerified `
+        -CodexTrustedHookLauncherVerified:$Layout.CodexTrustedHookLauncherVerified `
+        -DeferAutomaticStart
+    Set-DefenseClawManagedCoreAcls `
+        -Layout $Layout `
+        -GatewayServiceName $GatewayServiceName
+}
+
 function Get-DefenseClawLayout {
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
@@ -8313,6 +8338,16 @@ function Get-DefenseClawLifecycleStatus {
                 -Layout $Layout `
                 -GatewayServiceName $GatewayServiceName
             $generation = Get-DefenseClawGuardianGeneration -Report $guardianReport
+            if ($null -ne $guardianReport -and
+                $null -ne $guardianReport.PSObject.Properties['errors']) {
+                foreach ($issue in @($guardianReport.PSObject.Properties['errors'].Value)) {
+                    if (-not [string]::IsNullOrWhiteSpace([string]$issue)) {
+                        $errors.Add(
+                            "guardian status: $(ConvertTo-DefenseClawBoundedDiagnostic -Value $issue)"
+                        )
+                    }
+                }
+            }
         }
         catch {
             $errors.Add($_.Exception.Message)
@@ -10986,6 +11021,17 @@ function Invoke-DefenseClawInstallLikeLifecycle {
             }
         }
         if ($Action -eq 'Install') {
+            # A clean install has no NT SERVICE identities until SCM creates
+            # the transaction-owned service pair. The snapshot subprocess
+            # loads the protected managed config and validates the gateway's
+            # virtual-service SID, so register both services disabled and
+            # establish the SID-dependent runtime ACL before capture. The
+            # transaction already recorded both services as absent and removes
+            # them if capture or any later step fails.
+            Set-DefenseClawManagedServicesForTransaction `
+                -Layout $Layout `
+                -GatewayServiceName $GatewayServiceName `
+                -GuardianServiceName $GuardianServiceName
             [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `
                 -Layout $Layout `
                 -GatewayServiceName $GatewayServiceName `
@@ -11010,23 +11056,14 @@ function Invoke-DefenseClawInstallLikeLifecycle {
         elseif (-not $attestationNeedsRefresh -and $attestationExists) {
             [void](Get-DefenseClawCodexTrustedShellAttestation -Layout $Layout)
         }
-        Set-DefenseClawManagedServices `
-            -GatewayServiceName $GatewayServiceName `
-            -GuardianServiceName $GuardianServiceName `
-            -GatewayPath $Layout.GatewayPath `
-            -ManifestPath $Layout.ManifestPath `
-            -RuntimeDirectory $Layout.RuntimeDirectory `
-            -ConfigPath $Layout.ConfigPath `
-            -AuthorizationDirectory $Layout.AuthorizationDirectory `
-            -GatewayLogPath $Layout.GatewayLogPath `
-            -GuardianLogPath $Layout.GuardianLogPath `
-            -AgentApplicationControlAttested:$Layout.AgentApplicationControlAttested `
-            -ClaudeEffectivePolicyVerified:$Layout.ClaudeEffectivePolicyVerified `
-            -CodexTrustedHookLauncherVerified:$Layout.CodexTrustedHookLauncherVerified `
-            -DeferAutomaticStart
-        Set-DefenseClawManagedCoreAcls `
-            -Layout $Layout `
-            -GatewayServiceName $GatewayServiceName
+        if ($Action -ne 'Install') {
+            # Upgrade/Repair deliberately capture the previous hook identity
+            # before reconfiguring the existing service pair.
+            Set-DefenseClawManagedServicesForTransaction `
+                -Layout $Layout `
+                -GatewayServiceName $GatewayServiceName `
+                -GuardianServiceName $GuardianServiceName
+        }
         $targetReport = Invoke-DefenseClawCodexRequirementsCommand `
             -Layout $Layout `
             -GatewayServiceName $GatewayServiceName `

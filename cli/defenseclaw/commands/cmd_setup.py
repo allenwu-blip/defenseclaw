@@ -1917,11 +1917,12 @@ def _set_config_trusted_bin_prefixes(
     seen: set[str] = set()
     for raw in prefixes:
         resolved, _err = agent_discovery.validate_trusted_prefix(raw)
-        key = resolved or str(raw).strip()
+        entry = resolved or str(raw).strip()
+        key = agent_discovery._path_key(entry) if entry else ""
         if not key or key in seen:
             continue
         seen.add(key)
-        deduped.append(key)
+        deduped.append(entry)
     ai.trusted_binary_prefixes = deduped
     if locked_path is None:
         cfg.save()
@@ -1951,7 +1952,7 @@ def _add_trusted_bin_prefix(prefix: str, data_dir: str, cfg=None) -> bool:
 # ---------------------------------------------------------------------------
 # `defenseclaw setup trusted-paths` — manage the binary-discovery allow-list.
 #
-# Built-in defaults live in agent_discovery._TRUSTED_BIN_PREFIXES_DEFAULT and
+# Built-in defaults come from agent_discovery._builtin_trusted_bin_prefixes and
 # are read-only here. New operator additions persist to config.yaml under
 # ai_discovery.trusted_binary_prefixes. Legacy .env / process env entries are
 # still listed and honored for backward compatibility.
@@ -1975,10 +1976,20 @@ def _trusted_prefix_status(resolved: str) -> str:
 def _default_resolved_prefixes() -> set[str]:
     """Resolved absolute paths of the built-in (non-removable) defaults."""
     out: set[str] = set()
-    for raw in agent_discovery._TRUSTED_BIN_PREFIXES_DEFAULT:
+    for raw in agent_discovery._builtin_trusted_bin_prefixes():
         resolved, _ = agent_discovery.validate_trusted_prefix(raw)
         if resolved:
             out.add(resolved)
+    return out
+
+
+def _configured_resolved_prefix_keys(cfg) -> set[str]:
+    """Canonical comparison keys explicitly owned by config.yaml."""
+    out: set[str] = set()
+    for raw in _config_trusted_bin_prefixes(cfg):
+        resolved, _ = agent_discovery.validate_trusted_prefix(raw)
+        if resolved:
+            out.add(agent_discovery._path_key(resolved))
     return out
 
 
@@ -1998,9 +2009,10 @@ def _collect_trusted_prefixes(data_dir: str, cfg=None) -> list[dict[str, object]
 
     def _push(raw: str, source: str, removable: bool) -> None:
         resolved, _err = agent_discovery.validate_trusted_prefix(raw)
-        if not resolved or resolved in seen:
+        key = agent_discovery._path_key(resolved) if resolved else ""
+        if not key or key in seen:
             return
-        seen.add(resolved)
+        seen.add(key)
         rows.append(
             {
                 "path": raw,
@@ -2011,10 +2023,13 @@ def _collect_trusted_prefixes(data_dir: str, cfg=None) -> list[dict[str, object]
             }
         )
 
-    for raw in agent_discovery._TRUSTED_BIN_PREFIXES_DEFAULT:
-        _push(raw, "default", False)
+    # Operator provenance wins when a configured path later becomes a
+    # built-in default (for example after the Windows HOME/profile changes).
+    # Keeping the config row visible also keeps the explicit entry removable.
     for raw in config_file:
         _push(raw, "config", True)
+    for raw in agent_discovery._builtin_trusted_bin_prefixes():
+        _push(raw, "default", False)
     for raw in env_file:
         _push(raw, "legacy .env", True)
     for raw in env_only:
@@ -2095,7 +2110,12 @@ def trusted_paths_add(app: AppContext, directory: str, force: bool, as_json: boo
     if not resolved:
         _emit_trusted_path_result(as_json, ok=False, path=directory, message=f"invalid path ({err})")
         click.get_current_context().exit(1)
-    if resolved in _default_resolved_prefixes():
+    resolved_key = agent_discovery._path_key(resolved)
+    explicitly_configured = resolved_key in _configured_resolved_prefix_keys(app.cfg)
+    default_keys = {
+        agent_discovery._path_key(path) for path in _default_resolved_prefixes()
+    }
+    if resolved_key in default_keys and not explicitly_configured:
         _emit_trusted_path_result(as_json, ok=True, path=resolved, message="already trusted by default; nothing to do")
         return
     if err and not force:
@@ -2120,7 +2140,12 @@ def trusted_paths_add(app: AppContext, directory: str, force: bool, as_json: boo
 def trusted_paths_remove(app: AppContext, directory: str, as_json: bool) -> None:
     """Remove an operator-added trusted prefix (never a built-in default)."""
     resolved, _err = agent_discovery.validate_trusted_prefix(directory)
-    if resolved in _default_resolved_prefixes():
+    resolved_key = agent_discovery._path_key(resolved) if resolved else ""
+    explicitly_configured = resolved_key in _configured_resolved_prefix_keys(app.cfg)
+    default_keys = {
+        agent_discovery._path_key(path) for path in _default_resolved_prefixes()
+    }
+    if resolved_key in default_keys and not explicitly_configured:
         _emit_trusted_path_result(
             as_json, ok=False, path=resolved, message="refusing to remove a built-in default prefix"
         )

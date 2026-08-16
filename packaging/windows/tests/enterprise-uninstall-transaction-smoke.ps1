@@ -273,7 +273,8 @@ try {
                 [Parameter(Mandatory)]
                 [AllowEmptyString()]
                 [string]$PreimageSHA256,
-                [Parameter(Mandatory)][bool]$ServicesRunning
+                [Parameter(Mandatory)][bool]$ServicesRunning,
+                [bool]$ServicesExisted = $true
             )
             $snapshot = [ordered]@{
                 schema_version = 1
@@ -295,15 +296,15 @@ try {
                 services = @(
                     [ordered]@{
                         name = 'DefenseClawGateway'
-                        existed = $true
+                        existed = $ServicesExisted
                         running = $ServicesRunning
-                        start_mode = 2
+                        start_mode = $(if ($ServicesExisted) { 2 } else { 0 })
                     },
                     [ordered]@{
                         name = 'DefenseClawHookGuardian'
-                        existed = $true
+                        existed = $ServicesExisted
                         running = $ServicesRunning
-                        start_mode = 2
+                        start_mode = $(if ($ServicesExisted) { 2 } else { 0 })
                     }
                 )
                 created_shared_directories = @()
@@ -921,13 +922,30 @@ try {
                 $snapshotPath = Microsoft.PowerShell.Management\Join-Path `
                     ([string]$Layout.StateRoot) `
                     'install-snapshot.json'
+                $servicesExisted = $true
+                if ($script:HarnessState.ContainsKey(
+                        'track_fresh_install_services'
+                    ) -and
+                    [bool]$script:HarnessState.track_fresh_install_services) {
+                    $servicesExisted = [bool](
+                        $script:HarnessState.service_exists[
+                            $GatewayServiceName
+                        ] -or
+                        $script:HarnessState.service_exists[
+                            $GuardianServiceName
+                        ]
+                    )
+                    $script:HarnessState.fresh_services_existed =
+                        $servicesExisted
+                }
                 Write-HarnessSnapshot `
                     -Layout $Layout `
                     -SnapshotPath $snapshotPath `
                     -Prepared:$false `
                     -PreimageExisted:$false `
                     -PreimageSHA256 '' `
-                    -ServicesRunning:$false
+                    -ServicesRunning:$false `
+                    -ServicesExisted:$servicesExisted
                 $script:HarnessState.snapshot_path = $snapshotPath
                 return $snapshotPath
             }
@@ -1074,6 +1092,32 @@ try {
             $script:HarnessState.events.Add("lifecycle-snapshot:$Action")
             switch ($Action) {
                 'capture' {
+                    if ($script:HarnessState.ContainsKey(
+                            'track_fresh_install_services'
+                        ) -and
+                        [bool]$script:HarnessState.track_fresh_install_services) {
+                        if (-not [bool]$script:HarnessState.service_exists[
+                                $GatewayServiceName
+                            ] -or
+                            -not [bool]$script:HarnessState.service_exists[
+                                'DefenseClawHookGuardian'
+                            ]) {
+                            throw 'snapshot capture ran before both service identities existed'
+                        }
+                        if ($script:HarnessState.service_start_modes[
+                                $GatewayServiceName
+                            ] -ne 4 -or
+                            $script:HarnessState.service_start_modes[
+                                'DefenseClawHookGuardian'
+                            ] -ne 4) {
+                            throw 'snapshot capture observed a startable fresh service'
+                        }
+                        if ($script:HarnessState.events.IndexOf(
+                                'managed-core-acls'
+                            ) -lt 0) {
+                            throw 'snapshot capture ran before service-SID ACL setup'
+                        }
+                    }
                     $script:HarnessState.lifecycle_preimage_active = [bool](
                         $script:HarnessState.active_references
                     )
@@ -1082,6 +1126,12 @@ try {
                         '{"schema_version":1,"phase":"captured"}',
                         [Text.UTF8Encoding]::new($false)
                     )
+                    if ($script:HarnessState.ContainsKey(
+                            'fail_fresh_install_capture'
+                        ) -and
+                        [bool]$script:HarnessState.fail_fresh_install_capture) {
+                        throw 'injected fresh-install snapshot failure'
+                    }
                 }
                 'restore' {
                     if (-not (Microsoft.PowerShell.Management\Test-Path `
@@ -1122,6 +1172,23 @@ try {
                     -Layout $Layout `
                     -GatewayServiceName 'DefenseClawGateway' `
                     -Action retire)
+                if ($script:HarnessState.ContainsKey(
+                        'track_fresh_install_services'
+                    ) -and
+                    [bool]$script:HarnessState.track_fresh_install_services -and
+                    -not [bool]$script:HarnessState.fresh_services_existed) {
+                    foreach ($name in @(
+                        'DefenseClawGateway',
+                        'DefenseClawHookGuardian'
+                    )) {
+                        $script:HarnessState.service_exists[$name] = $false
+                        $script:HarnessState.service_start_modes[$name] = 0
+                    }
+                    $script:HarnessState.removed_services += 2
+                    $script:HarnessState.installed = $false
+                    $script:HarnessState.services_running = $false
+                    return
+                }
                 $script:HarnessState.installed = $true
                 $script:HarnessState.services_running = $false
                 $script:HarnessState.service_start_modes[
@@ -1326,17 +1393,23 @@ try {
                 [switch]$CodexTrustedHookLauncherVerified,
                 [switch]$DeferAutomaticStart
             )
+            $script:HarnessState.events.Add('managed-services')
             $mode = if ($DeferAutomaticStart) { 4 } else { 2 }
             $script:HarnessState.service_start_modes[$GatewayServiceName] =
                 $mode
             $script:HarnessState.service_start_modes[$GuardianServiceName] =
                 $mode
+            if ($script:HarnessState.ContainsKey('service_exists')) {
+                $script:HarnessState.service_exists[$GatewayServiceName] = $true
+                $script:HarnessState.service_exists[$GuardianServiceName] = $true
+            }
         }
         function script:Set-DefenseClawManagedCoreAcls {
             param(
                 [Parameter(Mandatory)][hashtable]$Layout,
                 [Parameter(Mandatory)][string]$GatewayServiceName
             )
+            $script:HarnessState.events.Add('managed-core-acls')
         }
         function script:Set-DefenseClawManagedAcls {
             param(
@@ -1896,6 +1969,181 @@ try {
                     -not [bool]$script:HarnessState.reheal_observed
                 )
                 failure = $failureMessage
+            })
+        }
+
+        function Invoke-HarnessFreshInstallServiceBootstrapSequence {
+            $root = New-HarnessCaseRoot `
+                -Parent $TestRoot `
+                -Label 'fresh-install-service-bootstrap'
+            $layout = New-HarnessLayout -Root $root
+            $manifest = @'
+version: 1
+targets:
+  - connector: claudecode
+    sid: S-1-5-21-111-222-333-1001
+    user_home: C:\Users\Alice
+    data_dir: C:\Users\Alice\.defenseclaw
+    agent_version: 2.9.999
+    enabled: true
+'@
+            $sources = @{
+                gateway = 'fresh-gateway'
+                hook = 'fresh-hook'
+                installer = 'fresh-installer'
+                module = 'fresh-module'
+                config = 'listen_addr: 127.0.0.1:18970'
+                manifest = $manifest
+            }
+            $script:HarnessState = @{
+                operation = 'install'
+                crash_at = ''
+                events = [Collections.Generic.List[string]]::new()
+                layout = $layout
+                active_references = $false
+                lifecycle_preimage_active = $false
+                binary_present = $false
+                installed = $false
+                guardian_running = $false
+                gateway_running = $false
+                services_running = $false
+                services_were_running = $false
+                reheal_observed = $false
+                prepare_while_guardian_running = $false
+                transaction_calls = 0
+                prepare_calls = 0
+                verify_calls = 0
+                rollback_calls = 0
+                restore_calls = 0
+                complete_calls = 0
+                service_contract_checks = 0
+                owned_checks = 0
+                removed_services = 0
+                purged_state = $false
+                install_saw_retired_journal = $false
+                snapshot_path = ''
+                track_fresh_install_services = $true
+                fresh_services_existed = $false
+                fail_fresh_install_capture = $true
+                service_start_modes = @{
+                    DefenseClawGateway = 0
+                    DefenseClawHookGuardian = 0
+                }
+                service_exists = @{
+                    DefenseClawGateway = $false
+                    DefenseClawHookGuardian = $false
+                }
+                guardian_fresh = $false
+                queued_gateway_restart = $false
+                queued_restart_blocked = $true
+                gateway_started_before_guardian = $false
+                barrier_required = $true
+                barrier_complete = $false
+            }
+
+            for ($attempt = 1; $attempt -le 2; $attempt++) {
+                $script:HarnessState.events.Clear()
+                $failure = ''
+                try {
+                    [void](Invoke-DefenseClawInstallLikeLifecycle `
+                        -Action 'Install' `
+                        -Layout $layout `
+                        -Sources $sources `
+                        -GatewayServiceName 'DefenseClawGateway' `
+                        -GuardianServiceName 'DefenseClawHookGuardian' `
+                        -NoStart)
+                }
+                catch {
+                    $failure = [string]$_.Exception.Message
+                }
+
+                $transaction = $script:HarnessState.events.IndexOf(
+                    'transaction'
+                )
+                $services = $script:HarnessState.events.IndexOf(
+                    'managed-services'
+                )
+                $coreAcls = $script:HarnessState.events.IndexOf(
+                    'managed-core-acls'
+                )
+                $capture = $script:HarnessState.events.IndexOf(
+                    'lifecycle-snapshot:capture'
+                )
+                Assert-Harness `
+                    -Condition (
+                        $transaction -ge 0 -and
+                        $services -gt $transaction -and
+                        $coreAcls -gt $services -and
+                        $capture -gt $coreAcls
+                    ) `
+                    -Message "fresh install attempt $attempt violated transaction/service/ACL/snapshot ordering"
+
+                if ($attempt -eq 1) {
+                    Assert-Harness `
+                        -Condition ($failure -match 'injected fresh-install snapshot failure') `
+                        -Message "fresh install fault lost its causal failure: $failure"
+                    Assert-Harness `
+                        -Condition (
+                            -not [bool]$script:HarnessState.service_exists[
+                                'DefenseClawGateway'
+                            ] -and
+                            -not [bool]$script:HarnessState.service_exists[
+                                'DefenseClawHookGuardian'
+                            ] -and
+                            $script:HarnessState.service_start_modes[
+                                'DefenseClawGateway'
+                            ] -eq 0 -and
+                            $script:HarnessState.service_start_modes[
+                                'DefenseClawHookGuardian'
+                            ] -eq 0
+                        ) `
+                        -Message 'fresh install rollback retained a transaction-created service'
+                    Assert-Harness `
+                        -Condition (
+                            -not (Microsoft.PowerShell.Management\Test-Path `
+                                -LiteralPath $layout.PendingPath) -and
+                            -not (Microsoft.PowerShell.Management\Test-Path `
+                                -LiteralPath $layout.ManagedHooksLifecycleJournalPath)
+                        ) `
+                        -Message 'fresh install rollback retained protected transaction state'
+                    $script:HarnessState.fail_fresh_install_capture = $false
+                }
+                else {
+                    Assert-Harness `
+                        -Condition ([string]::IsNullOrWhiteSpace($failure)) `
+                        -Message "fresh install retry failed: $failure"
+                    Assert-Harness `
+                        -Condition (
+                            [bool]$script:HarnessState.installed -and
+                            [bool]$script:HarnessState.service_exists[
+                                'DefenseClawGateway'
+                            ] -and
+                            [bool]$script:HarnessState.service_exists[
+                                'DefenseClawHookGuardian'
+                            ] -and
+                            $script:HarnessState.service_start_modes[
+                                'DefenseClawGateway'
+                            ] -eq 4 -and
+                            $script:HarnessState.service_start_modes[
+                                'DefenseClawHookGuardian'
+                            ] -eq 4
+                        ) `
+                        -Message 'fresh Install -NoStart retry did not leave both services disabled'
+                }
+            }
+            Assert-Harness `
+                -Condition (
+                    $script:HarnessState.transaction_calls -eq 2 -and
+                    $script:HarnessState.restore_calls -eq 1 -and
+                    $script:HarnessState.removed_services -eq 2
+                ) `
+                -Message 'fresh install fault/retry did not use exact transactional rollback'
+            $uninstallResults.Add([pscustomobject]@{
+                name = 'fresh-install-service-bootstrap-rollback-retry'
+                failed = $false
+                rollback = $script:HarnessState.restore_calls
+                service_contract_checks = 0
+                no_surviving_reference_before_delete = $true
             })
         }
 
@@ -3132,6 +3380,7 @@ targets:
             -ExpectSuccess:$true `
             -SelfUninstall:$true `
             -Purge:$true
+        Invoke-HarnessFreshInstallServiceBootstrapSequence
         Invoke-HarnessDirectReinstallSequence
         Invoke-HarnessFirstActivationFailureSequence
 

@@ -569,6 +569,7 @@ func TestWindowsCodexMachinePolicyLifecycleIsTransactionalAndFailClosed(t *testi
 	}
 
 	installLike := windowsPowerShellFunction(t, module, "Invoke-DefenseClawInstallLikeLifecycle")
+	servicePreparation := windowsPowerShellFunction(t, module, "Set-DefenseClawManagedServicesForTransaction")
 	preflight := strings.Index(installLike, "Assert-DefenseClawCodexMachinePolicyFilePreflight -Layout $Layout")
 	snapshot := strings.Index(installLike, "$snapshot = New-DefenseClawTransaction `")
 	aclBackup := strings.Index(installLike, "Initialize-DefenseClawCodexRequirementsAclBackup `")
@@ -588,6 +589,48 @@ func TestWindowsCodexMachinePolicyLifecycleIsTransactionalAndFailClosed(t *testi
 	}
 	if strings.Contains(installLike[reconcile:metadataWrite], "-Action verify)") {
 		t.Fatal("fresh install invokes standalone verify before deployment metadata exists")
+	}
+	serviceRegistration := strings.Index(servicePreparation, "Set-DefenseClawManagedServices `")
+	coreACLs := strings.Index(servicePreparation, "Set-DefenseClawManagedCoreAcls `")
+	if serviceRegistration < 0 || coreACLs < 0 || serviceRegistration > coreACLs ||
+		!strings.Contains(servicePreparation, "-DeferAutomaticStart") {
+		t.Fatal("transactional service preparation does not register disabled services before SID-dependent ACLs")
+	}
+	freshInstall := strings.Index(installLike, "# A clean install has no NT SERVICE identities")
+	freshServices := -1
+	if freshInstall >= 0 {
+		freshServices = strings.Index(
+			installLike[freshInstall:],
+			"Set-DefenseClawManagedServicesForTransaction `",
+		)
+		if freshServices >= 0 {
+			freshServices += freshInstall
+		}
+	}
+	freshCapture := -1
+	if freshServices >= 0 {
+		freshCapture = strings.Index(
+			installLike[freshServices:],
+			"Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `",
+		)
+		if freshCapture >= 0 {
+			freshCapture += freshServices
+		}
+	}
+	if freshInstall < 0 || freshServices < 0 || freshCapture < 0 ||
+		snapshot > freshServices || freshServices > freshCapture {
+		t.Fatal("clean install can resolve the gateway virtual account before transaction-owned service registration")
+	}
+	upgradeCapture := strings.Index(
+		installLike,
+		"if ($Action -ne 'Install') {\n            [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `",
+	)
+	upgradeServices := strings.Index(
+		installLike,
+		"if ($Action -ne 'Install') {\n            # Upgrade/Repair deliberately capture",
+	)
+	if upgradeCapture < 0 || upgradeServices < 0 || upgradeCapture > upgradeServices {
+		t.Fatal("upgrade/repair reconfigures services before capturing the previous hook identity")
 	}
 
 	uninstall := windowsPowerShellFunction(t, module, "Invoke-DefenseClawUninstallLifecycle")

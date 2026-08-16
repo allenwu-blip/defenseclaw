@@ -1563,12 +1563,19 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
             "function Get-DefenseClawLifecycleStatus"
         )
     ]
+    lifecycle_status = module[
+        module.index("function Get-DefenseClawLifecycleStatus") : module.index(
+            "function Wait-DefenseClawFreshGuardianReconcile"
+        )
+    ]
     wait = module[
         module.index("function Wait-DefenseClawFreshGuardianReconcile") : module.index(
             "function Assert-DefenseClawManagedInstallTree"
         )
     ]
     assert "without a valid JSON report" in report
+    assert "guardianReport.PSObject.Properties['errors']" in lifecycle_status
+    assert '"guardian status: $(ConvertTo-DefenseClawBoundedDiagnostic' in lifecycle_status
     assert "PSObject.Properties['errors']" in wait
     assert "last_status=$lastStatus" in wait
 
@@ -1577,10 +1584,51 @@ def test_activation_rollback_and_guardian_failure_contracts_are_durable() -> Non
             "function Invoke-DefenseClawUninstallLifecycle"
         )
     ]
+    service_preparation = module[
+        module.index("function Set-DefenseClawManagedServicesForTransaction") : module.index(
+            "function Get-DefenseClawLayout"
+        )
+    ]
+    service_registration = service_preparation.index(
+        "Set-DefenseClawManagedServices `"
+    )
+    core_acl_grant = service_preparation.index(
+        "Set-DefenseClawManagedCoreAcls `"
+    )
+    assert service_registration < core_acl_grant
+    assert "-DeferAutomaticStart" in service_preparation
+
+    transaction = install_like.index("$snapshot = New-DefenseClawTransaction `")
+    fresh_install = install_like.index(
+        "if ($Action -eq 'Install') {\n"
+        "            # A clean install has no NT SERVICE identities"
+    )
+    fresh_service_registration = install_like.index(
+        "Set-DefenseClawManagedServicesForTransaction `",
+        fresh_install,
+    )
+    fresh_snapshot = install_like.index(
+        "Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `",
+        fresh_service_registration,
+    )
+    assert transaction < fresh_service_registration < fresh_snapshot
+
+    upgrade_snapshot = install_like.index(
+        "if ($Action -ne 'Install') {\n"
+        "            [void](Invoke-DefenseClawManagedHooksLifecycleSnapshotCommand `"
+    )
+    upgrade_service_registration = install_like.index(
+        "if ($Action -ne 'Install') {\n"
+        "            # Upgrade/Repair deliberately capture"
+    )
+    assert upgrade_snapshot < upgrade_service_registration
+
     assert "ManagedHooksLifecycleJournalPath" in module
     assert "managed-hooks-lifecycle-snapshot" in module
     assert restore.index("-Action restore") < restore.index("foreach ($file in $snapshot.files)")
     assert restore.index("-Action retire") < restore.index("foreach ($file in $snapshot.files)")
+    assert "if (-not [bool]$service.existed)" in restore
+    assert "Remove-DefenseClawService -Name ([string]$service.name)" in restore
     assert "$deferredPolicySources" in install_like
     assert install_like.index("-Action capture") < install_like.index(
         "$attestationNeedsRefresh"
@@ -3045,7 +3093,9 @@ def test_uninstall_transaction_smoke_keeps_receipt_paths_powershell_51_compatibl
     assert "function New-HarnessCaseRoot" in smoke
     assert "$receiptProbe.Length -ge 240" in smoke
     assert "legacy MAX_PATH boundary" in smoke
-    assert smoke.count("New-HarnessCaseRoot") == 10
+    assert smoke.count("New-HarnessCaseRoot") == 11
+    assert "fresh-install-service-bootstrap-rollback-retry" in smoke
+    assert "snapshot capture ran before both service identities existed" in smoke
     assert "repeated-first-activation-failure-exact-rollback" in smoke
     assert "lifecycle-snapshot:capture" in smoke
     assert "lifecycle-snapshot:restore" in smoke

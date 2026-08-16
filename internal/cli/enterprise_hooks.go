@@ -543,6 +543,7 @@ func runEnterpriseHooksStatus(cmd *cobra.Command, _ []string) error {
 		report.Errors = append(report.Errors, "hook guardian has not completed a reconcile")
 	} else {
 		report.State = &state
+		report.Errors = append(report.Errors, enterpriseHookGuardianFailureIssues(state)...)
 	}
 	authorization, authorizationExists, authorizationErr := loadEnterpriseHookGuardianAuthorization(cfg.DataDir)
 	if authorizationErr != nil {
@@ -603,6 +604,24 @@ func enterpriseHooksStatusError(cmd *cobra.Command, report enterpriseHookStatusR
 		return fmt.Errorf("enterprise hooks status failed")
 	}
 	return err
+}
+
+func enterpriseHookGuardianFailureIssues(state enterpriseHookGuardianState) []string {
+	issues := make([]string, 0, state.FailureCount)
+	for _, row := range state.Results {
+		if row.OK {
+			continue
+		}
+		detail := strings.TrimSpace(row.Error)
+		if detail == "" {
+			detail = "no target error was recorded"
+		}
+		issues = append(
+			issues,
+			fmt.Sprintf("last guardian reconcile failed for %s: %s", enterpriseHookTargetLabel(row), detail),
+		)
+	}
+	return issues
 }
 
 func loadEnterpriseHookGuardianState(dataDir string) (enterpriseHookGuardianState, bool, error) {

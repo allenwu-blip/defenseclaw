@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -66,6 +67,40 @@ func TestWriteEnterpriseHookGuardianState(t *testing.T) {
 		t.Fatalf("stat authorization file: %v", statErr)
 	} else if got := info.Mode().Perm(); got != 0o640 {
 		t.Fatalf("authorization file mode = %o, want 640", got)
+	}
+}
+
+func TestEnterpriseHookGuardianFailureIssuesExposeTargetCause(t *testing.T) {
+	state := enterpriseHookGuardianState{
+		FailureCount: 2,
+		Results: []enterpriseHookReconcileRow{
+			{
+				User:      "alice",
+				SID:       "S-1-5-21-111-222-333-1001",
+				Connector: "claudecode",
+				OK:        false,
+				Error:     "publish managed policy: access denied",
+			},
+			{
+				User:      "bob",
+				Connector: "codex",
+				OK:        false,
+			},
+			{
+				User:      "carol",
+				Connector: "codex",
+				OK:        true,
+			},
+		},
+	}
+
+	issues := enterpriseHookGuardianFailureIssues(state)
+	want := []string{
+		"last guardian reconcile failed for claudecode@S-1-5-21-111-222-333-1001: publish managed policy: access denied",
+		"last guardian reconcile failed for codex@bob: no target error was recorded",
+	}
+	if !reflect.DeepEqual(issues, want) {
+		t.Fatalf("issues = %#v, want %#v", issues, want)
 	}
 }
 
