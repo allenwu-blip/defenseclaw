@@ -740,21 +740,61 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 	}
 	attribution := windowsPowerShellFunction(t, harness, "Get-NormalModeEnterpriseAttributionSnapshot")
 	for _, contract := range []string{
-		"hook-guardian\\targets.yaml",
-		"hook-guardian-state\\protected_targets.json",
-		"$script:ClaudeManagedPolicyPath",
-		"$script:ClaudeManagedStatePath",
-		"last_write_utc_ticks = if ($liveGuardianOutputs.Contains($path))",
-		"-not $liveGuardianOutputs.Contains(",
+		"bin\\defenseclaw-gateway.exe",
+		"bin\\defenseclaw-hook.exe",
+		"bin\\defenseclaw.exe",
+		"etc\\config.yaml",
+		"install\\deployment.json",
+		"last_write_utc_ticks = 0",
+		"$immutableDigestPaths.Contains(",
 		"sddl = [string]$row.sddl",
-		"services = @($Snapshot.services)",
+		"start_mode = [string]$service.start_mode",
+		"start_name = [string]$service.start_name",
+		"path_name = [string]$service.path_name",
 	} {
 		if !strings.Contains(attribution, contract) {
 			t.Fatalf("normal-mode guardian attribution missing bounded contract %q", contract)
 		}
 	}
-	if strings.Contains(attribution, "$script:ClaudeManagedLockPath") {
-		t.Fatal("normal-mode guardian attribution excludes the transaction lock")
+	if strings.Contains(attribution, "liveGuardianOutputs") ||
+		strings.Contains(attribution, "state = [string]$service.state") {
+		t.Fatal("normal-mode attribution still compares live guardian bytes or service runtime state")
+	}
+
+	ledgerSemantic := windowsPowerShellFunction(
+		t,
+		harness,
+		"Get-GuardianAuthorizationSemanticSnapshot",
+	)
+	for _, contract := range []string{
+		"Assert-PathBelow",
+		"Read-CredentialedProcessOutputFile",
+		"PSObject.Properties['updated_at']",
+		"PSObject.Properties.Remove('updated_at')",
+	} {
+		if !strings.Contains(ledgerSemantic, contract) {
+			t.Fatalf("guardian ledger semantic snapshot missing bounded contract %q", contract)
+		}
+	}
+	stableLedger := windowsPowerShellFunction(
+		t,
+		harness,
+		"Get-StableGuardianAuthorizationSemanticSnapshot",
+	)
+	for _, contract := range []string{
+		"AddSeconds(10)",
+		"Start-Sleep -Milliseconds 100",
+		"Get-GuardianAuthorizationSemanticSnapshot",
+		"ConvertTo-Json -Compress -Depth 8",
+	} {
+		if !strings.Contains(stableLedger, contract) {
+			t.Fatalf("guardian ledger stabilization missing bounded contract %q", contract)
+		}
+	}
+	if strings.Contains(harness, "$controlLedgerDigest") ||
+		!strings.Contains(harness, "$controlLedgerSemantics") ||
+		!strings.Contains(harness, "hostile unregister probe authorization semantics") {
+		t.Fatal("denied-control attribution still relies on a raw live ledger digest")
 	}
 
 	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
@@ -878,7 +918,7 @@ if (-not $rejected) {
 	}
 }
 
-func TestWindowsCertificationNormalModeAttributionExcludesOnlyLiveGuardianBytes(t *testing.T) {
+func TestWindowsCertificationNormalModeAttributionScopesImmutableInputs(t *testing.T) {
 	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
 	attributionFunction := windowsPowerShellFunction(
 		t,
@@ -895,6 +935,7 @@ function ConvertTo-CanonicalPath([string]$Path) {
 }
 ` + attributionFunction + `
 $root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_ATTRIBUTION_ROOT')
+$script:InstallRoot = [IO.Path]::Combine($root, 'install')
 $script:StateRoot = [IO.Path]::Combine($root, 'state')
 $script:ClaudeManagedPolicyPath = [IO.Path]::Combine($root, 'claude', 'policy.json')
 $script:ClaudeManagedStatePath = [IO.Path]::Combine($root, 'claude', 'state.json')
@@ -925,7 +966,13 @@ $digests = @(
 $snapshot = [pscustomobject]@{
     paths = $rows
     file_digests = $digests
-    services = @([pscustomobject]@{ name = 'guardian'; state = 'Running' })
+    services = @([pscustomobject]@{
+        name = 'guardian'
+        state = 'Running'
+        start_mode = 'Auto'
+        start_name = 'LocalSystem'
+        path_name = 'guardian.exe'
+    })
 }
 $normalized = Get-NormalModeEnterpriseAttributionSnapshot $snapshot
 if (@($normalized.paths).Count -ne 5) {
@@ -951,15 +998,17 @@ $immutableRow = @($normalized.paths | Where-Object {
     [string]::Equals([string]$_.path, $immutable, [StringComparison]::OrdinalIgnoreCase)
 })
 if ($immutableRow.Count -ne 1 -or
-    [long]$immutableRow[0].last_write_utc_ticks -ne 987654321 -or
+    [long]$immutableRow[0].last_write_utc_ticks -ne 0 -or
     @($normalized.file_digests).Count -ne 1 -or
     -not [string]::Equals(
         [string]$normalized.file_digests[0].path,
         $immutable,
         [StringComparison]::OrdinalIgnoreCase
     ) -or
-    @($normalized.services).Count -ne 1) {
-    throw 'attribution weakened an immutable path, digest, or service check'
+    @($normalized.services).Count -ne 1 -or
+    $null -ne $normalized.services[0].PSObject.Properties['state'] -or
+    [string]$normalized.services[0].start_name -cne 'LocalSystem') {
+    throw 'attribution weakened an immutable path, digest, ACL, or service configuration check'
 }
 `
 	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
@@ -982,6 +1031,102 @@ if ($immutableRow.Count -ne 1 -or
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("normal-mode guardian attribution contract timed out: %v", ctx.Err())
+	}
+}
+
+func TestWindowsCertificationGuardianLedgerAttributionIgnoresOnlyTimestamp(t *testing.T) {
+	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
+	semanticFunction := windowsPowerShellFunction(
+		t,
+		harness,
+		"Get-GuardianAuthorizationSemanticSnapshot",
+	)
+	root := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "guardian-ledger-attribution.ps1")
+	script := `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+function Assert-PathBelow([string]$Path, [string]$Root, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $parent = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $full.StartsWith($parent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label escaped its root"
+    }
+    return $full
+}
+function Read-CredentialedProcessOutputFile {
+    param([string]$Path, [string]$Label)
+    return [IO.File]::ReadAllText($Path)
+}
+function ConvertFrom-SingleJSONDocument([string]$Text, [string]$Label) {
+    return $Text | ConvertFrom-Json -ErrorAction Stop
+}
+` + semanticFunction + `
+$root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_LEDGER_ROOT')
+$script:StateRoot = [IO.Path]::Combine($root, 'state')
+[IO.Directory]::CreateDirectory($script:StateRoot) | Out-Null
+$path = [IO.Path]::Combine($script:StateRoot, 'protected_targets.json')
+function Write-Ledger([string]$UpdatedAt, [bool]$TargetOK, [int]$Generation) {
+    $document = [ordered]@{
+        version = 1
+        updated_at = $UpdatedAt
+        ok = $TargetOK
+        target_count = 1
+        success_count = if ($TargetOK) { 1 } else { 0 }
+        failure_count = if ($TargetOK) { 0 } else { 1 }
+        generation = $Generation
+        protected_targets = @([ordered]@{
+            sid = 'S-1-5-21-1-2-3-1001'
+            connector = 'claudecode'
+            ok = $TargetOK
+        })
+    }
+    [IO.File]::WriteAllText(
+        $path,
+        ($document | ConvertTo-Json -Depth 8),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+Write-Ledger '2026-08-16T10:00:00Z' $true 7
+$before = Get-GuardianAuthorizationSemanticSnapshot $path
+Write-Ledger '2026-08-16T10:05:00Z' $true 7
+$timestampOnly = Get-GuardianAuthorizationSemanticSnapshot $path
+$beforeJSON = $before | ConvertTo-Json -Compress -Depth 8
+$timestampOnlyJSON = $timestampOnly | ConvertTo-Json -Compress -Depth 8
+if (-not [string]::Equals($beforeJSON, $timestampOnlyJSON, [StringComparison]::Ordinal)) {
+    throw 'publication timestamp changed authorization semantics'
+}
+if ($null -ne $timestampOnly.PSObject.Properties['updated_at'] -or
+    [int]$timestampOnly.generation -ne 7) {
+    throw 'semantic snapshot removed more than the publication timestamp'
+}
+Write-Ledger '2026-08-16T10:10:00Z' $false 8
+$changed = Get-GuardianAuthorizationSemanticSnapshot $path
+$changedJSON = $changed | ConvertTo-Json -Compress -Depth 8
+if ([string]::Equals($beforeJSON, $changedJSON, [StringComparison]::Ordinal)) {
+    throw 'authorization or future generation changes were ignored'
+}
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
+	command.Env = append(os.Environ(), "DEFENSECLAW_LEDGER_ROOT="+root)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("guardian ledger attribution contract failed: %v\n%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("guardian ledger attribution contract timed out: %v", ctx.Err())
 	}
 }
 

@@ -6255,22 +6255,24 @@ function Get-NormalModeEnterpriseMachineSnapshot {
 }
 
 function Get-NormalModeEnterpriseAttributionSnapshot([object]$Snapshot) {
-    # These four outputs are periodically republished by the active guardian.
-    # The normal-mode test is attributing user-initiated machine mutations, so
-    # it must not treat authenticated guardian refresh bytes/timestamps as
-    # normal-mode writes. Their existence, type, attributes, and ACL remain in
-    # the comparison, and dedicated guardian status/repair phases validate
-    # their content and authorization contracts.
-    $liveGuardianOutputs = [Collections.Generic.HashSet[string]]::new(
+    # Attribute only state that normal mode could have changed without a live
+    # service legitimately refreshing it. All selected protected objects keep
+    # their existence, type, attributes, and ACL checks. Byte checks are scoped
+    # to immutable installation inputs; guardian-owned policy/state bytes are
+    # verified in the dedicated guardian and repair phases. LastWriteTime is
+    # deliberately excluded for every row because directory timestamps also
+    # change when a service atomically republishes a descendant.
+    $immutableDigestPaths = [Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase
     )
     foreach ($path in @(
-        (Join-Path $script:StateRoot 'hook-guardian\targets.yaml'),
-        (Join-Path $script:StateRoot 'hook-guardian-state\protected_targets.json'),
-        $script:ClaudeManagedPolicyPath,
-        $script:ClaudeManagedStatePath
+        (Join-Path $script:InstallRoot 'bin\defenseclaw-gateway.exe'),
+        (Join-Path $script:InstallRoot 'bin\defenseclaw-hook.exe'),
+        (Join-Path $script:InstallRoot 'bin\defenseclaw.exe'),
+        (Join-Path $script:StateRoot 'etc\config.yaml'),
+        (Join-Path $script:StateRoot 'install\deployment.json')
     )) {
-        [void]$liveGuardianOutputs.Add((ConvertTo-CanonicalPath $path))
+        [void]$immutableDigestPaths.Add((ConvertTo-CanonicalPath $path))
     }
     $paths = @(
         foreach ($row in @($Snapshot.paths)) {
@@ -6280,11 +6282,7 @@ function Get-NormalModeEnterpriseAttributionSnapshot([object]$Snapshot) {
                 existed = [bool]$row.existed
                 kind = [string]$row.kind
                 attributes = [int]$row.attributes
-                last_write_utc_ticks = if ($liveGuardianOutputs.Contains($path)) {
-                    0
-                } else {
-                    [long]$row.last_write_utc_ticks
-                }
+                last_write_utc_ticks = 0
                 sddl = [string]$row.sddl
             }
         }
@@ -6292,7 +6290,7 @@ function Get-NormalModeEnterpriseAttributionSnapshot([object]$Snapshot) {
     $fileDigests = @(
         $Snapshot.file_digests |
             Where-Object {
-                -not $liveGuardianOutputs.Contains(
+                $immutableDigestPaths.Contains(
                     (ConvertTo-CanonicalPath ([string]$_.path))
                 )
             } |
@@ -6303,11 +6301,66 @@ function Get-NormalModeEnterpriseAttributionSnapshot([object]$Snapshot) {
                 }
             }
     )
+    $services = @(
+        foreach ($service in @($Snapshot.services)) {
+            [pscustomobject]@{
+                name = [string]$service.name
+                start_mode = [string]$service.start_mode
+                start_name = [string]$service.start_name
+                path_name = [string]$service.path_name
+            }
+        }
+    )
     return [pscustomobject]@{
         paths = $paths
         file_digests = $fileDigests
-        services = @($Snapshot.services)
+        services = $services
     }
+}
+
+function Get-GuardianAuthorizationSemanticSnapshot([string]$Path) {
+    $safe = Assert-PathBelow `
+        $Path `
+        $script:StateRoot `
+        'guardian authorization ledger'
+    if (-not (Test-Path -LiteralPath $safe -PathType Leaf)) {
+        throw "guardian authorization ledger is missing: $safe"
+    }
+    $document = ConvertFrom-SingleJSONDocument `
+        (Read-CredentialedProcessOutputFile `
+            -Path $safe `
+            -Label 'guardian authorization ledger') `
+        'guardian authorization ledger'
+    $updatedAt = $document.PSObject.Properties['updated_at']
+    if ($null -eq $updatedAt -or
+        [string]::IsNullOrWhiteSpace([string]$updatedAt.Value)) {
+        throw 'guardian authorization ledger is missing updated_at'
+    }
+    # Freshness and the complete live schema are checked by status/verify.
+    # Remove only the publication timestamp for causal comparisons; all target,
+    # result, authorization, count, and future root fields remain fail-closed.
+    $document.PSObject.Properties.Remove('updated_at')
+    return $document
+}
+
+function Get-StableGuardianAuthorizationSemanticSnapshot([string]$Path) {
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+    $previous = Get-GuardianAuthorizationSemanticSnapshot $Path
+    do {
+        Start-Sleep -Milliseconds 100
+        $current = Get-GuardianAuthorizationSemanticSnapshot $Path
+        $previousJSON = $previous | ConvertTo-Json -Compress -Depth 8
+        $currentJSON = $current | ConvertTo-Json -Compress -Depth 8
+        if ([string]::Equals(
+            $previousJSON,
+            $currentJSON,
+            [StringComparison]::Ordinal
+        )) {
+            return $current
+        }
+        $previous = $current
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    throw 'guardian authorization ledger semantics did not stabilize within 10 seconds'
 }
 
 function Get-CertificationPersistentLifecycleLockBaseline {
@@ -20673,7 +20726,9 @@ targets:
     $controlArtifactBaseline = Get-ArtifactSnapshots $artifactSet.Paths
     $controlDeploymentBaseline = Get-DeploymentDigests
     $controlLedgerPath = Join-Path $script:StateRoot 'hook-guardian-state\protected_targets.json'
-    $controlLedgerDigest = Get-FileDigest $controlLedgerPath
+    $null = Assert-HealthyGuardianJSON 'initial-control-baseline'
+    $controlLedgerSemantics =
+        Get-StableGuardianAuthorizationSemanticSnapshot $controlLedgerPath
     $controlMachinePolicyRoot = if ($ClaudeOnly) {
         $script:ClaudeManagedPolicyDirectory
     } else {
@@ -20842,7 +20897,9 @@ targets:
             $postDeenrollmentStatus.JSON
     }
     $controlArtifactBaseline = Get-ArtifactSnapshots $artifactSet.Paths
-    $controlLedgerDigest = Get-FileDigest $controlLedgerPath
+    $null = Assert-HealthyGuardianJSON 'post-deenrollment-control-baseline'
+    $controlLedgerSemantics =
+        Get-StableGuardianAuthorizationSemanticSnapshot $controlLedgerPath
     $controlCodexSharedBaseline = Get-ProtectedUserTreeInventory `
         $controlMachinePolicyRoot `
         'managed machine policy directories after de-enrollment restore'
@@ -20871,10 +20928,13 @@ targets:
             $controlCodexSharedBaseline `
             $afterCodexShared `
             'hostile managed machine-policy directory probe'
-        if ([string]::IsNullOrWhiteSpace($controlLedgerDigest) -or
-            (Get-FileDigest $controlLedgerPath) -ne $controlLedgerDigest) {
-            throw 'hostile unregister probe changed the protected authorization ledger'
-        }
+        $null = Assert-HealthyGuardianJSON 'standard-user-probe'
+        $afterLedgerSemantics =
+            Get-StableGuardianAuthorizationSemanticSnapshot $controlLedgerPath
+        Assert-SameObjectJSON `
+            $controlLedgerSemantics `
+            $afterLedgerSemantics `
+            'hostile unregister probe authorization semantics'
         $afterServiceControl = Get-ServiceControlSnapshot 'after-hostile-control'
         Assert-SameServiceControlSnapshot `
             $serviceControlBaseline `
@@ -20893,8 +20953,7 @@ targets:
         if (-not [bool]$responsive.JSON.ok) {
             throw 'installer Verify found a service unresponsive after hostile process/token handle probes'
         }
-        Assert-HealthyGuardianJSON 'standard-user-probe'
-        return 'services/PIDs remained running/responsive; process and token mutation handles, SCM mutation, and file/ACL tamper were denied; SCM contract, ledger, deployment bytes, machine policy parent, and protected hook remained unchanged'
+        return 'services/PIDs remained running/responsive; process and token mutation handles, SCM mutation, and file/ACL tamper were denied; SCM contract, authorization semantics, deployment bytes, machine policy parent, and protected hook remained unchanged'
     }
 
     $script:Phase = 'repair'

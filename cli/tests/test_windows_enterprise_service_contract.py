@@ -895,7 +895,9 @@ def test_certification_exercises_tamper_and_full_scm_denial_surface() -> None:
     assert "Test-DeleteHandle ('delete_handle_'" in harness
     assert "write_service_token" in harness
     assert "Assert-SameServiceControlSnapshot" in harness
-    assert "hostile unregister probe changed the protected authorization ledger" in harness
+    assert "Get-StableGuardianAuthorizationSemanticSnapshot" in harness
+    assert "hostile unregister probe authorization semantics" in harness
+    assert "$controlLedgerDigest" not in harness
 
     assert "deleted_hook_token" in harness
     assert "deleted_connector_hookcfg" in harness
@@ -998,9 +1000,27 @@ def test_latest_windows_retest_harness_repairs_are_scoped_and_fail_closed() -> N
     assert "DEFENSECLAW_WINDOWS_SERVICE_NAME = $script:GatewayServiceName" in managed_environment
 
     temp_observer = function("Update-EnterprisePowerShellTempObservation")
-    assert "catch [IO.DirectoryNotFoundException]" in temp_observer
-    assert "catch [Management.Automation.ItemNotFoundException]" in temp_observer
-    assert "if (-not (Test-Path -LiteralPath $child.FullName))" in temp_observer
+    assert "catch {" in temp_observer
+    assert "$aclError = $_" in temp_observer
+    assert "$pathExists = Test-Path" in temp_observer
+    assert "if (-not $pathExists)" in temp_observer
+    assert "throw $aclError" in temp_observer
+
+    normal_attribution = function("Get-NormalModeEnterpriseAttributionSnapshot")
+    assert "$immutableDigestPaths.Contains(" in normal_attribution
+    assert "last_write_utc_ticks = 0" in normal_attribution
+    assert "state = [string]$service.state" not in normal_attribution
+    assert "sddl = [string]$row.sddl" in normal_attribution
+
+    ledger_semantics = function("Get-GuardianAuthorizationSemanticSnapshot")
+    assert "PSObject.Properties['updated_at']" in ledger_semantics
+    assert "PSObject.Properties.Remove('updated_at')" in ledger_semantics
+    assert "Assert-PathBelow" in ledger_semantics
+
+    stable_ledger = function("Get-StableGuardianAuthorizationSemanticSnapshot")
+    assert "AddSeconds(10)" in stable_ledger
+    assert "Start-Sleep -Milliseconds 100" in stable_ledger
+    assert "ConvertTo-Json -Compress -Depth 8" in stable_ledger
 
     healthy = function("Assert-HealthyGuardianJSON")
     assert "$result.JSON.PSObject.Properties['manifest']" in healthy
