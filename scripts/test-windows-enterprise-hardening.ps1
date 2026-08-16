@@ -3813,21 +3813,26 @@ function Update-EnterprisePowerShellTempObservation(
     try {
         $acl = Get-Acl -LiteralPath $child.FullName -ErrorAction Stop
     }
-    catch [IO.DirectoryNotFoundException] {
-        if (-not (Test-Path -LiteralPath $child.FullName)) {
+    catch {
+        $aclError = $_
+        try {
+            $pathExists = Test-Path `
+                -LiteralPath $child.FullName `
+                -ErrorAction Stop
+        }
+        catch {
+            # An inaccessible or otherwise unprovable path is not equivalent
+            # to a vanished capability. Preserve the original ACL diagnostic.
+            throw $aclError
+        }
+        if (-not $pathExists) {
             # The elevated launcher owns this short-lived capability. A
             # verified disappearance between enumeration and ACL inspection
-            # is expected; the caller keeps polling while the process runs and
-            # still requires at least one successful protected-ACL sample.
+            # is expected regardless of the provider's exception subtype; the
+            # caller keeps polling and still requires a protected-ACL sample.
             return
         }
-        throw
-    }
-    catch [Management.Automation.ItemNotFoundException] {
-        if (-not (Test-Path -LiteralPath $child.FullName)) {
-            return
-        }
-        throw
+        throw $aclError
     }
     $sddl = $acl.GetSecurityDescriptorSddlForm(
         [Security.AccessControl.AccessControlSections]::All

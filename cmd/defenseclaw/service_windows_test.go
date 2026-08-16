@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -725,6 +726,18 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 		strings.Contains(tempSnapshot, "$script:WindowsDirectory 'Temp'") {
 		t.Fatal("enterprise temp monitor is not aligned with the ProgramData launcher root")
 	}
+	tempObservation := windowsPowerShellFunction(t, harness, "Update-EnterprisePowerShellTempObservation")
+	for _, contract := range []string{
+		"catch {",
+		"$aclError = $_",
+		"$pathExists = Test-Path",
+		"-ErrorAction Stop",
+		"throw $aclError",
+	} {
+		if !strings.Contains(tempObservation, contract) {
+			t.Fatalf("enterprise temp ACL sampler missing disappearance-race contract %q", contract)
+		}
+	}
 
 	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
 	if !strings.Contains(restore, "$($Snapshot.name)-absent-cleanup-root-acl") ||
@@ -761,6 +774,89 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 		!strings.Contains(copyEvidence, "staged-binary-digests.json") ||
 		strings.Contains(copyEvidence, "Copy-Item -LiteralPath $entry.FullName -Destination $logRoot -Recurse") {
 		t.Fatal("certification evidence collection is not bounded to text plus named binary digests")
+	}
+}
+
+func TestWindowsCertificationTempObservationHandlesOnlyProvenDisappearance(t *testing.T) {
+	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
+	observationFunction := windowsPowerShellFunction(
+		t,
+		harness,
+		"Update-EnterprisePowerShellTempObservation",
+	)
+	root := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "temp-observation-race.ps1")
+	script := `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+` + observationFunction + `
+$root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_TEMP_RACE_ROOT')
+$baseline = [pscustomobject]@{ root = $root; entries = @() }
+$observation = [pscustomobject]@{
+    observed = $false
+    path = ''
+    sample_count = 0
+}
+$vanished = [IO.Path]::Combine(
+    $root,
+    'DefenseClaw-PowerShell-00000000000000000000000000000000'
+)
+[void][IO.Directory]::CreateDirectory($vanished)
+function Get-Acl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+    [IO.Directory]::Delete($LiteralPath)
+    throw [InvalidOperationException]::new($LiteralPath)
+}
+Update-EnterprisePowerShellTempObservation $baseline $observation
+if ($observation.observed) {
+    throw 'vanished capability was recorded as an ACL sample'
+}
+
+$present = [IO.Path]::Combine(
+    $root,
+    'DefenseClaw-PowerShell-11111111111111111111111111111111'
+)
+[void][IO.Directory]::CreateDirectory($present)
+function Get-Acl {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$LiteralPath)
+    throw [InvalidOperationException]::new($LiteralPath)
+}
+$rejected = $false
+try {
+    Update-EnterprisePowerShellTempObservation $baseline $observation
+}
+catch {
+    if ($_.Exception.Message -ne $present) {
+        throw
+    }
+    $rejected = $true
+}
+if (-not $rejected) {
+    throw 'existing capability ACL failure was incorrectly suppressed'
+}
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
+	command.Env = append(os.Environ(), "DEFENSECLAW_TEMP_RACE_ROOT="+root)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("forced PowerShell temp disappearance race failed: %v\n%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("forced PowerShell temp disappearance race timed out: %v", ctx.Err())
 	}
 }
 
