@@ -79,6 +79,14 @@ jobs:
 
       - name: Build the exact managed gateway inputs
         shell: bash
+        env:
+          # Keep private-module authentication process-scoped. Git consumes
+          # this in-memory config only for the controlled build step; no token
+          # is written into either checkout or the runner's global config.
+          GIT_CONFIG_COUNT: 1
+          GIT_CONFIG_KEY_0: url.https://x-access-token:${{ secrets.AI_COMMON_READ_TOKEN }}@github.com/.insteadOf
+          GIT_CONFIG_VALUE_0: https://github.com/
+          GIT_TERMINAL_PROMPT: 0
         run: >-
           packaging/scripts/build-managed-windows-bundle.sh
           --ref HEAD

@@ -71,6 +71,8 @@ func TestEnterpriseWorkflowPublishesTheExactUnsignedCertificationArtifact(t *tes
 		"pull_request:",
 		"github.event.pull_request.head.sha || github.sha",
 		"needs.managed-gateway.outputs.source_commit",
+		"GIT_CONFIG_COUNT: 1",
+		"GIT_TERMINAL_PROMPT: 0",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("enterprise workflow is missing %q", required)
