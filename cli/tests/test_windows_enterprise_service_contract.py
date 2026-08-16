@@ -935,6 +935,11 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
             "function Stop-ActiveUserSparseArtifactAttack"
         )
     ]
+    sparse_stop = harness[
+        harness.index("function Stop-ActiveUserSparseArtifactAttack") : harness.index(
+            "function Get-EnterprisePowerShellTempSnapshot"
+        )
+    ]
 
     assert "Test-ManagedSparseOversizedArtifactRecovery" in harness
     assert "Start-ActiveUserSparseArtifactAttack" in harness
@@ -951,6 +956,14 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "-File \"' + $payload" in sparse
     assert "$payloadSHA256 = Get-FileDigest $payload" in sparse
     assert "$encoded" not in sparse
+    assert "repair_observation_seconds = $RepairTimeoutSeconds" in sparse
+    assert "if ($canonicalRecreated)" in sparse
+    assert "$renamedToQuarantine -and $canonicalRecreated" not in sparse
+    assert "-TimeoutSeconds ($RepairTimeoutSeconds + 15)" in sparse_stop
+    assert "RetainedEvidencePath" in sparse_stop
+    assert "retained-sparse-recovery-evidence" in sparse_stop
+    assert "-not [bool]$evidence.renamed_to_quarantine" not in sparse_stop
+    assert "-not [bool]$evidence.canonical_recreated" not in sparse_stop
     for artifact in (
         "managed_token",
         "hookcfg_json",
@@ -963,6 +976,9 @@ def test_certification_exercises_bounded_sparse_runtime_recovery() -> None:
     assert "verify_unhealthy_during_attack = $true" in harness
     assert "guardian_pid_unchanged = $true" in harness
     assert "quarantine_rename_observed" in harness
+    assert "canonical_recreation_observed" in harness
+    assert "watcher_observation_authoritative = $false" in harness
+    assert "retained_evidence_path" in harness
     assert "exact_bytes_restored = $true" in harness
     assert "exact_owner_and_dacl_restored = $true" in harness
     assert "secret_material_recorded = $false" in harness

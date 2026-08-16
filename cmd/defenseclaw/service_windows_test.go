@@ -797,6 +797,37 @@ func TestWindowsCertificationHarnessFixesAreFailClosedAndBounded(t *testing.T) {
 		t.Fatal("denied-control attribution still relies on a raw live ledger digest")
 	}
 
+	sparseStart := windowsPowerShellFunction(t, harness, "Start-ActiveUserSparseArtifactAttack")
+	for _, contract := range []string{
+		"repair_observation_seconds = $RepairTimeoutSeconds",
+		"if ($canonicalRecreated)",
+		"$taskExecutionTimeoutSeconds = 120 + $RepairTimeoutSeconds",
+		"RetainedEvidencePath = $retainedEvidence",
+	} {
+		if !strings.Contains(sparseStart, contract) {
+			t.Fatalf("sparse recovery watcher missing synchronized evidence contract %q", contract)
+		}
+	}
+	if strings.Contains(sparseStart, "$renamedToQuarantine -and $canonicalRecreated") {
+		t.Fatal("sparse recovery still treats a lossy rename event as authoritative")
+	}
+	sparseStop := windowsPowerShellFunction(t, harness, "Stop-ActiveUserSparseArtifactAttack")
+	for _, contract := range []string{
+		"-TimeoutSeconds ($RepairTimeoutSeconds + 15)",
+		"retained_evidence_path",
+		"retained-sparse-recovery-evidence",
+		"[int]$evidence.grow_operations -lt 2",
+		"-not [bool]$evidence.final",
+	} {
+		if !strings.Contains(sparseStop, contract) {
+			t.Fatalf("sparse final evidence validation missing contract %q", contract)
+		}
+	}
+	if strings.Contains(sparseStop, "-not [bool]$evidence.renamed_to_quarantine") ||
+		strings.Contains(sparseStop, "-not [bool]$evidence.canonical_recreated") {
+		t.Fatal("sparse completion still fails on advisory watcher observations")
+	}
+
 	restore := windowsPowerShellFunction(t, harness, "Restore-ProtectedUserTreeSnapshot")
 	if !strings.Contains(restore, "$($Snapshot.name)-absent-cleanup-root-acl") ||
 		!strings.Contains(restore, "$descendantCleanupGrants") ||
@@ -1127,6 +1158,139 @@ if ([string]::Equals($beforeJSON, $changedJSON, [StringComparison]::Ordinal)) {
 	}
 	if ctx.Err() != nil {
 		t.Fatalf("guardian ledger attribution contract timed out: %v", ctx.Err())
+	}
+}
+
+func TestWindowsCertificationSparseCompletionRetainsAdvisoryWatcherEvidence(t *testing.T) {
+	harness := strings.ReplaceAll(string(readWindowsEnterpriseHarness(t)), "\r\n", "\n")
+	stopFunction := windowsPowerShellFunction(
+		t,
+		harness,
+		"Stop-ActiveUserSparseArtifactAttack",
+	)
+	root := t.TempDir()
+	scriptPath := filepath.Join(t.TempDir(), "sparse-completion-evidence.ps1")
+	script := `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+function Assert-PathBelow([string]$Path, [string]$Root, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path)
+    $parent = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+    if (-not $full.StartsWith($parent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$Label escaped its root"
+    }
+    return $full
+}
+function Wait-Until {
+    param([scriptblock]$Condition, [string]$Description, [int]$TimeoutSeconds, [int]$PollMilliseconds)
+    return & $Condition
+}
+function Remove-CertificationScheduledTask([string]$Name) {}
+function Get-FileDigest([string]$Path) { return 'payload-digest' }
+function Protect-AdministratorFile([string]$Path, [string]$Label) {}
+function Protect-SensitiveDisplayText([string]$Value) { return $Value }
+function Get-GuardianResourceObservation { throw 'resource observation was not expected' }
+function Assert-SameLiveGuardianProcess { throw 'guardian comparison was not expected' }
+` + stopFunction + `
+$root = [Environment]::GetEnvironmentVariable('DEFENSECLAW_SPARSE_EVIDENCE_ROOT')
+$script:WorkRoot = [IO.Path]::Combine($root, 'work')
+[IO.Directory]::CreateDirectory($script:WorkRoot) | Out-Null
+$script:EvidenceDirectory = [IO.Path]::Combine($root, 'evidence')
+[IO.Directory]::CreateDirectory($script:EvidenceDirectory) | Out-Null
+$script:ActiveUserHandoffRoot = [IO.Path]::Combine($script:WorkRoot, 'handoff')
+[IO.Directory]::CreateDirectory($script:ActiveUserHandoffRoot) | Out-Null
+$RepairTimeoutSeconds = 1
+$script:PrimarySID = 'S-1-5-21-1-2-3-1001'
+$script:SparseAttackLogicalBytes = [int64]1099511627776
+$script:SparseAttackMaxAllocatedBytes = [int64]1048576
+$release = [IO.Path]::Combine($script:ActiveUserHandoffRoot, 'release.txt')
+$evidencePath = [IO.Path]::Combine($script:ActiveUserHandoffRoot, 'evidence.json')
+$payload = [IO.Path]::Combine($script:WorkRoot, 'payload.ps1')
+$retained = [IO.Path]::Combine(
+    $script:EvidenceDirectory,
+    'logs',
+    'sparse-recovery-evidence',
+    'sparse-managed_token-final.json'
+)
+[IO.File]::WriteAllText($payload, 'fixture')
+$document = [ordered]@{
+    ok = $true
+    final = $true
+    sid = $script:PrimarySID
+    path = 'C:\managed.token'
+    sparse = $true
+    logical_bytes = $script:SparseAttackLogicalBytes
+    allocated_bytes = 4096
+    grow_operations = 2
+    renamed_to_quarantine = $false
+    canonical_recreated = $false
+    failure = ''
+}
+[IO.File]::WriteAllText(
+    $evidencePath,
+    ($document | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false)
+)
+$attack = [pscustomobject]@{
+    ReleasePath = $release
+    EvidencePath = $evidencePath
+    RetainedEvidencePath = $retained
+    TaskName = 'fixture-task'
+    PayloadPath = $payload
+    PayloadSHA256 = 'payload-digest'
+    Path = 'C:\managed.token'
+}
+$result = Stop-ActiveUserSparseArtifactAttack $attack $null
+if ([bool]$result.renamed_to_quarantine -or
+    [bool]$result.canonical_recreated -or
+    -not (Test-Path -LiteralPath $retained -PathType Leaf)) {
+    throw 'advisory watcher evidence was not retained without becoming authoritative'
+}
+$retainedJSON = Get-Content -LiteralPath $retained -Raw | ConvertFrom-Json -ErrorAction Stop
+if ([bool]$retainedJSON.renamed_to_quarantine -or
+    [bool]$retainedJSON.canonical_recreated -or
+    -not [bool]$retainedJSON.final -or
+    [int]$retainedJSON.grow_operations -ne 2) {
+    throw 'retained sparse evidence omitted a final proof flag/value'
+}
+$document.grow_operations = 1
+[IO.File]::WriteAllText(
+    $evidencePath,
+    ($document | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false)
+)
+$rejected = $false
+try {
+    $null = Stop-ActiveUserSparseArtifactAttack $attack $null
+}
+catch {
+    if ($_.Exception.Message -notmatch 'bounded grow') { throw }
+    $rejected = $true
+}
+if (-not $rejected) {
+    throw 'sparse completion accepted fewer than two bounded grow operations'
+}
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(
+		ctx,
+		"powershell.exe",
+		"-NoLogo",
+		"-NoProfile",
+		"-NonInteractive",
+		"-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
+	command.Env = append(os.Environ(), "DEFENSECLAW_SPARSE_EVIDENCE_ROOT="+root)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("sparse completion evidence contract failed: %v\n%s", err, output)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("sparse completion evidence contract timed out: %v", ctx.Err())
 	}
 }
 

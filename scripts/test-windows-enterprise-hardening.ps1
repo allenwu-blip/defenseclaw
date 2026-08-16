@@ -3103,6 +3103,17 @@ function Start-ActiveUserSparseArtifactAttack(
     $renameMarker = Join-Path `
         $script:ActiveUserHandoffRoot `
         "$safeLabel-$nonce.sparse-rename.json"
+    $retainedEvidenceRoot = Assert-PathBelow `
+        (Join-Path $script:EvidenceDirectory 'logs\sparse-recovery-evidence') `
+        $script:EvidenceDirectory `
+        'retained sparse recovery evidence root'
+    $retainedEvidence = Assert-PathBelow `
+        (Join-Path $retainedEvidenceRoot "$safeLabel-final.json") `
+        $retainedEvidenceRoot `
+        'retained sparse recovery evidence'
+    if (Test-Path -LiteralPath $retainedEvidence) {
+        throw "$Label retained sparse evidence already exists"
+    }
     $typeName = (
         "DefenseClawSparseAttack_$($script:RunToken)_" +
         $nonce.Substring(0, 8)
@@ -3119,6 +3130,7 @@ function Start-ActiveUserSparseArtifactAttack(
         logical_bytes = $script:SparseAttackLogicalBytes
         max_allocated_bytes = $script:SparseAttackMaxAllocatedBytes
         timeout_seconds = 90
+        repair_observation_seconds = $RepairTimeoutSeconds
         type_name = $typeName
     }
     $inputBase64 = [Convert]::ToBase64String(
@@ -3339,7 +3351,9 @@ try {
     # sharing so it cannot obstruct repair and can witness the renamed handle.
     $stream.Dispose()
     $stream = $null
-    $repairDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+    $repairDeadline = [DateTimeOffset]::UtcNow.AddSeconds(
+        [int]$inputObject.repair_observation_seconds
+    )
     do {
         try {
             $finalHandlePath = $native::FinalPath(
@@ -3374,7 +3388,11 @@ try {
                 }
             } catch {}
         }
-        if ($renamedToQuarantine -and $canonicalRecreated) {
+        # The rename event is diagnostic: FileSystemWatcher delivery is lossy.
+        # Canonical recreation is enough to end observation; the elevated
+        # caller subsequently proves exact bytes, a new single-link identity,
+        # owner/DACL, quarantine removal, and healthy Status/Verify.
+        if ($canonicalRecreated) {
             break
         }
         Start-Sleep -Milliseconds 25
@@ -3460,8 +3478,11 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
         -Execute $script:PowerShellExecutable `
         -Argument $taskArguments
     $principal = New-ActiveUserScheduledTaskPrincipal
+    $taskExecutionTimeoutSeconds = 120 + $RepairTimeoutSeconds
     $settings = New-ScheduledTaskSettingsSet `
-        -ExecutionTimeLimit ([TimeSpan]::FromSeconds(150)) `
+        -ExecutionTimeLimit (
+            [TimeSpan]::FromSeconds($taskExecutionTimeoutSeconds)
+        ) `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries
     $task = New-ScheduledTask `
@@ -3582,6 +3603,7 @@ if (-not [string]::IsNullOrWhiteSpace($failure)) { exit 21 }
         ReadyPath = $ready
         ReleasePath = $release
         EvidencePath = $evidence
+        RetainedEvidencePath = $retainedEvidence
         RenameMarkerPath = $renameMarker
         PayloadPath = $payload
         PayloadSHA256 = $payloadSHA256
@@ -3623,7 +3645,7 @@ function Stop-ActiveUserSparseArtifactAttack(
     try {
         $evidence = Wait-Until `
             -Description 'non-admin sparse artifact attack completion' `
-            -TimeoutSeconds 45 `
+            -TimeoutSeconds ($RepairTimeoutSeconds + 15) `
             -PollMilliseconds 100 `
             -Condition {
                 if ($null -ne $GuardianBaseline) {
@@ -3675,6 +3697,60 @@ function Stop-ActiveUserSparseArtifactAttack(
             $payloadCleanupError = $_.Exception.Message
         }
     }
+    if ($null -eq $evidence -and
+        (Test-Path -LiteralPath ([string]$Attack.EvidencePath) -PathType Leaf)) {
+        try {
+            $candidateEvidence = Get-Content `
+                -LiteralPath ([string]$Attack.EvidencePath) `
+                -Raw |
+                ConvertFrom-Json -ErrorAction Stop
+            if ([bool]$candidateEvidence.final) {
+                $evidence = $candidateEvidence
+            }
+        } catch {}
+    }
+    if ($null -ne $evidence) {
+        $evidence | Add-Member `
+            -NotePropertyName guardian_release_peak_working_set_bytes `
+            -NotePropertyValue ([int64]$resourceState.peak_working_set_bytes) `
+            -Force
+        $evidence | Add-Member `
+            -NotePropertyName guardian_release_lifetime_peak_working_set_bytes `
+            -NotePropertyValue (
+                [int64]$resourceState.lifetime_peak_working_set_bytes
+            ) `
+            -Force
+        $retainedEvidenceRoot = Assert-PathBelow `
+            (Join-Path `
+                $script:EvidenceDirectory `
+                'logs\sparse-recovery-evidence') `
+            $script:EvidenceDirectory `
+            'retained sparse recovery evidence root'
+        $retainedEvidencePath = Assert-PathBelow `
+            ([string]$Attack.RetainedEvidencePath) `
+            $retainedEvidenceRoot `
+            'retained sparse recovery evidence'
+        if (-not [string]::Equals(
+            [IO.Path]::GetDirectoryName($retainedEvidencePath),
+            $retainedEvidenceRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+            throw 'retained sparse recovery evidence is not an exact root child'
+        }
+        [IO.Directory]::CreateDirectory($retainedEvidenceRoot) | Out-Null
+        $evidence | Add-Member `
+            -NotePropertyName retained_evidence_path `
+            -NotePropertyValue $retainedEvidencePath `
+            -Force
+        [IO.File]::WriteAllText(
+            $retainedEvidencePath,
+            (($evidence | ConvertTo-Json -Depth 8) + "`n"),
+            [Text.UTF8Encoding]::new($false)
+        )
+        Protect-AdministratorFile `
+            $retainedEvidencePath `
+            'retained-sparse-recovery-evidence'
+    }
     if ($null -ne $completionError) {
         if (-not [string]::IsNullOrWhiteSpace($payloadCleanupError)) {
             throw (
@@ -3687,16 +3763,9 @@ function Stop-ActiveUserSparseArtifactAttack(
     if (-not [string]::IsNullOrWhiteSpace($payloadCleanupError)) {
         throw $payloadCleanupError
     }
-    $evidence | Add-Member `
-        -NotePropertyName guardian_release_peak_working_set_bytes `
-        -NotePropertyValue ([int64]$resourceState.peak_working_set_bytes) `
-        -Force
-    $evidence | Add-Member `
-        -NotePropertyName guardian_release_lifetime_peak_working_set_bytes `
-        -NotePropertyValue (
-            [int64]$resourceState.lifetime_peak_working_set_bytes
-        ) `
-        -Force
+    if ($null -eq $evidence) {
+        throw 'non-admin sparse artifact attack emitted no final evidence'
+    }
     if (-not [bool]$evidence.ok) {
         throw (
             'non-admin sparse artifact attack failed: ' +
@@ -3715,11 +3784,21 @@ function Stop-ActiveUserSparseArtifactAttack(
         [int64]$evidence.allocated_bytes -gt
             $script:SparseAttackMaxAllocatedBytes -or
         [int]$evidence.grow_operations -lt 2 -or
-        -not [bool]$evidence.renamed_to_quarantine -or
-        -not [bool]$evidence.canonical_recreated) {
+        -not [bool]$evidence.final) {
+        $proofValues = [ordered]@{
+            final = [bool]$evidence.final
+            sparse = [bool]$evidence.sparse
+            logical_bytes = [int64]$evidence.logical_bytes
+            allocated_bytes = [int64]$evidence.allocated_bytes
+            grow_operations = [int]$evidence.grow_operations
+            renamed_to_quarantine =
+                [bool]$evidence.renamed_to_quarantine
+            canonical_recreated = [bool]$evidence.canonical_recreated
+        } | ConvertTo-Json -Compress
         throw (
             'non-admin sparse artifact attack did not prove bounded grow, ' +
-            'quarantine rename, and canonical recreation'
+            'bounded allocation, and final evidence publication; values=' +
+            $proofValues
         )
     }
     return $evidence
@@ -18519,6 +18598,8 @@ function Test-ManagedSparseOversizedArtifactRecovery(
             $guardianBefore `
             $guardianAfter `
             "$($case.name) completed sparse recovery"
+        $null = Assert-HealthyGuardianJSON `
+            "sparse-$($case.name)-authoritative-repair"
         $workingSetPeak = [Math]::Max(
             $workingSetPeak,
             [int64](
@@ -18566,6 +18647,10 @@ function Test-ManagedSparseOversizedArtifactRecovery(
         $observations.Add([pscustomobject]@{
             artifact = [string]$case.name
             target_sid_verified = $true
+            attack_process_ok = [bool]$attackEvidence.ok
+            attack_final_evidence = [bool]$attackEvidence.final
+            retained_evidence_path =
+                [string]$attackEvidence.retained_evidence_path
             sparse_logical_bytes = [int64]$attackEvidence.logical_bytes
             sparse_allocated_bytes = [int64]$attackEvidence.allocated_bytes
             grow_operations = [int]$attackEvidence.grow_operations
@@ -18589,6 +18674,10 @@ function Test-ManagedSparseOversizedArtifactRecovery(
                 $script:SparseAttackMaxGuardianWorkingSetGrowthBytes
             quarantine_rename_observed =
                 [bool]$attackEvidence.renamed_to_quarantine
+            canonical_recreation_observed =
+                [bool]$attackEvidence.canonical_recreated
+            watcher_observation_authoritative = $false
+            healthy_status_and_verify_after_repair = $true
             quarantine_slot_removed = $true
             file_identity_replaced = $true
             exact_bytes_restored = $true
