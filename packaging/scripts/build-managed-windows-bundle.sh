@@ -3,9 +3,9 @@
 # build-managed-windows-bundle.sh
 #
 # Cross-build the managed-enterprise Windows gateway zip on macOS (or any
-# host with a Go toolchain), so a Windows tester can consume the zip via
-# scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise
-# without needing SSH access to the private cisco-aispg/ai-common repo.
+# host with a Go toolchain), so a Windows tester can consume the zip via the
+# separate scripts/build-windows-enterprise-installer.ps1 builder without
+# needing SSH access to the private cisco-aispg/ai-common repo.
 #
 # The output is the goreleaser-shaped defenseclaw_${VERSION}_windows_amd64.zip
 # (plus a small gateway-source-commit.txt sidecar so the Windows box can
@@ -24,7 +24,7 @@
 #   5. Stamp VERSIONINFO / icon on both PE binaries via
 #      `go run ./internal/tools/windowsresources -target windows_amd64 ...`
 #      (the Go tool is cross-platform; Windows verifies via the Win32
-#      VersionInfo API when build-windows-installer.ps1 consumes the zip).
+#      VersionInfo API when the enterprise installer builder consumes the zip).
 #   6. Package the two exe's plus LICENSE / README / CHANGELOG / packaging/**
 #      into ${DIST_DIR}/defenseclaw_${VERSION}_windows_amd64.zip using the
 #      same shape .goreleaser.yaml would produce for windows-amd64.
@@ -34,9 +34,8 @@
 # What this script deliberately does NOT do:
 #   - It does not run the Windows installer flow. Hand the produced zip and
 #     the companion gateway-source-commit.txt to a Windows box; the tester
-#     runs `.\scripts\build-windows-installer.ps1 -DistRoot <where the zip
-#     lives> -DistributionFlavor managed-enterprise -Version <version>`
-#     against a DistRoot pre-staged with the wheel + upgrade-manifest.json.
+#     runs `.\scripts\build-windows-enterprise-installer.ps1 -DistRoot
+#     <where the zip lives> -Version <version>`.
 #   - It does not sign anything. Authenticode is the Windows box's job.
 #   - It does not touch the pre-staged wheel or upgrade-manifest under
 #     ${DIST_DIR}; only the gateway zip is (re)written.
@@ -90,7 +89,7 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-# Derive the defenseclaw source commit up front. scripts/build-windows-installer.ps1
+# Derive the defenseclaw source commit up front. The enterprise Setup builder
 # re-derives the same HEAD via Get-GitSourceCommit and then refuses any binary
 # whose reported main.commit does not match a 40-char lowercase git OID, so
 # both halves have to read the same HEAD. Without stamping -X main.commit here
@@ -144,7 +143,15 @@ else
     exit 1
   fi
   echo "==> using existing ai-common checkout at ${AI_COMMON_DIR}"
-  ( cd "${AI_COMMON_DIR}" && git fetch --quiet origin "${REF}" && git checkout --quiet "${REF}" )
+  if [[ "${REF}" == "HEAD" ]]; then
+    # CI checks the private repository out with a narrowly scoped token and
+    # persist-credentials=false. Consume those exact reviewed bytes without a
+    # second authenticated fetch or leaving credentials available to the
+    # DefenseClaw build process.
+    ( cd "${AI_COMMON_DIR}" && git checkout --quiet --detach HEAD )
+  else
+    ( cd "${AI_COMMON_DIR}" && git fetch --quiet origin "${REF}" && git checkout --quiet --detach FETCH_HEAD )
+  fi
 fi
 
 # ---- validate overlay --------------------------------------------------
@@ -219,7 +226,7 @@ trap 'restore_overlay; rm -rf "${STAGE_DIR}"' EXIT
 
 GATEWAY_EXE="${STAGE_DIR}/defenseclaw.exe"
 HOOK_EXE="${STAGE_DIR}/defenseclaw-hook.exe"
-# main.commit defaults to "unknown", which build-windows-installer.ps1's
+# main.commit defaults to "unknown", which the enterprise Setup builder's
 # Assert-DefenseClawBinaryIdentity rejects. Stamp the exact HEAD sha we
 # derived above so identity verification passes.
 LDFLAGS_GATEWAY="-s -w -buildid=defenseclaw-${VERSION}-windows-amd64 -X main.version=${VERSION} -X main.commit=${SOURCE_COMMIT}"
@@ -287,7 +294,7 @@ echo "Hand ${GATEWAY_ZIP} and ${COMMIT_FILE} to the Windows tester. On the"
 echo "Windows box, check the same defenseclaw commit out, drop the zip and"
 echo "the pre-staged wheel + upgrade-manifest.json into one -DistRoot, then:"
 echo ""
-echo "  .\\scripts\\build-windows-installer.ps1 \`"
+echo "  .\\scripts\\build-windows-enterprise-installer.ps1 \`"
 echo "      -DistRoot <that dir> -OutRoot <output dir> \`"
-echo "      -Version ${VERSION} -DistributionFlavor managed-enterprise"
+echo "      -Version ${VERSION}"
 echo ""

@@ -40,10 +40,13 @@ and nothing can be cancelled.
 
 ## The executable carries its own scripts
 
-The lifecycle is implemented in PowerShell, and a Windows `defenseclaw.exe`
-carries both script files inside the binary. A release can therefore ship the
-single executable: it stages the scripts into a directory only SYSTEM and
-Administrators can write, runs them, and removes them afterwards.
+The lifecycle is implemented in PowerShell, and an installed Windows
+`defenseclaw.exe` carries both script files inside the binary. This lets the
+installed CLI service an existing deployment without loose sidecar scripts.
+It does not make that CLI a first-install package: initial installation also
+requires the gateway, hook, CLI source, protected configuration, and target
+manifest. `DefenseClawSetup-Enterprise-x64.exe` is the self-contained delivery
+artifact that carries those release sources and invokes this lifecycle.
 
 Resolution order for the entry script:
 
@@ -65,13 +68,14 @@ environment, profile, or working directory.
 
 ## Managed-enterprise build
 
-The public OSS setup.exe is built by `scripts/build-windows-installer.ps1
--DistributionFlavor oss`. A managed-enterprise setup.exe additionally links
-the private CMID provider so the gateway can authenticate to AI Defense; that
-requires a `-tags cmid` gateway with the private cloudreg overlay swapped into
-`internal/managed/cloudreg/provider_cisco.go` and the
-`github.com/cisco-aispg/ai-common/cmid` module pinned to a specific
-pseudo-version.
+The public `DefenseClawSetup-x64.exe` is the non-elevating per-user product. It
+must never be relabeled as the enterprise installer. The separate
+`DefenseClawSetup-Enterprise-x64.exe` requests administrator elevation, embeds
+the three machine-lifecycle executables plus the enterprise PowerShell pair,
+and delegates every mutation to the transaction documented above. Its gateway
+links the private CMID provider so it can authenticate to AI Defense; that
+requires a `-tags cmid` build with the private cloudreg overlay and a pinned
+`github.com/cisco-aispg/ai-common/cmid` pseudo-version.
 
 The build is split so the Windows tester never needs SSH access to the
 private `cisco-aispg/ai-common` repo:
@@ -110,30 +114,24 @@ Requires: `git`, `go`, and either SSH access to
 ### Windows — consume the pre-staged zip
 
 Copy `defenseclaw_<version>_windows_amd64.zip` and
-`gateway-source-commit.txt` into a directory alongside the release-candidate
-`defenseclaw-<version>-py3-none-any.whl` and `upgrade-manifest.json`, sync
-the defenseclaw working tree to the commit listed in the sidecar, and run
-`scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise`:
+`gateway-source-commit.txt` into one directory, sync the DefenseClaw working
+tree to the commit listed in the sidecar, and run the separate enterprise
+builder:
 
 ```powershell
 $expected = (Get-Content .\dist\gateway-source-commit.txt -Raw).Trim()
 git checkout $expected
 
-.\scripts\build-windows-installer.ps1 `
+.\scripts\build-windows-enterprise-installer.ps1 `
     -DistRoot .\dist `
-    -OutRoot .\dist\windows-installer `
-    -StateRoot .\dist\windows-installer-state `
-    -Version 0.9.0-rc1 `
-    -DistributionFlavor managed-enterprise
+    -OutRoot .\dist\windows-enterprise-installer `
+    -StateRoot .\dist\windows-enterprise-installer-state `
+    -Version 0.9.0-rc1
 ```
 
-When `gateway-source-commit.txt` is present in `-DistRoot`, the installer
-cross-checks the local `git HEAD` against it and refuses to proceed on a
-mismatch — the installer bakes the local HEAD into `manifest.source_commit`
-and the provenance record, so a mismatch would silently ship a setup.exe
-whose gateway metadata points at the wrong commit. Pass `-SkipCommitCheck`
-if you understand the trade-off and want to force the build anyway. OSS
-builds do not ship the sidecar; nothing changes for them.
+The enterprise builder always cross-checks local `git HEAD` against the
+sidecar and has no bypass. The commit is repeated in the embedded manifest and
+external provenance record.
 
 Or via Make on the Windows box:
 
@@ -145,10 +143,11 @@ The Windows box does not need access to `cisco-aispg/ai-common`. Everything
 CMID-specific already happened on the macOS side; the Windows flow only
 consumes the gateway zip and produces the setup.exe.
 
-The resulting `DefenseClawSetup-x64.exe.provenance.json` reports
-`distribution_flavor: "managed-enterprise"`; `cmd/defenseclaw-setup` accepts
-both `oss` and `managed-enterprise` payload flavors and rejects any other
-value.
+The result is `DefenseClawSetup-Enterprise-x64.exe` plus its `.sha256` and
+`.provenance.json` files. `cmd/defenseclaw-enterprise-setup` accepts only the
+`managed-enterprise` payload flavor. For disposable certification, add
+`-SkipSigning`; that artifact then requires the existing exact run-scoped
+`--allow-unsigned` lifecycle contract and cannot target production roots.
 
 ## AVC env_config.json contract
 

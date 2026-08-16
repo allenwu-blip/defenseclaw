@@ -1443,12 +1443,7 @@ func TestValidSourceCommitRequiresExactLowercaseGitOID(t *testing.T) {
 	}
 }
 
-// The flavor whitelist accepts oss and managed-enterprise. Managed-enterprise
-// setup.exe artifacts are built by scripts/build-managed-windows-installer.ps1,
-// which swaps the private cloudreg overlay in before compilation; the flavor
-// value on the manifest is baked in at build time, so widening this check is a
-// whitelist widen and not a runtime bypass.
-func TestVerifyPayloadManifestAcceptsManagedEnterprise(t *testing.T) {
+func TestVerifyPayloadManifestRejectsManagedEnterprise(t *testing.T) {
 	manifest := payloadManifest{
 		SchemaVersion:      2,
 		Version:            "1.2.3",
@@ -1457,10 +1452,10 @@ func TestVerifyPayloadManifestAcceptsManagedEnterprise(t *testing.T) {
 	}
 	err := verifyPayloadManifest(t.TempDir(), manifest)
 	if err == nil {
-		t.Fatal("verifyPayloadManifest accepted a manifest with no file hashes")
+		t.Fatal("per-user Setup accepted a managed-enterprise payload")
 	}
-	if strings.Contains(err.Error(), "unsupported payload distribution flavor") {
-		t.Fatalf("managed-enterprise flavor was rejected at the flavor gate: %v", err)
+	if !strings.Contains(err.Error(), "per-user Setup accepts only oss") {
+		t.Fatalf("managed-enterprise flavor produced a non-flavor error: %v", err)
 	}
 }
 

@@ -23,7 +23,7 @@ param(
     [string]$OutRoot = $DistRoot,
     [string]$Version = "",
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-windows-installer-build"),
-    [ValidateSet('oss', 'managed-enterprise')][string]$DistributionFlavor = 'oss',
+    [ValidateSet('oss')][string]$DistributionFlavor = 'oss',
     [switch]$SkipSigning,
     [switch]$SkipCommitCheck
 )
@@ -755,12 +755,11 @@ foreach ($requiredSetupInput in @(
 }
 . $WindowsAuthenticodeHelper
 
-# managed-enterprise is a valid flavor as long as the caller has already
-# staged a -tags cmid gateway zip under -DistRoot; scripts/build-managed-windows-installer.ps1
-# does that swap (private cloudreg overlay + pinned ai-common/cmid module +
-# go build -tags cmid) before invoking this script. The DistributionFlavor
-# value flows into the payload manifest and provenance record below, so a
-# managed setup.exe is self-identifying at install time.
+# This builder is intentionally restricted to the ordinary per-user product.
+# A CMID-enabled gateway does not turn its asInvoker/current-user transaction
+# into a machine-wide service installer. Managed-enterprise releases must use
+# scripts/build-windows-enterprise-installer.ps1 and the separate elevated
+# DefenseClawSetup-Enterprise-x64.exe entry point.
 $sourceCommit = Get-GitSourceCommit $repoRoot
 $sourceDateEpoch = Get-GitSourceEpoch $repoRoot $sourceCommit
 

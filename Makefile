@@ -784,29 +784,29 @@ packaging-managed-windows-bundle:
 	    --dist-dir "$(DIST_DIR)"
 
 # packaging-windows-managed-bundle (Windows only):
-#   Consumes the pre-staged gateway zip produced above (plus the release-
-#   candidate wheel and upgrade-manifest.json under $(DIST_DIR)) and drives
-#   scripts/build-windows-installer.ps1 -DistributionFlavor managed-enterprise
-#   to produce DefenseClawSetup-x64.exe in $(WINDOWS_INSTALLER_OUT).
+#   Consumes the pre-staged CMID gateway zip produced above and drives the
+#   separate elevated machine-wide builder. It produces the self-contained
+#   DefenseClawSetup-Enterprise-x64.exe and never reuses the ordinary
+#   per-user DefenseClawSetup-x64.exe transaction.
 #
 # Prereqs on the Windows box:
-#   - pwsh, git, and the Go / uv toolchains (>= go.mod / pyproject.toml).
+#   - pwsh, git, and the Go toolchain required by go.mod.
 #   - $(DIST_DIR) staged with the gateway zip + gateway-source-commit.txt
-#     (from the macOS step above) AND defenseclaw-$(VERSION)-py3-none-any.whl
-#     + upgrade-manifest.json (typically from the release candidate pipeline).
+#     from the macOS/Linux managed gateway step above.
 #   - Local git HEAD checked out at the same defenseclaw commit the gateway
-#     was built from. When gateway-source-commit.txt is present in
-#     $(DIST_DIR), build-windows-installer.ps1 refuses to proceed on a
-#     mismatch unless -SkipCommitCheck is passed.
-WINDOWS_INSTALLER_OUT   ?= $(DIST_DIR)/windows-installer
-WINDOWS_INSTALLER_STATE ?= $(DIST_DIR)/windows-installer-state
+#     was built from; a mismatch is always rejected.
+#   - Cisco signing variables for production. Set
+#     WINDOWS_ENTERPRISE_SKIP_SIGNING=1 only for exact disposable
+#     certification scope.
+WINDOWS_ENTERPRISE_INSTALLER_OUT   ?= $(DIST_DIR)/windows-enterprise-installer
+WINDOWS_ENTERPRISE_INSTALLER_STATE ?= $(DIST_DIR)/windows-enterprise-installer-state
+WINDOWS_ENTERPRISE_SKIP_SIGNING    ?=
 packaging-windows-managed-bundle:
-	@pwsh -NoProfile -File scripts/build-windows-installer.ps1 \
+	@pwsh -NoProfile -File scripts/build-windows-enterprise-installer.ps1 \
 	    -DistRoot "$(DIST_DIR)" \
-	    -OutRoot "$(WINDOWS_INSTALLER_OUT)" \
-	    -StateRoot "$(WINDOWS_INSTALLER_STATE)" \
-	    -Version "$(VERSION)" \
-	    -DistributionFlavor managed-enterprise
+	    -OutRoot "$(WINDOWS_ENTERPRISE_INSTALLER_OUT)" \
+	    -StateRoot "$(WINDOWS_ENTERPRISE_INSTALLER_STATE)" \
+	    -Version "$(VERSION)" $(if $(filter 1 true yes,$(WINDOWS_ENTERPRISE_SKIP_SIGNING)),-SkipSigning,)
 
 # Native SwiftUI companion-app checks and release packaging. The release target
 # builds a runtime-bearing drag-to-Applications DMG plus an app-only self-update

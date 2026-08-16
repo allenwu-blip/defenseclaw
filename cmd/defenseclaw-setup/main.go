@@ -2174,11 +2174,9 @@ func verifyPayloadManifest(root string, manifest payloadManifest) error {
 	if !validSourceCommit(manifest.SourceCommit) {
 		return fmt.Errorf("invalid payload source commit %q", manifest.SourceCommit)
 	}
-	switch manifest.DistributionFlavor {
-	case "oss", "managed-enterprise":
-	default:
+	if manifest.DistributionFlavor != "oss" {
 		return fmt.Errorf(
-			"unsupported payload distribution flavor %q; expected oss or managed-enterprise",
+			"unsupported payload distribution flavor %q; the per-user Setup accepts only oss",
 			manifest.DistributionFlavor,
 		)
 	}
