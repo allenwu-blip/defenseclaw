@@ -68,6 +68,9 @@ func TestEnterpriseWorkflowPublishesTheExactUnsignedCertificationArtifact(t *tes
 		"-SkipSigning",
 		"AI_COMMON_READ_TOKEN",
 		"environment: windows-enterprise-build",
+		"pull_request:",
+		"github.event.pull_request.head.sha || github.sha",
+		"needs.managed-gateway.outputs.source_commit",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("enterprise workflow is missing %q", required)
