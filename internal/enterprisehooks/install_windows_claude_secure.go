@@ -88,7 +88,7 @@ func installWindowsClaudeManagedResultSecure(ctx context.Context, opts InstallOp
 		Interactive:        false,
 		ManagedEnterprise:  true,
 		WorkspaceDir:       strings.TrimSpace(opts.WorkspaceDir),
-		HookFailMode:       strings.TrimSpace(opts.HookFailMode),
+		HookFailMode:       windowsEnterpriseHookFailMode("claudecode", opts.HookFailMode),
 		HILTEnabled:        opts.HILTEnabled,
 		AgentVersion:       strings.TrimSpace(opts.AgentVersion),
 		HookContractID:     strings.TrimSpace(opts.HookContractID),

@@ -677,6 +677,30 @@ func TestInstallWindowsClaudeManagedPolicySurvivesManagedOnlyHooks(t *testing.T)
 	}
 }
 
+func TestInstallWindowsClaudeNormalizesManagedFailModeClosed(t *testing.T) {
+	fixture := newWindowsManagedInstallFixture(t, map[string]interface{}{
+		"allowManagedHooksOnly": true,
+	})
+	opts := windowsManagedInstallOptions(fixture)
+	// Observe-mode and legacy protected configurations may resolve to open.
+	// Windows enterprise native hooks must still publish and verify one
+	// authoritative fail-closed contract.
+	opts.HookFailMode = "open"
+	if _, err := Install(context.Background(), opts); err != nil {
+		t.Fatalf("Install with configured fail-open mode: %v", err)
+	}
+	lock := connector.LoadHookContractLockEntry(
+		filepath.Join(fixture.home, ".defenseclaw"),
+		"claudecode",
+	)
+	if lock.HookFailMode != "closed" {
+		t.Fatalf("managed Claude lock fail mode = %q, want closed", lock.HookFailMode)
+	}
+	if _, err := Verify(context.Background(), opts); err != nil {
+		t.Fatalf("Verify with the same configured fail-open input: %v", err)
+	}
+}
+
 func TestInstallWindowsClaudeRebuildsDeletedRuntimeBytesAndSecurityExactly(t *testing.T) {
 	fixture := newWindowsManagedInstallFixture(
 		t,
@@ -1767,6 +1791,53 @@ func TestInstallWindowsClaudeRollsBackNewManagedPolicyDirectories(t *testing.T) 
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("new managed policy directory survived rollback at %s: %v", path, err)
 		}
+	}
+}
+
+func TestInstallWindowsClaudeRollbackRestoresAbsentHookDirectory(t *testing.T) {
+	fixture := newWindowsManagedInstallFixture(t, nil)
+	dataDir := filepath.Join(fixture.home, ".defenseclaw")
+	hookDir := filepath.Join(dataDir, "hooks")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setWindowsUserPathProtection(dataDir, fixture.targetSID, true); err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(dataDir, "existing-user-state.txt")
+	const sentinel = "preserve me\n"
+	if err := os.WriteFile(sentinelPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setWindowsUserPathProtection(sentinelPath, fixture.targetSID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(hookDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("precondition: hooks directory exists: %v", err)
+	}
+
+	originalWriter := windowsManagedPolicyWriter
+	windowsManagedPolicyWriter = func(path string, data []byte, readable bool) error {
+		if filepath.Base(path) == windowsClaudeManagedStateFile {
+			return errors.New("injected state publication failure")
+		}
+		return writeWindowsManagedFile(path, data, readable)
+	}
+	t.Cleanup(func() { windowsManagedPolicyWriter = originalWriter })
+	opts := windowsManagedInstallOptions(fixture)
+	opts.HookFailMode = "open"
+	_, err := Install(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "injected state publication failure") {
+		t.Fatalf("Install error = %v, want injected rollback failure", err)
+	}
+	if strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("Install masked the original failure with rollback residue: %v", err)
+	}
+	if _, err := os.Lstat(hookDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("new managed hooks directory survived rollback: %v", err)
+	}
+	if got, err := os.ReadFile(sentinelPath); err != nil || string(got) != sentinel {
+		t.Fatalf("pre-existing data-dir state changed: %q err=%v", got, err)
 	}
 }
 
