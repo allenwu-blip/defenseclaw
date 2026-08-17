@@ -60,23 +60,37 @@ func TestOrdinarySetupBuilderCannotBeRelabeledAsEnterprise(t *testing.T) {
 	}
 }
 
-func TestEnterpriseWorkflowPublishesTheExactUnsignedCertificationArtifact(t *testing.T) {
+func TestEnterpriseWorkflowValidatesPublicContractsWithoutPrivateRepositoryAccess(t *testing.T) {
 	workflow := readEnterpriseSetupContractFile(t, ".github/workflows/windows-enterprise-setup.yml")
 	for _, required := range []string{
 		"scripts/build-windows-enterprise-installer.ps1",
 		"DefenseClawSetup-Enterprise-x64.exe",
-		"-SkipSigning",
-		"AI_COMMON_READ_TOKEN",
-		"environment: windows-enterprise-build",
+		"Validate public enterprise Setup contracts",
 		"pull_request:",
 		"github.event.pull_request.head.sha || github.sha",
-		"needs.managed-gateway.outputs.source_commit",
-		"GIT_CONFIG_COUNT: 1",
-		"GIT_TERMINAL_PROMPT: 0",
-		"inputs.ai_common_ref || 'develop'",
+		"persist-credentials: false",
+		"go test -count=1",
+		"go vet",
+		"GOOS: windows",
+		"GOARCH: amd64",
+		"go build -trimpath",
+		"[Management.Automation.Language.Parser]::ParseFile",
+		"bash -n packaging/scripts/build-managed-windows-bundle.sh",
 	} {
 		if !strings.Contains(workflow, required) {
 			t.Errorf("enterprise workflow is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"AI_COMMON_READ_TOKEN",
+		"secrets.",
+		"cisco-aispg/ai-common",
+		"environment:",
+		"actions/upload-artifact",
+		"needs.managed-gateway",
+	} {
+		if strings.Contains(workflow, forbidden) {
+			t.Errorf("public enterprise workflow must not contain %q", forbidden)
 		}
 	}
 }

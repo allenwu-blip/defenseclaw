@@ -64,11 +64,17 @@ dist\windows-enterprise-installer\DefenseClawSetup-Enterprise-x64.exe.sha256
 dist\windows-enterprise-installer\DefenseClawSetup-Enterprise-x64.exe.provenance.json
 ```
 
-The same unsigned artifact can be produced through the manual **Windows
-Enterprise Setup** GitHub Actions workflow. The protected
-`windows-enterprise-build` environment must provide a read-only
-`AI_COMMON_READ_TOKEN`. Download the artifact named
-`DefenseClawSetup-Enterprise-x64-<commit>-unsigned` from that workflow run.
+The **Windows Enterprise Setup** GitHub Actions workflow is intentionally a
+public, fork-safe contract check. It runs the installer tests and vetting,
+cross-compiles the Windows bootstrap shell, parses the PowerShell assembly
+boundary, and validates the managed-bundle shell script. It does not fetch
+`cisco-aispg/ai-common`, receive private-repository credentials, assemble a
+CMID-enabled payload, or publish a certification artifact.
+
+The real CMID-enabled gateway and enterprise Setup must be produced through
+the protected release/AVC process using the build steps above. A personal
+access token must not be placed in pull-request CI as a substitute for that
+release boundary.
 
 ## Invocation
 
