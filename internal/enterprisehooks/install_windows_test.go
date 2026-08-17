@@ -768,11 +768,6 @@ func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := os.Stat(tokenPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	file, err := os.OpenFile(tokenPath, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -835,6 +830,34 @@ func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
 		t.Fatalf("locked sparse token Install error = %v, want bounded quarantine retry", err)
 	}
 	if err := windows.CloseHandle(held); err != nil {
+		t.Fatal(err)
+	}
+
+	// Keep the attacker-grown file alive through the successful repair, but
+	// allow it to be renamed and deleted. Without an open identity handle NTFS
+	// may recycle the removed file ID before os.SameFile compares it with the
+	// replacement, making a correct quarantine-and-recreate repair look like an
+	// in-place rewrite.
+	identityHandle, err := windows.CreateFile(
+		ptr,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityFile := os.NewFile(uintptr(identityHandle), tokenPath)
+	if identityFile == nil {
+		_ = windows.CloseHandle(identityHandle)
+		t.Fatal("wrap sparse token identity handle")
+	}
+	defer identityFile.Close()
+	original, err := identityFile.Stat()
+	if err != nil {
 		t.Fatal(err)
 	}
 
