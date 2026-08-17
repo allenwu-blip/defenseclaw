@@ -748,6 +748,7 @@ func TestInstallWindowsClaudeRebuildsDeletedRuntimeBytesAndSecurityExactly(t *te
 }
 
 func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
+	stubWindowsAuthorizedRepairIdentityChecks(t)
 	fixture := newWindowsManagedInstallFixture(
 		t,
 		map[string]interface{}{"allowManagedHooksOnly": true},

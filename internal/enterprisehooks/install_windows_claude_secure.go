@@ -372,6 +372,21 @@ func restoreWindowsClaudeUserRuntime(transaction windowsClaudeUserRuntimeTransac
 	if transaction.createdDataDir {
 		return removeEmptyWindowsDirectory(transaction.dataDir)
 	}
+	if transaction.createdHookDir {
+		// The hook directory was absent in the transaction preimage and has
+		// just been removed. Re-harden only the pre-existing data directory;
+		// requiring the absent hook directory here would turn a successful
+		// exact rollback into a second, masking failure.
+		return prepareWindowsGenericPath(
+			transaction.home,
+			transaction.dataDir,
+			transaction.targetSID,
+			true,
+			true,
+			true,
+			"restored per-user data directory",
+		)
+	}
 	return hardenWindowsUserRuntime(transaction.home, transaction.dataDir, transaction.paths, transaction.targetSID)
 }
 
