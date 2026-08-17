@@ -347,7 +347,7 @@ class TrustedPathsCliTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, msg=result.output)
             rows = json.loads(result.output)
             resolved = {r["resolved"] for r in rows}
-            expected = set(ad._expand_bin_prefixes(ad._TRUSTED_BIN_PREFIXES_DEFAULT))
+            expected = set(ad._expand_bin_prefixes(ad._builtin_trusted_bin_prefixes()))
             self.assertTrue(expected <= resolved)
             self.assertTrue(all({"path", "resolved", "source", "status", "removable"} <= set(r) for r in rows))
 

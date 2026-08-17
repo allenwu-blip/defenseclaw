@@ -1321,11 +1321,23 @@ $path = [IO.Path]::Combine($root, 'managed.token')
     [Text.UTF8Encoding]::new($false)
 )
 $item = Get-Item -LiteralPath $path -Force
-$digest = Get-FileHash -LiteralPath $path -Algorithm SHA256
+$digestStream = [IO.File]::OpenRead($path)
+$digestAlgorithm = [Security.Cryptography.SHA256]::Create()
+try {
+    $digest = (
+        [BitConverter]::ToString(
+            $digestAlgorithm.ComputeHash($digestStream)
+        ).Replace('-', '').ToLowerInvariant()
+    )
+}
+finally {
+    $digestAlgorithm.Dispose()
+    $digestStream.Dispose()
+}
 $snapshot = [pscustomobject]@{
     path = $path
     length = [int64]$item.Length
-    sha256 = $digest.Hash.ToLowerInvariant()
+    sha256 = $digest
 }
 if (-not (Test-BoundedArtifactSnapshotMatch $snapshot)) {
     throw 'bounded matcher rejected the canonical baseline'

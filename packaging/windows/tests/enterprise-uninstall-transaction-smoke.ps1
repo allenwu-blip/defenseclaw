@@ -1177,6 +1177,26 @@ try {
                     ) -and
                     [bool]$script:HarnessState.track_fresh_install_services -and
                     -not [bool]$script:HarnessState.fresh_services_existed) {
+                    # Model the exact absent file preimage recorded by a real
+                    # fresh-install transaction. Leaving the staged hook
+                    # binary behind makes the committed-uninstall preflight
+                    # correctly reject the retry before it opens a transaction.
+                    foreach ($path in @(
+                        $Layout.GatewayPath,
+                        $Layout.HookPath,
+                        $Layout.CLIPath,
+                        $Layout.ConfigPath,
+                        $Layout.ManifestPath,
+                        $Layout.InstallerPath,
+                        $Layout.ModulePath
+                    )) {
+                        if (Microsoft.PowerShell.Management\Test-Path `
+                                -LiteralPath $path) {
+                            Microsoft.PowerShell.Management\Remove-Item `
+                                -LiteralPath $path `
+                                -Force
+                        }
+                    }
                     foreach ($name in @(
                         'DefenseClawGateway',
                         'DefenseClawHookGuardian'
@@ -2069,6 +2089,10 @@ targets:
                 $capture = $script:HarnessState.events.IndexOf(
                     'lifecycle-snapshot:capture'
                 )
+                $eventTrace = [string]::Join(
+                    ', ',
+                    @($script:HarnessState.events)
+                )
                 Assert-Harness `
                     -Condition (
                         $transaction -ge 0 -and
@@ -2076,7 +2100,13 @@ targets:
                         $coreAcls -gt $services -and
                         $capture -gt $coreAcls
                     ) `
-                    -Message "fresh install attempt $attempt violated transaction/service/ACL/snapshot ordering"
+                    -Message (
+                        "fresh install attempt $attempt violated " +
+                        'transaction/service/ACL/snapshot ordering ' +
+                        "(transaction=$transaction services=$services " +
+                        "core_acls=$coreAcls capture=$capture; " +
+                        "failure=$failure; events=[$eventTrace])"
+                    )
 
                 if ($attempt -eq 1) {
                     Assert-Harness `
