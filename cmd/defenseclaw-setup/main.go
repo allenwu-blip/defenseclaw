@@ -2174,9 +2174,11 @@ func verifyPayloadManifest(root string, manifest payloadManifest) error {
 	if !validSourceCommit(manifest.SourceCommit) {
 		return fmt.Errorf("invalid payload source commit %q", manifest.SourceCommit)
 	}
-	if manifest.DistributionFlavor != "oss" {
+	switch manifest.DistributionFlavor {
+	case "oss", "managed-enterprise":
+	default:
 		return fmt.Errorf(
-			"unsupported payload distribution flavor %q; managed-enterprise requires the private Windows CMID release overlay",
+			"unsupported payload distribution flavor %q; expected oss or managed-enterprise",
 			manifest.DistributionFlavor,
 		)
 	}
