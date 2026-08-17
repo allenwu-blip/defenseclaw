@@ -855,7 +855,7 @@ func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
 		_ = windows.CloseHandle(identityHandle)
 		t.Fatal("wrap sparse token identity handle")
 	}
-	defer identityFile.Close()
+	t.Cleanup(func() { _ = identityFile.Close() })
 	original, err := identityFile.Stat()
 	if err != nil {
 		t.Fatal(err)
@@ -880,6 +880,11 @@ func TestInstallWindowsClaudeRepairsReleasedSparseOversizedToken(t *testing.T) {
 	}
 	if os.SameFile(original, repaired) {
 		t.Fatal("sparse token repair retained the attacker-grown file identity")
+	}
+	// Closing the last handle lets Windows finish deleting the quarantined
+	// original before the bounded-slot cleanup assertion below.
+	if err := identityFile.Close(); err != nil {
+		t.Fatalf("close sparse token identity handle: %v", err)
 	}
 	if err := validateWindowsUserPathElement(
 		tokenPath,
