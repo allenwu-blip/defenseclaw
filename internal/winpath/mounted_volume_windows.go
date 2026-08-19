@@ -130,10 +130,6 @@ func ValidateFixedNTFSMountedPath(path string) (MountedVolumeIdentity, error) {
 	}, nil
 }
 
-func isASCIIDriveLetter(value byte) bool {
-	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
-}
-
 // isLocalDriveLetterSyntax reports whether path is in the exact local
 // drive-letter form (e.g. `C:\...`). Rejects UNC, `\\?\` and `\\.\` device
 // namespaces, alternate-data-stream syntax (a colon past position 1), and
@@ -149,6 +145,10 @@ func isLocalDriveLetterSyntax(path string) bool {
 		!strings.HasPrefix(path, `\\?\`) &&
 		!strings.HasPrefix(path, `\\.\`) &&
 		!strings.Contains(path[2:], ":")
+}
+
+func isASCIIDriveLetter(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 }
 
 func validVolumeGUIDName(value string) bool {
