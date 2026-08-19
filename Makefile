@@ -94,7 +94,7 @@ endef
 .PHONY: help all path doctor uninstall quickstart llm-setup \
         build install cli-install dev-install pycli dev-pycli gateway gateway-cross gateway-run start gateway-install \
         plugin plugin-install amp-plugin-typecheck maybe-openclaw-plugin-install extensions test cli-test cli-test-cov cli-test-snap tui-test gateway-test go-test-cov \
-        packaging-macos-test packaging-macos-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
+        packaging-macos-test packaging-macos-bundle packaging-windows-managed-gateway-zip packaging-windows-enterprise-installer packaging-managed-windows-bundle packaging-windows-managed-bundle macos-app-license-check macos-app-upstream-check macos-app-build macos-app-test macos-app-release macos-app-release-verify \
         security-suite-test security-suite-eval \
         connector-matrix-test go-connector-matrix-test py-connector-matrix-test \
         test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
@@ -794,6 +794,83 @@ packaging-macos-bundle:
 	    "$(BUNDLE_TAGS)" \
 	    "$(CMID_OVERLAY)" \
 	    "$(CMID_VERSION)"
+
+# The managed-enterprise Windows build is split so a macOS release box (which
+# has SSH access to cisco-aispg/ai-common) prepares the -tags cmid gateway
+# zip, and a Windows tester (which typically does not) only runs the OSS
+# installer flow against that zip.
+#
+# packaging-windows-managed-gateway-zip (macOS / Linux / Windows-with-bash):
+#   Clones ai-common at $(WINDOWS_MANAGED_REF), applies the cloudreg overlay,
+#   pins the ai-common/cmid pseudo-version, cross-builds defenseclaw.exe +
+#   defenseclaw-hook.exe with -tags cmid, stamps VERSIONINFO / icon on both,
+#   and packages them into $(DIST_DIR)/defenseclaw_$(VERSION)_windows_amd64.zip
+#   alongside a gateway-source-commit.txt sidecar. Restores the OSS working
+#   tree on exit.
+#
+# The prior name was `packaging-managed-windows-bundle`, which differed from
+# `packaging-windows-managed-bundle` (the Windows-only enterprise-installer
+# build) only by word order — an operator transposing the words ran the
+# wrong step, and the mistake only surfaced after the script started.
+# The prior name is retained below as a deprecated alias.
+WINDOWS_MANAGED_REF ?= develop
+packaging-windows-managed-gateway-zip:
+	@packaging/scripts/build-managed-windows-bundle.sh \
+	    --ref "$(WINDOWS_MANAGED_REF)" \
+	    --version "$(VERSION)" \
+	    --dist-dir "$(DIST_DIR)"
+
+# Deprecated alias — remove in a future cleanup pass once release runbooks
+# are updated. Use `packaging-windows-managed-gateway-zip` instead.
+packaging-managed-windows-bundle: packaging-windows-managed-gateway-zip
+	@echo 'note: `packaging-managed-windows-bundle` is deprecated; use `packaging-windows-managed-gateway-zip`.'
+
+# packaging-windows-enterprise-installer (Windows only):
+#   Consumes the pre-staged CMID gateway zip produced above and drives the
+#   separate elevated machine-wide builder. It produces the self-contained
+#   DefenseClawSetup-Enterprise-x64.exe and never reuses the ordinary
+#   per-user DefenseClawSetup-x64.exe transaction.
+#
+# Prereqs on the Windows box:
+#   - MSYS2 / Git-for-Windows Bash on PATH. Neither this target's own recipe
+#     nor `packaging-windows-managed-gateway-zip` runs under cmd.exe-backed
+#     make: both rely on POSIX shell features and, in the gateway-zip case,
+#     on a shebang-driven `.sh` invocation. Invoke Make from a Git Bash /
+#     MSYS shell (`make packaging-windows-enterprise-installer`), or drive
+#     `scripts/build-windows-enterprise-installer.ps1` directly from PowerShell.
+#   - pwsh, git, and the Go toolchain required by go.mod.
+#   - $(DIST_DIR) staged with the gateway zip + gateway-source-commit.txt
+#     from the macOS/Linux managed gateway step above.
+#   - Local git HEAD checked out at the same defenseclaw commit the gateway
+#     was built from; a mismatch is always rejected.
+#   - Cisco signing variables for production. Set
+#     WINDOWS_ENTERPRISE_SKIP_SIGNING=1 only for exact disposable
+#     certification scope.
+WINDOWS_ENTERPRISE_INSTALLER_OUT   ?= $(DIST_DIR)/windows-enterprise-installer
+WINDOWS_ENTERPRISE_INSTALLER_STATE ?= $(DIST_DIR)/windows-enterprise-installer-state
+WINDOWS_ENTERPRISE_SKIP_SIGNING    ?=
+# Signing-mode diagnostic. Uses Make's own $(if $(filter ...)) rather than a
+# POSIX shell test so the target does not require MSYS just for the diagnostic
+# (the recipe's `.sh` and `[`-based invocations elsewhere still do — see the
+# prereq block above). Comma-in-argument constructs need a helper variable
+# because commas inside `$(if ...)` split its arguments.
+_WINDOWS_ENTERPRISE_SIGNING_LABEL := $(if $(filter 1 true yes,$(WINDOWS_ENTERPRISE_SKIP_SIGNING)),SKIPPED (WINDOWS_ENTERPRISE_SKIP_SIGNING set),ENFORCED (production Cisco Authenticode variables required))
+
+packaging-windows-enterprise-installer:
+	@# Print the resolved signing mode into the build log so an accidental
+	# `WINDOWS_ENTERPRISE_SKIP_SIGNING=1` (only valid for the exact
+	# disposable-certification scope) shows up during release triage.
+	@echo "packaging-windows-enterprise-installer: signing = $(_WINDOWS_ENTERPRISE_SIGNING_LABEL)"
+	@pwsh -NoProfile -File scripts/build-windows-enterprise-installer.ps1 \
+	    -DistRoot "$(DIST_DIR)" \
+	    -OutRoot "$(WINDOWS_ENTERPRISE_INSTALLER_OUT)" \
+	    -StateRoot "$(WINDOWS_ENTERPRISE_INSTALLER_STATE)" \
+	    -Version "$(VERSION)" $(if $(filter 1 true yes,$(WINDOWS_ENTERPRISE_SKIP_SIGNING)),-SkipSigning,)
+
+# Deprecated alias — remove once release runbooks are updated. Use
+# `packaging-windows-enterprise-installer` instead.
+packaging-windows-managed-bundle: packaging-windows-enterprise-installer
+	@echo 'note: `packaging-windows-managed-bundle` is deprecated; use `packaging-windows-enterprise-installer`.'
 
 # Native SwiftUI companion-app checks and release packaging. The release target
 # builds a runtime-bearing drag-to-Applications DMG plus an app-only self-update
