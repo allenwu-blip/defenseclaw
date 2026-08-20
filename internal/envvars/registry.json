@@ -293,6 +293,19 @@
       "since": "0.8.4"
     },
     {
+      "name": "DEFENSECLAW_INTEL_REFUSAL_COMMAND_LOG",
+      "category": "test_fixture",
+      "purpose": "Records any dependency, network, service, or mutation command reached by the native Intel macOS exact-candidate refusal harness.",
+      "default": "unset",
+      "accepted_values": ["absolute path inside the isolated refusal-test root", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "scripts/test-upgrade-macos-intel-refusal.sh", "description": "Fails the native Intel release gate if a blocked command executes before architecture refusal"}
+      ],
+      "since": "0.8.12"
+    },
+    {
       "name": "DEFENSECLAW_TEST_BASH",
       "category": "test_fixture",
       "purpose": "Selects the Bash executable used by release-workflow tests so macOS CI can exercise wrappers with the system Bash runtime.",
@@ -1822,6 +1835,20 @@
       "security_note": "MCP scan-target SSRF guard — prevents a scan request from reaching IMDS / loopback / private hosts."
     },
     {
+      "name": "DEFENSECLAW_SCRUB_BIN",
+      "category": "runtime_path",
+      "purpose": "Override the DefenseClaw gateway binary used by the macOS uninstaller for the per-user agent-config scrub step (`defenseclaw-gateway enterprise hooks scrub`). Discovery order without this env var: /opt/cisco/secureclient/defenseclaw/bin/defenseclaw-gateway, then a `defenseclaw` or `defenseclaw-gateway` executable next to the uninstall.sh script. Bundle-fixture and dev-tree tests set this so they can drive uninstall.sh against a stub binary without needing the managed install tree present.",
+      "default": "unset (auto-discover in order: /opt/cisco/secureclient/defenseclaw/bin/defenseclaw-gateway, then a `defenseclaw` or `defenseclaw-gateway` executable next to uninstall.sh)",
+      "accepted_values": ["any-absolute-path-to-executable", "unset"],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "packaging/macos/uninstall.sh", "description": "_scrub_bin() prefers this override before falling back to the managed install path"}
+      ],
+      "since": "0.8.5",
+      "security_note": "Uninstaller-only executable override — uninstall.sh runs under sudo, so the referenced binary is exec'd as root. _scrub_bin() validates every override before use via the shared _scrub_bin_trusted helper: must be an absolute path, must be a regular file (not a symlink or directory), must be executable, must be root-owned, must not be group/other writable. Any check failing prints a WARN and falls through to auto-discovery. Intended for bundle-fixture and dev-tree tests; production installs should never set this. First shipped in the macOS 26.7.3 Cisco Secure Client bundle (DefenseClaw 0.8.5)."
+    },
+    {
       "name": "DEFENSECLAW_BAKED_HOOK_PATH",
       "category": "hook_internal",
       "purpose": "Baked into the installed _hardening.sh helper at hook-generation time. When non-empty, replaces the hardened hook PATH with this colon-separated directory list instead of the default system paths.",
@@ -2516,6 +2543,50 @@
       "since": "0.8.0"
     },
     {
+      "name": "DEFENSECLAW_HOOK_TOKEN_LOCK_HELPER",
+      "category": "test_fixture",
+      "purpose": "Selects the connector hook-token cross-process lock fixture.",
+      "default": "unset",
+      "accepted_values": ["1", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [{"location": "internal/gateway/connector/hook_api_token_test.go", "description": "Connector hook-token lock fixture"}],
+      "since": "0.8.11"
+    },
+    {
+      "name": "DEFENSECLAW_HOOK_TOKEN_LOCK_PATH",
+      "category": "test_fixture",
+      "purpose": "Lock path passed to the connector hook-token cross-process fixture.",
+      "default": "unset",
+      "accepted_values": ["absolute test lock path", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [{"location": "internal/gateway/connector/hook_api_token_test.go", "description": "Connector hook-token lock target"}],
+      "since": "0.8.11"
+    },
+    {
+      "name": "DEFENSECLAW_HOOK_TOKEN_LOCK_READY",
+      "category": "test_fixture",
+      "purpose": "Ready-signal path shared with the connector hook-token cross-process fixture.",
+      "default": "unset",
+      "accepted_values": ["absolute test marker path", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [{"location": "internal/gateway/connector/hook_api_token_test.go", "description": "Connector hook-token lock readiness fixture"}],
+      "since": "0.8.11"
+    },
+    {
+      "name": "DEFENSECLAW_HOOK_TOKEN_LOCK_RELEASE",
+      "category": "test_fixture",
+      "purpose": "Release-signal path shared with the connector hook-token cross-process fixture.",
+      "default": "unset",
+      "accepted_values": ["absolute test marker path", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [{"location": "internal/gateway/connector/hook_api_token_test.go", "description": "Connector hook-token lock release fixture"}],
+      "since": "0.8.11"
+    },
+    {
       "name": "DEFENSECLAW_HOOK_DELEGATION_TEST_HELPER",
       "category": "test_fixture",
       "purpose": "Selects the isolated stable-hook delegation helper subprocess.",
@@ -3034,6 +3105,22 @@
       ],
       "since": "0.8.11",
       "security_note": "Bypassing the env_config file trust check lets a group-writable file at the canonical path retarget bearer-authenticated inspection POSTs. Test-only."
+    },
+    {
+      "name": "DEFENSECLAW_AUDIT_DB_LOCK_HELPER_PATH",
+      "category": "test_fixture",
+      "purpose": "Passes the temporary audit database path to isolated subprocesses that verify SQLite kernel-lock and WAL lifecycle behavior.",
+      "default": "unset",
+      "accepted_values": ["absolute temporary database path", "unset"],
+      "security_impact": "none",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "internal/audit/audit_db_lock_unix_test.go",
+          "description": "Peer-process lock and SQLite-close fixtures; never read by production runtime paths"
+        }
+      ],
+      "since": "0.8.11"
     }
   ]
 }

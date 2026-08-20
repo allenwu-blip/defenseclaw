@@ -17,10 +17,15 @@
 package connector
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,13 +39,29 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
+func TestManagedPluginTokenPathJavaScriptEscapingIsCrossPlatform(t *testing.T) {
+	for _, path := range []string{
+		`C:\Users\Alice O'Brien\DefenseClaw\hooks\.hook-opencode.token`,
+		`/Users/alice/${workspace}/Defense"Claw/hooks/.hook-amp.token`,
+	} {
+		escaped := javaScriptStringContent(path)
+		var decoded string
+		if err := json.Unmarshal([]byte(`"`+escaped+`"`), &decoded); err != nil {
+			t.Fatalf("escaped JavaScript path %q is not a valid JSON string: %v", escaped, err)
+		}
+		if decoded != path {
+			t.Fatalf("escaped path round trip = %q, want %q", decoded, path)
+		}
+	}
+}
+
 // TestOpenCodeSetup_WritesBridgePlugin pins the plugin-artifact install
-// path: Setup renders the embedded bridge template (gateway addr, token,
-// and fail mode substituted) and writes it owner-only into opencode's
+// path: Setup renders the embedded bridge template (gateway addr, stable
+// scoped-token path, and fail mode substituted) and writes it owner-only into opencode's
 // auto-load plugin directory — with no template placeholders left behind
 // and no executable bit. Teardown removes the managed file.
 func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(dir, ".config", "opencode", "plugins", "defenseclaw.js")
 	prev := OpenCodePluginPathOverride
 	OpenCodePluginPathOverride = pluginPath
@@ -56,17 +77,37 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil {
+		t.Fatalf("OwnedHooksPresent after setup: %v", err)
+	}
+	if !present {
+		t.Fatal("OwnedHooksPresent after setup = false, want true")
+	}
 
 	raw, err := os.ReadFile(pluginPath)
 	if err != nil {
 		t.Fatalf("read plugin after setup: %v", err)
 	}
 	body := string(raw)
+	tokenPath, err := HookAPITokenFilePath(opts.DataDir, "opencode")
+	if err != nil {
+		t.Fatalf("HookAPITokenFilePath: %v", err)
+	}
+	tokenPath, err = filepath.Abs(tokenPath)
+	if err != nil {
+		t.Fatalf("absolute hook token path: %v", err)
+	}
 	for _, want := range []string{
 		"127.0.0.1:18970",                  // APIAddr substituted
-		"tok-opencode-123",                 // APIToken embedded
+		javaScriptStringContent(tokenPath), // stable token path safely embedded
 		`DC_FAIL_MODE = "closed"`,          // fail mode honored (SupportsFailClosed=true)
 		"/api/v1/opencode/hook",            // gateway endpoint
+		`const DC_MAX_TOKEN_FILE_BYTES = 4096`,
+		`await open(DC_TOKEN_FILE, "r")`,
+		`if (offset > DC_MAX_TOKEN_FILE_BYTES)`,
+		`/^[0-9a-f]{64}$/`,
+		`if (actionable) return { reason: "DefenseClaw hook credential is unavailable." }`,
 		"tool.execute.before",              // block hook wired
 		"input && input.args",              // after-hook preserves exact executed args
 		"payload.tool_result = toolResult", // after-hook forwards the result
@@ -79,6 +120,9 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 	if strings.Contains(body, "{{.") {
 		t.Errorf("plugin still contains unrendered template placeholders:\n%s", body)
 	}
+	if strings.Contains(body, opts.APIToken) {
+		t.Fatal("plugin embeds the connector-scoped credential instead of loading its sidecar")
+	}
 
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(pluginPath)
@@ -86,10 +130,10 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 			t.Fatalf("stat plugin: %v", err)
 		}
 		if perm := info.Mode().Perm(); perm != 0o600 {
-			t.Errorf("plugin mode = %o, want 600 (carries the gateway token, never executable)", perm)
+			t.Errorf("plugin mode = %o, want 600 (managed policy bridge, never executable)", perm)
 		}
 	}
-	present, err := OwnedHooksPresent(conn, opts)
+	present, err = OwnedHooksPresent(conn, opts)
 	if err != nil {
 		t.Fatalf("OwnedHooksPresent: %v", err)
 	}
@@ -185,11 +229,228 @@ func TestOpenCodeSetupRollsBackPluginAndReceiptWhenFinalPublicationFails(t *test
 	}
 }
 
+func TestOpenCodePluginReloadsScopedTokenAndFailsCredentialErrorsClosed(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is required for the OpenCode plugin rotation test")
+	}
+	aToken := strings.Repeat("a", 64)
+	bToken := strings.Repeat("b", 64)
+	authorizations := make(chan string, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorizations <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"hook_output":{"decision":"allow"}}`))
+	}))
+	defer server.Close()
+
+	root := testenv.PrivateTempDir(t)
+	pluginPath := filepath.Join(root, "plugins", "defenseclaw.mjs")
+	previous := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = pluginPath
+	t.Cleanup(func() { OpenCodePluginPathOverride = previous })
+	opts := SetupOpts{
+		DataDir:      filepath.Join(root, "dc"),
+		APIAddr:      strings.TrimPrefix(server.URL, "http://"),
+		APIToken:     aToken,
+		HookFailMode: "open",
+	}
+	tokenPath, err := HookAPITokenFilePath(opts.DataDir, "opencode")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(tokenPath, []byte(aToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conn := NewOpenCodeConnector()
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Teardown(context.Background(), opts) })
+
+	pluginBytes, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{aToken, bToken} {
+		if strings.Contains(string(pluginBytes), secret) {
+			t.Fatal("rendered OpenCode plugin contains a rotation credential")
+		}
+	}
+	harness := `
+import { pathToFileURL } from "node:url";
+import { createInterface } from "node:readline";
+const loaded = await import(pathToFileURL(process.argv[1]).href);
+const plugin = await loaded.DefenseClaw({ directory: "" });
+const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+for await (const _ of lines) {
+  try {
+    await plugin["tool.execute.before"](
+      { tool: "Bash", sessionID: "S", messageID: "M", callID: "C" },
+      { args: { command: "printf test" } },
+    );
+    console.log("allow");
+  } catch (error) {
+    console.log("block:" + String(error && error.message || error));
+  }
+}
+`
+	processCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(processCtx, node, "--input-type=module", "-e", harness, pluginPath)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+	scanner := bufio.NewScanner(stdout)
+	for index, token := range []string{aToken, bToken, aToken} {
+		if index > 0 {
+			if err := atomicWriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := fmt.Fprintln(stdin, "evaluate"); err != nil {
+			t.Fatal(err)
+		}
+		if !scanner.Scan() {
+			t.Fatalf("read OpenCode evaluation %d: %v; stderr=%s", index, scanner.Err(), stderr.String())
+		}
+		if got := scanner.Text(); got != "allow" {
+			t.Fatalf("OpenCode evaluation %d = %q, want allow", index, got)
+		}
+	}
+	if err := atomicWriteFile(tokenPath, []byte("malformed-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(stdin, "evaluate-invalid"); err != nil {
+		t.Fatal(err)
+	}
+	if !scanner.Scan() {
+		t.Fatalf("read OpenCode credential failure: %v; stderr=%s", scanner.Err(), stderr.String())
+	}
+	if got := scanner.Text(); got != "block:DefenseClaw hook credential is unavailable." {
+		t.Fatalf("OpenCode credential failure = %q, want redacted unconditional block", got)
+	}
+	if err := atomicWriteFile(tokenPath, []byte(strings.Repeat("x", 4097)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(stdin, "evaluate-oversized"); err != nil {
+		t.Fatal(err)
+	}
+	if !scanner.Scan() {
+		t.Fatalf("read OpenCode oversized credential failure: %v; stderr=%s", scanner.Err(), stderr.String())
+	}
+	if got := scanner.Text(); got != "block:DefenseClaw hook credential is unavailable." {
+		t.Fatalf("OpenCode oversized credential failure = %q, want redacted unconditional block", got)
+	}
+	if err := stdin.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("OpenCode rotation process: %v; stderr=%s", err, stderr.String())
+	}
+
+	for index, want := range []string{"Bearer " + aToken, "Bearer " + bToken, "Bearer " + aToken} {
+		if got := <-authorizations; got != want {
+			t.Fatalf("OpenCode authorization %d = %q, want restored generation", index, got)
+		}
+	}
+	pluginAfter, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pluginAfter) != string(pluginBytes) {
+		t.Fatal("sidecar rotation rewrote the stable OpenCode plugin")
+	}
+}
+
+func TestOpenCodeOwnedHookContractRequiresExactRegularFileMarker(t *testing.T) {
+	dir := testenv.PrivateTempDir(t)
+	pluginPath := filepath.Join(dir, ".config", "opencode", "plugins", "defenseclaw.js")
+	prev := OpenCodePluginPathOverride
+	OpenCodePluginPathOverride = pluginPath
+	t.Cleanup(func() { OpenCodePluginPathOverride = prev })
+
+	conn := NewOpenCodeConnector()
+	opts := SetupOpts{
+		DataDir:  filepath.Join(dir, "dc"),
+		APIAddr:  "127.0.0.1:18970",
+		APIToken: "tok-opencode-marker-test",
+	}
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	rendered, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatalf("read rendered plugin: %v", err)
+	}
+	lfRendered := bytes.ReplaceAll(rendered, []byte("\r\n"), []byte("\n"))
+	crlfRendered := bytes.ReplaceAll(lfRendered, []byte("\n"), []byte("\r\n"))
+	if err := os.WriteFile(pluginPath, crlfRendered, 0o600); err != nil {
+		t.Fatalf("write CRLF-rendered plugin: %v", err)
+	}
+	if present, err := conn.ownedHookContractPresent(opts); err != nil || !present {
+		t.Fatalf("CRLF marker present=%v err=%v, want true/nil", present, err)
+	}
+	if err := os.WriteFile(pluginPath, rendered, 0o600); err != nil {
+		t.Fatalf("restore rendered plugin: %v", err)
+	}
+
+	foreignFirstLine := append([]byte("// operator-owned plugin\n"), rendered...)
+	if err := os.WriteFile(pluginPath, foreignFirstLine, 0o600); err != nil {
+		t.Fatalf("write marker lookalike: %v", err)
+	}
+	if present, err := conn.ownedHookContractPresent(opts); err != nil || present {
+		t.Fatalf("marker below first line present=%v err=%v, want false/nil", present, err)
+	}
+
+	if err := os.Remove(pluginPath); err != nil {
+		t.Fatalf("remove plugin: %v", err)
+	}
+	if err := os.Mkdir(pluginPath, 0o700); err != nil {
+		t.Fatalf("replace plugin with directory: %v", err)
+	}
+	if present, err := conn.ownedHookContractPresent(opts); err == nil || present {
+		t.Fatalf("directory present=%v err=%v, want false/error", present, err)
+	}
+	if err := os.Remove(pluginPath); err != nil {
+		t.Fatalf("remove plugin directory: %v", err)
+	}
+
+	target := filepath.Join(dir, "operator-plugin.js")
+	if err := os.WriteFile(target, rendered, 0o600); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, pluginPath); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	if present, err := conn.ownedHookContractPresent(opts); err == nil || present {
+		t.Fatalf("symlink present=%v err=%v, want false/error", present, err)
+	}
+}
+
 // TestOpenCodeSetup_FailModeDefaultsClosed asserts an unset HookFailMode
 // renders the bridge in fail-closed mode, matching defaultHookFailMode
 // (deny by default; see normalizeHookFailMode).
 func TestOpenCodeSetup_FailModeDefaultsClosed(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(dir, "plugins", "defenseclaw.js")
 	prev := OpenCodePluginPathOverride
 	OpenCodePluginPathOverride = pluginPath
@@ -349,11 +610,16 @@ func TestOpenCodeBridgeExecutableMCPIdentityAndFailurePosture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	dir := testenv.PrivateTempDir(t)
+	tokenPath := filepath.Join(dir, ".hook-opencode.token")
+	if err := os.WriteFile(tokenPath, []byte(strings.Repeat("a", 64)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	render := func(failMode string) []byte {
 		t.Helper()
 		text := strings.NewReplacer(
 			"{{.APIAddr}}", "127.0.0.1:18970",
-			"{{.APIToken}}", "provided by test runtime",
+			"{{.TokenFileJS}}", javaScriptStringContent(tokenPath),
 			"{{.FailMode}}", failMode,
 		).Replace(string(body))
 		if strings.Contains(text, "{{.") {
@@ -361,7 +627,6 @@ func TestOpenCodeBridgeExecutableMCPIdentityAndFailurePosture(t *testing.T) {
 		}
 		return []byte(text)
 	}
-	dir := t.TempDir()
 	openPlugin := filepath.Join(dir, "opencode-open.mjs")
 	closedPlugin := filepath.Join(dir, "opencode-closed.mjs")
 	if err := os.WriteFile(openPlugin, render("open"), 0o600); err != nil {
@@ -384,7 +649,7 @@ func TestOpenCodeBridgeExecutableMCPIdentityAndFailurePosture(t *testing.T) {
 }
 
 func TestOpenCodeOwnedHooksPresentRejectsManagedPluginDrift(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(dir, "OpenCode Config", "plugins", "defenseclaw.js")
 	previous := OpenCodePluginPathOverride
 	OpenCodePluginPathOverride = pluginPath
@@ -452,7 +717,7 @@ func TestOpenCodePluginPathHonorsConfigDir(t *testing.T) {
 // `make extensions`); when it is absent the openclaw assertions are
 // logged-and-skipped while the opencode half still runs.
 func TestOpenCode_OpenClaw_NoCollision(t *testing.T) {
-	dir := t.TempDir()
+	dir := testenv.PrivateTempDir(t)
 	dataDir := filepath.Join(dir, "dc")
 	pluginPath := filepath.Join(dir, "opencode-home", ".config", "opencode", "plugins", "defenseclaw.js")
 	openclawHome := filepath.Join(dir, "openclaw-home", ".openclaw")

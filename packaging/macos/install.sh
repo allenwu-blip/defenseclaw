@@ -34,6 +34,19 @@
 
 set -euo pipefail
 
+readonly MACOS_SYSCTL_BIN="/usr/sbin/sysctl"
+
+macos_hardware_machine() {
+  local machine="$1"
+  if [[ "${machine}" == "x86_64" || "${machine}" == "amd64" ]] \
+    && [[ -x "${MACOS_SYSCTL_BIN}" && ! -L "${MACOS_SYSCTL_BIN}" ]] \
+    && [[ "$("${MACOS_SYSCTL_BIN}" -in sysctl.proc_translated 2>/dev/null || true)" == "1" ]]; then
+    printf '%s\n' "arm64"
+    return 0
+  fi
+  printf '%s\n' "${machine}"
+}
+
 # ---- defaults -----------------------------------------------------------
 
 DEFAULT_MODE="observe"
@@ -135,6 +148,23 @@ for _candidate in \
 done
 unset _candidate
 
+# Guardrail rule packs source — the sidecar loads them from
+# ${DataDir}/policies/guardrail/<profile>/ on cold start. Without them
+# the gateway fails init with:
+#   rule pack directory_not_found at .: rule-pack directory does not exist
+# Bundle layout ships them beside install.sh; dev/CI runs source from
+# the repo tree.
+POLICIES_SRC=""
+for _candidate in \
+  "${SCRIPT_DIR}/policies" \
+  "${REPO_ROOT}/policies"; do
+  if [[ -d "${_candidate}/guardrail/default" ]]; then
+    POLICIES_SRC="${_candidate}"
+    break
+  fi
+done
+unset _candidate
+
 SKIP_BUILD="false"
 SKIP_LAUNCHD="false"
 SKIP_CONNECTOR="false"
@@ -191,6 +221,12 @@ AGENT_VERSION=""
 log()  { printf '[install] %s\n' "$*"; }
 warn() { printf '[install] WARN: %s\n' "$*" >&2; }
 die()  { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
+
+process_machine="$(uname -m)"
+hardware_machine="$(macos_hardware_machine "${process_machine}")"
+if [[ "$(uname -s)" == "Darwin" && "${hardware_machine}" != "arm64" ]]; then
+  die "Intel macOS (${process_machine}) is unsupported; the managed macOS package requires Apple Silicon (arm64)"
+fi
 
 # The persistent install.log sink is set up LATER (after the fresh-host
 # preflight passes and after LOGS_DIR has been created by
@@ -621,6 +657,24 @@ GUARDIAN_AUTH_DIR="${SUPPORT_DIR}/hook-guardian-state"
 create_install_directory_no_replace "${CONFIG_DIR}" root wheel 0755
 create_install_directory_no_replace "${RUNTIME_DIR}" root wheel 0750
 create_install_directory_no_replace "${GUARDIAN_AUTH_DIR}" root wheel 0750
+
+# Stage the shipped guardrail rule packs under runtime/policies/. The
+# gateway's cold-start sidecar init reads
+# ${DataDir}/policies/guardrail/default/ (see config default in
+# internal/config/config.go:3573). Ship all three profiles so an
+# operator can retarget rule_pack_dir at strict/permissive without a
+# reinstall.
+[[ -n "${POLICIES_SRC}" ]] \
+  || die "guardrail policies source not found (expected ${SCRIPT_DIR}/policies/guardrail/default or ${REPO_ROOT}/policies/guardrail/default)"
+POLICIES_DST="${RUNTIME_DIR}/policies"
+create_install_directory_no_replace "${POLICIES_DST}" root wheel 0750
+log "installing guardrail rule packs -> ${POLICIES_DST}/guardrail"
+# cp -R + explicit chown/chmod: we don't have install_dir_no_replace for
+# a whole tree, and RUNTIME_DIR itself is already 0750 root:wheel.
+cp -R "${POLICIES_SRC}/guardrail" "${POLICIES_DST}/guardrail"
+chown -R root:wheel "${POLICIES_DST}/guardrail"
+find "${POLICIES_DST}/guardrail" -type d -exec chmod 0750 {} +
+find "${POLICIES_DST}/guardrail" -type f -exec chmod 0640 {} +
 # Multi-user hook wiring: the hook-guardian LaunchDaemon reads its
 # per-tick manifest from ${GUARDIAN_MANIFEST_DIR}/targets.yaml. Creating
 # the directory unconditionally keeps the guardian's LoadManifest happy
@@ -680,11 +734,31 @@ CONFIG_PATH="${CONFIG_DIR}/config.yaml"
 [[ ! -e "${CONFIG_PATH}" && ! -L "${CONFIG_PATH}" ]] \
   || die "managed config appeared after fresh-host preflight and was preserved: ${CONFIG_PATH}"
 
-log "writing config (mode=${MODE} connectors=${CONNECTORS[*]} port=${API_PORT} env=${AID_ENV} redaction_profile=sensitive)"
+# Enumerate eligible local user homes so the sidecar's per-user AI-discovery
+# detectors (skills / rules / plugins / MCP under ~/.claude, ~/.codex, …) can
+# scan every real user rather than just the launchd-daemon HOME (/var/root
+# under root, where no operator has any real agent state). We pass the list
+# to render_config which writes it as `ai_discovery.home_dirs` in the
+# managed config so the daemon's `~/.claude/skills`-style expansions resolve
+# to each user's actual home. Uses the same enumerate_local_users filter
+# that populates targets.yaml so per-user detection and per-user hook
+# wiring stay in lockstep.
+HOME_DIRS=()
+if _user_lines_for_home_dirs="$(enumerate_local_users 2>/dev/null || true)"; then
+  while IFS=: read -r _u _uid _gid _home; do
+    [[ -z "${_home}" ]] && continue
+    HOME_DIRS+=("${_home}")
+  done <<< "${_user_lines_for_home_dirs}"
+  unset _u _uid _gid _home _user_lines_for_home_dirs
+fi
+
+log "writing config (mode=${MODE} connectors=${CONNECTORS[*]} port=${API_PORT} env=${AID_ENV} redaction_profile=sensitive home_dirs=${#HOME_DIRS[@]})"
 CONFIG_TMP="$(mktemp "${CONFIG_PATH}.new.XXXXXX")" \
   || die "could not reserve a private managed-config staging file"
 INSTALL_TEMP_FILES+=("${CONFIG_TMP}")
-render_config "${MODE}" "${PRIMARY_CONNECTOR}" "${API_PORT}" "${SUPPORT_DIR}" "${AID_ENDPOINT}" "${CONNECTORS[@]}" > "${CONFIG_TMP}"
+render_config "${MODE}" "${PRIMARY_CONNECTOR}" "${API_PORT}" "${SUPPORT_DIR}" "${AID_ENDPOINT}" \
+  "${#HOME_DIRS[@]}" "${HOME_DIRS[@]+"${HOME_DIRS[@]}"}" \
+  "${CONNECTORS[@]}" > "${CONFIG_TMP}"
 chown root:wheel "${CONFIG_TMP}"
 chmod 0640 "${CONFIG_TMP}"
 ln "${CONFIG_TMP}" "${CONFIG_PATH}" \
@@ -812,16 +886,86 @@ if [[ "${SKIP_CONNECTOR}" != "true" ]]; then
   MANIFEST_TMP="$(mktemp "${GUARDIAN_MANIFEST_PATH}.new.XXXXXX")" \
     || die "could not reserve a private manifest staging file"
   INSTALL_TEMP_FILES+=("${MANIFEST_TMP}")
-  render_targets_manifest "${SUPPORT_DIR}" "${CONNECTOR}" "${USER_LINES}" > "${MANIFEST_TMP}"
-  # Belt-and-suspenders: catch the case where user_lines was non-empty
-  # AND the connector CSV was non-empty but the rendered cross product
-  # still produced zero targets (e.g. every connector was filtered out
-  # as unsupported). Without this check the guardian would happily
-  # reconcile a "0 targets, all ok" manifest and the daemon would look
-  # green while enforcing nothing.
+  # Discovery-error side channel: discover_agent_version's per-connector
+  # probes distinguish "metadata absent" (file not there → connector not
+  # installed) from "metadata present but malformed" (JSON parse fails)
+  # by appending a record to this file. The file starts empty; a
+  # non-empty file at the end of render_targets_manifest signals that
+  # AT LEAST one connector had corrupt metadata on some user's home,
+  # which is a fatal condition — silently classifying it as
+  # `none-installed` (the old behaviour) hid a broken install behind
+  # a "just wait for the enumerator" warning.
+  DISCOVERY_ERRORS_LOG="$(mktemp "${GUARDIAN_MANIFEST_PATH}.discovery-errors.XXXXXX")" \
+    || die "could not reserve a private discovery-errors staging file"
+  INSTALL_TEMP_FILES+=("${DISCOVERY_ERRORS_LOG}")
+  DC_DISCOVERY_ERRORS_LOG="${DISCOVERY_ERRORS_LOG}" \
+    render_targets_manifest "${SUPPORT_DIR}" "${CONNECTOR}" "${USER_LINES}" \
+    > "${MANIFEST_TMP}"
+
+  # Count rendered target rows up-front so the discovery-error report
+  # below can distinguish "corrupt metadata blocked every target" from
+  # "corrupt metadata affected one connector but others still resolved".
+  # The prior implementation die()'d on ANY discovery error, which would
+  # fail an install for the whole box just because one user had a
+  # single truncated package.json — the reconciler never got a chance
+  # to run for the connectors that DID resolve cleanly.
   MANIFEST_TARGETS="$(grep -c '^  - user:' "${MANIFEST_TMP}" || true)"
-  if [[ "${MANIFEST_TARGETS}" == "0" ]] && [[ -n "${USER_LINES}" ]] && [[ "${ALLOW_EMPTY_USERS}" != "true" ]]; then
-    die "rendered hook-guardian manifest has zero targets despite ${USER_COUNT} eligible user(s) and connectors=${CONNECTOR} — every connector may be unsupported (only amp/codex/claudecode/cursor auto-wire today). Fix --connector or pass --allow-empty-users to proceed anyway."
+
+  # Report per-record discovery errors either way (operator visibility
+  # into what needs repair), but only ABORT when the metadata failures
+  # left the manifest completely empty — otherwise proceed and let the
+  # enumerator's tick pick up the affected connectors after the operator
+  # fixes the file(s). Emit a de-duplicated summary so a shared-metadata
+  # failure (e.g. system-wide /usr/local/lib/node_modules/... corrupted
+  # across every user) does not spam one line per user.
+  if [[ -s "${DISCOVERY_ERRORS_LOG}" ]]; then
+    warn "hook-guardian manifest rendering hit connector metadata errors:"
+    while IFS=$'\t' read -r user connector reason path; do
+      warn "  user=${user:-<none>} connector=${connector} reason=${reason} path=${path}"
+    done < <(sort -u "${DISCOVERY_ERRORS_LOG}")
+    if [[ "${MANIFEST_TARGETS}" == "0" ]]; then
+      die "refusing to install with unreadable/malformed connector metadata (fix the listed file(s) or uninstall the affected connector and rerun)"
+    fi
+    warn "  proceeding — other connectors rendered targets; repair the listed file(s) so the affected connectors get wired on the next enumerator tick"
+  fi
+  unset DC_DISCOVERY_ERRORS_LOG
+
+  # A user_lines-non-empty × connector-non-empty cross product that
+  # still resolves to zero targets means either (a) every requested
+  # connector is unsupported (not in amp/codex/claudecode/cursor) or
+  # (b) no eligible user has any of the requested connector CLIs
+  # installed yet (AIFW-31486: the AVC-shipped .pkg lands on boxes
+  # where amp/Codex/ClaudeCode/Cursor haven't been installed yet).
+  #
+  # We do NOT fail the install here — bootstrapping the daemons with
+  # an empty manifest is still useful: the hook-enumerator LaunchDaemon
+  # re-renders targets.yaml on a 5-min tick, so as soon as a user
+  # installs a supported connector the guardian picks it up and wires
+  # hooks without any operator action. Failing the install would leave
+  # the customer with no reconciler running at all.
+  #
+  # classify_zero_target_reason distinguishes the two modes above so an
+  # operator scanning install.log knows whether to (a) rerun with a
+  # supported --connector value or (b) just wait for the enumerator's
+  # tick to pick up the connector once someone installs it. The
+  # discovery-error branch above already handled the corrupt-metadata
+  # case (die when it left ZERO targets, warn+proceed when other
+  # connectors still rendered), so any zero-target state we see here is
+  # genuinely "connector CLI not present anywhere", not "metadata was
+  # corrupt".
+  if [[ "${MANIFEST_TARGETS}" == "0" ]] && [[ -n "${USER_LINES}" ]]; then
+    ZERO_TARGET_REASON="$(classify_zero_target_reason "${CONNECTOR}")"
+    case "${ZERO_TARGET_REASON}" in
+      all-unsupported)
+        warn "hook-guardian manifest has zero targets: no requested connector is auto-wireable (supported today: amp|codex|claudecode|cursor; got connectors=${CONNECTOR})"
+        warn "  proceeding anyway — the hook-enumerator's tick will NOT fix this on its own; rerun the installer with --connector picking a supported entry"
+        ;;
+      *)
+        warn "hook-guardian manifest has zero targets (users=${USER_COUNT}, connectors=${CONNECTOR}); no supported connector CLI is installed for any eligible user yet"
+        warn "  proceeding anyway — the hook-enumerator's 5-min tick will re-render targets.yaml and the hook-guardian will wire hooks automatically once a connector appears"
+        ;;
+    esac
+    unset ZERO_TARGET_REASON
   fi
   chown root:wheel "${MANIFEST_TMP}"
   chmod 0640 "${MANIFEST_TMP}"

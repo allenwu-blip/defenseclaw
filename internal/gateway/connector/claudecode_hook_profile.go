@@ -115,8 +115,8 @@ func claudeCodeProfileEventContent(payload map[string]interface{}) string {
 // evaluateClaudeCodeHook:
 //
 //   - rawAction=="block" + event-is-not-claude-enforceable →
-//     allow + wouldBlock=true (Claude Code's PostToolUseFailure,
-//     SessionStart, etc. are observe-only by contract).
+//     allow + wouldBlock=true (Claude Code's PostToolUse,
+//     PostToolBatch, SessionStart, etc. are observe-only by contract).
 //   - observe mode: any block/alert/confirm verdict demotes to
 //     allow; wouldBlock=true for the block case.
 //   - action mode + rawAction=="confirm": stays confirm only on

@@ -161,7 +161,7 @@
       "application_names": [],
       "local_endpoints": [],
       "plugin_paths": [
-        "~/.openclaw/plugins"
+        "~/.openclaw/extensions"
       ]
     },
     {
@@ -297,6 +297,14 @@
         "Cursor"
       ],
       "local_endpoints": [],
+      "skill_paths": [
+        "~/.cursor/skills-cursor",
+        "~/.cursor/skills",
+        ".cursor/skills-cursor",
+        ".cursor/skills",
+        ".agents/skills",
+        "~/.agents/skills"
+      ],
       "rule_paths": [
         "~/.cursor/rules",
         ".cursor/rules"
@@ -359,6 +367,12 @@
         "Windsurf"
       ],
       "local_endpoints": [],
+      "skill_paths": [
+        "~/.codeium/windsurf/skills",
+        ".windsurf/skills",
+        ".codeium/windsurf/skills",
+        ".agents/skills"
+      ],
       "rule_paths": [
         ".windsurf/rules",
         ".codeium/windsurf/rules"
@@ -413,7 +427,12 @@
         "google-generativeai"
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "skill_paths": [
+        ".gemini/skills",
+        ".agents/skills",
+        "~/.gemini/skills"
+      ]
     },
     {
       "id": "copilot",
@@ -465,7 +484,12 @@
         "copilot"
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "skill_paths": [
+        ".github/skills",
+        "~/.copilot/skills",
+        ".agents/skills"
+      ]
     },
     {
       "id": "antigravity",
@@ -511,7 +535,17 @@
         "agy "
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "skill_paths": [
+        "~/.gemini/config/skills",
+        "~/.gemini/antigravity-cli/skills",
+        ".agents/skills"
+      ],
+      "plugin_paths": [
+        "~/.gemini/config/plugins",
+        "~/.gemini/antigravity-cli/plugins",
+        ".agents/plugins"
+      ]
     },
     {
       "id": "openhands",
@@ -559,7 +593,12 @@
         "open hands"
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "skill_paths": [
+        ".openhands/skills",
+        "~/.openhands/skills/installed",
+        ".agents/skills"
+      ]
     },
     {
       "id": "aider",
@@ -686,7 +725,11 @@
         "opencode"
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "plugin_paths": [
+        "~/.config/opencode/plugins",
+        ".opencode/plugins"
+      ]
     },
     {
       "id": "amp",
@@ -752,7 +795,17 @@
         "amp --execute"
       ],
       "application_names": [],
-      "local_endpoints": []
+      "local_endpoints": [],
+      "skill_paths": [
+        "~/.config/amp/skills",
+        "~/.config/agents/skills",
+        "~/.agents/skills",
+        ".agents/skills"
+      ],
+      "plugin_paths": [
+        "~/.config/amp/plugins",
+        ".amp/plugins"
+      ]
     },
     {
       "id": "omnigent",

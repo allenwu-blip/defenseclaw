@@ -7,25 +7,28 @@
 // aborts the tool — by throwing, exactly like opencode's own
 // .env-protection example — when the gateway returns a block decision.
 //
-// The gateway address, bearer token, and fail mode are substituted in at
-// setup time. The file carries the gateway token, so Unix uses mode 0600
-// and Windows publishes a DACL restricted to the user, administrators,
-// and SYSTEM. The owning user/administrators can still modify it; Doctor
-// detects digest drift and Setup reconciles it. The file is never executable.
-// DefenseClaw's Teardown removes it (managed-file backup heal).
+// The gateway address, stable scoped-token sidecar path, and fail mode are
+// substituted in at setup time. The token itself is loaded and validated for
+// every request, so a transactional rotation never leaves a replacement
+// credential in this longer-lived plugin. DefenseClaw's Teardown removes this
+// file (managed-file backup heal).
 //
 // Wire contract: POST {hook_event_name, tool_name, tool_input,
 // tool_response, cwd} to
 // /api/v1/opencode/hook; the response carries hook_output={decision,
 // reason}; decision "deny"/"block" aborts the tool.
 
-// DC_-prefixed constants are values baked in at setup time, not env-var
-// reads — the envvars registry gate scans for DEFENSECLAW_* tokens.
+import { open } from "node:fs/promises";
+
+// DC_-prefixed constants are non-secret values baked in at setup time, not
+// env-var reads — the envvars registry gate scans for DEFENSECLAW_* tokens.
 const DC_API_ADDR = "{{.APIAddr}}";
-const DC_API_TOKEN = "{{.APIToken}}";
+const DC_TOKEN_FILE = "{{.TokenFileJS}}";
 const DC_FAIL_MODE = "{{.FailMode}}"; // "open" or "closed"
 const DC_TIMEOUT_MS = 10000;
 const DC_PLUGIN_URL = import.meta.url;
+const DC_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+const DC_MAX_TOKEN_FILE_BYTES = 4096;
 
 // OpenCode v1.18.10-v1.18.11 passes the effective config (including its derived
 // plugin_origins list) to every plugin's config hook after external plugins
@@ -98,11 +101,39 @@ function defenseclawResolveMCPServer(toolName) {
   return { status: "authoritative", name: candidates[0].name };
 }
 
-async function defenseclawPost(event, toolName, toolInput, cwd, context, toolResult, mcpIdentity) {
+async function defenseclawToken() {
+  const file = await open(DC_TOKEN_FILE, "r");
+  try {
+    const raw = new Uint8Array(DC_MAX_TOKEN_FILE_BYTES + 1);
+    let offset = 0;
+    while (offset < raw.byteLength) {
+      const { bytesRead } = await file.read(raw, offset, raw.byteLength - offset, offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > DC_MAX_TOKEN_FILE_BYTES) throw new Error("oversized scoped hook credential");
+    const token = new TextDecoder("utf-8", { fatal: true }).decode(raw.subarray(0, offset)).trim();
+    if (!DC_TOKEN_PATTERN.test(token)) throw new Error("invalid scoped hook credential");
+    return token;
+  } finally {
+    await file.close();
+  }
+}
+
+async function defenseclawPost(event, toolName, toolInput, cwd, context, toolResult, mcpIdentity, actionable) {
+  let token;
+  try {
+    token = await defenseclawToken();
+  } catch (_) {
+    // Missing, unreadable, or malformed credentials are never safe at a
+    // pre-execution boundary, even when transport fail-open was selected.
+    if (actionable) return { reason: "DefenseClaw hook credential is unavailable." };
+    return null;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DC_TIMEOUT_MS);
   const headers = { "Content-Type": "application/json", "X-DefenseClaw-Client": "opencode-plugin/1.0" };
-  if (DC_API_TOKEN) headers["Authorization"] = "Bearer " + DC_API_TOKEN;
+  headers["Authorization"] = "Bearer " + token;
   try {
     const payload = {
       hook_event_name: event,
@@ -156,10 +187,17 @@ async function defenseclawPost(event, toolName, toolInput, cwd, context, toolRes
 }
 
 async function defenseclawPostLoadHeartbeat(cwd) {
+  let token;
+  try {
+    token = await defenseclawToken();
+  } catch (_) {
+    // Load health is diagnostic only; tool hooks enforce credential failures.
+    return;
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DC_TIMEOUT_MS);
   const headers = { "Content-Type": "application/json", "X-DefenseClaw-Client": "opencode-plugin/1.0" };
-  if (DC_API_TOKEN) headers["Authorization"] = "Bearer " + DC_API_TOKEN;
+  headers["Authorization"] = "Bearer " + token;
   try {
     await fetch("http://" + DC_API_ADDR + "/api/v1/opencode/hook", {
       method: "POST",
@@ -184,12 +222,19 @@ async function defenseclawPostLoadHeartbeat(cwd) {
 
 async function defenseclawPostLifecycle(event, cwd) {
   if (!event || !event.type) return;
+  let token;
+  try {
+    token = await defenseclawToken();
+  } catch (_) {
+    // Lifecycle telemetry is observe-only; an unavailable credential skips it.
+    return;
+  }
   const properties = event.properties || {};
   const info = properties.info || {};
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DC_TIMEOUT_MS);
   const headers = { "Content-Type": "application/json", "X-DefenseClaw-Client": "opencode-plugin/1.0" };
-  if (DC_API_TOKEN) headers["Authorization"] = "Bearer " + DC_API_TOKEN;
+  headers["Authorization"] = "Bearer " + token;
   try {
     await fetch("http://" + DC_API_ADDR + "/api/v1/opencode/hook", {
       method: "POST",
@@ -249,6 +294,7 @@ export const DefenseClaw = async ({ directory, worktree }) => {
         input,
         undefined,
         mcpIdentity,
+        true,
       );
       if (verdict && verdict.reason) throw new Error(verdict.reason);
       if (verdict && verdict.mode === "action" && mcpIdentity.status === "ambiguous") {
@@ -277,6 +323,7 @@ export const DefenseClaw = async ({ directory, worktree }) => {
         input,
         result,
         defenseclawResolveMCPServer(input && input.tool),
+        false,
       );
     },
   };

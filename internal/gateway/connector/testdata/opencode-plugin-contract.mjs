@@ -81,7 +81,7 @@ async function runScenario({
   const request = requests.find(({ payload }) => payload.hook_event_name === "tool.execute.before");
   assert.ok(request, `${name}: authenticated gateway call was not made`);
   assert.equal(request.url, "http://127.0.0.1:18970/api/v1/opencode/hook");
-  assert.equal(request.init.headers.Authorization, "Bearer provided by test runtime");
+  assert.equal(request.init.headers.Authorization, "Bearer " + "a".repeat(64));
   assert.equal(request.init.headers["X-DefenseClaw-Client"], "opencode-plugin/1.0");
   if (verify) verify(request.payload);
 }
