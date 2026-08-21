@@ -1860,9 +1860,47 @@ private-secret-name = "DefenseClaw must remain redacted"
         $contractFunction.IndexOf('$env:APPDATA =', [StringComparison]::Ordinal) -gt
             $contractFunction.IndexOf("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D", [StringComparison]::Ordinal)) `
         'connector contract binds Profile, LocalAppData, and RoamingAppData to the current process token before hostile environment isolation'
-    Assert-True ($nativeWorkflowText -match '(?s)Required setup, allow/block, audit, telemetry, timeout, and teardown contract.*?invoke-windows-setup-standard-user-ci\.ps1.*?-Mode contract.*?-Connector \$env:CONNECTOR.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
+    Assert-True ($connectorContractJob -match '(?s)Required setup, allow/block, audit, telemetry, timeout, and teardown contract.*?matrix\.connector != ''devin''.*?invoke-windows-setup-standard-user-ci\.ps1.*?-Mode contract.*?-Connector \$env:CONNECTOR.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
+        $connectorContractJob -match '(?s)Required Devin contract with one bounded infrastructure retry.*?matrix\.connector == ''devin''.*?Invoke-DevinContractAttempt' -and
+        $connectorContractJob -match "timeout-minutes: \$\{\{ matrix\.connector == 'devin' && 50 \|\| 35 \}\}" -and
         $nativeWorkflowText -notmatch '\./scripts/windows-native-ci\.ps1 -Operation contract') `
         'hosted connector contracts run as disposable real standard users and preserve the matrix connector'
+    $devinRetryStep = [regex]::Match(
+        $connectorContractJob,
+        '(?ms)^      - name: Required Devin contract with one bounded infrastructure retry.*?(?=^      - name:)'
+    ).Value
+    $retryCaptureIndex = $devinRetryStep.IndexOf("'-Operation', 'capture'", [StringComparison]::Ordinal)
+    $retryCleanupIndex = $devinRetryStep.IndexOf("'-Operation', 'cleanup'", [StringComparison]::Ordinal)
+    $retrySecondAttemptIndex = $devinRetryStep.IndexOf(
+        '$second = Invoke-DevinContractAttempt 2', [StringComparison]::Ordinal
+    )
+    $retryCleanupFailurePrefixes = @(
+        'disposable execution boundary:',
+        'interactive desktop ACL restore:',
+        'ancestor ACL lease restore:',
+        'diagnostic handoff:',
+        'account/profile cleanup:',
+        'sandbox cleanup:',
+        'parent-only sibling cleanup:'
+    )
+    Assert-True ($devinRetryStep -match '\. \$nativeHarness -NoRun' -and
+        $devinRetryStep -match '\$first = Invoke-DevinContractAttempt 1' -and
+        $devinRetryStep -match '\$retrySignal = ''event_history=sqlite_write_failed''' -and
+        $devinRetryStep -notmatch 'rollback was incomplete' -and
+        @($retryCleanupFailurePrefixes | Where-Object {
+            -not $devinRetryStep.Contains("'$_'", [StringComparison]::Ordinal)
+        }).Count -eq 0 -and
+        $devinRetryStep -match '\$firstOutput\.Contains\(\$_, \[StringComparison\]::Ordinal\)' -and
+        $devinRetryStep -match '\$cleanupFailure\.Count -ne 0' -and
+        $devinRetryStep -match '-AllowedExitCodes @\(0, 1\)' -and
+        $retryCaptureIndex -ge 0 -and $retryCleanupIndex -gt $retryCaptureIndex -and
+        $retrySecondAttemptIndex -gt $retryCleanupIndex -and
+        $devinRetryStep -match 'Test-Path -LiteralPath \$contractStateRoot' -and
+        $devinRetryStep -match 'Get-StateProcesses \$contractStateRoot' -and
+        $devinRetryStep -match 'attempt-\$Attempt-child' -and
+        $devinRetryStep -match 'Write-BoundedText.*?devin-event-history-retry\.txt' -and
+        $connectorContractJob -match 'steps\.devin_contract\.outputs\.retried == ''true''') `
+        'Devin retries only the exact SQLite telemetry transient after bounded capture and complete isolated cleanup'
     Assert-True ($omniGentJob -match '(?s)invoke-windows-setup-standard-user-ci\.ps1.*?-Mode omnigent-native-degraded.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $standardUserCIText -match "'omnigent-native-degraded'" -and
         $standardUserCIText -match 'test-omnigent-windows-native\.ps1' -and
