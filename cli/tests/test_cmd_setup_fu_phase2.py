@@ -203,7 +203,10 @@ def _guardrail_judge_secret_wizard(
 
     def select(data_dir, connectors):
         records = record_test_setup_agent_selections(data_dir, connectors)
-        atomic_write_private_bytes(str(lock_path), b"fresh lock marker\n")
+        atomic_write_private_bytes(
+            str(lock_path),
+            (json.dumps({"version": 2, "connectors": {}}, sort_keys=True) + "\n").encode(),
+        )
         return records
 
     def prompt(label, *_args, **_kwargs):
