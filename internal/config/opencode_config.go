@@ -45,6 +45,11 @@ type openCodeConfigResolution struct {
 	Unverified []openCodeUnverifiedConfigSource
 }
 
+type openCodeConfigCandidate struct {
+	path  string
+	scope string
+}
+
 func openCodeEnvPath(value, workspaceDir string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -59,57 +64,33 @@ func openCodeEnvPath(value, workspaceDir string) string {
 	return ""
 }
 
-func resolveOpenCodeConfig(workspaceDir string) openCodeConfigResolution {
-	resolution := openCodeConfigResolution{Unverified: []openCodeUnverifiedConfigSource{
-		{Source: "authenticated .well-known/opencode", Scope: "remote", Reason: "requires OpenCode's authenticated runtime fetch"},
-	}}
-	type candidate struct{ path, scope string }
-	var candidates []candidate
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		root := filepath.Join(home, ".config", "opencode")
-		candidates = append(candidates,
-			candidate{filepath.Join(root, "config.json"), "global"},
-			candidate{filepath.Join(root, "opencode.json"), "global"},
-			candidate{filepath.Join(root, "opencode.jsonc"), "global"},
-		)
+func openCodeGlobalHomeConfigCandidates(home string) []openCodeConfigCandidate {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil
 	}
-	if raw := os.Getenv("OPENCODE_CONFIG"); raw != "" {
-		if path := openCodeEnvPath(raw, workspaceDir); path != "" {
-			candidates = append(candidates, candidate{path, "custom-file"})
-		} else {
-			resolution.Unverified = append(resolution.Unverified, openCodeUnverifiedConfigSource{
-				Source: "OPENCODE_CONFIG", Scope: "custom-file", Reason: "relative path has no explicit workspace",
-			})
-		}
+	root := filepath.Join(home, ".config", "opencode")
+	return []openCodeConfigCandidate{
+		{filepath.Join(root, "config.json"), "global"},
+		{filepath.Join(root, "opencode.json"), "global"},
+		{filepath.Join(root, "opencode.jsonc"), "global"},
 	}
-	if root := strings.TrimSpace(workspaceDir); root != "" {
-		candidates = append(candidates,
-			candidate{filepath.Join(root, "opencode.json"), "project"},
-			candidate{filepath.Join(root, "opencode.jsonc"), "project"},
-			candidate{filepath.Join(root, ".opencode", "opencode.json"), "project-directory"},
-			candidate{filepath.Join(root, ".opencode", "opencode.jsonc"), "project-directory"},
-		)
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		root := filepath.Join(home, ".opencode")
-		candidates = append(candidates,
-			candidate{filepath.Join(root, "opencode.json"), "home-directory"},
-			candidate{filepath.Join(root, "opencode.jsonc"), "home-directory"},
-		)
-	}
-	if raw := os.Getenv("OPENCODE_CONFIG_DIR"); raw != "" {
-		if root := openCodeEnvPath(raw, workspaceDir); root != "" {
-			candidates = append(candidates,
-				candidate{filepath.Join(root, "opencode.json"), "custom-directory"},
-				candidate{filepath.Join(root, "opencode.jsonc"), "custom-directory"},
-			)
-		} else {
-			resolution.Unverified = append(resolution.Unverified, openCodeUnverifiedConfigSource{
-				Source: "OPENCODE_CONFIG_DIR", Scope: "custom-directory", Reason: "relative path has no explicit workspace",
-			})
-		}
-	}
+}
 
+func openCodeLegacyHomeConfigCandidates(home string) []openCodeConfigCandidate {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil
+	}
+	root := filepath.Join(home, ".opencode")
+	return []openCodeConfigCandidate{
+		{filepath.Join(root, "opencode.json"), "home-directory"},
+		{filepath.Join(root, "opencode.jsonc"), "home-directory"},
+	}
+}
+
+func loadOpenCodeConfigCandidates(candidates []openCodeConfigCandidate) []openCodeConfigLayer {
+	layers := make([]openCodeConfigLayer, 0, len(candidates))
 	seen := map[string]bool{}
 	for _, candidate := range candidates {
 		path, err := filepath.Abs(candidate.path)
@@ -123,12 +104,59 @@ func resolveOpenCodeConfig(workspaceDir string) openCodeConfigResolution {
 		seen[key] = true
 		data, ok := gatewayconnector.ReadStableInventoryFile(path, maxOpenCodeInventoryConfigBytes)
 		if !ok {
-			resolution.Layers = append(resolution.Layers, openCodeConfigLayer{Source: path, Scope: candidate.scope})
+			layers = append(layers, openCodeConfigLayer{Source: path, Scope: candidate.scope})
 			continue
 		}
 		doc, _ := parseOpenCodeJSONC(data)
-		resolution.Layers = append(resolution.Layers, openCodeConfigLayer{Source: path, Scope: candidate.scope, Data: doc})
+		layers = append(layers, openCodeConfigLayer{Source: path, Scope: candidate.scope, Data: doc})
 	}
+	return layers
+}
+
+func resolveOpenCodeConfig(workspaceDir string) openCodeConfigResolution {
+	resolution := openCodeConfigResolution{Unverified: []openCodeUnverifiedConfigSource{
+		{Source: "authenticated .well-known/opencode", Scope: "remote", Reason: "requires OpenCode's authenticated runtime fetch"},
+	}}
+	var candidates []openCodeConfigCandidate
+	home := ""
+	if resolvedHome, err := os.UserHomeDir(); err == nil && resolvedHome != "" {
+		home = resolvedHome
+		candidates = append(candidates, openCodeGlobalHomeConfigCandidates(home)...)
+	}
+	if raw := os.Getenv("OPENCODE_CONFIG"); raw != "" {
+		if path := openCodeEnvPath(raw, workspaceDir); path != "" {
+			candidates = append(candidates, openCodeConfigCandidate{path, "custom-file"})
+		} else {
+			resolution.Unverified = append(resolution.Unverified, openCodeUnverifiedConfigSource{
+				Source: "OPENCODE_CONFIG", Scope: "custom-file", Reason: "relative path has no explicit workspace",
+			})
+		}
+	}
+	if root := strings.TrimSpace(workspaceDir); root != "" {
+		candidates = append(candidates,
+			openCodeConfigCandidate{filepath.Join(root, "opencode.json"), "project"},
+			openCodeConfigCandidate{filepath.Join(root, "opencode.jsonc"), "project"},
+			openCodeConfigCandidate{filepath.Join(root, ".opencode", "opencode.json"), "project-directory"},
+			openCodeConfigCandidate{filepath.Join(root, ".opencode", "opencode.jsonc"), "project-directory"},
+		)
+	}
+	if home != "" {
+		candidates = append(candidates, openCodeLegacyHomeConfigCandidates(home)...)
+	}
+	if raw := os.Getenv("OPENCODE_CONFIG_DIR"); raw != "" {
+		if root := openCodeEnvPath(raw, workspaceDir); root != "" {
+			candidates = append(candidates,
+				openCodeConfigCandidate{filepath.Join(root, "opencode.json"), "custom-directory"},
+				openCodeConfigCandidate{filepath.Join(root, "opencode.jsonc"), "custom-directory"},
+			)
+		} else {
+			resolution.Unverified = append(resolution.Unverified, openCodeUnverifiedConfigSource{
+				Source: "OPENCODE_CONFIG_DIR", Scope: "custom-directory", Reason: "relative path has no explicit workspace",
+			})
+		}
+	}
+
+	resolution.Layers = append(resolution.Layers, loadOpenCodeConfigCandidates(candidates)...)
 	if content := os.Getenv("OPENCODE_CONFIG_CONTENT"); content != "" {
 		doc, _ := parseOpenCodeJSONC([]byte(content))
 		resolution.Layers = append(resolution.Layers, openCodeConfigLayer{
@@ -143,7 +171,24 @@ func resolveOpenCodeConfig(workspaceDir string) openCodeConfigResolution {
 }
 
 func readMCPServersOpenCode(workspaceDir string) ([]MCPServerEntry, error) {
-	resolution := resolveOpenCodeConfig(workspaceDir)
+	return readMCPServersOpenCodeResolution(resolveOpenCodeConfig(workspaceDir)), nil
+}
+
+// ReadMCPServersOpenCodeUnderHome reads the standard user-scope OpenCode
+// configuration layers below an explicitly selected home. It deliberately
+// excludes daemon-process environment overrides and project layers, which do
+// not belong to another user's home-scoped managed inventory.
+func ReadMCPServersOpenCodeUnderHome(home string) ([]MCPServerEntry, error) {
+	candidates := append(
+		openCodeGlobalHomeConfigCandidates(home),
+		openCodeLegacyHomeConfigCandidates(home)...,
+	)
+	return readMCPServersOpenCodeResolution(openCodeConfigResolution{
+		Layers: loadOpenCodeConfigCandidates(candidates),
+	}), nil
+}
+
+func readMCPServersOpenCodeResolution(resolution openCodeConfigResolution) []MCPServerEntry {
 	order := []string{}
 	configs := map[string]map[string]any{}
 	provenance := map[string]openCodeConfigLayer{}
@@ -174,7 +219,7 @@ func readMCPServersOpenCode(workspaceDir string) ([]MCPServerEntry, error) {
 	for _, name := range order {
 		entries = append(entries, openCodeMCPEntry(name, configs[name], provenance[name]))
 	}
-	return entries, nil
+	return entries
 }
 
 func mergeOpenCodeConfig(base, override map[string]any) map[string]any {

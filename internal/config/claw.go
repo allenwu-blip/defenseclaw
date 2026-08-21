@@ -1571,6 +1571,15 @@ func ampManagedSettingsPath() string {
 }
 
 func ampSettingsPaths(home, workspace string, workspaceFirst bool) []string {
+	paths := ampUserSettingsPaths(home, workspace, workspaceFirst)
+	managed := ampManagedSettingsPath()
+	if workspaceFirst {
+		return dedupNonEmpty(append([]string{managed}, paths...))
+	}
+	return dedupNonEmpty(append(paths, managed))
+}
+
+func ampUserSettingsPaths(home, workspace string, workspaceFirst bool) []string {
 	user := []string{preferredAMPSettingsPath(
 		filepath.Join(home, ".config", "amp", "settings.json"),
 		filepath.Join(home, ".config", "amp", "settings.jsonc"),
@@ -1579,18 +1588,25 @@ func ampSettingsPaths(home, workspace string, workspaceFirst bool) []string {
 		workspaceJoin(workspace, ".amp", "settings.json"),
 		workspaceJoin(workspace, ".amp", "settings.jsonc"),
 	)}
-	managed := []string{ampManagedSettingsPath()}
 	if workspaceFirst {
-		return dedupNonEmpty(append(managed, append(project, user...)...))
+		return dedupNonEmpty(append(project, user...))
 	}
-	return dedupNonEmpty(append(append(user, project...), managed...))
+	return dedupNonEmpty(append(user, project...))
 }
 
 func ampSkillDirs(home, workspace string) []string {
+	return ampSkillDirsFromSettings(
+		home,
+		workspace,
+		ampSettingsPaths(home, workspace, false),
+	)
+}
+
+func ampSkillDirsFromSettings(home, workspace string, settingsPaths []string) []string {
 	disableClaude := false
 	var extraPath string
 	// Read user then workspace so the documented workspace override wins.
-	for _, path := range ampSettingsPaths(home, workspace, false) {
+	for _, path := range settingsPaths {
 		doc, err := readJSONObjectJSONC(path)
 		if err != nil {
 			continue
@@ -1778,9 +1794,34 @@ func readMCPFromOpenCodeConfig(path string) ([]MCPServerEntry, error) {
 func readMCPServersAMP(workspaceDir string) ([]MCPServerEntry, error) {
 	home, _ := os.UserHomeDir()
 	cwd := strings.TrimSpace(workspaceDir)
+	return readMCPServersAMPFromHome(
+		home,
+		cwd,
+		ampSettingsPaths(home, cwd, true),
+		ampSettingsPaths(home, cwd, false),
+	)
+}
+
+// ReadMCPServersAMPUnderHome reads Amp's standard user settings and
+// skill-bundled MCP files below an explicitly selected home. Shared managed
+// settings and project layers are intentionally outside this per-user view.
+func ReadMCPServersAMPUnderHome(home string) ([]MCPServerEntry, error) {
+	home = strings.TrimSpace(home)
+	if home == "" {
+		return nil, nil
+	}
+	return readMCPServersAMPFromHome(
+		home,
+		"",
+		ampUserSettingsPaths(home, "", true),
+		ampUserSettingsPaths(home, "", false),
+	)
+}
+
+func readMCPServersAMPFromHome(home, workspace string, settingsPaths, skillSettingsPaths []string) ([]MCPServerEntry, error) {
 	var entries []MCPServerEntry
 
-	for _, path := range ampSettingsPaths(home, cwd, true) {
+	for _, path := range settingsPaths {
 		doc, err := readJSONObjectJSONC(path)
 		if err != nil {
 			continue
@@ -1790,7 +1831,7 @@ func readMCPServersAMP(workspaceDir string) ([]MCPServerEntry, error) {
 		}
 	}
 
-	for _, skillRoot := range ampSkillDirs(home, cwd) {
+	for _, skillRoot := range ampSkillDirsFromSettings(home, workspace, skillSettingsPaths) {
 		children, err := os.ReadDir(skillRoot)
 		if err != nil {
 			continue

@@ -2245,6 +2245,8 @@ func resolveWatcherDirs(cfg *config.Config, conn connector.Connector, wcfg confi
 				// schema-aware Amp resolver instead of watching static defaults.
 				compTargets["skill"] = ampWatcherSkillDirs(cfg)
 				compTargets["plugin"] = cfg.PluginDirsForConnector("amp")
+			} else if strings.EqualFold(strings.TrimSpace(conn.Name()), "opencode") {
+				compTargets["skill"] = opencodeWatcherSkillDirs(compTargets["skill"])
 			}
 		}
 	}
@@ -2306,6 +2308,27 @@ func ampWatcherSkillDirs(cfg *config.Config) []string {
 	for _, dir := range dirs {
 		cleaned := filepath.Clean(dir)
 		if _, optional := optionalClaudeRoots[cleaned]; optional {
+			info, err := os.Stat(cleaned)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+		}
+		filtered = append(filtered, dir)
+	}
+	return filtered
+}
+
+// opencodeWatcherSkillDirs keeps OpenCode's Claude and Agent Skills
+// compatibility roots discoverable without materializing those optional roots.
+// Native .opencode and .config/opencode roots remain watchable unconditionally.
+func opencodeWatcherSkillDirs(dirs []string) []string {
+	filtered := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		cleaned := filepath.Clean(dir)
+		parent := filepath.Base(filepath.Dir(cleaned))
+		optionalCompatibilityRoot := filepath.Base(cleaned) == "skills" &&
+			(parent == ".claude" || parent == ".agents")
+		if optionalCompatibilityRoot {
 			info, err := os.Stat(cleaned)
 			if err != nil || !info.IsDir() {
 				continue

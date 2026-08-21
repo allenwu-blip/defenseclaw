@@ -425,6 +425,63 @@ func TestResolveWatcherDirs_AMPDoesNotMaterializeOptionalClaudeRoots(t *testing.
 	}
 }
 
+func TestResolveWatcherDirs_OpenCodeDoesNotMaterializeCompatibilityRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	workspace := filepath.Join(home, "repo")
+
+	existingUserRoot := filepath.Join(home, ".agents", "skills")
+	existingWorkspaceRoot := filepath.Join(workspace, ".claude", "skills")
+	for _, root := range []string{existingUserRoot, existingWorkspaceRoot} {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := &config.Config{Claw: config.ClawConfig{WorkspaceDir: workspace}}
+	wcfg := config.GatewayWatcherConfig{}
+	wcfg.Skill.Enabled = true
+
+	skillDirs, _, src := resolveWatcherDirs(cfg, connector.NewOpenCodeConnector(), wcfg)
+
+	if src.Skill != watcherDirsFromConnector {
+		t.Fatalf("OpenCode watcher skill source = %q, want %q", src.Skill, watcherDirsFromConnector)
+	}
+	for _, root := range []string{existingUserRoot, existingWorkspaceRoot} {
+		if !containsExactPath(skillDirs, root) {
+			t.Errorf("OpenCode skill dirs = %v, missing existing compatibility root %q", skillDirs, root)
+		}
+	}
+
+	absentRoots := []string{
+		filepath.Join(home, ".claude", "skills"),
+		filepath.Join(workspace, ".agents", "skills"),
+	}
+	for _, root := range absentRoots {
+		if containsExactPath(skillDirs, root) {
+			t.Errorf("OpenCode skill dirs = %v, retained absent compatibility root %q", skillDirs, root)
+		}
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			t.Errorf("optional OpenCode compatibility root %q was materialized during resolution: %v", root, err)
+		}
+	}
+
+	for _, nativeRoot := range []string{
+		filepath.Join(home, ".config", "opencode", "skill"),
+		filepath.Join(home, ".config", "opencode", "skills"),
+		filepath.Join(workspace, ".opencode", "skill"),
+		filepath.Join(workspace, ".opencode", "skills"),
+	} {
+		if !containsExactPath(skillDirs, nativeRoot) {
+			t.Errorf("OpenCode skill dirs = %v, missing native root %q", skillDirs, nativeRoot)
+		}
+	}
+}
+
 func anyContains(haystack []string, needle string) bool {
 	for _, h := range haystack {
 		if strings.Contains(h, needle) {
