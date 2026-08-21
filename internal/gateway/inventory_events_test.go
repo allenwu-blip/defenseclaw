@@ -1370,3 +1370,53 @@ func TestReadMCPServersUnderHomeHonorsClaudeConfigDirOverride(t *testing.T) {
 		t.Fatalf("no-override read must surface both defaults, got names=%v", names)
 	}
 }
+
+func TestReadMCPServersUnderHomeDevinUsesPlatformNativeConfigRoot(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		goos      string
+		canonical string
+		foreign   string
+	}{
+		{
+			name:      "windows_roaming_app_data",
+			goos:      "windows",
+			canonical: filepath.Join("AppData", "Roaming", "devin", "mcp_config.json"),
+			foreign:   filepath.Join(".config", "devin", "mcp_config.json"),
+		},
+		{
+			name:      "linux_config_home",
+			goos:      "linux",
+			canonical: filepath.Join(".config", "devin", "mcp_config.json"),
+			foreign:   filepath.Join("AppData", "Roaming", "devin", "mcp_config.json"),
+		},
+		{
+			name:      "darwin_config_home",
+			goos:      "darwin",
+			canonical: filepath.Join(".config", "devin", "mcp_config.json"),
+			foreign:   filepath.Join("AppData", "Roaming", "devin", "mcp_config.json"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			write := func(relative, name string) {
+				t.Helper()
+				path := filepath.Join(home, relative)
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				body := fmt.Sprintf(`{"mcpServers":{"%s":{"command":"%s-mcp"}}}`, name, name)
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(test.canonical, "canonical")
+			write(test.foreign, "foreign")
+
+			groups := readMCPServersUnderHomeForOS("devin", home, test.goos)
+			if len(groups) != 1 || len(groups[0]) != 1 || groups[0][0].Name != "canonical" {
+				t.Fatalf("Devin %s per-home inventory = %+v, want only canonical config", test.goos, groups)
+			}
+		})
+	}
+}

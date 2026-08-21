@@ -218,6 +218,8 @@ func (c *Config) ReadMCPServersForConnector(connector string) ([]MCPServerEntry,
 		return readMCPServersHermes()
 	case "cursor":
 		return readMCPServersCursor(workspaceDir)
+	case "devin":
+		return readMCPServersDevin(workspaceDir)
 	case "windsurf":
 		return readMCPServersWindsurf()
 	case "geminicli":
@@ -578,6 +580,12 @@ func (c *Config) ConnectorHomeDir(connector string) string {
 		return hermespath.HomeDir()
 	case "cursor":
 		return filepath.Join(home, ".cursor")
+	case "devin":
+		configHome, err := devinConfigHome()
+		if err != nil {
+			return ""
+		}
+		return configHome
 	case "windsurf":
 		boundHome, err := windsurfUserHome()
 		if err != nil {
@@ -1148,6 +1156,79 @@ func readMCPServersCursor(workspaceDir string) ([]MCPServerEntry, error) {
 		}
 	}
 	return dedupMCPEntries(entries), nil
+}
+
+const maxDevinInventoryConfigBytes int64 = 4 << 20
+
+// readMCPServersDevin reads Devin's canonical MCP registries in effective
+// precedence order. Project-local settings win over project settings, and both
+// win over the lifecycle-bound user registry. A workspace is consulted only
+// when the operator pinned one in DefenseClaw configuration; the gateway's own
+// working directory is never inferred.
+func readMCPServersDevin(workspaceDir string) ([]MCPServerEntry, error) {
+	configHome, err := devinConfigHome()
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []MCPServerEntry
+	if workspace := strings.TrimSpace(workspaceDir); workspace != "" {
+		for _, name := range []string{"mcp_config.local.json", "mcp_config.json"} {
+			if found, readErr := ReadMCPFromDevinConfig(filepath.Join(workspace, ".devin", name)); readErr == nil {
+				entries = append(entries, found...)
+			}
+		}
+	}
+	if found, readErr := ReadMCPFromDevinConfig(filepath.Join(configHome, "mcp_config.json")); readErr == nil {
+		entries = append(entries, found...)
+	}
+	return dedupMCPEntries(entries), nil
+}
+
+// devinConfigHome resolves the exact user configuration root used by the
+// current lifecycle. Native Setup supplies its Known-Folder result through the
+// DefenseClaw-only binding; source installs use Devin's documented platform
+// defaults.
+func devinConfigHome() (string, error) {
+	if configured, exists := os.LookupEnv("DEFENSECLAW_DEVIN_CONFIG_HOME"); exists {
+		if configured == "" || strings.TrimSpace(configured) != configured ||
+			strings.ContainsAny(configured, "\x00\r\n") ||
+			!filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
+			return "", fmt.Errorf("DEFENSECLAW_DEVIN_CONFIG_HOME is not an absolute normalized path")
+		}
+		return configured, nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return "", fmt.Errorf("Devin user home is unavailable")
+	}
+	if runtime.GOOS == "windows" {
+		if appData := strings.TrimSpace(os.Getenv("APPDATA")); appData != "" {
+			return filepath.Join(filepath.Clean(appData), "devin"), nil
+		}
+		return filepath.Join(home, "AppData", "Roaming", "devin"), nil
+	}
+	return filepath.Join(home, ".config", "devin"), nil
+}
+
+// ReadMCPFromDevinConfig reads one canonical Devin mcp_config.json file using
+// the same bounded, stable-file boundary as other native inventory readers.
+// Both Devin's wrapped mcpServers shape and its compatible top-level map are
+// accepted.
+func ReadMCPFromDevinConfig(path string) ([]MCPServerEntry, error) {
+	data, ok := gatewayconnector.ReadStableInventoryFile(path, maxDevinInventoryConfigBytes)
+	if !ok {
+		return nil, fmt.Errorf("Devin MCP config is unavailable, unstable, unsafe, or exceeds %d bytes: %s", maxDevinInventoryConfigBytes, path)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	if _, wrapped := raw["mcpServers"]; wrapped {
+		return readMCPFromAnyPaths(raw, []string{"mcpServers"})
+	}
+	return readMCPFromAnyPaths(map[string]any{"mcpServers": raw}, []string{"mcpServers"})
 }
 
 func readMCPServersWindsurf() ([]MCPServerEntry, error) {

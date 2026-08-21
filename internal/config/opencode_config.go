@@ -22,7 +22,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	gatewayconnector "github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 )
+
+const maxOpenCodeInventoryConfigBytes int64 = 1 << 20
 
 type openCodeConfigLayer struct {
 	Source string
@@ -117,8 +121,8 @@ func resolveOpenCodeConfig(workspaceDir string) openCodeConfigResolution {
 			continue
 		}
 		seen[key] = true
-		data, err := os.ReadFile(path)
-		if err != nil {
+		data, ok := gatewayconnector.ReadStableInventoryFile(path, maxOpenCodeInventoryConfigBytes)
+		if !ok {
 			resolution.Layers = append(resolution.Layers, openCodeConfigLayer{Source: path, Scope: candidate.scope})
 			continue
 		}

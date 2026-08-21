@@ -380,6 +380,60 @@ func TestWindsurfInventoryUsesPersistedBoundUserHome(t *testing.T) {
 	}
 }
 
+func TestDevinInventoryUsesBoundUserAndPinnedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	bound := filepath.Join(root, "bound-devin")
+	ambient := filepath.Join(root, "ambient-profile")
+	workspace := filepath.Join(root, "workspace")
+	testenv.SetHome(t, ambient)
+	t.Setenv("DEFENSECLAW_DEVIN_CONFIG_HOME", bound)
+
+	writeMCP := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMCP(filepath.Join(bound, "mcp_config.json"), `{"mcpServers":{"shared":{"command":"user"},"user":{"command":"user-only"}}}`)
+	writeMCP(filepath.Join(ambient, ".config", "devin", "mcp_config.json"), `{"mcpServers":{"ambient":{"command":"must-not-leak"}}}`)
+	writeMCP(filepath.Join(workspace, ".devin", "mcp_config.json"), `{"mcpServers":{"shared":{"command":"project"},"project":{"command":"project-only"}}}`)
+	writeMCP(filepath.Join(workspace, ".devin", "mcp_config.local.json"), `{"mcpServers":{"shared":{"command":"local"},"local":{"command":"local-only"}}}`)
+	openClawPath := filepath.Join(root, "openclaw.json")
+	writeMCP(openClawPath, `{"mcp":{"servers":{"openclaw-leak":{"command":"must-not-leak"}}}}`)
+
+	cfg := &Config{Claw: ClawConfig{WorkspaceDir: workspace, ConfigFile: openClawPath}}
+	if got := cfg.ConnectorHomeDir("devin"); got != bound {
+		t.Fatalf("ConnectorHomeDir(devin) = %q, want lifecycle-bound %q", got, bound)
+	}
+	entries, err := cfg.ReadMCPServersForConnector("devin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := mcpEntriesByName(entries)
+	if len(entries) != 4 || byName["shared"].Command != "local" ||
+		byName["project"].Command != "project-only" ||
+		byName["user"].Command != "user-only" ||
+		byName["local"].Command != "local-only" {
+		t.Fatalf("Devin MCP entries = %+v, want local > project > bound user precedence", entries)
+	}
+	for _, forbidden := range []string{"ambient", "openclaw-leak"} {
+		if hasMCPEntry(entries, forbidden) {
+			t.Fatalf("Devin MCP entries leaked %q: %+v", forbidden, entries)
+		}
+	}
+
+	t.Setenv("DEFENSECLAW_DEVIN_CONFIG_HOME", "relative")
+	if got := cfg.ConnectorHomeDir("devin"); got != "" {
+		t.Fatalf("invalid Devin binding resolved home %q", got)
+	}
+	if _, err := cfg.ReadMCPServersForConnector("devin"); err == nil {
+		t.Fatal("invalid Devin binding did not fail MCP discovery")
+	}
+}
+
 func TestGeminiInventoryUsesPrivateInstallBindingAcrossUserSurfaces(t *testing.T) {
 	root := t.TempDir()
 	bound := filepath.Join(root, "official-profile", ".gemini")

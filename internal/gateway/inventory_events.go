@@ -28,6 +28,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -372,6 +373,10 @@ func hasNativeMCPReader(connectorName string) bool {
 // per-source results so callers can label each individually if desired.
 // Missing/unparseable files yield nil entries (best-effort).
 func readMCPServersUnderHome(connectorName, home string) [][]config.MCPServerEntry {
+	return readMCPServersUnderHomeForOS(connectorName, home, runtime.GOOS)
+}
+
+func readMCPServersUnderHomeForOS(connectorName, home, goos string) [][]config.MCPServerEntry {
 	if home == "" {
 		return nil
 	}
@@ -405,7 +410,11 @@ func readMCPServersUnderHome(connectorName, home string) [][]config.MCPServerEnt
 	case "cursor":
 		tryFile(config.ReadMCPFromDotMCPJSON, ".cursor/mcp.json")
 	case "devin":
-		tryFile(config.ReadMCPFromDotMCPJSON, ".config/devin/mcp_config.json")
+		if strings.EqualFold(strings.TrimSpace(goos), "windows") {
+			tryFile(config.ReadMCPFromDevinConfig, "AppData/Roaming/devin/mcp_config.json")
+		} else {
+			tryFile(config.ReadMCPFromDevinConfig, ".config/devin/mcp_config.json")
+		}
 	case "copilot":
 		tryFile(config.ReadMCPFromDotMCPJSON, ".config/github-copilot/mcp.json")
 	case "geminicli":
