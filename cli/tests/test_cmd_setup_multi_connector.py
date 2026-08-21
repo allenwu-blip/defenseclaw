@@ -336,7 +336,7 @@ class TestAdditiveSetupCommand(unittest.TestCase):
 
         self.app.cfg.save = save  # type: ignore[assignment]
         ctx = click.Context(setup_group, obj=self.app)
-        forbidden = AssertionError("PATH/configured OpenCode 1.18.12 cannot authorize the exact image")
+        forbidden = AssertionError("PATH/configured OpenCode 1.18.20 cannot authorize the exact image")
         with (
             ctx,
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
@@ -397,7 +397,7 @@ class TestAdditiveSetupCommand(unittest.TestCase):
             patch(
                 "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
                 side_effect=click.ClickException(
-                    "exact SST OpenCode 1.18.12 rejected; PATH OpenCode 1.18.11 is not authority"
+                    "exact SST OpenCode 1.18.20 rejected; PATH OpenCode 1.18.19 is not authority"
                 ),
             ),
             patch(
@@ -412,7 +412,7 @@ class TestAdditiveSetupCommand(unittest.TestCase):
                 "defenseclaw.commands.cmd_setup._sync_guardrail_hilt_to_opa",
                 return_value=None,
             ) as hilt_sync,
-            self.assertRaisesRegex(click.ClickException, "exact SST OpenCode 1.18.12"),
+            self.assertRaisesRegex(click.ClickException, "exact SST OpenCode 1.18.20"),
         ):
             cmd_setup._apply_setup_batch(
                 ctx,

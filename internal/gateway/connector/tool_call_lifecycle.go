@@ -1040,8 +1040,8 @@ func openCodeToolCallLifecycle() ToolCallLifecycleContract {
 			ToolSurfaceSkills,
 		},
 		OfficialSourceURLs: []string{
-			"https://github.com/anomalyco/opencode/blob/e4bd9757a3a5dc7461d286000a19e9bd7df57c40/packages/plugin/src/index.ts",
-			"https://github.com/anomalyco/opencode/blob/e4bd9757a3a5dc7461d286000a19e9bd7df57c40/packages/opencode/src/session/tools.ts",
+			"https://github.com/anomalyco/opencode/blob/2b72179c663cadcb54f54d9f19221b3fb3d11fb6/packages/plugin/src/index.ts",
+			"https://github.com/anomalyco/opencode/blob/2b72179c663cadcb54f54d9f19221b3fb3d11fb6/packages/opencode/src/session/tools.ts",
 		},
 		Limitations: []string{
 			"Stateful success requires the v7 bridge, which forwards input.args plus the actual output and awaits delivery before returning to the agent.",

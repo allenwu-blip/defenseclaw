@@ -30,7 +30,7 @@ const DC_PLUGIN_URL = import.meta.url;
 const DC_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
 const DC_MAX_TOKEN_FILE_BYTES = 4096;
 
-// OpenCode v1.18.10-v1.18.11 passes the effective config (including its derived
+// OpenCode v1.18.10-v1.18.19 passes the effective config (including its derived
 // plugin_origins list) to every plugin's config hook after external plugins
 // have loaded. Hooks then run sequentially in that same order. DefenseClaw's
 // global plugin is authoritative over final args only when no external plugin
@@ -55,7 +55,7 @@ function defenseclawNormalizedPluginURL(spec) {
   }
 }
 
-// This is OpenCode v1.18.10-v1.18.11's published MCP tool-name sanitizer, mirrored
+// This is OpenCode v1.18.10-v1.18.19's published MCP tool-name sanitizer, mirrored
 // exactly from packages/opencode/src/mcp/catalog.ts.
 function defenseclawSanitizeMCPName(value) {
   return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_");

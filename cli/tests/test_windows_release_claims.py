@@ -398,7 +398,7 @@ def test_opencode_docs_exclude_unqualified_enforcement_media() -> None:
     assert len(contracts) == 1
     assert contracts[0]["agent_version"] == {
         "min_inclusive": "1.18.10",
-        "max_exclusive": "1.18.12",
+        "max_exclusive": "1.18.20",
     }
     assert validated["live"] is False
     assert validated["os"]["windows"] == {
@@ -406,7 +406,7 @@ def test_opencode_docs_exclude_unqualified_enforcement_media() -> None:
         "last_validated_at": "",
         "run_url": "",
     }
-    # Enforcement media may return only with exact official-package 1.18.11
+    # Enforcement media may return only with exact official-package 1.18.19
     # SHA-256 provenance plus matching version/date/run acceptance metadata.
     assert not re.search(r"<Video\b", connector_page)
     assert "v1.17.3" not in connector_page

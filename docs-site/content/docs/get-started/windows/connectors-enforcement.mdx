@@ -356,13 +356,13 @@ execution:
 | Generic lifecycle `event` dispatch | Best-effort observation only because OpenCode dispatches it without awaiting the plugin Promise. |
 
 OpenCode loads global plugins before project plugins and runs hooks in order.
-Bridge v7 checks the official v1.18.10-v1.18.11 `plugin_origins` list; if a later plugin
+Bridge v7 checks the official v1.18.10-v1.18.19 `plugin_origins` list; if a later plugin
 could mutate the shared args, action mode refuses an authoritative allow.
 Doctor also requires the bridge's config-hook load heartbeat, so a current file
 without runtime proof warns about stopped or `--pure`/external-plugin-disabled
 operation.
 
-OpenCode 1.18.10 and 1.18.11 expose permission and chat/context plugin hooks, but the
+OpenCode 1.18.10-v1.18.19 expose permission and chat/context plugin hooks, but the
 focused DefenseClaw bridge intentionally does not implement a native ask or
 context-injection response.
 `confirm` therefore falls back to allow with audit/alerting. Its plugin

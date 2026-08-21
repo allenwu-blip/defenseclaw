@@ -1240,7 +1240,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
         _emit(
             "warn",
             "Human approval",
-            "OpenCode v1.18.10-v1.18.11 publishes permission.ask, but the DefenseClaw bridge "
+            "OpenCode v1.18.10-v1.18.19 publishes permission.ask, but the DefenseClaw bridge "
             "intentionally does not implement or claim that surface",
             r=r,
         )
@@ -3785,7 +3785,7 @@ def _opencode_load_heartbeat_status(cfg) -> tuple[str, str]:
 
     A current file digest cannot distinguish a normal OpenCode process from
     ``--pure`` or another external-plugin-disabled launch. The bridge emits a
-    scoped, secret-free heartbeat from its v1.18.10-v1.18.11 config hook.
+    scoped, secret-free heartbeat from its v1.18.10-v1.18.19 config hook.
     Consume it only through the authenticated, process/profile-bound status
     document; missing or old evidence stays unverified and never guesses why
     the client did not load the plugin.

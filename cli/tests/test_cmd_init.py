@@ -506,7 +506,7 @@ class TestInitFirstRunBackend(unittest.TestCase):
         from defenseclaw.commands import cmd_init
 
         disc = self._discovery({"amp", "opencode"})
-        forbidden = AssertionError("generic OpenCode 1.18.12 must not downgrade exact SST 1.18.11")
+        forbidden = AssertionError("generic OpenCode 1.18.20 must not downgrade exact SST 1.18.19")
         with (
             patch.object(cmd_init.platform_support, "host_os", return_value="windows"),
             patch.object(cmd_init.agent_discovery, "discover_agents", return_value=disc),

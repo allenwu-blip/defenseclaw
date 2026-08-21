@@ -1701,6 +1701,13 @@ def _version_for_binary(
     timeout = VERSION_TIMEOUT_SECONDS
     if binary_name in {"claude", "hermes", "omnigent", "openhands"}:
         timeout = 8.0
+    elif binary_name == "opencode":
+        # The official WinGet binary is a packaged Bun executable. Windows
+        # Defender inspection routinely makes its otherwise trivial
+        # ``--version`` probe take 6-8 seconds on first and subsequent runs.
+        # Keep discovery bounded, but do not reject the authentic client at
+        # the generic two-second budget before signature/version admission.
+        timeout = 10.0
     if binary_name == "openhands":
         env = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"}
     elif binary_name == "gemini":

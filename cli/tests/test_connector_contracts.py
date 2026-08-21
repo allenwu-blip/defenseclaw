@@ -551,15 +551,15 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
         self.assertEqual(self.app.cfg.claw.mode, "codex")
         self.assertEqual(self.app.cfg.guardrail.connector, "codex")
 
-    def test_opencode_11811_is_exactly_supported(self) -> None:
-        resolved = resolve_connector_contract("opencode", "opencode 1.18.11")
+    def test_opencode_11819_is_exactly_supported(self) -> None:
+        resolved = resolve_connector_contract("opencode", "opencode 1.18.19")
         self.assertEqual(resolved.status, STATUS_KNOWN)
         self.assertEqual(resolved.contract.contract_id, "opencode-hooks-v1")
 
         with (
             patch(
                 "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
-                return_value=_discovery("opencode", installed=True, version="opencode 1.18.11"),
+                return_value=_discovery("opencode", installed=True, version="opencode 1.18.19"),
             ),
             patch(
                 "defenseclaw.commands.cmd_setup.platform_support.host_os",
@@ -580,18 +580,18 @@ class TestSetupConnectorVersionGate(unittest.TestCase):
 
     def test_opencode_version_guidance_distinguishes_old_from_new(self) -> None:
         old = _connector_contract_upgrade_guidance("opencode", "OpenCode", "1.18.9")
-        current = _connector_contract_upgrade_guidance("opencode", "OpenCode", "1.18.12")
+        current = _connector_contract_upgrade_guidance("opencode", "OpenCode", "1.18.20")
 
         self.assertIn("Upgrade OpenCode", old)
         self.assertIn("older than the validated minimum", old)
         self.assertNotIn("Upgrade OpenCode", current)
         self.assertIn("newer than DefenseClaw's validated range", current)
 
-    def test_opencode_11812_is_refused_before_save_and_roster_mutation(self) -> None:
+    def test_opencode_11820_is_refused_before_save_and_roster_mutation(self) -> None:
         with (
             patch(
                 "defenseclaw.commands.cmd_setup.agent_discovery.discover_agents",
-                return_value=_discovery("opencode", installed=True, version="opencode 1.18.12"),
+                return_value=_discovery("opencode", installed=True, version="opencode 1.18.20"),
             ),
             patch(
                 "defenseclaw.commands.cmd_setup.platform_support.host_os",

@@ -2006,6 +2006,23 @@ def test_claude_version_probe_gets_longer_timeout_with_exe_suffix(monkeypatch):
     assert calls[0][1]["timeout"] == 8.0
 
 
+def test_opencode_version_probe_allows_bounded_packaged_binary_startup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda _path, **_kwargs: True)
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="1.18.19\n", stderr="")
+
+    monkeypatch.setattr(ad.subprocess, "run", fake_run)
+
+    version, error = ad._version_for_binary(r"C:\Tools\opencode.EXE", ("--version",))
+
+    assert error == ""
+    assert version == "1.18.19"
+    assert calls[0][1]["timeout"] == 10.0
+
+
 def test_gemini_version_probe_does_not_receive_private_path_authority(monkeypatch):
     calls = []
     monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", "/authenticated/.gemini")

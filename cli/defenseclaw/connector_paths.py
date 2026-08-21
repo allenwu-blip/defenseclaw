@@ -203,7 +203,7 @@ class MCPServerEntry:
 
 @dataclass(frozen=True)
 class OpenCodeConfigLayer:
-    """One locally representable OpenCode v1.18.10-v1.18.11 config layer."""
+    """One locally representable OpenCode v1.18.10-v1.18.19 config layer."""
 
     source: str
     source_scope: str
@@ -3412,7 +3412,7 @@ def _opencode_layer(path: str, scope: str) -> OpenCodeConfigLayer:
 
 
 def _resolve_opencode_config(workspace_dir: str | None = None) -> OpenCodeConfigResolution:
-    """Resolve non-enterprise OpenCode v1.18.10-v1.18.11 config precedence.
+    """Resolve non-enterprise OpenCode v1.18.10-v1.18.19 config precedence.
 
     Remote authenticated ``.well-known`` config and Windows ProgramData
     managed config cannot be established safely by an offline connector read;

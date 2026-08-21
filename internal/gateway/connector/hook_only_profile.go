@@ -128,7 +128,7 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 		}
 	case "opencode":
 		// The DefenseClaw bridge plugin reads .decision and throws on
-		// "deny"/"block" to abort the tool. OpenCode v1.18.10-v1.18.11 publishes
+		// "deny"/"block" to abort the tool. OpenCode v1.18.10-v1.18.19 publishes
 		// permission.ask and chat/context hooks, but this focused bridge does
 		// not implement them, so only block surfaces a response body here;
 		// everything else is observe-only.

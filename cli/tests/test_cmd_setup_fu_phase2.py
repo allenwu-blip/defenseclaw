@@ -911,7 +911,7 @@ class TestPerConnectorWriteSurface(_BaseSetup):
             patch(
                 "defenseclaw.commands.cmd_setup._record_windows_setup_agent_selections",
                 side_effect=click.ClickException(
-                    "exact SST OpenCode 1.18.12 is outside the validated contract; PATH 1.18.11 is irrelevant"
+                    "exact SST OpenCode 1.18.20 is outside the validated contract; PATH 1.18.19 is irrelevant"
                 ),
             ),
             patch(
@@ -928,7 +928,7 @@ class TestPerConnectorWriteSurface(_BaseSetup):
             )
 
         self.assertNotEqual(result.exit_code, 0)
-        self.assertIn("exact SST OpenCode 1.18.12", result.output)
+        self.assertIn("exact SST OpenCode 1.18.20", result.output)
         generic.assert_not_called()
         trust.assert_not_called()
         restart.assert_not_called()

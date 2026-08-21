@@ -847,14 +847,14 @@ var builtinHookContracts = map[string][]HookContract{
 		Connector:               "opencode",
 		ContractID:              "opencode-hooks-v1",
 		MinAgentVersion:         "1.18.10",
-		MaxAgentVersion:         "1.18.12",
+		MaxAgentVersion:         "1.18.20",
 		DefaultForUnversioned:   false,
 		HookScriptVersion:       "v7",
 		HookConfigPathTemplates: []string{"~/.config/opencode/plugins/defenseclaw.js"},
 		ResponseFieldName:       "hook_output",
 		// opencode exposes plugin hooks (not shell hooks). DefenseClaw's
 		// bridge plugin wires tool.execute.before (block) and
-		// tool.execute.after (observe). OpenCode v1.18.10-v1.18.11 also exposes
+		// tool.execute.after (observe). OpenCode v1.18.10-v1.18.19 also exposes
 		// permission.ask and chat/context mutation hooks; this focused bridge
 		// intentionally does not implement those surfaces.
 		Events: []string{
@@ -880,8 +880,8 @@ var builtinHookContracts = map[string][]HookContract{
 		ToolCallLifecycle:   openCodeToolCallLifecycle(),
 		Notes: []string{
 			"opencode (https://opencode.ai) auto-loads JS/TS plugins from ~/.config/opencode/plugins/ — there is no command-hook config file to patch. DefenseClaw writes a dependency-free bridge plugin (defenseclaw.js) whose tool.execute.before POSTs to /api/v1/opencode/hook and throws new Error(reason) on a block decision, aborting the tool.",
-			"DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10 and v1.18.11 expose permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
-			"Source-reviewed range is >=1.18.10,<1.18.12 with current pin 1.18.11. The v1.18.11 plugin types, plugin loader/config origins, MCP catalog sanitizer, and tool execution call sites are byte-identical to v1.18.10. The bridge refuses ambiguous MCP identity and action-mode allow claims when a later plugin can mutate args.",
+			"DefenseClaw intentionally implements block plus observe-only tool/lifecycle telemetry. OpenCode v1.18.10-v1.18.19 exposes permission.ask and chat/context mutation hooks, but this connector does not implement or claim them. The bridge honors fail-closed by throwing when the gateway is unreachable and FAIL_MODE=closed.",
+			"Source-reviewed range is >=1.18.10,<1.18.20 with current pin 1.18.19. The v1.18.19 plugin types, plugin loader/config origins, MCP catalog sanitizer, and tool execution call sites are byte-identical to v1.18.11; its only reviewed config-parser delta ignores unknown top-level keys and does not alter plugin loading or hook dispatch. The bridge refuses ambiguous MCP identity and action-mode allow claims when a later plugin can mutate args.",
 		},
 	}},
 	"amp": {{
