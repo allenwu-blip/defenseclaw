@@ -242,8 +242,8 @@ foreach ($required in @($config, $module, $pth)) {
         throw "OmniGent policy setup did not create required state: $required"
     }
 }
-Invoke-NativeChecked $setup @('/repair', '/quiet', '/norestart')
-Invoke-NativeChecked $setup @('/upgrade', '/quiet', '/norestart')
+Invoke-NativeChecked $setup @('/repair', '/quiet', '/norestart') -TimeoutSeconds 600
+Invoke-NativeChecked $setup @('/upgrade', '/quiet', '/norestart') -TimeoutSeconds 600
 $preservedState = Get-Content -LiteralPath $installStatePath -Raw | ConvertFrom-Json
 if ([string]$preservedState.connector -cne 'omnigent' -or
     [IO.Path]::GetFullPath([string]$preservedState.omnigent_config_home) -cne

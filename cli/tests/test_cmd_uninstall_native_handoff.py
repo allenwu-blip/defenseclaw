@@ -82,6 +82,8 @@ def _install_state(local_app_data: Path, profile: Path) -> dict[str, object]:
         "installed_at_utc": "2026-07-28T12:00:00Z",
         "omnigent_config_home": str(profile / ".omnigent"),
         "hermes_home": str(local_app_data / "hermes"),
+        "devin_config_dir": str(profile / "AppData" / "Roaming" / "devin"),
+        "devin_executable": str(local_app_data / "devin" / "cli" / "bin" / "devin.exe"),
         "transaction_id": "1" * 32,
     }
 
@@ -659,6 +661,18 @@ def test_prepare_refuses_unknown_native_installer_connector(tmp_path: Path) -> N
     state_path = local_app_data / "Programs" / "DefenseClaw" / "installer" / "install-state.json"
     state = _install_state(local_app_data, profile)
     state["connector"] = "not-a-connector"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(native.NativeWindowsUninstallRefusal, match="signed user installation"):
+        _prepare_from_tree(local_app_data, profile)
+
+
+def test_prepare_refuses_unsigned_current_devin_state_at_signed_custody(tmp_path: Path) -> None:
+    local_app_data, profile = _native_tree(tmp_path)
+    state_path = local_app_data / "Programs" / "DefenseClaw" / "installer" / "install-state.json"
+    state = _install_state(local_app_data, profile)
+    state["connector"] = "devin"
+    state["unsigned_local_artifact"] = True
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(native.NativeWindowsUninstallRefusal, match="signed user installation"):

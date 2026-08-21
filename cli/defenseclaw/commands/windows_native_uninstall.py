@@ -89,6 +89,8 @@ _INSTALL_STATE_OPTIONAL_FIELDS = frozenset(
         "claude_config_dir",
         "copilot_home",
         "cursor_home",
+        "devin_config_dir",
+        "devin_executable",
         "windsurf_user_home",
         "windsurf_hooks_path",
         "antigravity_config_dir",
