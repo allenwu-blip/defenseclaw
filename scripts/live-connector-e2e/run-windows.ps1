@@ -6806,10 +6806,18 @@ function Assert-DoctorWindowsHookRegistration {
         $tamperedChecks = @($tamperedReport.checks | Where-Object { [string]::Equals([string]$_.label, $label, [StringComparison]::Ordinal) })
         if ($tamperedChecks.Count -ne 1) { throw "Tampered Doctor run returned $($tamperedChecks.Count) '$label' checks, expected one" }
         $tamperedCheck = $tamperedChecks[0]
-        $expectedTamperDetail = switch ($Connector) {
+        $expectedTamperDetails = @(switch ($Connector) {
             'codex' { 'cannot be resolved' }
             'claudecode' { 'does not use the native hook runtime' }
-            'devin' { 'registered hook uses the obsolete gateway launcher' }
+            'devin' {
+                $missingGatewayLauncher = [regex]::Replace(
+                    $parsed.Target,
+                    '(?i)defenseclaw-hook\.exe$',
+                    'defenseclaw-gateway.exe'
+                )
+                'registered hook uses the obsolete gateway launcher'
+                "registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"
+            }
             'amp' { 'does not reference DefenseClaw' }
             'copilot' {
                 $missingGatewayLauncher = [regex]::Replace(
@@ -6822,8 +6830,14 @@ function Assert-DoctorWindowsHookRegistration {
             'cursor' { 'configured file has no DefenseClaw Cursor command entries' }
             'hermes' { 'does not use the direct native DefenseClaw executable' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
+        })
+        $tamperDetailMatched = $false
+        foreach ($expectedTamperDetail in $expectedTamperDetails) {
+            if ($tamperedCheck.detail -match [regex]::Escape($expectedTamperDetail)) {
+                $tamperDetailMatched = $true
+                break
+            }
         }
-        $tamperDetailMatched = $tamperedCheck.detail -match [regex]::Escape($expectedTamperDetail)
         if ($tamperedCheck.status -ne 'fail' -or -not $tamperDetailMatched) {
             throw "Doctor did not reject the tampered $Connector hook command: $($tamperedCheck.status) $($tamperedCheck.detail)"
         }

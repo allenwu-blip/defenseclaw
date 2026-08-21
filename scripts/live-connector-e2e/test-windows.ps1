@@ -3424,6 +3424,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText.Contains('"registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
         'Doctor connector contract rejects connector-specific tampered hook commands with exit 1'
+    Assert-True ($doctorContract -match "(?s)'devin'\s*\{.*?registered hook uses the obsolete gateway launcher.*?registered hook target cannot be resolved with PATHEXT: \`$missingGatewayLauncher") `
+        'Devin tamper validation accepts only exact fail-closed diagnoses for present or absent obsolete launchers'
     Assert-True ($doctorContract.Contains('"setup $repairSubcommand --mode $($script:CopilotConfiguredMode) --yes --restart"') -and
         $doctorContract.Contains('[regex]::Escape($repairGuidance)')) `
         'Copilot Doctor tamper validation requires the exact configured-mode native Setup repair command'
