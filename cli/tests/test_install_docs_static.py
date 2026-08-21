@@ -65,7 +65,6 @@ OBSERVABILITY_V8_CURRENT_AUTHORITY_FILES = (
     "docs-site/content/docs/connectors/zeptoclaw.mdx",
     "docs-site/content/docs/connectors/claudecode.mdx",
     "docs-site/content/docs/connectors/codex.mdx",
-    "docs-site/content/docs/connectors/geminicli.mdx",
     "docs-site/content/docs/setup/index.mdx",
     "docs-site/content/docs/reference/redaction.mdx",
     "docs-site/content/docs/reference/cli.mdx",
@@ -88,7 +87,6 @@ OBSERVABILITY_V8_CONNECTOR_GUIDES = (
     "docs-site/content/docs/connectors/zeptoclaw.mdx",
     "docs-site/content/docs/connectors/claudecode.mdx",
     "docs-site/content/docs/connectors/codex.mdx",
-    "docs-site/content/docs/connectors/geminicli.mdx",
 )
 
 OBSERVABILITY_V8_JSONL_GUIDES = {

@@ -65,13 +65,6 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
         False,
         "Cascade hooks only; Devin Local/cloud/ACP unsupported",
     ),
-    ModeChoice(
-        "geminicli",
-        "Gemini CLI",
-        "g",
-        False,
-        "settings.json hooks + structured deny responses; native Windows preview",
-    ),
     ModeChoice("copilot", "Copilot", "p", False, "workspace hooks + native pre-tool approval"),
     ModeChoice("openhands", "OpenHands", "n", False, "command hooks via ~/.openhands/hooks.json"),
     ModeChoice("antigravity", "Antigravity", "a", False, "PreToolUse hooks via ~/.gemini/config/hooks.json"),
@@ -84,8 +77,8 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
 def visible_mode_picker_choices(os_name: str | None = None) -> tuple[ModeChoice, ...]:
     """Mode-picker rows supported on *os_name*.
 
-    Unsupported Windows connectors are dropped. Preview connectors remain
-    selectable with an explicit label/reason; macOS/Linux are unchanged.
+    Unsupported or retired connectors are dropped. Preview connectors remain
+    selectable with an explicit label/reason.
     """
     supported = set(supported_connectors([c.wire for c in MODE_PICKER_CHOICES], os_name))
     visible: list[ModeChoice] = []

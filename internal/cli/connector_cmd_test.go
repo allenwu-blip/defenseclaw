@@ -875,7 +875,7 @@ func TestConnectorReconcileCopilotSupportsOrdinaryPath(t *testing.T) {
 	}
 }
 
-func TestConnectorReconcileGeminiSupportsInstallerBoundNativePath(t *testing.T) {
+func TestConnectorReconcileRejectsDeprecatedGeminiWithoutWritingSettings(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows Setup maintenance contract")
 	}
@@ -894,12 +894,15 @@ func TestConnectorReconcileGeminiSupportsInstallerBoundNativePath(t *testing.T) 
 	}
 
 	stdout, stderr, exitCode := runConnectorCmd(t, "reconcile", "--connector", "geminicli", "--json")
-	if exitCode != 0 || !strings.Contains(stdout, `"connector":"geminicli"`) {
-		t.Fatalf("ordinary Gemini reconcile failed: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	if exitCode != 0 || stdout != "" {
+		t.Fatalf("deprecated Gemini reconcile produced output: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
 	}
-	assertConnectorReconcileStderr(t, "geminicli", stderr)
-	if _, err := os.Stat(filepath.Join(home, "settings.json")); err != nil {
-		t.Fatalf("bound Gemini reconcile did not publish settings.json: %v", err)
+	if !strings.Contains(stderr, "Gemini CLI integration is deprecated") ||
+		!strings.Contains(stderr, "use the Antigravity connector") {
+		t.Fatalf("deprecated Gemini reconcile stderr = %q", stderr)
+	}
+	if _, err := os.Stat(filepath.Join(home, "settings.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deprecated Gemini reconcile wrote bound settings.json: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(ambientHome, "settings.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Gemini reconcile trusted ambient GEMINI_CONFIG_DIR: %v", err)

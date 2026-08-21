@@ -379,62 +379,6 @@
       ]
     },
     {
-      "id": "geminicli",
-      "name": "Gemini CLI",
-      "vendor": "Google",
-      "category": "supported_connector",
-      "confidence": 0.95,
-      "supported_connector": "geminicli",
-      "binary_names": [
-        "gemini"
-      ],
-      "process_names": [
-        "gemini"
-      ],
-      "config_paths": [
-        "~/.gemini/settings.json",
-        ".gemini/settings.json",
-        ".gemini/skills",
-        ".agents/skills",
-        ".gemini/extensions",
-        "GEMINI.md",
-        ".gemini/GEMINI.md"
-      ],
-      "extension_ids": [
-        "google.geminicodeassist"
-      ],
-      "mcp_paths": [
-        "~/.gemini/settings.json",
-        ".gemini/settings.json"
-      ],
-      "package_names": [
-        "@google/gemini-cli",
-        "@google/genai",
-        "google-generativeai",
-        "google-genai"
-      ],
-      "env_var_names": [
-        "GEMINI_API_KEY",
-        "GOOGLE_API_KEY",
-        "GOOGLE_APPLICATION_CREDENTIALS"
-      ],
-      "domain_patterns": [
-        "generativelanguage.googleapis.com",
-        "aiplatform.googleapis.com"
-      ],
-      "history_patterns": [
-        "gemini",
-        "google-generativeai"
-      ],
-      "application_names": [],
-      "local_endpoints": [],
-      "skill_paths": [
-        ".gemini/skills",
-        ".agents/skills",
-        "~/.gemini/skills"
-      ]
-    },
-    {
       "id": "copilot",
       "name": "GitHub Copilot",
       "vendor": "GitHub",

@@ -74,7 +74,6 @@ export const defaultKeywords = [
   'Cursor',
   'Windsurf',
   'GitHub Copilot CLI',
-  'Gemini CLI',
   'MCP scanner',
   'AI policy',
   'AI audit',

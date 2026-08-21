@@ -26,11 +26,12 @@ var windowsSupportedConnectorNames = []string{
 	"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf",
 }
 
-var windowsPreviewConnectorNames = []string{"geminicli"}
+var windowsPreviewConnectorNames = []string{}
 
 var windowsNotCertifiedConnectorNames = []string{}
 
 var windowsUnsupportedConnectorNames = []string{
+	"geminicli",
 	"openclaw",
 	"openhands",
 	"zeptoclaw",
@@ -132,8 +133,12 @@ func TestConnectorSupportOnOS(t *testing.T) {
 
 	for _, goos := range []string{"linux", "darwin"} {
 		for _, name := range allWindowsConnectorNames() {
-			if got := ConnectorSupportOnOS(name, goos).Status; got != PlatformSupported {
-				t.Errorf("%s on %s status=%q, want supported", name, goos, got)
+			want := PlatformSupported
+			if name == "geminicli" {
+				want = PlatformUnsupported
+			}
+			if got := ConnectorSupportOnOS(name, goos).Status; got != want {
+				t.Errorf("%s on %s status=%q, want %q", name, goos, got, want)
 			}
 		}
 	}
@@ -149,8 +154,8 @@ func TestValidateConnectorSupportedOnOS(t *testing.T) {
 			t.Fatalf("supported connector %s should remain available: %v", name, err)
 		}
 	}
-	if err := validateConnectorSupportedOnOS("geminicli", "windows"); err != nil {
-		t.Fatalf("preview Gemini CLI connector should remain available: %v", err)
+	if err := validateConnectorSupportedOnOS("geminicli", "windows"); err == nil || !strings.Contains(err.Error(), "deprecated") {
+		t.Fatalf("deprecated Gemini CLI connector should be rejected: %v", err)
 	}
 	err := validateConnectorSupportedOnOS("openhands", "windows")
 	if err == nil || !strings.Contains(err.Error(), "requires WSL") {
@@ -172,16 +177,16 @@ func TestCheckPlatformSupportPreservesOperatorWording(t *testing.T) {
 	}
 
 	warning, err = CheckPlatformSupport("geminicli", "windows")
-	wantWarning := "connector geminicli is preview on windows: " + windowsConnectorSupport["geminicli"].Reason
-	if err != nil || warning != wantWarning {
-		t.Fatalf("preview Gemini CLI result warning=%q err=%v, want warning %q", warning, err, wantWarning)
+	wantError := "connector \"geminicli\" is not supported on windows: " + deprecatedConnectorSupport["geminicli"].Reason
+	if warning != "" || err == nil || err.Error() != wantError {
+		t.Fatalf("deprecated Gemini CLI result warning=%q err=%v, want error %q", warning, err, wantError)
 	}
 
 	warning, err = CheckPlatformSupport("openhands", "windows")
 	if warning != "" {
 		t.Fatalf("unsupported warning = %q, want empty", warning)
 	}
-	wantError := "connector \"openhands\" is not supported on windows: " + windowsConnectorSupport["openhands"].Reason
+	wantError = "connector \"openhands\" is not supported on windows: " + windowsConnectorSupport["openhands"].Reason
 	if err == nil || err.Error() != wantError {
 		t.Fatalf("unsupported error = %v, want %q", err, wantError)
 	}

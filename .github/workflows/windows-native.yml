@@ -802,10 +802,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Gemini CLI participates only in this deterministic packaged contract
-        # while it remains Preview. This matrix is not authenticated live or
-        # official-client evidence and does not certify preview connectors.
-        connector: [codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, geminicli, opencode]
+        connector: [codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, opencode]
     env:
       CONNECTOR: ${{ matrix.connector }}
     steps:

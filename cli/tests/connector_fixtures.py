@@ -34,7 +34,6 @@ CONNECTORS = (
     "hermes",
     "cursor",
     "windsurf",
-    "geminicli",
     "copilot",
     "openhands",
     "antigravity",

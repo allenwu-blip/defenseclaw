@@ -1850,7 +1850,7 @@ def test_windsurf_readiness_uses_bound_profile_not_ambient(
     assert result.status == "pass"
 
 
-def test_gemini_readiness_uses_private_binding_not_hostile_home(
+def test_gemini_readiness_reports_deprecation_and_safe_cleanup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bound = tmp_path / "authenticated" / ".gemini"
@@ -1868,11 +1868,14 @@ def test_gemini_readiness_uses_private_binding_not_hostile_home(
     monkeypatch.setattr(Path, "home", lambda: hostile)
 
     result = _connector_readiness(SimpleNamespace(), "geminicli")
-    assert result.status == "pass"
+    assert result.status == "warn"
+    assert "deprecated" in result.detail.lower()
+    assert result.next_command == "defenseclaw setup remove geminicli --yes"
 
     settings.unlink()
     result = _connector_readiness(SimpleNamespace(), "geminicli")
     assert result.status == "warn"
+    assert result.next_command == "defenseclaw setup antigravity"
 
 
 if __name__ == "__main__":

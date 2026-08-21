@@ -51,7 +51,6 @@ def test_mode_picker_choices_cover_go_connectors() -> None:
         "hermes",
         "cursor",
         "windsurf",
-        "geminicli",
         "copilot",
         "openhands",
         "antigravity",

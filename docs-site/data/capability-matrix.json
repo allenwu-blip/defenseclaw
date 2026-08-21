@@ -148,24 +148,6 @@
       "notes": "The documented custom Python policy bridge maps all six OmniGent policy phases. Post-phase DENY uses OmniGent's denial/sentinel behavior rather than custom replacement data. Native OTLP is inactive until the launch process exports OMNIGENT_TELEMETRY_ENABLED=true plus the standard OTLP variables, while content capture stays off. Policy-event usage, cost, model, harness, actor, and labels are bounded; v0.7 exposes no policy-event session ID. Component scanning of agent YAML functions, MCP tools, and subagents is unsupported/unverified."
     },
     {
-      "id": "geminicli",
-      "label": "Gemini CLI",
-      "summary": "Settings hooks with a native OTLP exporter pointed at the gateway.",
-      "family": "hooks",
-      "toolInspection": "pre-execution + response-scan",
-      "subprocessPolicy": "none",
-      "hooks": {
-        "canBlock": true,
-        "canAskNative": false,
-        "askEvents": [],
-        "blockEvents": ["BeforeAgent", "BeforeModel", "BeforeTool", "AfterTool", "AfterModel", "AfterAgent"],
-        "supportsFailClosed": true,
-        "scope": "user"
-      },
-      "hilt": "Can block supported hook events but has no native human-approval surface; confirm verdicts fall back explicitly.",
-      "notes": "settings.json hooks; native OTLP exporter wires directly to the gateway."
-    },
-    {
       "id": "copilot",
       "label": "GitHub Copilot CLI",
       "summary": "Global or workspace hooks with native approval on pre-tool-use.",

@@ -369,7 +369,6 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "Amp", Value: "amp"},
 		{Label: "Google Antigravity", Value: "antigravity"},
-		{Label: "Gemini CLI (preview)", Value: "geminicli"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent", Value: "hermes"},
@@ -462,6 +461,17 @@ func TestInteractiveInstallDefaultsPreserveExistingSelections(t *testing.T) {
 	}
 }
 
+func TestInteractiveInstallDefaultsRetireGeminiSelection(t *testing.T) {
+	state := &installState{Connector: "geminicli", Mode: "action"}
+	opts := applyInteractiveInstallDefaults(options{Action: "install"}, state, false, true)
+	if opts.Connector != "none" || opts.Mode != "action" || opts.StartGateway {
+		t.Fatalf("retired Gemini defaults = %+v, want connector-free install", opts)
+	}
+	if opts.ConnectorSet || opts.ModeSet || opts.StartGatewaySet {
+		t.Fatalf("retired Gemini defaults were incorrectly marked explicit: %+v", opts)
+	}
+}
+
 func TestInteractiveInstallDefaultsRespectExplicitSelections(t *testing.T) {
 	state := &installState{Connector: "claudecode", Mode: "action"}
 	opts := applyInteractiveInstallDefaults(options{
@@ -511,7 +521,6 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "hermes", want: "Hermes hooks", reject: "fail-closed"},
 		{connector: "windsurf", want: "PowerShell Cascade hooks", reject: "certified"},
 		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
-		{connector: "geminicli", want: "Gemini CLI preview is configured", reject: "certified"},
 		{connector: "omnigent", want: "native degraded policy integration", reject: "trusted automatically"},
 		{connector: "opencode", want: "OpenCode is configured", reject: "certified"},
 		{connector: "none", want: "defenseclaw init", reject: "open /hooks"},

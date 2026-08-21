@@ -214,7 +214,6 @@ var (
 		{Label: "Claude Code", Value: "claudecode"},
 		{Label: "Amp", Value: "amp"},
 		{Label: "Google Antigravity", Value: "antigravity"},
-		{Label: "Gemini CLI (preview)", Value: "geminicli"},
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent", Value: "hermes"},
@@ -753,8 +752,6 @@ func wizardCompletionDescription(connector string) string {
 		return "Windsurf native Windows support is configured with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
 	case "antigravity":
 		return "Google Antigravity is configured with its native Windows hooks." + installed
-	case "geminicli":
-		return "Gemini CLI preview is configured with awaited native Windows hooks. Packaged and authenticated official-client validation remains pending." + installed
 	case "opencode":
 		return "OpenCode is configured with the native Windows bridge plugin. Restart OpenCode to load it." + installed
 	case "omnigent":
@@ -1002,7 +999,11 @@ func applyInteractiveInstallDefaults(opts options, state *installState, autoStar
 		}
 		return opts
 	}
-	if !opts.ConnectorSet && validConnector(state.Connector) {
+	if !opts.ConnectorSet && state.Connector == "geminicli" {
+		// Retired Gemini CLI installs default to Configure later. The install
+		// transaction retains the previous state for exact teardown.
+		opts.Connector = "none"
+	} else if !opts.ConnectorSet && validConnector(state.Connector) {
 		opts.Connector = state.Connector
 	}
 	if !opts.ModeSet && validMode(state.Mode) {

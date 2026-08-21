@@ -44,8 +44,8 @@ intact when diagnosing a problem.
 | `%CODEX_HOME%\config.toml` | Codex user config plus DefenseClaw-marked OTLP/notify fields. | Other Codex settings are user-owned; use DefenseClaw teardown to remove managed fields. |
 | `%CLAUDE_CONFIG_DIR%\settings.json` | Claude Code user config plus DefenseClaw-marked hooks/OTLP environment entries. Default is `%USERPROFILE%\.claude`. | Do not remove individual managed entries by hand; use setup/remove. |
 | `%USERPROFILE%\.config\amp\plugins\defenseclaw.ts` | DefenseClaw-managed Amp TypeScript system-policy plugin with a connector-scoped credential. | **Never print, copy, or hand-edit.** Use setup/remove; operator-owned sibling plugins are separate. |
-| `%GEMINI_CLI_HOME%\.gemini\settings.json` | Gemini CLI preview hooks and path-token native-OTLP fields. When `GEMINI_CLI_HOME` is unset or exactly empty, the root defaults to the Profile Known Folder and this is `%USERPROFILE%\.gemini\settings.json`. | `GEMINI_CLI_HOME` is a home root, not the `.gemini` directory. Setup records the root and derived config directory, preserves foreign groups and fields, and removes only DefenseClaw-owned entries. |
-| `%USERPROFILE%\.gemini\config\hooks.json` | Google Antigravity's native hook configuration. | This nested Antigravity document is separate from Gemini CLI's root `settings.json`; lifecycle operations must not cross those ownership boundaries. |
+| `%GEMINI_CLI_HOME%\.gemini\settings.json` | Retired Gemini CLI integration state only. | New setup is unavailable. `defenseclaw setup remove geminicli --yes` uses the authenticated receipt to remove only DefenseClaw-owned legacy entries. |
+| `%USERPROFILE%\.gemini\config\hooks.json` | Google Antigravity's native hook configuration. | This nested Antigravity document is separate from retired Gemini CLI root settings; lifecycle operations must not cross those ownership boundaries. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw-managed entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
 | `%USERPROFILE%\.codeium\windsurf\hooks.json` | Legacy Cascade user hook configuration in Devin Desktop. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. Devin Local uses separate hooks and is unsupported. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
 | `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Optional read-only legacy Cascade MCP inventory. It is not hook configuration and its absence does not make the connector unhealthy. | Manage MCP servers through Devin Desktop. DefenseClaw does not create this file or use it to repair hooks. |
@@ -66,18 +66,15 @@ configuration overrides honored by their respective implementations. Set them
 to absolute, normalized native Windows paths before initial Setup or connector
 setup. The installer validates and records them; reparse ancestors are refused.
 Antigravity, Cursor, and legacy Cascade publish no equivalent public
-configuration-home override. Gemini CLI publishes `GEMINI_CLI_HOME`; its global
-configuration directory is `<GEMINI_CLI_HOME>\.gemini`. A non-empty value must
-be absolute, normalized, control-free, free of surrounding whitespace, and have
-no unsafe reparse ancestry or Setup fails closed. An absent or exactly empty
-value defaults to the Profile Known Folder. `GEMINI_CONFIG_DIR` is not a Gemini
-CLI selector and DefenseClaw ignores and scrubs it. Antigravity's distinct global hook path is fixed at
+configuration-home override. The retired Gemini CLI cleanup path can still read
+its previously authenticated `GEMINI_CLI_HOME` custody record; it is not a
+supported new setup override. Antigravity's distinct global hook path is fixed at
 `%USERPROFILE%\.gemini\config\hooks.json`; Setup keeps any predecessor custom
 path only as internal custody needed for exact migration and restoration.
-Setup records Gemini's vendor root, derived `.gemini` directory, and
-Antigravity's nested home independently so one
-connector cannot restore or delete the other's document. Cursor and legacy
-Cascade likewise record their exact native paths internally.
+Legacy cleanup records Gemini's vendor root and derived `.gemini` directory
+independently from Antigravity's nested home so one connector cannot restore or
+delete the other's document. Cursor and legacy Cascade likewise record their
+exact native paths internally.
 Amp has no connector-home override: its supported system plugin path is fixed
 beneath the current `%USERPROFILE%` at
 `.config\amp\plugins\defenseclaw.ts`.

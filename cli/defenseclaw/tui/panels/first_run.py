@@ -29,7 +29,6 @@ CONNECTOR_CHOICES: tuple[str, ...] = (
     "hermes",
     "cursor",
     "windsurf",
-    "geminicli",
     "copilot",
     "openhands",
     "antigravity",
@@ -42,7 +41,7 @@ CONNECTOR_CHOICES: tuple[str, ...] = (
 def visible_connector_choices(os_name: str | None = None) -> tuple[str, ...]:
     """``CONNECTOR_CHOICES`` supported on *os_name*.
 
-    Drops unsupported connectors on Windows; a no-op on macOS/Linux.
+    Drops unsupported or globally retired connectors on every platform.
     """
     return tuple(supported_connectors(CONNECTOR_CHOICES, os_name))
 

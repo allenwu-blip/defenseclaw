@@ -687,11 +687,6 @@ class DoctorGuardrailTests(unittest.TestCase):
         )
 
         result = _DoctorResult()
-        _check_hilt_support(cfg, "geminicli", result)
-        self.assertEqual(result.warned, 1)
-        self.assertIn("no native human approval surface", result.checks[0]["detail"])
-
-        result = _DoctorResult()
         _check_hilt_support(cfg, "openhands", result)
         self.assertEqual(result.warned, 1)
         self.assertIn("no native human approval surface", result.checks[0]["detail"])

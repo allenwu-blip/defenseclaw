@@ -3078,14 +3078,13 @@ class TestCheckHookHealth(unittest.TestCase):
         self.assertTrue(r.checks)
         self.assertEqual(r.checks[-1]["label"], "OmniGent policy")
 
-    def test_dispatch_routes_all_five_connectors(self) -> None:
+    def test_dispatch_routes_all_active_generic_connectors(self) -> None:
         """``_check_connector_hooks`` must dispatch each generic connector
         unhandled connectors to the generic hook-health row."""
         for connector, label in (
             ("hermes", "Hermes hooks (fail-open)"),
             ("cursor", "Cursor hooks"),
             ("windsurf", "Legacy Cascade hooks"),
-            ("geminicli", "Gemini CLI hooks"),
             ("opencode", "OpenCode hooks"),
         ):
             with tempfile.TemporaryDirectory() as tmp:
@@ -3094,6 +3093,15 @@ class TestCheckHookHealth(unittest.TestCase):
                 _check_connector_hooks(cfg, connector, r)
             self.assertTrue(r.checks, msg=connector)
             self.assertIn(label, {check["label"] for check in r.checks}, msg=connector)
+
+    def test_dispatch_reports_gemini_deprecation_instead_of_hook_health(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp, "geminicli", [os.path.join(tmp, "missing")])
+            r = _DoctorResult()
+            _check_connector_hooks(cfg, "geminicli", r)
+        self.assertEqual(r.checks[-1]["status"], "warn")
+        self.assertEqual(r.checks[-1]["reason_code"], "connector_deprecated")
+        self.assertIn("use Antigravity", r.checks[-1]["detail"])
 
 
 class TestConnectorEnabled(unittest.TestCase):

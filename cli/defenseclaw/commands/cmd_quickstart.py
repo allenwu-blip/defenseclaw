@@ -116,7 +116,6 @@ import click
             "hermes",
             "cursor",
             "windsurf",
-            "geminicli",
             "copilot",
             "openhands",
             "antigravity",

@@ -4077,7 +4077,6 @@ _CONNECTOR_NAMES_FALLBACK = [
     "hermes",
     "cursor",
     "windsurf",
-    "geminicli",
     "copilot",
     "openhands",
     "antigravity",
@@ -4128,6 +4127,14 @@ class _PlatformConnectorChoice(click.Choice):
     ) -> Any:
         if isinstance(value, str):
             connector = normalize_connector(value)
+            if connector in platform_support.DEPRECATED_CONNECTORS:
+                support = platform_support.connector_platform_support(connector)
+                self.fail(
+                    f"connector {connector!r} is {support.status} on "
+                    f"{platform_support.host_os()}: {support.reason}",
+                    param,
+                    ctx,
+                )
             if connector in _CONNECTOR_NAMES_FALLBACK:
                 support = platform_support.connector_platform_support(connector)
                 if not support.available:
@@ -4184,11 +4191,8 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
         "subprocess_policy": "none",
     },
     "geminicli": {
-        "label": "Gemini CLI",
-        "description": (
-            "settings.json hooks + native OTLP + project/user MCP; "
-            "workspace skills/agents + read-only user extensions"
-        ),
+        "label": "Gemini CLI (deprecated; use Antigravity)",
+        "description": "retired integration retained only for safe teardown and uninstall",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -4307,15 +4311,9 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "Devin Local/default-agent, cloud, ACP, and managed/ProgramData layers remain unsupported",
     ),
     "geminicli": (
-        (
-            "<GEMINI_CLI_HOME>/.gemini/settings.json lifecycle hooks and native OTLP "
-            "telemetry (absent/exact-empty override defaults to ~/.gemini; invalid "
-            "non-empty override is rejected)"
-        ),
-        "Project and user .gemini/settings.json MCP entries",
-        "<workspace>/.gemini/skills and <workspace>/.gemini/agents install surfaces",
-        "~/.gemini/extensions user-global discovery only (not modified by Setup)",
-        "native executable hook command on Windows; ~/.defenseclaw/hooks/geminicli-hook.sh elsewhere",
+        "New setup is disabled on every platform; use the Antigravity connector",
+        "Existing managed settings.json hooks and native OTLP state remain removable",
+        "Legacy receipts and backups are retained only for exact restore or surgical cleanup",
     ),
     "copilot": (
         "~/.copilot/hooks/defenseclaw.json hooks by default",
@@ -5014,7 +5012,7 @@ def _hilt_support_note(connector: str) -> str:
             "OmniGent parks request, tool_call, and llm_request policy phases for native ASK approval; "
             "post-phase confirm findings are audited and continue without an approval pause."
         )
-    if connector in {"hermes", "windsurf", "geminicli", "openhands", "opencode"}:
+    if connector in {"hermes", "windsurf", "openhands", "opencode"}:
         return (
             "This connector can block supported hook events but has no native human approval surface; "
             "confirm falls back explicitly."
@@ -6263,7 +6261,6 @@ def setup_guardrail(
 #   defenseclaw setup hermes         → observe by default for Hermes
 #   defenseclaw setup cursor         → observe by default for Cursor
 #   defenseclaw setup windsurf       → observe by default for Windsurf
-#   defenseclaw setup geminicli      → observe by default for Gemini CLI
 #   defenseclaw setup copilot        → observe by default for GitHub Copilot CLI
 #   defenseclaw setup openhands      → observe by default for OpenHands
 #   defenseclaw setup antigravity    → observe by default for Antigravity (agy)
@@ -8376,7 +8373,7 @@ def _print_connector_observability_banner(connector: str, *, mode: str = "observ
         click.echo("                   only PreToolUse carries documented ask/deny output")
     else:
         click.echo(f"    • Hooks      — tool calls, prompt-submit, agent stop → /api/v1/{connector}/hook")
-    native_otel_connectors = {"codex", "claudecode", "geminicli", "omnigent"}
+    native_otel_connectors = {"codex", "claudecode", "omnigent"}
     if connector in native_otel_connectors:
         if connector == "omnigent":
             click.echo(
@@ -10423,7 +10420,6 @@ for _observability_connector in (
     "hermes",
     "cursor",
     "windsurf",
-    "geminicli",
     "copilot",
     "openhands",
     "antigravity",
@@ -10432,6 +10428,24 @@ for _observability_connector in (
     "omnigent",
 ):
     setup.add_command(_make_observability_setup_command(_observability_connector))
+
+
+def _deprecated_gemini_setup() -> None:
+    raise click.ClickException(
+        "Gemini CLI integration is deprecated; use `defenseclaw setup antigravity`. "
+        "Existing managed Gemini CLI hooks remain removable with "
+        "`defenseclaw setup remove geminicli`."
+    )
+
+
+for _deprecated_gemini_alias in ("geminicli", "gemini-cli", "gemini"):
+    setup.add_command(
+        click.Command(
+            _deprecated_gemini_alias,
+            callback=_deprecated_gemini_setup,
+            hidden=True,
+        )
+    )
 
 
 # Two orthogonal facts about a connector — split deliberately so the
@@ -10462,7 +10476,6 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "hermes",
         "cursor",
         "windsurf",
-        "geminicli",
         "copilot",
         "openhands",
         "antigravity",

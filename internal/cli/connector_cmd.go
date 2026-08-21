@@ -308,8 +308,8 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		// SetupOpts.ConfigHome, so do not invent or export a vendor override.
 		return func() {}, nil
 	case "geminicli":
-		// Gemini CLI has no supported configuration-home environment variable.
-		// SetupOpts.ConfigHome already carries the authenticated hidden binding.
+		// Retired Gemini CLI cleanup uses only SetupOpts.ConfigHome from the
+		// authenticated maintenance handoff; never publish a new vendor override.
 		return func() {}, nil
 	case "opencode":
 		variable = "OPENCODE_CONFIG_DIR"

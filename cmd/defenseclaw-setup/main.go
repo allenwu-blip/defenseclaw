@@ -438,7 +438,14 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 		return 1, fmt.Errorf("refusing to replace an existing directory without valid DefenseClaw installer state: %s", installRoot)
 	}
 	if oldState != nil {
-		if !opts.ConnectorSet && validConnector(oldState.Connector) {
+		if !opts.ConnectorSet && oldState.Connector == "geminicli" {
+			// Retire inherited Gemini CLI selection during repair/upgrade. The
+			// transaction still carries oldState as previous custody, so the
+			// authenticated superseded-connector teardown removes only managed
+			// legacy entries before committing a connector-free install.
+			opts.Connector = "none"
+			opts.PreserveConnectorConfiguration = false
+		} else if !opts.ConnectorSet && validConnector(oldState.Connector) {
 			opts.Connector = oldState.Connector
 			opts.PreserveConnectorConfiguration = !opts.ModeSet
 		}
@@ -2834,7 +2841,10 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, geminicli, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
+	}
+	if opts.ConnectorSet && opts.Connector == "geminicli" {
+		return opts, errors.New("Gemini CLI integration is deprecated; install the Antigravity connector instead")
 	}
 	if opts.Mode != "observe" && opts.Mode != "action" {
 		return opts, fmt.Errorf("invalid MODE %q; expected observe or action", opts.Mode)
@@ -2901,7 +2911,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|antigravity|codex|claudecode|copilot|cursor|geminicli|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|antigravity|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

@@ -21,15 +21,6 @@
         "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
       }
     },
-    "geminicli": {
-      "version_probe": "gemini --version",
-      "live": true,
-      "os": {
-        "linux": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
-        "macos": { "last_validated_version": "", "last_validated_at": "", "run_url": "" },
-        "windows": { "last_validated_version": "", "last_validated_at": "", "run_url": "" }
-      }
-    },
     "cursor": {
       "version_probe": "agent --version",
       "live": false,

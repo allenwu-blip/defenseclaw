@@ -693,7 +693,7 @@ func (a *APIServer) registerConnectorHookRoutes(mux *http.ServeMux, wrap ...func
 		if f, ok := connectorHookHandlerByName["codex"]; ok {
 			register("/api/v1/codex/hook", http.HandlerFunc(f(a)))
 		}
-		for _, name := range []string{"hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "amp", "omnigent"} {
+		for _, name := range []string{"hermes", "cursor", "windsurf", "copilot", "openhands", "antigravity", "opencode", "amp", "omnigent"} {
 			if f, ok := connectorHookHandlerByName[name]; ok {
 				register("/api/v1/"+name+"/hook", http.HandlerFunc(f(a)))
 			}
@@ -702,6 +702,9 @@ func (a *APIServer) registerConnectorHookRoutes(mux *http.ServeMux, wrap ...func
 	}
 
 	for _, name := range a.connectorRegistry.Names() {
+		if connector.ConnectorSupportOnHostOS(name).Status == connector.PlatformUnsupported {
+			continue
+		}
 		conn, ok := a.connectorRegistry.Get(name)
 		if !ok {
 			continue

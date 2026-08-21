@@ -1689,7 +1689,7 @@ def friendly_connector_name(connector: str) -> str:
         case "windsurf":
             return "Devin Desktop — legacy Cascade"
         case "geminicli":
-            return "Gemini CLI"
+            return "Gemini CLI (deprecated; use Antigravity)"
         case "copilot":
             return "GitHub Copilot CLI"
         case "openhands":

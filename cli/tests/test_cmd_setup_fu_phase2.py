@@ -616,10 +616,10 @@ class TestPerConnectorWriteSurface(_BaseSetup):
             self.assertEqual(gc.effective_mode(connector), "observe")
 
     def test_setup_guardrail_unscoped_block_message_updates_all_active_overrides(self):
-        self._seed_map("geminicli", "hermes")
+        self._seed_map("codex", "hermes")
         gc = self.app.cfg.guardrail
         gc.block_message = "Global block"
-        gc.connectors["geminicli"].block_message = "Gemini scoped block"
+        gc.connectors["codex"].block_message = "Codex scoped block"
 
         with _stub_side_effects():
             res = _invoke(
@@ -635,7 +635,7 @@ class TestPerConnectorWriteSurface(_BaseSetup):
             )
         self.assertEqual(res.exit_code, 0, msg=res.output)
         self.assertEqual(gc.block_message, "Global block 2")
-        for connector in ("geminicli", "hermes"):
+        for connector in ("codex", "hermes"):
             self.assertEqual(gc.connectors[connector].block_message, "Global block 2")
             self.assertEqual(gc.effective_block_message(connector), "Global block 2")
 
@@ -3584,7 +3584,7 @@ class TestBareSetupBatch(_BaseSetup):
             stack.enter_context(
                 patch(
                     "defenseclaw.commands.cmd_setup._prompt_batch_connector_modes",
-                    return_value={"geminicli": "action", "windsurf": "action"},
+                    return_value={"copilot": "action", "windsurf": "action"},
                 )
             )
             stack.enter_context(patch("defenseclaw.commands.cmd_setup._prompt_batch_trusted_prefixes", return_value={}))
@@ -3601,17 +3601,17 @@ class TestBareSetupBatch(_BaseSetup):
                 )
             )
             res = _invoke(
-                ["-c", "geminicli", "-c", "windsurf", "--no-restart"],
+                ["-c", "copilot", "-c", "windsurf", "--no-restart"],
                 self.app,
             )
 
         self.assertEqual(res.exit_code, 0, msg=res.output)
-        self.assertIn("Gemini CLI: requested action mode was refused", res.output)
+        self.assertIn("GitHub Copilot CLI: requested action mode was refused", res.output)
         self.assertIn("Devin Desktop — legacy Cascade: requested action mode was refused", res.output)
         gc = self.app.cfg.guardrail
-        self.assertEqual(gc.effective_mode("geminicli"), "observe")
+        self.assertEqual(gc.effective_mode("copilot"), "observe")
         self.assertEqual(gc.effective_mode("windsurf"), "observe")
-        self.assertEqual(gc.connectors["geminicli"].mode, "observe")
+        self.assertEqual(gc.connectors["copilot"].mode, "observe")
         self.assertEqual(gc.connectors["windsurf"].mode, "observe")
 
     def test_interactive_batch_selects_judge_connectors_without_strategy_prompt(self):

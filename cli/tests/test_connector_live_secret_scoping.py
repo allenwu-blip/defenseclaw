@@ -65,8 +65,6 @@ def test_unix_live_secrets_are_connector_scoped_and_not_job_wide() -> None:
         "OPENAI_API_KEY": _secret_expression("OPENAI_API_KEY", "codex", "opencode", "openhands"),
         "ANTHROPIC_API_KEY": _secret_expression("ANTHROPIC_API_KEY", "claudecode"),
         "AMP_API_KEY": _secret_expression("AMP_API_KEY", "amp"),
-        "GOOGLE_API_KEY": _secret_expression("GOOGLE_API_KEY", "geminicli"),
-        "GEMINI_API_KEY": _secret_expression("GOOGLE_API_KEY", "geminicli"),
         "CURSOR_API_KEY": _secret_expression("CURSOR_API_KEY", "cursor"),
         "LLM_API_KEY": _secret_expression("LLM_API_KEY", "openhands"),
     }
@@ -76,8 +74,6 @@ def test_unix_live_secrets_are_connector_scoped_and_not_job_wide() -> None:
         "OPENAI_API_KEY": _secret_expression("OPENAI_API_KEY", "codex", "opencode", "openhands"),
         "ANTHROPIC_API_KEY": _secret_expression("ANTHROPIC_API_KEY", "claudecode"),
         "AMP_API_KEY": _secret_expression("AMP_API_KEY", "amp"),
-        "GOOGLE_API_KEY": _secret_expression("GOOGLE_API_KEY", "geminicli"),
-        "GEMINI_API_KEY": _secret_expression("GOOGLE_API_KEY", "geminicli"),
         "CURSOR_API_KEY": _secret_expression("CURSOR_API_KEY", "cursor"),
         "COPILOT_GITHUB_TOKEN": _secret_expression("COPILOT_GITHUB_TOKEN", "copilot"),
         "LLM_API_KEY": _secret_expression("LLM_API_KEY", "openhands"),
@@ -104,10 +100,6 @@ def test_seeded_env_contains_only_the_current_connector_keys() -> None:
     assert _case_writes(seed_script, "codex|opencode") == {"OPENAI_API_KEY"}
     assert _case_writes(seed_script, "claudecode") == {"ANTHROPIC_API_KEY"}
     assert _case_writes(seed_script, "amp") == {"AMP_API_KEY"}
-    assert _case_writes(seed_script, "geminicli") == {
-        "GOOGLE_API_KEY",
-        "GEMINI_API_KEY",
-    }
     assert _case_writes(seed_script, "cursor") == {"CURSOR_API_KEY"}
     assert _case_writes(seed_script, "openhands") == {"OPENAI_API_KEY", "LLM_API_KEY"}
     assert _case_writes(seed_script, "copilot|hermes|windsurf|antigravity") == set()

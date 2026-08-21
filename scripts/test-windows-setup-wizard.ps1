@@ -22,7 +22,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-wizard-smoke-$PID"),
     [ValidateRange(1, 60)]
     [int]$TimeoutSeconds = 15,
-    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'geminicli', 'copilot', 'cursor', 'hermes', 'windsurf', 'omnigent', 'opencode')]
+    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'copilot', 'cursor', 'hermes', 'windsurf', 'omnigent', 'opencode')]
     [string]$Connector = 'claudecode',
     [ValidateSet('observe', 'action')]
     [string]$Mode = 'observe',
@@ -390,13 +390,12 @@ $connectorIndices = @{
     claudecode = 2
     amp = 3
     antigravity = 4
-    geminicli = 5
-    copilot = 6
-    cursor = 7
-    hermes = 8
-    windsurf = 9
-    omnigent = 10
-    opencode = 11
+    copilot = 5
+    cursor = 6
+    hermes = 7
+    windsurf = 8
+    omnigent = 9
+    opencode = 10
 }
 $connectorLabels = @(
     'Configure later',
@@ -404,7 +403,6 @@ $connectorLabels = @(
     'Claude Code',
     'Amp',
     'Google Antigravity',
-    'Gemini CLI (preview)',
     'GitHub Copilot CLI',
     'Cursor Agent',
     'Hermes Agent',

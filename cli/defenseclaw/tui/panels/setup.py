@@ -7267,7 +7267,6 @@ def _connector_setup_alias(wire: str) -> str:
         "hermes",
         "cursor",
         "windsurf",
-        "geminicli",
         "copilot",
         "openhands",
         "antigravity",

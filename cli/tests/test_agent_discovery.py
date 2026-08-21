@@ -30,7 +30,6 @@ from pathlib import Path
 import pytest
 from defenseclaw import file_permissions
 from defenseclaw.config import PerConnectorGuardrailConfig, default_config
-from defenseclaw.connector_paths import KNOWN_CONNECTORS
 from defenseclaw.inventory import agent_discovery as ad
 
 from tests.permissions import grant_everyone, set_known_windows_directory_acl
@@ -51,7 +50,7 @@ def _signal(name: str, installed: bool = False) -> ad.AgentSignal:
 def _discovery(*installed: str, cache_hit: bool = False) -> ad.AgentDiscovery:
     return ad.AgentDiscovery(
         scanned_at="2026-05-04T18:21:00Z",
-        agents={name: _signal(name, name in installed) for name in KNOWN_CONNECTORS},
+        agents={name: _signal(name, name in installed) for name in ad.DISCOVERABLE_CONNECTORS},
         cache_hit=cache_hit,
     )
 
@@ -254,7 +253,8 @@ def test_cache_miss_hit_and_ttl_expiry(monkeypatch, tmp_path):
     first = ad.discover_agents()
     assert first.cache_hit is False
     assert first.agents["codex"].installed is True
-    assert len(calls) == len(KNOWN_CONNECTORS)
+    assert set(calls) == set(ad.DISCOVERABLE_CONNECTORS)
+    assert "geminicli" not in calls
 
     cache_file = Path(os.environ["DEFENSECLAW_HOME"]) / ad.CACHE_FILENAME
     assert cache_file.is_file()
@@ -496,7 +496,7 @@ def test_empty_home_has_no_config_only_false_positives(monkeypatch, tmp_path):
     monkeypatch.setenv("ProgramFiles(x86)", str(tmp_path / "program-files-x86"))
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
 
-    signals = {name: ad._scan_agent(name) for name in KNOWN_CONNECTORS}
+    signals = {name: ad._scan_agent(name) for name in ad.DISCOVERABLE_CONNECTORS}
 
     assert {name for name, signal in signals.items() if signal.installed} == set()
 
@@ -547,7 +547,6 @@ def test_windsurf_optional_mcp_file_is_not_hook_configuration_evidence(
         ("hermes", (".hermes", "config.yaml")),
         ("cursor", (".cursor", "hooks.json")),
         ("windsurf", (".codeium", "windsurf", "hooks.json")),
-        ("geminicli", (".gemini", "settings.json")),
         ("copilot", (".copilot", "mcp-config.json")),
         ("openhands", (".openhands", "hooks.json")),
         ("antigravity", (".gemini", "config", "hooks.json")),
@@ -1626,7 +1625,6 @@ def test_windsurf_windows_desktop_uses_narrow_product_trust_roots(monkeypatch, t
         ),
         ("cursor", ("local", "cursor-agent", "agent.exe")),
         ("windsurf", ("local", "Programs", "Windsurf", "bin", "windsurf.exe")),
-        ("geminicli", ("roaming", "npm", "gemini.cmd")),
         ("copilot", ("roaming", "npm", "copilot.cmd")),
         ("openhands", ("home", ".local", "bin", "openhands.exe")),
         ("antigravity", ("local", "agy", "bin", "agy.exe")),
@@ -2461,7 +2459,8 @@ def test_trust_check_codex_standalone_symlink_requires_opt_in(monkeypatch, tmp_p
 
 def test_first_installed_precedence():
     assert ad.first_installed(_discovery("claudecode"), "claudecode") == "claudecode"
-    assert ad.first_installed(_discovery(*KNOWN_CONNECTORS), "codex") == "codex"
+    assert ad.first_installed(_discovery(*ad.DISCOVERABLE_CONNECTORS), "codex") == "codex"
+    assert ad.first_installed(_discovery(), "geminicli") == "codex"
     assert ad.first_installed(_discovery(), "codex") == "codex"
     assert ad.first_installed(_discovery("openclaw"), "not-real") == "openclaw"
 

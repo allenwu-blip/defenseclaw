@@ -65,6 +65,7 @@ from defenseclaw.file_permissions import (
     open_regular_file_no_follow,
     reject_reparse_path,
 )
+from defenseclaw.platform_support import DEPRECATED_CONNECTORS
 
 # Sentinel error returned by ``_version_for_binary`` when a connector
 # binary resolves outside the trusted install prefixes. Callers (e.g.
@@ -779,13 +780,19 @@ DISCOVERY_PRECEDENCE: tuple[str, ...] = (
     "hermes",
     "cursor",
     "windsurf",
-    "geminicli",
     "copilot",
     "openhands",
     "antigravity",
     "opencode",
     "amp",
     "omnigent",
+)
+
+# Keep deprecated names in connector_paths.KNOWN_CONNECTORS so exact legacy
+# teardown can still resolve them, but never scan, cache, or render them as
+# install candidates.
+DISCOVERABLE_CONNECTORS: tuple[str, ...] = tuple(
+    name for name in KNOWN_CONNECTORS if name not in DEPRECATED_CONNECTORS
 )
 
 
@@ -837,7 +844,6 @@ _SPECS: dict[str, _AgentSpec] = {
     # Its optional mcp_config.json is inventory only and an undocumented
     # mcp.json guess must never make this connector appear configured.
     "windsurf": _AgentSpec(("~/.codeium/windsurf/hooks.json",), "windsurf", ("--version",)),
-    "geminicli": _AgentSpec(("~/.gemini/settings.json",), "gemini", ("--version",)),
     "copilot": _AgentSpec(
         (
             "~/.copilot/mcp-config.json",
@@ -943,7 +949,7 @@ def discover_agents(
                     data_dir=data_dir,
                     require_trusted_binary_paths=require_trusted,
                 ),
-                KNOWN_CONNECTORS,
+                DISCOVERABLE_CONNECTORS,
             )
         )
     agents = {signal.name: signal for signal in signals}
@@ -968,7 +974,7 @@ def first_installed(disc: AgentDiscovery, fallback: str = "codex") -> str:
         if signal and signal.installed:
             return name
 
-    return fallback if fallback in KNOWN_CONNECTORS else "codex"
+    return fallback if fallback in DISCOVERABLE_CONNECTORS else "codex"
 
 
 def apply_config_state(disc: AgentDiscovery, cfg: Any) -> AgentDiscovery:
@@ -1083,11 +1089,6 @@ def _scan_agent(
         config_candidates = (config_path,)
     elif name == "windsurf":
         config_candidates = (windsurf_hook_config_path(),)
-    elif name == "geminicli":
-        # The packaged launcher binds Gemini's user settings to authenticated
-        # install state. Do not reuse the static ~/.gemini candidate from the
-        # catalog when HOME/USERPROFILE may belong to a hostile caller.
-        config_candidates = tuple(connector_config_files("geminicli"))
     config_path = _first_existing_file(config_candidates)
     binary_candidates = _binary_candidates_for_agent(name, spec)
     binary_path = binary_candidates[0] if binary_candidates else ""
@@ -2276,7 +2277,7 @@ def _read_cache(*, data_dir: str | os.PathLike[str] | None = None) -> AgentDisco
 
     agents: dict[str, AgentSignal] = {}
     try:
-        for name in KNOWN_CONNECTORS:
+        for name in DISCOVERABLE_CONNECTORS:
             raw = raw_agents.get(name)
             if not isinstance(raw, dict):
                 return None
@@ -2353,7 +2354,7 @@ def _ordered_connector_names(disc: AgentDiscovery) -> list[str]:
     for name in DISCOVERY_PRECEDENCE:
         if name in disc.agents:
             names.append(name)
-    for name in KNOWN_CONNECTORS:
+    for name in DISCOVERABLE_CONNECTORS:
         if name in disc.agents and name not in names:
             names.append(name)
     return names

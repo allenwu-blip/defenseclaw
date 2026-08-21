@@ -1969,7 +1969,7 @@ final class AppState {
     /// Every agent DefenseClaw knows how to hook — the catalog-scan and
     /// Connectors-table fallback roster.
     static let knownConnectors = ["openclaw", "zeptoclaw", "codex", "claudecode", "hermes",
-                                  "cursor", "windsurf", "geminicli", "copilot", "openhands",
+                                  "cursor", "windsurf", "copilot", "openhands",
                                   "antigravity", "opencode", "amp", "omnigent"]
 
     func configuredConnectors() -> [String] {

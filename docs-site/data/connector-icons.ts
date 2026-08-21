@@ -12,7 +12,6 @@ export const connectorIconDefinitions: Record<string, ConnectorIconDefinition> =
   codex: { source: 'codex-color.svg', target: 'codex.svg', accent: '#10a37f' },
   copilot: { source: 'githubcopilot.svg', target: 'copilot.svg', accent: '#7657d6', monochrome: true },
   cursor: { source: 'cursor.svg', target: 'cursor.svg', accent: '#57636d', monochrome: true },
-  geminicli: { source: 'geminicli-color.svg', target: 'geminicli.svg', accent: '#4285f4' },
   hermes: { source: 'hermesagent.svg', target: 'hermes.svg', accent: '#ad7a1f', monochrome: true },
   openclaw: { source: 'openclaw-color.svg', target: 'openclaw.svg', accent: '#ff4d4d' },
   opencode: { source: 'opencode.svg', target: 'opencode.svg', accent: '#52616b', monochrome: true },

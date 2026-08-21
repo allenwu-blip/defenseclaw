@@ -1244,7 +1244,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
             "intentionally does not implement or claim that surface",
             r=r,
         )
-    elif connector in {"hermes", "windsurf", "geminicli", "openhands"}:
+    elif connector in {"hermes", "windsurf", "openhands"}:
         _emit(
             "warn",
             "Human approval",
@@ -3634,10 +3634,10 @@ def _check_hermes_hooks(
 # Services check above. Each maps to (home-relative fallback path(s), marker
 # substrings). The fallback paths mirror the Go source of truth in
 # ``internal/gateway/connector/hook_only.go`` (hermesConfigPath / cursorHooksPath
-# / windsurfHooksPath / geminiSettingsPath / opencodePluginPath); the gateway's
+# / windsurfHooksPath / opencodePluginPath); the gateway's
 # hook_contract_lock.json is consulted first and these are only the offline
 # fallback. Markers are matched as raw substrings (see _file_references_marker)
-# so the check stays format-agnostic: hermes is YAML, cursor/windsurf/geminicli
+# so the check stays format-agnostic: hermes is YAML, cursor/windsurf
 # are JSON, opencode is a flat ``.js`` plugin (existence + substring).
 _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "hermes": (
@@ -3651,10 +3651,6 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "windsurf": (
         (os.path.join(".codeium", "windsurf", "hooks.json"),),
         ("windsurf-hook.ps1", "windsurf-hook.sh", "hook --connector windsurf", "defenseclaw"),
-    ),
-    "geminicli": (
-        (os.path.join(".gemini", "settings.json"),),
-        ("geminicli-hook.sh", "hook --connector geminicli", "defenseclaw"),
     ),
     "opencode": (
         (os.path.join(".config", "opencode", "plugins", "defenseclaw.js"),),
@@ -3674,7 +3670,6 @@ _HOOK_HEALTH_LABELS = {
     "hermes": "Hermes hooks (fail-open)",
     "cursor": "Cursor hooks",
     "windsurf": "Legacy Cascade hooks",
-    "geminicli": "Gemini CLI hooks",
     "opencode": "OpenCode hooks",
     "amp": "Amp policy plugin",
     "omnigent": "OmniGent policy",
@@ -3684,9 +3679,9 @@ _HOOK_HEALTH_LABELS = {
 def _file_references_marker(path: str, markers: tuple[str, ...]) -> bool:
     """Report whether the file at ``path`` contains any ``markers`` substring.
 
-    Deliberately format-agnostic — no JSON/YAML parse — because the five
+    Deliberately format-agnostic — no JSON/YAML parse — because these
     connectors this serves store hook entries in different shapes (hermes
-    YAML, cursor/windsurf/geminicli JSON, opencode a flat ``.js`` plugin).
+    use YAML, JSON, or a flat ``.js`` plugin.
     Mirrors the Go self-heal guard's ``configFileReferencesHook`` (raw-bytes
     substring match) so doctor and the guard agree on what "the hook is
     installed" means. A missing/unreadable file reports ``False``.
@@ -4953,8 +4948,8 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
 def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
     """Generic "is this connector's hook installed and reachable?" row.
 
-    Covers hermes / cursor / windsurf / geminicli / opencode — active
-    connectors that previously got NO Services hook row at all, so an operator
+    Covers active generic-hook connectors that previously got no Services
+    hook row at all, so an operator
     could not tell from doctor whether their hooks were installed (D4).
     Resolves the hook file from ``hook_contract_lock.json`` first (what the
     gateway actually wrote), then the static fallback map, and
@@ -5131,7 +5126,15 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     connector (multi-connector installs) instead of probing only the
     primary. Unknown connectors are skipped silently (no new failure row).
     """
-    if connector == "openclaw":
+    if connector == "geminicli":
+        r.record(
+            "warn",
+            "Gemini CLI (deprecated)",
+            "New setup is retired; remove existing managed state and use Antigravity",
+            reason_code="connector_deprecated",
+            remediation="defenseclaw setup remove geminicli --yes",
+        )
+    elif connector == "openclaw":
         _check_openclaw_gateway(cfg, r)
     elif connector == "claudecode":
         _check_claudecode_hooks(cfg, r)
@@ -5152,7 +5155,7 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "omnigent":
         _check_omnigent_policy_health(cfg, r)
     elif connector in _HOOK_HEALTH_FALLBACK:
-        # Cursor / Gemini CLI / OpenCode use the lock-file-driven health row;
+        # Cursor / OpenCode use the lock-file-driven health row;
         # Windows-native connectors with richer contracts dispatch above.
         _check_hook_health(cfg, connector, r)
         if connector == "amp":
@@ -5177,7 +5180,6 @@ _SETUP_READINESS_PRIMARY_LABELS = {
     "windsurf": "Legacy Cascade hooks",
     "copilot": "Copilot hooks",
     "antigravity": "Antigravity hooks",
-    "geminicli": "Gemini CLI hooks",
     "opencode": "OpenCode hooks",
     "amp": "Amp policy plugin",
     "hermes": "Hermes hooks (fail-open)",
@@ -5548,10 +5550,12 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "hermes",
         "cursor",
         "windsurf",
-        "geminicli",
         "copilot",
         "openhands",
         "antigravity",
+        # Retained only so Doctor handles an already-configured, deprecated
+        # Gemini CLI install as hook-driven while the operator removes it.
+        "geminicli",
         "opencode",
         "amp",
         "omnigent",
@@ -8813,7 +8817,7 @@ _CONNECTOR_LABELS = {
     "hermes": "Hermes",
     "cursor": "Cursor",
     "windsurf": "Devin Desktop — legacy Cascade",
-    "geminicli": "Gemini CLI",
+    "geminicli": "Gemini CLI (deprecated; use Antigravity)",
     "copilot": "GitHub Copilot CLI",
     "openhands": "OpenHands",
     "antigravity": "Antigravity",

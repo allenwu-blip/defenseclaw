@@ -68,6 +68,29 @@ func TestRegisterConnectorHookRoutes_DataDriven(t *testing.T) {
 	}
 }
 
+func TestRegisterConnectorHookRoutesDoesNotExposeDeprecatedGemini(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		reg  *connector.Registry
+	}{
+		{name: "default registry", reg: connector.NewDefaultRegistry()},
+		{name: "legacy no-registry fallback", reg: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := &APIServer{connectorRegistry: tc.reg}
+			mux := http.NewServeMux()
+			a.registerConnectorHookRoutes(mux)
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/geminicli/hook", nil)
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("deprecated Gemini hook endpoint status=%d, want 404", rec.Code)
+			}
+		})
+	}
+}
+
 // fakeHookEndpointConnector is the smallest connector that satisfies
 // the HookEndpoint contract for this test. Doesn't implement the
 // rest of Connector; the test is allowed to skip those assertions

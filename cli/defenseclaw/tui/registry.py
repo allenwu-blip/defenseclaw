@@ -27,7 +27,6 @@ _SETUP_CONNECTOR_ALIASES: dict[str, str] = {
     "hermes": "hermes",
     "cursor": "cursor",
     "windsurf": "windsurf",
-    "geminicli": "geminicli",
     "copilot": "copilot",
     "openhands": "openhands",
     "antigravity": "antigravity",

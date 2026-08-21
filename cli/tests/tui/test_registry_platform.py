@@ -26,7 +26,7 @@ def _setup_connectors(os_name: str) -> dict[str, str]:
 def test_windows_palette_hides_unsupported_connector_setup_commands() -> None:
     commands = _setup_connectors("windows")
 
-    assert {"openclaw", "zeptoclaw", "openhands"}.isdisjoint(commands)
+    assert {"openclaw", "zeptoclaw", "openhands", "geminicli"}.isdisjoint(commands)
     assert {
         "amp",
         "antigravity",
@@ -34,16 +34,15 @@ def test_windows_palette_hides_unsupported_connector_setup_commands() -> None:
         "codex",
         "copilot",
         "cursor",
-        "geminicli",
         "hermes",
         "omnigent",
         "opencode",
         "windsurf",
     } <= commands.keys()
-    assert "preview on native Windows" in commands["geminicli"]
 
 
 def test_non_windows_palette_retains_all_connector_setup_commands() -> None:
     for os_name in ("darwin", "linux"):
         commands = _setup_connectors(os_name)
         assert {"openclaw", "zeptoclaw", "openhands"} <= commands.keys()
+        assert "geminicli" not in commands

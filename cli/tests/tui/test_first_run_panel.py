@@ -32,7 +32,6 @@ def test_first_run_defaults_match_go_panel_argv() -> None:
         "hermes",
         "cursor",
         "windsurf",
-        "geminicli",
         "copilot",
         "openhands",
         "antigravity",
@@ -145,13 +144,13 @@ def test_first_run_passes_hitl_flags_only_in_action_profile() -> None:
 def test_connector_preview_badge_uses_stable_kind_not_label(monkeypatch) -> None:
     monkeypatch.setattr(
         "defenseclaw.tui.panels.first_run.connector_preview_on_os",
-        lambda value: value == "geminicli",
+        lambda value: value == "codex",
     )
 
-    preview = FirstRunField("Renamed display label", "connector", "geminicli")
+    preview = FirstRunField("Renamed display label", "connector", "codex")
     supported = FirstRunField("Renamed display label", "connector", "hermes")
 
-    assert preview.display_value == "geminicli (preview)"
+    assert preview.display_value == "codex (preview)"
     assert supported.display_value == "hermes"
 
 

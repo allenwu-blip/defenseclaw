@@ -21,8 +21,7 @@
 #
 #     ROLLOUT STATUS: Layer B is currently manual-only (workflow_dispatch). The
 #     nightly schedule runs Layer A alone until the live secrets are in place.
-#     Gemini CLI remains deferred (its native key is not yet set and has no
-#     Azure/Bedrock substitute). Copilot's Windows-only protected delta uses a
+#     Copilot's Windows-only protected delta uses a
 #     dedicated pre-authenticated runner; HITL is excluded and unclaimed.
 #     Cursor has a manual native-Windows preview cell using CURSOR_API_KEY; it
 #     is not a release-certification cell.
@@ -70,7 +69,6 @@ on:
           - claudecode
           - amp
           - opencode
-          - geminicli
           - cursor
           - copilot
           - openhands
@@ -188,7 +186,7 @@ jobs:
           set -euo pipefail
           # The Unix harness retains the full supported connector matrix.
           # Native Windows contract validation is a separate, explicit x64 matrix.
-          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","geminicli","cursor","copilot","openhands","hermes","windsurf","antigravity"]}'
+          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","cursor","copilot","openhands","hermes","windsurf","antigravity"]}'
           # Always-on PR smoke: one connector on one cross-platform OS. macOS is
           # chosen because windows-native.yml separately checks the native
           # Windows hook contract on every PR. This adds the missing native macOS
@@ -389,9 +387,9 @@ jobs:
         # windows-live below; an unrun or failed cell proves nothing.
         #
         # Currently scoped to the connectors we can authenticate with Azure
-        # OpenAI / Amazon Bedrock (Codex, Claude Code, OpenHands). Gemini CLI,
-        # Cursor, and Copilot are deferred until their native keys exist — add
-        # their cells back here when GOOGLE_API_KEY / CURSOR_API_KEY /
+        # OpenAI / Amazon Bedrock (Codex, Claude Code, OpenHands). Cursor and
+        # Copilot are deferred until their native keys exist — add
+        # their cells back here when CURSOR_API_KEY /
         # COPILOT_GITHUB_TOKEN are configured.
         include:
           - { connector: codex,      os: ubuntu-latest,  dcos: linux }
@@ -498,8 +496,6 @@ jobs:
           OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'opencode' || matrix.connector == 'openhands') && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
           AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
-          GEMINI_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
           CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
           LLM_API_KEY: ${{ matrix.connector == 'openhands' && secrets.LLM_API_KEY || '' }}
         run: |
@@ -521,10 +517,6 @@ jobs:
               ;;
             amp)
               write_key AMP_API_KEY "${AMP_API_KEY:-}"
-              ;;
-            geminicli)
-              write_key GOOGLE_API_KEY "${GOOGLE_API_KEY:-}"
-              write_key GEMINI_API_KEY "${GEMINI_API_KEY:-}"
               ;;
             cursor)
               write_key CURSOR_API_KEY "${CURSOR_API_KEY:-}"
@@ -560,8 +552,6 @@ jobs:
           OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'opencode' || matrix.connector == 'openhands') && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
           AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
-          GEMINI_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
           CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
           COPILOT_GITHUB_TOKEN: ${{ matrix.connector == 'copilot' && secrets.COPILOT_GITHUB_TOKEN || '' }}
           LLM_API_KEY: ${{ matrix.connector == 'openhands' && secrets.LLM_API_KEY || '' }}

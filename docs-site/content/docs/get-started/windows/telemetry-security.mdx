@@ -25,16 +25,14 @@ the same local audit and optional outbound observability pipeline.
 | Devin Desktop legacy Cascade | Twelve Cascade events; only five pre-hooks can block. Devin Local/cloud/ACP are unsupported. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. Managed/system layers are unverified. |
 | Copilot CLI | Fourteen current documented events; event-specific hooks are the only DefenseClaw enforcement and telemetry input. | Upstream documents optional OTel traces and metrics, but DefenseClaw does not configure, authenticate, or certify that native surface. Authentication, HITL, and live evidence remain unverified and unclaimed. | PowerShell-only entries in `%COPILOT_HOME%\hooks\defenseclaw.json` or an explicitly pinned workspace hook file; hook credential remains in the protected DefenseClaw runtime. |
 | Hermes Agent | All 23 v0.19 events are registered and independently classified; only a valid `pre_tool_call` JSON block can veto a tool. | No official native OTLP logs, metrics, or traces. Hook-derived events enter the same v8 audit pipeline. | Owned handlers in `%HERMES_HOME%\config.yaml`; no native exporter settings are invented. |
-| Google Antigravity | Five documented events; only `PreToolUse` can block or return native ask. Upstream failures remain fail-open. | No documented native OTLP surface; hook-derived events enter the same audit and telemetry pipeline. | DefenseClaw handlers in `%USERPROFILE%\.gemini\config\hooks.json`; the sibling Gemini CLI settings file is a separate ownership boundary. |
-| Gemini CLI — preview | Eleven documented events; six control events can block and there is no native ask. | OTLP logs, metrics, and traces use a connector-scoped path-token endpoint; native OTLP remains observation-only. | DefenseClaw hook groups and telemetry fields in `<GEMINI_CLI_HOME>\.gemini\settings.json` (Profile Known Folder default), launched through awaited system PowerShell. |
+| Google Antigravity | Five documented events; only `PreToolUse` can block or return native ask. Upstream failures remain fail-open. | No documented native OTLP surface; hook-derived events enter the same audit and telemetry pipeline. | DefenseClaw handlers in `%USERPROFILE%\.gemini\config\hooks.json`; retired Gemini CLI state in the sibling root settings file remains a separate cleanup boundary. |
 | OpenCode | Awaited `tool.execute.before` is the only enforcement path; `tool.execute.after` and generic lifecycle delivery are best-effort observation. | No documented native OTLP surface; the plugin emits hook-generated audit/telemetry. | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js`, default `%USERPROFILE%\.config\opencode\plugins\defenseclaw.js`. |
 | OmniGent — native degraded | Six awaited server/SDK policy phases can deny; native ask exists only on the three pre-action phases. Terminal and sandbox parity are not included. | Opt-in native logs, metrics, and traces plus policy-derived events; content capture remains policy-bound. | DefenseClaw's protected OmniGent bridge and policy configuration under the exact installer-bound OmniGent home. |
 
-Codex, Claude Code, and Gemini CLI configure connector-scoped native-OTLP
-credentials and source/client identity. Codex does not place the credential in
-the endpoint URL. Claude Code stores the managed exporter settings in its
-configuration, not in the interactive shell. Gemini uses a path token because
-its documented exporter has no custom-header surface. OpenCode embeds a separate connector-scoped hook
+Codex and Claude Code configure connector-scoped native-OTLP credentials and
+source/client identity. Codex does not place the credential in the endpoint
+URL. Claude Code stores the managed exporter settings in its configuration,
+not in the interactive shell. OpenCode embeds a separate connector-scoped hook
 token in its managed plugin and has no native OTLP credential. Cursor and
 legacy Cascade use protected connector-scoped hook credentials without placing them
 in the vendor hook JSON. Copilot follows the same hook-token boundary and does
@@ -43,14 +41,9 @@ variables. Hermes uses its own connector-scoped hook credential. Amp has no
 native-OTLP credential; its managed plugin carries a connector-scoped hook
 credential.
 
-The installed DefenseClaw launcher scrubs ambient Gemini selectors and
-rehydrates the authenticated `GEMINI_CLI_HOME` root and derived `.gemini`
-binding. A Gemini CLI process started independently of that launcher can still
-inherit later operator environment drift and read a different settings file;
-DefenseClaw cannot detect that direct-client drift or treat its missing managed
-telemetry fields as authenticated official-client evidence. Confirm the client
-environment and settings path when diagnosing gaps. This evidence boundary is
-one reason the native Windows connector remains Preview.
+Gemini CLI setup and telemetry are retired. Existing receipt-bound Gemini CLI
+state remains recognizable only so `defenseclaw setup remove geminicli --yes`
+can remove it without crossing Antigravity's ownership boundary.
 
 A scoped credential is accepted only for its connector and route; it cannot
 authenticate the management API, another connector, or a non-loopback request.
@@ -116,7 +109,7 @@ DefenseClaw uses distinct credentials for distinct jobs:
 | --- | --- | --- |
 | Gateway master token | Local gateway control/lifecycle authentication. Stored through the protected DefenseClaw environment file. | Rotate with the CLI; do not edit, print, or pass it on an argv. |
 | Connector hook/plugin credential | One connector's hook or plugin API route. | Managed by setup/teardown; never copy its sidecar or the credential-bearing Amp plugin. |
-| Connector native-OTLP credential | One Codex, Claude Code, or Gemini CLI connector's OTLP routes only; Hermes has no official native OTLP surface. | Stable across unrelated master-token rotation and revoked during connector teardown. |
+| Connector native-OTLP credential | One Codex or Claude Code connector's OTLP routes only; Hermes has no official native OTLP surface. | Stable across unrelated master-token rotation and revoked during connector teardown. |
 | Provider or destination credentials | Only the configured external provider/destination. | Reference protected environment names; do not place literal values in YAML or support output. |
 
 ### Rotate safely

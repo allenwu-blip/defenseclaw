@@ -29,7 +29,6 @@ dc_connector_config_file() {
   case "$1" in
     codex)       printf '%s/.codex/config.toml' "${HOME}" ;;
     claudecode)  printf '%s/.claude/settings.json' "${HOME}" ;;
-    geminicli)   printf '%s/.gemini/settings.json' "${HOME}" ;;
     cursor)      printf '%s/.cursor/hooks.json' "${HOME}" ;;
     windsurf)    printf '%s/.codeium/windsurf/hooks.json' "${HOME}" ;;
     copilot)     printf '%s/.copilot/hooks/defenseclaw.json' "${HOME}" ;;

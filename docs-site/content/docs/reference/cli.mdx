@@ -18,8 +18,9 @@ Authoritative source for any flag is `defenseclaw <command> --help`. These group
 A registered command or connector alias is not, by itself, a native Windows
 support claim. Native Windows supports Amp plus Codex, Claude Code, Cursor,
 Windsurf, GitHub Copilot CLI, Antigravity, OpenCode, Hermes, and OmniGent.
-Gemini CLI is available in preview; OpenHands, OpenClaw, and ZeptoClaw remain
-unavailable there. Some
+Gemini CLI setup is deprecated on every platform; existing managed state remains
+removable; use `defenseclaw setup antigravity` for new Google agent setup.
+OpenHands, OpenClaw, and ZeptoClaw remain unavailable there. Some
 commands require optional configuration or are unavailable there. Use the
 [native Windows command matrix](/docs/get-started/windows/capabilities-commands)
 for the Windows classification and safe examples.
@@ -94,7 +95,6 @@ Hook setup aliases (`setup codex`, `setup claude-code`, `setup hermes`, and the 
 | `defenseclaw setup codex` | Hook setup alias for Codex; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup cursor` | Native Windows user-hook alias for Cursor; defaults to observe, while `--mode action` uses event-native deny with `failClosed: true`. Native human approval is not enabled. |
 | `defenseclaw setup windsurf` | Native Windows compatibility alias for Devin Desktop legacy Cascade; Devin Local/cloud/ACP are unsupported. Defaults to observe; pass `--mode action` to block only on supported Cascade pre-hooks. |
-| `defenseclaw setup geminicli` | Gemini CLI hook setup alias on macOS, Linux, and native Windows preview. Defaults to observe; pass `--mode action` to block on supported hook events. Windows Setup binds `%USERPROFILE%\.gemini` and uses an awaited system-PowerShell launcher. |
 | `defenseclaw setup copilot` | Hook setup alias for GitHub Copilot CLI; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup hermes` | Hook setup alias for Hermes; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup openhands` | Hook setup alias for OpenHands on supported non-Windows platforms; it is unsupported in the native Windows release. Defaults to observe, pass `--mode action` to block hook-side. |

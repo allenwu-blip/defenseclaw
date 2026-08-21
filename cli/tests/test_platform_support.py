@@ -31,6 +31,7 @@ from defenseclaw.commands.cmd_setup import (
 from defenseclaw.connector_paths import KNOWN_CONNECTORS
 from defenseclaw.context import AppContext
 from defenseclaw.platform_support import (
+    DEPRECATED_CONNECTORS,
     NOT_CERTIFIED,
     PREVIEW,
     PROXY_CONNECTORS,
@@ -74,9 +75,9 @@ WINDOWS_SUPPORTED: set[str] = {
     "omnigent",
     "antigravity",
 }
-WINDOWS_PREVIEW: set[str] = {"geminicli"}
+WINDOWS_PREVIEW: set[str] = set()
 WINDOWS_NOT_CERTIFIED: set[str] = set()
-WINDOWS_UNSUPPORTED = {"openhands", "openclaw", "zeptoclaw"}
+WINDOWS_UNSUPPORTED = {"geminicli", "openhands", "openclaw", "zeptoclaw"}
 ALL_CONNECTORS = WINDOWS_SUPPORTED | WINDOWS_PREVIEW | WINDOWS_NOT_CERTIFIED | WINDOWS_UNSUPPORTED
 
 
@@ -180,8 +181,12 @@ def test_non_windows_behavior_is_unchanged() -> None:
     for os_name in ("linux", "darwin"):
         for name in ALL_CONNECTORS:
             support = connector_platform_support(name, os_name)
-            assert support.status == SUPPORTED
-            assert support.available
+            if name in DEPRECATED_CONNECTORS:
+                assert support.status == UNSUPPORTED
+                assert support.available is False
+            else:
+                assert support.status == SUPPORTED
+                assert support.available
 
 
 def test_supported_connectors_preserves_order_and_available_windows_scope() -> None:
@@ -281,12 +286,13 @@ def test_windows_sandbox_init_keeps_nonzero_rejection_with_aligned_wording() -> 
 
 
 def test_all_connector_lists_share_one_taxonomy() -> None:
+    active = ALL_CONNECTORS - DEPRECATED_CONNECTORS
     assert set(KNOWN_CONNECTORS) == ALL_CONNECTORS
-    assert set(_CONNECTOR_NAMES_FALLBACK) == ALL_CONNECTORS
-    assert set(CONNECTORS) == ALL_CONNECTORS
-    assert {choice.wire for choice in MODE_PICKER_CHOICES} == ALL_CONNECTORS
-    assert set(CONNECTOR_CHOICES) == ALL_CONNECTORS
-    assert set(_HOOK_ENFORCED_CONNECTORS) == ALL_CONNECTORS - set(PROXY_CONNECTORS)
+    assert set(_CONNECTOR_NAMES_FALLBACK) == active
+    assert set(CONNECTORS) == active
+    assert {choice.wire for choice in MODE_PICKER_CHOICES} == active
+    assert set(CONNECTOR_CHOICES) == active
+    assert set(_HOOK_ENFORCED_CONNECTORS) == active - set(PROXY_CONNECTORS)
 
 
 def test_windows_views_include_supported_and_labeled_preview_connectors() -> None:
@@ -297,20 +303,22 @@ def test_windows_views_include_supported_and_labeled_preview_connectors() -> Non
     win_modes = visible_mode_picker_choices("windows")
     assert {choice.wire for choice in win_modes} == expected
     labels = {choice.wire: choice.label.lower() for choice in win_modes}
-    assert "preview" in labels["geminicli"]
-    assert all(
-        "preview" not in label
-        for connector, label in labels.items()
-        if connector != "geminicli"
-    )
+    assert "geminicli" not in labels
+    assert all("preview" not in label for label in labels.values())
     assert {"copilot", "antigravity"} <= set(labels)
     assert "omnigent" in {choice.wire for choice in win_modes}
 
 
 def test_non_windows_views_are_unfiltered() -> None:
-    assert supported_connector_choices("linux") == CONNECTORS
-    assert visible_mode_picker_choices("darwin") == MODE_PICKER_CHOICES
-    assert visible_connector_choices("linux") == CONNECTOR_CHOICES
+    assert supported_connector_choices("linux") == tuple(
+        connector for connector in CONNECTORS if connector not in DEPRECATED_CONNECTORS
+    )
+    assert visible_mode_picker_choices("darwin") == tuple(
+        choice for choice in MODE_PICKER_CHOICES if choice.wire not in DEPRECATED_CONNECTORS
+    )
+    assert visible_connector_choices("linux") == tuple(
+        connector for connector in CONNECTOR_CHOICES if connector not in DEPRECATED_CONNECTORS
+    )
 
 
 def test_discovery_default_preserves_non_windows_and_avoids_unsupported_windows() -> None:
@@ -361,6 +369,22 @@ def test_direct_windows_setup_rejects_unsupported_with_reason() -> None:
         assert "requires WSL" in openhands.output
     finally:
         cleanup_app(app, db_path, tmp_dir)
+
+
+def test_gemini_setup_aliases_are_globally_deprecated_before_mutation() -> None:
+    for os_name in ("windows", "darwin", "linux"):
+        for alias in ("geminicli", "gemini-cli", "gemini"):
+            app, tmp_dir, db_path = make_app_context()
+            try:
+                with patch("defenseclaw.platform_support.host_os", return_value=os_name):
+                    result = CliRunner().invoke(setup_group, [alias], obj=app)
+                assert result.exit_code != 0
+                assert "deprecated" in result.output.lower()
+                assert "setup antigravity" in result.output
+                assert "setup remove geminicli" in result.output
+                assert app.cfg.guardrail.connectors == {}
+            finally:
+                cleanup_app(app, db_path, tmp_dir)
 
 
 def test_bare_windows_setup_rejects_explicit_unsupported_before_mutation() -> None:

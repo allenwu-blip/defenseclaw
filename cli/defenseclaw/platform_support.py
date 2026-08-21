@@ -23,9 +23,9 @@ connectors (``openclaw`` and ``zeptoclaw``) therefore cannot run on Windows,
 so the TUI/CLI must not offer or accept them there.
 
 This module mirrors ``internal/gateway/connector/platform_support.go``.  Tests
-pin the two taxonomies and all Python presentation lists together.  macOS and
-Linux retain their historical behavior: every built-in and plugin connector is
-offered there.
+pin the two taxonomies and all Python presentation lists together. Retired
+built-ins are unavailable on every operating system but remain resolvable by
+the teardown/uninstall compatibility path.
 """
 
 from __future__ import annotations
@@ -44,6 +44,14 @@ NOT_CERTIFIED: SupportStatus = "not_certified"
 UNSUPPORTED: SupportStatus = "unsupported"
 
 PROXY_CONNECTORS: frozenset[str] = frozenset({"openclaw", "zeptoclaw"})
+DEPRECATED_CONNECTORS: frozenset[str] = frozenset({"geminicli"})
+
+_DEPRECATED_REASONS: dict[str, str] = {
+    "geminicli": (
+        "Gemini CLI integration is deprecated; use the Antigravity connector. "
+        "Existing managed Gemini CLI state remains removable through teardown and uninstall."
+    ),
+}
 
 LOCAL_OBSERVABILITY_UNSUPPORTED_REASON = "Bundled local observability is unavailable on this operating system."
 LOCAL_SPLUNK_UNSUPPORTED_REASON = "Bundled Local Splunk is unavailable on this operating system."
@@ -91,11 +99,7 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer "
         "enforcement are not covered; packaged and official-client validation metadata is not recorded.",
     ),
-    "geminicli": ConnectorPlatformSupport(
-        PREVIEW,
-        "Gemini CLI native Windows hooks are available in preview; packaged and "
-        "official-client validation metadata is not recorded and live evidence remains false.",
-    ),
+    "geminicli": ConnectorPlatformSupport(UNSUPPORTED, _DEPRECATED_REASONS["geminicli"]),
     "copilot": ConnectorPlatformSupport(
         SUPPORTED,
         "The DefenseClaw GitHub Copilot CLI integration is supported on native Windows x64; "
@@ -197,9 +201,11 @@ def connector_platform_support(
     """Return the status and reason for *name* on *os_name*.
 
     Unknown/plugin connectors require separate native Windows certification.
-    macOS and Linux preserve their historical supported behavior.
+    Deprecated built-ins are unavailable on every operating system.
     """
     resolved_os = host_os() if os_name is None else _normalize_os_name(os_name)
+    if name in DEPRECATED_CONNECTORS:
+        return ConnectorPlatformSupport(UNSUPPORTED, _DEPRECATED_REASONS[name])
     if resolved_os == "windows":
         return WINDOWS_CONNECTOR_SUPPORT.get(
             name,

@@ -14,8 +14,8 @@ local gateway, native hook launcher, CLI, TUI, scanners, and managed Python
 runtime. **Amp** is supported through its owner-only TypeScript system-policy
 plugin. **Claude Code**, **Codex**, **Cursor**, **Devin Desktop legacy Cascade**,
 **Hermes**, **OpenCode**, **Copilot**, and **Antigravity** are supported through
-ordinary Setup. **Gemini CLI** is available as a native Windows preview with
-packaged and official-client evidence still pending. **OmniGent 0.7.0** is
+ordinary Setup. **Gemini CLI** setup is deprecated on every platform; legacy
+managed state remains removable. **OmniGent 0.7.0** is
 supported on the narrower native-degraded awaited server/SDK policy surface. A
 supported availability label does not populate validation evidence or certify
 an official-client run.
@@ -48,7 +48,7 @@ native agent at a WSL installation, or mix native and WSL connector homes.
 | OpenCode | `opencode` | **Supported** | Auto-loaded in-process JavaScript plugin; only awaited `tool.execute.before` can block. Validation metadata remains empty and `live=false`. |
 | OmniGent | `omnigent` | **Supported — native degraded** | OmniGent 0.7.0 server/SDK harness policy calls only; no terminal wrapper or filesystem/network/L7 sandbox parity; `live=false`. |
 | Copilot CLI, Antigravity | `copilot`, `antigravity` | **Supported** | Ordinary Setup is available. Provider authentication is still required; HITL and official-client live evidence are unverified and unclaimed, validation metadata remains empty, and `live=false`. |
-| Gemini CLI | `geminicli` | **Preview** | Awaited system-PowerShell hooks use `<GEMINI_CLI_HOME>\.gemini`, defaulting to the Profile Known Folder. Packaged and authenticated official-client evidence remains pending and `live=false`. |
+| Gemini CLI | — | **Deprecated** | New setup is unavailable. Remove existing managed state with `defenseclaw setup remove geminicli --yes`, then use Antigravity. |
 | OpenHands, OpenClaw, ZeptoClaw | — | **Unsupported** | Their required WSL or proxy topology is not hosted by native Windows DefenseClaw. |
 
 All supported connectors remain connected directly to their normal upstream

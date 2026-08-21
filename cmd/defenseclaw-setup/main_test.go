@@ -200,14 +200,14 @@ func TestParseArgsNormalizesCursorAgentAliases(t *testing.T) {
 	}
 }
 
-func TestGeminiAliasesResolveToNativeLifecycleConnector(t *testing.T) {
+func TestGeminiAliasesRemainRecognizableButCannotBeSelected(t *testing.T) {
 	if !isNativeLifecycleConnector("geminicli") || !validConnector("geminicli") {
-		t.Fatal("Gemini CLI is missing from the native lifecycle roster")
+		t.Fatal("Gemini CLI cleanup compatibility is missing from the native lifecycle roster")
 	}
 	for _, alias := range []string{"gemini", "geminicli", "gemini-cli"} {
 		opts, err := parseArgs([]string{"/quiet", "CONNECTOR=" + alias})
-		if err != nil {
-			t.Fatalf("parseArgs(%q): %v", alias, err)
+		if err == nil || !strings.Contains(err.Error(), "deprecated") {
+			t.Fatalf("parseArgs(%q) error = %v, want deprecation refusal", alias, err)
 		}
 		if opts.Connector != "geminicli" || !opts.ConnectorSet {
 			t.Fatalf("parseArgs(%q) connector = %q, set=%t", alias, opts.Connector, opts.ConnectorSet)
@@ -257,7 +257,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connector := range []string{"none", "amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {

@@ -911,7 +911,7 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
         "hermes": "Hermes",
         "cursor": "Cursor",
         "windsurf": "Devin Desktop — legacy Cascade",
-        "geminicli": "Gemini CLI",
+        "geminicli": "Gemini CLI (deprecated; use Antigravity)",
         "copilot": "GitHub Copilot CLI",
     }
     for wire, want in cases.items():

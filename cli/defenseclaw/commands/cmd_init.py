@@ -84,7 +84,6 @@ _WINDOWS_LAUNCHER_EXECUTABLE = "defenseclaw.exe"
             "hermes",
             "cursor",
             "windsurf",
-            "geminicli",
             "copilot",
             "openhands",
             "antigravity",
