@@ -15,7 +15,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Synchronized with DefenseClaw mainline cli/defenseclaw/tui/registry_data.py.
-// Keep these 227 entries aligned when the TUI command palette changes.
+// Keep these 226 entries aligned when the TUI command palette changes.
 
 import Foundation
 
@@ -146,7 +146,7 @@ struct CommandExecutionPlan: Equatable, Sendable {
 }
 
 enum CommandRegistry {
-    static let sourceCount = 227
+    static let sourceCount = 226
     static let all: [CommandDefinition] = [
         CommandDefinition(id: 0, title: "init", binary: "defenseclaw", arguments: ["init"], summary: "Initialize DefenseClaw", category: "setup", requiresInput: false, usage: ""),
         CommandDefinition(id: 1, title: "init first-run", binary: "defenseclaw", arguments: ["init", "--non-interactive", "--yes", "--verify"], summary: "Run guided first-run backend with defaults", category: "setup", requiresInput: false, usage: ""),
