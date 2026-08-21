@@ -2231,17 +2231,23 @@ private-secret-name = "DefenseClaw must remain redacted"
     ).Value
     Assert-True ($restrictedLuaTokenFunction -match
             'WindowsIdentity\(sourceToken\)' -and
-        $restrictedLuaTokenFunction -match 'userSid\.GetBinaryForm' -and
+        $restrictedLuaTokenFunction -match 'GetTokenLogonSid\(sourceToken\)' -and
+        $restrictedLuaTokenFunction -match 'WellKnownSidType\.WorldSid' -and
+        $restrictedLuaTokenFunction -match 'restrictingSids\[index\]\.GetBinaryForm' -and
         $restrictedLuaTokenFunction -match 'Attributes = 0' -and
         $restrictedLuaTokenFunction -match
             'DISABLE_MAX_PRIVILEGE \| LUA_TOKEN \| WRITE_RESTRICTED' -and
         $restrictedLuaTokenFunction -match
-            '(?s)IntPtr\.Zero,\s*1,\s*restrictingSidBuffer,\s*out restrictedToken' -and
+            '(?s)IntPtr\.Zero,\s*\(uint\)restrictingSids\.Length,\s*restrictingSidBuffer,\s*out restrictedToken' -and
+        $setupStandardUserLauncherText -match 'SE_GROUP_LOGON_ID' -and
+        $setupStandardUserLauncherText -match 'GetTokenInformationBuffer' -and
+        $setupStandardUserLauncherText -match
+            'restricted LUA source token has an invalid logon SID set' -and
         $setupStandardUserLauncherText -match
             'launchToken = CreateRestrictedLuaToken\(sourceToken\)' -and
         $setupStandardUserLauncherText -match
             'if \(!IsTokenRestricted\(token\)\)') `
-        'restricted-LUA fallback keeps fail-closed validation and restricts writes to the current token user SID'
+        'restricted-LUA fallback uses exact account, logon, and World write-restriction SIDs with fail-closed validation'
     Assert-True ($setupStandardUserLauncherText -match
             '(?s)process = Process\.GetProcessById\(.*?process\.Handle == IntPtr\.Zero.*?ResumeThread\(processInfo\.hThread\)') `
         'restricted Setup retains the exact suspended child handle before it can exit'

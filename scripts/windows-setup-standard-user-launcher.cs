@@ -206,12 +206,15 @@ namespace DefenseClaw
         private const uint DISABLE_MAX_PRIVILEGE = 0x0001;
         private const uint LUA_TOKEN = 0x0004;
         private const uint WRITE_RESTRICTED = 0x0008;
+        private const uint SE_GROUP_LOGON_ID = 0xC0000000;
+        private const int ERROR_INSUFFICIENT_BUFFER = 122;
         private const uint CREATE_SUSPENDED = 0x00000004;
         private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
         private const uint CREATE_NO_WINDOW = 0x08000000;
         private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
         private const int STARTF_USESTDHANDLES = 0x00000100;
         private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
+        private const int TokenGroups = 2;
         private const int TokenTypeInformation = 8;
         private const int TokenElevationType = 18;
         private const int TokenLinkedToken = 19;
@@ -245,6 +248,13 @@ namespace DefenseClaw
         {
             public IntPtr Sid;
             public uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TOKEN_GROUPS
+        {
+            public uint GroupCount;
+            public SID_AND_ATTRIBUTES Groups;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -391,6 +401,19 @@ namespace DefenseClaw
             int informationLength,
             out int returnLength);
 
+        [DllImport(
+            "advapi32.dll",
+            EntryPoint = "GetTokenInformation",
+            ExactSpelling = true,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetTokenInformationBuffer(
+            IntPtr token,
+            int informationClass,
+            IntPtr information,
+            int informationLength,
+            out int returnLength);
+
         [DllImport("advapi32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool IsTokenRestricted(IntPtr token);
@@ -528,9 +551,89 @@ namespace DefenseClaw
             return primary;
         }
 
+        private static SecurityIdentifier GetTokenLogonSid(IntPtr token)
+        {
+            int required = 0;
+            if (GetTokenInformationBuffer(token, TokenGroups, IntPtr.Zero, 0, out required))
+            {
+                throw new InvalidOperationException(
+                    "GetTokenInformation(TokenGroups) unexpectedly accepted an empty buffer");
+            }
+            int sizeError = Marshal.GetLastWin32Error();
+            int groupsOffset = Marshal.OffsetOf(typeof(TOKEN_GROUPS), "Groups").ToInt32();
+            int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+            if (sizeError != ERROR_INSUFFICIENT_BUFFER || required < groupsOffset)
+            {
+                throw new Win32Exception(
+                    sizeError,
+                    "GetTokenInformation(TokenGroups) did not return a valid buffer size");
+            }
+
+            IntPtr buffer = Marshal.AllocHGlobal(required);
+            try
+            {
+                int returned;
+                if (!GetTokenInformationBuffer(
+                    token,
+                    TokenGroups,
+                    buffer,
+                    required,
+                    out returned))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "GetTokenInformation(TokenGroups) failed");
+                }
+                if (returned < groupsOffset || returned > required)
+                {
+                    throw new InvalidOperationException(
+                        "GetTokenInformation(TokenGroups) returned an invalid length");
+                }
+
+                uint groupCount = unchecked((uint)Marshal.ReadInt32(buffer));
+                int availableEntries = (returned - groupsOffset) / entrySize;
+                if (groupCount > (uint)availableEntries)
+                {
+                    throw new InvalidOperationException(
+                        "GetTokenInformation(TokenGroups) returned a truncated group array");
+                }
+
+                SecurityIdentifier logonSid = null;
+                for (uint index = 0; index < groupCount; index++)
+                {
+                    IntPtr entryAddress = IntPtr.Add(
+                        buffer,
+                        groupsOffset + checked((int)index) * entrySize);
+                    SID_AND_ATTRIBUTES entry = (SID_AND_ATTRIBUTES)Marshal.PtrToStructure(
+                        entryAddress,
+                        typeof(SID_AND_ATTRIBUTES));
+                    if ((entry.Attributes & SE_GROUP_LOGON_ID) != SE_GROUP_LOGON_ID)
+                    {
+                        continue;
+                    }
+                    if (entry.Sid == IntPtr.Zero || logonSid != null)
+                    {
+                        throw new InvalidOperationException(
+                            "restricted LUA source token has an invalid logon SID set");
+                    }
+                    logonSid = new SecurityIdentifier(entry.Sid);
+                }
+                if (logonSid == null)
+                {
+                    throw new InvalidOperationException(
+                        "restricted LUA source token has no logon SID");
+                }
+                return logonSid;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
         private static IntPtr CreateRestrictedLuaToken(IntPtr sourceToken)
         {
-            IntPtr userSidBuffer = IntPtr.Zero;
+            IntPtr[] sidBuffers = null;
             IntPtr restrictingSidBuffer = IntPtr.Zero;
             IntPtr restrictedToken = IntPtr.Zero;
             try
@@ -546,19 +649,31 @@ namespace DefenseClaw
                         "restricted LUA source token has no user SID");
                 }
 
-                byte[] userSidBytes = new byte[userSid.BinaryLength];
-                userSid.GetBinaryForm(userSidBytes, 0);
-                userSidBuffer = Marshal.AllocHGlobal(userSidBytes.Length);
-                Marshal.Copy(userSidBytes, 0, userSidBuffer, userSidBytes.Length);
-
-                SID_AND_ATTRIBUTES restrictingSid = new SID_AND_ATTRIBUTES
+                SecurityIdentifier[] restrictingSids = new SecurityIdentifier[]
                 {
-                    Sid = userSidBuffer,
-                    Attributes = 0
+                    userSid,
+                    GetTokenLogonSid(sourceToken),
+                    new SecurityIdentifier(WellKnownSidType.WorldSid, null)
                 };
+                sidBuffers = new IntPtr[restrictingSids.Length];
+                int entrySize = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
                 restrictingSidBuffer = Marshal.AllocHGlobal(
-                    Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)));
-                Marshal.StructureToPtr(restrictingSid, restrictingSidBuffer, false);
+                    checked(entrySize * restrictingSids.Length));
+                for (int index = 0; index < restrictingSids.Length; index++)
+                {
+                    byte[] sidBytes = new byte[restrictingSids[index].BinaryLength];
+                    restrictingSids[index].GetBinaryForm(sidBytes, 0);
+                    sidBuffers[index] = Marshal.AllocHGlobal(sidBytes.Length);
+                    Marshal.Copy(sidBytes, 0, sidBuffers[index], sidBytes.Length);
+                    Marshal.StructureToPtr(
+                        new SID_AND_ATTRIBUTES
+                        {
+                            Sid = sidBuffers[index],
+                            Attributes = 0
+                        },
+                        IntPtr.Add(restrictingSidBuffer, entrySize * index),
+                        false);
+                }
 
                 if (!CreateRestrictedToken(
                     sourceToken,
@@ -567,7 +682,7 @@ namespace DefenseClaw
                     IntPtr.Zero,
                     0,
                     IntPtr.Zero,
-                    1,
+                    (uint)restrictingSids.Length,
                     restrictingSidBuffer,
                     out restrictedToken))
                 {
@@ -586,7 +701,13 @@ namespace DefenseClaw
                 {
                     Marshal.FreeHGlobal(restrictingSidBuffer);
                 }
-                if (userSidBuffer != IntPtr.Zero) Marshal.FreeHGlobal(userSidBuffer);
+                if (sidBuffers != null)
+                {
+                    foreach (IntPtr sidBuffer in sidBuffers)
+                    {
+                        if (sidBuffer != IntPtr.Zero) Marshal.FreeHGlobal(sidBuffer);
+                    }
+                }
             }
         }
 
