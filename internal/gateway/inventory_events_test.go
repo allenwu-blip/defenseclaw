@@ -699,18 +699,22 @@ func TestManagedInventoryRoutingExcludesOperatorDestinations(t *testing.T) {
 func TestManagedEndpointInventorySurvivesSourceDisabledAIDiscoveryLogs(t *testing.T) {
 	withManagedEnterprise(t, true)
 	runtime, path, adapter := newManagedAIDFailOpenRuntime(t)
-	configPath := filepath.Join(t.TempDir(), "openclaw.json")
-	if err := os.WriteFile(configPath, []byte(`{
-  "mcp": {"servers": {"safe-mcp": {
-    "command": "/opt/managed/bin/mcp-server",
-    "transport": "stdio"
-  }}}
-}`), 0o600); err != nil {
+	home := t.TempDir()
+	codexHome := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &config.Config{Claw: config.ClawConfig{
-		Mode: config.ClawMode("openclaw"), ConfigFile: configPath,
-	}}
+	if err := os.WriteFile(filepath.Join(codexHome, "config.toml"), []byte(`
+[mcp_servers.safe-mcp]
+command = "managed-mcp-server"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	cfg := &config.Config{
+		Claw:        config.ClawConfig{Mode: config.ClawMode("codex")},
+		AIDiscovery: config.AIDiscoveryConfig{HomeDirs: []string{home}},
+	}
 	registry := connector.NewRegistry()
 	if err := registry.RegisterPlugin(&endpointInventoryPluginConnector{
 		// Unknown plugins are deliberately not certified on Windows. Reuse a
