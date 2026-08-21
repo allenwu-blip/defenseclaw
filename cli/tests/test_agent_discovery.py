@@ -551,12 +551,16 @@ def test_devin_discovery_uses_pinned_workspace_hook_not_ambient_home(
 def test_devin_canonical_user_mcp_file_is_configuration_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    roaming = tmp_path / "roaming"
-    mcp = roaming / "devin" / "mcp_config.json"
+    home = tmp_path / "ambient-profile"
+    _pin_home(monkeypatch, home)
+    if os.name == "nt":
+        roaming = tmp_path / "roaming"
+        monkeypatch.setenv("APPDATA", str(roaming))
+        mcp = roaming / "devin" / "mcp_config.json"
+    else:
+        mcp = home / ".config" / "devin" / "mcp_config.json"
     mcp.parent.mkdir(parents=True)
     mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
-    _pin_home(monkeypatch, tmp_path / "ambient-profile")
-    monkeypatch.setenv("APPDATA", str(roaming))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
 
