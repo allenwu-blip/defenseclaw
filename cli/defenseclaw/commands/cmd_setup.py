@@ -4826,7 +4826,8 @@ def _record_windows_setup_agent_selections(
 ) -> _VerifiedSetupAgentSelections | None:
     """Refresh protected executable authority for native runtime inspection."""
 
-    if platform_support.host_os() != "windows":
+    host_os = platform_support.host_os()
+    if host_os not in {"windows", "darwin"}:
         return None
     from defenseclaw.agent_selection import (
         record_setup_agent_selections,
@@ -4834,6 +4835,8 @@ def _record_windows_setup_agent_selections(
     )
 
     selected = setup_agent_selection_connectors(connectors)
+    if host_os == "darwin":
+        selected = tuple(name for name in selected if name == "openhands")
     if not selected:
         return None
 

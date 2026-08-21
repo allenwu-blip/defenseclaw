@@ -30,6 +30,7 @@ import json
 import os
 import re
 import stat
+import sys
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -50,7 +51,9 @@ _CODEX_WINDOWS_PLATFORM_VARIANTS = (
     ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
 )
 _MAX_AGENT_EXECUTABLE_BYTES = 512 * 1024 * 1024
-_SUPPORTED_CONNECTORS = frozenset({"codex", "claudecode", "hermes", "omnigent", "opencode", "amp"})
+_SUPPORTED_CONNECTORS = frozenset(
+    {"codex", "claudecode", "hermes", "omnigent", "opencode", "amp", "openhands"}
+)
 _PROTECTED_LOCK_EXECUTABLE_NAMES = {
     "codex": frozenset({"codex.exe"}),
     "hermes": frozenset({"hermes.exe"}),
@@ -86,6 +89,7 @@ def setup_agent_selection_connectors(connectors: Iterable[str]) -> tuple[str, ..
             name
             for raw in connectors
             if (name := agent_discovery._normalize_connector(str(raw))) in _SUPPORTED_CONNECTORS
+            and (name != "openhands" or sys.platform == "darwin")
         )
     )
 
@@ -152,11 +156,17 @@ def _select_agent_executable(data_dir: str, connector: str) -> SetupAgentSelecti
         rejection = "no installed executable was found in a built-in or operator-approved trusted prefix"
     for candidate in _setup_agent_candidates(connector, spec, data_dir):
         protected_windows_opencode = connector == "opencode" and os.name == "nt"
+        protected_darwin_openhands = connector == "openhands" and sys.platform == "darwin"
+        identity = _stable_selection_identity(candidate) if protected_darwin_openhands else None
+        if protected_darwin_openhands and identity is None:
+            continue
         if protected_windows_opencode:
             trusted = _is_windows_opencode_setup_binary(candidate)
+        elif protected_darwin_openhands:
+            trusted = is_setup_trusted_binary(candidate, data_dir, connector=connector)
         else:
             trusted = is_setup_trusted_binary(candidate, data_dir)
-        if not trusted:
+        if not trusted or (protected_darwin_openhands and _stable_selection_identity(candidate) != identity):
             continue
         executable = os.path.realpath(os.path.abspath(candidate))
         digest = ""
@@ -186,14 +196,21 @@ def _select_agent_executable(data_dir: str, connector: str) -> SetupAgentSelecti
         if probe_error or not raw_version:
             rejection = probe_error or "version probe returned no version"
             continue
+        if protected_darwin_openhands and _stable_selection_identity(executable) != identity:
+            rejection = "selected OpenHands executable changed while probing its version"
+            continue
         normalized = normalize_agent_version(raw_version)
         if not normalized:
             rejection = f"could not normalize agent version {raw_version!r}"
             continue
-        if connector == "amp" or protected_windows_opencode:
+        if connector == "amp" or protected_windows_opencode or protected_darwin_openhands:
             compatibility = resolve_connector_contract(connector, raw_version)
             if compatibility.status != STATUS_KNOWN or compatibility.normalized_version != normalized:
-                label = "OpenCode" if protected_windows_opencode else "Amp"
+                label = "Amp"
+                if protected_windows_opencode:
+                    label = "OpenCode"
+                elif protected_darwin_openhands:
+                    label = "OpenHands"
                 rejection = f"{label} version {raw_version!r} is outside the validated hook contract"
                 continue
         if not digest:
@@ -202,6 +219,9 @@ def _select_agent_executable(data_dir: str, connector: str) -> SetupAgentSelecti
             except OSError as exc:
                 rejection = str(exc)
                 continue
+        if protected_darwin_openhands and _stable_selection_identity(executable) != identity:
+            rejection = "selected OpenHands executable changed while hashing"
+            continue
         return SetupAgentSelection(
             connector=connector,
             executable=executable,
@@ -212,7 +232,7 @@ def _select_agent_executable(data_dir: str, connector: str) -> SetupAgentSelecti
     raise OSError(f"cannot select {connector} executable: {rejection}")
 
 
-def is_setup_trusted_binary(candidate: str, data_dir: str) -> bool:
+def is_setup_trusted_binary(candidate: str, data_dir: str, *, connector: str = "") -> bool:
     """Admit only built-in or protected-config prefixes, never env extras."""
 
     try:
@@ -237,6 +257,10 @@ def is_setup_trusted_binary(candidate: str, data_dir: str) -> bool:
         return any(agent_discovery._windows_acl_chain_is_safe(resolved, root) for root in matching_roots)
     if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
         return False
+    if connector == "openhands" and sys.platform == "darwin":
+        if os.path.basename(resolved) != "openhands":
+            return False
+        return any(_posix_setup_chain_is_safe(resolved, root) for root in matching_roots)
     try:
         binary_info = os.stat(resolved)
         parent_info = os.stat(os.path.dirname(resolved))
@@ -251,6 +275,70 @@ def is_setup_trusted_binary(candidate: str, data_dir: str) -> bool:
     # discovery. Do not re-resolve them through the passive discovery registry:
     # that would discard a setup-only root after it was already validated.
     return True
+
+
+def _stable_selection_identity(path: str) -> tuple[int, int, int, int, int] | None:
+    """Return replacement-sensitive identity for one non-link regular file."""
+
+    try:
+        lexical = os.path.abspath(path)
+        info = os.lstat(lexical)
+        if is_link_or_reparse(lexical) or not stat.S_ISREG(info.st_mode):
+            return None
+        return (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _posix_setup_chain_is_safe(executable: str, root: str) -> bool:
+    """Validate every executable-path element through its admitted root."""
+
+    try:
+        resolved = os.path.abspath(executable)
+        boundary = os.path.abspath(root)
+        if not agent_discovery._path_is_within(resolved, boundary):
+            return False
+        trusted_owners = {0, os.getuid(), os.geteuid()}
+        current = resolved
+        leaf = True
+        reached_boundary = False
+        while True:
+            info = os.lstat(current)
+            writable = bool(info.st_mode & 0o022)
+            trusted_sticky_ancestor = (
+                not leaf
+                and stat.S_ISDIR(info.st_mode)
+                and bool(info.st_mode & stat.S_ISVTX)
+                and info.st_uid == 0
+            )
+            if (
+                is_link_or_reparse(current)
+                or info.st_uid not in trusted_owners
+                or (writable and not trusted_sticky_ancestor)
+            ):
+                return False
+            if leaf:
+                if not stat.S_ISREG(info.st_mode) or not os.access(current, os.X_OK):
+                    return False
+                leaf = False
+            elif not stat.S_ISDIR(info.st_mode):
+                return False
+            if os.path.normcase(current) == os.path.normcase(boundary):
+                reached_boundary = True
+            parent = os.path.dirname(current)
+            if parent == current:
+                return reached_boundary
+            if not reached_boundary and not agent_discovery._path_is_within(parent, boundary):
+                return False
+            current = parent
+    except (OSError, ValueError):
+        return False
 
 
 def setup_agent_lock_executable_invariant(data_dir: str, connector: str, entry: object) -> str:
@@ -345,6 +433,7 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
         "omnigent": ("omnigent.exe", "omni.exe"),
         "opencode": ("opencode.exe",),
         "amp": ("amp.exe",),
+        "openhands": ("openhands",),
     }[connector]
     for root in roots:
         for name in names:

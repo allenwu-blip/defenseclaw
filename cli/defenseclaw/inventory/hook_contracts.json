@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "defenseclaw_version": "0.5.0",
   "runtime_lock_file": "hook_contract_lock.json",
   "description": "DefenseClaw hook connector compatibility contracts. Each hook connector maps agent CLI version ranges to the hook script contract DefenseClaw knows how to install, decode, evaluate, and respond to.",
@@ -1632,7 +1632,8 @@
             "Current GitHub Copilot CLI documentation includes the mutation-only userPromptTransformed event; DefenseClaw returns no modification.",
             "GitHub Copilot CLI 1.0.76 is the conservative reviewed floor for this current 14-event contract.",
             "Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
-            "postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool."
+            "postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool.",
+            "Copilot documents optional native OpenTelemetry metrics and traces on POSIX hosts. DefenseClaw records that upstream surface but does not configure, launch, or certify the exporter; every DefenseClaw contract remains hook-only."
           ]
         }
       ]
@@ -1747,7 +1748,7 @@
         {
           "contract_id": "openhands-hooks-v1",
           "agent_version": {
-            "min_inclusive": "0.0.0",
+            "min_inclusive": "1.12.0",
             "max_exclusive": ""
           },
           "default_for_unversioned": true,
@@ -1774,6 +1775,22 @@
           ],
           "supports_traceparent": true,
           "native_otlp": false,
+          "platform_overrides": {
+            "darwin": {
+              "native_otlp": true,
+              "native_otlp_auth": "otel-exporter-headers",
+              "native_otlp_signals": [
+                "traces"
+              ],
+              "native_otlp_endpoint_template": "/v1/traces"
+            },
+            "windows": {
+              "agent_version": {
+                "min_inclusive": "0.0.0"
+              },
+              "native_otlp": false
+            }
+          },
           "tool_call_lifecycle": {
             "version": 1,
             "pre_proposal_events": [
@@ -1841,8 +1858,9 @@
           },
           "notes": [
             "OpenHands hooks use native snake_case event keys and install to ~/.openhands/hooks.json by default, with repo-local .openhands/hooks.json when a workspace is pinned.",
-            "Validated with OpenHands CLI 1.16.0; the contract stays unbounded because upstream documents the hooks as a config contract rather than a versioned hook API floor.",
-            "OpenHands blocks by exit code 2 and optional decision=deny JSON; no native ask/permission prompt surface is documented, so confirm verdicts are downgraded to additionalContext alerts."
+            "OpenHands CLI 1.12.0 is the POSIX minimum because it first loads user-global ~/.openhands/hooks.json; source-reviewed against CLI 1.16.0 with no maximum. Windows retains its established unversioned hook contract. macOS remains uncertified until a durable green latest-version live run is recorded.",
+            "OpenHands blocks by exit code 2 and optional decision=deny JSON; no native ask surface is documented. Confirm becomes additionalContext only for user_prompt_submit; pre_tool_use and stop downgrades are audit-only.",
+            "Standalone OpenHands SDK 1.39.1 preserves a trace-only process-environment OTLP exporter; DefenseClaw integrates it only through the protected connector launch command on the reviewed macOS lane and does not persist launch variables."
           ]
         }
       ]

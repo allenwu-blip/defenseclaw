@@ -525,6 +525,43 @@ func TestNativeOTLPShape_GeminiCLI(t *testing.T) {
 	}
 }
 
+func TestNativeOTLPShape_OpenHandsDarwinExporterOnly(t *testing.T) {
+	t.Parallel()
+	opts := fixedSetupOpts(t)
+
+	if got := openhandsNativeOTLPSpecForOS(opts, "linux"); got != nil {
+		t.Fatalf("Linux OpenHands NativeOTLP spec = %+v, want nil", got)
+	}
+	spec := openhandsNativeOTLPSpecForOS(opts, "darwin")
+	if spec == nil {
+		t.Fatal("Darwin OpenHands NativeOTLP spec is nil")
+	}
+	if spec.Kind != NativeOTLPEnvBlock || spec.PerSignal {
+		t.Fatalf("OpenHands NativeOTLP shape = kind %q perSignal=%v, want process env block with explicit trace-only overrides", spec.Kind, spec.PerSignal)
+	}
+	env, err := spec.EnvBlock()
+	if err != nil {
+		t.Fatalf("spec.EnvBlock: %v", err)
+	}
+	wantHeaders := "authorization=Bearer%20" + strings.Repeat("a", 64) + ",x-defenseclaw-client=openhands-otel%2F1.0,x-defenseclaw-source=openhands"
+	wants := map[string]string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT":        "http://127.0.0.1:18970",
+		"OTEL_EXPORTER_OTLP_PROTOCOL":        "http/protobuf",
+		"OTEL_EXPORTER_OTLP_HEADERS":         wantHeaders,
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:18970/v1/traces",
+		"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":  wantHeaders,
+		"OTEL_TRACES_EXPORTER":               "otlp",
+		"OTEL_METRICS_EXPORTER":              "none",
+		"OTEL_LOGS_EXPORTER":                 "none",
+		"OTEL_SERVICE_NAME":                  "openhands",
+		"OTEL_RESOURCE_ATTRIBUTES":           "defenseclaw.connector=openhands",
+	}
+	if !reflect.DeepEqual(env, wants) {
+		t.Fatalf("OpenHands Darwin NativeOTLP env = %#v, want %#v", env, wants)
+	}
+}
+
 func TestSerializeOTLPHeadersRoundTripsThroughJavaScriptURIParser(t *testing.T) {
 	t.Parallel()
 

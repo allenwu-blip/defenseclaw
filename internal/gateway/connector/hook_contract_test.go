@@ -61,6 +61,93 @@ func TestAntigravityDefaultCapabilitiesMatchResolvedContract(t *testing.T) {
 	}
 }
 
+func TestPlatformHookContractsPreservePR655Bands(t *testing.T) {
+	type contractBand struct {
+		id             string
+		min            string
+		max            string
+		defaultVersion bool
+		scriptVersion  string
+		events         int
+	}
+	want := map[string][]contractBand{
+		"codex": {
+			{"codex-hooks-v1", "0.124.0", "0.129.0", false, "v6", 6},
+			{"codex-hooks-v2", "0.129.0", "0.133.0", false, "v6", 8},
+			{"codex-hooks-v3", "0.133.0", "0.135.0", false, "v6", 10},
+			{"codex-hooks-v3-generic", "0.135.0", "0.145.0", false, "v6", 10},
+			{"codex-hooks-v4", "0.145.0", "", true, "v6", 11},
+		},
+		"claudecode": {
+			{"claudecode-hooks-v1", "2.1.154", "2.1.219", true, "v7", 28},
+			{"claudecode-hooks-v2", "2.1.219", "", false, "v7", 29},
+		},
+		"copilot": {
+			{"copilot-hooks-v1", "1.0.18", "1.0.76", false, "v7", 13},
+			{"copilot-hooks-v2", "1.0.76", "", true, "v7", 14},
+		},
+		"hermes":      {{"hermes-hooks-v1", "0.19.0", "0.21.0", true, "v6", 23}},
+		"antigravity": {{"antigravity-hooks-v2", "1.1.8", "", true, "v8", 5}},
+		"openhands":   {{"openhands-hooks-v1", "1.12.0", "", true, "v6", 6}},
+		"opencode":    {{"opencode-hooks-v1", "1.18.10", "1.18.20", false, "v7", 10}},
+		"amp":         {{"amp-plugin-v1", "0.0.1785334225", "", true, "v2", 5}},
+		"geminicli":   {{"geminicli-hooks-v1", "0.26.0", "", true, "v6", 11}},
+	}
+
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		for connectorName, wantBands := range want {
+			t.Run(goos+"/"+connectorName, func(t *testing.T) {
+				contracts := hookContractsForOS(connectorName, goos)
+				if len(contracts) != len(wantBands) {
+					t.Fatalf("contract count=%d want %d", len(contracts), len(wantBands))
+				}
+				for i, contract := range contracts {
+					wantBand := wantBands[i]
+					if goos == "windows" && connectorName == "openhands" {
+						wantBand.min = "0.0.0"
+					}
+					got := contractBand{
+						id:             contract.ContractID,
+						min:            contract.MinAgentVersion,
+						max:            contract.MaxAgentVersion,
+						defaultVersion: contract.DefaultForUnversioned,
+						scriptVersion:  contract.HookScriptVersion,
+						events:         len(contract.Events),
+					}
+					if got != wantBand {
+						t.Errorf("contract[%d]=%+v want %+v", i, got, wantBand)
+					}
+				}
+			})
+		}
+	}
+
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		resolution := resolveHookContractForOS("copilot", "GitHub Copilot CLI 1.0.76", goos)
+		if resolution.Status != HookCompatibilityKnown || resolution.Contract.ContractID != "copilot-hooks-v2" {
+			t.Fatalf("Copilot %s resolution=%+v", goos, resolution)
+		}
+		if resolution.Contract.NativeOTLP {
+			t.Errorf("Copilot %s advertised an exporter DefenseClaw does not integrate", goos)
+		}
+	}
+
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		openHands := hookContractsForOS("openhands", goos)[0]
+		wantNativeOTLP := goos == "darwin"
+		if openHands.NativeOTLP != wantNativeOTLP {
+			t.Errorf("OpenHands %s native OTLP=%v want %v", goos, openHands.NativeOTLP, wantNativeOTLP)
+		}
+		wantMinimum := "1.12.0"
+		if goos == "windows" {
+			wantMinimum = "0.0.0"
+		}
+		if openHands.MinAgentVersion != wantMinimum {
+			t.Errorf("OpenHands %s minimum=%q want %q", goos, openHands.MinAgentVersion, wantMinimum)
+		}
+	}
+}
+
 func sharedHookBytes(t *testing.T, hookDir string) map[string][]byte {
 	t.Helper()
 	out := make(map[string][]byte, len(genericHookScripts)+len(hookHelperScripts))
@@ -100,7 +187,7 @@ func TestHookContractResolution(t *testing.T) {
 		{"claude_v1_upper_boundary", "claude-code", "Claude Code v2.1.218", HookCompatibilityKnown, "claudecode-hooks-v1", "2.1.218"},
 		{"claude_directory_added_minimum", "claude-code", "Claude Code v2.1.219", HookCompatibilityKnown, "claudecode-hooks-v2", "2.1.219"},
 		{"claude_directory_added_current", "claude-code", "Claude Code v2.1.220", HookCompatibilityKnown, "claudecode-hooks-v2", "2.1.220"},
-		{"openhands_alias_known", "open-hands", "OpenHands 1.0.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.0.0"},
+		{"openhands_alias_known", "open-hands", "OpenHands 1.12.0", HookCompatibilityKnown, "openhands-hooks-v1", "1.12.0"},
 		{"cursor_exact_agent_preview_pin", "cursor", "2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_exact_agent_preview_command_prefix", "cursor", "agent v2026.07.23-e383d2b", HookCompatibilityKnown, "cursor-hooks-v1", "2026.7.23"},
 		{"cursor_other_agent_build_unknown", "cursor", "cursor-agent 2026.07.23-deadbee", HookCompatibilityUnknown, "", "2026.7.23"},
@@ -134,6 +221,23 @@ func TestHookContractResolution(t *testing.T) {
 				t.Fatalf("NormalizedVersion=%q want %q", got.NormalizedVersion, tc.wantNorm)
 			}
 		})
+	}
+}
+
+func TestOpenHandsPOSIXContractFloorAndWindowsCompatibilityOverride(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux"} {
+		before := resolveHookContractForOS("openhands", "OpenHands 1.11.99", goos)
+		if before.Status != HookCompatibilityUnknown {
+			t.Fatalf("OpenHands %s before-floor status=%q want %q", goos, before.Status, HookCompatibilityUnknown)
+		}
+		floor := resolveHookContractForOS("openhands", "OpenHands 1.12.0", goos)
+		if floor.Status != HookCompatibilityKnown || floor.Contract.ContractID != "openhands-hooks-v1" {
+			t.Fatalf("OpenHands %s floor resolution=%+v", goos, floor)
+		}
+	}
+	windows := resolveHookContractForOS("openhands", "OpenHands 1.11.99", "windows")
+	if windows.Status != HookCompatibilityKnown || windows.Contract.MinAgentVersion != "0.0.0" || windows.Contract.NativeOTLP {
+		t.Fatalf("OpenHands Windows compatibility override=%+v", windows)
 	}
 }
 
@@ -461,23 +565,38 @@ func TestContentEnvelopeKeyDeclarations(t *testing.T) {
 }
 
 func TestHookContractsManifestMatchesRuntime(t *testing.T) {
+	type manifestAgentVersion struct {
+		Exact        []string `json:"exact"`
+		MinInclusive string   `json:"min_inclusive"`
+		MaxExclusive string   `json:"max_exclusive"`
+	}
+	type manifestAgentVersionOverride struct {
+		Exact        *[]string `json:"exact"`
+		MinInclusive *string   `json:"min_inclusive"`
+		MaxExclusive *string   `json:"max_exclusive"`
+	}
+	type manifestContractOverride struct {
+		AgentVersion          *manifestAgentVersionOverride `json:"agent_version"`
+		DefaultForUnversioned *bool                         `json:"default_for_unversioned"`
+		HookScriptVersion     *string                       `json:"hook_script_version"`
+		Events                *[]string                     `json:"events"`
+		AIDSurfaces           *[]string                     `json:"aid_surfaces"`
+		NativeOTLP            *bool                         `json:"native_otlp"`
+	}
 	type manifestContract struct {
-		ContractID   string `json:"contract_id"`
-		AgentVersion struct {
-			Exact        []string `json:"exact"`
-			MinInclusive string   `json:"min_inclusive"`
-			MaxExclusive string   `json:"max_exclusive"`
-		} `json:"agent_version"`
-		DefaultForUnversioned   bool                      `json:"default_for_unversioned"`
-		HookScriptVersion       string                    `json:"hook_script_version"`
-		HookConfigPathTemplates []string                  `json:"hook_config_path_templates"`
-		ResponseField           string                    `json:"response_field"`
-		Events                  []string                  `json:"events"`
-		AIDSurfaces             []string                  `json:"aid_surfaces"`
-		SupportsTraceparent     bool                      `json:"supports_traceparent"`
-		NativeOTLP              bool                      `json:"native_otlp"`
-		ContentEnvelopeKey      string                    `json:"content_envelope_key"`
-		ToolCallLifecycle       ToolCallLifecycleContract `json:"tool_call_lifecycle"`
+		ContractID              string                              `json:"contract_id"`
+		AgentVersion            manifestAgentVersion                `json:"agent_version"`
+		PlatformOverrides       map[string]manifestContractOverride `json:"platform_overrides"`
+		DefaultForUnversioned   bool                                `json:"default_for_unversioned"`
+		HookScriptVersion       string                              `json:"hook_script_version"`
+		HookConfigPathTemplates []string                            `json:"hook_config_path_templates"`
+		ResponseField           string                              `json:"response_field"`
+		Events                  []string                            `json:"events"`
+		AIDSurfaces             []string                            `json:"aid_surfaces"`
+		SupportsTraceparent     bool                                `json:"supports_traceparent"`
+		NativeOTLP              bool                                `json:"native_otlp"`
+		ContentEnvelopeKey      string                              `json:"content_envelope_key"`
+		ToolCallLifecycle       ToolCallLifecycleContract           `json:"tool_call_lifecycle"`
 		Capabilities            struct {
 			CanBlock           bool     `json:"can_block"`
 			CanAskNative       bool     `json:"can_ask_native"`
@@ -493,7 +612,8 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 		Contracts         []manifestContract `json:"contracts"`
 	}
 	type manifest struct {
-		Connectors map[string]manifestConnector `json:"connectors"`
+		SchemaVersion int                          `json:"schema_version"`
+		Connectors    map[string]manifestConnector `json:"connectors"`
 	}
 
 	path := filepath.Join("..", "..", "..", "cli", "defenseclaw", "inventory", "hook_contracts.json")
@@ -504,6 +624,52 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 	var gotManifest manifest
 	if err := json.Unmarshal(payload, &gotManifest); err != nil {
 		t.Fatalf("unmarshal hook contract manifest: %v", err)
+	}
+	if gotManifest.SchemaVersion != 2 {
+		t.Fatalf("hook contract manifest schema_version=%d want 2", gotManifest.SchemaVersion)
+	}
+
+	contractForOS := func(contract manifestContract, goos string) manifestContract {
+		override, ok := contract.PlatformOverrides[goos]
+		if !ok {
+			return contract
+		}
+		if override.AgentVersion != nil {
+			if override.AgentVersion.Exact != nil {
+				contract.AgentVersion.Exact = append([]string(nil), (*override.AgentVersion.Exact)...)
+			}
+			if override.AgentVersion.MinInclusive != nil {
+				contract.AgentVersion.MinInclusive = *override.AgentVersion.MinInclusive
+			}
+			if override.AgentVersion.MaxExclusive != nil {
+				contract.AgentVersion.MaxExclusive = *override.AgentVersion.MaxExclusive
+			}
+		}
+		if override.DefaultForUnversioned != nil {
+			contract.DefaultForUnversioned = *override.DefaultForUnversioned
+		}
+		if override.HookScriptVersion != nil {
+			contract.HookScriptVersion = *override.HookScriptVersion
+		}
+		if override.Events != nil {
+			contract.Events = append([]string(nil), (*override.Events)...)
+		}
+		if override.AIDSurfaces != nil {
+			contract.AIDSurfaces = append([]string(nil), (*override.AIDSurfaces)...)
+		}
+		if override.NativeOTLP != nil {
+			contract.NativeOTLP = *override.NativeOTLP
+		}
+		return contract
+	}
+	for name, spec := range gotManifest.Connectors {
+		for _, contract := range spec.Contracts {
+			for platformName := range contract.PlatformOverrides {
+				if platformName != "darwin" && platformName != "linux" && platformName != "windows" {
+					t.Fatalf("%s/%s has unknown platform override %q", name, contract.ContractID, platformName)
+				}
+			}
+		}
 	}
 
 	for _, proxy := range []string{"openclaw", "zeptoclaw"} {
@@ -526,7 +692,24 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 		}
 	}
 
-	for name, runtimeContracts := range builtinHookContracts {
+	type runtimeCase struct {
+		goos      string
+		name      string
+		contracts []HookContract
+	}
+	runtimeCases := []runtimeCase{}
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		for name := range builtinHookContracts {
+			runtimeCases = append(runtimeCases, runtimeCase{
+				goos:      goos,
+				name:      name,
+				contracts: hookContractsForOS(name, goos),
+			})
+		}
+	}
+	for _, runtimeCase := range runtimeCases {
+		name := runtimeCase.name
+		runtimeContracts := runtimeCase.contracts
 		spec, ok := gotManifest.Connectors[name]
 		if !ok {
 			t.Fatalf("manifest missing hook connector %s", name)
@@ -546,6 +729,7 @@ func TestHookContractsManifestMatchesRuntime(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s manifest missing contract %s", name, runtime.ContractID)
 			}
+			manifestContract = contractForOS(manifestContract, runtimeCase.goos)
 			if manifestContract.AgentVersion.MinInclusive != runtime.MinAgentVersion {
 				t.Fatalf("%s min version=%q want %q", runtime.ContractID, manifestContract.AgentVersion.MinInclusive, runtime.MinAgentVersion)
 			}

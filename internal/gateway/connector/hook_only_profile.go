@@ -123,7 +123,8 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 	case "openhands":
 		if in.Action == "block" {
 			output = map[string]interface{}{"decision": "deny", "reason": reason}
-		} else if (in.Action == "alert" || in.RawAction == "confirm") && in.AdditionalContext != "" {
+		} else if canonicalHookEvent(in.Req.HookEventName) == "userpromptsubmit" &&
+			(in.Action == "alert" || in.RawAction == "confirm") && in.AdditionalContext != "" {
 			output = map[string]interface{}{"additionalContext": in.AdditionalContext}
 		}
 	case "opencode":
@@ -150,6 +151,7 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 		return HookRespondOutput{}
 	}
 	if output == nil && in.Req.ConnectorName != "hermes" && in.Req.ConnectorName != "geminicli" &&
+		in.Req.ConnectorName != "openhands" &&
 		in.RawAction == "confirm" && in.AdditionalContext != "" && !in.Caps.CanAskNative {
 		output = map[string]interface{}{"systemMessage": in.AdditionalContext}
 	}

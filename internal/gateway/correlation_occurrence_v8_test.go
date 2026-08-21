@@ -900,7 +900,7 @@ func TestHookOccurrenceRejectsConflictingTypedAliasesBeforePersistence(t *testin
 	}
 }
 
-func TestOpenHandsActionIdentityIsPreservedWithoutBecomingToolInvocation(t *testing.T) {
+func TestOpenHandsCommandHookRejectsSDKOnlyActionIdentity(t *testing.T) {
 	installCorrelationHMACForTest()
 	path := filepath.Join(t.TempDir(), "audit.db")
 	server, store := newHookCorrelationServer(t, path)
@@ -908,17 +908,23 @@ func TestOpenHandsActionIdentityIsPreservedWithoutBecomingToolInvocation(t *test
 	profile := server.hookProfileForConnector("openhands")
 	req := normalizeAgentHookRequestWithProfile("openhands", map[string]interface{}{
 		"hook_event_name": "user_prompt_submit",
-		"conversation_id": "conversation-1",
+		"session_id":      "session-1",
 		"message_id":      "message-1",
 		"action_id":       "action-1",
 	}, profile)
+	if req.SessionID != "session-1" {
+		t.Fatalf("documented session ID was not preserved before correlation: %+v", req)
+	}
 	if req.ToolInvocationID != "" {
 		t.Fatalf("action ID populated tool invocation before correlation: %+v", req)
 	}
 	_, correlated, err := server.correlateHookOccurrence(t.Context(), profile, req,
-		[]byte(`{"action_id":"action-1","conversation_id":"conversation-1","hook_event_name":"user_prompt_submit","message_id":"message-1"}`))
+		[]byte(`{"action_id":"action-1","hook_event_name":"user_prompt_submit","message_id":"message-1","session_id":"session-1"}`))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if correlated.SessionID != "session-1" {
+		t.Fatalf("documented session ID was not preserved after correlation: %+v", correlated)
 	}
 	if correlated.ToolInvocationID != "" {
 		t.Fatalf("action ID populated tool invocation after correlation: %+v", correlated)
@@ -929,7 +935,11 @@ func TestOpenHandsActionIdentityIsPreservedWithoutBecomingToolInvocation(t *test
 		t.Fatal(err)
 	}
 	defer database.Close() //nolint:errcheck
-	var actions, tools int
+	var sessions, actions, tools int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM correlation_identifiers
+		WHERE identifier_kind='session' AND normalized_value='session-1'`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
 	if err := database.QueryRow(`SELECT COUNT(*) FROM correlation_identifiers
 		WHERE identifier_kind='action' AND normalized_value='action-1'`).Scan(&actions); err != nil {
 		t.Fatal(err)
@@ -938,8 +948,8 @@ func TestOpenHandsActionIdentityIsPreservedWithoutBecomingToolInvocation(t *test
 		WHERE identifier_kind='tool_invocation' AND normalized_value='action-1'`).Scan(&tools); err != nil {
 		t.Fatal(err)
 	}
-	if actions != 1 || tools != 0 {
-		t.Fatalf("action/tool identifier rows=%d/%d", actions, tools)
+	if sessions != 1 || actions != 0 || tools != 0 {
+		t.Fatalf("session/action/tool identifier rows=%d/%d/%d", sessions, actions, tools)
 	}
 }
 

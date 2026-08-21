@@ -17,6 +17,7 @@
 package connector
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -33,6 +34,10 @@ import (
 // before opening a config file.
 func TestHookProfileMatrix(t *testing.T) {
 	t.Parallel()
+	openHandsNativeOTLPKind := NativeOTLPKind("")
+	if runtime.GOOS == "darwin" {
+		openHandsNativeOTLPKind = NativeOTLPEnvBlock
+	}
 
 	cases := []struct {
 		name               string
@@ -52,7 +57,7 @@ func TestHookProfileMatrix(t *testing.T) {
 		{"claudecode", true, NativeOTLPEnvBlock, true, true, true, true},
 		{"geminicli", true, NativeOTLPJSONBlock, true, false, true, true},
 		{"copilot", true, "", true, true, false, true},
-		{"openhands", true, "", true, false, true, true},
+		{"openhands", true, openHandsNativeOTLPKind, true, false, true, true},
 		// Cursor's native beforeShellExecution and preToolUse events can deny
 		// synchronously. The client has no native ask/HITL response, but action
 		// mode can block and fail closed on the reviewed event contract.

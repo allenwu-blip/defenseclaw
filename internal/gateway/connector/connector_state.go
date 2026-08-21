@@ -653,14 +653,14 @@ func LoadHookContractLockEntry(dataDir, connectorName string) HookContractLockEn
 	}
 	connectorName = normalizeConnectorName(connectorName)
 	entry := lock.Connectors[connectorName]
-	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes" || connectorName == "omnigent" || connectorName == "opencode" || connectorName == "amp") {
+	if protectedSetupSelectionConnectorForOS(connectorName, runtime.GOOS) {
 		if _, ok := supersedingProtectedSetupSelection(dataDir, connectorName, entry); ok {
 			// An explicit setup action selected and protected newer executable
 			// evidence. Treat the previous lock as absent for this one repair so
 			// the normal compatibility-drift gate does not block the operation
 			// whose purpose is to refresh that lock. The old bytes remain on disk
 			// until Setup succeeds and SaveFreshHookContractLockEntry atomically
-			// replaces only the Codex entry.
+			// replaces only the selected connector entry.
 			return HookContractLockEntry{}
 		}
 	}
@@ -764,6 +764,11 @@ func saveHookContractLockEntry(dataDir string, entry HookContractLockEntry, forc
 	entry.Connector = normalizeConnectorName(entry.Connector)
 	if runtime.GOOS == "windows" && entry.Connector == "hermes" {
 		if err := validateHermesWindowsLockPublication(context.Background(), dataDir, entry); err != nil {
+			return err
+		}
+	}
+	if runtime.GOOS == "darwin" && entry.Connector == "openhands" {
+		if err := validateOpenHandsDarwinLockPublication(dataDir, entry); err != nil {
 			return err
 		}
 	}
@@ -946,7 +951,7 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		},
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if runtime.GOOS == "windows" && (entry.Connector == "codex" || entry.Connector == "hermes" || entry.Connector == "omnigent" || entry.Connector == "amp") {
+	if protectedSetupSelectionConnectorForOS(entry.Connector, runtime.GOOS) && entry.Connector != "opencode" {
 		executable, digest, ok := setupSelectedAgentExecutableEvidence(opts.AgentExecutable)
 		if ok {
 			entry.AgentExecutable = executable
@@ -955,6 +960,19 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		}
 	}
 	return entry
+}
+
+func protectedSetupSelectionConnectorForOS(connectorName, goos string) bool {
+	connectorName = normalizeConnectorName(connectorName)
+	switch strings.ToLower(strings.TrimSpace(goos)) {
+	case "windows":
+		return connectorName == "codex" || connectorName == "hermes" || connectorName == "omnigent" ||
+			connectorName == "opencode" || connectorName == "amp"
+	case "darwin":
+		return connectorName == "openhands"
+	default:
+		return false
+	}
 }
 
 func effectiveHookGuardrailMode(mode string) string {
@@ -1353,6 +1371,21 @@ func hookRuntimeArtifactPaths(opts SetupOpts, conn Connector) []string {
 
 func LoadCachedAgentVersion(dataDir, connectorName string) string {
 	normalizedName := normalizeConnectorName(connectorName)
+	if runtime.GOOS == "darwin" && normalizedName == "openhands" {
+		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
+			if selection, supersedes := supersedingProtectedSetupSelection(dataDir, normalizedName, entry); supersedes {
+				return selection.RawVersion
+			}
+			if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
+				return strings.TrimSpace(entry.RawAgentVersion)
+			}
+			return ""
+		}
+		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
+			return selection.RawVersion
+		}
+		return ""
+	}
 	if runtime.GOOS == "windows" && normalizedName == "codex" {
 		if entry, exists := loadProtectedCodexContractEntry(dataDir); exists {
 			if validCodexAgentExecutableEvidence(entry) {
@@ -1398,6 +1431,21 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 // established discovery-cache behavior.
 func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 	normalizedName := normalizeConnectorName(connectorName)
+	if runtime.GOOS == "darwin" && normalizedName == "openhands" {
+		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
+			if selection, supersedes := supersedingProtectedSetupSelection(dataDir, normalizedName, entry); supersedes {
+				return selection.Executable
+			}
+			if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
+				return strings.TrimSpace(entry.AgentExecutable)
+			}
+			return ""
+		}
+		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
+			return selection.Executable
+		}
+		return ""
+	}
 	if runtime.GOOS == "windows" && normalizedName == "codex" {
 		if entry, exists := loadProtectedCodexContractEntry(dataDir); exists {
 			if validCodexAgentExecutableEvidence(entry) {

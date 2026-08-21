@@ -1214,6 +1214,35 @@ func TestCursorProfileRespond_BeforeSubmitPromptBlockUsesContinue(t *testing.T) 
 	}
 }
 
+func TestOpenHandsProfileRespondConfirmContextIsPromptOnly(t *testing.T) {
+	caps := NewOpenHandsConnector().HookCapabilities(SetupOpts{})
+	for _, tc := range []struct {
+		event string
+		want  map[string]interface{}
+	}{
+		{event: "user_prompt_submit", want: map[string]interface{}{"additionalContext": "review this finding"}},
+		{event: "UserPromptSubmit", want: map[string]interface{}{"additionalContext": "review this finding"}},
+		{event: "pre_tool_use", want: nil},
+		{event: "stop", want: nil},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			out := hookOnlyProfileRespond(HookRespondInput{
+				Req: HookProfileRequest{
+					ConnectorName: "openhands",
+					HookEventName: tc.event,
+				},
+				Action:            "alert",
+				RawAction:         "confirm",
+				AdditionalContext: "review this finding",
+				Caps:              caps,
+			})
+			if out.FieldName != "hook_output" || !reflect.DeepEqual(out.Output, tc.want) {
+				t.Fatalf("OpenHands %s confirm response = %#v/%#v, want hook_output/%#v", tc.event, out.FieldName, out.Output, tc.want)
+			}
+		})
+	}
+}
+
 func TestCursorProfileRespond_StopUsesFollowupInsteadOfPermissionDeny(t *testing.T) {
 	out := hookOnlyProfileRespond(HookRespondInput{
 		Req: HookProfileRequest{

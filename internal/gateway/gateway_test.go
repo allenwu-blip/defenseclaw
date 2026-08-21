@@ -6248,27 +6248,36 @@ func TestTokenAuth_OTLPScopedTokensCannotCrossConnectorNamespaces(t *testing.T) 
 }
 
 func TestTokenAuth_AcceptLoopbackOTLPScopedAuthorizationHeader(t *testing.T) {
-	api, called := tokenAuthTestServer(t, "master-token")
-	api.SetOTLPPathTokens(map[connector.OTLPPathTokenScope]string{
-		connector.OTLPScopeCodex:  "codex-scoped-token",
-		connector.OTLPScopeClaude: "claude-scoped-token",
-	})
-	handler := api.tokenAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		*called = true
-		if got := r.Header.Get(otelSourceHeader); got != "codex" {
-			t.Errorf("authenticated OTLP source = %q, want codex", got)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
+	for _, tc := range []struct {
+		name   string
+		scope  connector.OTLPPathTokenScope
+		token  string
+		signal string
+	}{
+		{name: "codex logs", scope: connector.OTLPScopeCodex, token: "codex-scoped-token", signal: "logs"},
+		{name: "openhands traces", scope: connector.OTLPScopeOpenHands, token: "openhands-scoped-token", signal: "traces"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, called := tokenAuthTestServer(t, "master-token")
+			api.SetOTLPPathTokens(map[connector.OTLPPathTokenScope]string{tc.scope: tc.token})
+			handler := api.tokenAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				*called = true
+				if got := r.Header.Get(otelSourceHeader); got != string(tc.scope) {
+					t.Errorf("authenticated OTLP source = %q, want %q", got, tc.scope)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/logs", nil)
-	req.RemoteAddr = "127.0.0.1:54321"
-	req.Header.Set("Authorization", "Bearer codex-scoped-token")
-	req.Header.Set(otelSourceHeader, "codex")
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK || !*called {
-		t.Fatalf("Codex scoped Authorization rejected: status=%d called=%v", rr.Code, *called)
+			req := httptest.NewRequest(http.MethodPost, "/v1/"+tc.signal, nil)
+			req.RemoteAddr = "127.0.0.1:54321"
+			req.Header.Set("Authorization", "Bearer "+tc.token)
+			req.Header.Set(otelSourceHeader, string(tc.scope))
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK || !*called {
+				t.Fatalf("%s scoped Authorization rejected: status=%d called=%v", tc.scope, rr.Code, *called)
+			}
+		})
 	}
 }
 

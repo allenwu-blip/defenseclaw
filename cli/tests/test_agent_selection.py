@@ -14,6 +14,121 @@ from types import SimpleNamespace
 
 import pytest
 from defenseclaw import agent_selection
+from defenseclaw.commands import cmd_setup
+
+
+def test_openhands_protected_selection_roster_is_darwin_only(monkeypatch) -> None:
+    connectors = ("codex", "openhands", "amp")
+    monkeypatch.setattr(agent_selection.sys, "platform", "linux")
+    assert agent_selection.setup_agent_selection_connectors(connectors) == ("codex", "amp")
+    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    assert agent_selection.setup_agent_selection_connectors(connectors) == (
+        "codex",
+        "openhands",
+        "amp",
+    )
+
+
+def test_darwin_setup_records_only_openhands_from_native_roster(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    selected = agent_selection.SetupAgentSelection(
+        connector="openhands",
+        executable="/usr/local/bin/openhands",
+        raw_version="OpenHands CLI 1.16.0",
+        normalized_version="1.16.0",
+        sha256="a" * 64,
+    )
+    captured: list[tuple[str, ...]] = []
+    monkeypatch.setattr(cmd_setup.platform_support, "host_os", lambda: "darwin")
+    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+
+    def record(_data_dir, connectors):
+        captured.append(tuple(connectors))
+        return {"openhands": selected}, {}
+
+    sentinel = object()
+    monkeypatch.setattr(agent_selection, "record_setup_agent_selections", record)
+    monkeypatch.setattr(cmd_setup, "_validate_setup_agent_selection_receipt", lambda *_args, **_kwargs: sentinel)
+
+    result = cmd_setup._record_windows_setup_agent_selections(
+        tmp_path,
+        ("codex", "openhands", "amp"),
+    )
+
+    assert result is sentinel
+    assert captured == [("openhands",)]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Darwin POSIX executable custody")
+def test_darwin_openhands_selection_binds_stable_executable_and_full_chain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    trusted.mkdir(mode=0o700)
+    executable = trusted / "openhands"
+    executable.write_text("#!/bin/sh\necho OpenHands CLI 1.16.0\n", encoding="utf-8")
+    executable.chmod(0o700)
+    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(trusted),))
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_ai_discovery_trust_config",
+        lambda _data_dir: (True, ()),
+    )
+    monkeypatch.setattr(agent_selection.agent_discovery, "_expand_bin_prefixes", lambda roots: tuple(roots))
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_binary_candidates_for_agent",
+        lambda *_args: (str(executable),),
+    )
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_version_for_agent_binary",
+        lambda *_args, **_kwargs: ("OpenHands CLI 1.16.0", ""),
+    )
+
+    selected = agent_selection._select_agent_executable(str(tmp_path / "state"), "openhands")
+
+    assert selected.executable == str(executable)
+    assert selected.sha256 == hashlib.sha256(executable.read_bytes()).hexdigest()
+    trusted.chmod(0o777)
+    assert not agent_selection.is_setup_trusted_binary(
+        str(executable),
+        str(tmp_path / "state"),
+        connector="openhands",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Darwin POSIX executable custody")
+def test_darwin_openhands_selection_rejects_identity_change_during_hash(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    trusted = tmp_path / "trusted"
+    trusted.mkdir(mode=0o700)
+    executable = trusted / "openhands"
+    executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    executable.chmod(0o700)
+    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_setup_agent_candidates", lambda *_args: (str(executable),))
+    monkeypatch.setattr(agent_selection, "is_setup_trusted_binary", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_version_for_agent_binary",
+        lambda *_args, **_kwargs: ("OpenHands CLI 1.16.0", ""),
+    )
+
+    def replace_during_hash(path: str) -> str:
+        Path(path).write_text("#!/bin/sh\necho replaced\n", encoding="utf-8")
+        return "b" * 64
+
+    monkeypatch.setattr(agent_selection, "stable_executable_sha256", replace_during_hash)
+
+    with pytest.raises(OSError, match="changed while hashing"):
+        agent_selection._select_agent_executable(str(tmp_path / "state"), "openhands")
 
 
 def test_record_setup_agent_selection_writes_short_lived_protected_receipt(

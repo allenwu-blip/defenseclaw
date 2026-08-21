@@ -87,6 +87,8 @@ var connectorSaveOpenCodeActive = connector.SaveActiveConnectors
 var connectorSaveOpenCodeLock = connector.SaveFreshHookContractLockEntry
 var connectorEnsureHookAPIToken = connector.EnsureHookAPIToken
 var connectorVerifyRootPersistentPreRun = rootPersistentPreRunE
+var connectorLaunchOpenHands = connector.LaunchOpenHandsWithNativeOTLP
+var connectorCheckPlatformSupportOnHost = connector.CheckPlatformSupportOnHost
 
 var connectorTeardownCmd = &cobra.Command{
 	Use:   "teardown",
@@ -133,6 +135,24 @@ var connectorReconcileCmd = &cobra.Command{
 This is the selected-connector setup primitive used by transactional policy
 mutations. It does not restart the gateway and does not setup peer connectors.`,
 	RunE: runConnectorReconcile,
+}
+
+var connectorLaunchCmd = &cobra.Command{
+	Use:   "launch -- [openhands arguments...]",
+	Short: "Launch the protected OpenHands executable with scoped native telemetry",
+	Long: `Launch the exact OpenHands executable selected and sealed by setup.
+
+This Darwin-only boundary revalidates the protected executable and hook
+registration, loads the owner-only OpenHands OTLP credential, and supplies it
+only in the child process environment. The credential is never printed or
+placed in the command arguments. Put -- before OpenHands flags.`,
+	// A launch client can coexist with the running gateway. Loading a second
+	// audit store would create the same WAL/SHM ownership hazard as status.
+	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		return loadGatewayCommandConfigOnly()
+	},
+	PersistentPostRun: func(_ *cobra.Command, _ []string) {},
+	RunE:              runConnectorLaunch,
 }
 
 var connectorListBackupsCmd = &cobra.Command{
@@ -195,6 +215,7 @@ func init() {
 	connectorCmd.AddCommand(connectorTeardownCmd)
 	connectorCmd.AddCommand(connectorVerifyCmd)
 	connectorCmd.AddCommand(connectorReconcileCmd)
+	connectorCmd.AddCommand(connectorLaunchCmd)
 	connectorCmd.AddCommand(connectorListBackupsCmd)
 
 	rootCmd.AddCommand(connectorCmd)
@@ -436,6 +457,37 @@ func resolveConnectorOpts(dataDir string) connector.SetupOpts {
 	opts.AgentExecutable = connector.LoadCachedAgentExecutable(dataDir, name)
 	opts.APIToken = cfg.Gateway.ResolvedToken()
 	return opts
+}
+
+func runConnectorLaunch(cmd *cobra.Command, args []string) error {
+	if connectorFlagJSON {
+		return errors.New("connector launch does not support --json because stdout and stderr belong to OpenHands")
+	}
+	dataDir := resolveConnectorDataDir()
+	if dataDir == "" {
+		return errors.New("connector launch: no data directory configured")
+	}
+	name := resolveActiveConnectorName(dataDir)
+	if name != "openhands" {
+		return fmt.Errorf("connector launch supports only the protected OpenHands boundary, got %q", name)
+	}
+	if _, err := connectorCheckPlatformSupportOnHost(name); err != nil {
+		return fmt.Errorf("connector launch openhands: %w", err)
+	}
+	opts := resolveConnectorOpts(dataDir)
+	opts.AgentVersion = connector.LoadCachedAgentVersion(dataDir, name)
+	opts.AgentExecutable = connector.LoadCachedAgentExecutable(dataDir, name)
+	if err := connectorLaunchOpenHands(
+		cmd.Context(),
+		opts,
+		append([]string(nil), args...),
+		cmd.InOrStdin(),
+		cmd.OutOrStdout(),
+		cmd.ErrOrStderr(),
+	); err != nil {
+		return fmt.Errorf("connector launch openhands: %w", err)
+	}
+	return nil
 }
 
 func runConnectorReconcile(cmd *cobra.Command, _ []string) error {

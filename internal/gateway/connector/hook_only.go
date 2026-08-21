@@ -512,14 +512,13 @@ func (c *hookOnlyConnector) HookCapabilities(opts SetupOpts) HookCapability {
 }
 
 // HookProfile implements HookProfileProvider for the generic hook-only
-// connectors. Today only geminicli has a DefenseClaw-integrated native OTLP
-// path (via the JSON-block telemetry section in settings.json with a scoped
-// path-token). Copilot upstream documents an optional OTel exporter, but
-// DefenseClaw does not configure or certify that surface; its profile remains
-// hook-only until a scoped-auth, custody, correlation, and teardown contract
-// is implemented. Cursor, Windsurf, Hermes, and OpenHands likewise return
-// spec=nil. A future reviewed integration can return a non-nil spec without
-// changing the dispatcher.
+// connectors. Gemini CLI has a managed JSON-block telemetry section with a
+// scoped path-token. On Darwin, OpenHands additionally exposes a reviewed
+// process-environment trace exporter with connector-scoped header auth; the
+// connector deliberately does not persist those variables or mutate a shell
+// profile. Copilot upstream documents an optional OTel exporter, but
+// DefenseClaw does not configure or certify that surface. Cursor, Windsurf,
+// Hermes, and the non-Darwin OpenHands profiles remain hook-only.
 //
 // SupportsTraceparent is true for the entire generic family: every
 // shipped hook script (cursor-hook.sh, windsurf-hook.sh,
@@ -553,6 +552,9 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 	}
 	if c.name == "geminicli" {
 		profile.NativeOTLP = geminiCLINativeOTLPSpec(opts)
+	}
+	if c.name == "openhands" {
+		profile.NativeOTLP = openhandsNativeOTLPSpecForOS(opts, runtime.GOOS)
 	}
 	if c.name == "amp" {
 		// Amp exposes an opaque plugin span ID but no documented W3C
@@ -707,6 +709,49 @@ func geminiCLINativeOTLPSpec(opts SetupOpts) *NativeOTLPSpec {
 		}
 	}
 	return spec
+}
+
+// openhandsNativeOTLPSpecForOS describes the process environment consumed by
+// the OpenHands SDK observability layer on the reviewed macOS lane. The SDK
+// exports traces through standard OTEL variables; DefenseClaw does not persist
+// this block in hooks.json or a shell profile. The protected connector launch
+// command renders it only for the admitted child. Native attributes remain
+// exporter-only until upstream documents a stable cross-rail identity.
+func openhandsNativeOTLPSpecForOS(opts SetupOpts, goos string) *NativeOTLPSpec {
+	if strings.ToLower(strings.TrimSpace(goos)) != "darwin" {
+		return nil
+	}
+	endpoint := "http://" + strings.TrimSpace(opts.APIAddr)
+	headers := map[string]string{
+		"x-defenseclaw-source": "openhands",
+		"x-defenseclaw-client": "openhands-otel/1.0",
+	}
+	token := strings.TrimSpace(opts.OTLPPathToken)
+	if token == "" && strings.TrimSpace(opts.DataDir) != "" {
+		token, _ = LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands)
+	}
+	if token != "" {
+		headers["authorization"] = "Bearer " + token
+	}
+	return &NativeOTLPSpec{
+		Kind:        NativeOTLPEnvBlock,
+		Endpoint:    endpoint,
+		Protocol:    "http/protobuf",
+		Headers:     headers,
+		PerSignal:   false,
+		ServiceName: "openhands",
+		ResourceAttributes: map[string]string{
+			"defenseclaw.connector": "openhands",
+		},
+		ExtraEnv: map[string]string{
+			"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": endpoint + "/v1/traces",
+			"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+			"OTEL_EXPORTER_OTLP_TRACES_HEADERS":  serializeOTLPHeaders(headers),
+			"OTEL_TRACES_EXPORTER":               "otlp",
+			"OTEL_METRICS_EXPORTER":              "none",
+			"OTEL_LOGS_EXPORTER":                 "none",
+		},
+	}
 }
 
 func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
@@ -1143,12 +1188,12 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
 			Scope:           "user",
-			ConfigPaths:     []string{homePath(".openhands", "mcp.json")},
-			ReadPaths:       []string{homePath(".openhands", "mcp.json")},
-			WritePaths:      []string{homePath(".openhands", "mcp.json")},
+			ConfigPaths:     []string{openhandsMCPPath()},
+			ReadPaths:       []string{openhandsMCPPath()},
+			WritePaths:      []string{openhandsMCPPath()},
 			SupportsBackup:  true,
 			SupportsRestore: true,
-			Notes:           []string{"OpenHands MCP servers are managed through the OpenHands CLI or ~/.openhands/mcp.json."},
+			Notes:           []string{"OpenHands MCP servers use <OPENHANDS_PERSISTENCE_DIR>/mcp.json when configured, otherwise ~/.openhands/mcp.json."},
 		}
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
@@ -1162,14 +1207,46 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Rules = SurfaceCapability{
 			Supported:     true,
 			Scope:         "user,workspace",
-			ReadPaths:     []string{filepath.Join(openhandsWorkspaceRoot(opts), "AGENTS.md")},
+			ReadPaths:     openhandsInstructionPaths(opts),
 			DiscoveryOnly: true,
-			Notes:         []string{"OpenHands permanent repository context is AGENTS.md; DefenseClaw discovers it but does not overwrite it."},
+			Notes:         []string{"OpenHands loads AGENTS.md, AGENT.md, CLAUDE.md, GEMINI.md, and .cursorrules case-insensitively as permanent third-party instruction skills; DefenseClaw discovers but never overwrites them."},
 		}
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill"}
-		caps.Plugins = pluginsAreOpenClawOnly()
-		caps.Agents = unsupportedSurface("OpenHands agent-specific microagents are deprecated; install AgentSkills under .agents/skills instead.")
+		caps.Plugins = unsupportedSurface("N/A for the OpenHands CLI: the SDK accepts plugins programmatically, but the reviewed CLI exposes no persistent plugin install/config path for DefenseClaw to manage.")
+		caps.Agents = SurfaceCapability{
+			Supported:      true,
+			Scope:          "user,workspace",
+			ReadPaths:      openhandsAgentPaths(opts),
+			WritePaths:     openhandsAgentWritePaths(opts),
+			InstallTargets: []string{"agent"},
+			RequiresOptIn:  true,
+			Notes:          []string{"OpenHands loads file-based subagents from .agents/agents/*.md first and .openhands/agents/*.md as the legacy fallback. Built-in general-purpose, code-explorer, and bash-runner agents are runtime-provided and are not filesystem assets; default, explore, and bash are deprecated aliases."},
+		}
+		caps.Telemetry = TelemetryCapability{
+			HookSignals: []string{"logs", "metrics", "traces"},
+			SourceModes: []string{"hook"},
+			Notes: []string{
+				"OpenHands hook events supply DefenseClaw audit, metric, and trace telemetry on every supported platform.",
+			},
+		}
+		if runtime.GOOS == "darwin" {
+			caps.Telemetry.NativeOTLP = true
+			caps.Telemetry.NativeSignals = []string{"traces"}
+			caps.Telemetry.Env = []EnvRequirement{
+				{Name: "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", Scope: EnvScopeProcess, Required: false, Description: "Point OpenHands SDK native traces at the DefenseClaw gateway."},
+				{Name: "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", Scope: EnvScopeProcess, Required: false, Description: "Set to http/protobuf for DefenseClaw OTLP trace ingestion."},
+				{Name: "OTEL_EXPORTER_OTLP_TRACES_HEADERS", Scope: EnvScopeProcess, Required: false, Description: "Carry connector-scoped bearer and OpenHands source/client attribution."},
+			}
+			caps.Telemetry.AuthMode = "scoped-header-token-loopback"
+			caps.Telemetry.EndpointTemplate = "http://" + strings.TrimSpace(opts.APIAddr) + "/v1/traces"
+			caps.Telemetry.SourceModes = []string{"native", "hook"}
+			caps.Telemetry.Notes = append(caps.Telemetry.Notes,
+				"The reviewed macOS SDK lane accepts standard OTEL process variables and exports traces only.",
+				"DefenseClaw does not persist OTEL variables or wrap arbitrary OpenHands launches; use `defenseclaw-gateway connector launch --connector openhands -- <args>` for the protected child environment.",
+				"Native trace attributes are exporter-only and are not claimed as cross-rail identity.",
+			)
+		}
 	default:
 		caps.MCP = unsupportedSurface("")
 		caps.Skills = unsupportedSurface("")
@@ -1201,6 +1278,9 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 	}
 	if c.name == "geminicli" {
 		return c.setupGeminiWithTokenRollback(ctx, opts)
+	}
+	if c.name == "openhands" && runtime.GOOS == "darwin" {
+		return c.setupOpenHandsWithTokenRollback(ctx, opts)
 	}
 	return c.setup(ctx, opts, "")
 }
@@ -1235,6 +1315,49 @@ func (c *hookOnlyConnector) setupGeminiWithTokenRollback(ctx context.Context, op
 	return nil
 }
 
+// setupOpenHandsWithTokenRollback binds the optional process-environment OTLP
+// exporter to a connector-scoped credential without leaving a live token after
+// a failed hook installation. A pre-existing or explicitly supplied token is
+// retained because it may belong to an earlier successful registration.
+var openHandsSetupOperation = func(c *hookOnlyConnector, ctx context.Context, opts SetupOpts) error {
+	return c.setup(ctx, opts, "")
+}
+
+func (c *hookOnlyConnector) setupOpenHandsWithTokenRollback(ctx context.Context, opts SetupOpts) error {
+	return withOpenHandsLifecycleTransaction(opts, func() error {
+		if runtime.GOOS == "darwin" {
+			if _, err := validateOpenHandsDarwinExecutable(opts, false); err != nil {
+				return fmt.Errorf("openhands setup executable admission: %w", err)
+			}
+		}
+		return c.setupOpenHandsWithTokenRollbackLocked(ctx, opts)
+	})
+}
+
+func (c *hookOnlyConnector) setupOpenHandsWithTokenRollbackLocked(ctx context.Context, opts SetupOpts) error {
+	existingToken, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands)
+	if err != nil {
+		return fmt.Errorf("openhands inspect scoped OTLP token: %w", err)
+	}
+	suppliedToken := strings.TrimSpace(opts.OTLPPathToken)
+	otlpToken, err := resolveSetupOTLPPathToken(opts.DataDir, OTLPScopeOpenHands, suppliedToken)
+	if err != nil {
+		return fmt.Errorf("openhands scoped OTLP token: %w", err)
+	}
+	freshlyMinted := suppliedToken == "" && existingToken == ""
+	opts.OTLPPathToken = otlpToken
+
+	if err := openHandsSetupOperation(c, ctx, opts); err != nil {
+		if freshlyMinted {
+			if revokeErr := RemoveOTLPPathToken(opts.DataDir, OTLPScopeOpenHands); revokeErr != nil {
+				return errors.Join(err, fmt.Errorf("openhands revoke scoped OTLP token after failed setup: %w", revokeErr))
+			}
+		}
+		return err
+	}
+	return nil
+}
+
 func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesConfigPath string) error {
 	_ = ctx
 	if c.name == "hermes" {
@@ -1244,6 +1367,11 @@ func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesCon
 	}
 	if c.pluginArtifact {
 		return c.setupPluginArtifact(opts)
+	}
+	if c.name == "openhands" {
+		if err := c.migrateOpenHandsConfigTarget(opts, c.configPath(opts)); err != nil {
+			return err
+		}
 	}
 	if c.name == "windsurf" && WindsurfHooksPathOverride == "" {
 		if _, err := resolveWindsurfHooksPath(opts); err != nil {
@@ -1284,6 +1412,48 @@ func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesCon
 			return errors.New("geminicli persisted hook/telemetry contract does not match the requested mode")
 		}
 	}
+	return nil
+}
+
+// migrateOpenHandsConfigTarget closes the previous managed ownership cycle
+// before switching between the user-global and workspace hooks.json targets.
+// The receipt is validated before its old path is touched. Unchanged managed
+// bytes are restored exactly; an operator-edited target receives surgical
+// removal of DefenseClaw entries and retains all foreign hooks.
+func (c *hookOnlyConnector) migrateOpenHandsConfigTarget(opts SetupOpts, target string) error {
+	backup, err := loadManagedFileBackupPath(managedFileBackupPath(opts.DataDir, c.name, "config"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load previous OpenHands config backup: %w", err)
+	}
+	oldPath, err := validateManagedFileBackupTarget(backup, c.name, "config", backup.Path)
+	if err != nil {
+		return fmt.Errorf("validate previous OpenHands config backup: %w", err)
+	}
+	newPath, err := normalizeManagedTargetPath(target)
+	if err != nil {
+		return fmt.Errorf("resolve new OpenHands config target: %w", err)
+	}
+	equal := oldPath == newPath
+	if runtime.GOOS == "windows" {
+		equal = strings.EqualFold(oldPath, newPath)
+	}
+	if equal {
+		return nil
+	}
+	restored, err := restoreManagedFileBackupIfUnchanged(opts.DataDir, c.name, "config", oldPath)
+	if err != nil {
+		return fmt.Errorf("restore previous OpenHands config target: %w", err)
+	}
+	if restored {
+		return nil
+	}
+	if err := c.removeConfigEntries(oldPath, c.hookCommand(opts), opts); err != nil {
+		return fmt.Errorf("remove previous OpenHands hook entries: %w", err)
+	}
+	discardManagedFileBackup(opts.DataDir, c.name, "config")
 	return nil
 }
 
@@ -1588,7 +1758,25 @@ func (c *hookOnlyConnector) Teardown(ctx context.Context, opts SetupOpts) error 
 			return c.teardown(ctx, opts, configPath)
 		})
 	}
+	if c.name == "openhands" && runtime.GOOS == "darwin" {
+		return c.teardownOpenHandsWithToken(ctx, opts)
+	}
 	return c.teardown(ctx, opts, "")
+}
+
+func (c *hookOnlyConnector) teardownOpenHandsWithToken(ctx context.Context, opts SetupOpts) error {
+	return withOpenHandsLifecycleTransaction(opts, func() error {
+		if err := c.teardown(ctx, opts, ""); err != nil {
+			return err
+		}
+		if err := c.VerifyClean(opts); err != nil {
+			return fmt.Errorf("openhands teardown: verify clean before token revocation: %w", err)
+		}
+		if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeOpenHands); err != nil {
+			return fmt.Errorf("openhands teardown: revoke scoped OTLP token: %w", err)
+		}
+		return nil
+	})
 }
 
 func (c *hookOnlyConnector) teardown(ctx context.Context, opts SetupOpts, hermesConfigPath string) error {
@@ -1971,10 +2159,15 @@ func (c *hookOnlyConnector) AgentPaths(opts SetupOpts) AgentPaths {
 	if c.name == "amp" {
 		hookScripts = []string{c.configPath(opts)}
 	}
+	generatedFiles := []string(nil)
+	if c.name == "openhands" && runtime.GOOS == "darwin" {
+		generatedFiles = []string{filepath.Join(opts.DataDir, "hooks", otlpPathTokenFileName(OTLPScopeOpenHands))}
+	}
 	return AgentPaths{
-		PatchedFiles: uniqueNonEmptyStrings(patched),
-		BackupFiles:  backups,
-		HookScripts:  hookScripts,
+		PatchedFiles:   uniqueNonEmptyStrings(patched),
+		BackupFiles:    backups,
+		HookScripts:    hookScripts,
+		GeneratedFiles: generatedFiles,
 	}
 }
 
@@ -1989,10 +2182,14 @@ func (c *hookOnlyConnector) RequiredEnv() []EnvRequirement {
 			Description: "No environment variables are required. For headless action mode, launch Amp with `amp -x --plugin-ready-timeout 30` so the managed policy plugin is ready before the turn starts.",
 		}}
 	}
-	if c.name == "copilot" {
+	if c.name == "copilot" || c.name == "openhands" {
+		description := "DefenseClaw's Copilot hook integration requires no shell environment variables; upstream OTel process variables are not configured or managed by this connector."
+		if c.name == "openhands" {
+			description = "DefenseClaw's OpenHands hook integration requires no shell environment variables; the optional macOS native trace exporter is process-scoped, rendered only by the protected connector launch command, and not persisted by Setup."
+		}
 		return append([]EnvRequirement{{
 			Scope:       EnvScopeNone,
-			Description: "DefenseClaw's Copilot hook integration requires no shell environment variables; upstream OTel process variables are not configured or managed by this connector.",
+			Description: description,
 		}}, c.Capabilities(SetupOpts{APIAddr: "127.0.0.1:18970"}).Telemetry.Env...)
 	}
 	return []EnvRequirement{{
@@ -3375,6 +3572,28 @@ func openhandsWorkspaceRoot(opts SetupOpts) string {
 	return root
 }
 
+func openhandsPersistenceRoot() string {
+	if root := strings.TrimSpace(os.Getenv("OPENHANDS_PERSISTENCE_DIR")); root != "" {
+		return filepath.Clean(root)
+	}
+	return homePath(".openhands")
+}
+
+func openhandsMCPPath() string {
+	return filepath.Join(openhandsPersistenceRoot(), "mcp.json")
+}
+
+func openhandsInstructionPaths(opts SetupOpts) []string {
+	root := openhandsWorkspaceRoot(opts)
+	return uniqueNonEmptyStrings([]string{
+		filepath.Join(root, "AGENTS.md"),
+		filepath.Join(root, "AGENT.md"),
+		filepath.Join(root, "CLAUDE.md"),
+		filepath.Join(root, "GEMINI.md"),
+		filepath.Join(root, ".cursorrules"),
+	})
+}
+
 func workspaceRoot(opts SetupOpts) string {
 	return selectedWorkspaceRoot(CopilotWorkspaceDirOverride, opts.WorkspaceDir)
 }
@@ -3784,6 +4003,23 @@ func openhandsSkillPaths(opts SetupOpts) []string {
 		homePath(".openhands", "skills", "installed"),
 		homePath(".openhands", "cache", "skills", "public-skills", "skills"),
 	)
+	return uniqueNonEmptyStrings(paths)
+}
+
+func openhandsAgentPaths(opts SetupOpts) []string {
+	paths := openhandsAgentWritePaths(opts)
+	paths = append(paths, homePath(".openhands", "agents"))
+	if root := selectedWorkspaceRoot(OpenHandsWorkspaceDirOverride, opts.WorkspaceDir); root != "" && workspaceRootOutsideDataDir(root, opts.DataDir) {
+		paths = append(paths, filepath.Join(root, ".openhands", "agents"))
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func openhandsAgentWritePaths(opts SetupOpts) []string {
+	paths := []string{homePath(".agents", "agents")}
+	if root := selectedWorkspaceRoot(OpenHandsWorkspaceDirOverride, opts.WorkspaceDir); root != "" && workspaceRootOutsideDataDir(root, opts.DataDir) {
+		paths = append([]string{filepath.Join(root, ".agents", "agents")}, paths...)
+	}
 	return uniqueNonEmptyStrings(paths)
 }
 

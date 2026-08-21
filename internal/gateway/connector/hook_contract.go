@@ -19,6 +19,7 @@ package connector
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -764,6 +765,7 @@ var builtinHookContracts = map[string][]HookContract{
 				"GitHub Copilot CLI 1.0.76 is the conservative reviewed floor for this current 14-event contract.",
 				"Copilot CLI native ask is limited to preToolUse / PreToolUse hooks.",
 				"postToolUseFailure is advisory-only and can provide recovery additionalContext; it cannot block the failed tool.",
+				"Copilot documents optional native OpenTelemetry metrics and traces on POSIX hosts. DefenseClaw records that upstream surface but does not configure, launch, or certify the exporter; every DefenseClaw contract remains hook-only.",
 			},
 		},
 	},
@@ -810,7 +812,7 @@ var builtinHookContracts = map[string][]HookContract{
 	"openhands": {{
 		Connector:               "openhands",
 		ContractID:              "openhands-hooks-v1",
-		MinAgentVersion:         "0.0.0",
+		MinAgentVersion:         "1.12.0",
 		DefaultForUnversioned:   true,
 		HookScriptVersion:       "v6",
 		HookConfigPathTemplates: []string{"~/.openhands/hooks.json", "<workspace>/.openhands/hooks.json"},
@@ -836,11 +838,13 @@ var builtinHookContracts = map[string][]HookContract{
 			Scope:              "user,workspace",
 		},
 		SupportsTraceparent: true,
+		NativeOTLP:          false,
 		ToolCallLifecycle:   openHandsToolCallLifecycle(),
 		Notes: []string{
 			"OpenHands hooks use native snake_case event keys and install to ~/.openhands/hooks.json by default, with repo-local .openhands/hooks.json when a workspace is pinned.",
-			"Validated with OpenHands CLI 1.16.0; the contract stays unbounded because upstream documents the hooks as a config contract rather than a versioned hook API floor.",
-			"OpenHands blocks by exit code 2 and optional decision=deny JSON; no native ask/permission prompt surface is documented, so confirm verdicts are downgraded to additionalContext alerts.",
+			"OpenHands CLI 1.12.0 is the POSIX minimum because it first loads user-global ~/.openhands/hooks.json; source-reviewed against CLI 1.16.0 with no maximum. Windows retains its established unversioned hook contract. macOS remains uncertified until a durable green latest-version live run is recorded.",
+			"OpenHands blocks by exit code 2 and optional decision=deny JSON; no native ask surface is documented. Confirm becomes additionalContext only for user_prompt_submit; pre_tool_use and stop downgrades are audit-only.",
+			"Standalone OpenHands SDK 1.39.1 preserves a trace-only process-environment OTLP exporter; DefenseClaw integrates it only through the protected connector launch command on the reviewed macOS lane and does not persist launch variables.",
 		},
 	}},
 	"opencode": {{
@@ -964,10 +968,37 @@ var builtinHookContracts = map[string][]HookContract{
 }
 
 func KnownHookContracts(connectorName string) []HookContract {
+	return hookContractsForOS(connectorName, runtime.GOOS)
+}
+
+func hookContractsForOS(connectorName, goos string) []HookContract {
 	name := normalizeConnectorName(connectorName)
 	contracts := builtinHookContracts[name]
 	out := make([]HookContract, len(contracts))
-	copy(out, contracts)
+	for i, contract := range contracts {
+		contract.ExactAgentVersions = append([]string(nil), contract.ExactAgentVersions...)
+		contract.HookConfigPathTemplates = append([]string(nil), contract.HookConfigPathTemplates...)
+		contract.Events = append([]string(nil), contract.Events...)
+		contract.AIDSurfaces = append([]string(nil), contract.AIDSurfaces...)
+		contract.Notes = append([]string(nil), contract.Notes...)
+
+		// OpenHands exposes a trace-only standard-OTEL process environment on
+		// the reviewed macOS lane. DefenseClaw supplies scoped header auth only
+		// through its protected connector launch boundary and does not persist
+		// the launch environment.
+		if contract.Connector == "openhands" && contract.ContractID == "openhands-hooks-v1" {
+			switch goos {
+			case "darwin":
+				contract.NativeOTLP = true
+			case "windows":
+				// Windows preserves the pre-POSIX compatibility band and has no
+				// DefenseClaw-managed native exporter.
+				contract.MinAgentVersion = "0.0.0"
+				contract.NativeOTLP = false
+			}
+		}
+		out[i] = contract
+	}
 	return out
 }
 
@@ -985,6 +1016,10 @@ func hookContractByID(connectorName, contractID string) (HookContract, bool) {
 }
 
 func ResolveHookContract(connectorName, rawVersion string) HookContractResolution {
+	return resolveHookContractForOS(connectorName, rawVersion, runtime.GOOS)
+}
+
+func resolveHookContractForOS(connectorName, rawVersion, goos string) HookContractResolution {
 	name := normalizeConnectorName(connectorName)
 	if proxyConnectorsWithoutHookGate[name] {
 		raw := strings.TrimSpace(rawVersion)
@@ -996,7 +1031,7 @@ func ResolveHookContract(connectorName, rawVersion string) HookContractResolutio
 			Reason:            "proxy/chat connector; no hook contract gate",
 		}
 	}
-	contracts := KnownHookContracts(name)
+	contracts := hookContractsForOS(name, goos)
 	if len(contracts) == 0 {
 		return HookContractResolution{
 			Connector:  name,

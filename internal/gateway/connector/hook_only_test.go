@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -854,7 +856,7 @@ func TestHookOnlyConnector_SurfaceCapabilities(t *testing.T) {
 		{NewWindsurfConnector(), []string{"rule"}, false, false, true},
 		{NewGeminiCLIConnector(), []string{"skill"}, true, true, true},
 		{NewCopilotConnector(), []string{"skill", "rule"}, false, true, true},
-		{NewOpenHandsConnector(), []string{"skill"}, false, false, true},
+		{NewOpenHandsConnector(), []string{"skill"}, runtime.GOOS == "darwin", false, true},
 		{NewAntigravityConnector(), nil, false, true, true},
 	}
 	for _, tc := range cases {
@@ -1063,6 +1065,66 @@ func TestCursorConnector_InventoryOnlyPluginAndSubagentCapabilities(t *testing.T
 	}
 	if len(caps.Agents.WritePaths) != 0 || len(caps.Agents.InstallTargets) != 0 {
 		t.Fatalf("Cursor subagents must remain inventory-only: %+v", caps.Agents)
+	}
+}
+
+func TestOpenHandsConnector_CapabilityContract(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	workspace := filepath.Join(dir, "repo")
+	persistence := filepath.Join(dir, "openhands-persistence")
+	testenv.SetHome(t, home)
+	t.Setenv("OPENHANDS_PERSISTENCE_DIR", persistence)
+
+	previousWorkspace := OpenHandsWorkspaceDirOverride
+	OpenHandsWorkspaceDirOverride = ""
+	t.Cleanup(func() { OpenHandsWorkspaceDirOverride = previousWorkspace })
+
+	opts := SetupOpts{
+		DataDir:      filepath.Join(dir, "defenseclaw"),
+		WorkspaceDir: workspace,
+		APIAddr:      "127.0.0.1:18970",
+	}
+	caps := NewOpenHandsConnector().Capabilities(opts)
+
+	wantMCP := []string{filepath.Join(persistence, "mcp.json")}
+	if !caps.MCP.Supported || !sameStrings(caps.MCP.ConfigPaths, wantMCP) ||
+		!sameStrings(caps.MCP.ReadPaths, wantMCP) || !sameStrings(caps.MCP.WritePaths, wantMCP) {
+		t.Fatalf("OpenHands persistence-root MCP capability drifted: %+v", caps.MCP)
+	}
+	t.Setenv("OPENHANDS_PERSISTENCE_DIR", "")
+	fallback := NewOpenHandsConnector().Capabilities(opts).MCP
+	if want := []string{filepath.Join(home, ".openhands", "mcp.json")}; !sameStrings(fallback.ConfigPaths, want) {
+		t.Fatalf("OpenHands default MCP path = %v, want %v", fallback.ConfigPaths, want)
+	}
+
+	wantRules := []string{
+		filepath.Join(workspace, "AGENTS.md"),
+		filepath.Join(workspace, "AGENT.md"),
+		filepath.Join(workspace, "CLAUDE.md"),
+		filepath.Join(workspace, "GEMINI.md"),
+		filepath.Join(workspace, ".cursorrules"),
+	}
+	if !caps.Rules.Supported || !caps.Rules.DiscoveryOnly || !sameStrings(caps.Rules.ReadPaths, wantRules) ||
+		len(caps.Rules.Notes) == 0 || !strings.Contains(caps.Rules.Notes[0], "case-insensitively") {
+		t.Fatalf("OpenHands instruction discovery capability drifted: %+v", caps.Rules)
+	}
+
+	wantAgentWrites := []string{
+		filepath.Join(workspace, ".agents", "agents"),
+		filepath.Join(home, ".agents", "agents"),
+	}
+	wantAgentReads := append(append([]string{}, wantAgentWrites...),
+		filepath.Join(home, ".openhands", "agents"),
+		filepath.Join(workspace, ".openhands", "agents"),
+	)
+	if !caps.Agents.Supported || !caps.Agents.RequiresOptIn ||
+		!sameStrings(caps.Agents.WritePaths, wantAgentWrites) || !sameStrings(caps.Agents.ReadPaths, wantAgentReads) ||
+		!sameStrings(caps.Agents.InstallTargets, []string{"agent"}) {
+		t.Fatalf("OpenHands subagent capability drifted: %+v", caps.Agents)
+	}
+	if caps.Plugins.Supported || len(caps.Plugins.Notes) == 0 || !strings.Contains(caps.Plugins.Notes[0], "N/A for the OpenHands CLI") {
+		t.Fatalf("OpenHands plugin N/A boundary drifted: %+v", caps.Plugins)
 	}
 }
 
@@ -1379,7 +1441,7 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
 	opts = prepareHermesSetupAdmissionFixture(t, opts)
-	if err := conn.Setup(context.Background(), opts); err != nil {
+	if err := conn.setup(context.Background(), opts, ""); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 	if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")); err != nil {
@@ -1469,6 +1531,106 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	}
 	if err := conn.VerifyClean(opts); err != nil {
 		t.Fatalf("VerifyClean: %v", err)
+	}
+}
+
+func TestOpenHandsSetupMigratesGlobalWorkspaceGlobalWithExactRestore(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	home := filepath.Join(root, "home")
+	workspace := filepath.Join(root, "workspace")
+	testenv.SetHome(t, home)
+	globalPath := filepath.Join(home, ".openhands", "hooks.json")
+	workspacePath := filepath.Join(workspace, ".openhands", "hooks.json")
+	for _, path := range []string{globalPath, workspacePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	globalOriginal := []byte("{\"session_start\":[{\"hooks\":[{\"command\":\"global-operator\"}]}]}\n")
+	workspaceOriginal := []byte("{\"session_end\":[{\"hooks\":[{\"command\":\"workspace-operator\"}]}]}\n")
+	if err := os.WriteFile(globalPath, globalOriginal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(workspacePath, workspaceOriginal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := NewOpenHandsConnector()
+	base := SetupOpts{DataDir: filepath.Join(root, "state"), APIAddr: "127.0.0.1:18970"}
+	if err := conn.setup(context.Background(), base, ""); err != nil {
+		t.Fatalf("global setup: %v", err)
+	}
+	workspaceOpts := base
+	workspaceOpts.WorkspaceDir = workspace
+	if err := conn.setup(context.Background(), workspaceOpts, ""); err != nil {
+		t.Fatalf("workspace migration: %v", err)
+	}
+	if got, err := os.ReadFile(globalPath); err != nil || !bytes.Equal(got, globalOriginal) {
+		t.Fatalf("global target not exactly restored: %q err=%v", got, err)
+	}
+	if err := conn.setup(context.Background(), base, ""); err != nil {
+		t.Fatalf("global migration: %v", err)
+	}
+	if got, err := os.ReadFile(workspacePath); err != nil || !bytes.Equal(got, workspaceOriginal) {
+		t.Fatalf("workspace target not exactly restored: %q err=%v", got, err)
+	}
+	if err := conn.teardown(context.Background(), base, ""); err != nil {
+		t.Fatalf("global teardown: %v", err)
+	}
+	if got, err := os.ReadFile(globalPath); err != nil || !bytes.Equal(got, globalOriginal) {
+		t.Fatalf("final global target not exactly restored: %q err=%v", got, err)
+	}
+}
+
+func TestOpenHandsTargetMigrationSurgicallyPreservesOperatorEdits(t *testing.T) {
+	root := testenv.PrivateTempDir(t)
+	home := filepath.Join(root, "home")
+	workspace := filepath.Join(root, "workspace")
+	testenv.SetHome(t, home)
+	globalPath := filepath.Join(home, ".openhands", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(globalPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, []byte(`{"operator_extension":{"enabled":true}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := NewOpenHandsConnector()
+	base := SetupOpts{DataDir: filepath.Join(root, "state"), APIAddr: "127.0.0.1:18970"}
+	if err := conn.setup(context.Background(), base, ""); err != nil {
+		t.Fatalf("global setup: %v", err)
+	}
+	configured, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited map[string]interface{}
+	if err := json.Unmarshal(configured, &edited); err != nil {
+		t.Fatal(err)
+	}
+	edited["operator_after_setup"] = map[string]interface{}{"enabled": true}
+	editedBody, err := json.Marshal(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(globalPath, editedBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	workspaceOpts := base
+	workspaceOpts.WorkspaceDir = workspace
+	if err := conn.setup(context.Background(), workspaceOpts, ""); err != nil {
+		t.Fatalf("workspace migration: %v", err)
+	}
+	cleaned, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(cleaned, []byte("openhands-hook.sh")) {
+		t.Fatalf("previous managed hook survived migration:\n%s", cleaned)
+	}
+	if !bytes.Contains(cleaned, []byte("operator_extension")) || !bytes.Contains(cleaned, []byte("operator_after_setup")) {
+		t.Fatalf("migration clobbered operator edits:\n%s", cleaned)
 	}
 }
 
@@ -2424,6 +2586,157 @@ func TestOpenHandsSetup_PatchesDocumentedHookSchema(t *testing.T) {
 	}
 	if _, wrapped := cfg["hooks"]; wrapped {
 		t.Fatalf("OpenHands native schema should not add Claude-compatible top-level hooks wrapper: %#v", cfg["hooks"])
+	}
+}
+
+func newOpenHandsTokenLifecycleFixture(t *testing.T) (*hookOnlyConnector, SetupOpts, string) {
+	t.Helper()
+	root := testenv.PrivateTempDir(t)
+	configPath := filepath.Join(root, ".openhands", "hooks.json")
+	previous := OpenHandsHooksPathOverride
+	OpenHandsHooksPathOverride = configPath
+	t.Cleanup(func() { OpenHandsHooksPathOverride = previous })
+	opts := SetupOpts{
+		DataDir:      filepath.Join(root, "defenseclaw"),
+		WorkspaceDir: root,
+		APIAddr:      "127.0.0.1:18970",
+		APIToken:     "gateway-token-must-not-be-published",
+	}
+	if runtime.GOOS == "darwin" {
+		trustedDir := filepath.Join(root, "trusted")
+		if err := os.MkdirAll(trustedDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		executable := filepath.Join(trustedDir, "openhands")
+		if err := os.WriteFile(executable, []byte("OpenHands executable fixture\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stablePath, digest, ok := setupSelectedAgentExecutableEvidence(executable)
+		if !ok {
+			t.Fatal("capture OpenHands setup-selected executable evidence")
+		}
+		now := time.Now().UTC().Truncate(time.Second)
+		receipt := agentSelectionReceipt{
+			SchemaVersion: agentSelectionSchemaVersion,
+			UpdatedAt:     now.Format(time.RFC3339),
+			Selections: map[string]agentSelectionEvidence{
+				"openhands": {
+					Connector:         "openhands",
+					Source:            "setup-selected",
+					Executable:        stablePath,
+					RawVersion:        "OpenHands CLI 1.16.0",
+					NormalizedVersion: "1.16.0",
+					SHA256:            digest,
+					SelectedAt:        now.Format(time.RFC3339),
+					ExpiresAt:         now.Add(10 * time.Minute).Format(time.RFC3339),
+				},
+			},
+		}
+		body, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(opts.DataDir, agentSelectionFile), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		opts.AgentVersion = "OpenHands CLI 1.16.0"
+		opts.AgentExecutable = stablePath
+	}
+	return NewOpenHandsConnector(), opts, configPath
+}
+
+func TestOpenHandsDarwinExporterTokenLifecycle(t *testing.T) {
+	t.Run("clean teardown revokes token", func(t *testing.T) {
+		conn, opts, _ := newOpenHandsTokenLifecycleFixture(t)
+		if err := conn.setupOpenHandsWithTokenRollback(context.Background(), opts); err != nil {
+			t.Fatalf("setupOpenHandsWithTokenRollback: %v", err)
+		}
+		if token, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands); err != nil || token == "" {
+			t.Fatalf("LoadOTLPPathToken after setup = %q, %v; want provisioned token", token, err)
+		}
+		if err := conn.teardownOpenHandsWithToken(context.Background(), opts); err != nil {
+			t.Fatalf("teardownOpenHandsWithToken: %v", err)
+		}
+		if token, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands); err != nil || token != "" {
+			t.Fatalf("LoadOTLPPathToken after teardown = %q, %v; want revoked token", token, err)
+		}
+	})
+
+	t.Run("failed setup revokes only a fresh token", func(t *testing.T) {
+		for _, preexisting := range []bool{false, true} {
+			name := "fresh"
+			if preexisting {
+				name = "preexisting"
+			}
+			t.Run(name, func(t *testing.T) {
+				conn, opts, configPath := newOpenHandsTokenLifecycleFixture(t)
+				before := ""
+				if preexisting {
+					var err error
+					before, err = EnsureOTLPPathToken(opts.DataDir, OTLPScopeOpenHands)
+					if err != nil {
+						t.Fatalf("EnsureOTLPPathToken: %v", err)
+					}
+				}
+				if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(configPath, []byte("{\n  \"pre_tool_use\": [\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := conn.setupOpenHandsWithTokenRollback(context.Background(), opts); err == nil {
+					t.Fatal("setup succeeded despite malformed OpenHands hooks.json")
+				}
+				after, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands)
+				if err != nil {
+					t.Fatalf("LoadOTLPPathToken after failed setup: %v", err)
+				}
+				if after != before {
+					t.Fatalf("failed setup token = %q, want %q", after, before)
+				}
+			})
+		}
+	})
+}
+
+func TestOpenHandsConcurrentFailedSetupCannotRevokeSuccessfulToken(t *testing.T) {
+	conn, opts, _ := newOpenHandsTokenLifecycleFixture(t)
+	original := openHandsSetupOperation
+	var calls atomic.Int32
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	openHandsSetupOperation = func(_ *hookOnlyConnector, _ context.Context, _ SetupOpts) error {
+		if calls.Add(1) == 1 {
+			close(firstEntered)
+			<-releaseFirst
+			return errors.New("injected first setup failure")
+		}
+		return nil
+	}
+	t.Cleanup(func() { openHandsSetupOperation = original })
+
+	firstResult := make(chan error, 1)
+	secondResult := make(chan error, 1)
+	go func() { firstResult <- conn.setupOpenHandsWithTokenRollback(context.Background(), opts) }()
+	<-firstEntered
+	go func() { secondResult <- conn.setupOpenHandsWithTokenRollback(context.Background(), opts) }()
+	select {
+	case err := <-secondResult:
+		t.Fatalf("second setup crossed the first setup/rollback transaction: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if err := <-firstResult; err == nil || !strings.Contains(err.Error(), "injected first setup failure") {
+		t.Fatalf("first setup error = %v, want injected failure", err)
+	}
+	if err := <-secondResult; err != nil {
+		t.Fatalf("second setup: %v", err)
+	}
+	if token, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeOpenHands); err != nil || token == "" {
+		t.Fatalf("successful concurrent setup token = %q, %v; want live token", token, err)
 	}
 }
 

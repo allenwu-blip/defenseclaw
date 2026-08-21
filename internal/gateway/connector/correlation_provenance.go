@@ -83,8 +83,16 @@ func correlationContractSources(name string) []CorrelationContractSource {
 		return source("copilot-hooks-doc-d39949a7",
 			"https://github.com/github/docs/blob/2f383aa194327fbe933682cbe01dd4c5625f5239/content/copilot/reference/hooks-reference.md", "sha256:d39949a728947c06d1745133aa95dfaabac72c4d45918eed20ec13cbc0fb1d67")
 	case "openhands":
-		return source("openhands-source-a55f1ded",
-			"https://github.com/All-Hands-AI/OpenHands", "a55f1ded61cac85d6e42aee9e460320ead93ae6a")
+		return []CorrelationContractSource{
+			{
+				ID: "openhands-source-a55f1ded", URI: "https://github.com/All-Hands-AI/OpenHands",
+				Revision: "a55f1ded61cac85d6e42aee9e460320ead93ae6a", CheckedDate: correlationSourceCheckedDate,
+			},
+			{
+				ID: "openhands-sdk-source-bf57d16f", URI: "https://github.com/OpenHands/software-agent-sdk",
+				Revision: "bf57d16f3dde05b0b03fa0af3f7e0ae924043b80", CheckedDate: "2026-07-31",
+			},
+		}
 	case "antigravity":
 		return source("antigravity-hooks-doc-9c9b420a",
 			"https://antigravity.google/docs/hooks", "sha256:9c9b420a22b35ae6610133d803706678c66282cbb5479816a8f56f1175780acb")

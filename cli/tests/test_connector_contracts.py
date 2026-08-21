@@ -63,7 +63,7 @@ class TestConnectorContractManifest(unittest.TestCase):
     """The packaged JSON manifest is the setup-time source of truth."""
 
     def test_manifest_covers_every_connector(self) -> None:
-        self.assertEqual(HOOK_CONTRACT_MANIFEST["schema_version"], 1)
+        self.assertEqual(HOOK_CONTRACT_MANIFEST["schema_version"], 2)
         self.assertEqual(
             set(HOOK_CONTRACT_MANIFEST["connectors"]),
             set(KNOWN_CONNECTORS),
@@ -314,14 +314,141 @@ class TestConnectorContractManifest(unittest.TestCase):
                     compat.contract.capabilities["ask_events"],
                 )
 
-    def test_copilot_contract_does_not_claim_native_otlp(self) -> None:
-        compat = resolve_connector_contract("copilot", "")
+    def test_copilot_contract_remains_hook_only_on_every_platform(self) -> None:
+        resolved = {
+            platform_name: resolve_connector_contract(
+                "copilot",
+                "GitHub Copilot CLI 1.0.76",
+                platform_name=platform_name,
+            )
+            for platform_name in ("darwin", "linux", "windows")
+        }
 
-        self.assertEqual(compat.contract.contract_id, "copilot-hooks-v2")
-        self.assertFalse(compat.contract.native_otlp)
-        self.assertEqual(compat.contract.native_otlp_auth, "")
-        self.assertEqual(compat.contract.native_otlp_signals, ())
-        self.assertEqual(compat.contract.native_otlp_endpoint_template, "")
+        for platform_name, compat in resolved.items():
+            with self.subTest(platform_name=platform_name):
+                self.assertEqual(compat.status, STATUS_KNOWN)
+                self.assertEqual(compat.contract.contract_id, "copilot-hooks-v2")
+                self.assertEqual(compat.contract.min_agent_version, "1.0.76")
+                self.assertEqual(compat.contract.max_agent_version, "")
+                self.assertTrue(compat.contract.default_for_unversioned)
+                self.assertEqual(compat.contract.hook_script_version, "v7")
+                self.assertEqual(len(compat.contract.events), 14)
+                self.assertIn("userPromptTransformed", compat.contract.events)
+                self.assertFalse(compat.contract.native_otlp)
+                self.assertEqual(compat.contract.native_otlp_auth, "")
+                self.assertEqual(compat.contract.native_otlp_signals, ())
+                self.assertEqual(compat.contract.native_otlp_endpoint_template, "")
+
+                self.assertTrue(
+                    any("optional native OpenTelemetry metrics and traces" in note for note in compat.contract.notes)
+                )
+
+    def test_openhands_native_otlp_is_darwin_exporter_only(self) -> None:
+        darwin = resolve_connector_contract(
+            "openhands",
+            "OpenHands 1.16.0",
+            platform_name="darwin",
+        )
+        self.assertTrue(darwin.contract.native_otlp)
+        self.assertEqual(darwin.contract.native_otlp_auth, "otel-exporter-headers")
+        self.assertEqual(darwin.contract.native_otlp_signals, ("traces",))
+        self.assertEqual(darwin.contract.native_otlp_endpoint_template, "/v1/traces")
+
+        for platform_name in ("linux", "windows"):
+            compat = resolve_connector_contract(
+                "openhands",
+                "OpenHands 1.16.0",
+                platform_name=platform_name,
+            )
+            self.assertFalse(compat.contract.native_otlp)
+            self.assertEqual(compat.contract.native_otlp_auth, "")
+            self.assertEqual(compat.contract.native_otlp_signals, ())
+
+    def test_openhands_posix_floor_preserves_windows_compatibility_override(self) -> None:
+        for platform_name in ("darwin", "linux"):
+            with self.subTest(platform_name=platform_name):
+                before = resolve_connector_contract(
+                    "openhands", "OpenHands 1.11.99", platform_name=platform_name
+                )
+                self.assertEqual(before.status, STATUS_UNKNOWN)
+                floor = resolve_connector_contract(
+                    "openhands", "OpenHands 1.12.0", platform_name=platform_name
+                )
+                self.assertEqual(floor.status, STATUS_KNOWN)
+                self.assertEqual(floor.contract.min_agent_version, "1.12.0")
+
+        windows = resolve_connector_contract(
+            "openhands", "OpenHands 1.11.99", platform_name="windows"
+        )
+        self.assertEqual(windows.status, STATUS_KNOWN)
+        self.assertEqual(windows.contract.min_agent_version, "0.0.0")
+        self.assertFalse(windows.contract.native_otlp)
+
+    def test_platform_overrides_preserve_current_contract_bands(self) -> None:
+        expected = {
+            "codex": (
+                ("codex-hooks-v1", "0.124.0", "0.129.0", False, "v6", 6),
+                ("codex-hooks-v2", "0.129.0", "0.133.0", False, "v6", 8),
+                ("codex-hooks-v3", "0.133.0", "0.135.0", False, "v6", 10),
+                (
+                    "codex-hooks-v3-generic",
+                    "0.135.0",
+                    "0.145.0",
+                    False,
+                    "v6",
+                    10,
+                ),
+                ("codex-hooks-v4", "0.145.0", "", True, "v6", 11),
+            ),
+            "claudecode": (
+                ("claudecode-hooks-v1", "2.1.154", "2.1.219", True, "v7", 28),
+                ("claudecode-hooks-v2", "2.1.219", "", False, "v7", 29),
+            ),
+            "copilot": (
+                ("copilot-hooks-v1", "1.0.18", "1.0.76", False, "v7", 13),
+                ("copilot-hooks-v2", "1.0.76", "", True, "v7", 14),
+            ),
+            "hermes": (("hermes-hooks-v1", "0.19.0", "0.21.0", True, "v6", 23),),
+            "antigravity": (("antigravity-hooks-v2", "1.1.8", "", True, "v8", 5),),
+            "openhands": (("openhands-hooks-v1", "1.12.0", "", True, "v6", 6),),
+            "opencode": (("opencode-hooks-v1", "1.18.10", "1.18.20", False, "v7", 10),),
+            "amp": (("amp-plugin-v1", "0.0.1785334225", "", True, "v2", 5),),
+            "geminicli": (("geminicli-hooks-v1", "0.26.0", "", True, "v6", 11),),
+        }
+
+        for platform_name in ("darwin", "linux", "windows"):
+            _, contracts = _load_contracts_from_manifest(
+                HOOK_CONTRACT_MANIFEST,
+                platform_name=platform_name,
+            )
+            for connector, want in expected.items():
+                with self.subTest(platform_name=platform_name, connector=connector):
+                    got = tuple(
+                        (
+                            contract.contract_id,
+                            contract.min_agent_version,
+                            contract.max_agent_version,
+                            contract.default_for_unversioned,
+                            contract.hook_script_version,
+                            len(contract.events),
+                        )
+                        for contract in contracts[connector]
+                    )
+                    platform_want = want
+                    if platform_name == "windows" and connector == "openhands":
+                        platform_want = (("openhands-hooks-v1", "0.0.0", "", True, "v6", 6),)
+                    self.assertEqual(got, platform_want)
+
+        overridden = {
+            (connector, contract["contract_id"]): set(contract["platform_overrides"])
+            for connector, spec in HOOK_CONTRACT_MANIFEST["connectors"].items()
+            for contract in spec.get("contracts", ())
+            if "platform_overrides" in contract
+        }
+        self.assertEqual(
+            overridden,
+            {("openhands", "openhands-hooks-v1"): {"darwin", "windows"}},
+        )
 
     def test_unversioned_connectors_use_default_contract(self) -> None:
         compat = resolve_connector_contract("cursor", "")
@@ -474,6 +601,159 @@ class TestConnectorContractManifest(unittest.TestCase):
         self.assertEqual(contracts["codex"][0].contract_id, "codex-hooks-v1")
         self.assertFalse(contracts["codex"][0].default_for_unversioned)
         self.assertTrue(contracts["codex"][1].default_for_unversioned)
+
+    def test_manifest_loader_merges_typed_platform_override_fields(self) -> None:
+        manifest = {
+            "connectors": {
+                "codex": {
+                    "contracts": [
+                        {
+                            "contract_id": "codex-hooks-v1",
+                            "agent_version": {
+                                "exact": ["base"],
+                                "min_inclusive": "1.0.0",
+                                "max_exclusive": "2.0.0",
+                            },
+                            "default_for_unversioned": True,
+                            "hook_script_version": "v1",
+                            "events": ["base-event"],
+                            "aid_surfaces": ["prompt"],
+                            "native_otlp": False,
+                            "native_otlp_auth": "",
+                            "native_otlp_signals": [],
+                            "native_otlp_endpoint_template": "",
+                            "platform_overrides": {
+                                "windows": {
+                                    "agent_version": {
+                                        "exact": ["windows"],
+                                        "max_exclusive": "",
+                                    },
+                                    "default_for_unversioned": False,
+                                    "hook_script_version": "v2",
+                                    "events": ["windows-event"],
+                                    "aid_surfaces": ["tool_call"],
+                                    "native_otlp": True,
+                                    "native_otlp_auth": "header-token",
+                                    "native_otlp_signals": ["logs", "traces"],
+                                    "native_otlp_endpoint_template": "/v1/<signal>",
+                                }
+                            },
+                        }
+                    ]
+                }
+            }
+        }
+
+        _, darwin_contracts = _load_contracts_from_manifest(
+            manifest,
+            platform_name="darwin",
+        )
+        _, windows_contracts = _load_contracts_from_manifest(
+            manifest,
+            platform_name="windows",
+        )
+        darwin = darwin_contracts["codex"][0]
+        windows = windows_contracts["codex"][0]
+
+        self.assertEqual(darwin.exact_agent_versions, ("base",))
+        self.assertEqual(darwin.min_agent_version, "1.0.0")
+        self.assertEqual(darwin.max_agent_version, "2.0.0")
+        self.assertTrue(darwin.default_for_unversioned)
+        self.assertFalse(darwin.native_otlp)
+
+        self.assertEqual(windows.exact_agent_versions, ("windows",))
+        self.assertEqual(windows.min_agent_version, "1.0.0")
+        self.assertEqual(windows.max_agent_version, "")
+        self.assertFalse(windows.default_for_unversioned)
+        self.assertEqual(windows.hook_script_version, "v2")
+        self.assertEqual(windows.events, ("windows-event",))
+        self.assertEqual(windows.aid_surfaces, ("tool_call",))
+        self.assertTrue(windows.native_otlp)
+        self.assertEqual(windows.native_otlp_auth, "header-token")
+        self.assertEqual(windows.native_otlp_signals, ("logs", "traces"))
+        self.assertEqual(windows.native_otlp_endpoint_template, "/v1/<signal>")
+
+    def test_manifest_loader_rejects_unknown_platform_override(self) -> None:
+        manifest = {
+            "connectors": {
+                "codex": {
+                    "contracts": [
+                        {
+                            "contract_id": "codex-hooks-v1",
+                            "platform_overrides": {"plan9": {}},
+                        }
+                    ]
+                }
+            }
+        }
+        with self.assertRaisesRegex(ValueError, "unknown platform override 'plan9'"):
+            _load_contracts_from_manifest(manifest, platform_name="darwin")
+
+    def test_manifest_loader_rejects_invalid_platform_override(self) -> None:
+        invalid_overrides = (
+            ([], "platform_overrides must be an object"),
+            ({"windows": []}, "must be an object"),
+            ({"windows": {"contract_id": "replacement"}}, "unknown fields"),
+            (
+                {"windows": {"agent_version": {"build": "stable"}}},
+                "unknown fields",
+            ),
+            ({"windows": {"native_otlp": "false"}}, "must be a boolean"),
+            (
+                {"windows": {"agent_version": {"max_exclusive": 20}}},
+                "must be a string",
+            ),
+            (
+                {"windows": {"agent_version": {"exact": [""]}}},
+                "must be a string list",
+            ),
+            ({"windows": {"events": "event"}}, "must be a string list"),
+        )
+        for override, message in invalid_overrides:
+            with self.subTest(override=override):
+                manifest = {
+                    "connectors": {
+                        "codex": {
+                            "contracts": [
+                                {
+                                    "contract_id": "codex-hooks-v1",
+                                    "platform_overrides": override,
+                                }
+                            ]
+                        }
+                    }
+                }
+                with self.assertRaisesRegex(ValueError, message):
+                    _load_contracts_from_manifest(manifest, platform_name="darwin")
+
+    def test_manifest_loader_rejects_unknown_requested_platform(self) -> None:
+        with self.assertRaisesRegex(ValueError, "darwin, linux, or windows"):
+            _load_contracts_from_manifest(
+                {"connectors": {}},
+                platform_name="plan9",
+            )
+
+    def test_manifest_loader_rejects_multiple_defaults_after_override(self) -> None:
+        manifest = {
+            "connectors": {
+                "codex": {
+                    "contracts": [
+                        {
+                            "contract_id": "codex-hooks-v1",
+                            "default_for_unversioned": True,
+                        },
+                        {
+                            "contract_id": "codex-hooks-v2",
+                            "platform_overrides": {"windows": {"default_for_unversioned": True}},
+                        },
+                    ]
+                }
+            }
+        }
+
+        _load_contracts_from_manifest(manifest, platform_name="darwin")
+        with self.assertRaisesRegex(ValueError, "multiple default contracts"):
+            _load_contracts_from_manifest(manifest, platform_name="windows")
 
 
 class TestSetupConnectorVersionGate(unittest.TestCase):
