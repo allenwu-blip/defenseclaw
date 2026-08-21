@@ -203,11 +203,17 @@ namespace DefenseClaw
         private const uint TOKEN_ASSIGN_PRIMARY = 0x0001;
         private const uint TOKEN_DUPLICATE = 0x0002;
         private const uint TOKEN_QUERY = 0x0008;
+        private const uint TOKEN_ADJUST_DEFAULT = 0x0080;
         private const uint DISABLE_MAX_PRIVILEGE = 0x0001;
         private const uint LUA_TOKEN = 0x0004;
         private const uint WRITE_RESTRICTED = 0x0008;
+        private const uint GENERIC_ALL = 0x10000000;
+        private const int GRANT_ACCESS = 1;
+        private const int TRUSTEE_IS_SID = 0;
+        private const int TRUSTEE_IS_GROUP = 2;
         private const uint SE_GROUP_LOGON_ID = 0xC0000000;
         private const int ERROR_INSUFFICIENT_BUFFER = 122;
+        private const int ERROR_SUCCESS = 0;
         private const uint CREATE_SUSPENDED = 0x00000004;
         private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
         private const uint CREATE_NO_WINDOW = 0x08000000;
@@ -215,6 +221,7 @@ namespace DefenseClaw
         private const int STARTF_USESTDHANDLES = 0x00000100;
         private static readonly IntPtr PROC_THREAD_ATTRIBUTE_HANDLE_LIST = new IntPtr(0x00020002);
         private const int TokenGroups = 2;
+        private const int TokenDefaultDacl = 6;
         private const int TokenTypeInformation = 8;
         private const int TokenElevationType = 18;
         private const int TokenLinkedToken = 19;
@@ -255,6 +262,31 @@ namespace DefenseClaw
         {
             public uint GroupCount;
             public SID_AND_ATTRIBUTES Groups;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TRUSTEE
+        {
+            public IntPtr MultipleTrustee;
+            public int MultipleTrusteeOperation;
+            public int TrusteeForm;
+            public int TrusteeType;
+            public IntPtr Name;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct EXPLICIT_ACCESS
+        {
+            public uint AccessPermissions;
+            public int AccessMode;
+            public uint Inheritance;
+            public TRUSTEE Trustee;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct TOKEN_DEFAULT_DACL
+        {
+            public IntPtr DefaultDacl;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -302,6 +334,9 @@ namespace DefenseClaw
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern uint ResumeThread(IntPtr thread);
@@ -361,6 +396,29 @@ namespace DefenseClaw
             int impersonationLevel,
             int tokenType,
             out IntPtr newToken);
+
+        [DllImport(
+            "advapi32.dll",
+            EntryPoint = "SetEntriesInAclW",
+            CharSet = CharSet.Unicode,
+            ExactSpelling = true)]
+        private static extern uint SetEntriesInAcl(
+            uint explicitEntryCount,
+            IntPtr explicitEntries,
+            IntPtr oldAcl,
+            out IntPtr newAcl);
+
+        [DllImport(
+            "advapi32.dll",
+            EntryPoint = "SetTokenInformation",
+            ExactSpelling = true,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetTokenInformationDefaultDacl(
+            IntPtr token,
+            int informationClass,
+            ref TOKEN_DEFAULT_DACL information,
+            int informationLength);
 
         [DllImport(
             "advapi32.dll",
@@ -631,6 +689,83 @@ namespace DefenseClaw
             }
         }
 
+        private static void SetRestrictedTokenDefaultDacl(
+            IntPtr token,
+            SecurityIdentifier logonSid)
+        {
+            SecurityIdentifier[] allowedSids = new SecurityIdentifier[]
+            {
+                logonSid
+            };
+            IntPtr[] sidBuffers = new IntPtr[allowedSids.Length];
+            IntPtr entryBuffer = IntPtr.Zero;
+            IntPtr newAcl = IntPtr.Zero;
+            try
+            {
+                int entrySize = Marshal.SizeOf(typeof(EXPLICIT_ACCESS));
+                entryBuffer = Marshal.AllocHGlobal(checked(entrySize * allowedSids.Length));
+                for (int index = 0; index < allowedSids.Length; index++)
+                {
+                    byte[] sidBytes = new byte[allowedSids[index].BinaryLength];
+                    allowedSids[index].GetBinaryForm(sidBytes, 0);
+                    sidBuffers[index] = Marshal.AllocHGlobal(sidBytes.Length);
+                    Marshal.Copy(sidBytes, 0, sidBuffers[index], sidBytes.Length);
+                    Marshal.StructureToPtr(
+                        new EXPLICIT_ACCESS
+                        {
+                            AccessPermissions = GENERIC_ALL,
+                            AccessMode = GRANT_ACCESS,
+                            Inheritance = 0,
+                            Trustee = new TRUSTEE
+                            {
+                                MultipleTrustee = IntPtr.Zero,
+                                MultipleTrusteeOperation = 0,
+                                TrusteeForm = TRUSTEE_IS_SID,
+                                TrusteeType = TRUSTEE_IS_GROUP,
+                                Name = sidBuffers[index]
+                            }
+                        },
+                        IntPtr.Add(entryBuffer, entrySize * index),
+                        false);
+                }
+
+                uint result = SetEntriesInAcl(
+                    (uint)allowedSids.Length,
+                    entryBuffer,
+                    IntPtr.Zero,
+                    out newAcl);
+                if (result != ERROR_SUCCESS || newAcl == IntPtr.Zero)
+                {
+                    throw new Win32Exception(
+                        unchecked((int)result),
+                        "SetEntriesInAclW failed for restricted LUA TokenDefaultDacl");
+                }
+                TOKEN_DEFAULT_DACL information = new TOKEN_DEFAULT_DACL
+                {
+                    DefaultDacl = newAcl
+                };
+                if (!SetTokenInformationDefaultDacl(
+                    token,
+                    TokenDefaultDacl,
+                    ref information,
+                    Marshal.SizeOf(typeof(TOKEN_DEFAULT_DACL))))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "SetTokenInformation(TokenDefaultDacl) failed for restricted LUA token");
+                }
+            }
+            finally
+            {
+                if (newAcl != IntPtr.Zero) LocalFree(newAcl);
+                if (entryBuffer != IntPtr.Zero) Marshal.FreeHGlobal(entryBuffer);
+                foreach (IntPtr sidBuffer in sidBuffers)
+                {
+                    if (sidBuffer != IntPtr.Zero) Marshal.FreeHGlobal(sidBuffer);
+                }
+            }
+        }
+
         private static IntPtr CreateRestrictedLuaToken(IntPtr sourceToken)
         {
             IntPtr[] sidBuffers = null;
@@ -690,6 +825,14 @@ namespace DefenseClaw
                         Marshal.GetLastWin32Error(),
                         "CreateRestrictedToken failed");
                 }
+                // GitHub's UAC-disabled elevated token can carry an
+                // Administrators-only default DACL. LUA filtering makes that SID
+                // deny-only, so PowerShell cannot reopen its own default-secured
+                // IPC objects. Normalize only the synthetic restricted token;
+                // explicit product/file ACLs remain unchanged and fail closed.
+                SetRestrictedTokenDefaultDacl(
+                    restrictedToken,
+                    restrictingSids[1]);
                 IntPtr result = restrictedToken;
                 restrictedToken = IntPtr.Zero;
                 return result;
@@ -1089,7 +1232,8 @@ namespace DefenseClaw
             {
                 sourceToken = OpenToken(
                     GetCurrentProcess(),
-                    TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY);
+                    TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY |
+                        TOKEN_ADJUST_DEFAULT);
                 if (!IsElevated(sourceToken))
                 {
                     throw new InvalidOperationException(

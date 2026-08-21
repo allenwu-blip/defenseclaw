@@ -2229,6 +2229,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupStandardUserLauncherText,
         '(?sm)private static IntPtr CreateRestrictedLuaToken\b.*?^        \}'
     ).Value
+    $restrictedDefaultDaclFunction = [regex]::Match(
+        $setupStandardUserLauncherText,
+        '(?sm)private static void SetRestrictedTokenDefaultDacl\b.*?^        \}'
+    ).Value
     Assert-True ($restrictedLuaTokenFunction -match
             'WindowsIdentity\(sourceToken\)' -and
         $restrictedLuaTokenFunction -match 'GetTokenLogonSid\(sourceToken\)' -and
@@ -2239,7 +2243,12 @@ private-secret-name = "DefenseClaw must remain redacted"
             'DISABLE_MAX_PRIVILEGE \| LUA_TOKEN \| WRITE_RESTRICTED' -and
         $restrictedLuaTokenFunction -match
             '(?s)IntPtr\.Zero,\s*\(uint\)restrictingSids\.Length,\s*restrictingSidBuffer,\s*out restrictedToken' -and
+        $restrictedLuaTokenFunction -match
+            '(?s)SetRestrictedTokenDefaultDacl\(\s*restrictedToken,\s*restrictingSids\[1\]\)' -and
         $setupStandardUserLauncherText -match 'SE_GROUP_LOGON_ID' -and
+        $setupStandardUserLauncherText -match 'TOKEN_ADJUST_DEFAULT' -and
+        $setupStandardUserLauncherText -match
+            'SetTokenInformation\(TokenDefaultDacl\) failed for restricted LUA token' -and
         $setupStandardUserLauncherText -match 'GetTokenInformationBuffer' -and
         $setupStandardUserLauncherText -match
             'restricted LUA source token has an invalid logon SID set' -and
@@ -2248,6 +2257,19 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupStandardUserLauncherText -match
             'if \(!IsTokenRestricted\(token\)\)') `
         'restricted-LUA fallback uses exact account, logon, and World write-restriction SIDs with fail-closed validation'
+    Assert-True ($restrictedDefaultDaclFunction -match
+            '(?s)allowedSids = new SecurityIdentifier\[\].*?\{\s*logonSid\s*\}' -and
+        $restrictedDefaultDaclFunction -match
+            'AccessPermissions = GENERIC_ALL' -and
+        $restrictedDefaultDaclFunction -match 'AccessMode = GRANT_ACCESS' -and
+        $restrictedDefaultDaclFunction -match 'TrusteeForm = TRUSTEE_IS_SID' -and
+        $restrictedDefaultDaclFunction -match 'TrusteeType = TRUSTEE_IS_GROUP' -and
+        $restrictedDefaultDaclFunction -match
+            '(?s)SetEntriesInAcl\(\s*\(uint\)allowedSids\.Length,\s*entryBuffer,\s*IntPtr\.Zero,\s*out newAcl\)' -and
+        $restrictedDefaultDaclFunction -match
+            'SetTokenInformationDefaultDacl' -and
+        $restrictedDefaultDaclFunction -notmatch 'WorldSid|LocalSystemSid|userSid|AdministratorsSid') `
+        'restricted-LUA fallback replaces inherited administrator defaults with exact logon-session IPC access'
     Assert-True ($setupStandardUserLauncherText -match
             '(?s)process = Process\.GetProcessById\(.*?process\.Handle == IntPtr\.Zero.*?ResumeThread\(processInfo\.hThread\)') `
         'restricted Setup retains the exact suspended child handle before it can exit'
