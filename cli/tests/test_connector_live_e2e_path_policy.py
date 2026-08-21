@@ -169,7 +169,7 @@ def test_amp_is_reachable_through_contract_and_manual_live_layers() -> None:
     assert "DC_DRIVER_SUPPORTS_OTLP=0" in driver
 
 
-def test_unix_contract_matrix_covers_every_active_nonproxy_connector() -> None:
+def test_unix_contract_matrix_covers_executable_shell_hook_connectors() -> None:
     workflow = (ROOT / ".github/workflows/connector-live-e2e.yml").read_text(
         encoding="utf-8"
     )
@@ -185,8 +185,6 @@ def test_unix_contract_matrix_covers_every_active_nonproxy_connector() -> None:
         "hermes",
         "devin",
         "antigravity",
-        "opencode",
-        "omnigent",
     }
     assert set(json.loads(full_match.group(1))["connector"]) == expected
 
@@ -198,6 +196,11 @@ def test_unix_contract_matrix_covers_every_active_nonproxy_connector() -> None:
     dispatch = workflow.split("      connector:", 1)[1].split("      os:", 1)[0]
     for connector in expected:
         assert f"          - {connector}" in dispatch
+    # OpenCode and OmniGent use plugin/policy transports rather than the shell
+    # hook entrypoint exercised by contract-smoke.sh. Neither belongs in this
+    # generic executable-hook matrix.
+    assert "opencode" not in json.loads(full_match.group(1))["connector"]
+    assert "omnigent" not in json.loads(full_match.group(1))["connector"]
     assert "          - openclaw" not in dispatch
     assert "          - zeptoclaw" not in dispatch
     assert "          - geminicli" not in dispatch

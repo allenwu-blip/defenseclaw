@@ -16,11 +16,11 @@
 #   run.sh --layer contract --connector <name|all>   # Layer A entrypoint smoke
 #   run.sh --layer live     --connector <name|all>   # Layer B live agent
 #
-# Layer A targets every registry connector (golden payload -> installed hook
-# entrypoint). Layer B only targets connectors that ship a driver under
-# drivers/; contract-only connectors (Hermes, Devin, OpenCode, OmniGent, and
-# Antigravity) are
-# skipped with a recorded `skip` so the matrix stays honest.
+# Layer A targets connectors with an executable shell-hook contract (golden
+# payload -> installed hook entrypoint). Plugin/policy transports are covered
+# by focused tests instead. Layer B only targets connectors that ship a driver
+# under drivers/; contract-only connectors (Hermes, Devin, and Antigravity)
+# are skipped with a recorded `skip` so the matrix stays honest.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,8 +45,8 @@ done
 [ -n "${LAYER}" ]     || dc_die "--layer contract|live is required"
 [ -n "${CONNECTOR}" ] || dc_die "--connector <name|all> is required"
 
-# Registry connectors (Layer A covers all; Layer B covers those with drivers).
-ALL_CONNECTORS=(codex claudecode amp cursor copilot openhands hermes devin antigravity opencode omnigent)
+# Executable shell-hook connectors (Layer B covers the subset with drivers).
+ALL_CONNECTORS=(codex claudecode amp cursor copilot openhands hermes devin antigravity)
 
 resolve_connectors() {
   if [ "${CONNECTOR}" = "all" ]; then
