@@ -2926,7 +2926,7 @@ func inferTrustedCodexManagedHookCommands(
 
 	keySource := codexHookStateKeySource(configPath)
 	for _, profile := range codexShippedManagedHookProfiles() {
-		var candidates map[string]struct{}
+		var candidates map[codexManagedCommandIdentity]struct{}
 		complete := true
 		for eventIndex, expected := range profile {
 			rawGroups, present := hooks[expected.eventType]
@@ -2944,12 +2944,15 @@ func inferTrustedCodexManagedHookCommands(
 				return nil, fmt.Errorf("hooks.%s: %w", expected.eventType, err)
 			}
 			if eventIndex == 0 {
-				candidates = forEvent
+				candidates = make(map[codexManagedCommandIdentity]struct{}, len(forEvent))
+				for identity := range forEvent {
+					candidates[identity] = struct{}{}
+				}
 				continue
 			}
-			for command := range candidates {
-				if _, present := forEvent[command]; !present {
-					delete(candidates, command)
+			for identity := range candidates {
+				if _, present := forEvent[identity]; !present {
+					delete(candidates, identity)
 				}
 			}
 			if len(candidates) == 0 {
@@ -2959,8 +2962,15 @@ func inferTrustedCodexManagedHookCommands(
 		if !complete {
 			continue
 		}
-		for command := range candidates {
-			if codexCommandMatchesExactGeneratedProfile(hooks, command, profile) {
+		for identity := range candidates {
+			if !codexManagedCommandIdentityMatchesProfile(identity, profile) {
+				continue
+			}
+			commands, exact := codexCommandsMatchExactGeneratedProfile(hooks, identity, profile)
+			if !exact {
+				continue
+			}
+			for command := range commands {
 				managed[command] = struct{}{}
 			}
 		}
@@ -2995,6 +3005,10 @@ func codexShippedManagedHookProfiles() [][]codexHookGroup {
 		sixEvents[len(sixEvents)-1],
 	)
 	tenEvents := append([]codexHookGroup(nil), codexHookGroups...)
+	// The v3 and v4 contracts have always emitted compact as a reviewed
+	// SessionStart matcher. The shared registry keeps the narrower legacy
+	// matcher so v1/v2 rendering is not broadened.
+	tenEvents[0].matcher = "startup|resume|clear|compact"
 	elevenEvents := append([]codexHookGroup(nil), tenEvents...)
 	elevenEvents = append(elevenEvents, codexSessionEndHookGroup)
 	preClampElevenEvents := append([]codexHookGroup(nil), tenEvents...)
@@ -3009,16 +3023,104 @@ func codexShippedManagedHookProfiles() [][]codexHookGroup {
 	}
 }
 
-func codexCommandMatchesExactGeneratedProfile(
-	hooks map[string]interface{},
-	command string,
+type codexManagedCommandIdentity struct {
+	script     string
+	contractID string
+}
+
+// parseCodexManagedCommandIdentity accepts the two command families that
+// DefenseClaw has emitted. Older releases registered the script path directly;
+// current releases bind each command to one finite event and hook contract.
+// The latter necessarily differs across events, so migration must correlate the
+// underlying script+contract identity rather than intersecting full commands.
+func parseCodexManagedCommandIdentity(command string) (
+	codexManagedCommandIdentity,
+	string,
+	bool,
+) {
+	return parseCodexManagedCommandIdentityForPlatform(runtime.GOOS, command)
+}
+
+func parseCodexManagedCommandIdentityForPlatform(goos, command string) (
+	codexManagedCommandIdentity,
+	string,
+	bool,
+) {
+	if isCodexManagedScriptCandidate(command) {
+		return codexManagedCommandIdentity{script: command}, "", true
+	}
+
+	const contractSeparator = " --hook-contract "
+	contractIndex := strings.LastIndex(command, contractSeparator)
+	if contractIndex <= 0 {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	contractID := command[contractIndex+len(contractSeparator):]
+	if contractID == "" || strings.TrimSpace(contractID) != contractID {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	prefix := command[:contractIndex]
+	const eventSeparator = " --event "
+	eventIndex := strings.LastIndex(prefix, eventSeparator)
+	if eventIndex <= 0 {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	script := prefix[:eventIndex]
+	event := prefix[eventIndex+len(eventSeparator):]
+	if event == "" || !isCodexManagedScriptCandidate(script) {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	contract, registered := hookContractByID("codex", contractID)
+	if !registered || !codexContractContainsEvent(contract, event) {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	if command != codexHookCommandForPlatform(goos, event, contractID, script) {
+		return codexManagedCommandIdentity{}, "", false
+	}
+	return codexManagedCommandIdentity{script: script, contractID: contractID}, event, true
+}
+
+func codexContractContainsEvent(contract HookContract, event string) bool {
+	for _, candidate := range contract.Events {
+		if candidate == event {
+			return true
+		}
+	}
+	return false
+}
+
+func codexManagedCommandIdentityMatchesProfile(
+	identity codexManagedCommandIdentity,
 	profile []codexHookGroup,
 ) bool {
+	// Unbound commands predate contract IDs; their exact shipped event shape and
+	// positional trust fingerprints remain the bounded ownership evidence.
+	if identity.contractID == "" {
+		return true
+	}
+	contract, registered := hookContractByID("codex", identity.contractID)
+	if !registered || len(contract.Events) != len(profile) {
+		return false
+	}
+	for index, expected := range profile {
+		if contract.Events[index] != expected.eventType {
+			return false
+		}
+	}
+	return true
+}
+
+func codexCommandsMatchExactGeneratedProfile(
+	hooks map[string]interface{},
+	identity codexManagedCommandIdentity,
+	profile []codexHookGroup,
+) (map[string]struct{}, bool) {
 	expectedByEvent := make(map[string]codexHookGroup, len(profile))
 	for _, expected := range profile {
 		expectedByEvent[expected.eventType] = expected
 	}
 	seen := make(map[string]int, len(profile))
+	commands := make(map[string]struct{}, len(profile))
 	for eventType, rawGroups := range hooks {
 		if eventType == "state" {
 			continue
@@ -3039,29 +3141,37 @@ func codexCommandMatchesExactGeneratedProfile(
 			for _, rawHandler := range handlers {
 				handler, ok := rawHandler.(map[string]interface{})
 				candidateCommand, _ := handler["command"].(string)
-				if !ok || candidateCommand != command {
+				if !ok {
 					continue
+				}
+				candidateIdentity, boundEvent, parsed := parseCodexManagedCommandIdentity(candidateCommand)
+				if !parsed || candidateIdentity != identity {
+					continue
+				}
+				if boundEvent != "" && boundEvent != eventType {
+					return nil, false
 				}
 				expected, recognized := expectedByEvent[eventType]
 				if !recognized || !codexGeneratedGroupShapeMatches(group, expected) {
-					return false
+					return nil, false
 				}
 				seen[eventType]++
 				if seen[eventType] != 1 {
-					return false
+					return nil, false
 				}
+				commands[candidateCommand] = struct{}{}
 			}
 		}
 	}
 	if len(seen) != len(profile) {
-		return false
+		return nil, false
 	}
 	for _, expected := range profile {
 		if seen[expected.eventType] != 1 {
-			return false
+			return nil, false
 		}
 	}
-	return true
+	return commands, true
 }
 
 func trustedCodexManagedCommandsForEvent(
@@ -3069,13 +3179,14 @@ func trustedCodexManagedCommandsForEvent(
 	state map[string]interface{},
 	keySource string,
 	expected codexHookGroup,
-) (map[string]struct{}, error) {
+) (map[codexManagedCommandIdentity]string, error) {
 	groups, ok := rawGroups.([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("event groups have unsupported type %T", rawGroups)
 	}
 	eventKey := codexHookEventKeyLabel(expected.eventType)
-	counts := map[string]int{}
+	counts := map[codexManagedCommandIdentity]int{}
+	commandsByIdentity := map[codexManagedCommandIdentity]string{}
 	for groupIndex, rawGroup := range groups {
 		group, ok := rawGroup.(map[string]interface{})
 		if !ok || !codexGeneratedGroupShapeMatches(group, expected) {
@@ -3084,7 +3195,8 @@ func trustedCodexManagedCommandsForEvent(
 		handlers := group["hooks"].([]interface{})
 		handler := handlers[0].(map[string]interface{})
 		command, _ := handler["command"].(string)
-		if !isCodexManagedScriptCandidate(command) {
+		identity, boundEvent, parsed := parseCodexManagedCommandIdentity(command)
+		if !parsed || (boundEvent != "" && boundEvent != expected.eventType) {
 			continue
 		}
 		currentHash, err := codexCommandHookHashForPlatform(
@@ -3111,16 +3223,17 @@ func trustedCodexManagedCommandsForEvent(
 		if trustedHash != currentHash && trustedHash != legacyHash {
 			continue
 		}
-		counts[command]++
+		counts[identity]++
+		commandsByIdentity[identity] = command
 	}
 
-	commands := map[string]struct{}{}
-	for command, count := range counts {
+	commands := map[codexManagedCommandIdentity]string{}
+	for identity, count := range counts {
 		// Multiple identical handlers in one event are ambiguous and cannot be
 		// repaired without changing positional identities. Distinct predecessor
 		// paths remain independently recognizable.
 		if count == 1 {
-			commands[command] = struct{}{}
+			commands[identity] = commandsByIdentity[identity]
 		}
 	}
 	return commands, nil

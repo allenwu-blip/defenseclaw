@@ -204,6 +204,54 @@ func TestPatchCodexConfigReplacesTrustedMatrixAfterDataDirChange(t *testing.T) {
 	}
 }
 
+func TestParseCodexManagedCommandIdentityKeepsEventBoundMatrixTogether(t *testing.T) {
+	script := filepath.ToSlash(filepath.Join(t.TempDir(), ".defenseclaw", "hooks", "codex-hook.sh"))
+	command := codexHookCommandForPlatform(
+		"linux",
+		"SessionStart",
+		"codex-hooks-v4",
+		script,
+	)
+	identity, event, ok := parseCodexManagedCommandIdentityForPlatform("linux", command)
+	if !ok {
+		t.Fatalf("event-bound command was not recognized: %q", command)
+	}
+	if identity.script != script || identity.contractID != "codex-hooks-v4" || event != "SessionStart" {
+		t.Fatalf("parsed identity = %#v, event %q", identity, event)
+	}
+
+	var tenEventProfile, elevenEventProfile []codexHookGroup
+	for _, profile := range codexShippedManagedHookProfiles() {
+		switch len(profile) {
+		case 10:
+			if tenEventProfile == nil {
+				tenEventProfile = profile
+			}
+		case 11:
+			if profile[len(profile)-1].timeout == codexSessionEndHookGroup.timeout {
+				elevenEventProfile = profile
+			}
+		}
+	}
+	if !codexManagedCommandIdentityMatchesProfile(identity, elevenEventProfile) {
+		t.Fatal("v4 command identity did not match its eleven-event profile")
+	}
+	if codexManagedCommandIdentityMatchesProfile(identity, tenEventProfile) {
+		t.Fatal("v4 command identity matched a truncated ten-event profile")
+	}
+
+	legacyIdentity, legacyEvent, ok := parseCodexManagedCommandIdentityForPlatform("linux", script)
+	if !ok || legacyIdentity.script != script || legacyIdentity.contractID != "" || legacyEvent != "" {
+		t.Fatalf("legacy identity = %#v, event %q, ok=%v", legacyIdentity, legacyEvent, ok)
+	}
+	if _, _, ok := parseCodexManagedCommandIdentityForPlatform(
+		"linux",
+		script+" --event SessionStart --hook-contract third-party-v1",
+	); ok {
+		t.Fatal("unregistered hook contract was accepted")
+	}
+}
+
 func TestInferTrustedCodexManagedHookCommandsRequiresOwnershipEvidence(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("user-scoped Codex trust state is not installed on Windows")
