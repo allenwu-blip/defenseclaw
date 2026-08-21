@@ -966,6 +966,9 @@ func TestValidateSetupTransactionAntigravityHomeIgnoresSpoofedDataRoot(t *testin
 }
 
 func TestValidateSetupTransactionGeminiHomeBindingIgnoresSpoofedDataRoot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Gemini home custody contract")
+	}
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, nil)
 	geminiCLIHome := filepath.Join(t.TempDir(), "gemini-cli-home")
@@ -1962,6 +1965,9 @@ func TestResolveGeminiCLIHomeUsesOnlyAbsoluteNormalizedControlFreeAmbientValue(t
 }
 
 func TestNewSetupTransactionRejectsInvalidNonemptyGeminiCLIHome(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Setup transaction contract")
+	}
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	t.Setenv("GEMINI_CLI_HOME", "relative-gemini-home")
 	_, err := newSetupTransaction(

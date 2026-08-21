@@ -4987,6 +4987,8 @@ function Assert-WizardConnectorHealth(
     }
     $expectedHookTarget = if ($Specification.Connector -eq 'amp') {
         [string]$Specification.ConfigPath
+    } elseif ($Specification.Connector -eq 'geminicli') {
+        [string]$Specification.ConfigPath
     } elseif ($Specification.Connector -eq 'cursor') {
         Join-Path ([Environment]::GetEnvironmentVariable('DEFENSECLAW_HOME')) 'hooks\cursor-hook.ps1'
     } elseif ($Specification.Connector -eq 'windsurf') {

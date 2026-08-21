@@ -6,6 +6,7 @@ package main
 import (
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -42,6 +43,9 @@ func TestLauncherArgsRejectsUnknownName(t *testing.T) {
 }
 
 func TestLauncherEnvRehydratesManagedConnectorHomes(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows launcher environment contract")
+	}
 	t.Setenv("CODEX_HOME", `C:\project\codex`)
 	t.Setenv("CLAUDE_CONFIG_DIR", `C:\project\claude`)
 	t.Setenv("WINDSURF_USER_HOME", `C:\project\windsurf`)

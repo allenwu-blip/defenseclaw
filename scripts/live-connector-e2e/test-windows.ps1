@@ -3298,6 +3298,16 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Assert-WizardHookRegistration\b.*?(?=\r?\nfunction )'
     ).Value
+    $wizardConnectorHealthContract = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-WizardConnectorHealth\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True (
+        $doctorSetupContract.Contains("} elseif (`$Connector -eq 'geminicli') {") -and
+        $wizardConnectorHealthContract.Contains(
+            "} elseif (`$Specification.Connector -eq 'geminicli') {"
+        )
+    ) 'Gemini Doctor contracts validate the managed settings file rather than a generic hook launcher'
     foreach ($marker in @(
         'amp.on("session.start"',
         'amp.on("agent.start"',

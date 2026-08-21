@@ -5866,6 +5866,8 @@ function Assert-DoctorHookRegistration {
     } else {
         $expectedHookExecutable = if ($Connector -eq 'amp') {
             $config
+        } elseif ($Connector -eq 'geminicli') {
+            $config
         } elseif ($Connector -eq 'cursor') {
             Join-Path $env:DEFENSECLAW_HOME 'hooks\cursor-hook.ps1'
         } elseif ($Connector -eq 'windsurf') {
