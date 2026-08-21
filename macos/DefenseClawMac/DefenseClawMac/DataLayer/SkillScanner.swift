@@ -83,7 +83,7 @@ enum SkillScanner {
                 }
                 for entry in orderedEntries {
                     let full = dir + "/" + entry
-                    guard fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue,
+                    guard fm.fileExists(atPath: full, isDirectory: &isDir), isDir.boolValue
                     else { continue }
                     let isCodexSystemContainer = connector.lowercased()
                         .replacingOccurrences(of: "-", with: "") == "codex"
