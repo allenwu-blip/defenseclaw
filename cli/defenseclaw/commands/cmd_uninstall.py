@@ -105,6 +105,7 @@ _CONNECTOR_BACKUP_MARKERS: dict[str, tuple[str, ...]] = {
     ),
     "opencode": (os.path.join("connector_backups", "opencode", "config.json"),),
     "openhands": (os.path.join("connector_backups", "openhands", "config.json"),),
+    "devin": (os.path.join("connector_backups", "devin", "config.json"),),
     "windsurf": (os.path.join("connector_backups", "windsurf", "config.json"),),
     "zeptoclaw": (
         "zeptoclaw_backup.json",

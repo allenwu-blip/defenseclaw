@@ -83,7 +83,7 @@ _WINDOWS_LAUNCHER_EXECUTABLE = "defenseclaw.exe"
             "openclaw",
             "hermes",
             "cursor",
-            "windsurf",
+            "devin",
             "copilot",
             "openhands",
             "antigravity",

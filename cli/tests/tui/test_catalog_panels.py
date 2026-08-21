@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import pytest
+from defenseclaw import connector_paths
 from defenseclaw.config import AssetPolicyRule
 from defenseclaw.tui.panels.mcps import MCPsPanelModel, mcp_actions, mcp_unset_target_for_connector
 from defenseclaw.tui.panels.plugins import PluginRow, PluginsPanelModel, plugin_actions
@@ -238,12 +239,12 @@ def test_mcp_actions_name_connector_specific_unset_targets(monkeypatch, tmp_path
     hermes_config = tmp_path / "hermes-home" / "config.yaml"
     claude_config = tmp_path / "claude-home" / "settings.json"
     codex_config = tmp_path / "codex-home" / "config.toml"
-    windsurf_profile = tmp_path / "windsurf-profile"
+    devin_config = tmp_path / "devin-config"
     gemini_home = tmp_path / "gemini-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_config.parent))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_config.parent))
     monkeypatch.setenv("CODEX_HOME", str(codex_config.parent))
-    monkeypatch.setenv("WINDSURF_USER_HOME", str(windsurf_profile))
+    monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(devin_config))
     monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
     cases = {
         "openclaw": "OpenClaw config",
@@ -252,7 +253,7 @@ def test_mcp_actions_name_connector_specific_unset_targets(monkeypatch, tmp_path
         "zeptoclaw": "~/.zeptoclaw/config.json",
         "hermes": str(hermes_config),
         "cursor": "./.cursor/mcp.json",
-        "windsurf": str(windsurf_profile / ".codeium" / "windsurf" / "mcp_config.json"),
+        "devin": str(devin_config / "mcp_config.json"),
         "geminicli": (
             f"{gemini_home / 'settings.json'} / "
             "<workspace>/.gemini/settings.json"

@@ -181,6 +181,13 @@ func OwnedHooksPresent(conn Connector, opts SetupOpts) (bool, error) {
 		}
 		return windsurfOwnedHooksPresentForOS(windsurf, opts, runtime.GOOS)
 	}
+	if conn != nil && conn.Name() == "devin" {
+		devin, ok := conn.(*hookOnlyConnector)
+		if !ok {
+			return false, errors.New("devin hook contract requires the native Devin connector")
+		}
+		return devinOwnedHooksPresent(devin, opts)
+	}
 	// OpenCode is a whole-file managed plugin. Its generic hook-only marker
 	// inspector proves only the embedded version header; the custody receipt is
 	// the authority for the exact path and post-setup digest, so evaluate it

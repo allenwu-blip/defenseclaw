@@ -2585,30 +2585,27 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertIn(str(project_agents), inv["connector_agent_dirs"])
         self.assertIn(str(project_rules), inv["connector_rule_dirs"])
 
-    def test_windsurf_inventory_classifies_cascade_rules_and_discloses_limits(self):
-        cfg = _make_cfg_for_connector(self.tmp, "windsurf")
-        bound = Path(self.tmp) / "windsurf-profile"
-        repo = Path(self.tmp) / "repo"
-        workspace = repo / "app"
-        (repo / ".git").mkdir(parents=True)
+    def test_devin_inventory_classifies_documented_rules_and_discloses_limits(self):
+        cfg = _make_cfg_for_connector(self.tmp, "devin")
+        config_root = Path(self.tmp) / "devin-config"
+        workspace = Path(self.tmp) / "repo"
         workspace.mkdir()
         cfg.claw.workspace_dir = str(workspace)
 
         sources = (
-            bound / ".codeium" / "windsurf" / "memories" / "global_rules.md",
-            repo / "AGENTS.md",
-            workspace / ".devin" / "rules" / "preferred.md",
-            workspace / ".windsurf" / "rules" / "legacy.md",
-            workspace / ".windsurfrules",
+            config_root / "AGENTS.md",
+            workspace / "AGENTS.local.md",
+            workspace / ".devin" / "global_rules.md",
+            workspace / ".devin" / "rules" / "policy.md",
         )
         for source in sources:
             source.parent.mkdir(parents=True, exist_ok=True)
             source.write_text("rule\n", encoding="utf-8")
 
-        with patch.dict(
-            os.environ,
-            {"WINDSURF_USER_HOME": str(bound)},
-            clear=False,
+        with patch.object(
+            connector_paths,
+            "devin_config_home",
+            return_value=str(config_root),
         ), self._patch_skill_dirs([]), self._patch_plugin_dirs([]), self._patch_mcp([]):
             inv = build_claw_aibom(cfg, live=True)
 
@@ -2617,9 +2614,8 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             {
                 "user-global",
                 "directory-scoped",
-                "preferred-devin",
-                "legacy-windsurf",
-                "legacy-single-file",
+                "devin-project-global",
+                "devin-native",
             },
         )
         self.assertTrue(all(rule["discovery_only"] for rule in inv["rules"]))
@@ -2633,8 +2629,8 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             {category: limitations[category]["status"] for category in ("mcp", "rules", "skills")},
             {"mcp": "unverified", "rules": "unverified", "skills": "unverified"},
         )
-        self.assertIn("Devin Local", limitations["mcp"]["reason"])
-        self.assertIn("ProgramData", limitations["rules"]["reason"])
+        self.assertIn("legacy config*.json", limitations["mcp"]["reason"])
+        self.assertIn("runtime precedence", limitations["rules"]["reason"])
 
     def test_codex_agents_and_rules_reject_reparse_ancestry(self):
         cfg = _make_cfg_for_connector(self.tmp, "codex")

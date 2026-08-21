@@ -1678,7 +1678,7 @@ func TestReadTokenFile(t *testing.T) {
 
 func TestSupportedConnectorsSorted(t *testing.T) {
 	got := SupportedConnectors()
-	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "openhands", "windsurf"}
+	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "devin", "geminicli", "hermes", "openhands"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

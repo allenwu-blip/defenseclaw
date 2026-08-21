@@ -1322,7 +1322,7 @@ func runtimeAssetCanEnforce(event string) bool {
 	case "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PermissionRequest":
 		return true
 	}
-	// Generic hook-only connectors (hermes, cursor, windsurf, geminicli,
+	// Generic hook-only connectors (hermes, cursor, devin, geminicli,
 	// copilot, openhands) use varied case/spacing for the same semantic events
 	// (preToolUse, pre_tool_call, beforeMCPExecution, beforeShellExecution,
 	// pre_run_command, premcptooluse, ...). Reusing the canonical

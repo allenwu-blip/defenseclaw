@@ -724,12 +724,12 @@ class TestAdditiveSetupCommand(unittest.TestCase):
     def test_replace_flag_overwrites_multi_set(self):
         self._seed_map("codex", "cursor")
         with _setup_patches():
-            result = _invoke(["windsurf", "--replace", "--yes", "--no-restart"], self.app)
+            result = _invoke(["devin", "--replace", "--yes", "--no-restart"], self.app)
         self.assertEqual(result.exit_code, 0, msg=result.output)
         gc = self.app.cfg.guardrail
         self.assertEqual(gc.connectors, {})
-        self.assertEqual(gc.connector, "windsurf")
-        self.assertEqual(self.app.cfg.claw.mode, "windsurf")
+        self.assertEqual(gc.connector, "devin")
+        self.assertEqual(self.app.cfg.claw.mode, "devin")
 
     # D1: interactive three-choice prompt — Add.
     def test_interactive_add_choice(self):
@@ -843,10 +843,10 @@ class TestWriteConnectorIdentityUnit(unittest.TestCase):
         gc = self.app.cfg.guardrail
         gc.connectors = {"codex": PerConnectorGuardrailConfig(), "cursor": PerConnectorGuardrailConfig()}
         gc.connector = "codex"
-        _write_connector_identity(self.app.cfg, "windsurf", "replace")
+        _write_connector_identity(self.app.cfg, "devin", "replace")
         self.assertEqual(gc.connectors, {})
-        self.assertEqual(gc.connector, "windsurf")
-        self.assertEqual(self.app.cfg.claw.mode, "windsurf")
+        self.assertEqual(gc.connector, "devin")
+        self.assertEqual(self.app.cfg.claw.mode, "devin")
 
     def test_add_does_not_seed_proxy_predecessor(self):
         gc = self.app.cfg.guardrail
@@ -1018,9 +1018,9 @@ class TestRemoveConnector(unittest.TestCase):
 
     # Removing one of three leaves a still-multi set; map retained, primary repointed.
     def test_remove_from_multi_keeps_map(self):
-        self._seed_map("codex", "cursor", "windsurf")
+        self._seed_map("codex", "cursor", "devin")
         with self._no_restart_bounce():
-            result = _invoke(["remove", "windsurf", "--yes", "--no-restart"], self.app)
+            result = _invoke(["remove", "devin", "--yes", "--no-restart"], self.app)
         self.assertEqual(result.exit_code, 0, msg=result.output)
         gc = self.app.cfg.guardrail
         self.assertEqual(set(gc.connectors), {"codex", "cursor"})
@@ -1069,7 +1069,7 @@ class TestRemoveConnector(unittest.TestCase):
     def test_remove_known_absent_is_idempotent(self):
         self._seed_map("codex", "cursor")
         with self._no_restart_bounce():
-            result = _invoke(["remove", "windsurf", "--yes", "--no-restart"], self.app)
+            result = _invoke(["remove", "devin", "--yes", "--no-restart"], self.app)
         self.assertEqual(result.exit_code, 0, msg=result.output)
         self.assertIn("already absent", result.output)
         self.assertEqual(set(self.app.cfg.guardrail.connectors), {"codex", "cursor"})

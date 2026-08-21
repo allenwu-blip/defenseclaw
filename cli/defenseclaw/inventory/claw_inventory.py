@@ -1613,32 +1613,11 @@ _FILESYSTEM_ONLY_CONNECTOR_NOTES: dict[str, str] = {
 
 _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
     (
-        "windsurf",
-        "skills",
+        "devin",
+        "plugins",
     ): (
-        "legacy Cascade user and pinned-workspace .windsurf/skills and "
-        ".agents/skills roots are inventoried with no-follow discovery; "
-        "optional Claude-config reading plus system/ProgramData and managed "
-        "enterprise skill layers are excluded and unverified"
-    ),
-    (
-        "windsurf",
-        "rules",
-    ): (
-        "legacy Cascade user-global, preferred .devin/rules, legacy "
-        ".windsurf/rules and .windsurfrules, and recursive/ancestor AGENTS.md "
-        "sources are inventoried with bounded no-follow discovery; cloud "
-        "dashboard, MDM, ProgramData/system, and effective higher-layer "
-        "enforcement are excluded and unverified"
-    ),
-    (
-        "windsurf",
-        "mcp",
-    ): (
-        "only the legacy Cascade mcp_config.json under the persisted bound "
-        "WINDSURF_USER_HOME is inventoried; Devin Local config files, cloud, "
-        "Team/Enterprise registry, and allowlist state are unsupported and "
-        "unverified"
+        "Devin plugins remain closed beta and no general local plugin "
+        "discovery, installation, activation, or enforcement claim is made"
     ),
     (
         "copilot",
@@ -1693,6 +1672,37 @@ _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
 }
 
 _UNVERIFIED_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
+    (
+        "devin",
+        "skills",
+    ): (
+        "documented user config-root and ~/.agents skills plus pinned project "
+        ".devin/.agents skills are inventoried locally; remote or managed "
+        "activation requires official-client evidence"
+    ),
+    (
+        "devin",
+        "rules",
+    ): (
+        "documented config-root AGENT(S).md, project/nested AGENT(S).md and "
+        "AGENTS.local.md, and project .devin rules are inventoried with bounded "
+        "no-follow discovery; effective runtime precedence is unverified"
+    ),
+    (
+        "devin",
+        "mcp",
+    ): (
+        "canonical user/project mcp_config.json registries and read-only "
+        "mcp_config.local.json plus legacy config*.json sources are inventoried; "
+        "live server activation is unverified"
+    ),
+    (
+        "devin",
+        "agents",
+    ): (
+        "pinned-project .devin/agents and .agents/agents Markdown agents are "
+        "inventoried locally; runtime activation and precedence are unverified"
+    ),
     (
         "cursor",
         "skills",
@@ -1784,6 +1794,7 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
     * copilot    — precedence-aware project/ancestor agents plus
       ``$COPILOT_HOME/agents`` (default ``~/.copilot/agents``)
     * cursor     — explicitly pinned project ``.cursor/agents`` and user ``~/.cursor/agents``
+    * devin      — pinned project ``.devin/agents`` and ``.agents/agents``
     * antigravity — global/workspace custom agents plus plugin agent components
     * amp        — static plugin metadata and ``createAgent({name})`` calls
     """
@@ -1816,6 +1827,13 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _agents_from_copilot_dirs(connector_paths.copilot_agent_dirs(_connector_workspace_dir(cfg)))
     if name == "cursor":
         return _agents_from_cursor_dirs(
+            connector_paths.agent_dirs(
+                name,
+                workspace_dir=_connector_workspace_dir(cfg),
+            )
+        )
+    if name == "devin":
+        return _agents_from_md_dirs(
             connector_paths.agent_dirs(
                 name,
                 workspace_dir=_connector_workspace_dir(cfg),
@@ -1856,31 +1874,30 @@ def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         return _copilot_instruction_rules(_connector_workspace_dir(cfg))
     if normalized == "cursor":
         return _cursor_rules_from_workspace(_connector_workspace_dir(cfg))
-    if normalized == "windsurf":
+    if normalized == "devin":
         workspace = _connector_workspace_dir(cfg)
         rows: list[dict[str, Any]] = []
-        for source in connector_paths.windsurf_rule_files(workspace):
+        config_root = os.path.normcase(os.path.abspath(connector_paths.devin_config_home()))
+        for source in connector_paths.devin_rule_files(workspace):
             folded_parts = [part.casefold() for part in Path(source).parts]
             filename = os.path.basename(source)
             filename_folded = filename.casefold()
-            if filename_folded == "global_rules.md":
+            normalized_source = os.path.normcase(os.path.abspath(source))
+            if normalized_source.startswith(config_root + os.sep):
                 kind = "global-rule"
                 source_format = "user-global"
-            elif filename_folded == "agents.md":
+            elif filename_folded == "global_rules.md":
+                kind = "global-rule"
+                source_format = "devin-project-global"
+            elif filename_folded in {"agents.md", "agent.md", "agents.local.md"}:
                 kind = "agents-md"
                 source_format = "directory-scoped"
-            elif filename_folded == ".windsurfrules":
-                kind = "legacy-rule"
-                source_format = "legacy-single-file"
             elif ".devin" in folded_parts:
                 kind = "rule"
-                source_format = "preferred-devin"
-            elif ".windsurf" in folded_parts:
-                kind = "legacy-rule"
-                source_format = "legacy-windsurf"
+                source_format = "devin-native"
             else:
-                kind = "global-rule"
-                source_format = "user-global"
+                kind = "rule"
+                source_format = "devin-native"
 
             identity = source
             if workspace:
@@ -1895,7 +1912,11 @@ def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
                     "id": identity.replace(os.sep, "/"),
                     "name": filename,
                     "source": source,
-                    "scope": "user" if source_format == "user-global" else "workspace",
+                    "scope": (
+                        "user"
+                        if normalized_source.startswith(config_root + os.sep)
+                        else "workspace"
+                    ),
                     "kind": kind,
                     "source_format": source_format,
                     "discovery_only": True,
@@ -3873,11 +3894,7 @@ def _build_aibom_from_filesystem(
         result = results.get(cat_key)
         if result is None or result.error is not None:
             continue
-        partial_status = (
-            InventoryCapabilityStatus.UNVERIFIED
-            if partial_connector == "windsurf"
-            else InventoryCapabilityStatus.UNSUPPORTED
-        )
+        partial_status = InventoryCapabilityStatus.UNSUPPORTED
         limitations.append(
             {
                 "connector": connector,
@@ -3951,6 +3968,8 @@ def _build_aibom_from_filesystem(
         # Cursor has a documented local subagent surface. An empty directory is
         # a successful empty inventory, not an unsupported capability.
         if connector == "cursor" and cat_key == "agents":
+            continue
+        if connector == "devin" and cat_key == "agents":
             continue
         result = results.get(cat_key)
         if connector_paths.normalize(connector) == "claudecode" and cat_key == "memory":

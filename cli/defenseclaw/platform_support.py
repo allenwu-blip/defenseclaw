@@ -93,11 +93,11 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "on native Windows x64; official-client validation metadata is not recorded "
         "and live evidence remains false.",
     ),
-    "windsurf": ConnectorPlatformSupport(
+    "devin": ConnectorPlatformSupport(
         SUPPORTED,
-        "Legacy Cascade-only hooks and the native PowerShell adapter are supported on Windows x64. "
-        "Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer "
-        "enforcement are not covered; packaged and official-client validation metadata is not recorded.",
+        "Native Devin CLI lifecycle hooks are supported on Windows x64 using the "
+        "pinned 3000.4.25 CLI; cloud Devin, proxy, ACP, native OTLP, and managed "
+        "higher-layer enforcement are not covered.",
     ),
     "geminicli": ConnectorPlatformSupport(UNSUPPORTED, _DEPRECATED_REASONS["geminicli"]),
     "copilot": ConnectorPlatformSupport(

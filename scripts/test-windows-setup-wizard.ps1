@@ -22,7 +22,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-wizard-smoke-$PID"),
     [ValidateRange(1, 60)]
     [int]$TimeoutSeconds = 15,
-    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'copilot', 'cursor', 'hermes', 'windsurf', 'omnigent', 'opencode')]
+    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'copilot', 'cursor', 'hermes', 'devin', 'omnigent', 'opencode')]
     [string]$Connector = 'claudecode',
     [ValidateSet('observe', 'action')]
     [string]$Mode = 'observe',
@@ -393,7 +393,7 @@ $connectorIndices = @{
     copilot = 5
     cursor = 6
     hermes = 7
-    windsurf = 8
+    devin = 8
     omnigent = 9
     opencode = 10
 }
@@ -406,7 +406,7 @@ $connectorLabels = @(
     'GitHub Copilot CLI',
     'Cursor Agent',
     'Hermes Agent',
-    'Legacy Cascade',
+    'Devin CLI',
     'OmniGent (native degraded)',
     'OpenCode'
 )

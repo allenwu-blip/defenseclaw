@@ -73,7 +73,7 @@ on:
           - copilot
           - openhands
           - hermes
-          - windsurf
+          - devin
           - antigravity
       os:
         description: "OS to run (or 'all')"
@@ -186,7 +186,7 @@ jobs:
           set -euo pipefail
           # The Unix harness retains the full supported connector matrix.
           # Native Windows contract validation is a separate, explicit x64 matrix.
-          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","cursor","copilot","openhands","hermes","windsurf","antigravity"]}'
+          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","cursor","copilot","openhands","hermes","devin","antigravity"]}'
           # Always-on PR smoke: one connector on one cross-platform OS. macOS is
           # chosen because windows-native.yml separately checks the native
           # Windows hook contract on every PR. This adds the missing native macOS
@@ -381,7 +381,7 @@ jobs:
       fail-fast: false
       matrix:
         # The reality matrix: which agents have a headless CLI that fires hooks
-        # on which OS. Contract-only connectors (hermes, windsurf, antigravity)
+        # on which OS. Contract-only connectors (hermes, devin, antigravity)
         # are absent here — they are covered by Layer A only. Native Windows
         # Candidate Codex/Claude Windows certification evidence is handled by
         # windows-live below; an unrun or failed cell proves nothing.
@@ -525,7 +525,7 @@ jobs:
               write_key OPENAI_API_KEY "${OPENAI_API_KEY:-}"
               write_key LLM_API_KEY "${LLM_API_KEY:-}"
               ;;
-            copilot|hermes|windsurf|antigravity)
+            copilot|hermes|devin|antigravity)
               :
               ;;
             *)

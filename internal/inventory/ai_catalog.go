@@ -133,7 +133,7 @@ type aiSignatureCatalog struct {
 // Only expand this table for signatures whose product IS an agent the
 // dashboards should treat as first-class. For signatures that already
 // carry `SupportedConnector` in ai_signatures.json (openclaw, codex,
-// claudecode, cursor, windsurf, …), the connector value flows through
+// claudecode, cursor, devin, …), the connector value flows through
 // directly and this table is not consulted.
 var promotedAgentKinds = map[string]string{
 	"aider":          "aider",

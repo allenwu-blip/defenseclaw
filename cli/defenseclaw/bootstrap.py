@@ -47,9 +47,9 @@ from defenseclaw.connector_paths import (
     connector_config_files,
     connector_home,
     copilot_home,
+    devin_hook_config_path,
     hermes_config_path,
     omnigent_config_path,
-    windsurf_hook_config_path,
 )
 from defenseclaw.inventory import agent_discovery
 
@@ -1726,15 +1726,17 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Cursor hooks found")
         return StepResult("Connector", "warn", "Cursor hooks not found yet", "defenseclaw setup cursor")
-    if connector == "windsurf":
-        path = windsurf_hook_config_path()
-        if os.path.isfile(path):
-            return StepResult("Connector", "pass", "Legacy Cascade hooks found")
+    if connector == "devin":
+        claw_cfg = getattr(cfg, "claw", None)
+        workspace = (getattr(claw_cfg, "workspace_dir", "") or "").strip()
+        path = devin_hook_config_path(workspace)
+        if path and os.path.isfile(path):
+            return StepResult("Connector", "pass", "Devin project hooks found")
         return StepResult(
             "Connector",
             "warn",
-            "Legacy Cascade hooks not found; Devin Local/default-agent hooks are unsupported",
-            "defenseclaw setup windsurf",
+            "Devin project hooks not found; pin a workspace and run setup",
+            "defenseclaw setup devin --workspace <project>",
         )
     if connector == "geminicli":
         path = connector_config_files("geminicli")[0]

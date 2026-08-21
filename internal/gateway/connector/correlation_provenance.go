@@ -76,6 +76,13 @@ func correlationContractSources(name string) []CorrelationContractSource {
 	case "windsurf":
 		return source("windsurf-hooks-doc-9a43fa5d",
 			"https://docs.windsurf.com/windsurf/cascade/hooks", "sha256:9a43fa5d3f3963f842e8b18b4861f59d121e3782c053dbedb230788f19ff04bd")
+	case "devin":
+		return []CorrelationContractSource{{
+			ID:          "devin-hooks-doc-d420df73",
+			URI:         "https://docs.devin.ai/cli/extensibility/hooks/overview",
+			Revision:    "sha256:d420df730773a54829f863a05874da48b1fbeb9213f9b5147d65f1acbe3a7ca9",
+			CheckedDate: "2026-08-20",
+		}}
 	case "geminicli":
 		return source("geminicli-source-fa975395",
 			"https://github.com/google-gemini/gemini-cli", "fa975395bcc6b609e44735e47320e54f51535d47")

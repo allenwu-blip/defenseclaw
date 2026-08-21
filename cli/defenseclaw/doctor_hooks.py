@@ -61,7 +61,7 @@ _EXPECTED_CONTRACTS = {
     ),
     "claudecode": frozenset({"claudecode-hooks-v1", "claudecode-hooks-v2"}),
     "copilot": frozenset({"copilot-hooks-v1", "copilot-hooks-v2"}),
-    "windsurf": frozenset({"windsurf-hooks-v1"}),
+    "devin": frozenset({"devin-hooks-v1"}),
     "antigravity": frozenset({"antigravity-hooks-v2"}),
     "hermes": frozenset({"hermes-hooks-v1"}),
 }
@@ -159,7 +159,7 @@ _REPAIR = {
     "claudecode": "defenseclaw setup claude-code --yes --restart",
     "copilot": "defenseclaw setup copilot --yes --restart",
     "antigravity": "defenseclaw setup antigravity --yes --restart",
-    "windsurf": "defenseclaw setup windsurf --yes --restart",
+    "devin": "defenseclaw setup devin --yes --restart",
     "hermes": "defenseclaw setup hermes --yes --restart",
 }
 _WINDSURF_EVENTS = frozenset(
@@ -177,6 +177,17 @@ _WINDSURF_EVENTS = frozenset(
         "post_cascade_response_with_transcript",
         "post_setup_worktree",
     }
+)
+
+_DEVIN_EVENTS = (
+    "PreToolUse",
+    "PostToolUse",
+    "PermissionRequest",
+    "UserPromptSubmit",
+    "Stop",
+    "PostCompaction",
+    "SessionStart",
+    "SessionEnd",
 )
 
 _CLAUDE_REQUIRED_HOOKS: dict[str, tuple[str | None, int]] = {
@@ -1005,6 +1016,8 @@ def _read_config(path: str, connector: str) -> dict[str, Any]:
             document = tomllib.loads(raw.decode("utf-8"))
         elif connector == "hermes":
             document = yaml.safe_load(raw.decode("utf-8"))
+        elif connector == "devin":
+            document = json.loads(connector_paths._normalize_jsonc(raw.decode("utf-8")))
         else:
             document = json.loads(raw)
     except (UnicodeError, ValueError, tomllib.TOMLDecodeError, yaml.YAMLError) as exc:
@@ -2170,6 +2183,9 @@ def _commands_from_hooks(
 ) -> list[str]:
     """Extract managed commands after validating connector-specific policy."""
     _ = claude_managed_settings_paths  # retained for call-site compatibility
+    if connector == "devin":
+        command, _count = _validate_devin_hook_matrix(document)
+        return [command]
     if connector == "windsurf":
         command, _count = _validate_windsurf_hook_matrix(
             document,
@@ -2250,6 +2266,50 @@ def _commands_from_hooks(
     if connector != "codex" and len(unique) != 1:
         raise _InspectionError("malformed", "DefenseClaw hook entries use inconsistent commands")
     return managed
+
+
+def _validate_devin_hook_matrix(document: dict[str, Any]) -> tuple[str, int]:
+    """Validate the exact DefenseClaw-owned Devin eight-event registration."""
+
+    nested = document.get("hooks")
+    hooks = nested if isinstance(nested, dict) else document
+    commands: list[str] = []
+    for event in _DEVIN_EVENTS:
+        groups = hooks.get(event)
+        if not isinstance(groups, list):
+            raise _InspectionError("stale", f"Devin hook contract is missing {event}")
+        owned: list[tuple[dict[str, Any], dict[str, Any], str]] = []
+        for group in groups:
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(handlers, list):
+                continue
+            for handler in handlers:
+                command = handler.get("command") if isinstance(handler, dict) else None
+                if isinstance(command, str) and _managed_hook_command(command, "devin"):
+                    owned.append((group, handler, command.strip()))
+        if len(owned) != 1:
+            raise _InspectionError(
+                "stale",
+                f"Devin hook contract has {len(owned)} DefenseClaw handlers for {event}; expected exactly one",
+            )
+        group, handler, command = owned[0]
+        if group.get("matcher", "") != "" or handler.get("type") != "command":
+            raise _InspectionError("stale", f"Devin {event} handler has an invalid matcher or type")
+        if handler.get("timeout") != 10:
+            raise _InspectionError("stale", f"Devin {event} handler timeout is not 10 seconds")
+        commands.append(command)
+    if len(set(commands)) != 1:
+        raise _InspectionError("stale", "DefenseClaw Devin hooks use inconsistent commands")
+    for event, groups in hooks.items():
+        if event in _DEVIN_EVENTS or not isinstance(groups, list):
+            continue
+        for group in groups:
+            handlers = group.get("hooks") if isinstance(group, dict) else None
+            for handler in handlers if isinstance(handlers, list) else ():
+                command = handler.get("command") if isinstance(handler, dict) else None
+                if isinstance(command, str) and _managed_hook_command(command, "devin"):
+                    raise _InspectionError("stale", f"unexpected Devin event {event} contains a DefenseClaw handler")
+    return commands[0], len(commands)
 
 
 def _handler_command_line(handler: dict[str, Any], connector: str, *, windows: bool) -> str:
@@ -3408,6 +3468,8 @@ def validate_windows_hook_registration(
         if connector == "codex":
             if inspect_effective_policy:
                 policy_detail = _validate_codex_effective_hook_policy(data_dir, config_path)
+        elif connector == "devin":
+            _command, matrix_entries = _validate_devin_hook_matrix(document)
         elif connector == "windsurf":
             _command, matrix_entries = _validate_windsurf_hook_matrix(
                 document,
@@ -3518,7 +3580,13 @@ def validate_windows_hook_registration(
                 "foreign", f"registered hook target is not the DefenseClaw hook launcher: {resolved}"
             )
         limitations = ""
-        if connector == "windsurf":
+        if connector == "devin":
+            limitations = (
+                "; limitations=exit 2 blocks supported pre/control events; "
+                "other hook errors fail open; Restricted Mode disables hooks and agents; "
+                "native OTLP, proxy, ACP, cloud, and plugins are unclaimed"
+            )
+        elif connector == "windsurf":
             limitations = (
                 "; limitations=exit 2 blocks only five documented pre-hooks; "
                 "non-2 hook errors fail open; post hooks are non-blocking "

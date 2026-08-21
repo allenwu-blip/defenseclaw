@@ -372,7 +372,7 @@ func TestWizardChoiceMappings(t *testing.T) {
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent", Value: "hermes"},
-		{Label: "Legacy Cascade", Value: "windsurf"},
+		{Label: "Devin CLI", Value: "devin"},
 		{Label: "OmniGent (native degraded)", Value: "omnigent"},
 		{Label: "OpenCode", Value: "opencode"},
 	}
@@ -519,7 +519,7 @@ func TestWizardCompletionDescriptionMatchesConfiguredConnector(t *testing.T) {
 		{connector: "copilot", want: "GitHub Copilot CLI is configured", reject: "defenseclaw init"},
 		{connector: "cursor", want: "Cursor Agent is configured", reject: "certified"},
 		{connector: "hermes", want: "Hermes hooks", reject: "fail-closed"},
-		{connector: "windsurf", want: "PowerShell Cascade hooks", reject: "certified"},
+		{connector: "devin", want: "Devin CLI is configured", reject: "certified"},
 		{connector: "antigravity", want: "Google Antigravity is configured", reject: "defenseclaw init"},
 		{connector: "omnigent", want: "native degraded policy integration", reject: "trusted automatically"},
 		{connector: "opencode", want: "OpenCode is configured", reject: "certified"},

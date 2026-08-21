@@ -658,7 +658,7 @@ func (a *APIServer) hookDecisionMeta(
 // shape onto the wire JSON shape each connector's agent CLI
 // expects. The fixed agentHookResponse JSON tag for HookOutput
 // ("hook_output") works for generic hookOnly connectors
-// (hermes/cursor/windsurf/geminicli/copilot) but Claude Code and
+// (hermes/cursor/devin/geminicli/copilot) but Claude Code and
 // Codex agents expect "claude_code_output" and "codex_output"
 // respectively. Rendering as a map[string]interface{} lets us pick
 // the right top-level key per connector while keeping
@@ -2244,6 +2244,18 @@ func hookOutputFor(req agentHookRequest, action, rawAction, reason, additional s
 	case "windsurf":
 		if action == "block" {
 			return map[string]interface{}{"message": reason}
+		}
+	case "devin":
+		if action == "block" {
+			return map[string]interface{}{"decision": "block", "reason": reason}
+		}
+		switch canonicalEvent(req.HookEventName) {
+		case "userpromptsubmit", "sessionstart", "posttooluse":
+			if additional != "" {
+				return map[string]interface{}{"hookSpecificOutput": map[string]interface{}{
+					"hookEventName": req.HookEventName, "additionalContext": additional,
+				}}
+			}
 		}
 	case "geminicli":
 		if action == "block" {

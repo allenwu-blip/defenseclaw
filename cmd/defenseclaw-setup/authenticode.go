@@ -359,6 +359,8 @@ func verifyInstalledPEInventoryWith(
 type embeddedAuthenticodeMetadata struct {
 	Present                 bool
 	PublisherMatchesCisco   bool
+	SignerCommonName        string
+	SignerOrganizations     string
 	SignerThumbprintSHA256  string
 	RFC3161TimestampPresent bool
 	NestedSignaturePresent  bool
@@ -782,6 +784,8 @@ func inspectEmbeddedAuthenticodePayload(
 	return embeddedAuthenticodeMetadata{
 		Present:                 true,
 		PublisherMatchesCisco:   publisherMatches,
+		SignerCommonName:        signer.Subject.CommonName,
+		SignerOrganizations:     strings.Join(signer.Subject.Organization, "\x00"),
 		SignerThumbprintSHA256:  hex.EncodeToString(digest[:]),
 		RFC3161TimestampPresent: timestampPresent,
 		NestedSignaturePresent:  nestedPresent,

@@ -1630,8 +1630,8 @@ def mcp_unset_target_for_connector(connector: str) -> str:
             return hermes_config_path()
         case "cursor":
             return "./.cursor/mcp.json"
-        case "windsurf":
-            return connector_config_files("windsurf")[0]
+        case "devin":
+            return os.path.join(connector_home("devin"), "mcp_config.json")
         case "geminicli":
             return (
                 f"{connector_config_files('geminicli')[0]} / "
@@ -1686,8 +1686,8 @@ def friendly_connector_name(connector: str) -> str:
             return "Hermes"
         case "cursor":
             return "Cursor"
-        case "windsurf":
-            return "Devin Desktop — legacy Cascade"
+        case "devin":
+            return "Devin"
         case "geminicli":
             return "Gemini CLI (deprecated; use Antigravity)"
         case "copilot":
@@ -1714,6 +1714,7 @@ def connector_source_label(connector: str, category: str) -> str:
     codex_config = connector_config_files("codex")[0]
     gemini_root = connector_home("geminicli")
     gemini_config = connector_config_files("geminicli")[0]
+    devin_root = connector_home("devin")
     opencode_plugin = connector_config_files("opencode")[0]
     opencode_mcp_sources = [
         "authenticated remote .well-known/opencode (mcp; provenance unverified locally)",
@@ -1745,6 +1746,12 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.agents/skills (active directory to repository root)",
         ),
         ("zeptoclaw", "skills"): ("~/.zeptoclaw/skills", "./.zeptoclaw/skills"),
+        ("devin", "skills"): (
+            os.path.join(devin_root, "skills"),
+            "~/.agents/skills",
+            "./.devin/skills",
+            "./.agents/skills",
+        ),
         ("geminicli", "skills"): (
             os.path.join(gemini_root, "skills"),
             "./.gemini/skills",
@@ -1771,6 +1778,13 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.codex/config.toml ([mcp_servers]; trusted projects only)",
         ),
         ("zeptoclaw", "mcps"): ("~/.zeptoclaw/config.json (mcp.servers)", "./.mcp.json"),
+        ("devin", "mcps"): (
+            os.path.join(devin_root, "mcp_config.json"),
+            "./.devin/mcp_config.json",
+            "./.devin/mcp_config.local.json (read-only)",
+            f"{os.path.join(devin_root, 'config.json')} (legacy read-only)",
+            "./.devin/config*.json (legacy read-only)",
+        ),
         ("geminicli", "mcps"): (
             "./.gemini/settings.json (mcpServers)",
             f"{gemini_config} (mcpServers)",
@@ -1788,6 +1802,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
         ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
+        ("devin", "plugins"): ("unsupported; Devin plugins are closed beta",),
         ("geminicli", "plugins"): (os.path.join(gemini_root, "extensions"),),
         ("codex", "plugins"): (
             "./.agents/plugins/marketplace.json",
@@ -1811,6 +1826,10 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),
         ("geminicli", "config"): (gemini_config, "./.gemini/settings.json"),
+        ("devin", "config"): (
+            "./.devin/hooks.v1.json",
+            os.path.join(devin_root, "config.json"),
+        ),
         ("opencode", "config"): (opencode_plugin,),
         ("omnigent", "config"): ("$OMNIGENT_CONFIG, $OMNIGENT_CONFIG_HOME/config.yaml, or ~/.omnigent/config.yaml; CLI server requires --config",),
     }

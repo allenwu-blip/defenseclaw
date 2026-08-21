@@ -494,7 +494,7 @@ func (c *hookOnlyConnector) ToolInspectionMode() ToolInspectionMode {
 }
 func (c *hookOnlyConnector) SubprocessPolicy() SubprocessPolicy { return SubprocessNone }
 func (c *hookOnlyConnector) HookScriptNames(SetupOpts) []string {
-	// Cursor and Windsurf require connector-specific PowerShell adapters only
+	// Cursor and the retired Windsurf cleanup connector require connector-specific PowerShell adapters only
 	// for their native Windows transports. Unix and macOS continue to use the
 	// existing shell hooks.
 	if runtime.GOOS == "windows" {
@@ -574,6 +574,9 @@ func (c *hookOnlyConnector) HookProfile(opts SetupOpts) HookProfile {
 	}
 	if c.name == "windsurf" {
 		profile.Decode = windsurfProfileDecode
+	}
+	if c.name == "devin" {
+		profile.Decode = devinProfileDecode
 	}
 	// NOTE: hermes needs no Decode override. Its nested `extra` content
 	// is recovered by the generic decoder's ContentEnvelopeKey fallback
@@ -1005,6 +1008,42 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		}
 		caps.Plugins = pluginsAreOpenClawOnly()
 		caps.Agents = unsupportedSurface("Legacy Cascade has no supported agent/subagent asset surface; Devin Local and ACP agents are outside this connector.")
+	case "devin":
+		caps.MCP = SurfaceCapability{
+			Supported:      true,
+			Scope:          "user,workspace",
+			ConfigPaths:    devinMCPPaths(opts),
+			ReadPaths:      devinMCPPaths(opts),
+			WritePaths:     devinMCPWritePaths(opts),
+			InstallTargets: []string{"mcp"},
+			RequiresOptIn:  true,
+			Notes: []string{
+				"Devin CLI v3000.3 and later prefers dedicated mcp_config.json files; embedded MCP entries in config.json remain discovery-only for backward compatibility.",
+				"Cloud Devin, proxy, ACP, team-managed, and dynamically registered MCP sources are outside this native local connector.",
+			},
+		}
+		caps.Skills = SurfaceCapability{
+			Supported:      true,
+			Scope:          "user,workspace",
+			ReadPaths:      devinSkillPaths(opts),
+			WritePaths:     []string{workspacePath(opts, ".agents", "skills")},
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes:          []string{"Discovery covers Devin's user skills directory and the documented .agents/skills and .devin/skills project roots."},
+		}
+		caps.Rules = SurfaceCapability{
+			Supported:      true,
+			Scope:          "user,workspace",
+			ReadPaths:      devinRulePaths(opts),
+			WritePaths:     []string{workspacePath(opts, ".devin", "rules")},
+			InstallTargets: []string{"rule"},
+			RequiresOptIn:  true,
+			Notes:          []string{"Discovery covers AGENTS.md/AGENT.md and Markdown rules under .devin/rules without claiming cloud or managed-policy precedence."},
+		}
+		caps.CodeGuard.Supported = true
+		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
+		caps.Plugins = unsupportedSurface("Devin plugins are closed beta; DefenseClaw makes no general plugin discovery or installation claim.")
+		caps.Agents = unsupportedSurface("Subagents are not installed or managed by this native hook connector.")
 	case "geminicli":
 		geminiHome := geminiConfigHome(opts)
 		geminiSettings := geminiSettingsPaths(opts)
@@ -1709,7 +1748,7 @@ func validatePluginArtifactDestination(path string) error {
 
 // hookCommand returns the command an agent runs for this connector's hook. On
 // Unix it is the bundled .sh path. Most Windows connectors use the native
-// DefenseClaw `hook` subcommand; Cursor and Windsurf use PowerShell adapters
+// DefenseClaw `hook` subcommand; Cursor and retired Cascade cleanup use PowerShell adapters
 // for their documented Windows transports. The same value is used at setup,
 // teardown, and VerifyClean so the JSON/YAML hook removers (which match on the
 // exact command string) recognize the entries DefenseClaw added.
@@ -1980,6 +2019,15 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 				needle,
 				legacyWindsurfWindowsHookCommand(),
 			}) {
+			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+		}
+	}
+	if c.name == "devin" {
+		present, parseErr := devinConfigReferencesHook(path, needle)
+		if parseErr != nil {
+			return fmt.Errorf("%s teardown verification could not parse hook config %s: %w", c.name, path, parseErr)
+		}
+		if present {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
 	}
@@ -2374,6 +2422,8 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			hookScript,
 			filepath.Join(opts.DataDir, "hooks", c.scriptName),
 		)
+	case "devin":
+		err = patchDevinHooks(path, hookScript)
 	case "geminicli":
 		if err = patchGeminiHooks(path, hookScript, geminiOwnedCommands...); err == nil {
 			err = patchGeminiTelemetry(path, opts)
@@ -2575,6 +2625,8 @@ func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string, opts Se
 		return removeJSONHookReferences(path, cursorOwnedHookCommands(opts)...)
 	case "copilot", "openhands":
 		return removeJSONHookReferences(path, hookScript)
+	case "devin":
+		return removeDevinHookReferences(path, hookScript)
 	case "windsurf":
 		return removeJSONHookReferences(path, hookScript, legacyWindsurfWindowsHookCommand())
 	case "antigravity":

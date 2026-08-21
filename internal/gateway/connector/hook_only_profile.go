@@ -111,6 +111,8 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 		if in.Action == "block" {
 			output = map[string]interface{}{"message": reason}
 		}
+	case "devin":
+		output = devinHookOutput(in.Req.HookEventName, in.Action, reason, in.AdditionalContext)
 	case "geminicli":
 		output = geminiCLIHookOutputForProfile(
 			in.Req.HookEventName,
@@ -152,6 +154,7 @@ func hookOnlyProfileRespond(in HookRespondInput) HookRespondOutput {
 	}
 	if output == nil && in.Req.ConnectorName != "hermes" && in.Req.ConnectorName != "geminicli" &&
 		in.Req.ConnectorName != "openhands" &&
+		in.Req.ConnectorName != "devin" &&
 		in.RawAction == "confirm" && in.AdditionalContext != "" && !in.Caps.CanAskNative {
 		output = map[string]interface{}{"systemMessage": in.AdditionalContext}
 	}

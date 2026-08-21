@@ -60,7 +60,7 @@ from tests.helpers import cleanup_app, make_app_context, record_test_setup_agent
 HOOK_ALIAS_CONNECTORS = (
     "hermes",
     "cursor",
-    "windsurf",
+    "devin",
     "copilot",
     "openhands",
     "antigravity",

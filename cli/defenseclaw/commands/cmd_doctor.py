@@ -67,12 +67,12 @@ from defenseclaw.connector_paths import (
     connector_policy_settings,
     copilot_home,
     copilot_settings_resolution,
+    devin_hook_config_path,
     hermes_config_path,
     hermes_profile_unsupported_reason,
     normalize,
     omnigent_config_path,
     rule_paths,
-    windsurf_hook_config_path,
 )
 from defenseclaw.context import AppContext, pass_ctx
 from defenseclaw.cursor_contract import validate_cursor_registration
@@ -1244,7 +1244,7 @@ def _check_hilt_support(cfg, connector: str, r: _DoctorResult) -> None:
             "intentionally does not implement or claim that surface",
             r=r,
         )
-    elif connector in {"hermes", "windsurf", "openhands"}:
+    elif connector in {"hermes", "devin", "geminicli", "openhands"}:
         _emit(
             "warn",
             "Human approval",
@@ -3316,8 +3316,6 @@ def _windows_native_hook_check(
             )
         elif connector == "antigravity":
             config_path = os.path.join(connector_home("antigravity"), "hooks.json")
-        elif connector == "windsurf":
-            config_path = windsurf_hook_config_path()
         else:
             config_path = connector_config_files(connector)[0]
     if install_root is None:
@@ -3576,21 +3574,6 @@ def _check_codex_otel_alignment(cfg, r: _DoctorResult) -> None:
         )
 
 
-def _check_windsurf_hooks(cfg, r: _DoctorResult, *, platform_name: str | None = None) -> None:
-    if (platform_name or os.name) == "nt":
-        _check_windows_native_hooks(cfg, "windsurf", "Legacy Cascade hooks", r)
-    else:
-        _check_hook_health(cfg, "windsurf", r)
-    _emit(
-        "warn",
-        "Cascade Restricted Mode",
-        "workspace state cannot be detected passively; Restricted Mode disables all "
-        "Cascade hooks. Exact 12-event registration does not prove authentic event "
-        "delivery, and zero counters are not activation or certification evidence",
-        r=r,
-    )
-
-
 def _check_hermes_hooks(
     cfg,
     r: _DoctorResult,
@@ -3634,10 +3617,10 @@ def _check_hermes_hooks(
 # Services check above. Each maps to (home-relative fallback path(s), marker
 # substrings). The fallback paths mirror the Go source of truth in
 # ``internal/gateway/connector/hook_only.go`` (hermesConfigPath / cursorHooksPath
-# / windsurfHooksPath / opencodePluginPath); the gateway's
+# / devinHooksPath / opencodePluginPath); the gateway's
 # hook_contract_lock.json is consulted first and these are only the offline
 # fallback. Markers are matched as raw substrings (see _file_references_marker)
-# so the check stays format-agnostic: hermes is YAML, cursor/windsurf
+# so the check stays format-agnostic: hermes is YAML, cursor/devin
 # are JSON, opencode is a flat ``.js`` plugin (existence + substring).
 _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "hermes": (
@@ -3648,9 +3631,9 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         (os.path.join(".cursor", "hooks.json"),),
         ("cursor-hook.sh", "cursor-hook.ps1", "hook --connector cursor", "defenseclaw"),
     ),
-    "windsurf": (
-        (os.path.join(".codeium", "windsurf", "hooks.json"),),
-        ("windsurf-hook.ps1", "windsurf-hook.sh", "hook --connector windsurf", "defenseclaw"),
+    "devin": (
+        (os.path.join(".devin", "hooks.v1.json"),),
+        ("devin-hook.ps1", "devin-hook.sh", "hook --connector devin", "defenseclaw"),
     ),
     "opencode": (
         (os.path.join(".config", "opencode", "plugins", "defenseclaw.js"),),
@@ -3669,7 +3652,8 @@ _HOOK_HEALTH_FALLBACK: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 _HOOK_HEALTH_LABELS = {
     "hermes": "Hermes hooks (fail-open)",
     "cursor": "Cursor hooks",
-    "windsurf": "Legacy Cascade hooks",
+    "devin": "Devin hooks",
+    "geminicli": "Gemini CLI hooks (deprecated)",
     "opencode": "OpenCode hooks",
     "amp": "Amp policy plugin",
     "omnigent": "OmniGent policy",
@@ -3680,8 +3664,8 @@ def _file_references_marker(path: str, markers: tuple[str, ...]) -> bool:
     """Report whether the file at ``path`` contains any ``markers`` substring.
 
     Deliberately format-agnostic — no JSON/YAML parse — because these
-    connectors this serves store hook entries in different shapes (hermes
-    use YAML, JSON, or a flat ``.js`` plugin.
+    connectors this serves store hook entries in different shapes: Hermes uses
+    YAML, Cursor and Devin use JSON, and OpenCode uses a flat ``.js`` plugin.
     Mirrors the Go self-heal guard's ``configFileReferencesHook`` (raw-bytes
     substring match) so doctor and the guard agree on what "the hook is
     installed" means. A missing/unreadable file reports ``False``.
@@ -4948,8 +4932,8 @@ def _check_omnigent_policy_health(cfg, r: _DoctorResult) -> None:
 def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
     """Generic "is this connector's hook installed and reachable?" row.
 
-    Covers active generic-hook connectors that previously got no Services
-    hook row at all, so an operator
+    Covers active generic-hook connectors that previously got no Services hook
+    row at all, so an operator
     could not tell from doctor whether their hooks were installed (D4).
     Resolves the hook file from ``hook_contract_lock.json`` first (what the
     gateway actually wrote), then the static fallback map, and
@@ -4973,8 +4957,12 @@ def _check_hook_health(cfg, connector: str, r: _DoctorResult) -> None:
             # root. Match Setup/discovery instead of silently inspecting the
             # unrelated default home when the lock is unavailable.
             candidates = connector_config_files("opencode")
-        elif connector == "windsurf":
-            candidates = [windsurf_hook_config_path()]
+        elif connector == "devin":
+            project_hook = devin_hook_config_path(_workspace_dir(cfg))
+            if not project_hook:
+                _emit("fail", label, "no pinned workspace for .devin/hooks.v1.json", r=r)
+                return
+            candidates = [project_hook]
         else:
             candidates = [os.path.join(home, rel) for rel in rel_candidates]
     present = [p for p in candidates if os.path.isfile(p)]
@@ -5140,8 +5128,8 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
         _check_claudecode_hooks(cfg, r)
     elif connector == "codex":
         _check_codex_hooks(cfg, r)
-    elif connector == "windsurf":
-        _check_windsurf_hooks(cfg, r)
+    elif connector == "devin":
+        _check_hook_health(cfg, connector, r)
     elif connector == "hermes":
         _check_hermes_hooks(cfg, r)
     elif connector == "zeptoclaw":
@@ -5177,7 +5165,7 @@ _SETUP_READINESS_PRIMARY_LABELS = {
     "codex": "Codex hooks",
     "claudecode": "Claude Code hooks",
     "cursor": "Cursor hooks",
-    "windsurf": "Legacy Cascade hooks",
+    "devin": "Devin hooks",
     "copilot": "Copilot hooks",
     "antigravity": "Antigravity hooks",
     "opencode": "OpenCode hooks",
@@ -5549,7 +5537,7 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "claudecode",
         "hermes",
         "cursor",
-        "windsurf",
+        "devin",
         "copilot",
         "openhands",
         "antigravity",
@@ -8816,6 +8804,7 @@ _CONNECTOR_LABELS = {
     "zeptoclaw": "ZeptoClaw",
     "hermes": "Hermes",
     "cursor": "Cursor",
+    "devin": "Devin",
     "windsurf": "Devin Desktop — legacy Cascade",
     "geminicli": "Gemini CLI (deprecated; use Antigravity)",
     "copilot": "GitHub Copilot CLI",
@@ -9054,16 +9043,7 @@ def _check_connector_inventory(
         more = f" (+{count - 5} more)" if count > 5 else ""
         _emit("pass", "MCP servers", f"{count} configured: {names}{more}", r=r)
     else:
-        if connector == "windsurf":
-            _emit(
-                "skip",
-                "MCP servers",
-                "optional legacy Cascade mcp_config.json is absent or contains no servers; "
-                "MCP inventory does not own or repair hook activation",
-                r=r,
-            )
-        else:
-            _emit("skip", "MCP servers", "no MCP servers registered", r=r)
+        _emit("skip", "MCP servers", "no MCP servers registered", r=r)
 
     # Effective rule pack for this connector (falls back to built-in defaults
     # when no rule_pack_dir is configured). The offline Go loader validates
@@ -9161,18 +9141,20 @@ def _check_hook_contract_lock(
         with open(lock_path, encoding="utf-8") as fh:
             lock = json.load(fh)
     except FileNotFoundError:
-        if connector in {"windsurf", "opencode"}:
-            owner = "legacy Cascade" if connector == "windsurf" else "OpenCode"
-            command = (
-                "defenseclaw setup windsurf --yes --restart"
-                if connector == "windsurf"
-                else "defenseclaw setup opencode --yes"
-            )
-            evidence = (
-                "connector-owned 12-event registration"
-                if connector == "windsurf"
-                else "managed plugin and hook contract lock"
-            )
+        strict_contracts = {
+            "devin": (
+                "Devin",
+                "defenseclaw setup devin --yes --restart",
+                "project hook registration and hook contract lock",
+            ),
+            "opencode": (
+                "OpenCode",
+                "defenseclaw setup opencode --yes",
+                "managed plugin and hook contract lock",
+            ),
+        }
+        if connector in strict_contracts:
+            owner, command, evidence = strict_contracts[connector]
             _emit(
                 "fail",
                 "Hook contract",
@@ -9189,13 +9171,12 @@ def _check_hook_contract_lock(
 
     entry = (lock.get("connectors") or {}).get(connector) or {}
     if not entry:
-        if connector in {"windsurf", "opencode"}:
-            owner = "legacy Cascade" if connector == "windsurf" else "OpenCode"
-            command = (
-                "defenseclaw setup windsurf --yes --restart"
-                if connector == "windsurf"
-                else "defenseclaw setup opencode --yes"
-            )
+        strict_contracts = {
+            "devin": ("Devin", "defenseclaw setup devin --yes --restart"),
+            "opencode": ("OpenCode", "defenseclaw setup opencode --yes"),
+        }
+        if connector in strict_contracts:
+            owner, command = strict_contracts[connector]
             _emit(
                 "fail",
                 "Hook contract",
@@ -9225,7 +9206,6 @@ def _check_hook_contract_lock(
         "claudecode",
         "copilot",
         "hermes",
-        "windsurf",
         "antigravity",
     }:
         native_runtime = _windows_native_hook_check(
@@ -9379,6 +9359,9 @@ _CONNECTOR_RESIDUE_ARTIFACTS: dict[str, tuple[str, ...]] = {
     ),
     "openhands": (
         os.path.join("connector_backups", "openhands", "config.json"),
+    ),
+    "devin": (
+        os.path.join("connector_backups", "devin", "config.json"),
     ),
     "windsurf": (
         os.path.join("connector_backups", "windsurf", "config.json"),

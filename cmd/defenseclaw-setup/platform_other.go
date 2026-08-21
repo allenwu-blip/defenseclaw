@@ -65,9 +65,11 @@ func createExclusiveUnpublishedFile(path string) (*os.File, error) {
 func gatewayAutoStartValueOwned(gatewayPath, value string) (bool, error) {
 	return value == gatewayAutoStartCommand(gatewayPath) || value == legacyGatewayAutoStartCommand(gatewayPath), nil
 }
-func defaultInstallRoot() (string, error) { return "", errors.New("windows-only operation") }
-func defaultDataRoot() (string, error)    { return "", errors.New("windows-only operation") }
-func defaultProfileRoot() (string, error) { return "", errors.New("windows-only operation") }
+func defaultInstallRoot() (string, error)     { return "", errors.New("windows-only operation") }
+func defaultDataRoot() (string, error)        { return "", errors.New("windows-only operation") }
+func defaultProfileRoot() (string, error)     { return "", errors.New("windows-only operation") }
+func defaultDevinConfigDir() (string, error)  { return "", errors.New("windows-only operation") }
+func defaultDevinExecutable() (string, error) { return "", errors.New("windows-only operation") }
 func officialAntigravityConfigHomeForTransaction(dataRoot string) (string, error) {
 	// Setup cannot mutate on non-Windows hosts. Keep host-independent journal
 	// tests deterministic for arbitrary synthetic roots without pretending that

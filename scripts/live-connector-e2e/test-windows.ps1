@@ -29,6 +29,8 @@ $ampHookTest = Join-Path $root 'internal\gateway\amp_hook_test.go'
 $setupMainSource = Join-Path $root 'cmd\defenseclaw-setup\main.go'
 $setupMainTests = Join-Path $root 'cmd\defenseclaw-setup\main_test.go'
 $setupWizardSource = Join-Path $root 'cmd\defenseclaw-setup\wizard_windows.go'
+$devinAdmissionSource = Join-Path $root 'cmd\defenseclaw-setup\devin_admission_windows.go'
+$devinAdmissionTests = Join-Path $root 'cmd\defenseclaw-setup\devin_admission_windows_test.go'
 $mock = Join-Path $PSScriptRoot 'testdata\windows-mock.ps1'
 $ampGoldenRoot = Join-Path $PSScriptRoot 'golden\amp'
 $tempCandidates = [Collections.Generic.List[string]]::new()
@@ -275,52 +277,6 @@ try {
     }
     Assert-True $cursorCompatibilityContentRejected `
         'Cursor compatibility skill-home allowance accepts only the watcher-created empty skills root'
-
-    $windsurfAdapter = "C:\DefenseClaw Data\Kevin O'Brien\hooks\windsurf-hook.ps1"
-    $windsurfPowerShell = "& '" + $windsurfAdapter.Replace("'", "''") + "'"
-    $windsurfEvents = @(
-        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
-        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
-        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
-        'post_setup_worktree'
-    )
-    $windsurfHooks = [ordered]@{}
-    foreach ($eventName in $windsurfEvents) {
-        $windsurfHooks[$eventName] = @(
-            [ordered]@{ powershell = $windsurfPowerShell; show_output = $true }
-        )
-    }
-    $windsurfConfig = [ordered]@{ hooks = $windsurfHooks } | ConvertTo-Json -Depth 8
-    Assert-WindsurfWindowsHookConfig $windsurfConfig $windsurfAdapter 'synthetic Windsurf registration'
-
-    $windsurfFallback = $windsurfConfig | ConvertFrom-Json
-    $windsurfFallback.hooks.pre_read_code[0] |
-        Add-Member -NotePropertyName command -NotePropertyValue 'windsurf-hook.cmd'
-    $rejectedFallback = $false
-    try {
-        Assert-WindsurfWindowsHookConfig `
-            ($windsurfFallback | ConvertTo-Json -Depth 8) `
-            $windsurfAdapter `
-            'synthetic Windsurf command fallback'
-    } catch {
-        $rejectedFallback = $_.Exception.Message -match 'command fallback'
-    }
-    Assert-True $rejectedFallback 'Windsurf validator rejects a command fallback'
-
-    $windsurfWrongShape = $windsurfConfig | ConvertFrom-Json
-    $windsurfWrongShape.hooks.pre_read_code[0].powershell =
-        "powershell.exe -File '$windsurfAdapter'"
-    $rejectedWrongShape = $false
-    try {
-        Assert-WindsurfWindowsHookConfig `
-            ($windsurfWrongShape | ConvertTo-Json -Depth 8) `
-            $windsurfAdapter `
-            'synthetic Windsurf command-shape drift'
-    } catch {
-        $rejectedWrongShape = $_.Exception.Message -match 'exact managed PowerShell handlers'
-    }
-    Assert-True $rejectedWrongShape `
-        'Windsurf validator accepts only the safely quoted call-operator adapter command'
 
     $copilotEvents = @(
         'sessionStart', 'sessionEnd', 'userPromptSubmitted',
@@ -586,8 +542,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     $originalGeminiCLIHome = [Environment]::GetEnvironmentVariable('GEMINI_CLI_HOME')
     $originalGeminiConfigDir = [Environment]::GetEnvironmentVariable('GEMINI_CONFIG_DIR')
     $originalPrivateGeminiHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_GEMINI_CONFIG_HOME')
-    $originalWindsurfUserHome = [Environment]::GetEnvironmentVariable('WINDSURF_USER_HOME')
-    $originalWindsurfHooksPath = [Environment]::GetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH')
     try {
         $resolverRoot = Join-Path $temp 'resolver-root'
         $resolverProfile = Join-Path $resolverRoot 'profile'
@@ -623,14 +577,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         $env:GEMINI_CLI_HOME = $resolverGeminiCLIHome
         $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $resolverGeminiHome
         Remove-Item Env:GEMINI_CONFIG_DIR -ErrorAction SilentlyContinue
-        $knownProfile = [Environment]::GetFolderPath(
-            [Environment+SpecialFolder]::UserProfile
-        )
-        Assert-True (-not [string]::IsNullOrWhiteSpace($knownProfile) -and
-            (Resolve-EffectiveConnectorHome windsurf).Equals(
-                [IO.Path]::GetFullPath($knownProfile),
-                [StringComparison]::OrdinalIgnoreCase
-            )) 'Windsurf effective home follows FOLDERID_Profile instead of ambient USERPROFILE'
         Assert-True ((Resolve-EffectiveConnectorHome codex).Equals(
             [IO.Path]::GetFullPath($resolverCodexHome),
             [StringComparison]::OrdinalIgnoreCase
@@ -657,17 +603,6 @@ private-secret-name = "DefenseClaw must remain redacted"
             $env:GEMINI_CLI_HOME -eq [IO.Path]::GetFullPath($resolverGeminiCLIHome) -and
             $env:DEFENSECLAW_GEMINI_CONFIG_HOME -eq [IO.Path]::GetFullPath($resolverGeminiHome)) `
             'packaged connector home guard preserves exact installer-recorded homes'
-        $expectedWindsurfHome = [IO.Path]::GetFullPath($knownProfile).TrimEnd('\')
-        $expectedWindsurfHooks = Join-Path $expectedWindsurfHome '.codeium\windsurf\hooks.json'
-        Assert-True ([string]::Equals(
-                $env:WINDSURF_USER_HOME,
-                $expectedWindsurfHome,
-                [StringComparison]::OrdinalIgnoreCase
-            ) -and [string]::Equals(
-                $env:WINDSURF_HOOK_CONFIG_PATH,
-                $expectedWindsurfHooks,
-                [StringComparison]::OrdinalIgnoreCase
-            )) 'packaged gateway commands inherit exact FOLDERID_Profile Windsurf custody'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-cursor-home'
         [IO.Directory]::CreateDirectory($env:DEFENSECLAW_CURSOR_CONFIG_HOME) | Out-Null
         $spoofedCursorHomeRejected = $false
@@ -726,8 +661,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         [Environment]::SetEnvironmentVariable(
             'DEFENSECLAW_GEMINI_CONFIG_HOME', $originalPrivateGeminiHome
         )
-        [Environment]::SetEnvironmentVariable('WINDSURF_USER_HOME', $originalWindsurfUserHome)
-        [Environment]::SetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH', $originalWindsurfHooksPath)
     }
     . $nativePathHelpers
     $disjointRoots = @(Assert-WindowsNativePathsDisjoint @(
@@ -1512,6 +1445,8 @@ private-secret-name = "DefenseClaw must remain redacted"
     $setupMainSourceText = [IO.File]::ReadAllText($setupMainSource)
     $setupMainTestsText = [IO.File]::ReadAllText($setupMainTests)
     $setupWizardSourceText = [IO.File]::ReadAllText($setupWizardSource)
+    $devinAdmissionSourceText = [IO.File]::ReadAllText($devinAdmissionSource)
+    $devinAdmissionTestsText = [IO.File]::ReadAllText($devinAdmissionTests)
     $nativeProcessFunction = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WindowsNativeProcess\b.*?(?=\r?\nfunction )'
@@ -1534,9 +1469,11 @@ private-secret-name = "DefenseClaw must remain redacted"
     )
     $requiredContractConnectors = @(
         'amp', 'antigravity', 'claudecode', 'codex', 'copilot',
-        'cursor', 'hermes', 'omnigent', 'opencode', 'windsurf'
+        'cursor', 'hermes', 'omnigent', 'opencode'
     )
-    $excludedContractConnectors = @('geminicli', 'openhands', 'openclaw', 'zeptoclaw')
+    $excludedContractConnectors = @(
+        'devin', 'geminicli', 'openhands', 'openclaw', 'windsurf', 'zeptoclaw'
+    )
     $genericContractConnectors = if ($connectorMatrix.Success) {
         @($connectorMatrix.Groups[1].Value -split '\s*,\s*')
     } else {
@@ -1554,17 +1491,27 @@ private-secret-name = "DefenseClaw must remain redacted"
         $actualContractConnectors.Count -eq $requiredContractConnectors.Count -and
         ($actualContractConnectors | Sort-Object) -join ',' -ceq
             ($requiredContractConnectors | Sort-Object) -join ','
-    ) 'required Windows contract coverage is exactly the ten active native hook connectors'
+    ) 'required Windows contract coverage is exactly the nine deterministic packaged connector lanes'
     Assert-True (@($excludedContractConnectors | Where-Object {
         $actualContractConnectors -ccontains $_
-    }).Count -eq 0) 'required Windows contract coverage excludes retired and unsupported connectors'
+    }).Count -eq 0) 'packaged coverage excludes deprecated or unsupported connectors and Devin, whose signed fixed-path admission is unit/static validated'
+    Assert-True ($devinAdmissionSourceText -match 'const devinPinnedCLIVersion = "3000\.4\.25"' -and
+        $devinAdmissionSourceText -match 'rejectReparseAncestors\(executable\)' -and
+        $devinAdmissionSourceText -match 'verifyEmbeddedAuthenticodeTrust\(executable\)' -and
+        $devinAdmissionSourceText -match 'SignerCommonName == "Exafunction, Inc\."' -and
+        $devinAdmissionSourceText -match 'context\.WithTimeout\(context\.Background\(\), 5\*time\.Second\)' -and
+        $devinAdmissionSourceText -match 'exec\.CommandContext\(ctx, executable, "--version"\)' -and
+        $devinAdmissionTestsText -match 'TestValidateDevinExecutableIdentityRequiresExactFixedPath' -and
+        $devinAdmissionTestsText -match 'TestValidateDevinSignerRequiresExactExafunctionIdentity' -and
+        $devinAdmissionTestsText -match 'TestValidateDevinVersionOutputPins3000425') `
+        'Devin Windows readiness is covered by fixed-path, signed-publisher, exact-version admission checks instead of a synthetic packaged lane'
     $requiredFanInJob = [regex]::Match(
         $nativeWorkflowText,
         '(?ms)^  windows-native-required:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
     ).Value
     Assert-True ($requiredFanInJob -match '(?m)^\s{6}- connector-contract\s*$' -and
         $requiredFanInJob -match '(?m)^\s{6}- omnigent-native-degraded\s*$') `
-        'required Windows aggregate depends on every active connector contract'
+        'required Windows aggregate depends on every deterministic packaged connector contract'
     $invokeHookFunction = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-Hook\b.*?(?=\r?\nfunction )'
@@ -1775,7 +1722,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'wizard automation activates Install and verifies the completion page before Finish'
     Assert-True ($nativeHarnessText -match "Invoke-WizardConfigureLaterAcceptance" -and
         $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'.*?Invoke-WizardConnectorAcceptance.*?'amp' 'action'" -and
-        $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor', 'windsurf'\)\)") `
+        $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor'\)\)") `
         'setup acceptance performs Configure Later, reference mode installs, and the established additive connector wizard lifecycle samples'
     $antigravitySupportedAvailability = [regex]::Match(
         $nativeHarnessText,
@@ -1796,7 +1743,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'copilot = 5',
         'cursor = 6',
         'hermes = 7',
-        'windsurf = 8',
+        'devin = 8',
         'omnigent = 9',
         'opencode = 10'
     )) {
@@ -1835,9 +1782,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         ($wizardChoiceValues -join ',') -ceq ($wizardValidateValues -join ',')) `
         'wizard Go choices, driver indices, and accepted connector values have exact ordered parity'
     Assert-True (($wizardChoiceLabels -join ',') -ceq ($wizardDriverLabels -join ',') -and
-        $wizardChoiceLabels[8] -ceq 'Legacy Cascade' -and
+        $wizardChoiceLabels[8] -ceq 'Devin CLI' -and
         $wizardHarnessText -match 'Get-BoundedComboItemText \$connectorControl \$index') `
-        'wizard driver verifies every rendered label and identifies the Windsurf connector as Legacy Cascade without index drift'
+        'wizard driver verifies every rendered label and identifies canonical Devin without index drift'
     $wizardInstall = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WizardInstall\b.*?(?=\r?\nfunction )'
@@ -1861,8 +1808,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     ).Value
     Assert-True ($wizardHealth -match "(?s)Connector -eq 'amp'.*?Specification\.ConfigPath") `
         'Amp wizard Doctor validation requires the native plugin path rather than the hook runtime executable'
-    Assert-True ($wizardAcceptance -match "C:\\\\Vendor\\\\audit\.ps1") `
-        'Windsurf preservation fixture JSON-escapes its third-party Windows hook path'
     $wizardHookValidation = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Assert-WizardHookRegistration\b.*?(?=\r?\nfunction )'
@@ -1986,7 +1931,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $standardUserCIText -match '-Operation contract -Connector \$Connector' -and
         $standardUserCIText -match '\$arguments \+= @\(''-Connector'', \$Connector\)' -and
         $standardUserCIText -match 'live-connector-e2e\\run-windows\.ps1' -and
-        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode'\)" -and
+        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode'\)" -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_allow.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_block.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\session_start.json') -and
@@ -2233,7 +2178,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupAcceptanceFunction -notmatch '\(@\(\$roster \| Sort-Object\) -join "`0"\)\) \{' -and
         $setupAcceptanceFunction -match 'Assert-NativeConnectorCleanupAuthorityPresent \$dataRoot \$repairedRoster' -and
         $setupAcceptanceFunction -match 'Assert-NativeConnectorBackupMarkersConsumed \$dataRoot' -and
-        $setupAcceptanceFunction -match 'foreach \(\$configuredConnector in @\(''codex'', ''claudecode'', ''amp'', ''copilot'', ''cursor'', ''windsurf'', ''antigravity''\)\)') `
+        $setupAcceptanceFunction -match 'foreach \(\$configuredConnector in @\(''codex'', ''claudecode'', ''amp'', ''copilot'', ''cursor'', ''antigravity''\)\)' -and
+        $setupAcceptanceFunction -match "Get-NativeConnectorBackupMarkers \`$dataRoot 'windsurf'") `
         'packaged Setup preserves and migrates the exact staged connector roster with complete supported cleanup custody'
     Assert-True ($setupAcceptanceFunction -match '\$cachedSetup' -and
         $setupAcceptanceFunction -match 'Join-Path \$cacheRoot ''DefenseClawSetup-x64\.exe''' -and
@@ -2356,12 +2302,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Assert-PackagedConnectorHomes\b.*?(?=\nfunction Get-StableHookRuntimeExecutable\b)'
     ).Value
-    Assert-True ($packagedConnectorHomes -match "Resolve-EffectiveConnectorHome 'windsurf'" -and
-        $packagedConnectorHomes -match "Get-EffectiveConnectorConfigPath 'windsurf'" -and
-        $packagedConnectorHomes -match '\$env:WINDSURF_USER_HOME = \$windsurfUserHome' -and
-        $packagedConnectorHomes -match '\$env:WINDSURF_HOOK_CONFIG_PATH = \$windsurfHooksPath' -and
-        $packagedConnectorHomes -notmatch 'Join-Path \$env:USERPROFILE .*?windsurf') `
-        'packaged direct gateway commands preserve launcher-owned FOLDERID_Profile Windsurf custody'
+    Assert-True ($packagedConnectorHomes -notmatch '(?i)windsurf|cascade') `
+        'packaged connector-home setup exposes no retired Windsurf/Cascade binding'
     $setupOtlpFixture = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Start-SetupAcceptanceOtlpCollector\b.*?(?=\nfunction Stop-SetupAcceptanceOtlpCollector\b)'
@@ -3116,7 +3058,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         '(?s)wizardConnectorChoices = \[\]wizardChoice\{.*?\n\s*\}'
     ).Value
     Assert-True ($wizardConnectorChoices -match 'Google Antigravity.*?antigravity' -and
-        $setupMainSourceText -match 'CONNECTOR=amp\|antigravity\|codex\|claudecode\|copilot\|cursor\|hermes\|omnigent\|opencode\|windsurf\|none' -and
+        $setupMainSourceText -match 'CONNECTOR=amp\|antigravity\|codex\|claudecode\|copilot\|cursor\|devin\|hermes\|omnigent\|opencode\|none' -and
         $setupMainSourceText -notmatch 'Antigravity is not_certified and cannot be selected by public Setup' -and
         $setupMainTestsText -match 'TestParseArgsAllowsPublicAntigravitySetupSelection' -and
         $setupMainTestsText -match 'TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride' -and
@@ -3318,7 +3260,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Hermes setup Doctor contract preserves truthful failed readiness with direct-native pending-reload evidence'
     $hermesSetupContract = [regex]::Match(
         $harnessText,
-        '(?s)function Assert-HermesWindowsHookConfig\b.*?(?=\nfunction Get-WindsurfExpectedEventNames\b)'
+        '(?s)function Assert-HermesWindowsHookConfig\b.*?(?=\nfunction Assert-DoctorHookRegistration\b)'
     ).Value
     Assert-True ($hermesSetupContract -match 'if "hooks_auto_accept" in document:' -and
         $hermesSetupContract -match 'Setup introduced operator-owned hooks_auto_accept' -and
@@ -3336,8 +3278,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         'Cursor contract requires mode-matched action/fail-closed or observe/fail-open posture without unsupported claims'
     Assert-True ($doctorContract -match "'cursor' \{ 'configured file has no DefenseClaw Cursor command entries' \}") `
         'Cursor tamper contract expects exact zero-managed-entry rejection after lock-bound ownership filtering'
-    Assert-True ($harnessText -match "'windsurf' \{ 'Legacy Cascade hooks' \}") `
-        'Windsurf contract uses the scoped Legacy Cascade Doctor label'
     Assert-True ([IO.File]::ReadAllText($openCodeAssertion) -match 'await hooks\.config') `
         'OpenCode contract runs the official config hook before tool hooks'
     Assert-True ($openCodeAssertionText -match '\["allow", "block", "lifecycle", "load"\]' -and
@@ -3397,7 +3337,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($gatewayHookReadiness -match 'Get-StableHookRuntimeExecutable' -and
         $gatewayHookReadiness -match "'copilot' \{ 'preToolUse' \}" -and
         $gatewayHookReadiness -match "'cursor' \{ 'preToolUse' \}" -and
-        $gatewayHookReadiness -match "'windsurf' \{ 'pre_run_command' \}" -and
         $gatewayHookReadiness -match 'Invoke-OpenCodePluginProbe allow' -and
         $readinessTool -ge 0 -and
         $readinessToolDecision -gt $readinessTool) `
@@ -3480,9 +3419,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($harnessText -match 'doctor:windows-hook-tamper' -and
         $harnessText -match 'cannot be resolved' -and
         $harnessText -match 'does not use the native hook runtime' -and
-        $harnessText.Contains('function Get-WindsurfExpectedEventNames') -and
-        $harnessText.Contains('has 0 DefenseClaw handlers for (?<event>[a-z_]+); expected exactly one') -and
-        $harnessText.Contains('@(Get-WindsurfExpectedEventNames) -ccontains') -and
         $harnessText.Contains("'copilot' {") -and
         $harnessText.Contains('"registered hook target cannot be resolved with PATHEXT: $missingGatewayLauncher"') -and
         $harnessText.Contains("Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(1)")) `
@@ -3546,10 +3482,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
         $nativeHarnessText -match '\$openCodePluginDir = Join-Path \$openCodeHome ''plugins''' -and
-        $nativeHarnessText -match '\$officialWindsurfConfig = Join-Path \$realProfile ''\.codeium\\windsurf\\hooks\.json''' -and
-        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome,\s*\$openCodeHome' -and
+        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome,\s*\$openCodeHome, \$geminiCLIHome\s*\)' -and
+        $nativeHarnessText -notmatch '\$officialWindsurfConfig' -and
         $contractInstall -ge 0) `
-        'connector contract uses official active connector homes with disjoint real-override custody'
+        'connector contract keeps active connector homes and legacy Gemini cleanup custody disjoint without a Windsurf target'
     foreach ($homeAssignment in @(
         '$env:CODEX_HOME = $codexHome',
         '$env:CLAUDE_CONFIG_DIR = $claudeHome',

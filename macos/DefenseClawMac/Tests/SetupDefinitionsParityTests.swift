@@ -104,6 +104,7 @@ struct SetupDefinitionsParityTests {
         validatesDiscoveryCLIRanges()
         observabilityNeverEmitsAnUnsupportedConnectorOption()
         includesAmpAcrossSetupSurfaces()
+        includesOnlyCanonicalDevinAcrossSetupAndCatalogSurfaces()
         guardrailDefaultsNeverGuessTheWrongConnector()
         llmDefaultsPreserveTheSelectedProvider()
         llmBuilderDropsStaleRegionalOptions()
@@ -225,6 +226,33 @@ struct SetupDefinitionsParityTests {
             return
         }
         expect(options.contains("amp"), "Amp appears in connector setup choices")
+    }
+
+    private static func includesOnlyCanonicalDevinAcrossSetupAndCatalogSurfaces() {
+        expect(TUIWizards.connectors.contains("devin"), "Devin appears in the native connector picker")
+        expect(TUIWizards.hookConnectors.contains("devin"), "Devin is treated as a hook connector")
+        expect(!TUIWizards.connectors.contains("windsurf"), "legacy Windsurf is not selectable")
+
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceRoot = testsDirectory.deletingLastPathComponent().appendingPathComponent("DefenseClawMac")
+        let scanner = (try? String(
+            contentsOf: sourceRoot.appendingPathComponent("DataLayer/SkillScanner.swift"),
+            encoding: .utf8
+        )) ?? ""
+        expect(
+            scanner.contains("case \"devin\": return [p(\".config\", \"devin\", \"skills\"), p(\".agents\", \"skills\")]"),
+            "native catalog scans Devin user and standardized skills"
+        )
+        expect(
+            scanner.contains("p(\".config\", \"devin\", \"mcp_config.json\")"),
+            "native catalog scans canonical Devin MCP config"
+        )
+        expect(
+            scanner.contains("p(\".config\", \"devin\", \"config.json\")"),
+            "native catalog retains legacy Devin MCP read compatibility"
+        )
+        expect(!scanner.localizedCaseInsensitiveContains("windsurf"),
+               "native catalog has no public Windsurf surface")
     }
 
     private static func guardrailDefaultsNeverGuessTheWrongConnector() {

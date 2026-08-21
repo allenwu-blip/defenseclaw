@@ -1834,18 +1834,18 @@ class ApplyGatewayDefaultsTokenGateTests(unittest.TestCase):
         self.assertEqual(cfg.gateway.token_env, "OPENCLAW_GATEWAY_TOKEN")
 
 
-def test_windsurf_readiness_uses_bound_profile_not_ambient(
+def test_devin_readiness_uses_pinned_workspace_hook_not_ambient_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bound = tmp_path / "bound-profile"
     ambient = tmp_path / "ambient-profile"
-    hooks = bound / ".codeium" / "windsurf" / "hooks.json"
+    workspace = tmp_path / "workspace"
+    hooks = workspace / ".devin" / "hooks.v1.json"
     hooks.parent.mkdir(parents=True)
     hooks.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
     monkeypatch.setattr(Path, "home", lambda: ambient)
 
-    result = _connector_readiness(SimpleNamespace(), "windsurf")
+    cfg = SimpleNamespace(claw=SimpleNamespace(workspace_dir=str(workspace)))
+    result = _connector_readiness(cfg, "devin")
 
     assert result.status == "pass"
 

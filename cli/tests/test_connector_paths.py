@@ -89,7 +89,7 @@ class TestIsKnown:
         assert connector_paths.is_known(None)
 
 
-def test_windsurf_paths_use_explicit_profile_binding_not_ambient_home(
+def test_legacy_windsurf_teardown_paths_use_explicit_profile_binding_not_ambient_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bound = tmp_path / "bound-profile"
@@ -97,15 +97,13 @@ def test_windsurf_paths_use_explicit_profile_binding_not_ambient_home(
     monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
     monkeypatch.setattr(Path, "home", lambda: ambient)
 
-    assert connector_paths.connector_home("windsurf") == str(
+    assert connector_paths.windsurf_config_home() == str(
         bound / ".codeium" / "windsurf"
     )
     assert connector_paths.windsurf_hook_config_path() == str(
         bound / ".codeium" / "windsurf" / "hooks.json"
     )
-    assert connector_paths.connector_config_files("windsurf") == [
-        str(bound / ".codeium" / "windsurf" / "mcp_config.json"),
-    ]
+    assert not connector_paths.is_known("windsurf")
 
 
 def test_gemini_paths_use_private_install_binding_across_every_user_surface(
@@ -604,10 +602,13 @@ class TestClaudeAutoMemory:
 
     def test_new_connector_skill_dirs_are_connector_specific(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        home = tmp_path / "home"
+        devin_config = tmp_path / "devin-config"
+        monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home" / ".hermes"))
         monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(tmp_path / "opencode-custom"))
-        monkeypatch.setenv("WINDSURF_USER_HOME", str(tmp_path / "windsurf-profile"))
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(devin_config))
         assert connector_paths.skill_dirs("hermes") == [
             os.path.join(str(tmp_path / "home"), ".hermes", "skills"),
         ]
@@ -625,24 +626,14 @@ class TestClaudeAutoMemory:
                 "cursor",
                 workspace_dir=str(tmp_path),
             )
-        assert connector_paths.skill_dirs("windsurf") == [
-            os.path.join(
-                str(tmp_path / "windsurf-profile"),
-                ".codeium",
-                "windsurf",
-                "skills",
-            ),
-            os.path.join(str(tmp_path / "windsurf-profile"), ".agents", "skills"),
+        assert connector_paths.skill_dirs("devin") == [
+            str(devin_config / "skills"),
+            str(home / ".agents" / "skills"),
         ]
-        assert connector_paths.skill_dirs("windsurf", workspace_dir=str(tmp_path)) == [
-            os.path.join(
-                str(tmp_path / "windsurf-profile"),
-                ".codeium",
-                "windsurf",
-                "skills",
-            ),
-            os.path.join(str(tmp_path / "windsurf-profile"), ".agents", "skills"),
-            os.path.join(str(tmp_path), ".windsurf", "skills"),
+        assert connector_paths.skill_dirs("devin", workspace_dir=str(tmp_path)) == [
+            str(devin_config / "skills"),
+            str(home / ".agents" / "skills"),
+            os.path.join(str(tmp_path), ".devin", "skills"),
             os.path.join(str(tmp_path), ".agents", "skills"),
         ]
         antigravity = connector_paths.skill_dirs("antigravity", workspace_dir=str(tmp_path))
@@ -1135,7 +1126,7 @@ class TestPluginDirs:
         assert connector_paths.plugin_inventory_dirs("cursor") == [
             os.path.join(str(tmp_path / "home"), ".cursor", "plugins", "local"),
         ]
-        assert connector_paths.plugin_dirs("windsurf") == []
+        assert connector_paths.plugin_dirs("devin") == []
         assert os.path.join(str(tmp_path / "home"), ".gemini", "extensions") in connector_paths.plugin_dirs("geminicli")
         assert os.path.join(str(tmp_path), ".gemini", "extensions") not in connector_paths.plugin_dirs(
             "geminicli",
@@ -1600,56 +1591,54 @@ class TestMCPServers:
             str(workspace / ".cursor" / "rules"),
         ]
 
-    def test_windsurf_mcp_reads_only_persisted_bound_profile(
+    def test_devin_mcp_reads_canonical_and_legacy_files_in_precedence_order(
         self,
         tmp_path,
         monkeypatch,
     ):
-        bound = tmp_path / "bound-profile"
-        ambient = tmp_path / "ambient-profile"
-        monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
-        monkeypatch.setattr(Path, "home", lambda: ambient)
-
-        for profile, name in ((bound, "bound"), (ambient, "ambient")):
-            mcp = profile / ".codeium" / "windsurf" / "mcp_config.json"
-            mcp.parent.mkdir(parents=True)
-            mcp.write_text(
+        config_root = tmp_path / "devin-config"
+        workspace = tmp_path / "workspace"
+        monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(config_root))
+        sources = (
+            (workspace / ".devin" / "mcp_config.local.json", "local"),
+            (workspace / ".devin" / "mcp_config.json", "project"),
+            (config_root / "mcp_config.json", "user"),
+            (workspace / ".devin" / "config.json", "legacy-project"),
+            (config_root / "config.json", "legacy-user"),
+        )
+        for path, name in sources:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
                 json.dumps({"mcpServers": {name: {"command": f"{name}-mcp"}}}),
                 encoding="utf-8",
             )
-        guessed = bound / ".codeium" / "windsurf" / "mcp.json"
-        guessed.write_text(
-            json.dumps({"mcpServers": {"guessed": {"command": "guessed-mcp"}}}),
-            encoding="utf-8",
-        )
 
-        entries = connector_paths.mcp_servers("windsurf")
+        entries = connector_paths.mcp_servers("devin", workspace_dir=str(workspace))
 
         assert [(entry.name, entry.command) for entry in entries] == [
-            ("bound", "bound-mcp")
+            (name, f"{name}-mcp") for _, name in sources
         ]
 
-    def test_windsurf_rule_discovery_covers_non_enterprise_cascade_sources(
+    def test_devin_rule_discovery_covers_documented_sources(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        bound = tmp_path / "bound-profile"
-        repo = tmp_path / "repo"
-        workspace = repo / "packages" / "app"
+        config_root = tmp_path / "devin-config"
+        workspace = tmp_path / "repo"
         nested = workspace / "src" / "feature"
-        (repo / ".git").mkdir(parents=True)
         nested.mkdir(parents=True)
-        monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+        monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(config_root))
 
         expected = [
-            bound / ".codeium" / "windsurf" / "memories" / "global_rules.md",
-            repo / "AGENTS.md",
-            repo / ".devin" / "rules" / "preferred.md",
-            workspace / ".windsurfrules",
-            workspace / ".windsurf" / "rules" / "legacy.md",
+            config_root / "AGENTS.md",
+            config_root / "AGENT.md",
+            workspace / "AGENTS.md",
+            workspace / ".devin" / "global_rules.md",
+            workspace / ".devin" / "rules" / "preferred.md",
             nested / "AgEnTs.Md",
-            nested / ".devin" / "rules" / "nested.md",
+            nested / "AGENT.md",
+            nested / "AGENTS.local.md",
         ]
         for path in expected:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1664,26 +1653,29 @@ class TestMCPServers:
         except OSError:
             linked = None
 
-        discovered = connector_paths.windsurf_rule_files(str(workspace))
+        discovered = connector_paths.devin_rule_files(str(workspace))
 
         assert set(discovered) == {str(path) for path in expected}
         if linked is not None:
             assert str(outside / "AGENTS.md") not in discovered
         assert all("ProgramData" not in path for path in discovered)
 
-    def test_windsurf_rule_discovery_requires_an_explicit_workspace(
+    def test_devin_rule_discovery_without_workspace_reads_only_user_rules(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        bound = tmp_path / "bound-profile"
+        config_root = tmp_path / "devin-config"
         ambient_workspace = tmp_path / "ambient-workspace"
         ambient_workspace.mkdir()
         (ambient_workspace / "AGENTS.md").write_text("ambient\n", encoding="utf-8")
-        monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+        config_root.mkdir()
+        user_rule = config_root / "AGENTS.md"
+        user_rule.write_text("user\n", encoding="utf-8")
+        monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(config_root))
         monkeypatch.chdir(ambient_workspace)
 
-        assert connector_paths.windsurf_rule_files() == []
+        assert connector_paths.devin_rule_files() == [str(user_rule)]
 
     def test_copilot_mcp_reads_ancestors_and_deduplicates_by_priority(
         self,

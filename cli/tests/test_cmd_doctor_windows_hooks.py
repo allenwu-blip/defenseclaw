@@ -478,7 +478,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 "codex": "codex-hooks-v1",
                 "claudecode": "claudecode-hooks-v1",
                 "hermes": "hermes-hooks-v1",
-                "windsurf": "windsurf-hooks-v1",
+                "devin": "devin-hooks-v1",
             }[connector]
         normalized_agent_version = {
             "codex-hooks-v1": "0.124.0",
@@ -488,7 +488,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
             "codex-hooks-v4": "0.145.0",
             "claudecode-hooks-v1": "2.1.154",
             "claudecode-hooks-v2": "2.1.219",
-            "windsurf-hooks-v1": "1.12.41",
+            "devin-hooks-v1": "3000.4.25",
             "hermes-hooks-v1": "0.19.0",
             "antigravity-hooks-v2": "1.1.8",
         }[contract]
@@ -514,32 +514,32 @@ class WindowsHookDoctorTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _windsurf_config(self, *, foreign: bool = False) -> tuple[Path, Path]:
-        adapter = self.data / "hooks" / "windsurf-hook.ps1"
-        adapter.parent.mkdir(parents=True, exist_ok=True)
-        adapter.write_text(
-            "# DefenseClaw Windsurf native Windows hook adapter.\n"
-            "# defenseclaw-managed-hook v6\n",
-            encoding="utf-8",
-        )
-        command = "& '" + str(adapter).replace("'", "''") + "'"
+    def _devin_config(self, *, foreign: bool = False) -> tuple[Path, Path]:
+        runtime = self._runtime()
+        command = f'"{runtime}" hook --connector devin'
         events: dict[str, list[dict[str, object]]] = {}
-        for event in doctor_hooks._WINDSURF_EVENTS:
-            handlers: list[dict[str, object]] = [{"powershell": command, "show_output": True}]
-            if foreign and event == "pre_read_code":
-                handlers.insert(
+        for event in doctor_hooks._DEVIN_EVENTS:
+            groups: list[dict[str, object]] = [
+                {
+                    "matcher": "",
+                    "hooks": [{"type": "command", "command": command, "timeout": 10}],
+                }
+            ]
+            if foreign and event == "PreToolUse":
+                groups.insert(
                     0,
                     {
-                        "powershell": r"& 'C:\Vendor\windsurf-hook.ps1'",
+                        "matcher": "vendor",
+                        "hooks": [{"type": "command", "command": r"C:\Vendor\hook.exe"}],
                         "vendor": {"keep": True},
                     },
                 )
-            events[event] = handlers
-        config = self.profile / ".codeium" / "windsurf" / "hooks.json"
+            events[event] = groups
+        config = self.profile / "AppData" / "Roaming" / "devin" / "config.json"
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text(json.dumps({"hooks": events, "foreign_top_level": {"keep": True}}), encoding="utf-8")
-        self._lock("windsurf", config)
-        return config, adapter
+        self._lock("devin", config)
+        return config, runtime
 
     def _config(
         self,
@@ -847,44 +847,44 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertIn("Windows-native executable", check.detail)
         self.assertIn("entries=28", check.detail)
 
-    def test_healthy_windsurf_powershell_matrix_reports_exact_limitations(self) -> None:
-        config, adapter = self._windsurf_config(foreign=True)
+    def test_healthy_devin_matrix_reports_exact_limitations(self) -> None:
+        config, runtime = self._devin_config(foreign=True)
 
-        check = self._validate("windsurf", config, pathext=".EXE;.CMD;.PS1")
+        check = self._validate("devin", config)
 
         self.assertEqual(check.state, "healthy", check.detail)
-        self.assertEqual(os.path.normcase(check.target), os.path.normcase(str(adapter)))
-        self.assertIn("Windows-native PowerShell", check.detail)
-        self.assertIn("entries=12", check.detail)
-        self.assertIn("exit 2 blocks only five documented pre-hooks", check.detail)
-        self.assertIn("non-2 hook errors fail open", check.detail)
-        self.assertIn("post hooks are non-blocking", check.detail)
-        self.assertIn("Restricted Mode disables hooks", check.detail)
+        self.assertEqual(os.path.normcase(check.target), os.path.normcase(str(runtime)))
+        self.assertIn("Windows-native executable", check.detail)
+        self.assertIn("entries=8", check.detail)
+        self.assertIn("exit 2 blocks supported pre/control events", check.detail)
+        self.assertIn("other hook errors fail open", check.detail)
+        self.assertIn("Restricted Mode disables hooks and agents", check.detail)
+        self.assertIn("native OTLP, proxy, ACP, cloud, and plugins are unclaimed", check.detail)
 
-    def test_windsurf_rejects_command_fallback_and_incomplete_matrix(self) -> None:
+    def test_devin_rejects_duplicate_handler_and_incomplete_matrix(self) -> None:
         for mutation, expected in (
             (
-                lambda document: document["hooks"]["pre_run_command"][0].update(
-                    {"command": r"C:\Vendor\fallback.exe"}
+                lambda document: document["hooks"]["PreToolUse"][0]["hooks"].append(
+                    dict(document["hooks"]["PreToolUse"][0]["hooks"][0])
                 ),
-                "command fallback",
+                "has 2 DefenseClaw handlers",
             ),
             (
-                lambda document: document["hooks"].pop("post_setup_worktree"),
-                "missing post_setup_worktree",
+                lambda document: document["hooks"].pop("SessionEnd"),
+                "missing SessionEnd",
             ),
         ):
             with self.subTest(expected=expected):
-                config, _adapter = self._windsurf_config()
+                config, _runtime = self._devin_config()
                 document = json.loads(config.read_text(encoding="utf-8"))
                 mutation(document)
                 config.write_text(json.dumps(document), encoding="utf-8")
 
-                check = self._validate("windsurf", config, pathext=".EXE;.CMD;.PS1")
+                check = self._validate("devin", config)
 
                 self.assertEqual(check.state, "stale", check.detail)
                 self.assertIn(expected, check.detail)
-                self.assertIn("setup windsurf --yes --restart", check.detail)
+                self.assertIn("setup devin --yes --restart", check.detail)
 
     def test_native_stable_hook_runtime_is_accepted_for_codex_and_claude(self) -> None:
         local_app_data = self.root / "Local AppData"

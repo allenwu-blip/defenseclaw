@@ -218,7 +218,7 @@ func friendlyConnectorName(_ connector: String) -> String {
     case "codex": return "Codex"
     case "hermes": return "Hermes"
     case "cursor": return "Cursor"
-    case "windsurf": return "Windsurf"
+    case "devin": return "Devin"
     case "geminicli": return "Gemini CLI (deprecated; use Antigravity)"
     case "copilot": return "GitHub Copilot CLI"
     case "openhands": return "OpenHands"

@@ -478,6 +478,7 @@ def _validate_install_state(
             "claudecode",
             "copilot",
             "cursor",
+            "devin",
             "geminicli",
             "hermes",
             "omnigent",

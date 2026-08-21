@@ -35,6 +35,8 @@ type State struct {
 	ClaudeConfigDir      string `json:"claude_config_dir,omitempty"`
 	CopilotHome          string `json:"copilot_home,omitempty"`
 	CursorHome           string `json:"cursor_home,omitempty"`
+	DevinConfigDir       string `json:"devin_config_dir,omitempty"`
+	DevinExecutable      string `json:"devin_executable,omitempty"`
 	WindsurfUserHome     string `json:"windsurf_user_home,omitempty"`
 	WindsurfHooksPath    string `json:"windsurf_hooks_path,omitempty"`
 	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
@@ -59,6 +61,8 @@ func (state State) Environment(base []string) []string {
 		"CLAUDE_CONFIG_DIR":                   true,
 		"COPILOT_HOME":                        true,
 		"DEFENSECLAW_CURSOR_CONFIG_HOME":      true,
+		"DEFENSECLAW_DEVIN_CONFIG_HOME":       true,
+		"DEFENSECLAW_DEVIN_EXECUTABLE":        true,
 		"WINDSURF_USER_HOME":                  true,
 		"WINDSURF_HOOK_CONFIG_PATH":           true,
 		"OPENCODE_CONFIG_DIR":                 true,
@@ -93,6 +97,12 @@ func (state State) Environment(base []string) []string {
 	}
 	if state.CursorHome != "" {
 		result = append(result, "DEFENSECLAW_CURSOR_CONFIG_HOME="+state.CursorHome)
+	}
+	if state.DevinConfigDir != "" {
+		result = append(result, "DEFENSECLAW_DEVIN_CONFIG_HOME="+state.DevinConfigDir)
+	}
+	if state.DevinExecutable != "" {
+		result = append(result, "DEFENSECLAW_DEVIN_EXECUTABLE="+state.DevinExecutable)
 	}
 	if state.WindsurfUserHome != "" {
 		result = append(result, "WINDSURF_USER_HOME="+state.WindsurfUserHome)
@@ -201,6 +211,8 @@ func loadAt(executable, installRoot string) (State, error) {
 		state.ClaudeConfigDir,
 		state.CopilotHome,
 		state.CursorHome,
+		state.DevinConfigDir,
+		state.DevinExecutable,
 		state.WindsurfUserHome,
 		state.WindsurfHooksPath,
 		state.AntigravityConfigDir,

@@ -355,7 +355,7 @@ func hasNativeMCPReader(connectorName string) bool {
 		"zeptoclaw",
 		"hermes",
 		"cursor",
-		"windsurf",
+		"devin",
 		"geminicli",
 		"copilot",
 		"openhands",
@@ -404,8 +404,8 @@ func readMCPServersUnderHome(connectorName, home string) [][]config.MCPServerEnt
 		tryFile(config.ReadMCPFromDotMCPJSON, ".mcp.json")
 	case "cursor":
 		tryFile(config.ReadMCPFromDotMCPJSON, ".cursor/mcp.json")
-	case "windsurf":
-		tryFile(config.ReadMCPFromDotMCPJSON, ".codeium/windsurf/mcp_config.json")
+	case "devin":
+		tryFile(config.ReadMCPFromDotMCPJSON, ".config/devin/mcp_config.json")
 	case "copilot":
 		tryFile(config.ReadMCPFromDotMCPJSON, ".config/github-copilot/mcp.json")
 	case "geminicli":

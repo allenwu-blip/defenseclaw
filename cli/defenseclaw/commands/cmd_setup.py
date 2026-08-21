@@ -4076,7 +4076,7 @@ _CONNECTOR_NAMES_FALLBACK = [
     "codex",
     "hermes",
     "cursor",
-    "windsurf",
+    "devin",
     "copilot",
     "openhands",
     "antigravity",
@@ -4184,9 +4184,9 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
-    "windsurf": {
-        "label": "Devin Desktop — legacy Cascade",
-        "description": "legacy Cascade-only hooks + bounded local customization discovery",
+    "devin": {
+        "label": "Devin",
+        "description": "project hooks + documented local MCP, skill, rule, and agent discovery",
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -4305,10 +4305,12 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
             "~/.defenseclaw/hooks/cursor-hook.sh on non-Windows"
         ),
     ),
-    "windsurf": (
-        "Legacy Cascade only: ~/.codeium/windsurf/hooks.json hooks",
-        "Bound-user MCP plus non-enterprise Cascade rules/skills are discovered read-only",
-        "Devin Local/default-agent, cloud, ACP, and managed/ProgramData layers remain unsupported",
+    "devin": (
+        "<workspace>/.devin/hooks.v1.json project hooks",
+        "%APPDATA%\\devin on Windows or ~/.config/devin on macOS/Linux",
+        "Canonical user/project mcp_config.json plus read-only legacy config*.json MCP compatibility",
+        "User and project .devin/.agents skills, rules, and file agents are discovered locally",
+        "Plugins are closed beta and are not claimed; native OTLP is not claimed",
     ),
     "geminicli": (
         "New setup is disabled on every platform; use the Antigravity connector",
@@ -4394,11 +4396,11 @@ def _print_connector_mutation_notice(connector: str, *, switching_from: str | No
         prefix = f"  Switching from {old} first tears down its DefenseClaw integration, then updates {label}"
     click.echo(prefix + ":")
     surfaces = _CONNECTOR_CHANGE_SURFACES.get(connector, ())
-    if connector == "windsurf":
+    if connector == "devin":
         hook_surface = (
-            "~/.defenseclaw/hooks/windsurf-hook.ps1 on Windows"
+            "the protected native defenseclaw-hook.exe boundary on Windows"
             if platform_support.host_os() == "windows"
-            else "~/.defenseclaw/hooks/windsurf-hook.sh on non-Windows"
+            else "~/.defenseclaw/hooks/devin-hook.sh on non-Windows"
         )
         surfaces = (*surfaces, hook_surface)
     for surface in surfaces:
@@ -5015,7 +5017,7 @@ def _hilt_support_note(connector: str) -> str:
             "OmniGent parks request, tool_call, and llm_request policy phases for native ASK approval; "
             "post-phase confirm findings are audited and continue without an approval pause."
         )
-    if connector in {"hermes", "windsurf", "openhands", "opencode"}:
+    if connector in {"hermes", "devin", "openhands", "opencode"}:
         return (
             "This connector can block supported hook events but has no native human approval surface; "
             "confirm falls back explicitly."
@@ -6263,7 +6265,7 @@ def setup_guardrail(
 #   defenseclaw setup claude-code    → observe by default for Claude Code
 #   defenseclaw setup hermes         → observe by default for Hermes
 #   defenseclaw setup cursor         → observe by default for Cursor
-#   defenseclaw setup windsurf       → observe by default for Windsurf
+#   defenseclaw setup devin          → observe by default for Devin
 #   defenseclaw setup copilot        → observe by default for GitHub Copilot CLI
 #   defenseclaw setup openhands      → observe by default for OpenHands
 #   defenseclaw setup antigravity    → observe by default for Antigravity (agy)
@@ -10422,7 +10424,7 @@ def _make_observability_setup_command(connector: str) -> click.Command:
 for _observability_connector in (
     "hermes",
     "cursor",
-    "windsurf",
+    "devin",
     "copilot",
     "openhands",
     "antigravity",
@@ -10478,7 +10480,7 @@ _HOOK_ENFORCED_CONNECTORS = frozenset(
         "claudecode",
         "hermes",
         "cursor",
-        "windsurf",
+        "devin",
         "copilot",
         "openhands",
         "antigravity",

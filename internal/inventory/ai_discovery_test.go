@@ -149,57 +149,48 @@ func TestLoadAISignatures_ContainsRequiredSurfaces(t *testing.T) {
 	for _, sig := range sigs {
 		seen[sig.ID] = true
 	}
-	for _, id := range []string{"codex", "claudecode", "hermes", "cursor", "windsurf", "copilot", "openhands", "antigravity", "opencode", "omnigent", "ai-sdks", "lemonade"} {
+	for _, id := range []string{"codex", "claudecode", "hermes", "cursor", "devin", "copilot", "openhands", "antigravity", "opencode", "omnigent", "ai-sdks", "lemonade"} {
 		if !seen[id] {
 			t.Fatalf("signature %q missing", id)
 		}
 	}
 }
 
-func TestLoadAISignatures_WindsurfIncludesOfficialDevinDesktopRename(t *testing.T) {
+func TestLoadAISignatures_DevinUsesNativeCLIContractOnly(t *testing.T) {
 	sigs, err := LoadAISignatures()
 	if err != nil {
 		t.Fatalf("LoadAISignatures: %v", err)
 	}
 	for _, sig := range sigs {
-		if sig.ID != "windsurf" {
+		if sig.ID == "windsurf" {
+			t.Fatal("retired Windsurf signature remains public")
+		}
+		if sig.ID != "devin" {
 			continue
 		}
-		for field, values := range map[string][]string{
-			"binary_names":      sig.BinaryNames,
-			"process_names":     sig.ProcessNames,
-			"config_paths":      sig.ConfigPaths,
-			"application_names": sig.ApplicationNames,
-			"domain_patterns":   sig.DomainPatterns,
-		} {
-			want := map[string]string{
-				"binary_names":      "Devin.exe",
-				"process_names":     "Devin.exe",
-				"config_paths":      ".devin/rules",
-				"application_names": "Devin Desktop",
-				"domain_patterns":   "devin.ai",
-			}[field]
-			if !slices.Contains(values, want) {
-				t.Errorf("Windsurf %s missing official renamed identity %q: %v", field, want, values)
-			}
+		if sig.Name != "Devin" || sig.Vendor != "Cognition" || sig.SupportedConnector != "devin" {
+			t.Errorf("Devin identity = %q/%q/%q, want canonical native connector", sig.Name, sig.Vendor, sig.SupportedConnector)
 		}
-		if sig.Name != "Devin Desktop (legacy Cascade)" || sig.Vendor != "Cognition" {
-			t.Errorf("Windsurf identity = %q/%q, want legacy Cascade/Cognition", sig.Name, sig.Vendor)
+		if !slices.Equal(sig.BinaryNames, []string{"devin", "devin.exe"}) ||
+			!slices.Equal(sig.ProcessNames, []string{"devin", "devin.exe"}) {
+			t.Errorf("Devin binary/process identity is not CLI-only: %v / %v", sig.BinaryNames, sig.ProcessNames)
 		}
-		if !slices.Equal(sig.MCPPaths, []string{"~/.codeium/windsurf/mcp_config.json"}) {
-			t.Errorf("Windsurf MCP paths = %v, want only documented bound-profile path", sig.MCPPaths)
-		}
-		if len(sig.EnvVarNames) != 0 {
-			t.Errorf("Windsurf env vars = %v, want none for legacy Cascade discovery", sig.EnvVarNames)
-		}
-		for _, want := range []string{"~/.codeium/windsurf/skills", "~/.agents/skills", "AGENTS.md"} {
+		for _, want := range []string{"$APPDATA/devin/config.json", "~/.config/devin/config.json", ".devin/hooks.v1.json", ".devin/rules", ".agents/skills"} {
 			if !slices.Contains(sig.ConfigPaths, want) {
-				t.Errorf("Windsurf config paths missing %q: %v", want, sig.ConfigPaths)
+				t.Errorf("Devin config paths missing %q: %v", want, sig.ConfigPaths)
 			}
+		}
+		for _, want := range []string{"$APPDATA/devin/mcp_config.json", "~/.config/devin/mcp_config.json", ".devin/mcp_config.json"} {
+			if !slices.Contains(sig.MCPPaths, want) {
+				t.Errorf("Devin MCP paths missing %q: %v", want, sig.MCPPaths)
+			}
+		}
+		if len(sig.EnvVarNames) != 0 || len(sig.ApplicationNames) != 0 || len(sig.DomainPatterns) != 0 {
+			t.Errorf("Devin signature claims unsupported cloud/GUI surfaces: env=%v apps=%v domains=%v", sig.EnvVarNames, sig.ApplicationNames, sig.DomainPatterns)
 		}
 		return
 	}
-	t.Fatal("Windsurf signature missing")
+	t.Fatal("Devin signature missing")
 }
 
 func TestLoadAISignatures_LemonadeServerSurface(t *testing.T) {

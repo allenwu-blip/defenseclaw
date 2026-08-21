@@ -483,6 +483,22 @@ func defaultProfileRoot() (string, error) {
 	return winpath.CurrentUserKnownFolderPath(windows.FOLDERID_Profile)
 }
 
+func defaultDevinConfigDir() (string, error) {
+	roaming, err := winpath.CurrentUserKnownFolderPath(windows.FOLDERID_RoamingAppData)
+	if err != nil {
+		return "", fmt.Errorf("resolve RoamingAppData for Devin config: %w", err)
+	}
+	return filepath.Join(roaming, "devin"), nil
+}
+
+func defaultDevinExecutable() (string, error) {
+	local, err := winpath.CurrentUserKnownFolderPath(windows.FOLDERID_LocalAppData)
+	if err != nil {
+		return "", fmt.Errorf("resolve LocalAppData for Devin CLI: %w", err)
+	}
+	return filepath.Join(local, "devin", "cli", "bin", "devin.exe"), nil
+}
+
 func officialAntigravityConfigHomeForTransaction(_ string) (string, error) {
 	// Deliberately ignore DataRoot. Current Antigravity custody is always the
 	// vendor-documented global path under the current Profile Known Folder.

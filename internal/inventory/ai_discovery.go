@@ -2193,12 +2193,10 @@ func (s *ContinuousDiscoveryService) detectEditorExtensions() []AISignal {
 			filepath.Join(home, ".vscode-insiders", "extensions"),
 			filepath.Join(home, ".vscodium", "extensions"),
 			filepath.Join(home, ".cursor", "extensions"),
-			filepath.Join(home, ".windsurf", "extensions"),
 			filepath.Join(home, "Library", "Application Support", "Code", "User", "globalStorage"),
 			filepath.Join(home, "Library", "Application Support", "Code - Insiders", "User", "globalStorage"),
 			filepath.Join(home, "Library", "Application Support", "VSCodium", "User", "globalStorage"),
 			filepath.Join(home, "Library", "Application Support", "Cursor", "User", "globalStorage"),
-			filepath.Join(home, "Library", "Application Support", "Windsurf", "User", "globalStorage"),
 		)
 		for _, pattern := range []string{
 			filepath.Join(home, "Library", "Application Support", "JetBrains", "*", "plugins"),

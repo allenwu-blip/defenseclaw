@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -144,7 +144,7 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     if ($ConnectorName -eq 'amp') {
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
@@ -153,15 +153,6 @@ function Resolve-EffectiveConnectorHome(
         return [IO.Path]::GetFullPath(
             (Join-Path $env:USERPROFILE '.config\amp')
         ).TrimEnd('\')
-    }
-    if ($ConnectorName -eq 'windsurf') {
-        $profile = [Environment]::GetFolderPath(
-            [Environment+SpecialFolder]::UserProfile
-        )
-        if ([string]::IsNullOrWhiteSpace($profile)) {
-            throw 'Windows user profile known folder is unavailable for the Windsurf profile-root binding'
-        }
-        return [IO.Path]::GetFullPath($profile).TrimEnd('\')
     }
     if ($ConnectorName -eq 'geminicli') {
         # Gemini CLI treats GEMINI_CLI_HOME as a home root and appends .gemini.
@@ -240,11 +231,8 @@ function Resolve-EffectiveConnectorHome(
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
-    if ($ConnectorName -eq 'windsurf') {
-        return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) '.codeium\windsurf\hooks.json'
-    }
     $fileName = switch ($ConnectorName) {
         'codex' { 'managed_config.toml' }
         'claudecode' { 'settings.json' }
@@ -263,8 +251,6 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $codexHome = [Environment]::GetEnvironmentVariable('CODEX_HOME')
     $claudeHome = [Environment]::GetEnvironmentVariable('CLAUDE_CONFIG_DIR')
     $ampHome = Join-Path $ProfileHome '.config\amp'
-    $windsurfUserHome = Resolve-EffectiveConnectorHome 'windsurf'
-    $windsurfHooksPath = Get-EffectiveConnectorConfigPath 'windsurf'
     $copilotHome = [Environment]::GetEnvironmentVariable('COPILOT_HOME')
     if ([string]::IsNullOrWhiteSpace($copilotHome)) {
         $copilotHome = Join-Path $Root 'copilot-home'
@@ -361,12 +347,6 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     if (-not (Test-Path -LiteralPath $ampHome -PathType Container)) {
         throw "packaged Amp home is not a directory: $ampHome"
     }
-    # Direct contract-harness gateway invocations must carry the same
-    # FOLDERID_Profile custody captured by Setup and supplied by the native
-    # startup launcher. These are existing internal install-state bindings,
-    # never public Windsurf configuration overrides.
-    $env:WINDSURF_USER_HOME = $windsurfUserHome
-    $env:WINDSURF_HOOK_CONFIG_PATH = $windsurfHooksPath
 }
 
 function Get-StableHookRuntimeExecutable {
@@ -737,7 +717,7 @@ function Assert-AuthenticatedAntigravityExistingInstallState(
     }
     if ([string]$State.connector -cnotin @(
             'none', 'codex', 'claudecode', 'copilot', 'cursor', 'hermes', 'antigravity',
-            'windsurf', 'opencode', 'omnigent'
+            'devin', 'opencode', 'omnigent'
         ) -or [string]$State.mode -cnotin @('observe', 'action')) {
         throw "$Context has an invalid preexisting connector/mode identity"
     }
@@ -4687,7 +4667,6 @@ function Get-RegisteredHookEvent([string]$EventName, [string]$PayloadPath) {
         return $registeredEvent
     }
     if ($Connector -eq 'cursor' -and $payloadEvent -ceq 'PreToolUse') { return 'preToolUse' }
-    if ($Connector -eq 'windsurf' -and $payloadEvent -ceq 'PreToolUse') { return 'pre_run_command' }
     if ($Connector -eq 'opencode' -and $payloadEvent -ceq 'PreToolUse') { return 'tool.execute.before' }
     return $payloadEvent
 }
@@ -4922,7 +4901,6 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         $toolEvent = switch ($Connector) {
             'copilot' { 'preToolUse' }
             'cursor' { 'preToolUse' }
-            'windsurf' { 'pre_run_command' }
             'geminicli' { 'BeforeTool' }
             default { 'PreToolUse' }
         }
@@ -5171,7 +5149,6 @@ function Invoke-Setup([string]$Mode) {
         'amp' { 'amp' }
         'cursor' { 'cursor' }
         'hermes' { 'hermes' }
-        'windsurf' { 'windsurf' }
         'antigravity' { 'antigravity' }
         'geminicli' { 'geminicli' }
         'opencode' { 'opencode' }
@@ -5209,7 +5186,6 @@ function Get-ConnectorHookLabel {
         'copilot' { 'Copilot hooks' }
         'cursor' { 'Cursor hooks' }
         'hermes' { 'Hermes hooks (fail-open)' }
-        'windsurf' { 'Legacy Cascade hooks' }
         'antigravity' { 'Antigravity hooks' }
         'geminicli' { 'Gemini CLI hooks' }
         'opencode' { 'OpenCode hooks' }
@@ -5224,7 +5200,6 @@ function Get-ConnectorRepairSubcommand {
         'copilot' { 'copilot' }
         'cursor' { 'cursor' }
         'hermes' { 'hermes' }
-        'windsurf' { 'windsurf' }
         'antigravity' { 'antigravity' }
         'geminicli' { 'geminicli' }
     }
@@ -5236,7 +5211,6 @@ function Get-ConnectorToolName {
         'copilot' { 'powershell' }
         'cursor' { 'run_terminal_cmd' }
         'hermes' { 'execute_command' }
-        'windsurf' { 'run_command' }
         'geminicli' { 'RunShellCommand' }
         default { 'shell' }
     }
@@ -5782,57 +5756,6 @@ print(json.dumps({
     }
 }
 
-function Get-WindsurfExpectedEventNames {
-    return @(
-        'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
-        'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
-        'pre_user_prompt', 'post_cascade_response', 'post_cascade_response_with_transcript',
-        'post_setup_worktree'
-    )
-}
-
-function Assert-WindsurfWindowsHookConfig(
-    [string]$Config,
-    [string]$ExpectedAdapter,
-    [string]$Context
-) {
-    try { $settings = $Config | ConvertFrom-Json -ErrorAction Stop }
-    catch { throw "$Context is not valid JSON: $($_.Exception.Message)" }
-
-    $expectedEvents = @(Get-WindsurfExpectedEventNames)
-    if ($null -eq $settings.hooks) { throw "$Context does not contain a hooks object" }
-    $actualEvents = @($settings.hooks.PSObject.Properties.Name)
-    $actualEventKey = (@($actualEvents | Sort-Object) -join "`0")
-    $expectedEventKey = (@($expectedEvents | Sort-Object) -join "`0")
-    if ($actualEventKey -cne $expectedEventKey) {
-        throw "$Context registered an unexpected event matrix: $($actualEvents -join ', ')"
-    }
-
-    $expectedPowerShell = "& '" + $ExpectedAdapter.Replace("'", "''") + "'"
-    foreach ($eventName in $expectedEvents) {
-        $handlers = @($settings.hooks.$eventName)
-        $managed = @(
-            $handlers |
-                Where-Object {
-                    [string]::Equals(
-                        [string]$_.powershell,
-                        $expectedPowerShell,
-                        [StringComparison]::Ordinal
-                    )
-                }
-        )
-        if ($managed.Count -ne 1) {
-            throw "$Context registered $($managed.Count) exact managed PowerShell handlers for $eventName, expected one"
-        }
-        if ($null -ne $managed[0].PSObject.Properties['command']) {
-            throw "$Context registered a command fallback for $eventName"
-        }
-        if ($managed[0].show_output -ne $true) {
-            throw "$Context did not enable show_output for $eventName"
-        }
-    }
-}
-
 function Assert-DoctorHookRegistration {
     $config = Get-EffectiveConnectorConfigPath $Connector
     $doctor = Invoke-Tool 'defenseclaw' @('doctor', '--json-output') @(0, 1)
@@ -5870,8 +5793,6 @@ function Assert-DoctorHookRegistration {
             $config
         } elseif ($Connector -eq 'cursor') {
             Join-Path $env:DEFENSECLAW_HOME 'hooks\cursor-hook.ps1'
-        } elseif ($Connector -eq 'windsurf') {
-            Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
         } else {
             Get-StableHookRuntimeExecutable
         }
@@ -5924,8 +5845,6 @@ function Assert-DoctorHookRegistration {
         }
     } elseif ($Connector -eq 'hermes') {
         Assert-HermesWindowsHookConfig $config 'setup-created Hermes registration'
-    } elseif ($Connector -eq 'windsurf') {
-        Assert-WindsurfWindowsHookConfig $registration $expectedHookExecutable 'setup-created Windsurf registration'
     } elseif ($Connector -eq 'antigravity') {
         Assert-AntigravityWindowsHookCommands $registration
     } elseif ($Connector -eq 'geminicli') {
@@ -6018,7 +5937,6 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\cursor'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\hermes'),
-        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\windsurf'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\antigravity'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\geminicli'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\opencode'),
@@ -6279,7 +6197,6 @@ function New-DangerousCommandPayload(
         'copilot' { 'preToolUse' }
         'cursor' { 'preToolUse' }
         'hermes' { 'pre_tool_call' }
-        'windsurf' { 'pre_run_command' }
         'geminicli' { 'BeforeTool' }
         'opencode' { 'tool.execute.before' }
         default { 'PreToolUse' }
@@ -6692,10 +6609,6 @@ function Assert-DoctorWindowsHookRegistration {
         }
         Assert-AmpScopedTokenPluginContract $config 'Amp policy plugin'
         Assert-AmpPluginPrivateACL $configPath
-    } elseif ($Connector -eq 'windsurf') {
-        Assert-WindsurfWindowsHookConfig $config `
-            (Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1') `
-            'Windsurf setup'
     } else {
         Assert-CopilotSynchronousWindowsHookConfig $config "$Connector setup"
     }
@@ -6710,7 +6623,6 @@ function Assert-DoctorWindowsHookRegistration {
         'copilot' { 'healthy Windows-native Copilot PowerShell registration' }
         'cursor' { 'configured runtime=' }
         'hermes' { 'on-disk Windows-native executable registration is valid' }
-        'windsurf' { 'healthy Windows-native PowerShell registration' }
         'geminicli' { 'reachable at' }
         default { 'healthy Windows-native executable registration' }
     }
@@ -6723,8 +6635,6 @@ function Assert-DoctorWindowsHookRegistration {
         $configPath
     } elseif ($Connector -eq 'cursor') {
         $cursorAdapter
-    } elseif ($Connector -eq 'windsurf') {
-        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
     } else {
         Get-StableHookRuntimeExecutable
     }
@@ -6790,12 +6700,6 @@ function Assert-DoctorWindowsHookRegistration {
             }
         }
         $tamperedConfig = $cursorSettings | ConvertTo-Json -Depth 12
-    } elseif ($Connector -eq 'windsurf') {
-        $tamperedConfig = [regex]::Replace(
-            $config,
-            '(?i)windsurf-hook\.ps1',
-            'windsurf-hook-tampered.ps1'
-        )
     } elseif ($Connector -eq 'antigravity') {
         $encoded = [regex]::Match($config, '(?i)-EncodedCommand\s+(?<value>[A-Za-z0-9+/=]+)')
         if (-not $encoded.Success) { throw 'Antigravity tamper contract found no EncodedCommand' }
@@ -6831,20 +6735,9 @@ function Assert-DoctorWindowsHookRegistration {
             }
             'cursor' { 'configured file has no DefenseClaw Cursor command entries' }
             'hermes' { 'does not use the direct native DefenseClaw executable' }
-            'windsurf' { 'cannot be resolved' }
             'antigravity' { "does not use DefenseClaw's hook runtime" }
         }
         $tamperDetailMatched = $tamperedCheck.detail -match [regex]::Escape($expectedTamperDetail)
-        if ($Connector -eq 'windsurf') {
-            $zeroHandler = [regex]::Match(
-                [string]$tamperedCheck.detail,
-                'has 0 DefenseClaw handlers for (?<event>[a-z_]+); expected exactly one'
-            )
-            if ($zeroHandler.Success -and
-                @(Get-WindsurfExpectedEventNames) -ccontains $zeroHandler.Groups['event'].Value) {
-                $tamperDetailMatched = $true
-            }
-        }
         if ($tamperedCheck.status -ne 'fail' -or -not $tamperDetailMatched) {
             throw "Doctor did not reject the tampered $Connector hook command: $($tamperedCheck.status) $($tamperedCheck.detail)"
         }
@@ -8108,7 +8001,7 @@ function Invoke-ProtectedCopilotCleanup([switch]$PreserveRunInputs) {
 }
 
 function Install-Agent {
-    if ($Connector -in @('hermes', 'windsurf')) {
+    if ($Connector -eq 'hermes') {
         throw (
             "$Connector official-client E2E requires a separately prepared native Windows " +
             'client runner; this deterministic harness does not substitute a shell or compatibility workaround.'

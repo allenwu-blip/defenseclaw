@@ -24,7 +24,7 @@ TEN_CONNECTORS = (
     "codex",
     "claudecode",
     "cursor",
-    "windsurf",
+    "devin",
     "copilot",
     "antigravity",
     "opencode",
@@ -57,7 +57,13 @@ def _config(data_dir: Path) -> SimpleNamespace:
 
 
 def _entry(connector: str, root: Path) -> dict[str, object]:
-    raw_version = "1.18.10" if connector == "opencode" else ""
+    raw_version = (
+        "1.18.10"
+        if connector == "opencode"
+        else "3000.4.25"
+        if connector == "devin"
+        else ""
+    )
     compatibility = resolve_connector_contract(connector, raw_version)
     assert compatibility.contract is not None
     config_path = root / f"{connector}-config.json"
@@ -93,7 +99,7 @@ def test_contract_lock_accepts_exact_eleven(connector: str, tmp_path: Path) -> N
     assert connector_lock_contract_invariant(connector, _entry(connector, tmp_path)) == ""
 
 
-@pytest.mark.parametrize("connector", ("antigravity", "windsurf"))
+@pytest.mark.parametrize("connector", ("antigravity",))
 def test_contract_lock_accepts_go_omitted_unversioned_fields(connector: str, tmp_path: Path) -> None:
     entry = _entry(connector, tmp_path)
     entry.pop("raw_agent_version")
@@ -224,7 +230,7 @@ def test_real_doctor_dispatch_exercises_exact_eleven(monkeypatch, tmp_path: Path
 
     assert observed_labels == expected_labels
     expected_native_calls = (
-        ["codex", "claudecode", "windsurf", "copilot", "antigravity", "hermes"]
+        ["codex", "claudecode", "copilot", "antigravity", "hermes"]
         if agent_selection.os.name == "nt"
         else []
     )
@@ -476,7 +482,7 @@ def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, t
     assert readiness.detail == "configured=closed; effective=open"
 
 
-@pytest.mark.parametrize("connector", ("codex", "claudecode", "windsurf", "amp", "opencode"))
+@pytest.mark.parametrize("connector", ("codex", "claudecode", "devin", "amp", "opencode"))
 def test_observe_readiness_compares_lock_to_mode_aware_desired_fail_mode(
     monkeypatch,
     tmp_path: Path,

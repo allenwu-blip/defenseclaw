@@ -71,7 +71,6 @@ from defenseclaw.commands.cmd_doctor import (
     _check_omnigent_policy_health,
     _check_plugin_registry_required,
     _check_scan_coverage,
-    _check_windsurf_hooks,
     _connector_enabled,
     _doctor_active_connectors,
     _doctor_label_suffix,
@@ -88,9 +87,7 @@ from defenseclaw.commands.cmd_doctor import (
     _plugin_registry_required_offenders,
     _probe_cursor_windows_runtime,
     _run_cursor_windows_runtime_process,
-    _windows_native_hook_check,
 )
-from defenseclaw.doctor_hooks import WindowsHookCheck
 from defenseclaw.file_permissions import (
     UNSAFE_PATH_CHANGED,
     UNSAFE_PATH_SYMLINK_OR_REPARSE,
@@ -327,16 +324,15 @@ class TestCheckConnectorInventory(unittest.TestCase):
         self.assertIn("7 configured", mcp_check["detail"])
         self.assertIn("(+2 more)", mcp_check["detail"])
 
-    def test_windsurf_missing_optional_mcp_is_not_hook_failure(self) -> None:
+    def test_devin_missing_optional_mcp_is_not_hook_failure(self) -> None:
         cfg = self._cfg(skill_dirs=[], plugin_dirs=[], servers=[])
         r = _DoctorResult()
 
-        _check_connector_inventory(cfg, "windsurf", r)
+        _check_connector_inventory(cfg, "devin", r)
 
         mcp_check = next(c for c in r.checks if c["label"] == "MCP servers")
         self.assertEqual(mcp_check["status"], "skip")
-        self.assertIn("optional legacy Cascade mcp_config.json", mcp_check["detail"])
-        self.assertIn("does not own or repair hook activation", mcp_check["detail"])
+        self.assertEqual(mcp_check["detail"], "no MCP servers registered")
 
     def test_paths_swallow_exception_as_warn(self) -> None:
         cfg = MagicMock()
@@ -1090,12 +1086,12 @@ class TestCheckHookContractLock(unittest.TestCase):
         self.assertEqual(check["status"], "skip")
         self.assertEqual(check["label"], "Hook contract")
 
-    def test_active_windsurf_without_lock_fails_with_setup_owner(self) -> None:
+    def test_active_devin_without_lock_fails_with_setup_owner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             r = _DoctorResult()
             _check_hook_contract_lock(
                 self._cfg(tmp),
-                "windsurf",
+                "devin",
                 r,
                 platform_name="linux",
             )
@@ -1103,7 +1099,7 @@ class TestCheckHookContractLock(unittest.TestCase):
         check = r.checks[-1]
         self.assertEqual(check["status"], "fail")
         self.assertIn("no hook_contract_lock.json", check["detail"])
-        self.assertIn("setup windsurf", check["detail"])
+        self.assertIn("setup devin", check["detail"])
 
     def test_active_opencode_without_lock_fails_with_setup_owner(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1279,49 +1275,6 @@ class TestCheckHookContractLock(unittest.TestCase):
             check = r.checks[-1]
             self.assertEqual(check["status"], "fail")
             self.assertIn("drift", check["detail"])
-
-
-class TestWindsurfDoctorContract(unittest.TestCase):
-    def test_services_explicitly_reports_restricted_mode_and_noncertification(self) -> None:
-        cfg = MagicMock()
-        cfg.data_dir = tempfile.gettempdir()
-        r = _DoctorResult()
-
-        _check_windsurf_hooks(cfg, r, platform_name="linux")
-
-        restricted = next(c for c in r.checks if c["label"] == "Cascade Restricted Mode")
-        self.assertEqual(restricted["status"], "warn")
-        self.assertIn("disables all Cascade hooks", restricted["detail"])
-        self.assertIn("zero counters are not activation or certification", restricted["detail"])
-
-    @patch("defenseclaw.commands.cmd_doctor.validate_windows_hook_registration")
-    def test_lockless_windows_check_uses_bound_hooks_not_optional_mcp(
-        self,
-        validator,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            bound = os.path.join(tmp, "windsurf-profile")
-            expected = os.path.join(bound, ".codeium", "windsurf", "hooks.json")
-            validator.return_value = WindowsHookCheck("healthy", "ok", "", "", "")
-            cfg = MagicMock()
-            cfg.data_dir = os.path.join(tmp, "data")
-            with patch.dict(
-                os.environ,
-                {
-                    "WINDSURF_USER_HOME": bound,
-                    "WINDSURF_HOOK_CONFIG_PATH": expected,
-                },
-            ):
-                _windows_native_hook_check(
-                    cfg,
-                    "windsurf",
-                    install_root=os.path.join(tmp, "install"),
-                    search_path="",
-                    pathext=".EXE",
-                )
-
-        self.assertEqual(validator.call_args.kwargs["config_path"], expected)
-        self.assertNotIn("mcp_config.json", validator.call_args.kwargs["config_path"])
 
 
 class TestCheckScanCoverage(unittest.TestCase):
@@ -3084,7 +3037,7 @@ class TestCheckHookHealth(unittest.TestCase):
         for connector, label in (
             ("hermes", "Hermes hooks (fail-open)"),
             ("cursor", "Cursor hooks"),
-            ("windsurf", "Legacy Cascade hooks"),
+            ("devin", "Devin hooks"),
             ("opencode", "OpenCode hooks"),
         ):
             with tempfile.TemporaryDirectory() as tmp:

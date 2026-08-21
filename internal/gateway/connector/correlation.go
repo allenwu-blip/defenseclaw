@@ -42,6 +42,7 @@ const (
 	CorrelationProfileCodexV2       CorrelationProfileVersion = "codex-correlation-v2"
 	CorrelationProfileHermesV1      CorrelationProfileVersion = "hermes-correlation-v1"
 	CorrelationProfileCursorV1      CorrelationProfileVersion = "cursor-correlation-v1"
+	CorrelationProfileDevinV1       CorrelationProfileVersion = "devin-correlation-v1"
 	CorrelationProfileWindsurfV1    CorrelationProfileVersion = "windsurf-correlation-v1"
 	CorrelationProfileGeminiCLIV1   CorrelationProfileVersion = "geminicli-correlation-v1"
 	CorrelationProfileCopilotV1     CorrelationProfileVersion = "copilot-correlation-v1"
@@ -722,6 +723,12 @@ func CorrelationSpecForConnector(name, hookContractID string) (CorrelationSpec, 
 			reported(CorrelationTargetSourceSeq, ns, "trajectory_step", "step_index", "stepIndex"),
 		)
 		return makeSpec(CorrelationProfileWindsurfV1, "windsurf-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessPartial, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, CorrelationCompletenessAbsent, "delegation and per-tool IDs are not consistently reported"))
+	case "devin":
+		bindings := appendBindings(base,
+			reported(CorrelationTargetSession, ns, "session", "session_id", "sessionId"),
+			reported(CorrelationTargetTurn, ns, "prompt", "prompt_id", "promptId"),
+		)
+		return makeSpec(CorrelationProfileDevinV1, "devin-hooks-v1", []CorrelationSurface{CorrelationSurfaceHook}, bindings, nil, []CorrelationInferenceRule{CorrelationInferenceUniquePendingTool}, complete(CorrelationCompletenessComplete, CorrelationCompletenessComplete, CorrelationCompletenessAbsent, CorrelationCompletenessPartial, CorrelationCompletenessAbsent, CorrelationCompletenessAbsent, "Devin publishes session and per-prompt IDs but no stable per-tool invocation or native OTLP identity"))
 	case "geminicli":
 		bindings := appendBindings(base,
 			reported(CorrelationTargetSession, ns, "session", "sessionId", "conversation_id", "conversationId"),

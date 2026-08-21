@@ -83,33 +83,33 @@ def test_copilot_packaged_inventory_uses_documented_version_probe() -> None:
     }
 
 
-def test_windsurf_windows_version_reads_trusted_desktop_metadata_without_launch(monkeypatch) -> None:
-    calls: list[tuple[str, bool]] = []
+def test_devin_windows_version_probes_exact_cli_for_supported_version(monkeypatch) -> None:
+    calls: list[tuple[str, tuple[str, ...], bool]] = []
     monkeypatch.setattr(ad, "_is_windows_host", lambda: True)
     monkeypatch.setattr(
         ad,
-        "_windows_file_version_for_binary",
-        lambda path, **kwargs: (
-            calls.append((path, kwargs["require_trusted_binary_paths"])) or "3.6.22",
+        "_version_for_binary",
+        lambda path, args, **kwargs: (
+            calls.append((path, args, kwargs["require_trusted_binary_paths"]))
+            or "3000.4.25",
             "",
         ),
     )
-    monkeypatch.setattr(
-        ad,
-        "_version_for_binary",
-        lambda *_args, **_kwargs: pytest.fail("GUI version discovery must not launch Devin Desktop"),
-    )
 
     result = ad._version_for_agent_binary(
-        "windsurf",
-        r"C:\Users\tester\AppData\Local\Programs\Devin\Devin.exe",
+        "devin",
+        r"C:\Users\tester\AppData\Local\devin\cli\bin\devin.exe",
         ("--version",),
         require_trusted_binary_paths=False,
     )
 
-    assert result == ("3.6.22", "")
+    assert result == ("3000.4.25", "")
     assert calls == [
-        (r"C:\Users\tester\AppData\Local\Programs\Devin\Devin.exe", True),
+        (
+            r"C:\Users\tester\AppData\Local\devin\cli\bin\devin.exe",
+            ("--version",),
+            True,
+        ),
     ]
 
 
@@ -501,40 +501,41 @@ def test_empty_home_has_no_config_only_false_positives(monkeypatch, tmp_path):
     assert {name for name, signal in signals.items() if signal.installed} == set()
 
 
-def test_windsurf_discovery_uses_bound_profile_not_ambient(
+def test_devin_discovery_uses_pinned_workspace_hook_not_ambient_home(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    bound = tmp_path / "bound-profile"
     ambient = tmp_path / "ambient-profile"
-    hooks = bound / ".codeium" / "windsurf" / "hooks.json"
+    workspace = tmp_path / "workspace"
+    hooks = workspace / ".devin" / "hooks.v1.json"
     hooks.parent.mkdir(parents=True)
     hooks.write_text("{}\n", encoding="utf-8")
     _pin_home(monkeypatch, ambient)
-    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+    monkeypatch.chdir(workspace)
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
 
-    signal = ad._scan_agent("windsurf")
+    signal = ad._scan_agent("devin")
 
     assert signal.configured is True
     assert signal.config_path == str(hooks)
     assert str(ambient) not in signal.config_path
 
 
-def test_windsurf_optional_mcp_file_is_not_hook_configuration_evidence(
+def test_devin_canonical_user_mcp_file_is_configuration_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    bound = tmp_path / "bound-profile"
-    mcp = bound / ".codeium" / "windsurf" / "mcp_config.json"
+    roaming = tmp_path / "roaming"
+    mcp = roaming / "devin" / "mcp_config.json"
     mcp.parent.mkdir(parents=True)
     mcp.write_text('{"mcpServers": {}}\n', encoding="utf-8")
     _pin_home(monkeypatch, tmp_path / "ambient-profile")
-    monkeypatch.setenv("WINDSURF_USER_HOME", str(bound))
+    monkeypatch.setenv("APPDATA", str(roaming))
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
 
-    signal = ad._scan_agent("windsurf")
+    signal = ad._scan_agent("devin")
 
-    assert signal.configured is False
-    assert signal.config_path == ""
+    assert signal.configured is True
+    assert signal.config_path == str(mcp)
 
 
 @pytest.mark.parametrize(
@@ -546,7 +547,7 @@ def test_windsurf_optional_mcp_file_is_not_hook_configuration_evidence(
         ("zeptoclaw", (".zeptoclaw", "config.json")),
         ("hermes", (".hermes", "config.yaml")),
         ("cursor", (".cursor", "hooks.json")),
-        ("windsurf", (".codeium", "windsurf", "hooks.json")),
+        ("devin", (".devin", "hooks.v1.json")),
         ("copilot", (".copilot", "mcp-config.json")),
         ("openhands", (".openhands", "hooks.json")),
         ("antigravity", (".gemini", "config", "hooks.json")),
@@ -1593,14 +1594,14 @@ def test_hermes_windows_venv_is_a_narrow_trusted_prefix(monkeypatch, tmp_path):
     assert ad._path_key(str(local_app_data)) not in prefixes
 
 
-def test_windsurf_windows_desktop_uses_narrow_product_trust_roots(monkeypatch, tmp_path):
+def test_devin_windows_cli_uses_exact_product_trust_root(monkeypatch, tmp_path):
     local_app_data = tmp_path / "local-app-data"
     monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
 
     prefixes = {ad._path_key(path) for path in ad._windows_default_trusted_bin_prefixes()}
 
-    assert ad._path_key(str(local_app_data / "Programs" / "Devin")) in prefixes
-    assert ad._path_key(str(local_app_data / "Programs" / "Windsurf")) in prefixes
+    assert ad._path_key(str(local_app_data / "devin" / "cli" / "bin")) in prefixes
+    assert ad._path_key(str(local_app_data / "Programs" / "Devin")) not in prefixes
     assert ad._path_key(str(local_app_data / "Programs")) not in prefixes
     assert ad._path_key(str(local_app_data)) not in prefixes
 
@@ -1624,7 +1625,7 @@ def test_windsurf_windows_desktop_uses_narrow_product_trust_roots(monkeypatch, t
             ),
         ),
         ("cursor", ("local", "cursor-agent", "agent.exe")),
-        ("windsurf", ("local", "Programs", "Windsurf", "bin", "windsurf.exe")),
+        ("devin", ("local", "devin", "cli", "bin", "devin.exe")),
         ("copilot", ("roaming", "npm", "copilot.cmd")),
         ("openhands", ("home", ".local", "bin", "openhands.exe")),
         ("antigravity", ("local", "agy", "bin", "agy.exe")),
@@ -1727,7 +1728,25 @@ def test_windows_trust_rejects_extensionless_npm_shim(monkeypatch, tmp_path):
     assert not ad._is_trusted_binary_path(str(shim))
 
 
-def test_windsurf_windows_discovery_finds_devin_desktop_without_optional_launcher(
+def test_devin_windows_discovery_finds_exact_cli_without_path_launcher(
+    monkeypatch,
+    tmp_path,
+    windows_host_no_path,
+):
+    local = tmp_path / "local-app-data"
+    binary = local / "devin" / "cli" / "bin" / "devin.exe"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"test executable")
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.delenv("ProgramFiles", raising=False)
+    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+
+    candidates = ad._binary_candidates_for_agent("devin", ad._SPECS["devin"])
+
+    assert tuple(map(ad._path_key, candidates)) == (ad._path_key(str(binary)),)
+
+
+def test_devin_windows_discovery_rejects_gui_product_root(
     monkeypatch,
     tmp_path,
     windows_host_no_path,
@@ -1740,27 +1759,9 @@ def test_windsurf_windows_discovery_finds_devin_desktop_without_optional_launche
     monkeypatch.delenv("ProgramFiles", raising=False)
     monkeypatch.delenv("ProgramFiles(x86)", raising=False)
 
-    candidates = ad._binary_candidates_for_agent("windsurf", ad._SPECS["windsurf"])
+    candidates = ad._binary_candidates_for_agent("devin", ad._SPECS["devin"])
 
-    assert tuple(map(ad._path_key, candidates)) == (ad._path_key(str(binary)),)
-
-
-def test_windsurf_windows_discovery_finds_devin_executable_in_documented_product_root(
-    monkeypatch,
-    tmp_path,
-    windows_host_no_path,
-):
-    local = tmp_path / "local-app-data"
-    binary = local / "Programs" / "Windsurf" / "Devin.exe"
-    binary.parent.mkdir(parents=True)
-    binary.write_bytes(b"test executable")
-    monkeypatch.setenv("LOCALAPPDATA", str(local))
-    monkeypatch.delenv("ProgramFiles", raising=False)
-    monkeypatch.delenv("ProgramFiles(x86)", raising=False)
-
-    candidates = ad._binary_candidates_for_agent("windsurf", ad._SPECS["windsurf"])
-
-    assert tuple(map(ad._path_key, candidates)) == (ad._path_key(str(binary)),)
+    assert ad._path_key(str(binary)) not in tuple(map(ad._path_key, candidates))
 
 
 def test_cursor_discovery_prefers_primary_agent_entrypoint(monkeypatch, tmp_path):
@@ -2083,10 +2084,10 @@ def test_config_state_marks_selected_observe_connectors_active():
         error="",
         configured=True,
     )
-    disc.agents["windsurf"] = ad.AgentSignal(
-        name="windsurf",
+    disc.agents["devin"] = ad.AgentSignal(
+        name="devin",
         installed=False,
-        config_path="/tmp/.codeium/windsurf/hooks.json",
+        config_path="/tmp/project/.devin/hooks.v1.json",
         binary_path="",
         version="",
         error="",
@@ -2095,12 +2096,12 @@ def test_config_state_marks_selected_observe_connectors_active():
     cfg = default_config()
     cfg.guardrail.connectors = {
         "hermes": PerConnectorGuardrailConfig(mode="observe"),
-        "windsurf": PerConnectorGuardrailConfig(mode="observe"),
+        "devin": PerConnectorGuardrailConfig(mode="observe"),
     }
 
     ad.apply_config_state(disc, cfg)
 
-    for name in ("hermes", "windsurf"):
+    for name in ("hermes", "devin"):
         assert disc.agents[name].installed is False
         assert disc.agents[name].configured is True
         assert disc.agents[name].active is True

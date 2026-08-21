@@ -318,6 +318,10 @@ func bindConnectorLifecycleConfigHome(connectorName string) (func(), error) {
 		// The hidden maintenance flag is carried through SetupOpts.ConfigHome
 		// instead of inventing an upstream-facing override.
 		return func() {}, nil
+	case "devin":
+		// Devin has no supported config-home environment override. The
+		// authenticated installer binding flows through SetupOpts.ConfigHome.
+		return func() {}, nil
 	case "windsurf":
 		// Windsurf has no vendor home override variable. Bind DefenseClaw's
 		// connector path resolver directly to Setup's validated profile root;
@@ -508,8 +512,8 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	}
 	if name != "amp" && name != "antigravity" && name != "claudecode" && name != "codex" &&
 		name != "copilot" && name != "cursor" && name != "geminicli" && name != "hermes" && name != "omnigent" &&
-		name != "opencode" && name != "windsurf" {
-		return fmt.Errorf("connector reconcile: selected refresh is supported only for amp, antigravity, claudecode, codex, copilot, cursor, geminicli, hermes, omnigent, opencode, and windsurf")
+		name != "opencode" && name != "devin" {
+		return fmt.Errorf("connector reconcile: selected refresh is supported only for amp, antigravity, claudecode, codex, copilot, cursor, devin, geminicli, hermes, omnigent, and opencode")
 	}
 	if warning, supportErr := connector.CheckPlatformSupportOnHost(name); supportErr != nil {
 		return fmt.Errorf("connector reconcile %s: %w", name, supportErr)
@@ -744,6 +748,11 @@ func runConnectorTeardown(cmd *cobra.Command, _ []string) error {
 
 	reg := newConnectorRegistryWithPlugins()
 	conn, ok := reg.Get(name)
+	if !ok && name == "windsurf" {
+		// Retired Cascade is never selectable or reconcilable. It remains
+		// resolvable only here so upgrades can restore its exact managed backup.
+		conn, ok = connector.NewWindsurfConnector(), true
+	}
 	if !ok {
 		return fmt.Errorf("connector teardown: unknown connector %q (known: %s)",
 			name, strings.Join(reg.Names(), ", "))
@@ -801,6 +810,10 @@ func runConnectorVerify(cmd *cobra.Command, _ []string) error {
 
 	reg := newConnectorRegistryWithPlugins()
 	conn, ok := reg.Get(name)
+	if !ok && name == "windsurf" {
+		// Private legacy verification pairs with the teardown compatibility path.
+		conn, ok = connector.NewWindsurfConnector(), true
+	}
 	if !ok {
 		// Map "unknown connector" to exit code 2 (config error), distinct
 		// from "connector dirty" (exit 1). Cobra surfaces RunE errors as

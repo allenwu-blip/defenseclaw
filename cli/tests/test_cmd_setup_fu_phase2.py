@@ -141,11 +141,11 @@ def _click_result_reaches_marker(result, marker: str) -> bool:
 @pytest.mark.parametrize(
     ("host_os", "expected_hook", "other_hook"),
     (
-        ("windows", "windsurf-hook.ps1 on Windows", "windsurf-hook.sh"),
-        ("linux", "windsurf-hook.sh on non-Windows", "windsurf-hook.ps1"),
+        ("windows", "protected native defenseclaw-hook.exe boundary on Windows", "devin-hook.sh"),
+        ("linux", "devin-hook.sh on non-Windows", "defenseclaw-hook.exe"),
     ),
 )
-def test_windsurf_mutation_notice_names_platform_hook(
+def test_devin_mutation_notice_names_platform_hook(
     host_os: str,
     expected_hook: str,
     other_hook: str,
@@ -155,7 +155,7 @@ def test_windsurf_mutation_notice_names_platform_hook(
         patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value=host_os),
         runner.isolation() as (stdout, _stderr, _input),
     ):
-        cmd_setup._print_connector_mutation_notice("windsurf")
+        cmd_setup._print_connector_mutation_notice("devin")
 
     notice = stdout.getvalue().decode()
     assert expected_hook in notice
@@ -3105,7 +3105,7 @@ class TestInteractiveModeJudgePrompts(_BaseSetup):
         model_prompt.assert_called_once()
 
     def test_multi_guardrail_setup_action_defaults_ignore_stale_global_mode(self):
-        targets = ["antigravity", "claudecode", "geminicli", "hermes", "opencode", "openhands", "windsurf"]
+        targets = ["antigravity", "claudecode", "devin", "geminicli", "hermes", "opencode", "openhands"]
         self._seed_map(*targets)
         gc = self.app.cfg.guardrail
         gc.enabled = True
@@ -3521,7 +3521,7 @@ class TestBareSetupBatch(_BaseSetup):
         self.assertIn("hermes", self.app.cfg.guardrail.connectors)
 
     def test_picker_preselects_active_not_detected_inactive_connectors(self):
-        self._seed_map("hermes", "windsurf")
+        self._seed_map("hermes", "devin")
         captured = {}
 
         def choose(options, *, default_selected, title, empty_ok):
@@ -3538,7 +3538,7 @@ class TestBareSetupBatch(_BaseSetup):
         ), patch("defenseclaw.commands.cmd_setup.ux.subhead") as subhead:
             selected = cmd_setup._run_setup_picker(self.app)
 
-        self.assertEqual(set(selected), {"hermes", "windsurf"})
+        self.assertEqual(set(selected), {"hermes", "devin"})
         cursor_option = next(option for option in captured["options"] if "Cursor" in option)
         self.assertNotIn(cursor_option, captured["default_selected"])
         subhead.assert_any_call(
@@ -3584,7 +3584,7 @@ class TestBareSetupBatch(_BaseSetup):
             stack.enter_context(
                 patch(
                     "defenseclaw.commands.cmd_setup._prompt_batch_connector_modes",
-                    return_value={"copilot": "action", "windsurf": "action"},
+                    return_value={"copilot": "action", "devin": "action"},
                 )
             )
             stack.enter_context(patch("defenseclaw.commands.cmd_setup._prompt_batch_trusted_prefixes", return_value={}))
@@ -3601,18 +3601,18 @@ class TestBareSetupBatch(_BaseSetup):
                 )
             )
             res = _invoke(
-                ["-c", "copilot", "-c", "windsurf", "--no-restart"],
+                ["-c", "copilot", "-c", "devin", "--no-restart"],
                 self.app,
             )
 
         self.assertEqual(res.exit_code, 0, msg=res.output)
         self.assertIn("GitHub Copilot CLI: requested action mode was refused", res.output)
-        self.assertIn("Devin Desktop — legacy Cascade: requested action mode was refused", res.output)
+        self.assertIn("Devin: requested action mode was refused", res.output)
         gc = self.app.cfg.guardrail
         self.assertEqual(gc.effective_mode("copilot"), "observe")
-        self.assertEqual(gc.effective_mode("windsurf"), "observe")
+        self.assertEqual(gc.effective_mode("devin"), "observe")
         self.assertEqual(gc.connectors["copilot"].mode, "observe")
-        self.assertEqual(gc.connectors["windsurf"].mode, "observe")
+        self.assertEqual(gc.connectors["devin"].mode, "observe")
 
     def test_interactive_batch_selects_judge_connectors_without_strategy_prompt(self):
         gc = self.app.cfg.guardrail

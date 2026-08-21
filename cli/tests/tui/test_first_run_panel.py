@@ -31,7 +31,7 @@ def test_first_run_defaults_match_go_panel_argv() -> None:
         "openclaw",
         "hermes",
         "cursor",
-        "windsurf",
+        "devin",
         "copilot",
         "openhands",
         "antigravity",

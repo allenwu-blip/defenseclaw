@@ -1,0 +1,178 @@
+// Copyright 2026 Cisco Systems, Inc. and its affiliates
+// SPDX-License-Identifier: Apache-2.0
+
+package connector
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+)
+
+func TestDevinPatchUserConfigAcceptsJSONCAndPreservesForeignHooks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	before := []byte(`{
+  // Devin accepts JSONC.
+  "theme": "dark",
+  "hooks": {
+    "PreToolUse": [{"matcher":"^exec$","hooks":[{"type":"command","command":"foreign-check"}]}],
+  },
+}`)
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hook := filepath.Join(t.TempDir(), "devin-hook.sh")
+	if err := patchDevinHooks(path, hook); err != nil {
+		t.Fatalf("patch Devin hooks: %v", err)
+	}
+	cfg, err := readDevinJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg["theme"] != "dark" {
+		t.Fatalf("foreign config lost: %+v", cfg)
+	}
+	hooks, ok := cfg["hooks"].(map[string]interface{})
+	if !ok || len(hooks) != len(devinHookEvents) {
+		t.Fatalf("hook matrix = %+v", cfg["hooks"])
+	}
+	pre, _ := hooks["PreToolUse"].([]interface{})
+	if len(pre) != 2 || devinHookGroupReferences(pre[0], hook) || !devinHookGroupReferences(pre[1], hook) {
+		t.Fatalf("PreToolUse did not preserve foreign-first/managed-last ordering: %+v", pre)
+	}
+	if err := removeDevinHookReferences(path, hook); err != nil {
+		t.Fatalf("remove Devin hooks: %v", err)
+	}
+	cfg, err = readDevinJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, _ = cfg["hooks"].(map[string]interface{})
+	pre, _ = hooks["PreToolUse"].([]interface{})
+	if len(pre) != 1 || cfg["theme"] != "dark" {
+		t.Fatalf("surgical cleanup lost foreign data: %+v", cfg)
+	}
+}
+
+func TestDevinPatchProjectHooksUsesWholeDocument(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".devin", "hooks.v1.json")
+	hook := "/opt/defenseclaw/hooks/devin-hook.sh"
+	if err := patchDevinHooks(path, hook); err != nil {
+		t.Fatalf("patch project hooks: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]interface{}
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, wrapped := cfg["hooks"]; wrapped {
+		t.Fatalf("hooks.v1.json was incorrectly wrapped: %s", body)
+	}
+	for _, event := range devinHookEvents {
+		entries, _ := cfg[event].([]interface{})
+		if len(entries) != 1 || !devinHookGroupReferences(entries[0], hook) {
+			t.Fatalf("event %s registration = %+v", event, entries)
+		}
+	}
+}
+
+func TestDevinProfileUsesNativeLifecycleContract(t *testing.T) {
+	profile := NewDevinConnector().HookProfile(SetupOpts{AgentVersion: "3000.4.25"})
+	if profile.ContractID != "devin-hooks-v1" || profile.CompatibilityStatus != HookCompatibilityKnown {
+		t.Fatalf("contract = %+v", profile)
+	}
+	if !slices.Equal(profile.SupportedEvents, devinHookEvents) || profile.NativeOTLP != nil {
+		t.Fatalf("events/native OTLP = %v / %+v", profile.SupportedEvents, profile.NativeOTLP)
+	}
+	req := profile.Decode(map[string]interface{}{
+		"hook_event_name": "PostToolUse",
+		"session_id":      "session-1",
+		"prompt_id":       "prompt-2",
+		"tool_name":       "exec",
+		"tool_input":      map[string]interface{}{"command": "git status"},
+		"tool_response":   map[string]interface{}{"success": true, "output": "clean"},
+	})
+	if req.SessionID != "session-1" || req.TurnID != "prompt-2" || req.ToolName != "exec" || req.Direction != "tool_result" {
+		t.Fatalf("decoded request = %+v", req)
+	}
+	blocked := profile.Respond(HookRespondInput{
+		Req:    HookProfileRequest{ConnectorName: "devin", HookEventName: "PreToolUse", ToolName: "exec"},
+		Action: "block", Reason: "unsafe", Caps: profile.Capabilities,
+	})
+	if blocked.Output["decision"] != "block" || blocked.Output["reason"] == "" {
+		t.Fatalf("block response = %+v", blocked)
+	}
+	context := profile.Respond(HookRespondInput{
+		Req:    HookProfileRequest{ConnectorName: "devin", HookEventName: "UserPromptSubmit"},
+		Action: "alert", AdditionalContext: "policy context", Caps: profile.Capabilities,
+	})
+	nested, _ := context.Output["hookSpecificOutput"].(map[string]interface{})
+	if nested["hookEventName"] != "UserPromptSubmit" || nested["additionalContext"] != "policy context" {
+		t.Fatalf("context response = %+v", context)
+	}
+	forbidden := profile.Respond(HookRespondInput{
+		Req:    HookProfileRequest{ConnectorName: "devin", HookEventName: "PermissionRequest"},
+		Action: "alert", RawAction: "confirm", AdditionalContext: "do not invent", Caps: profile.Capabilities,
+	})
+	if forbidden.Output != nil {
+		t.Fatalf("unsupported response fields invented: %+v", forbidden)
+	}
+}
+
+func TestDefaultRegistryPublishesDevinNotRetiredWindsurf(t *testing.T) {
+	registry := NewDefaultRegistry()
+	if _, ok := registry.Get("devin"); !ok {
+		t.Fatal("default registry omitted Devin")
+	}
+	if _, ok := registry.Get("windsurf"); ok {
+		t.Fatal("retired Windsurf connector remains public")
+	}
+}
+
+func TestDevinReadinessRequiresExactlyOneManagedGroupPerEvent(t *testing.T) {
+	root := t.TempDir()
+	opts := SetupOpts{ConfigHome: root, DataDir: filepath.Join(root, "defenseclaw")}
+	conn := NewDevinConnector()
+	path := devinHooksPath(opts)
+	command := conn.hookCommand(opts)
+	if err := patchDevinHooks(path, command); err != nil {
+		t.Fatal(err)
+	}
+	present, err := OwnedHooksPresent(conn, opts)
+	if err != nil || !present {
+		t.Fatalf("complete Devin contract present=%t err=%v", present, err)
+	}
+	cfg, err := readDevinJSONObject(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := devinHooksObject(path, cfg)
+	delete(hooks, "SessionEnd")
+	if err := writeJSONObject(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	present, err = OwnedHooksPresent(conn, opts)
+	if err != nil || present {
+		t.Fatalf("incomplete Devin contract present=%t err=%v", present, err)
+	}
+}
+
+func TestDevinCapabilityPathsAreScopedToDocumentedFiles(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	opts := SetupOpts{ConfigHome: filepath.Join(t.TempDir(), "devin"), WorkspaceDir: workspace}
+	caps := NewDevinConnector().Capabilities(opts)
+	if slices.Contains(caps.MCP.ConfigPaths, workspace) {
+		t.Fatalf("raw workspace root leaked into MCP file inventory: %v", caps.MCP.ConfigPaths)
+	}
+	if !slices.Contains(caps.MCP.WritePaths, filepath.Join(workspace, ".devin", "mcp_config.json")) {
+		t.Fatalf("project MCP target missing: %v", caps.MCP.WritePaths)
+	}
+	if caps.Plugins.Supported {
+		t.Fatalf("closed-beta Devin plugins were advertised: %+v", caps.Plugins)
+	}
+}

@@ -182,7 +182,7 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 	if connector == "copilot" {
 		return windowsCopilotPowerShellHookCommand()
 	}
-	// Cursor requires an adapter for its object-pipeline transport. Windsurf
+	// Cursor requires an adapter for its object-pipeline transport. Retired Cascade
 	// documents a `powershell` command field and JSON stdin; its adapter uses
 	// byte streams so the payload and response streams reach the exact packaged
 	// launcher unchanged, synchronously preserving exit 2.

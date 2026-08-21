@@ -228,7 +228,7 @@ type APIServer struct {
 	// regex + CodeGuard verdict in that case. Wired by the sidecar
 	// at boot via SetCiscoInspector. Only the proxy lane held an
 	// AID client historically; this field extends coverage to the
-	// hook surface (Codex / Claude Code / Cursor / Windsurf /
+	// hook surface (Codex / Claude Code / Cursor / Devin /
 	// Hermes / Gemini / Copilot) so MCP tool calls and tool results
 	// reach AID without per-script changes.
 	// Widened from *CiscoInspectClient to the Inspector interface so
@@ -693,7 +693,7 @@ func (a *APIServer) registerConnectorHookRoutes(mux *http.ServeMux, wrap ...func
 		if f, ok := connectorHookHandlerByName["codex"]; ok {
 			register("/api/v1/codex/hook", http.HandlerFunc(f(a)))
 		}
-		for _, name := range []string{"hermes", "cursor", "windsurf", "copilot", "openhands", "antigravity", "opencode", "amp", "omnigent"} {
+		for _, name := range []string{"hermes", "cursor", "devin", "copilot", "openhands", "antigravity", "opencode", "amp", "omnigent"} {
 			if f, ok := connectorHookHandlerByName[name]; ok {
 				register("/api/v1/"+name+"/hook", http.HandlerFunc(f(a)))
 			}
@@ -1361,7 +1361,7 @@ func connectorModeFor(name, policyMode string) map[string]interface{} {
 		// Claude Code uses hooks + the OTel env-block; no notify
 		// equivalent (Anthropic doesn't ship a turn-complete shim).
 		telemetry = []string{"hooks", "otel"}
-	case "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "amp":
+	case "hermes", "cursor", "devin", "geminicli", "copilot", "openhands", "antigravity", "opencode", "amp":
 		mode = "observability"
 		intercept = false
 		surface = "agent_lifecycle_hooks"

@@ -30,7 +30,7 @@ dc_connector_config_file() {
     codex)       printf '%s/.codex/config.toml' "${HOME}" ;;
     claudecode)  printf '%s/.claude/settings.json' "${HOME}" ;;
     cursor)      printf '%s/.cursor/hooks.json' "${HOME}" ;;
-    windsurf)    printf '%s/.codeium/windsurf/hooks.json' "${HOME}" ;;
+    devin)       printf '%s/.config/devin/config.json' "${HOME}" ;;
     copilot)     printf '%s/.copilot/hooks/defenseclaw.json' "${HOME}" ;;
     openhands)   printf '%s/.openhands/hooks.json' "${HOME}" ;;
     antigravity) printf '%s/.gemini/config/hooks.json' "${HOME}" ;;

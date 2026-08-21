@@ -92,6 +92,8 @@ type setupTransaction struct {
 	PreviousClaudeConfigDir        string                   `json:"previous_claude_config_dir,omitempty"`
 	PreviousCopilotHome            string                   `json:"previous_copilot_home,omitempty"`
 	PreviousCursorHome             string                   `json:"previous_cursor_home,omitempty"`
+	PreviousDevinConfigDir         string                   `json:"previous_devin_config_dir,omitempty"`
+	PreviousDevinExecutable        string                   `json:"previous_devin_executable,omitempty"`
 	PreviousHermesHome             string                   `json:"previous_hermes_home,omitempty"`
 	PreviousWindsurfUserHome       string                   `json:"previous_windsurf_user_home,omitempty"`
 	PreviousAntigravityConfigDir   string                   `json:"previous_antigravity_config_dir,omitempty"`
@@ -103,6 +105,8 @@ type setupTransaction struct {
 	ClaudeConfigDir                string                   `json:"claude_config_dir,omitempty"`
 	CopilotHome                    string                   `json:"copilot_home,omitempty"`
 	CursorHome                     string                   `json:"cursor_home,omitempty"`
+	DevinConfigDir                 string                   `json:"devin_config_dir,omitempty"`
+	DevinExecutable                string                   `json:"devin_executable,omitempty"`
 	WindsurfUserHome               string                   `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir           string                   `json:"antigravity_config_dir,omitempty"`
 	GeminiCLIHome                  string                   `json:"gemini_cli_home,omitempty"`
@@ -307,6 +311,14 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	devinDefaultConfigDir, err := defaultDevinConfigDir()
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	devinExecutable, err := defaultDevinExecutable()
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	defaultWindsurfUserHome, err := defaultProfileRoot()
 	if err != nil {
 		return setupTransaction{}, fmt.Errorf("resolve Windsurf user profile: %w", err)
@@ -345,6 +357,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	// fresh registration. A previously authenticated transaction or managed
 	// backup may still restore its exact historical custody below.
 	cursorHome := defaultCursorHome
+	devinConfigDir := filepath.Clean(devinDefaultConfigDir)
 	// Google documents Antigravity's global hook root at
 	// %USERPROFILE%\.gemini\config and publishes no configuration-home
 	// environment override. New registrations always target that official
@@ -372,12 +385,14 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousHermesState, previousWindsurfState, previousAntigravityState, previousGeminiCLIState, previousGeminiState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", "", "", "", ""
+	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousDevinState, previousDevinExecutable, previousHermesState, previousWindsurfState, previousAntigravityState, previousGeminiCLIState, previousGeminiState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
 		previousCopilotState = oldState.CopilotHome
 		previousCursorState = oldState.CursorHome
+		previousDevinState = oldState.DevinConfigDir
+		previousDevinExecutable = oldState.DevinExecutable
 		previousHermesState = oldState.HermesHome
 		previousWindsurfState = oldState.WindsurfUserHome
 		previousAntigravityState = oldState.AntigravityConfigDir
@@ -401,6 +416,15 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	)
 	if err != nil {
 		return setupTransaction{}, err
+	}
+	previousDevinConfigDir, err := resolvePreviousConnectorHome(
+		previousDevinState, previousConnectors, dataRoot, "devin", "config", devinConfigDir,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	if previousDevinExecutable == "" {
+		previousDevinExecutable = devinExecutable
 	}
 	previousAntigravityConfigDir, err := resolvePreviousConnectorHome(
 		previousAntigravityState, previousConnectors, dataRoot, "antigravity", "hooks.json", antigravityConfigDir,
@@ -467,6 +491,9 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		claudeConfigDir = previousClaudeConfigDir
 		copilotHome = previousCopilotHome
 		cursorHome = previousCursorHome
+		// Devin publishes fixed per-user config and executable locations. Keep
+		// previous Devin custody only for teardown; never let stale native state
+		// redirect a refreshed registration or admission probe.
 		hermesHome = previousHermesHome
 		windsurfUserHome = previousWindsurfUserHome
 		openCodeConfigDir = previousOpenCodeConfigDir
@@ -474,6 +501,11 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		if previousGeminiCLIHome != "" {
 			geminiCLIHome = previousGeminiCLIHome
 			geminiConfigDir = previousGeminiConfigDir
+		}
+	}
+	if action == "install" && targetConnector == "devin" {
+		if err := verifyDevinExecutableAdmission(devinExecutable); err != nil {
+			return setupTransaction{}, fmt.Errorf("Devin CLI readiness: %w", err)
 		}
 	}
 	maintenanceSHA256 := ""
@@ -525,6 +557,8 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousClaudeConfigDir:        previousClaudeConfigDir,
 		PreviousCopilotHome:            previousCopilotHome,
 		PreviousCursorHome:             previousCursorHome,
+		PreviousDevinConfigDir:         previousDevinConfigDir,
+		PreviousDevinExecutable:        previousDevinExecutable,
 		PreviousHermesHome:             previousHermesHome,
 		PreviousWindsurfUserHome:       previousWindsurfUserHome,
 		PreviousAntigravityConfigDir:   previousAntigravityConfigDir,
@@ -536,6 +570,8 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		ClaudeConfigDir:                claudeConfigDir,
 		CopilotHome:                    copilotHome,
 		CursorHome:                     cursorHome,
+		DevinConfigDir:                 devinConfigDir,
+		DevinExecutable:                devinExecutable,
 		HermesHome:                     hermesHome,
 		WindsurfUserHome:               windsurfUserHome,
 		AntigravityConfigDir:           antigravityConfigDir,
@@ -601,6 +637,14 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	devinDefaultConfigDir, err := defaultDevinConfigDir()
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	devinDefaultExecutable, err := defaultDevinExecutable()
+	if err != nil {
+		return setupTransaction{}, err
+	}
 	defaultWindsurfUserHome, err := defaultProfileRoot()
 	if err != nil {
 		return setupTransaction{}, fmt.Errorf("resolve Windsurf user profile: %w", err)
@@ -624,12 +668,14 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredHermesHome, configuredWindsurfHome, configuredAntigravityHome, configuredGeminiCLIHome, configuredGeminiHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", "", "", "", ""
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredDevinHome, configuredDevinExecutable, configuredHermesHome, configuredWindsurfHome, configuredAntigravityHome, configuredGeminiCLIHome, configuredGeminiHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
 		configuredCopilotHome = oldState.CopilotHome
 		configuredCursorHome = oldState.CursorHome
+		configuredDevinHome = oldState.DevinConfigDir
+		configuredDevinExecutable = oldState.DevinExecutable
 		configuredHermesHome = oldState.HermesHome
 		configuredWindsurfHome = oldState.WindsurfUserHome
 		configuredAntigravityHome = oldState.AntigravityConfigDir
@@ -656,6 +702,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	legacyCursorFallback := source.CursorHome
 	if legacyCursorFallback == "" {
 		legacyCursorFallback = defaultCursorHome
+	}
+	legacyDevinFallback := source.DevinConfigDir
+	if legacyDevinFallback == "" {
+		legacyDevinFallback = devinDefaultConfigDir
 	}
 	legacyAntigravityFallback := source.AntigravityConfigDir
 	if legacyAntigravityFallback == "" {
@@ -709,6 +759,24 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	)
 	if err != nil {
 		return setupTransaction{}, err
+	}
+	previousDevinConfigDir, err := resolvePreviousConnectorHome(
+		configuredDevinHome,
+		previousConnectors,
+		source.DataRoot,
+		"devin",
+		"config",
+		legacyDevinFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousDevinExecutable := configuredDevinExecutable
+	if previousDevinExecutable == "" {
+		previousDevinExecutable = source.DevinExecutable
+	}
+	if previousDevinExecutable == "" {
+		previousDevinExecutable = devinDefaultExecutable
 	}
 	legacyWindsurfFallback := source.WindsurfUserHome
 	if legacyWindsurfFallback == "" {
@@ -859,6 +927,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousClaudeConfigDir:      previousClaudeConfigDir,
 		PreviousCopilotHome:          previousCopilotHome,
 		PreviousCursorHome:           previousCursorHome,
+		PreviousDevinConfigDir:       previousDevinConfigDir,
+		PreviousDevinExecutable:      previousDevinExecutable,
 		PreviousHermesHome:           previousHermesHome,
 		PreviousWindsurfUserHome:     previousWindsurfUserHome,
 		PreviousAntigravityConfigDir: previousAntigravityConfigDir,
@@ -870,6 +940,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		ClaudeConfigDir:              previousClaudeConfigDir,
 		CopilotHome:                  previousCopilotHome,
 		CursorHome:                   previousCursorHome,
+		DevinConfigDir:               previousDevinConfigDir,
+		DevinExecutable:              previousDevinExecutable,
 		HermesHome:                   previousHermesHome,
 		WindsurfUserHome:             previousWindsurfUserHome,
 		AntigravityConfigDir:         previousAntigravityConfigDir,
@@ -1144,6 +1216,8 @@ func transactionChildEnv(transaction setupTransaction) []string {
 		transaction.ClaudeConfigDir,
 		transaction.CopilotHome,
 		transaction.CursorHome,
+		transaction.DevinConfigDir,
+		transaction.DevinExecutable,
 		transaction.WindsurfUserHome,
 		transaction.AntigravityConfigDir,
 		transaction.GeminiCLIHome,
@@ -1161,6 +1235,8 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction.PreviousClaudeConfigDir,
 		transaction.PreviousCopilotHome,
 		transaction.PreviousCursorHome,
+		transaction.PreviousDevinConfigDir,
+		transaction.PreviousDevinExecutable,
 		transaction.PreviousWindsurfUserHome,
 		transaction.PreviousAntigravityConfigDir,
 		transaction.PreviousGeminiCLIHome,
@@ -1186,6 +1262,8 @@ func transactionChildEnvForHomes(
 		claudeConfigDir,
 		transaction.CopilotHome,
 		transaction.CursorHome,
+		transaction.DevinConfigDir,
+		transaction.DevinExecutable,
 		transaction.WindsurfUserHome,
 		antigravityConfigDir,
 		transaction.GeminiCLIHome,
@@ -1206,6 +1284,8 @@ func transactionChildEnvForAllHomes(
 		claudeConfigDir,
 		transaction.CopilotHome,
 		transaction.CursorHome,
+		transaction.DevinConfigDir,
+		transaction.DevinExecutable,
 		transaction.WindsurfUserHome,
 		transaction.AntigravityConfigDir,
 		transaction.GeminiCLIHome,
@@ -1218,7 +1298,7 @@ func transactionChildEnvForAllHomes(
 
 func transactionChildEnvForConnectorHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, geminiCLIHome, geminiConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
+	codexHome, claudeConfigDir, copilotHome, cursorHome, devinConfigDir, devinExecutable, windsurfUserHome, antigravityConfigDir, geminiCLIHome, geminiConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
 	filtered := make([]string, 0, len(base)+12)
@@ -1228,6 +1308,8 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "CLAUDE_CONFIG_DIR") ||
 			strings.EqualFold(name, "COPILOT_HOME") ||
 			strings.EqualFold(name, "DEFENSECLAW_CURSOR_CONFIG_HOME") ||
+			strings.EqualFold(name, "DEFENSECLAW_DEVIN_CONFIG_HOME") ||
+			strings.EqualFold(name, "DEFENSECLAW_DEVIN_EXECUTABLE") ||
 			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
 			strings.EqualFold(name, "WINDSURF_HOOK_CONFIG_PATH") ||
 			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR") ||
@@ -1253,6 +1335,12 @@ func transactionChildEnvForConnectorHomes(
 	}
 	if cursorHome != "" {
 		filtered = append(filtered, "DEFENSECLAW_CURSOR_CONFIG_HOME="+cursorHome)
+	}
+	if devinConfigDir != "" {
+		filtered = append(filtered, "DEFENSECLAW_DEVIN_CONFIG_HOME="+devinConfigDir)
+	}
+	if devinExecutable != "" {
+		filtered = append(filtered, "DEFENSECLAW_DEVIN_EXECUTABLE="+devinExecutable)
 	}
 	if windsurfUserHome != "" {
 		filtered = append(filtered, "WINDSURF_USER_HOME="+windsurfUserHome)
@@ -1520,6 +1608,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousClaudeConfigDir, transaction.ClaudeConfigDir) ||
 			!samePath(transaction.PreviousCopilotHome, transaction.CopilotHome) ||
 			!samePath(transaction.PreviousCursorHome, transaction.CursorHome) ||
+			!samePath(transaction.PreviousDevinConfigDir, transaction.DevinConfigDir) ||
+			!samePath(transaction.PreviousDevinExecutable, transaction.DevinExecutable) ||
 			!samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome) ||
 			!samePath(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir) ||
 			!samePath(transaction.PreviousOmnigentConfigHome, transaction.OmnigentConfigHome) ||
@@ -1555,6 +1645,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"previous Claude configuration dir":      transaction.PreviousClaudeConfigDir,
 		"previous Copilot home":                  transaction.PreviousCopilotHome,
 		"previous Cursor home":                   transaction.PreviousCursorHome,
+		"previous Devin configuration dir":       transaction.PreviousDevinConfigDir,
+		"previous Devin executable":              transaction.PreviousDevinExecutable,
 		"previous Windsurf user home":            transaction.PreviousWindsurfUserHome,
 		"previous Antigravity configuration dir": transaction.PreviousAntigravityConfigDir,
 		"previous Gemini CLI home":               transaction.PreviousGeminiCLIHome,
@@ -1565,6 +1657,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"Claude configuration dir":               transaction.ClaudeConfigDir,
 		"Copilot home":                           transaction.CopilotHome,
 		"Cursor home":                            transaction.CursorHome,
+		"Devin configuration dir":                transaction.DevinConfigDir,
+		"Devin executable":                       transaction.DevinExecutable,
 		"Windsurf user home":                     transaction.WindsurfUserHome,
 		"Antigravity configuration dir":          transaction.AntigravityConfigDir,
 		"Gemini CLI home":                        transaction.GeminiCLIHome,
@@ -1612,7 +1706,7 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 	}
 	seenConnectors := map[string]bool{}
 	for _, connectorName := range transaction.PreviousConnectors {
-		if connectorName == "none" || !validConnector(connectorName) {
+		if connectorName == "none" || !validCleanupConnector(connectorName) {
 			return fmt.Errorf("setup transaction has an invalid previous connector %q", connectorName)
 		}
 		if seenConnectors[connectorName] {
@@ -1643,7 +1737,7 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 	}
 	if state.SchemaVersion != 1 || state.InstallKind != "native-windows-exe" ||
 		state.InstallScope != "user" || !validPayloadVersion(state.Version) ||
-		!validConnector(state.Connector) || !validMode(state.Mode) {
+		!validCleanupConnector(state.Connector) || !validMode(state.Mode) {
 		return errors.New("installer state is not a supported native Windows install")
 	}
 	if state.TransactionID != "" && !validSetupTransactionID(state.TransactionID) {
@@ -1672,6 +1766,8 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Claude configuration dir":      state.ClaudeConfigDir,
 		"Copilot home":                  state.CopilotHome,
 		"Cursor home":                   state.CursorHome,
+		"Devin configuration dir":       state.DevinConfigDir,
+		"Devin executable":              state.DevinExecutable,
 		"Windsurf user home":            state.WindsurfUserHome,
 		"Windsurf hooks path":           state.WindsurfHooksPath,
 		"Antigravity configuration dir": state.AntigravityConfigDir,
@@ -1699,6 +1795,20 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 	if state.GeminiCLIHome != "" &&
 		!geminiCLIConfigBindingConsistent(state.GeminiCLIHome, state.GeminiConfigDir) {
 		return errors.New("installer state has an inconsistent Gemini CLI home binding")
+	}
+	if state.Connector == "devin" {
+		expectedConfigDir, err := defaultDevinConfigDir()
+		if err != nil {
+			return fmt.Errorf("resolve expected Devin configuration dir: %w", err)
+		}
+		expectedExecutable, err := defaultDevinExecutable()
+		if err != nil {
+			return fmt.Errorf("resolve expected Devin executable: %w", err)
+		}
+		if !samePath(state.DevinConfigDir, expectedConfigDir) ||
+			!samePath(state.DevinExecutable, expectedExecutable) {
+			return errors.New("installer state has an inconsistent Devin fixed-path binding")
+		}
 	}
 	return nil
 }
@@ -3630,6 +3740,9 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousCopilotHome, transaction.CopilotHome)
 	case "cursor":
 		return !samePath(transaction.PreviousCursorHome, transaction.CursorHome)
+	case "devin":
+		return !samePath(transaction.PreviousDevinConfigDir, transaction.DevinConfigDir) ||
+			!samePath(transaction.PreviousDevinExecutable, transaction.DevinExecutable)
 	case "windsurf":
 		return !samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome)
 	case "antigravity":

@@ -217,7 +217,7 @@ var (
 		{Label: "GitHub Copilot CLI", Value: "copilot"},
 		{Label: "Cursor Agent", Value: "cursor"},
 		{Label: "Hermes Agent", Value: "hermes"},
-		{Label: "Legacy Cascade", Value: "windsurf"},
+		{Label: "Devin CLI", Value: "devin"},
 		{Label: "OmniGent (native degraded)", Value: "omnigent"},
 		{Label: "OpenCode", Value: "opencode"},
 	}
@@ -748,8 +748,8 @@ func wizardCompletionDescription(connector string) string {
 		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
 	case "hermes":
 		return "Hermes hooks are configured through the direct native launcher. Valid synchronous JSON can block pre-tool calls; hook failures remain open and no native ask surface exists." + installed
-	case "windsurf":
-		return "Windsurf native Windows support is configured with PowerShell Cascade hooks. Blocking applies only to documented pre-hooks; post hooks remain non-blocking." + installed
+	case "devin":
+		return "Devin CLI is configured with native lifecycle hooks. Exit code 2 blocks; other hook failures remain open, and Restricted Mode disables hooks." + installed
 	case "antigravity":
 		return "Google Antigravity is configured with its native Windows hooks." + installed
 	case "opencode":

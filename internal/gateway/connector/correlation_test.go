@@ -140,7 +140,7 @@ func TestCorrelationAuthorityRequiresExactFieldEvidence(t *testing.T) {
 
 func TestHookProfilesCarryResolvedCorrelationVersion(t *testing.T) {
 	reg := NewDefaultRegistry()
-	for _, name := range []string{"codex", "claudecode", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"} {
+	for _, name := range []string{"codex", "claudecode", "hermes", "cursor", "devin", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"} {
 		conn, _ := reg.Get(name)
 		profile := conn.(HookProfileProvider).HookProfile(SetupOpts{})
 		if profile.Correlation.ProfileVersion == "" || profile.Correlation.ProfileVersion == CorrelationProfileExplicitV1 {
@@ -331,7 +331,7 @@ func TestNativeTelemetryRegistryIsExplicit(t *testing.T) {
 	wants := map[string]NativeTelemetryStability{
 		"openclaw": NativeTelemetryNone, "zeptoclaw": NativeTelemetryNone,
 		"codex": NativeTelemetryStable, "claudecode": NativeTelemetryBeta,
-		"hermes": NativeTelemetryNone, "cursor": NativeTelemetryNone, "windsurf": NativeTelemetryNone,
+		"hermes": NativeTelemetryNone, "cursor": NativeTelemetryNone, "devin": NativeTelemetryNone,
 		"geminicli": NativeTelemetryStable, "copilot": NativeTelemetryNone,
 		"openhands": openhandsStability, "antigravity": NativeTelemetryNone,
 		"opencode": NativeTelemetryNone, "omnigent": NativeTelemetryExperimental,
@@ -513,7 +513,7 @@ func TestCorrelationRegistryRetainsAllTypedNativeIdentifiers(t *testing.T) {
 
 func TestHookLifecycleBindingsUseOnlyReviewedContractEvents(t *testing.T) {
 	for _, name := range []string{
-		"codex", "claudecode", "hermes", "cursor", "windsurf", "geminicli",
+		"codex", "claudecode", "hermes", "cursor", "devin", "geminicli",
 		"copilot", "openhands", "antigravity", "opencode", "omnigent", "amp",
 	} {
 		t.Run(name, func(t *testing.T) {

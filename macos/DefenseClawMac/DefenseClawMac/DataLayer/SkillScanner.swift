@@ -35,14 +35,14 @@ enum SkillScanner {
         case "zeptoclaw": return [p(".zeptoclaw", "skills")]
         case "hermes": return [p(".hermes", "skills")]
         case "cursor": return [p(".cursor", "skills"), p(".agents", "skills")]
-        case "geminicli": return [p(".gemini", "skills")]
+        case "devin": return [p(".config", "devin", "skills"), p(".agents", "skills")]
         case "copilot": return [p(".copilot", "skills")]
         case "openhands":
             return [p(".agents", "skills"), p(".openhands", "skills"),
                     p(".openhands", "microagents"),
                     p(".openhands", "skills", "installed")]
         case "openclaw": return [p(".openclaw", "workspace", "skills")]
-        default: return [] // windsurf, antigravity: no skills surface
+        default: return [] // antigravity: no skills surface; Gemini CLI is deprecated
         }
     }
 
@@ -164,10 +164,12 @@ enum MCPScanner {
             return [(p(".hermes", "config.yaml"), .yaml([["mcp", "servers"], ["mcpServers"]]))]
         case "cursor":
             return [(p(".cursor", "mcp.json"), .dotMCPJSON)]
-        case "windsurf":
-            return [(p(".codeium", "windsurf", "mcp_config.json"), .dotMCPJSON)]
-        case "geminicli":
-            return [(p(".gemini", "settings.json"), .settingsJSON([["mcpServers"]]))]
+        case "devin":
+            return [
+                (p(".config", "devin", "mcp_config.json"), .dotMCPJSON),
+                // Legacy MCP read compatibility only; writes target mcp_config.json.
+                (p(".config", "devin", "config.json"), .dotMCPJSON),
+            ]
         case "copilot":
             return [(p(".copilot", "mcp-config.json"), .dotMCPJSON)]
         case "openhands":
@@ -175,7 +177,7 @@ enum MCPScanner {
         case "openclaw":
             return [(p(".openclaw", "openclaw.json"), .settingsJSON([["mcp", "servers"], ["mcpServers"]]))]
         default:
-            return [] // antigravity: no documented MCP surface
+            return [] // antigravity: no documented MCP surface; Gemini CLI is deprecated
         }
     }
 
@@ -330,9 +332,8 @@ enum PluginScanner {
         case "codex": return [p(".codex", "plugins"), p(".codex", "plugins", "cache")]
         case "zeptoclaw": return [p(".zeptoclaw", "plugins"), p(".zeptoclaw", "plugins", "cache")]
         case "hermes": return [p(".hermes", "plugins")]
-        case "geminicli": return [p(".gemini", "extensions")]
         case "openclaw": return [p(".openclaw", "extensions")]
-        default: return [] // cursor, windsurf, copilot, openhands, antigravity: no plugin surface
+        default: return [] // cursor, devin (closed beta), copilot, openhands, antigravity, deprecated Gemini CLI
         }
     }
 

@@ -70,7 +70,7 @@ WINDOWS_SUPPORTED: set[str] = {
     "copilot",
     "cursor",
     "hermes",
-    "windsurf",
+    "devin",
     "opencode",
     "omnigent",
     "antigravity",

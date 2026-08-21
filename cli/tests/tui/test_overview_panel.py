@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from defenseclaw import connector_paths
 from defenseclaw.observability.custody_status import (
     NativeDeliveryStatus,
     NativeDeliverySummary,
@@ -899,18 +900,18 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     claude_home = tmp_path / "claude-home"
     codex_home = tmp_path / "codex-home"
     opencode_home = tmp_path / "opencode-home"
-    windsurf_profile = tmp_path / "windsurf-profile"
+    devin_config = tmp_path / "devin-config"
     gemini_home = tmp_path / "gemini-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(opencode_home))
-    monkeypatch.setenv("WINDSURF_USER_HOME", str(windsurf_profile))
+    monkeypatch.setattr(connector_paths, "devin_config_home", lambda: str(devin_config))
     monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
     cases = {
         "hermes": "Hermes",
         "cursor": "Cursor",
-        "windsurf": "Devin Desktop — legacy Cascade",
+        "devin": "Devin",
         "geminicli": "Gemini CLI (deprecated; use Antigravity)",
         "copilot": "GitHub Copilot CLI",
     }
@@ -933,9 +934,9 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert ".claude-plugin/marketplace.json" in codex_plugins
     assert "plugins/cache" in codex_plugins.replace("\\", "/")
     assert ".cursor/skills" in connector_source_label("cursor", "skills")
-    assert str(windsurf_profile / ".codeium" / "windsurf" / "hooks.json") in connector_source_label(
-        "windsurf", "config"
-    )
+    assert "./.devin/hooks.v1.json" in connector_source_label("devin", "config")
+    assert str(devin_config / "mcp_config.json") in connector_source_label("devin", "mcps")
+    assert "closed beta" in connector_source_label("devin", "plugins")
     assert connector_source_label("geminicli", "plugins") == str(gemini_home / "extensions")
     gemini_mcps = connector_source_label("geminicli", "mcps")
     assert str(gemini_home / "settings.json") in gemini_mcps

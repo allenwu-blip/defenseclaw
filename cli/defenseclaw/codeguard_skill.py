@@ -191,14 +191,8 @@ def _target_path(cfg, connector: str, target: str) -> str:
         return os.path.join(cwd, ".cursor", "rules", "codeguard.mdc")
     if connector == "copilot":
         return os.path.join(cwd, ".github", "instructions", "codeguard.instructions.md")
-    if connector == "windsurf":
-        for parent in (
-            os.path.join(cwd, ".windsurf", "rules"),
-            os.path.join(cwd, ".codeium", "windsurf", "rules"),
-        ):
-            if os.path.isdir(parent):
-                return os.path.join(parent, "codeguard.md")
-        return ""
+    if connector == "devin":
+        return os.path.join(cwd, ".devin", "rules", "codeguard.md")
     return ""
 
 

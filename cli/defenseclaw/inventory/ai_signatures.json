@@ -311,71 +311,78 @@
       ]
     },
     {
-      "id": "windsurf",
-      "name": "Devin Desktop (legacy Cascade)",
+      "id": "devin",
+      "name": "Devin",
       "vendor": "Cognition",
       "category": "supported_connector",
       "confidence": 0.95,
-      "supported_connector": "windsurf",
+      "supported_connector": "devin",
       "binary_names": [
-        "Devin.exe",
-        "devin-desktop",
-        "windsurf"
+        "devin",
+        "devin.exe"
       ],
       "process_names": [
-        "Devin",
-        "Devin.exe",
-        "devin-desktop",
-        "Devin Desktop",
-        "windsurf",
-        "Windsurf"
+        "devin",
+        "devin.exe"
       ],
       "config_paths": [
-        "~/.codeium/windsurf/hooks.json",
-        "~/.codeium/windsurf/mcp_config.json",
-        "~/.codeium/windsurf/memories/global_rules.md",
-        "~/.codeium/windsurf/skills",
+        "$APPDATA/devin/config.json",
+        "$APPDATA/devin/mcp_config.json",
+        "$APPDATA/devin/skills",
+        "~/.config/devin/config.json",
+        "~/.config/devin/mcp_config.json",
+        "~/.config/devin/skills",
         "~/.agents/skills",
+        ".devin/hooks.v1.json",
+        ".devin/mcp_config.json",
+        ".devin/mcp_config.local.json",
+        ".devin/config.json",
+        ".devin/config.local.json",
+        ".devin/skills",
         ".devin/rules",
-        ".windsurf/rules",
-        ".windsurf/skills",
+        ".devin/agents",
         ".agents/skills",
-        ".windsurfrules",
-        "AGENTS.md"
+        ".agents/agents",
+        "AGENTS.md",
+        "AGENT.md",
+        "AGENTS.local.md"
       ],
-      "extension_ids": [
-        "codeium.codeium",
-        "windsurf"
-      ],
+      "extension_ids": [],
       "mcp_paths": [
-        "~/.codeium/windsurf/mcp_config.json"
+        "$APPDATA/devin/mcp_config.json",
+        "~/.config/devin/mcp_config.json",
+        ".devin/mcp_config.json",
+        ".devin/mcp_config.local.json",
+        "$APPDATA/devin/config.json",
+        "~/.config/devin/config.json",
+        ".devin/config.json",
+        ".devin/config.local.json"
       ],
       "package_names": [],
       "env_var_names": [],
-      "domain_patterns": [
-        "devin.ai",
-        "codeium.com",
-        "windsurf.com"
-      ],
+      "domain_patterns": [],
       "history_patterns": [
-        "windsurf",
-        "codeium"
+        "devin"
       ],
-      "application_names": [
-        "Devin Desktop",
-        "Windsurf.app",
-        "Windsurf"
-      ],
+      "application_names": [],
       "local_endpoints": [],
       "skill_paths": [
-        "~/.codeium/windsurf/skills",
-        ".windsurf/skills",
-        ".codeium/windsurf/skills",
+        "$APPDATA/devin/skills",
+        "~/.config/devin/skills",
+        "~/.agents/skills",
+        ".devin/skills",
         ".agents/skills"
       ],
       "rule_paths": [
-        ".windsurf/rules",
-        ".codeium/windsurf/rules"
+        "$APPDATA/devin/AGENTS.md",
+        "$APPDATA/devin/AGENT.md",
+        "~/.config/devin/AGENTS.md",
+        "~/.config/devin/AGENT.md",
+        ".devin/rules",
+        ".devin/global_rules.md",
+        "AGENTS.md",
+        "AGENT.md",
+        "AGENTS.local.md"
       ]
     },
     {
@@ -2094,25 +2101,6 @@
       ],
       "domain_patterns": [
         "gpt4all.io"
-      ]
-    },
-    {
-      "id": "devin",
-      "name": "Devin",
-      "vendor": "Cognition",
-      "category": "ai_cli",
-      "confidence": 0.84,
-      "specificity": 0.94,
-      "supported_connector": "",
-      "binary_names": [
-        "devin"
-      ],
-      "process_names": [
-        "devin"
-      ],
-      "env_var_names": [
-        "DEVIN_API_KEY",
-        "DEVIN_ORG_ID"
       ]
     },
     {

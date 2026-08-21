@@ -379,6 +379,7 @@ _FRIENDLY_CONNECTOR_NAMES = {
     "codex": "Codex",
     "hermes": "Hermes",
     "cursor": "Cursor",
+    "devin": "Devin",
     "windsurf": "Devin Desktop — legacy Cascade",
     "geminicli": "Gemini CLI (deprecated; use Antigravity)",
     "copilot": "GitHub Copilot CLI",

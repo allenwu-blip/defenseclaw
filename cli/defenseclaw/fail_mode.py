@@ -46,7 +46,7 @@ _EXPECTED_CONTRACTS = {
             "codex-hooks-v4",
         }
     ),
-    "windsurf": frozenset({"windsurf-hooks-v1"}),
+    "devin": frozenset({"devin-hooks-v1"}),
 }
 _UPSTREAM_FAIL_OPEN_CONNECTORS = frozenset({"antigravity", "copilot", "hermes"})
 _SHARED_RUNTIME_CONNECTORS = frozenset({"claudecode", "codex"})
@@ -549,7 +549,12 @@ def _windows_registration_freshness(
         validate_windows_hook_registration,
     )
 
-    if connector == "windsurf":
+    if connector == "devin":
+        locked_paths = _registration_hook_config_paths(cfg, connector)
+        if len(locked_paths) != 1:
+            return "registration-config-binding-stale"
+        config_path = locked_paths[0]
+    elif connector == "windsurf":
         try:
             config_path = windsurf_hook_config_path()
         except ValueError:

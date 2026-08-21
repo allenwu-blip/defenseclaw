@@ -57,6 +57,7 @@ import importlib.util
 import json
 import ntpath
 import os
+import posixpath
 import re
 import stat
 import subprocess
@@ -99,7 +100,7 @@ KNOWN_CONNECTORS: tuple[str, ...] = (
     "zeptoclaw",
     "hermes",
     "cursor",
-    "windsurf",
+    "devin",
     "geminicli",
     "copilot",
     "openhands",
@@ -150,7 +151,7 @@ HOOK_ONLY_CONNECTORS: frozenset[str] = frozenset(
     {
         "hermes",
         "cursor",
-        "windsurf",
+        "devin",
         "geminicli",
         "copilot",
         "openhands",
@@ -869,6 +870,61 @@ def copilot_settings_resolution(
     )
 
 
+def _resolve_devin_config_home(
+    *,
+    platform_name: str,
+    user_home: str,
+    roaming_app_data: str,
+) -> str:
+    """Resolve Devin's documented user configuration root.
+
+    Devin uses ``%APPDATA%\\devin`` on native Windows and
+    ``~/.config/devin`` on macOS/Linux.  This helper is intentionally pure so
+    platform-specific behavior can be verified without changing process-wide
+    path semantics in tests.
+    """
+
+    if platform_name == "nt":
+        home = ntpath.abspath(user_home)
+        app_data = (roaming_app_data or "").strip()
+        if app_data:
+            if (
+                app_data != roaming_app_data
+                or "\x00" in app_data
+                or "\r" in app_data
+                or "\n" in app_data
+                or not ntpath.isabs(app_data)
+                or ntpath.normpath(app_data) != app_data
+            ):
+                raise ValueError("APPDATA is not an absolute normalized path")
+            return ntpath.join(app_data, "devin")
+        return ntpath.join(home, "AppData", "Roaming", "devin")
+    home = posixpath.abspath(user_home)
+    return posixpath.join(home, ".config", "devin")
+
+
+def devin_config_home() -> str:
+    """Return Devin's documented user configuration root for this host."""
+
+    return _resolve_devin_config_home(
+        platform_name=os.name,
+        user_home=str(Path.home()),
+        roaming_app_data=os.environ.get("APPDATA", ""),
+    )
+
+
+def devin_user_config_path() -> str:
+    """Return Devin's canonical user ``config.json`` path."""
+
+    return os.path.join(devin_config_home(), "config.json")
+
+
+def devin_hook_config_path(workspace_dir: str | None = None) -> str:
+    """Return the canonical project hook registration, if scope is pinned."""
+
+    return _workspace_path(workspace_dir, ".devin", "hooks.v1.json")
+
+
 def windsurf_user_home() -> str:
     """Return DefenseClaw's exact Windsurf user-profile binding.
 
@@ -1317,8 +1373,8 @@ def connector_home(
         return os.path.join(home, ".gemini", "config")
     if name == "cursor":
         return os.path.join(home, ".cursor")
-    if name == "windsurf":
-        return windsurf_config_home()
+    if name == "devin":
+        return devin_config_home()
     if name == "hermes":
         return hermes_home()
     if name == "opencode":
@@ -1426,8 +1482,8 @@ def connector_config_files(
             os.path.join(home, ".cursor", "mcp.json"),
             _workspace_path(workspace_dir, ".cursor", "mcp.json"),
         ]
-    elif name == "windsurf":
-        paths = list(_windsurf_mcp_paths())
+    elif name == "devin":
+        paths = _devin_config_paths(workspace_dir)
     elif name == "hermes":
         # Hermes' real config file is YAML, not JSON. HERMES_HOME takes
         # precedence, native Windows defaults to %LOCALAPPDATA%\\hermes, and
@@ -1614,8 +1670,8 @@ def skill_dirs(
         return _hermes_skill_dirs()
     if name == "cursor":
         return _cursor_skill_dirs(workspace_dir)
-    if name == "windsurf":
-        return _windsurf_skill_dirs(workspace_dir)
+    if name == "devin":
+        return _devin_skill_dirs(workspace_dir)
     if name == "geminicli":
         return _gemini_skill_dirs(workspace_dir)
     if name == "copilot":
@@ -1652,6 +1708,11 @@ def skill_write_dirs(
         if workspace:
             return [os.path.join(workspace, ".agents", "skills")]
         return [os.path.join(str(Path.home()), ".config", "agents", "skills")]
+    if normalize(connector) == "devin":
+        workspace = _workspace_dir(workspace_dir)
+        if workspace:
+            return [os.path.join(workspace, ".devin", "skills")]
+        return [os.path.join(devin_config_home(), "skills")]
     return skill_dirs(
         connector,
         openclaw_home=openclaw_home,
@@ -1690,7 +1751,7 @@ def plugin_dirs(
         return _hermes_plugin_dirs(workspace_dir)
     if name == "cursor":
         return []
-    if name == "windsurf":
+    if name == "devin":
         return []
     if name == "geminicli":
         return _gemini_plugin_dirs(workspace_dir)
@@ -1774,6 +1835,13 @@ def agent_dirs(
                 _workspace_path(workspace_dir, ".gemini", "agents"),
             ]
         )
+    if name == "devin":
+        return _dedup(
+            [
+                _workspace_path(workspace_dir, ".devin", "agents"),
+                _workspace_path(workspace_dir, ".agents", "agents"),
+            ]
+        )
     return []
 
 
@@ -1795,16 +1863,13 @@ def rule_dirs(
         return copilot_instruction_paths(workspace_dir)
     if name == "cursor":
         return _dedup([_workspace_path(workspace_dir, ".cursor", "rules")])
-    if name == "windsurf":
-        paths = [os.path.join(windsurf_config_home(), "memories")]
-        for layer in _windsurf_workspace_ancestors(workspace_dir):
-            paths.extend(
-                [
-                    os.path.join(layer, ".devin", "rules"),
-                    os.path.join(layer, ".windsurf", "rules"),
-                ]
-            )
-        return _dedup(paths)
+    if name == "devin":
+        return _dedup(
+            [
+                devin_config_home(),
+                _workspace_path(workspace_dir, ".devin", "rules"),
+            ]
+        )
     if name == "geminicli":
         return _dedup(
             [
@@ -1866,8 +1931,8 @@ def mcp_servers(
         return _hermes_mcp_servers()
     if name == "cursor":
         return _cursor_mcp_servers(workspace_dir)
-    if name == "windsurf":
-        return _windsurf_mcp_servers()
+    if name == "devin":
+        return _devin_mcp_servers(workspace_dir)
     if name == "geminicli":
         return _gemini_mcp_servers(workspace_dir)
     if name == "copilot":
@@ -2488,65 +2553,23 @@ def _cursor_walkable_directory(path: str) -> bool:
     )
 
 
-def _windsurf_skill_dirs(workspace_dir: str | None = None) -> list[str]:
-    home = windsurf_user_home()
+def _devin_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    home = str(Path.home())
     return _dedup(
         [
-            os.path.join(home, ".codeium", "windsurf", "skills"),
+            os.path.join(devin_config_home(), "skills"),
             os.path.join(home, ".agents", "skills"),
-            _workspace_path(workspace_dir, ".windsurf", "skills"),
+            _workspace_path(workspace_dir, ".devin", "skills"),
             _workspace_path(workspace_dir, ".agents", "skills"),
         ]
     )
 
 
-_WINDSURF_CUSTOMIZATION_DIR_LIMIT = 32768
-_WINDSURF_CUSTOMIZATION_FILE_LIMIT = 65536
+_DEVIN_CUSTOMIZATION_DIR_LIMIT = 32768
+_DEVIN_CUSTOMIZATION_FILE_LIMIT = 65536
 
 
-def _windsurf_workspace_ancestors(workspace_dir: str | None) -> list[str]:
-    """Return the pinned workspace through its repository root, closest first."""
-
-    start = _workspace_dir(workspace_dir)
-    if not start:
-        return []
-    repository_root = _windsurf_repository_root(start)
-    stop = repository_root or start
-    layers: list[str] = []
-    current = start
-    while True:
-        layers.append(current)
-        if os.path.normcase(current) == os.path.normcase(stop):
-            break
-        parent = os.path.dirname(current)
-        if os.path.normcase(parent) == os.path.normcase(current):
-            break
-        current = parent
-    return _dedup(layers)
-
-
-def _windsurf_repository_root(start: str) -> str:
-    """Resolve a Git root without following linked/reparse marker ancestry."""
-
-    current = os.path.abspath(start)
-    while True:
-        marker = os.path.join(current, ".git")
-        try:
-            reject_reparse_path(marker)
-            info = os.stat(marker, follow_symlinks=False)
-        except OSError:
-            info = None
-        if info is not None and (
-            stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)
-        ):
-            return current
-        parent = os.path.dirname(current)
-        if os.path.normcase(parent) == os.path.normcase(current):
-            return ""
-        current = parent
-
-
-def _windsurf_safe_directory(path: str) -> bool:
+def _devin_safe_directory(path: str) -> bool:
     try:
         reject_reparse_path(path)
         info = os.stat(path, follow_symlinks=False)
@@ -2555,7 +2578,7 @@ def _windsurf_safe_directory(path: str) -> bool:
     return stat.S_ISDIR(info.st_mode) and not is_symlink(path)
 
 
-def _windsurf_safe_regular_file(path: str) -> bool:
+def _devin_safe_regular_file(path: str) -> bool:
     try:
         reject_reparse_path(path)
         info = os.stat(path, follow_symlinks=False)
@@ -2564,19 +2587,19 @@ def _windsurf_safe_regular_file(path: str) -> bool:
     return stat.S_ISREG(info.st_mode) and not is_symlink(path)
 
 
-def _windsurf_walk_directories(root: str) -> list[str]:
-    """Return a deterministic bounded workspace walk without following links."""
+def _devin_walk_directories(root: str) -> list[str]:
+    """Return a deterministic, bounded workspace walk without links."""
 
     if not root:
         return []
     root = os.path.abspath(root)
-    if not _windsurf_safe_directory(root):
+    if not _devin_safe_directory(root):
         return []
     pending = [root]
     walked: list[str] = []
-    while pending and len(walked) < _WINDSURF_CUSTOMIZATION_DIR_LIMIT:
+    while pending and len(walked) < _DEVIN_CUSTOMIZATION_DIR_LIMIT:
         current = pending.pop()
-        if not _windsurf_safe_directory(current):
+        if not _devin_safe_directory(current):
             continue
         walked.append(current)
         try:
@@ -2586,91 +2609,69 @@ def _windsurf_walk_directories(root: str) -> list[str]:
             continue
         children: list[str] = []
         for entry in entries:
-            if entry.name.casefold() == ".git":
+            if entry.name == ".git":
                 continue
-            candidate = entry.path
+            candidate = os.path.abspath(entry.path)
             try:
                 info = entry.stat(follow_symlinks=False)
-            except OSError:
+                contained = os.path.normcase(os.path.commonpath((root, candidate))) == os.path.normcase(root)
+            except (OSError, ValueError):
                 continue
-            if (
-                entry.is_symlink()
-                or not stat.S_ISDIR(info.st_mode)
-                or not _windsurf_safe_directory(candidate)
-            ):
+            if entry.is_symlink() or not stat.S_ISDIR(info.st_mode) or not contained:
                 continue
-            try:
-                if os.path.normcase(os.path.commonpath((root, candidate))) != os.path.normcase(root):
-                    continue
-            except ValueError:
-                continue
-            children.append(candidate)
+            if _devin_safe_directory(candidate):
+                children.append(candidate)
         pending.extend(reversed(children))
     return walked
 
 
-def windsurf_rule_files(workspace_dir: str | None = None) -> list[str]:
-    """Discover non-enterprise Cascade rules with bounded no-follow semantics.
+def devin_rule_files(workspace_dir: str | None = None) -> list[str]:
+    """Discover Devin's documented local rule and instruction files.
 
-    This intentionally excludes system/ProgramData, managed dashboard, and MDM
-    layers. It covers the documented user-global rule, preferred and legacy
-    workspace rule directories, legacy ``.windsurfrules``, and case-insensitive
-    ``AGENTS.md`` files in the workspace plus ancestors through the Git root.
+    User instructions are the two canonical files in Devin's config root.
+    Project instruction files are recognized recursively; Devin-native rule
+    files remain rooted in the explicitly pinned project ``.devin`` tree.
     """
 
     files: list[str] = []
 
     def add(candidate: str) -> None:
-        if len(files) >= _WINDSURF_CUSTOMIZATION_FILE_LIMIT:
+        if len(files) >= _DEVIN_CUSTOMIZATION_FILE_LIMIT:
             return
         absolute = os.path.abspath(candidate)
-        if _windsurf_safe_regular_file(absolute):
+        if _devin_safe_regular_file(absolute):
             files.append(absolute)
 
-    add(os.path.join(windsurf_config_home(), "memories", "global_rules.md"))
-    ancestors = _windsurf_workspace_ancestors(workspace_dir)
-    for layer in ancestors:
-        if not _windsurf_safe_directory(layer):
-            continue
-        try:
-            with os.scandir(layer) as iterator:
-                entries = sorted(iterator, key=lambda entry: entry.name.casefold())
-        except OSError:
-            entries = []
-        for entry in entries:
-            folded = entry.name.casefold()
-            if folded in {"agents.md", ".windsurfrules"}:
-                add(entry.path)
-        for rules_dir in (
-            os.path.join(layer, ".devin", "rules"),
-            os.path.join(layer, ".windsurf", "rules"),
-        ):
-            if not _windsurf_safe_directory(rules_dir):
-                continue
-            try:
-                with os.scandir(rules_dir) as iterator:
-                    rule_entries = sorted(iterator, key=lambda entry: entry.name.casefold())
-            except OSError:
-                continue
-            for entry in rule_entries:
-                if entry.name.casefold().endswith(".md"):
-                    add(entry.path)
+    config_root = devin_config_home()
+    add(os.path.join(config_root, "AGENTS.md"))
+    add(os.path.join(config_root, "AGENT.md"))
 
     workspace = _workspace_dir(workspace_dir)
-    for current in _windsurf_walk_directories(workspace):
+    if not workspace:
+        return _dedup(files)
+
+    devin_root = os.path.join(workspace, ".devin")
+    add(os.path.join(devin_root, "global_rules.md"))
+    rules_root = os.path.join(devin_root, "rules")
+    if _devin_safe_directory(rules_root):
+        try:
+            with os.scandir(rules_root) as iterator:
+                rule_entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+        except OSError:
+            rule_entries = []
+        for entry in rule_entries:
+            if entry.name.casefold().endswith(".md"):
+                add(entry.path)
+
+    instruction_names = {"agents.md", "agent.md", "agents.local.md"}
+    for current in _devin_walk_directories(workspace):
         try:
             with os.scandir(current) as iterator:
                 entries = sorted(iterator, key=lambda entry: entry.name.casefold())
         except OSError:
             continue
-        is_rule_dir = (
-            os.path.basename(current).casefold() == "rules"
-            and os.path.basename(os.path.dirname(current)).casefold()
-            in {".devin", ".windsurf"}
-        )
         for entry in entries:
-            folded = entry.name.casefold()
-            if folded == "agents.md" or (is_rule_dir and folded.endswith(".md")):
+            if entry.name.casefold() in instruction_names:
                 add(entry.path)
     return _dedup(files)
 
@@ -3321,9 +3322,9 @@ def _cursor_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry
     return entries
 
 
-def _windsurf_mcp_servers() -> list[MCPServerEntry]:
+def _devin_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
     entries: list[MCPServerEntry] = []
-    for path in _windsurf_mcp_paths():
+    for path in _devin_mcp_read_paths(workspace_dir):
         entries.extend(_read_dotmcp_json(path))
     return _dedup_mcp_entries(entries)
 
@@ -3862,11 +3863,63 @@ def _read_zepto_config(path: str) -> list[MCPServerEntry]:
     return _read_mcp_settings_block(path, keys=("mcp", "servers"))
 
 
-def _windsurf_mcp_paths(home: str | None = None) -> list[str]:
-    home = home or windsurf_user_home()
-    return [
-        os.path.join(home, ".codeium", "windsurf", "mcp_config.json"),
+def _devin_workspace_legacy_config_paths(workspace_dir: str | None = None) -> list[str]:
+    root = _workspace_path(workspace_dir, ".devin")
+    if not root or not _devin_safe_directory(root):
+        return []
+    try:
+        with os.scandir(root) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name.casefold())
+    except OSError:
+        return []
+    paths: list[str] = []
+    for entry in entries[:256]:
+        folded = entry.name.casefold()
+        if folded.startswith("config") and folded.endswith(".json") and _devin_safe_regular_file(entry.path):
+            paths.append(os.path.abspath(entry.path))
+    return paths
+
+
+def _devin_mcp_write_path(workspace_dir: str | None = None) -> str:
+    workspace = _workspace_dir(workspace_dir)
+    if workspace:
+        return os.path.join(workspace, ".devin", "mcp_config.json")
+    return os.path.join(devin_config_home(), "mcp_config.json")
+
+
+def _devin_mcp_read_paths(workspace_dir: str | None = None) -> list[str]:
+    workspace = _workspace_dir(workspace_dir)
+    canonical: list[str] = []
+    if workspace:
+        canonical.extend(
+            [
+                os.path.join(workspace, ".devin", "mcp_config.local.json"),
+                os.path.join(workspace, ".devin", "mcp_config.json"),
+            ]
+        )
+    canonical.append(_devin_mcp_write_path(None))
+    # config.json variants are historical read compatibility. Writes always
+    # target mcp_config.json and never rewrite a legacy configuration file.
+    legacy = [*_devin_workspace_legacy_config_paths(workspace_dir), devin_user_config_path()]
+    return _dedup([*canonical, *legacy])
+
+
+def _devin_config_paths(workspace_dir: str | None = None) -> list[str]:
+    workspace = _workspace_dir(workspace_dir)
+    paths = [
+        devin_user_config_path(),
+        os.path.join(devin_config_home(), "mcp_config.json"),
     ]
+    if workspace:
+        paths.extend(
+            [
+                os.path.join(workspace, ".devin", "hooks.v1.json"),
+                os.path.join(workspace, ".devin", "mcp_config.json"),
+                os.path.join(workspace, ".devin", "mcp_config.local.json"),
+                *_devin_workspace_legacy_config_paths(workspace_dir),
+            ]
+        )
+    return _dedup(paths)
 
 
 def _read_mcp_servers_via_openclaw_cli(
@@ -4070,6 +4123,8 @@ def set_mcp_server(
                      by default, or ``<workspace>/.agents/mcp_config.json``
                      when *workspace_dir* is explicit. Remote generic ``url``
                      entries are written canonically as ``serverUrl``.
+    * Devin        — user ``<config-root>/mcp_config.json`` by default, or
+                     ``<workspace>/.devin/mcp_config.json`` when scoped.
     * ZeptoClaw    — :class:`MCPWriteUnsupportedError`.
     * Hook-backed  — connector-owned JSON/YAML config when documented
                      (for example OpenHands writes ``~/.openhands/mcp.json``).
@@ -4117,14 +4172,8 @@ def set_mcp_server(
         )
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
-    if name_n == "windsurf":
-        path = _windsurf_existing_mcp_write_path()
-        if not path:
-            raise MCPWriteUnsupportedError(
-                "windsurf MCP writes are disabled until an existing documented "
-                "Windsurf MCP config file is present; DefenseClaw will not "
-                "create guessed Windsurf config paths.",
-            )
+    if name_n == "devin":
+        path = _devin_mcp_write_path(workspace_dir)
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
     if name_n == "geminicli":
@@ -4230,12 +4279,8 @@ def unset_mcp_server(
         )
         _atomic_json_delete(path, ("mcpServers", name))
         return
-    if name_n == "windsurf":
-        path = _windsurf_existing_mcp_write_path()
-        if not path:
-            raise MCPWriteUnsupportedError(
-                "windsurf MCP writes are disabled until an existing documented Windsurf MCP config file is present.",
-            )
+    if name_n == "devin":
+        path = _devin_mcp_write_path(workspace_dir)
         _atomic_json_delete(path, ("mcpServers", name))
         return
     if name_n == "geminicli":
@@ -7511,13 +7556,6 @@ def _atomic_write_yaml(path: str, data: dict[str, Any]) -> None:
 def _atomic_write_text(path: str, text: str) -> None:
     """Atomically write UTF-8 text with private permissions."""
     atomic_write_private_bytes(path, text.encode("utf-8"))
-
-
-def _windsurf_existing_mcp_write_path() -> str | None:
-    for path in _windsurf_mcp_paths():
-        if os.path.isfile(path):
-            return path
-    return None
 
 
 def _atomic_write_json(path: str, data: dict[str, Any]) -> None:

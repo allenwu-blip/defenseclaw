@@ -882,6 +882,41 @@ func windsurfToolCallLifecycle() ToolCallLifecycleContract {
 	}
 }
 
+func devinToolCallLifecycle() ToolCallLifecycleContract {
+	return ToolCallLifecycleContract{
+		Version:                           ToolCallLifecycleContractVersion,
+		PreProposalEvents:                 []string{"PreToolUse"},
+		AuthoritativeSuccessEvents:        []string{"PostToolUse"},
+		AuthoritativeFailureEvents:        []string{"PostToolUse"},
+		AuthoritativeDenialEvents:         []string{},
+		AuthoritativePendingDiscardEvents: []string{"Stop"},
+		AuthoritativeTerminalEvents:       []string{"SessionEnd"},
+		InvocationIDAuthority:             ToolInvocationIDNone,
+		OutcomeAuthority:                  ToolOutcomeResultPayload,
+		StatefulEnforcementLevel:          StatefulToolDetectionOnly,
+		Routing: ToolEventRouting{
+			StructuredActionEvents: []string{"PreToolUse", "PermissionRequest"},
+			ResultContentEvents:    []string{"PostToolUse"},
+			StateTransitionEvents:  []string{},
+			AuditOnlyEvents: []string{
+				"UserPromptSubmit", "Stop", "PostCompaction", "SessionStart", "SessionEnd",
+			},
+		},
+		CoveredToolSurfaces: []ToolSurface{
+			ToolSurfaceGeneric, ToolSurfaceShell, ToolSurfaceFileRead,
+			ToolSurfaceFileWrite, ToolSurfaceFileEdit, ToolSurfaceMCP,
+		},
+		OfficialSourceURLs: []string{
+			"https://docs.devin.ai/cli/extensibility/hooks/overview",
+			"https://docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks",
+		},
+		Limitations: []string{
+			"Devin publishes session_id and per-turn prompt_id but no stable per-tool invocation identifier, so PreToolUse/PostToolUse state remains detection-only.",
+			"PostToolUse success/failure is authoritative only through tool_response.success; hook errors other than exit code 2 fail open upstream.",
+		},
+	}
+}
+
 func geminiCLIToolCallLifecycle() ToolCallLifecycleContract {
 	return ToolCallLifecycleContract{
 		Version:                           ToolCallLifecycleContractVersion,

@@ -802,7 +802,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        connector: [codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, opencode]
+        # Devin requires its authentic signed fixed-path client, so its Windows
+        # readiness is covered by admission tests plus authenticated manual/live
+        # validation rather than this synthetic packaged contract.
+        connector: [codex, claudecode, amp, copilot, cursor, hermes, antigravity, opencode]
     env:
       CONNECTOR: ${{ matrix.connector }}
     steps:

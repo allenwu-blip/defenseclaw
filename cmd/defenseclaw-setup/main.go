@@ -182,6 +182,8 @@ type options struct {
 	ClaudeConfigDir      string
 	CopilotHome          string
 	CursorHome           string
+	DevinConfigDir       string
+	DevinExecutable      string
 	WindsurfUserHome     string
 	AntigravityConfigDir string
 	GeminiCLIHome        string
@@ -265,6 +267,8 @@ type installState struct {
 	ClaudeConfigDir        string            `json:"claude_config_dir,omitempty"`
 	CopilotHome            string            `json:"copilot_home,omitempty"`
 	CursorHome             string            `json:"cursor_home,omitempty"`
+	DevinConfigDir         string            `json:"devin_config_dir,omitempty"`
+	DevinExecutable        string            `json:"devin_executable,omitempty"`
 	WindsurfUserHome       string            `json:"windsurf_user_home,omitempty"`
 	WindsurfHooksPath      string            `json:"windsurf_hooks_path,omitempty"`
 	AntigravityConfigDir   string            `json:"antigravity_config_dir,omitempty"`
@@ -438,12 +442,17 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 		return 1, fmt.Errorf("refusing to replace an existing directory without valid DefenseClaw installer state: %s", installRoot)
 	}
 	if oldState != nil {
-		if !opts.ConnectorSet && oldState.Connector == "geminicli" {
+		if !opts.ConnectorSet && strings.EqualFold(oldState.Connector, "geminicli") {
 			// Retire inherited Gemini CLI selection during repair/upgrade. The
 			// transaction still carries oldState as previous custody, so the
 			// authenticated superseded-connector teardown removes only managed
 			// legacy entries before committing a connector-free install.
 			opts.Connector = "none"
+			opts.PreserveConnectorConfiguration = false
+		} else if !opts.ConnectorSet && strings.EqualFold(oldState.Connector, "windsurf") {
+			// One-way product-slot migration: cleanup retains the retired ID, while
+			// every refreshed installation persists and configures canonical Devin.
+			opts.Connector = "devin"
 			opts.PreserveConnectorConfiguration = false
 		} else if !opts.ConnectorSet && validConnector(oldState.Connector) {
 			opts.Connector = oldState.Connector
@@ -525,6 +534,8 @@ func runInstallContext(ctx context.Context, opts options, installRoot, dataRoot 
 	opts.ClaudeConfigDir = transaction.ClaudeConfigDir
 	opts.CopilotHome = transaction.CopilotHome
 	opts.CursorHome = transaction.CursorHome
+	opts.DevinConfigDir = transaction.DevinConfigDir
+	opts.DevinExecutable = transaction.DevinExecutable
 	opts.WindsurfUserHome = transaction.WindsurfUserHome
 	opts.AntigravityConfigDir = transaction.AntigravityConfigDir
 	opts.GeminiCLIHome = transaction.GeminiCLIHome
@@ -1004,7 +1015,7 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	seen := map[string]bool{}
 	connectors := make([]string, 0, len(nativeLifecycleConnectorNames))
 	add := func(name string) {
-		if validConnector(name) && name != "none" && !seen[name] {
+		if validCleanupConnector(name) && name != "none" && !seen[name] {
 			seen[name] = true
 			connectors = append(connectors, name)
 		}
@@ -1046,6 +1057,9 @@ func connectorsForNativeUninstall(state *installState, dataRoot string) ([]strin
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "windsurf", "config.json")) {
 		add("windsurf")
+	}
+	if pathExists(filepath.Join(dataRoot, "connector_backups", "devin", "config.json")) {
+		add("devin")
 	}
 	if pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "hooks.json.json")) ||
 		pathExists(filepath.Join(dataRoot, "connector_backups", "antigravity", "config.json")) {
@@ -1431,6 +1445,8 @@ func connectorLifecycleConfigHome(env []string, connectorName string) (string, e
 		variable = "COPILOT_HOME"
 	case "cursor":
 		variable = "DEFENSECLAW_CURSOR_CONFIG_HOME"
+	case "devin":
+		variable = "DEFENSECLAW_DEVIN_CONFIG_HOME"
 	case "windsurf":
 		variable = "WINDSURF_USER_HOME"
 	case "antigravity":
@@ -1494,6 +1510,13 @@ func validConnector(value string) bool {
 	return value == "none" || isNativeLifecycleConnector(value)
 }
 
+// validCleanupConnector admits the retired Cascade identity only inside
+// authenticated native-state teardown and migration paths. It must never be
+// used by argument parsing, pickers, discovery, or new registration.
+func validCleanupConnector(value string) bool {
+	return validConnector(value) || value == "windsurf"
+}
+
 var nativeLifecycleConnectorNames = []string{
 	"amp",
 	"antigravity",
@@ -1501,11 +1524,11 @@ var nativeLifecycleConnectorNames = []string{
 	"codex",
 	"copilot",
 	"cursor",
+	"devin",
 	"geminicli",
 	"hermes",
 	"omnigent",
 	"opencode",
-	"windsurf",
 }
 
 func isNativeLifecycleConnector(value string) bool {
@@ -1788,6 +1811,8 @@ func stageInstallTree(payload loadedPayload, staging, installRoot, dataRoot, mai
 		ClaudeConfigDir:        opts.ClaudeConfigDir,
 		CopilotHome:            opts.CopilotHome,
 		CursorHome:             opts.CursorHome,
+		DevinConfigDir:         opts.DevinConfigDir,
+		DevinExecutable:        opts.DevinExecutable,
 		WindsurfUserHome:       opts.WindsurfUserHome,
 		WindsurfHooksPath:      windsurfHooksPath,
 		AntigravityConfigDir:   opts.AntigravityConfigDir,
@@ -2841,7 +2866,7 @@ func parseArgs(args []string) (options, error) {
 		return opts, errors.New("only per-user INSTALLSCOPE=user is supported by this installer")
 	}
 	if !validConnector(opts.Connector) {
-		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, hermes, omnigent, opencode, windsurf, or none", opts.Connector)
+		return opts, fmt.Errorf("invalid CONNECTOR %q; expected amp, antigravity, codex, claudecode, copilot, cursor, devin, hermes, omnigent, opencode, or none", opts.Connector)
 	}
 	if opts.ConnectorSet && opts.Connector == "geminicli" {
 		return opts, errors.New("Gemini CLI integration is deprecated; install the Antigravity connector instead")
@@ -2895,8 +2920,8 @@ func normalizeConnector(value string) string {
 		return "copilot"
 	case "cursor", "cursoragent", "cursor-agent":
 		return "cursor"
-	case "windsurf":
-		return "windsurf"
+	case "devin", "devincli", "devin-cli", "devinlocal", "devin-local":
+		return "devin"
 	case "antigravity", "agy":
 		return "antigravity"
 	case "gemini", "geminicli", "gemini-cli":
@@ -2911,7 +2936,7 @@ func normalizeConnector(value string) string {
 }
 
 func printUsage() {
-	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|antigravity|codex|claudecode|copilot|cursor|hermes|omnigent|opencode|windsurf|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
+	fmt.Println("DefenseClawSetup-x64.exe [/quiet] [/norestart] [INSTALLSCOPE=user] [CONNECTOR=amp|antigravity|codex|claudecode|copilot|cursor|devin|hermes|omnigent|opencode|none] [MODE=observe|action] [STARTGATEWAY=1] | /verify")
 	fmt.Println("Maintenance: DefenseClawSetup-x64.exe /repair | /upgrade | /uninstall [DELETEUSERDATA=1]")
 }
 

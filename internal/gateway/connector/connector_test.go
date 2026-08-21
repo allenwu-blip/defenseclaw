@@ -354,7 +354,7 @@ func TestIsLoopback(t *testing.T) {
 
 func TestRegistry_DefaultContainsAllBuiltins(t *testing.T) {
 	r := NewDefaultRegistry()
-	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "windsurf", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
+	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "devin", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
 	for _, name := range expected {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("default registry missing %q", name)

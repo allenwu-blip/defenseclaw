@@ -106,7 +106,7 @@ func retryPendingConnectorReconciliation(
 		}
 		seen[identity] = true
 		connectorName := strings.ToLower(failure.Connector)
-		codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome := "", "", "", "", "", "", "", "", "", "", ""
+		codexHome, claudeHome, copilotHome, cursorHome, devinHome, devinExecutable, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome := "", "", "", "", "", "", "", "", "", "", "", "", ""
 		if connectorName == "codex" {
 			codexHome = failure.ConfigHome
 		} else if connectorName == "claudecode" {
@@ -115,6 +115,9 @@ func retryPendingConnectorReconciliation(
 			copilotHome = failure.ConfigHome
 		} else if connectorName == "cursor" {
 			cursorHome = failure.ConfigHome
+		} else if connectorName == "devin" {
+			devinHome = failure.ConfigHome
+			devinExecutable = transaction.PreviousDevinExecutable
 		} else if connectorName == "windsurf" {
 			windsurfHome = failure.ConfigHome
 		} else if connectorName == "antigravity" {
@@ -130,7 +133,7 @@ func retryPendingConnectorReconciliation(
 			hermesHome = failure.ConfigHome
 		}
 		env := transactionChildEnvForConnectorHomes(
-			transaction, codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome,
+			transaction, codexHome, claudeHome, copilotHome, cursorHome, devinHome, devinExecutable, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome,
 		)
 		verify := func() error {
 			return run(gatewayPath, transaction.DataRoot, connectorName, "verify", env)
@@ -319,6 +322,8 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 			candidates = append(candidates, transaction.PreviousState.CopilotHome)
 		case "cursor":
 			candidates = append(candidates, transaction.PreviousState.CursorHome)
+		case "devin":
+			candidates = append(candidates, transaction.PreviousState.DevinConfigDir)
 		case "windsurf":
 			candidates = append(candidates, transaction.PreviousState.WindsurfUserHome)
 		case "antigravity":
@@ -334,7 +339,7 @@ func connectorCleanupHomes(transaction setupTransaction, connectorName string) [
 		}
 	}
 	candidates = append(candidates, connectorConfigHome(transaction, connectorName, false))
-	if connectorName != "windsurf" &&
+	if connectorName != "windsurf" && connectorName != "devin" &&
 		!connectorManagedBackupExists(transaction.DataRoot, connectorName) {
 		// A predecessor or concurrent reconcile can discard its exact managed
 		// backup after detecting config drift while retaining the field-level
@@ -387,6 +392,8 @@ func connectorManagedBackupExists(dataRoot, connectorName string) bool {
 		logicalName = "config"
 	case "cursor":
 		logicalName = "hooks.json"
+	case "devin":
+		logicalName = "config"
 	case "windsurf":
 		logicalName = "config"
 	case "antigravity":
@@ -449,6 +456,8 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 	claudeHome := transaction.PreviousClaudeConfigDir
 	copilotHome := transaction.PreviousCopilotHome
 	cursorHome := transaction.PreviousCursorHome
+	devinHome := transaction.PreviousDevinConfigDir
+	devinExecutable := transaction.PreviousDevinExecutable
 	windsurfHome := transaction.PreviousWindsurfUserHome
 	antigravityHome := transaction.PreviousAntigravityConfigDir
 	geminiCLIHome := transaction.PreviousGeminiCLIHome
@@ -464,6 +473,8 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		copilotHome = configHome
 	} else if connectorName == "cursor" {
 		cursorHome = configHome
+	} else if connectorName == "devin" {
+		devinHome = configHome
 	} else if connectorName == "windsurf" {
 		windsurfHome = configHome
 	} else if connectorName == "antigravity" {
@@ -479,7 +490,7 @@ func connectorLifecycleEnvForHome(transaction setupTransaction, connectorName, c
 		hermesHome = configHome
 	}
 	return transactionChildEnvForConnectorHomes(
-		transaction, codexHome, claudeHome, copilotHome, cursorHome, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome,
+		transaction, codexHome, claudeHome, copilotHome, cursorHome, devinHome, devinExecutable, windsurfHome, antigravityHome, geminiCLIHome, geminiHome, openCodeHome, omnigentHome, hermesHome,
 	)
 }
 
@@ -698,7 +709,7 @@ func validateConnectorReconciliationState(state *connectorReconciliationState) e
 }
 
 func validateConnectorReconciliationIdentity(connectorName, configHome string) error {
-	if connectorName == "none" || !validConnector(connectorName) {
+	if connectorName == "none" || !validCleanupConnector(connectorName) {
 		return fmt.Errorf("invalid connector reconciliation target %q", connectorName)
 	}
 	if configHome == "" || !filepath.IsAbs(configHome) || filepath.Clean(configHome) != configHome {
@@ -776,6 +787,11 @@ func connectorConfigHome(transaction setupTransaction, connectorName string, pre
 			return transaction.PreviousCursorHome
 		}
 		return transaction.CursorHome
+	case "devin":
+		if previous {
+			return transaction.PreviousDevinConfigDir
+		}
+		return transaction.DevinConfigDir
 	case "windsurf":
 		if previous {
 			return transaction.PreviousWindsurfUserHome

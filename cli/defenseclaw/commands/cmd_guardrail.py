@@ -81,6 +81,7 @@ _CONNECTOR_LABELS = {
     "zeptoclaw": "ZeptoClaw",
     "hermes": "Hermes",
     "cursor": "Cursor",
+    "devin": "Devin",
     "windsurf": "Devin Desktop — legacy Cascade",
     "geminicli": "Gemini CLI (deprecated; use Antigravity)",
     "copilot": "GitHub Copilot CLI",

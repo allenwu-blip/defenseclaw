@@ -32,7 +32,7 @@ def test_ai_signature_catalog_contains_supported_and_shadow_agents():
         "claudecode",
         "hermes",
         "cursor",
-        "windsurf",
+        "devin",
         "copilot",
         "aider",
         "ai-sdks",
@@ -49,31 +49,41 @@ def test_ai_signature_catalog_contains_supported_and_shadow_agents():
         assert expected in ids
 
 
-def test_windsurf_signature_tracks_official_devin_desktop_rename():
+def test_devin_signature_tracks_canonical_connector_contract():
     signatures = {sig.id: sig for sig in load_ai_signatures()}
-    windsurf = signatures["windsurf"]
+    devin = signatures["devin"]
 
-    assert {"Devin.exe", "devin-desktop", "windsurf"} <= set(windsurf.binary_names)
-    assert {"Devin", "Devin.exe", "Devin Desktop", "Windsurf"} <= set(windsurf.process_names)
+    assert "windsurf" not in signatures
+    assert set(devin.binary_names) == {"devin", "devin.exe"}
+    assert set(devin.process_names) == {"devin", "devin.exe"}
     assert {
-        "~/.codeium/windsurf/mcp_config.json",
-        "~/.codeium/windsurf/memories/global_rules.md",
-        "~/.codeium/windsurf/skills",
+        "$APPDATA/devin/config.json",
+        "$APPDATA/devin/mcp_config.json",
+        "~/.config/devin/config.json",
+        "~/.config/devin/mcp_config.json",
+        ".devin/hooks.v1.json",
+        ".devin/mcp_config.json",
+        ".devin/mcp_config.local.json",
+        ".devin/skills",
         "~/.agents/skills",
         ".devin/rules",
-        ".windsurf/rules",
         "AGENTS.md",
-        ".windsurf/skills",
+        "AGENT.md",
+        "AGENTS.local.md",
         ".agents/skills",
-    } <= set(windsurf.config_paths)
-    assert ".codeium/windsurf/rules" not in windsurf.config_paths
-    assert "~/.codeium/windsurf/mcp.json" not in windsurf.config_paths
-    assert windsurf.mcp_paths == ("~/.codeium/windsurf/mcp_config.json",)
-    assert windsurf.name == "Devin Desktop (legacy Cascade)"
-    assert windsurf.vendor == "Cognition"
-    assert windsurf.env_var_names == ()
-    assert "Devin Desktop" in windsurf.application_names
-    assert "devin.ai" in windsurf.domain_patterns
+    } <= set(devin.config_paths)
+    assert not any("windsurf" in path.casefold() for path in devin.config_paths)
+    assert {
+        "$APPDATA/devin/mcp_config.json",
+        "~/.config/devin/mcp_config.json",
+        ".devin/mcp_config.json",
+        ".devin/mcp_config.local.json",
+    } <= set(devin.mcp_paths)
+    assert devin.name == "Devin"
+    assert devin.vendor == "Cognition"
+    assert devin.env_var_names == ()
+    assert devin.application_names == ()
+    assert devin.domain_patterns == ()
 
 
 def test_lemonade_signature_tracks_server_surface():

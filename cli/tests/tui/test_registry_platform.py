@@ -37,7 +37,7 @@ def test_windows_palette_hides_unsupported_connector_setup_commands() -> None:
         "hermes",
         "omnigent",
         "opencode",
-        "windsurf",
+        "devin",
     } <= commands.keys()
 
 

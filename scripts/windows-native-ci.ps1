@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -4046,12 +4046,6 @@ function Get-WizardConnectorSpecification([string]$ConnectorName, [string]$UserP
             DoctorLabel = 'Cursor hooks'
             DoctorRuntimePattern = 'configured runtime=.*cursor-hook\.ps1.*failClosed='
         }
-        windsurf = @{
-            HookScript = 'windsurf-hook.ps1'
-            ConfigPath = Join-Path $UserProfile '.codeium\windsurf\hooks.json'
-            DoctorLabel = 'Legacy Cascade hooks'
-            DoctorRuntimePattern = 'healthy Windows-native PowerShell registration'
-        }
     }
     if (-not $definitions.Contains($ConnectorName)) {
         throw "unsupported wizard connector specification: $ConnectorName"
@@ -4112,6 +4106,8 @@ function Get-NativeConnectorBackupMarkers([string]$DataRoot, [string]$Connector)
                 'connector_backups\cursor\hooks.json.json'
             )
         }
+        # Retired Windsurf/Cascade is accepted only as an old backup namespace
+        # so uninstall can restore bytes owned by a pre-Devin installation.
         'windsurf' {
             @('connector_backups\windsurf\config.json')
         }
@@ -4131,7 +4127,7 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
 ) {
     $configured = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($name in @($ConfiguredConnectors)) {
-        if ([string]$name -notin @('antigravity', 'codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf')) {
+        if ([string]$name -notin @('antigravity', 'codex', 'claudecode', 'amp', 'copilot', 'cursor')) {
             throw 'native Setup acceptance received an unsupported configured connector'
         }
         $null = $configured.Add([string]$name)
@@ -4151,6 +4147,8 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
         @(Get-NativeConnectorBackupMarkers $DataRoot 'cursor').Count -ne 0) {
         $required += 'cursor'
     }
+    # Preserve cleanup authority for a pre-Devin Cascade backup, but never
+    # treat the retired connector as configured or selectable.
     if (@(Get-NativeConnectorBackupMarkers $DataRoot 'windsurf').Count -ne 0) {
         $required += 'windsurf'
     }
@@ -4164,14 +4162,12 @@ function Assert-NativeConnectorCleanupAuthorityPresent(
             throw "native Setup acceptance lost $connector cleanup authority before uninstall"
         }
     }
-    if ($configured.Contains('windsurf') -and
-        @(Get-NativeConnectorBackupMarkers $DataRoot 'windsurf').Count -eq 0) {
-        throw 'native Setup acceptance lost windsurf cleanup authority before uninstall'
-    }
 }
 
 function Assert-NativeConnectorBackupMarkersConsumed([string]$DataRoot) {
     $remaining = [Collections.Generic.List[string]]::new()
+    # The final legacy entry proves uninstall consumed old Cascade restoration
+    # custody without exposing Windsurf as a current connector.
     foreach ($connector in @('antigravity', 'codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf')) {
         foreach ($relativePath in @(Get-NativeConnectorBackupMarkers $DataRoot $connector)) {
             $remaining.Add("$connector/$relativePath")
@@ -4370,24 +4366,6 @@ function Assert-SetupInstallState(
     $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
     if ([string]$state.connector -ne $ConnectorName -or [string]$state.mode -ne $Mode) {
         throw "setup install state did not preserve wizard selections: connector=$($state.connector) mode=$($state.mode)"
-    }
-    if ($ConnectorName -eq 'windsurf') {
-        $expectedProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
-        if (-not [string]::Equals(
-            [IO.Path]::GetFullPath([string]$state.windsurf_user_home),
-            [IO.Path]::GetFullPath($expectedProfile),
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-            throw 'setup install state did not preserve the explicit Windsurf profile binding'
-        }
-        $expectedHooksPath = Join-Path $expectedProfile '.codeium\windsurf\hooks.json'
-        if (-not [string]::Equals(
-            [IO.Path]::GetFullPath([string]$state.windsurf_hooks_path),
-            [IO.Path]::GetFullPath($expectedHooksPath),
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-            throw 'setup install state did not preserve the exact Windsurf hooks target'
-        }
     }
     if ($ConnectorName -eq 'antigravity') {
         $expectedAntigravityConfigDir = Join-Path (
@@ -4833,31 +4811,6 @@ function Assert-WizardHookRegistration(
         if ($registration -match '(?i)defenseclaw-hook(?:\.exe|\.cmd)|\bwsl\b|\bbash\b|\bchmod\b') {
             throw 'wizard-selected Amp policy plugin depends on a shell hook or compatibility layer'
         }
-    } elseif ($Specification.Connector -eq 'windsurf') {
-        try { $settings = $registration | ConvertFrom-Json -ErrorAction Stop }
-        catch { throw "wizard-selected Windsurf registration is not valid JSON: $($_.Exception.Message)" }
-        $expectedEvents = @(
-            'pre_read_code', 'post_read_code', 'pre_write_code', 'post_write_code',
-            'pre_run_command', 'post_run_command', 'pre_mcp_tool_use', 'post_mcp_tool_use',
-            'pre_user_prompt', 'post_cascade_response',
-            'post_cascade_response_with_transcript', 'post_setup_worktree'
-        )
-        $actualEvents = @($settings.hooks.PSObject.Properties.Name | Sort-Object)
-        if (($actualEvents -join "`n") -cne (@($expectedEvents | Sort-Object) -join "`n")) {
-            throw "wizard-selected Windsurf registration has an incomplete event matrix: $($actualEvents -join ', ')"
-        }
-        $expectedCommand = "& '" + $expectedHook.Replace("'", "''") + "'"
-        foreach ($event in $expectedEvents) {
-            $handlers = @($settings.hooks.PSObject.Properties[$event].Value)
-            $managedHandlers = @($handlers | Where-Object {
-                [string]$_.powershell -ceq $expectedCommand
-            })
-            if ($managedHandlers.Count -ne 1 -or
-                $managedHandlers[0].PSObject.Properties.Name -contains 'command' -or
-                [bool]$managedHandlers[0].show_output -ne $true) {
-                throw "wizard-selected Windsurf $event registration is not the exact PowerShell-only managed handler"
-            }
-        }
     } else {
         throw "unsupported wizard connector registration contract: $($Specification.Connector)"
     }
@@ -4991,8 +4944,6 @@ function Assert-WizardConnectorHealth(
         [string]$Specification.ConfigPath
     } elseif ($Specification.Connector -eq 'cursor') {
         Join-Path ([Environment]::GetEnvironmentVariable('DEFENSECLAW_HOME')) 'hooks\cursor-hook.ps1'
-    } elseif ($Specification.Connector -eq 'windsurf') {
-        Join-Path $env:DEFENSECLAW_HOME 'hooks\windsurf-hook.ps1'
     } else {
         Get-StableHookRuntimeExecutable
     }
@@ -5106,16 +5057,6 @@ function Invoke-WizardConnectorAcceptance(
     $launcher = Join-Path $InstallRoot 'bin\defenseclaw.exe'
     $gateway = Join-Path $InstallRoot 'bin\defenseclaw-gateway.exe'
     $python = Join-Path $InstallRoot 'runtime\python\python.exe'
-    $originalConfigBytes = $null
-    if ($ConnectorName -eq 'windsurf') {
-        [IO.Directory]::CreateDirectory((Split-Path -Parent $specification.ConfigPath)) | Out-Null
-        $originalConfigBytes = [Text.UTF8Encoding]::new($false).GetBytes(
-            "{`r`n  `"vendor`": {`"preserve`": true},`r`n  `"hooks`": {`r`n" +
-            "    `"pre_read_code`": [{`"powershell`": `"& 'C:\\Vendor\\audit.ps1'`", `"show_output`": false}]`r`n" +
-            "  }`r`n}`r`n"
-        )
-        [IO.File]::WriteAllBytes($specification.ConfigPath, $originalConfigBytes)
-    }
     Invoke-WizardInstall $Setup $Root $ConnectorName $Mode $true `
         (Join-Path $Logs "wizard-$ConnectorName-$Mode-install.json")
     $env:DEFENSECLAW_HOME = $DataRoot
@@ -5205,13 +5146,6 @@ function Invoke-WizardConnectorAcceptance(
     Assert-NoDefenseClawRegistration (
         @($specification.ConfigPath) + @($specification.OtherConfigPaths)
     )
-    if ($null -ne $originalConfigBytes) {
-        if (-not (Test-Path -LiteralPath $specification.ConfigPath -PathType Leaf) -or
-            [Convert]::ToBase64String([IO.File]::ReadAllBytes($specification.ConfigPath)) -cne
-                [Convert]::ToBase64String($originalConfigBytes)) {
-            throw 'wizard Windsurf uninstall did not restore the unrelated config bytes exactly'
-        }
-    }
     Assert-NoGatewayAutoStart
     Assert-NoInstalledGatewayProcess $gateway
     Assert-UserPathRegistrySnapshot $UserPathBefore `
@@ -5262,8 +5196,7 @@ function Invoke-SetupAcceptance {
         (Join-Path $userProfile '.claude\settings.json'),
         (Join-Path $userProfile '.config\amp\plugins\defenseclaw.ts'),
         (Join-Path $userProfile '.copilot\hooks\defenseclaw.json'),
-        (Join-Path $userProfile '.cursor\hooks.json'),
-        (Join-Path $userProfile '.codeium\windsurf\hooks.json')
+        (Join-Path $userProfile '.cursor\hooks.json')
     )
     if (Test-Path -LiteralPath $installRoot) { throw "refusing to overwrite an existing current-user install: $installRoot" }
     if (Test-Path -LiteralPath $dataRoot) { throw "refusing to overwrite existing current-user data: $dataRoot" }
@@ -5330,7 +5263,7 @@ function Invoke-SetupAcceptance {
             Remove-Item Env:DEFENSECLAW_HOME -ErrorAction SilentlyContinue
             $env:PATH = "$fixtureSearchPath;$processPathBefore"
 
-            foreach ($wizardConnector in @('copilot', 'cursor', 'windsurf')) {
+            foreach ($wizardConnector in @('copilot', 'cursor')) {
                 Invoke-WizardConnectorAcceptance `
                     $setup $root $logs $installRoot $dataRoot $arpKey $userProfile `
                     $fixtureSearchPath $userPathBefore $wizardConnector 'observe'
@@ -5969,12 +5902,23 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp
             catch { Write-Warning "setup acceptance watchdog cleanup failed: $($_.Exception.Message)" }
             try { Invoke-Installed $gateway @('stop') @(0, 1) 60 | Out-Null }
             catch { Write-Warning "setup acceptance gateway cleanup failed: $($_.Exception.Message)" }
-            foreach ($configuredConnector in @('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'windsurf', 'antigravity')) {
+            foreach ($configuredConnector in @('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'antigravity')) {
                 try {
                     Invoke-Installed $gateway @('connector', 'teardown', '--connector', $configuredConnector) `
                         @(0, 1) 120 | Out-Null
                 } catch {
                     Write-Warning "setup acceptance $configuredConnector teardown cleanup failed: $($_.Exception.Message)"
+                }
+            }
+            # Retired Windsurf/Cascade is not a setup target. Invoke its
+            # compatibility teardown only when an old restoration marker proves
+            # that a pre-Devin installation still owns cleanup work.
+            if (@(Get-NativeConnectorBackupMarkers $dataRoot 'windsurf').Count -ne 0) {
+                try {
+                    Invoke-Installed $gateway @('connector', 'teardown', '--connector', 'windsurf') `
+                        @(0, 1) 120 | Out-Null
+                } catch {
+                    Write-Warning "legacy Cascade teardown cleanup failed: $($_.Exception.Message)"
                 }
             }
         }
@@ -7485,9 +7429,6 @@ function Invoke-Contract {
     $defaultGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
     $defaultHermesHome = Join-Path $contractHome 'AppData\Local\hermes'
-    # Native Setup binds Cascade-only Windsurf custody to FOLDERID_Profile;
-    # changing process USERPROFILE below must not redirect that vendor path.
-    $officialWindsurfConfig = Join-Path $realProfile '.codeium\windsurf\hooks.json'
     $profileGeminiSettings = Join-Path $realProfile '.gemini\settings.json'
     $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
@@ -7589,7 +7530,6 @@ function Invoke-Contract {
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath (Join-Path $defaultCursorHome 'hooks.json')) -or
             (Test-Path -LiteralPath $defaultHermesHome) -or
-            (Test-Path -LiteralPath $officialWindsurfConfig) -or
             (Test-Path -LiteralPath $profileGeminiSettings) -or
             (Test-Path -LiteralPath $geminiSettings) -or
             (Test-Path -LiteralPath $defaultGeminiSettings) -or
@@ -7620,7 +7560,6 @@ function Invoke-Contract {
             $defaultClaudeHome,
             (Join-Path $defaultCursorHome 'hooks.json'),
             $defaultHermesHome,
-            $officialWindsurfConfig,
             $defaultGeminiSettings,
             $defaultOpenCodeHome
         )
@@ -7645,9 +7584,6 @@ function Invoke-Contract {
                 }
             }
         }
-        if ($Connector -eq 'windsurf') {
-            $defaultConnectorHomes = @($defaultConnectorHomes | Where-Object { $_ -cne $officialWindsurfConfig })
-        }
         foreach ($defaultHome in $defaultConnectorHomes) {
             if (Test-Path -LiteralPath $defaultHome) {
                 throw "connector contract wrote to the default agent home: $defaultHome"
@@ -7659,7 +7595,6 @@ function Invoke-Contract {
             copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
             cursor = Join-Path $cursorHome 'hooks.json'
             hermes = Join-Path $hermesHome 'config.yaml'
-            windsurf = $officialWindsurfConfig
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
             geminicli = $geminiSettings
             opencode = Join-Path $openCodeHome 'plugins\defenseclaw.js'
