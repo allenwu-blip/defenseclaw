@@ -2417,7 +2417,7 @@ class TestCoverage:
             elif name in {"zeptoclaw", "amp", "omnigent"}:
                 with pytest.raises(MCPWriteUnsupportedError):
                     set_mcp_server(name, "x", {"command": "y"})
-            elif name == "windsurf":
+            elif name in {"geminicli", "windsurf"}:
                 with pytest.MonkeyPatch.context() as m:
                     m.setenv("HOME", str(tmp_path / "isolated-home"))
                     with pytest.raises(MCPWriteUnsupportedError):
