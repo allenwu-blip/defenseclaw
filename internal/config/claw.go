@@ -617,8 +617,11 @@ func (c *Config) ConnectorHomeDir(connector string) string {
 		// side. Never fall through to OpenClaw's home_dir.
 		return filepath.Join(home, ".gemini", "antigravity-cli")
 	case "opencode":
-		// opencode keeps its config under ~/.config/opencode/ (XDG-style);
-		// matches connector_paths.connector_home("opencode").
+		if configured := openCodeEnvPath(os.Getenv("OPENCODE_CONFIG_DIR"), c.ConnectorWorkspaceDir()); configured != "" {
+			return configured
+		}
+		// OpenCode keeps its default config under ~/.config/opencode/
+		// (XDG-style); matches connector_paths.connector_home("opencode").
 		return filepath.Join(home, ".config", "opencode")
 	case "amp":
 		// Amp uses this same config home on macOS, Linux, and native

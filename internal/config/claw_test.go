@@ -1107,6 +1107,7 @@ func TestSkillPluginDirs_OpenCodeEmptyAntigravityNativePaths(t *testing.T) {
 func TestConnectorHomeDir_OpenCodeAntigravity(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
 	cfg := &Config{}
 	cfg.Claw.HomeDir = "/tmp/openclaw-home"
 
@@ -1118,6 +1119,25 @@ func TestConnectorHomeDir_OpenCodeAntigravity(t *testing.T) {
 	}
 	if got := cfg.ConnectorHomeDir("opencode"); strings.Contains(got, "openclaw-home") {
 		t.Errorf("ConnectorHomeDir(opencode) leaked OpenClaw home: %q", got)
+	}
+}
+
+func TestConnectorHomeDir_OpenCodeHonorsConfigDir(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	configured := filepath.Join(home, "opencode-home")
+	t.Setenv("OPENCODE_CONFIG_DIR", configured)
+	cfg := &Config{}
+
+	if got := cfg.ConnectorHomeDir("opencode"); got != configured {
+		t.Fatalf("ConnectorHomeDir(opencode) = %q, want OPENCODE_CONFIG_DIR %q", got, configured)
+	}
+
+	workspace := filepath.Join(home, "repo")
+	cfg.Claw.WorkspaceDir = workspace
+	t.Setenv("OPENCODE_CONFIG_DIR", "relative-opencode-home")
+	if got, want := cfg.ConnectorHomeDir("opencode"), filepath.Join(workspace, "relative-opencode-home"); got != want {
+		t.Fatalf("relative ConnectorHomeDir(opencode) = %q, want workspace-relative %q", got, want)
 	}
 }
 

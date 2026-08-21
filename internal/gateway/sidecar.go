@@ -2246,7 +2246,12 @@ func resolveWatcherDirs(cfg *config.Config, conn connector.Connector, wcfg confi
 				compTargets["skill"] = ampWatcherSkillDirs(cfg)
 				compTargets["plugin"] = cfg.PluginDirsForConnector("amp")
 			} else if strings.EqualFold(strings.TrimSpace(conn.Name()), "opencode") {
-				compTargets["skill"] = opencodeWatcherSkillDirs(compTargets["skill"])
+				activeRoot := ""
+				if cfg != nil {
+					activeRoot = cfg.ConnectorHomeDir("opencode")
+				}
+				compTargets["skill"] = opencodeWatcherDirs(compTargets["skill"], activeRoot)
+				compTargets["plugin"] = opencodeWatcherDirs(compTargets["plugin"], activeRoot)
 			}
 		}
 	}
@@ -2318,21 +2323,24 @@ func ampWatcherSkillDirs(cfg *config.Config) []string {
 	return filtered
 }
 
-// opencodeWatcherSkillDirs keeps OpenCode's Claude and Agent Skills
-// compatibility roots discoverable without materializing those optional roots.
-// Native .opencode and .config/opencode roots remain watchable unconditionally.
-func opencodeWatcherSkillDirs(dirs []string) []string {
+// opencodeWatcherDirs lets the watcher create directories only below the
+// effective OpenCode config root. Other native and compatibility roots remain
+// discoverable, but are watchable only when they already exist.
+func opencodeWatcherDirs(dirs []string, activeRoot string) []string {
+	activeRoot = strings.TrimSpace(activeRoot)
+	if activeRoot != "" {
+		activeRoot = filepath.Clean(activeRoot)
+	}
 	filtered := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
 		cleaned := filepath.Clean(dir)
-		parent := filepath.Base(filepath.Dir(cleaned))
-		optionalCompatibilityRoot := filepath.Base(cleaned) == "skills" &&
-			(parent == ".claude" || parent == ".agents")
-		if optionalCompatibilityRoot {
-			info, err := os.Stat(cleaned)
-			if err != nil || !info.IsDir() {
-				continue
-			}
+		if activeRoot != "" && filepath.Clean(filepath.Dir(cleaned)) == activeRoot {
+			filtered = append(filtered, dir)
+			continue
+		}
+		info, err := os.Stat(cleaned)
+		if err != nil || !info.IsDir() {
+			continue
 		}
 		filtered = append(filtered, dir)
 	}

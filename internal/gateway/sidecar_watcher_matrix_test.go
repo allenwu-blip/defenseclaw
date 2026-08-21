@@ -436,7 +436,8 @@ func TestResolveWatcherDirs_OpenCodeDoesNotMaterializeCompatibilityRoots(t *test
 
 	existingUserRoot := filepath.Join(home, ".agents", "skills")
 	existingWorkspaceRoot := filepath.Join(workspace, ".claude", "skills")
-	for _, root := range []string{existingUserRoot, existingWorkspaceRoot} {
+	existingNativeFallback := filepath.Join(workspace, ".opencode", "skills")
+	for _, root := range []string{existingUserRoot, existingWorkspaceRoot, existingNativeFallback} {
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -473,12 +474,89 @@ func TestResolveWatcherDirs_OpenCodeDoesNotMaterializeCompatibilityRoots(t *test
 	for _, nativeRoot := range []string{
 		filepath.Join(home, ".config", "opencode", "skill"),
 		filepath.Join(home, ".config", "opencode", "skills"),
-		filepath.Join(workspace, ".opencode", "skill"),
-		filepath.Join(workspace, ".opencode", "skills"),
+		existingNativeFallback,
 	} {
 		if !containsExactPath(skillDirs, nativeRoot) {
 			t.Errorf("OpenCode skill dirs = %v, missing native root %q", skillDirs, nativeRoot)
 		}
+	}
+}
+
+func TestResolveWatcherDirs_OpenCodeHonorsBoundConfigHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	configured := filepath.Join(home, "opencode-home")
+	t.Setenv("OPENCODE_CONFIG_DIR", configured)
+
+	cfg := &config.Config{}
+	wcfg := config.GatewayWatcherConfig{}
+	wcfg.Skill.Enabled = true
+	wcfg.Plugin.Enabled = true
+
+	skillDirs, pluginDirs, src := resolveWatcherDirs(cfg, connector.NewOpenCodeConnector(), wcfg)
+	if src.Skill != watcherDirsFromConnector || src.Plugin != watcherDirsFromConnector {
+		t.Fatalf("OpenCode watcher sources = %+v, want connector targets", src)
+	}
+	for _, root := range []string{
+		filepath.Join(configured, "skill"),
+		filepath.Join(configured, "skills"),
+	} {
+		if !containsExactPath(skillDirs, root) {
+			t.Errorf("OpenCode skill dirs = %v, missing bound config root %q", skillDirs, root)
+		}
+	}
+	for _, root := range []string{
+		filepath.Join(configured, "plugin"),
+		filepath.Join(configured, "plugins"),
+	} {
+		if !containsExactPath(pluginDirs, root) {
+			t.Errorf("OpenCode plugin dirs = %v, missing bound config root %q", pluginDirs, root)
+		}
+	}
+
+	fallbackRoots := []string{
+		filepath.Join(home, ".config", "opencode", "skill"),
+		filepath.Join(home, ".config", "opencode", "skills"),
+		filepath.Join(home, ".config", "opencode", "plugin"),
+		filepath.Join(home, ".config", "opencode", "plugins"),
+		filepath.Join(home, ".opencode", "skill"),
+		filepath.Join(home, ".opencode", "skills"),
+		filepath.Join(home, ".opencode", "plugin"),
+		filepath.Join(home, ".opencode", "plugins"),
+	}
+	for _, root := range fallbackRoots {
+		if containsExactPath(skillDirs, root) || containsExactPath(pluginDirs, root) {
+			t.Errorf("OpenCode watcher dirs retained absent fallback root %q: skills=%v plugins=%v", root, skillDirs, pluginDirs)
+		}
+		if _, err := os.Stat(root); !os.IsNotExist(err) {
+			t.Errorf("OpenCode fallback root %q was materialized during resolution: %v", root, err)
+		}
+	}
+	for _, parent := range []string{
+		filepath.Join(home, ".config", "opencode"),
+		filepath.Join(home, ".opencode"),
+	} {
+		if _, err := os.Stat(parent); !os.IsNotExist(err) {
+			t.Errorf("OpenCode fallback home %q was materialized during resolution: %v", parent, err)
+		}
+	}
+
+	existingSkill := filepath.Join(home, ".opencode", "skills")
+	existingPlugin := filepath.Join(home, ".config", "opencode", "plugin")
+	for _, root := range []string{existingSkill, existingPlugin} {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	skillDirs, pluginDirs, _ = resolveWatcherDirs(cfg, connector.NewOpenCodeConnector(), wcfg)
+	if !containsExactPath(skillDirs, existingSkill) {
+		t.Errorf("OpenCode skill dirs = %v, missing preexisting native fallback %q", skillDirs, existingSkill)
+	}
+	if !containsExactPath(pluginDirs, existingPlugin) {
+		t.Errorf("OpenCode plugin dirs = %v, missing preexisting native fallback %q", pluginDirs, existingPlugin)
 	}
 }
 
