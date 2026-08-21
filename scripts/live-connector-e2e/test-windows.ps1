@@ -1696,18 +1696,27 @@ private-secret-name = "DefenseClaw must remain redacted"
         'native process harness parses Go JSON only on failure, bounds collection, and reports the focused summary instead of the full JSON stream'
     Assert-True ($nativeWorkflowText -match 'Validate registered Windows Codex and Claude hook commands') 'native Windows workflow has a required Doctor hook-command step'
     Assert-True ($nativeWorkflowText -match "'pytest', 'cli/tests/test_cmd_doctor_windows_hooks\.py', '-q'") 'Doctor validates registered Windows hook commands explicitly'
-    Assert-True ($nativeWorkflowText -match "Get-ChildItem cli/tests -Recurse -File -Filter 'test_\*\.py'") 'complete Python suite discovers every test file'
+    Assert-True ($nativeWorkflowText -match "Get-ChildItem cli/tests -Recurse -File -Filter 'test_\*\.py'") 'Windows Python suite discovers every test file before applying its documented TUI mode'
     Assert-True ($nativeWorkflowText -match 'shard: \[1, 2, 3, 4, 5, 6, 7, 8\]' -and
+        $nativeWorkflowText -match "WINDOWS_TUI_MODE: \$\{\{ github\.event_name == 'pull_request' && 'smoke' \|\| 'full' \}\}" -and
+        $nativeWorkflowText -match '\$fullTUI = \$env:WINDOWS_TUI_MODE -eq ''full''' -and
+        $nativeWorkflowText -match "Join-Path \$env:GITHUB_WORKSPACE 'cli\\tests\\tui'" -and
+        $nativeWorkflowText -match 'return \$fullTUI -or -not \$isTUI' -and
         $nativeWorkflowText -match "\.Name -eq 'test_app_shell\.py'" -and
         $nativeWorkflowText -match "'--collect-only', '-q', '--color=no'" -and
         $nativeWorkflowText -match "Collected no test_app_shell\.py nodes" -and
         $nativeWorkflowText -match '\$appShellNodes\[\$index\]' -and
         $nativeWorkflowText -match '\(\$index % 8\) -eq \$shardIndex' -and
-        $nativeWorkflowText -match '\$appShellPytestArgs.*?\$shardAppShellNodes' -and
+        $nativeWorkflowText -match "elseif \(\$shardIndex -eq 0\)" -and
+        $nativeWorkflowText -match 'test_textual_shell_starts_on_overview' -and
+        $nativeWorkflowText -match 'test_digit_shortcut_switches_panel_placeholder' -and
+        $nativeWorkflowText -match 'test_executor_gateway_windows\.py' -and
+        $nativeWorkflowText -match 'test_windows_clipboard\.py' -and
+        $nativeWorkflowText -match '\$tuiPytestArgs.*?\$tuiTargets' -and
         $nativeWorkflowText -match '\$ordinaryPytestArgs.*?\$shardFiles' -and
-        $nativeWorkflowText -match 'pytest-shard-\{0\}-app-shell\.log' -and
+        $nativeWorkflowText -match 'pytest-shard-\{0\}-tui\.log' -and
         $nativeWorkflowText -match 'pytest-shard-\{0\}-ordinary\.log') `
-        'complete Python suite file-shards ordinary tests, node-shards the large TUI shell file, and isolates them in fresh pytest processes'
+        'Windows Python suite keeps full TUI coverage on main/manual runs and a bounded native smoke set on pull requests'
     foreach ($node in @(
         'test_existing_openclaw_integration_requires_pin',
         'test_f0162_refuses_swapped_symlink',

@@ -200,11 +200,15 @@ jobs:
         run: ./scripts/windows-native-ci.ps1 -Operation cleanup -StateRoot $env:DC_STATE_ROOT
 
   windows-python:
-    name: Windows complete Python suite (includes TUI) / shard ${{ matrix.shard }}
+    name: Windows Python suite / shard ${{ matrix.shard }}
     runs-on: windows-latest
     timeout-minutes: 75
     env:
       PYTHON_SHARD: ${{ matrix.shard }}
+      # Linux CI already runs the complete Python/TUI suite on every PR.
+      # Keep the native Windows PR gate focused on platform smoke coverage;
+      # main and manual/release-candidate runs retain the complete Windows TUI.
+      WINDOWS_TUI_MODE: ${{ github.event_name == 'pull_request' && 'smoke' || 'full' }}
     strategy:
       fail-fast: false
       matrix:
@@ -238,20 +242,30 @@ jobs:
           Initialize-WindowsNativeTestEnvironment $env:DC_STATE_ROOT | Out-Null
           $uv = (Get-Command uv.exe -ErrorAction Stop).Source
           Invoke-WindowsNativeProcess $uv @('run', '--frozen', 'python', '-m', 'pytest', 'cli/tests/test_local_splunk_controller.py', 'cli/tests/test_local_splunk_transaction.py', 'cli/tests/test_local_splunk_packaging.py', 'cli/tests/test_windows_local_observability_gates.py', '-q') -TimeoutSeconds 900 -LogPath (Join-Path $env:DC_STATE_ROOT 'pytest-local-splunk.log') | Out-Null
-      - name: Run Python test shard ${{ matrix.shard }} of 8, including headless TUI tests
+      - name: Run Python test shard ${{ matrix.shard }} of 8 with bounded TUI coverage
         run: |
           . ./scripts/windows-native-ci.ps1 -NoRun
           Initialize-WindowsNativeTestEnvironment $env:DC_STATE_ROOT | Out-Null
           $uv = (Get-Command uv.exe -ErrorAction Stop).Source
-          $testFiles = @(Get-ChildItem cli/tests -Recurse -File -Filter 'test_*.py' | Sort-Object FullName)
+          $allTestFiles = @(Get-ChildItem cli/tests -Recurse -File -Filter 'test_*.py' | Sort-Object FullName)
           $shardIndex = [int]$env:PYTHON_SHARD - 1
-          $appShellFile = @($testFiles | Where-Object { $_.Name -eq 'test_app_shell.py' })
+          $appShellFile = @($allTestFiles | Where-Object { $_.Name -eq 'test_app_shell.py' })
           if ($appShellFile.Count -ne 1) {
             throw "Expected exactly one test_app_shell.py file, found $($appShellFile.Count)"
           }
+          $fullTUI = $env:WINDOWS_TUI_MODE -eq 'full'
+          $tuiRoot = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'cli\tests\tui'))
+          $tuiPrefix = $tuiRoot + [IO.Path]::DirectorySeparatorChar
+          $testFiles = @(
+            $allTestFiles | Where-Object {
+              if ($_.FullName -eq $appShellFile[0].FullName) { return $false }
+              $isTUI = $_.FullName.StartsWith($tuiPrefix, [StringComparison]::OrdinalIgnoreCase)
+              return $fullTUI -or -not $isTUI
+            }
+          )
           $shardFiles = @(
             for ($index = 0; $index -lt $testFiles.Count; $index++) {
-              if (($index % 8) -eq $shardIndex -and $testFiles[$index].FullName -ne $appShellFile[0].FullName) {
+              if (($index % 8) -eq $shardIndex) {
                 $testFiles[$index].FullName
               }
             }
@@ -269,34 +283,45 @@ jobs:
             # remains covered by the Linux suite.
             '--deselect=cli/tests/test_migrations.py::TestMigrate050PurgeLegacyFlatPolicyBundle::test_symlinked_flat_data_json_is_left_alone'
           )
-          $appShellCollectionLog = Join-Path $env:DC_STATE_ROOT 'pytest-app-shell-collection.log'
-          $appShellCollectionArgs = @('run', '--frozen', 'python', '-m', 'pytest', $appShellFile[0].FullName, '--collect-only', '-q', '--color=no')
-          Invoke-WindowsNativeProcess $uv $appShellCollectionArgs -TimeoutSeconds 300 -LogPath $appShellCollectionLog | Out-Null
-          $appShellNodes = @(
-            Get-Content -LiteralPath $appShellCollectionLog |
-              Where-Object { $_ -match '^cli[/\\]tests[/\\]tui[/\\]test_app_shell\.py::' }
-          )
-          if (-not $appShellNodes) {
-            throw 'Collected no test_app_shell.py nodes'
-          }
-          $shardAppShellNodes = @(
-            for ($index = 0; $index -lt $appShellNodes.Count; $index++) {
-              if (($index % 8) -eq $shardIndex) {
-                $appShellNodes[$index]
-              }
+          $tuiTargets = @()
+          if ($fullTUI) {
+            $appShellCollectionLog = Join-Path $env:DC_STATE_ROOT 'pytest-app-shell-collection.log'
+            $appShellCollectionArgs = @('run', '--frozen', 'python', '-m', 'pytest', $appShellFile[0].FullName, '--collect-only', '-q', '--color=no')
+            Invoke-WindowsNativeProcess $uv $appShellCollectionArgs -TimeoutSeconds 300 -LogPath $appShellCollectionLog | Out-Null
+            $appShellNodes = @(
+              Get-Content -LiteralPath $appShellCollectionLog |
+                Where-Object { $_ -match '^cli[/\\]tests[/\\]tui[/\\]test_app_shell\.py::' }
+            )
+            if (-not $appShellNodes) {
+              throw 'Collected no test_app_shell.py nodes'
             }
-          )
+            $tuiTargets = @(
+              for ($index = 0; $index -lt $appShellNodes.Count; $index++) {
+                if (($index % 8) -eq $shardIndex) {
+                  $appShellNodes[$index]
+                }
+              }
+            )
+          } elseif ($shardIndex -eq 0) {
+            $tuiTargets = @(
+              'cli/tests/tui/test_app_shell.py::test_textual_shell_starts_on_overview',
+              'cli/tests/tui/test_app_shell.py::test_digit_shortcut_switches_panel_placeholder',
+              'cli/tests/tui/test_executor_gateway_windows.py',
+              'cli/tests/tui/test_windows_clipboard.py'
+            )
+          }
           if (-not $shardFiles) {
             throw "Python test shard $($shardIndex + 1) selected no ordinary test files"
           }
-          if (-not $shardAppShellNodes) {
+          if ($fullTUI -and -not $tuiTargets) {
             throw "Python test shard $($shardIndex + 1) selected no test_app_shell.py nodes"
           }
-          # Run the TUI subset in a fresh interpreter before the ordinary file
-          # shard so process-global state from the 40-file batch cannot reach
-          # a later Textual context-manager teardown.
-          $appShellPytestArgs = @('run', '--frozen', 'python', '-m', 'pytest') + $shardAppShellNodes + @('-vv', '--durations=25', '--color=no')
-          Invoke-WindowsNativeProcess $uv $appShellPytestArgs -TimeoutSeconds 900 -LogPath (Join-Path $env:DC_STATE_ROOT ('pytest-shard-{0}-app-shell.log' -f $env:PYTHON_SHARD)) | Out-Null
+          # Run TUI coverage in a fresh interpreter before the ordinary file
+          # shard so process-global Textual state cannot leak across suites.
+          if ($tuiTargets) {
+            $tuiPytestArgs = @('run', '--frozen', 'python', '-m', 'pytest') + $tuiTargets + @('-vv', '--durations=25', '--color=no')
+            Invoke-WindowsNativeProcess $uv $tuiPytestArgs -TimeoutSeconds 900 -LogPath (Join-Path $env:DC_STATE_ROOT ('pytest-shard-{0}-tui.log' -f $env:PYTHON_SHARD)) | Out-Null
+          }
           $ordinaryPytestArgs = @('run', '--frozen', 'python', '-m', 'pytest') + $shardFiles + $windowsInapplicableTests + @('-q')
           Invoke-WindowsNativeProcess $uv $ordinaryPytestArgs -TimeoutSeconds 4200 -LogPath (Join-Path $env:DC_STATE_ROOT ('pytest-shard-{0}-ordinary.log' -f $env:PYTHON_SHARD)) | Out-Null
       - name: Capture bounded diagnostics
