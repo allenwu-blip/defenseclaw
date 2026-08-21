@@ -91,6 +91,9 @@ func TestConnectorLifecycle_Matrix(t *testing.T) {
 			if !connector.ConnectorSupportedOnHostOS(fx.Name) {
 				t.Skipf("[%s] has no native lifecycle on this host; platform rejection is covered by connector support tests", fx.Name)
 			}
+			if runtime.GOOS == "darwin" && fx.Name == "openhands" {
+				t.Skip("[openhands] Darwin Setup requires a private setup-selected executable receipt; protected admission and lifecycle are covered in package connector")
+			}
 
 			// Stage 2: Setup. The actual error type is implementation
 			// detail; we only care that the connector's *contract*
@@ -130,24 +133,23 @@ func connectorLifecycleMatrix(t *testing.T) []ConnectorFixture {
 		return fixtures
 	}
 
-	// Native Windows Hermes requires current-token updater identity plus a
-	// protected setup receipt or reusable contract lock. Manufacturing those
-	// from this external package would either mutate the real Hermes profile or
-	// weaken admission. Its Windows lifecycle is exercised instead by
-	// TestHermesConnectorLifecycleWithProtectedAdmission in package connector,
-	// where the existing private resolver/probe fixture is available. Keep
-	// Hermes in connectorMatrix for non-lifecycle matrices and every other OS.
-	filtered := make([]ConnectorFixture, 0, len(fixtures)-1)
-	hermesRows := 0
+	// Native Windows Hermes and Devin require protected executable evidence.
+	// Manufacturing that evidence from this external package would either
+	// mutate a real profile or weaken admission. Their Windows lifecycles are
+	// exercised by package-connector and native-Windows tests where the private
+	// admission fixtures are available. Keep both in connectorMatrix for every
+	// non-lifecycle matrix and on other operating systems.
+	filtered := make([]ConnectorFixture, 0, len(fixtures)-2)
+	protectedRows := 0
 	for _, fixture := range fixtures {
-		if fixture.Name == "hermes" {
-			hermesRows++
+		if fixture.Name == "hermes" || fixture.Name == "devin" {
+			protectedRows++
 			continue
 		}
 		filtered = append(filtered, fixture)
 	}
-	if hermesRows != 1 {
-		t.Fatalf("Windows lifecycle routing found %d Hermes fixtures, want exactly one", hermesRows)
+	if protectedRows != 2 {
+		t.Fatalf("Windows lifecycle routing found %d protected Hermes/Devin fixtures, want exactly two", protectedRows)
 	}
 	return filtered
 }
