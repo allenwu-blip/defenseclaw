@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -204,6 +205,7 @@ namespace DefenseClaw
         private const uint TOKEN_QUERY = 0x0008;
         private const uint DISABLE_MAX_PRIVILEGE = 0x0001;
         private const uint LUA_TOKEN = 0x0004;
+        private const uint WRITE_RESTRICTED = 0x0008;
         private const uint CREATE_SUSPENDED = 0x00000004;
         private const uint EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
         private const uint CREATE_NO_WINDOW = 0x08000000;
@@ -236,6 +238,13 @@ namespace DefenseClaw
         private struct TOKEN_LINKED_TOKEN
         {
             public IntPtr LinkedToken;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SID_AND_ATTRIBUTES
+        {
+            public IntPtr Sid;
+            public uint Attributes;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -519,6 +528,68 @@ namespace DefenseClaw
             return primary;
         }
 
+        private static IntPtr CreateRestrictedLuaToken(IntPtr sourceToken)
+        {
+            IntPtr userSidBuffer = IntPtr.Zero;
+            IntPtr restrictingSidBuffer = IntPtr.Zero;
+            IntPtr restrictedToken = IntPtr.Zero;
+            try
+            {
+                SecurityIdentifier userSid;
+                using (WindowsIdentity sourceIdentity = new WindowsIdentity(sourceToken))
+                {
+                    userSid = sourceIdentity.User;
+                }
+                if (userSid == null)
+                {
+                    throw new InvalidOperationException(
+                        "restricted LUA source token has no user SID");
+                }
+
+                byte[] userSidBytes = new byte[userSid.BinaryLength];
+                userSid.GetBinaryForm(userSidBytes, 0);
+                userSidBuffer = Marshal.AllocHGlobal(userSidBytes.Length);
+                Marshal.Copy(userSidBytes, 0, userSidBuffer, userSidBytes.Length);
+
+                SID_AND_ATTRIBUTES restrictingSid = new SID_AND_ATTRIBUTES
+                {
+                    Sid = userSidBuffer,
+                    Attributes = 0
+                };
+                restrictingSidBuffer = Marshal.AllocHGlobal(
+                    Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES)));
+                Marshal.StructureToPtr(restrictingSid, restrictingSidBuffer, false);
+
+                if (!CreateRestrictedToken(
+                    sourceToken,
+                    DISABLE_MAX_PRIVILEGE | LUA_TOKEN | WRITE_RESTRICTED,
+                    0,
+                    IntPtr.Zero,
+                    0,
+                    IntPtr.Zero,
+                    1,
+                    restrictingSidBuffer,
+                    out restrictedToken))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "CreateRestrictedToken failed");
+                }
+                IntPtr result = restrictedToken;
+                restrictedToken = IntPtr.Zero;
+                return result;
+            }
+            finally
+            {
+                if (restrictedToken != IntPtr.Zero) CloseHandle(restrictedToken);
+                if (restrictingSidBuffer != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(restrictingSidBuffer);
+                }
+                if (userSidBuffer != IntPtr.Zero) Marshal.FreeHGlobal(userSidBuffer);
+            }
+        }
+
         private static void ValidateStandardUserPrimaryToken(
             IntPtr token,
             LaunchTokenKind kind,
@@ -605,19 +676,7 @@ namespace DefenseClaw
                 }
 
                 kind = LaunchTokenKind.RestrictedLua;
-                if (!CreateRestrictedToken(
-                    sourceToken,
-                    DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
-                    0,
-                    IntPtr.Zero,
-                    0,
-                    IntPtr.Zero,
-                    0,
-                    IntPtr.Zero,
-                    out launchToken))
-                {
-                    throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateRestrictedToken failed");
-                }
+                launchToken = CreateRestrictedLuaToken(sourceToken);
                 ValidateStandardUserPrimaryToken(launchToken, kind, "restricted LUA Setup");
                 IntPtr fallback = launchToken;
                 launchToken = IntPtr.Zero;

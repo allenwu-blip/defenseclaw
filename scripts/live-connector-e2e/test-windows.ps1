@@ -2223,6 +2223,23 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'verified-linked-limited-token' -and
         $nativeHarnessText -match 'requires-disposable-standard-user') `
         'Setup launcher fails linked-token query errors and prohibits restricted-LUA fallback in certification'
+    $restrictedLuaTokenFunction = [regex]::Match(
+        $setupStandardUserLauncherText,
+        '(?sm)private static IntPtr CreateRestrictedLuaToken\b.*?^        \}'
+    ).Value
+    Assert-True ($restrictedLuaTokenFunction -match
+            'WindowsIdentity\(sourceToken\)' -and
+        $restrictedLuaTokenFunction -match 'userSid\.GetBinaryForm' -and
+        $restrictedLuaTokenFunction -match 'Attributes = 0' -and
+        $restrictedLuaTokenFunction -match
+            'DISABLE_MAX_PRIVILEGE \| LUA_TOKEN \| WRITE_RESTRICTED' -and
+        $restrictedLuaTokenFunction -match
+            '(?s)IntPtr\.Zero,\s*1,\s*restrictingSidBuffer,\s*out restrictedToken' -and
+        $setupStandardUserLauncherText -match
+            'launchToken = CreateRestrictedLuaToken\(sourceToken\)' -and
+        $setupStandardUserLauncherText -match
+            'if \(!IsTokenRestricted\(token\)\)') `
+        'restricted-LUA fallback keeps fail-closed validation and restricts writes to the current token user SID'
     Assert-True ([regex]::Matches(
             $standardUserCIText,
             'DisposableFileGuard\]::ComputeSha256Hex'
