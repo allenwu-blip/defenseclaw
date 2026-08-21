@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import defenseclaw.skill_discovery as skill_discovery_module
 import pytest
+from defenseclaw.hermes_skills import directory_md5, is_bundled_skill_path
 from defenseclaw.skill_discovery import discover_skill_directories
 
 from tests.environment import requires_symlink_privilege
@@ -171,6 +172,94 @@ def test_codex_arbitrary_system_directory_is_not_bundled(tmp_path, monkeypatch) 
     assert [(entry.name, entry.path, entry.bundled) for entry in discovered] == [
         ("operator-skill", os.fspath(skill), False),
     ]
+
+
+def test_hermes_nested_manifest_provenance_distinguishes_vendor_and_user_skills(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    hermes_home = tmp_path / "hermes-home"
+    root = hermes_home / "skills"
+    bundled = root / "productivity" / "vendor-docs"
+    modified = root / "software-development" / "modified-vendor"
+    forged = root / "productivity" / "manifest-only"
+    user = root / "operator-skill"
+    for path, name in (
+        (bundled, "vendor-docs"),
+        (modified, "modified-vendor"),
+        (forged, "manifest-only"),
+        (user, "operator-skill"),
+    ):
+        path.mkdir(parents=True)
+        (path / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\n",
+            encoding="utf-8",
+        )
+
+    source_root = hermes_home / "hermes-agent" / "skills"
+    for relative, name in (
+        (bundled.relative_to(root), "vendor-docs"),
+        (modified.relative_to(root), "modified-vendor"),
+    ):
+        source = source_root / relative
+        source.mkdir(parents=True)
+        (source / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: test\n---\n",
+            encoding="utf-8",
+        )
+
+    bundled_hash = directory_md5(os.fspath(bundled))
+    modified_hash = directory_md5(os.fspath(modified))
+    forged_hash = directory_md5(os.fspath(forged))
+    assert bundled_hash and modified_hash and forged_hash
+    (root / ".bundled_manifest").write_text(
+        f"vendor-docs:{bundled_hash}\n"
+        f"modified-vendor:{modified_hash}\n"
+        f"manifest-only:{forged_hash}\n",
+        encoding="utf-8",
+    )
+    (modified / "SKILL.md").write_text(
+        "---\nname: modified-vendor\n---\noperator changed this\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", os.fspath(hermes_home))
+
+    discovered = discover_skill_directories(os.fspath(root), connector="hermes")
+
+    by_name = {entry.name: entry for entry in discovered}
+    assert set(by_name) == {
+        "manifest-only",
+        "modified-vendor",
+        "operator-skill",
+        "vendor-docs",
+    }
+    assert by_name["vendor-docs"].path == os.fspath(bundled)
+    assert by_name["vendor-docs"].bundled
+    assert not by_name["modified-vendor"].bundled
+    assert not by_name["manifest-only"].bundled
+    assert not by_name["operator-skill"].bundled
+    assert is_bundled_skill_path(os.fspath(bundled / "SKILL.md"))
+    assert not is_bundled_skill_path(os.fspath(modified))
+    assert not is_bundled_skill_path(os.fspath(forged))
+    assert not is_bundled_skill_path(os.fspath(user))
+
+
+def test_hermes_tree_hash_fails_open_when_content_exceeds_bounds(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import defenseclaw.hermes_skills as hermes_skills
+
+    skill = tmp_path / "oversized"
+    skill.mkdir()
+    (skill / "SKILL.md").write_bytes(b"12345")
+
+    monkeypatch.setattr(hermes_skills, "_SKILL_FILE_MAX_BYTES", 4)
+    assert directory_md5(os.fspath(skill)) is None
+
+    monkeypatch.setattr(hermes_skills, "_SKILL_FILE_MAX_BYTES", 10)
+    monkeypatch.setattr(hermes_skills, "_SKILL_TREE_MAX_BYTES", 4)
+    assert directory_md5(os.fspath(skill)) is None
 
 
 def test_claude_skills_directory_plugin_is_not_a_plain_skill(tmp_path) -> None:

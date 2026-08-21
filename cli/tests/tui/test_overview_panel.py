@@ -937,14 +937,10 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert "./.devin/hooks.v1.json" in connector_source_label("devin", "config")
     assert str(devin_config / "mcp_config.json") in connector_source_label("devin", "mcps")
     assert "closed beta" in connector_source_label("devin", "plugins")
-    assert connector_source_label("geminicli", "plugins") == str(gemini_home / "extensions")
-    gemini_mcps = connector_source_label("geminicli", "mcps")
-    assert str(gemini_home / "settings.json") in gemini_mcps
-    assert "./.gemini/settings.json" in gemini_mcps
-    assert "./.mcp.json" not in gemini_mcps
-    assert connector_source_label("geminicli", "config").startswith(
-        str(gemini_home / "settings.json")
-    )
+    gemini_guidance = connector_paths.cleanup_only_guidance("geminicli")
+    for category in ("skills", "plugins", "mcps", "config"):
+        assert connector_source_label("geminicli", category) == gemini_guidance
+    assert "Antigravity" in gemini_guidance
     assert ".github/mcp.json" in connector_source_label("copilot", "mcps")
     # opencode MCP is now managed by DefenseClaw (read+write via the bridge
     # path layer), so the source label points at its real config and no longer
@@ -963,6 +959,11 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert str(opencode_home / "plugins" / "defenseclaw.js") in connector_source_label(
         "opencode", "plugins"
     )
+    assert "excluded from inventory and scans" in connector_source_label(
+        "opencode", "plugins"
+    )
+    assert ".opencode/{agent,agents}" in connector_source_label("opencode", "agents")
+    assert "CLAUDE.md fallback" in connector_source_label("opencode", "rules")
     antigravity_mcps = connector_source_label("antigravity", "mcps")
     assert ".gemini/config/mcp_config.json" in antigravity_mcps
     assert ".agents/mcp_config.json" in antigravity_mcps

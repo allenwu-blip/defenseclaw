@@ -263,6 +263,31 @@ func TestAdmission_BundledSkillIsDiscoveryOnly(t *testing.T) {
 	}
 }
 
+func TestAdmission_ExactManagedPluginIsDiscoveryOnly(t *testing.T) {
+	cfg, store, logger, skillDir := setupTestEnv(t)
+	pluginDir := filepath.Join(filepath.Dir(skillDir), "plugins")
+	if err := os.MkdirAll(pluginDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	managed := filepath.Join(pluginDir, "defenseclaw.js")
+	foreign := filepath.Join(pluginDir, "foreign.js")
+	w := New(cfg, nil, []string{pluginDir}, store, logger, nil, nil, nil)
+	w.SetManagedArtifacts([]string{managed, managed})
+
+	result := w.runAdmission(context.Background(), InstallEvent{
+		Type: InstallPlugin, Name: "defenseclaw", Path: managed, Timestamp: time.Now(),
+	})
+	if result.Verdict != VerdictAllowed || result.Reason != "connector-managed plugin is lifecycle-owned and discovery-only" {
+		t.Fatalf("managed plugin admission = %+v", result)
+	}
+	if w.isManagedArtifact(foreign) {
+		t.Fatalf("managed artifact exemption escaped to sibling %s", foreign)
+	}
+	if len(w.managedArtifacts) != 1 {
+		t.Fatalf("managed artifact set = %v, want one exact path", w.managedArtifacts)
+	}
+}
+
 func TestBundledSkillWatchPathDoesNotExemptArbitrarySystemDirectory(t *testing.T) {
 	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex-home"))
 	target := filepath.Join(t.TempDir(), "skills", ".system", "operator-skill")

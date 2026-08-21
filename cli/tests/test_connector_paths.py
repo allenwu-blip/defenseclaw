@@ -106,7 +106,7 @@ def test_legacy_windsurf_teardown_paths_use_explicit_profile_binding_not_ambient
     assert not connector_paths.is_known("windsurf")
 
 
-def test_gemini_paths_use_private_install_binding_across_every_user_surface(
+def test_gemini_paths_keep_only_exact_cleanup_binding_and_block_active_surfaces(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bound = tmp_path / "official-profile" / ".gemini"
@@ -154,57 +154,28 @@ def test_gemini_paths_use_private_install_binding_across_every_user_surface(
         str(settings),
         str(workspace / ".gemini" / "settings.json"),
     ]
-    assert connector_paths.skill_dirs("geminicli", workspace_dir=str(workspace)) == [
-        str(bound / "skills"),
-        str(workspace / ".gemini" / "skills"),
-        str(workspace / ".agents" / "skills"),
-    ]
-    assert connector_paths.plugin_dirs("geminicli", workspace_dir=str(workspace)) == [
-        str(bound / "extensions"),
-    ]
-    assert connector_paths.agent_dirs("geminicli", workspace_dir=str(workspace)) == [
-        str(bound / "agents"),
-        str(workspace / ".gemini" / "agents"),
-    ]
-    assert connector_paths.rule_dirs("geminicli", workspace_dir=str(workspace)) == [
-        str(bound / "skills"),
-        str(workspace / ".agents" / "skills"),
-    ]
-    assert [
-        (entry.name, entry.command)
-        for entry in connector_paths.mcp_servers(
-            "geminicli",
+    assert connector_paths.is_cleanup_only("gemini-cli") is True
+    assert "Antigravity" in connector_paths.cleanup_only_guidance("geminicli")
+    assert connector_paths.skill_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.skill_write_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.plugin_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.plugin_inventory_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.agent_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.rule_dirs("geminicli", workspace_dir=str(workspace)) == []
+    assert connector_paths.mcp_servers("geminicli", workspace_dir=str(workspace)) == []
+
+    settings_before = settings.read_bytes()
+    project_before = project_settings.read_bytes()
+    with pytest.raises(connector_paths.MCPWriteUnsupportedError, match="Antigravity"):
+        connector_paths.set_mcp_server("geminicli", "added", {"command": "added-mcp"})
+    with pytest.raises(connector_paths.MCPWriteUnsupportedError, match="cleanup-only"):
+        connector_paths.unset_mcp_server(
+            "gemini-cli",
+            "existing",
             workspace_dir=str(workspace),
         )
-    ] == [
-        ("existing", "project-mcp"),
-        ("project-only", "project-only-mcp"),
-        ("user-only", "user-mcp"),
-    ]
-
-    connector_paths.set_mcp_server("geminicli", "added", {"command": "added-mcp"})
-    document = json.loads(settings.read_text(encoding="utf-8"))
-    assert document["mcpServers"]["added"]["command"] == "added-mcp"
-    connector_paths.unset_mcp_server("geminicli", "added")
-    document = json.loads(settings.read_text(encoding="utf-8"))
-    assert "added" not in document["mcpServers"]
-
-    connector_paths.set_mcp_server(
-        "geminicli",
-        "workspace-added",
-        {"command": "workspace-mcp"},
-        workspace_dir=str(workspace),
-    )
-    project_document = json.loads(project_settings.read_text(encoding="utf-8"))
-    assert project_document["mcpServers"]["workspace-added"]["command"] == "workspace-mcp"
-    assert "workspace-added" not in document["mcpServers"]
-    connector_paths.unset_mcp_server(
-        "geminicli",
-        "workspace-added",
-        workspace_dir=str(workspace),
-    )
-    project_document = json.loads(project_settings.read_text(encoding="utf-8"))
-    assert "workspace-added" not in project_document["mcpServers"]
+    assert settings.read_bytes() == settings_before
+    assert project_settings.read_bytes() == project_before
     assert not (hostile / ".gemini" / "settings.json").exists()
 
 
@@ -230,9 +201,10 @@ def test_gemini_source_paths_follow_official_cli_home_root(
     assert connector_paths.connector_home("geminicli") == str(
         vendor_root / ".gemini"
     )
-    assert connector_paths.plugin_dirs("geminicli") == [
-        str(vendor_root / ".gemini" / "extensions")
-    ]
+    assert connector_paths.connector_config_files("geminicli")[0] == str(
+        vendor_root / ".gemini" / "settings.json"
+    )
+    assert connector_paths.plugin_dirs("geminicli") == []
 
 
 @pytest.mark.parametrize("binding", ["relative", " trailing ", "bad\npath"])
@@ -350,6 +322,44 @@ class TestSkillDirs:
             str(repo / ".agents" / "skills"),
         ]
         assert str(fake_home / ".agents" / "skills") in dirs
+
+    def test_opencode_walks_only_to_nearest_git_root_and_exposes_native_assets(
+        self, tmp_path, monkeypatch
+    ):
+        home = tmp_path / "home"
+        custom = tmp_path / "custom-opencode"
+        repository = tmp_path / "outer" / "repo"
+        workspace = repository / "apps" / "api"
+        workspace.mkdir(parents=True)
+        (repository / ".git").write_text("gitdir: ../git/worktrees/repo\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(custom))
+
+        skills = connector_paths.skill_dirs("opencode", workspace_dir=str(workspace))
+
+        for expected in (
+            home / ".config" / "opencode" / "skill",
+            home / ".config" / "opencode" / "skills",
+            workspace / ".opencode" / "skills",
+            workspace.parent / ".opencode" / "skills",
+            repository / ".opencode" / "skills",
+            workspace / ".claude" / "skills",
+            repository / ".agents" / "skills",
+            custom / "skills",
+        ):
+            assert str(expected) in skills
+        assert str(repository.parent / ".opencode" / "skills") not in skills
+        assert connector_paths.skill_write_dirs(
+            "opencode", workspace_dir=str(workspace)
+        ) == [str(workspace / ".opencode" / "skills")]
+        assert connector_paths.plugin_dirs("opencode", workspace_dir=str(workspace)) == []
+        inventory_dirs = connector_paths.plugin_inventory_dirs(
+            "opencode", workspace_dir=str(workspace)
+        )
+        assert str(workspace / ".opencode" / "plugin") in inventory_dirs
+        assert str(repository / ".opencode" / "plugins") in inventory_dirs
+        assert str(repository.parent / ".opencode" / "plugins") not in inventory_dirs
 
 
 class TestClaudeAgentDirs:
@@ -653,12 +663,14 @@ class TestClaudeAutoMemory:
         assert os.path.join(str(tmp_path / "home"), ".gemini", "antigravity-cli", "skills") in antigravity
         assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") not in antigravity
         assert os.path.join(str(tmp_path / "home"), ".agents", "skills") not in antigravity
-        assert connector_paths.skill_dirs("opencode", workspace_dir=str(tmp_path)) == []
-        assert os.path.join(str(tmp_path / "home"), ".gemini", "skills") in connector_paths.skill_dirs("geminicli")
-        assert os.path.join(str(tmp_path), ".gemini", "skills") in connector_paths.skill_dirs(
-            "geminicli",
-            workspace_dir=str(tmp_path),
-        )
+        opencode = connector_paths.skill_dirs("opencode", workspace_dir=str(tmp_path))
+        assert os.path.join(str(home), ".config", "opencode", "skills") in opencode
+        assert os.path.join(str(tmp_path), ".opencode", "skills") in opencode
+        assert os.path.join(str(tmp_path), ".claude", "skills") in opencode
+        assert os.path.join(str(tmp_path), ".agents", "skills") in opencode
+        assert os.path.join(str(tmp_path / "opencode-custom"), "skills") in opencode
+        assert connector_paths.skill_dirs("geminicli") == []
+        assert connector_paths.skill_dirs("geminicli", workspace_dir=str(tmp_path)) == []
         assert os.path.join(str(tmp_path / "home"), ".copilot", "skills") in connector_paths.skill_dirs("copilot")
         assert os.path.join(str(tmp_path), ".github", "skills") in connector_paths.skill_dirs(
             "copilot",
@@ -1137,11 +1149,8 @@ class TestPluginDirs:
             os.path.join(str(tmp_path / "home"), ".cursor", "plugins", "local"),
         ]
         assert connector_paths.plugin_dirs("devin") == []
-        assert os.path.join(str(tmp_path / "home"), ".gemini", "extensions") in connector_paths.plugin_dirs("geminicli")
-        assert os.path.join(str(tmp_path), ".gemini", "extensions") not in connector_paths.plugin_dirs(
-            "geminicli",
-            workspace_dir=str(tmp_path),
-        )
+        assert connector_paths.plugin_dirs("geminicli") == []
+        assert connector_paths.plugin_dirs("geminicli", workspace_dir=str(tmp_path)) == []
         assert connector_paths.plugin_dirs("copilot") == []
         assert connector_paths.plugin_dirs("openhands") == []
         antigravity = connector_paths.plugin_dirs("antigravity", workspace_dir=str(tmp_path))
@@ -1536,7 +1545,7 @@ class TestMCPServers:
         gemini = fake_home / ".gemini" / "settings.json"
         gemini.parent.mkdir(parents=True)
         gemini.write_text(json.dumps({"mcpServers": {"g": {"command": "gemini-mcp"}}}))
-        assert connector_paths.mcp_servers("geminicli")[0].command == "gemini-mcp"
+        assert connector_paths.mcp_servers("geminicli") == []
 
         copilot = tmp_path / ".github" / "mcp.json"
         copilot.parent.mkdir(parents=True)
@@ -2434,7 +2443,8 @@ class TestConnectorHome:
         monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(configured))
 
         assert connector_paths.connector_home("opencode") == str(configured)
-        assert connector_paths.connector_config_files("opencode") == [str(configured / "plugins" / "defenseclaw.js")]
+        config_files = connector_paths.connector_config_files("opencode")
+        assert config_files == [str(configured / "plugins" / "defenseclaw.js")]
 
     def test_antigravity_home(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(tmp_path))

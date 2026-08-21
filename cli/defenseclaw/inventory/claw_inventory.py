@@ -70,6 +70,10 @@ INVENTORY_VERSION = 4
 _ANTIGRAVITY_RULE_FILE_MAX_BYTES = 1 << 20
 _ANTIGRAVITY_RULE_DIRECTORY_MAX_ENTRIES = 4096
 _ANTIGRAVITY_RULE_INVENTORY_MAX_FILES = 16_384
+_OPENCODE_ASSET_DIRECTORY_MAX_ENTRIES = 4096
+_OPENCODE_ASSET_INVENTORY_MAX_ENTRIES = 16_384
+_OPENCODE_ASSET_INVENTORY_MAX_FILES = 16_384
+_OPENCODE_ASSET_FILE_MAX_BYTES = 2 * 1024 * 1024
 
 ALL_CATEGORIES: frozenset[str] = frozenset(
     ["skills", "plugins", "mcp", "agents", "rules", "tools", "models", "memory"]
@@ -690,7 +694,7 @@ def _attach_connector_paths(
                 openclaw_home=cfg.claw.home_dir,
                 workspace_dir=cfg.connector_workspace_dir(),
             )
-            if connector == "cursor"
+            if connector_paths.normalize(connector) in {"cursor", "opencode"}
             else list(cfg.plugin_dirs(connector))
         )
     except Exception:
@@ -774,6 +778,15 @@ def _collect_mcp_config_files(connector: str, cfg: Config) -> list[str]:
     """
     if connector_paths.normalize(connector) == "copilot":
         return connector_paths.copilot_mcp_config_files(_connector_workspace_dir(cfg))
+
+    if connector_paths.normalize(connector) == "opencode":
+        return [
+            path
+            for path in connector_paths._opencode_config_paths(  # type: ignore[attr-defined]
+                cfg.connector_workspace_dir()
+            )
+            if os.path.basename(path).casefold().endswith((".json", ".jsonc"))
+        ]
 
     candidates = connector_paths.connector_config_files(
         connector,
@@ -1673,6 +1686,43 @@ _PARTIAL_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
 
 _UNVERIFIED_CONNECTOR_NOTES: dict[tuple[str, str], str] = {
     (
+        "opencode",
+        "skills",
+    ): (
+        "local project-through-worktree, global, compatibility, and active "
+        "OPENCODE_CONFIG_DIR skills are inventoried; built-in, remote, and "
+        "runtime permission-filtered availability are not scanned"
+    ),
+    (
+        "opencode",
+        "plugins",
+    ): (
+        "operator-authored direct JS/TS plugins and local config plugin specs "
+        "are inventoried; the exact DefenseClaw-managed bridge is connector "
+        "configuration and is excluded from ordinary plugin scanning"
+    ),
+    (
+        "opencode",
+        "agents",
+    ): (
+        "local singular/plural Markdown agents and config agent maps are "
+        "inventoried; built-in and remote/managed agents remain unverified"
+    ),
+    (
+        "opencode",
+        "rules",
+    ): (
+        "local AGENTS.md/CLAUDE.md fallback and config instruction files are "
+        "inventoried without fetching remote instruction URLs"
+    ),
+    (
+        "opencode",
+        "tools",
+    ): (
+        "local singular/plural JS/TS tools and Markdown/config commands are "
+        "inventoried; the legacy config tools permission map is not a custom-tool registry"
+    ),
+    (
         "devin",
         "skills",
     ): (
@@ -1841,6 +1891,8 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         )
     if name == "antigravity":
         return _agents_from_antigravity_dirs(_antigravity_agent_dirs(_connector_workspace_dir(cfg)))
+    if name == "opencode":
+        return _agents_from_opencode(cfg)
     if name == "amp":
         return _agents_from_amp_plugins(cfg)
     return []
@@ -1924,6 +1976,8 @@ def _rules_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
                 }
             )
         return rows
+    if normalized == "opencode":
+        return _opencode_rules(cfg)
     if normalized != "codex":
         return []
 
@@ -2431,7 +2485,7 @@ def _tools_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
             os.path.join(home, ".zeptoclaw", "agents.json"),
         )
     if name == "opencode":
-        return []
+        return _tools_from_opencode(cfg)
     if name == "antigravity":
         return _tools_from_antigravity(cfg)
     return []
@@ -3594,16 +3648,22 @@ def _tools_from_zeptoclaw_json(path: str) -> list[dict[str, Any]]:
 
 def _tools_from_opencode(cfg: Config) -> list[dict[str, Any]]:
     workspace = _connector_workspace_dir(cfg)
-    rows: list[dict[str, Any]] = []
-    for path in connector_paths._opencode_config_paths(workspace):  # type: ignore[attr-defined]
-        rows.extend(_tools_from_opencode_config(path))
+    rows = _opencode_script_rows(
+        _opencode_tool_dirs(workspace),
+        kind="custom-tool",
+        extensions=(".js", ".ts"),
+        recursive=False,
+    )
     rows.extend(
-        _tools_from_script_dirs(
-            _opencode_tool_dirs(workspace),
-            kind="custom-tool",
-            extensions=(".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"),
+        _opencode_script_rows(
+            _opencode_command_dirs(workspace),
+            kind="slash-command",
+            extensions=(".md",),
+            recursive=True,
         )
     )
+    for layer in connector_paths._resolve_opencode_config(workspace).layers:  # type: ignore[attr-defined]
+        rows.extend(_commands_from_opencode_config(layer.data, layer.source))
     return _dedup_tool_rows(rows)
 
 
@@ -3626,15 +3686,11 @@ def _connector_workspace_dir(cfg: Config) -> str:
 
 
 def _opencode_tool_dirs(workspace_dir: str) -> list[str]:
-    home = os.path.expanduser("~")
-    custom = os.environ.get("OPENCODE_CONFIG_DIR", "").strip()
-    return _dedup_paths(
-        [
-            os.path.join(workspace_dir, ".opencode", "tools") if workspace_dir else "",
-            os.path.join(home, ".config", "opencode", "tools"),
-            os.path.join(os.path.expanduser(custom), "tools") if custom else "",
-        ]
-    )
+    return connector_paths._opencode_component_dirs("tool", workspace_dir)  # type: ignore[attr-defined]
+
+
+def _opencode_command_dirs(workspace_dir: str) -> list[str]:
+    return connector_paths._opencode_component_dirs("command", workspace_dir)  # type: ignore[attr-defined]
 
 
 def _antigravity_command_dirs(workspace_dir: str) -> list[str]:
@@ -3681,37 +3737,277 @@ def _plugin_component_dirs(plugin_dirs: list[str], component: str) -> list[str]:
     return _dedup_paths(out)
 
 
-def _tools_from_opencode_config(path: str) -> list[dict[str, Any]]:
-    data = connector_paths._load_json_or_jsonc(path)  # type: ignore[attr-defined]
+def _commands_from_opencode_config(
+    data: Any,
+    source: str,
+) -> list[dict[str, Any]]:
+    """Return config-defined commands; ``tools`` is only legacy permission."""
+
     if not isinstance(data, dict):
         return []
-    raw_tools = data.get("tool")
-    if raw_tools is None:
-        raw_tools = data.get("tools")
-    if not isinstance(raw_tools, dict):
+    commands = data.get("command")
+    if not isinstance(commands, dict):
         return []
     rows: list[dict[str, Any]] = []
-    for tool_id, body in raw_tools.items():
+    for command_id, body in commands.items():
         if isinstance(body, dict):
             rows.append(
                 {
-                    "id": str(tool_id),
-                    "name": str(body.get("name") or tool_id),
+                    "id": str(command_id),
+                    "name": str(body.get("name") or command_id),
                     "description": str(body.get("description", "")),
-                    "source": path,
-                    "kind": "config-tool",
-                }
-            )
-        else:
-            rows.append(
-                {
-                    "id": str(tool_id),
-                    "name": str(tool_id),
-                    "source": path,
-                    "kind": "config-tool",
+                    "source": source,
+                    "kind": "config-command",
                 }
             )
     return rows
+
+
+def _opencode_asset_files(
+    roots: list[str],
+    *,
+    extensions: tuple[str, ...],
+    recursive: bool,
+) -> list[tuple[str, str]]:
+    """Return bounded regular files without following directory aliases."""
+
+    files: list[tuple[str, str]] = []
+    inspected_entries = 0
+    for root in roots:
+        pending = [root]
+        while pending and len(files) < _OPENCODE_ASSET_INVENTORY_MAX_FILES:
+            current = pending.pop()
+            entries = _safe_bounded_directory_entries(
+                current,
+                max_entries=_OPENCODE_ASSET_DIRECTORY_MAX_ENTRIES,
+            )
+            if entries is None:
+                continue
+            inspected_entries += len(entries)
+            if inspected_entries > _OPENCODE_ASSET_INVENTORY_MAX_ENTRIES:
+                return files
+            for entry in entries:
+                full = os.path.join(current, entry)
+                try:
+                    connector_paths.reject_reparse_path(full)
+                    info = os.stat(full, follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISDIR(info.st_mode):
+                    if recursive:
+                        pending.append(full)
+                    continue
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_size > _OPENCODE_ASSET_FILE_MAX_BYTES
+                    or (extensions and not entry.casefold().endswith(extensions))
+                ):
+                    continue
+                relative = os.path.relpath(full, root).replace(os.sep, "/")
+                files.append((relative, full))
+                if len(files) >= _OPENCODE_ASSET_INVENTORY_MAX_FILES:
+                    break
+    return files
+
+
+def _opencode_script_rows(
+    roots: list[str],
+    *,
+    kind: str,
+    extensions: tuple[str, ...],
+    recursive: bool,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for relative, full in _opencode_asset_files(
+        roots,
+        extensions=extensions,
+        recursive=recursive,
+    ):
+        rows.append(
+            {
+                "id": os.path.splitext(relative)[0],
+                "name": os.path.splitext(os.path.basename(relative))[0],
+                "source": full,
+                "kind": kind,
+            }
+        )
+    return rows
+
+
+def _agents_from_opencode(cfg: Config) -> list[dict[str, Any]]:
+    workspace = _connector_workspace_dir(cfg)
+    rows = _opencode_script_rows(
+        connector_paths.agent_dirs("opencode", workspace_dir=workspace),
+        kind="subagent",
+        extensions=(".md",),
+        recursive=True,
+    )
+    for layer in connector_paths._resolve_opencode_config(workspace).layers:  # type: ignore[attr-defined]
+        data = layer.data
+        agents = data.get("agent") if isinstance(data, dict) else None
+        if not isinstance(agents, dict):
+            continue
+        for agent_id, body in agents.items():
+            row: dict[str, Any] = {
+                "id": str(agent_id),
+                "name": str(agent_id),
+                "source": layer.source,
+                "kind": "config-agent",
+            }
+            if isinstance(body, dict):
+                row.update(
+                    {
+                        "name": str(body.get("name") or agent_id),
+                        "description": str(body.get("description") or ""),
+                        "model": str(body.get("model") or ""),
+                        "enabled": not bool(body.get("disable", False)),
+                    }
+                )
+            rows.append(row)
+    return _dedup_rows_by_source(rows)
+
+
+def _opencode_rule_row(path: str, *, scope: str, activation_source: str) -> dict[str, Any] | None:
+    try:
+        connector_paths.reject_reparse_path(path)
+        info = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_size > _OPENCODE_ASSET_FILE_MAX_BYTES:
+        return None
+    return {
+        "id": os.path.basename(path),
+        "name": os.path.basename(path),
+        "source": os.path.abspath(path),
+        "kind": "instruction",
+        "scope": scope,
+        "activation_source": activation_source,
+        "activation_verified": False,
+    }
+
+
+def _opencode_instruction_matches(raw: str, workspace: str) -> list[str]:
+    value = raw.strip()
+    if not value or value.startswith(("https://", "http://")):
+        return []
+    wildcard = any(token in value for token in ("*", "?", "["))
+    roots_and_patterns: list[tuple[str, str]] = []
+    if value.startswith("~/") or value.startswith("~\\"):
+        value = os.path.join(os.path.expanduser("~"), value[2:])
+    if os.path.isabs(value):
+        if not wildcard:
+            return [os.path.abspath(value)] if _opencode_rule_row(
+                value,
+                scope="config",
+                activation_source=f"config instructions: {raw}",
+            ) else []
+        parts = Path(value).parts
+        fixed: list[str] = []
+        for part in parts:
+            if any(token in part for token in ("*", "?", "[")):
+                break
+            fixed.append(part)
+        scan_root = os.path.join(*fixed) if fixed else os.path.dirname(value)
+        roots_and_patterns.append((scan_root, value.replace("\\", "/")))
+    else:
+        if any(part == os.pardir for part in Path(value).parts):
+            return []
+        for root in connector_paths._opencode_project_dirs(workspace):  # type: ignore[attr-defined]
+            if not wildcard:
+                candidate = os.path.join(root, value)
+                if _opencode_rule_row(
+                    candidate,
+                    scope="config",
+                    activation_source=f"config instructions: {raw}",
+                ):
+                    return [os.path.abspath(candidate)]
+                continue
+            roots_and_patterns.append((root, value.replace("\\", "/")))
+    matches: list[str] = []
+    for scan_root, pattern in roots_and_patterns:
+        for relative, match in _opencode_asset_files(
+            [scan_root],
+            extensions=(),
+            recursive=True,
+        ):
+            candidate = match.replace("\\", "/") if os.path.isabs(pattern) else relative
+            if not Path(candidate).match(pattern):
+                continue
+            absolute = os.path.abspath(match)
+            if absolute not in matches:
+                matches.append(absolute)
+            if len(matches) >= _OPENCODE_ASSET_INVENTORY_MAX_FILES:
+                return matches
+    return matches
+
+
+def _opencode_rules(cfg: Config) -> list[dict[str, Any]]:
+    workspace = _connector_workspace_dir(cfg)
+    rows: list[dict[str, Any]] = []
+    global_candidates = [
+        os.path.join(os.path.expanduser("~"), ".config", "opencode", "AGENTS.md"),
+        os.path.join(os.path.expanduser("~"), ".claude", "CLAUDE.md"),
+    ]
+    for candidate in global_candidates:
+        row = _opencode_rule_row(
+            candidate,
+            scope="global",
+            activation_source="global AGENTS.md/CLAUDE.md fallback",
+        )
+        if row is not None:
+            rows.append(row)
+            break
+    project_dirs = connector_paths._opencode_project_dirs(workspace)  # type: ignore[attr-defined]
+    for filename in ("AGENTS.md", "CLAUDE.md"):
+        selected = next(
+            (
+                row
+                for root in project_dirs
+                if (
+                    row := _opencode_rule_row(
+                        os.path.join(root, filename),
+                        scope="project",
+                        activation_source="project AGENTS.md/CLAUDE.md fallback",
+                    )
+                )
+                is not None
+            ),
+            None,
+        )
+        if selected is not None:
+            rows.append(selected)
+            break
+    for layer in connector_paths._resolve_opencode_config(workspace).layers:  # type: ignore[attr-defined]
+        instructions = layer.data.get("instructions") if isinstance(layer.data, dict) else None
+        if not isinstance(instructions, list):
+            continue
+        for raw in instructions:
+            if not isinstance(raw, str):
+                continue
+            for match in _opencode_instruction_matches(raw, workspace):
+                row = _opencode_rule_row(
+                    match,
+                    scope=layer.source_scope,
+                    activation_source=f"{layer.source}: instructions",
+                )
+                if row is not None:
+                    rows.append(row)
+    return _dedup_rows_by_source(rows)
+
+
+def _dedup_rows_by_source(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            str(row.get("id") or "").casefold(),
+            os.path.normcase(str(row.get("source") or "")),
+        )
+        if not key[0] or key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 
 def _tools_from_script_dirs(
@@ -3977,6 +4273,8 @@ def _build_aibom_from_filesystem(
         if result is None or result.error is not None:
             continue
         if (connector, cat_key) in _PARTIAL_CONNECTOR_NOTES:
+            continue
+        if (connector, cat_key) in _UNVERIFIED_CONNECTOR_NOTES:
             continue
         if result.items:
             continue
@@ -4488,7 +4786,7 @@ def _enumerate_plugins_filesystem(
             openclaw_home=cfg.claw.home_dir,
             workspace_dir=workspace_dir,
         )
-        if connector_paths.normalize(resolved_connector) == "cursor"
+        if connector_paths.normalize(resolved_connector) in {"cursor", "opencode"}
         else cfg.plugin_dirs(connector)
     )
     exact_codex_sources = (
@@ -4554,6 +4852,52 @@ def _enumerate_plugins_filesystem(
             if discovered.logical_id and discovered.logical_id != discovered.id:
                 row["logical_id"] = discovered.logical_id
             rows.append(row)
+    if connector_paths.normalize(resolved_connector) == "opencode":
+        for row in _opencode_config_plugin_rows(workspace_dir):
+            identity = str(row["id"]).casefold()
+            if identity in seen:
+                continue
+            seen[identity] = str(row["path"])
+            rows.append(row)
+    return rows
+
+
+def _opencode_config_plugin_rows(workspace_dir: str) -> list[dict[str, Any]]:
+    """Inventory local config ``plugin`` specs without resolving/installing them."""
+
+    managed_bridge = os.path.normcase(
+        os.path.abspath(connector_paths.connector_config_files("opencode")[0])
+    )
+    rows: list[dict[str, Any]] = []
+    for layer in connector_paths._resolve_opencode_config(workspace_dir).layers:  # type: ignore[attr-defined]
+        configured = layer.data.get("plugin") if isinstance(layer.data, dict) else None
+        if not isinstance(configured, list):
+            continue
+        for value in configured:
+            spec = value[0] if isinstance(value, list) and value else value
+            if not isinstance(spec, str) or not spec.strip():
+                continue
+            plugin_id = spec.strip()
+            path_candidate = ""
+            if plugin_id.startswith(("./", "../")) and layer.path:
+                path_candidate = os.path.abspath(
+                    os.path.join(os.path.dirname(layer.path), plugin_id)
+                )
+            elif os.path.isabs(plugin_id):
+                path_candidate = os.path.abspath(plugin_id)
+            if path_candidate and os.path.normcase(path_candidate) == managed_bridge:
+                continue
+            rows.append(
+                {
+                    "id": plugin_id,
+                    "name": plugin_id,
+                    "origin": layer.source,
+                    "enabled": True,
+                    "status": "configured",
+                    "path": layer.path or layer.source,
+                    "configuration_only": True,
+                }
+            )
     return rows
 
 

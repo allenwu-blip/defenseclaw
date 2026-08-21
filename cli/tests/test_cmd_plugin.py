@@ -131,6 +131,64 @@ class PluginCommandTestBase(unittest.TestCase):
         return dest
 
 
+class TestOpenCodeManagedBridgeProtection(PluginCommandTestBase):
+    def setUp(self):
+        super().setUp()
+        self.config_root = os.path.join(self.tmp_dir, "opencode-config")
+        self.managed = os.path.join(self.config_root, "plugins", "defenseclaw.js")
+        os.makedirs(os.path.dirname(self.managed))
+        with open(self.managed, "w", encoding="utf-8") as handle:
+            handle.write("// managed bridge\n")
+        self.app.cfg.active_connector = lambda: "opencode"  # type: ignore[method-assign]
+        self.app.cfg.active_connectors = lambda: ["opencode"]  # type: ignore[method-assign]
+
+    def test_scan_block_disable_and_quarantine_refuse_exact_managed_bridge(self):
+        commands = (
+            ["scan", self.managed, "--connector", "opencode"],
+            ["block", "defenseclaw", "--connector", "opencode"],
+            ["disable", "defenseclaw", "--connector", "opencode"],
+            ["quarantine", self.managed, "--connector", "opencode"],
+        )
+        with patch.dict(
+            os.environ,
+            {"OPENCODE_CONFIG_DIR": self.config_root},
+            clear=False,
+        ):
+            for args in commands:
+                result = self.invoke(args)
+                self.assertNotEqual(result.exit_code, 0, result.output)
+                self.assertIn("managed OpenCode defenseclaw.js bridge", result.output)
+        self.assertTrue(os.path.isfile(self.managed))
+
+    def test_same_named_project_plugin_remains_eligible(self):
+        repository = os.path.join(self.tmp_dir, "repo")
+        workspace = os.path.join(repository, "app")
+        project_plugins = os.path.join(workspace, ".opencode", "plugins")
+        os.makedirs(os.path.join(repository, ".git"))
+        os.makedirs(project_plugins)
+        sibling = os.path.join(project_plugins, "defenseclaw.js")
+        with open(sibling, "w", encoding="utf-8") as handle:
+            handle.write("export default {}\n")
+        self.app.cfg.connector_workspace_dir = lambda: workspace  # type: ignore[method-assign]
+
+        with patch.dict(
+            os.environ,
+            {"OPENCODE_CONFIG_DIR": self.config_root},
+            clear=False,
+        ):
+            result = self.invoke(["block", "defenseclaw", "--connector", "opencode"])
+            quarantined = self.invoke(
+                ["quarantine", "defenseclaw", "--connector", "opencode"]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("added to block list", result.output)
+        self.assertEqual(quarantined.exit_code, 0, quarantined.output)
+        self.assertIn("quarantined", quarantined.output)
+        self.assertFalse(os.path.exists(sibling))
+        self.assertTrue(os.path.isfile(self.managed))
+
+
 class TestPluginInstall(PluginCommandTestBase):
     """Local directory installs — scanner mocked to return clean."""
 
@@ -334,12 +392,17 @@ class TestPluginListMultiConnectorDefault(PluginCommandTestBase):
 
         from defenseclaw.models import ScanResult
 
-        opencode_dir = os.path.join(self.tmp_dir, "opencode-plugins")
+        opencode_config = os.path.join(self.tmp_dir, "opencode-config")
+        opencode_dir = os.path.join(opencode_config, "plugins")
         hermes_dir = os.path.join(self.tmp_dir, "hermes-plugins")
         plugin_name = "dc-plugin-overview"
-        opencode_path = os.path.join(opencode_dir, plugin_name)
+        opencode_path = os.path.join(opencode_dir, f"{plugin_name}.js")
         hermes_path = os.path.join(hermes_dir, plugin_name)
-        os.makedirs(opencode_path)
+        os.makedirs(opencode_dir)
+        with open(opencode_path, "w", encoding="utf-8") as handle:
+            handle.write("export default {}\n")
+        with open(os.path.join(opencode_dir, "defenseclaw.js"), "w", encoding="utf-8") as handle:
+            handle.write("// managed bridge\n")
         os.makedirs(hermes_path)
         self.app.cfg.active_connectors = lambda: ["opencode", "hermes"]  # type: ignore[method-assign]
         self.app.cfg.plugin_dirs = lambda connector=None: {  # type: ignore[method-assign]
@@ -368,17 +431,19 @@ class TestPluginListMultiConnectorDefault(PluginCommandTestBase):
             ),
         )
 
-        scoped = self.invoke(["list", "--connector", "hermes", "--json"])
-        self.assertEqual(scoped.exit_code, 0, scoped.output)
-        scoped_row = json.loads(scoped.output)[0]
-        self.assertEqual(scoped_row["connector"], "hermes")
-        self.assertEqual(scoped_row["scan"]["target"], hermes_path)
+        with patch.dict(os.environ, {"OPENCODE_CONFIG_DIR": opencode_config}, clear=False):
+            scoped = self.invoke(["list", "--connector", "hermes", "--json"])
+            self.assertEqual(scoped.exit_code, 0, scoped.output)
+            scoped_row = json.loads(scoped.output)[0]
+            self.assertEqual(scoped_row["connector"], "hermes")
+            self.assertEqual(scoped_row["scan"]["target"], hermes_path)
 
-        bare = self.invoke(["list", "--json"])
+            bare = self.invoke(["list", "--json"])
         self.assertEqual(bare.exit_code, 0, bare.output)
         groups = {group["connector"]: group["plugins"] for group in json.loads(bare.output)}
         hermes_row = next(item for item in groups["hermes"] if item["id"] == plugin_name)
         self.assertEqual(hermes_row["scan"]["target"], hermes_path)
+        self.assertEqual([item["id"] for item in groups["opencode"]], [plugin_name])
 
     @patch("defenseclaw.commands.cmd_plugin._list_openclaw_plugins", return_value=[])
     def test_table_title_counts_effectively_enabled_plugins(self, _mock_oc):

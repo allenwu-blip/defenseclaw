@@ -34,6 +34,7 @@ import (
 
 	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/config"
+	"github.com/defenseclaw/defenseclaw/internal/hermesskills"
 	"github.com/defenseclaw/defenseclaw/internal/processutil"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
 	"github.com/defenseclaw/defenseclaw/internal/version"
@@ -152,6 +153,28 @@ func (w *InstallWatcher) enumerateTargets() []InstallEvent {
 	var targets []InstallEvent
 
 	for _, dir := range w.skillDirs {
+		if hermesskills.IsRoot(dir) {
+			entries, err := hermesskills.Discover(dir, hermesskills.DefaultDirectoryLimit)
+			if err == nil {
+				for _, entry := range entries {
+					if entry.Bundled {
+						continue
+					}
+					targets = append(targets, InstallEvent{
+						Type:      InstallSkill,
+						Name:      entry.Name,
+						Path:      entry.Path,
+						Connector: "hermes",
+						Timestamp: time.Now().UTC(),
+					})
+				}
+				continue
+			}
+			// Discovery errors deliberately fall through to the ordinary
+			// direct-child scan. Failure to prove vendor provenance must not
+			// turn an untrusted category tree into a scanner bypass.
+			fmt.Fprintf(os.Stderr, "[rescan] enumerate Hermes skills dir %s: %v\n", dir, err)
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[rescan] enumerate skills dir %s: %v\n", dir, err)

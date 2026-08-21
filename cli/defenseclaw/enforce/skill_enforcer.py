@@ -51,11 +51,15 @@ class BundledSkillRefusedError(Exception):
 
 
 def is_bundled_skill_path(path: str) -> bool:
-    """Return whether *path* is in Codex's exact system-skill cache.
+    """Return whether *path* is a genuine vendor-managed skill.
 
-    Path is normalized before check. Symlink resolution is the
-    caller's responsibility: mutation surfaces MUST realpath the
-    input before calling this. A directory merely named ``.system`` outside
+    Codex trusts only its exact ``$CODEX_HOME/skills/.system`` cache. Hermes
+    trusts only unchanged skills tracked by its ``.bundled_manifest``; modified
+    or untracked copies in the shared Hermes skills root remain scanable.
+
+    Path is normalized before the Codex check. Symlink resolution is the
+    caller's responsibility: mutation surfaces MUST realpath the input before
+    calling this. A directory merely named ``.system`` outside
     ``$CODEX_HOME/skills`` remains eligible for scanning and enforcement.
 
     Returns False for an empty path; the missing-provenance rule at
@@ -72,9 +76,14 @@ def is_bundled_skill_path(path: str) -> bool:
         )
     )
     try:
-        return os.path.commonpath((candidate, root)) == root
+        if os.path.commonpath((candidate, root)) == root:
+            return True
     except ValueError:
-        return False
+        pass
+
+    from defenseclaw.hermes_skills import is_bundled_skill_path as is_hermes_bundled
+
+    return is_hermes_bundled(path)
 
 
 class SkillEnforcer:
@@ -277,8 +286,8 @@ class SkillEnforcer:
     ) -> str | None:
         """Copy, verify, then remove a skill from its original location.
 
-        Raises BundledSkillRefusedError when the source path resolves under a
-        `.system` container — vendor-managed skills are refused at the
+        Raises BundledSkillRefusedError when the source path resolves to a
+        proven vendor bundle — vendor-managed skills are refused at the
         file-mutation boundary. The check runs before any hash or copy
         work so a bundled skill's content is never staged, even
         transiently.
@@ -286,8 +295,8 @@ class SkillEnforcer:
         if not self._existing_path_is_safe(self.quarantine_dir):
             return None
         source = os.path.abspath(source_path)
-        # Resolve symlinks so a link outside the bundled tree pointing
-        # into `<skills-root>/.system/hello` can't bypass the guard.
+        # Resolve symlinks so a link outside a bundled tree pointing into it
+        # cannot bypass the guard.
         # os.path.realpath is a no-op when source is already a real
         # path, so this doesn't perturb the ordinary case.
         try:
@@ -296,7 +305,7 @@ class SkillEnforcer:
             resolved = source
         if is_bundled_skill_path(source) or is_bundled_skill_path(resolved):
             raise BundledSkillRefusedError(
-                f"refusing to quarantine bundled skill under .system: {skill_name!r}"
+                f"refusing to quarantine vendor-bundled skill: {skill_name!r}"
             )
         if not self._validate_tree(source):
             return None

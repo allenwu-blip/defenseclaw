@@ -22,6 +22,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/defenseclaw/defenseclaw/internal/hermesskills"
 )
 
 // BundledSkillContainer is the reserved directory name Codex uses for its
@@ -38,13 +40,16 @@ const BundledSkillContainer = ".system"
 // audit-store side effects — because a corrupted bundled skill is a
 // vendor-supplied component and cannot be restored by the operator.
 var ErrBundledSkill = errors.New(
-	"enforce: bundled skill (.system container or descendant) is vendor-managed and cannot be blocked, disabled, or quarantined",
+	"enforce: bundled skill is vendor-managed and cannot be blocked, disabled, or quarantined",
 )
 
 // IsBundledSkillPath reports whether path is at or below Codex's exact
-// vendor-managed system-skill cache: `$CODEX_HOME/skills/.system`.
-// A directory merely named ".system" elsewhere remains operator-controlled
-// and must not bypass scanning or enforcement.
+// vendor-managed system-skill cache, or inside an unchanged Hermes skill whose
+// identity/content match both HERMES_HOME/skills/.bundled_manifest and the
+// corresponding source in the exact Hermes checkout.
+// Modified/untracked Hermes skills and a directory merely named ".system"
+// elsewhere remain operator-controlled and must not bypass scanning or
+// enforcement.
 //
 // Path is Cleaned before check. Symlink resolution is the caller's
 // responsibility: mutation surfaces MUST resolve symlinks (via
@@ -62,6 +67,13 @@ func IsBundledSkillPath(path string) bool {
 	if trimmed == "" {
 		return false
 	}
+	if isCodexBundledSkillPath(trimmed) {
+		return true
+	}
+	return hermesskills.IsBundledPath(trimmed)
+}
+
+func isCodexBundledSkillPath(path string) bool {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
 		userHome, err := os.UserHomeDir()
@@ -89,7 +101,7 @@ func IsBundledSkillPath(path string) bool {
 		}
 		codexHome = absolute
 	}
-	return pathAtOrBelow(trimmed, filepath.Join(codexHome, "skills", BundledSkillContainer))
+	return pathAtOrBelow(path, filepath.Join(codexHome, "skills", BundledSkillContainer))
 }
 
 func pathAtOrBelow(path, root string) bool {

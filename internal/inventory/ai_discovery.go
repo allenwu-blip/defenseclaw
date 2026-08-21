@@ -43,6 +43,7 @@ import (
 
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/enforce"
+	"github.com/defenseclaw/defenseclaw/internal/hermesskills"
 	"github.com/defenseclaw/defenseclaw/internal/inventory/lockparse"
 	"github.com/defenseclaw/defenseclaw/internal/managed"
 	"github.com/defenseclaw/defenseclaw/internal/safefile"
@@ -1915,6 +1916,14 @@ func (s *ContinuousDiscoveryService) signalFromDirectoryChildren(sig AISignature
 			partial = true
 			coverageReason = CoverageReasonReadError
 		default:
+			if detector == "skill" && strings.EqualFold(strings.TrimSpace(sig.ID), "hermes") &&
+				hermesskills.IsRoot(path) {
+				if childPartial, childReason := s.appendHermesSkillChildren(&evidence, path); childPartial {
+					partial = true
+					coverageReason = childReason
+				}
+				break
+			}
 			for _, entry := range entries {
 				if len(evidence) >= maxEvidencePerSignal {
 					// Cap hit before we processed every child.
@@ -1973,6 +1982,52 @@ func (s *ContinuousDiscoveryService) signalFromDirectoryChildren(sig AISignature
 		out.LastActiveAt = &mt
 	}
 	return out
+}
+
+// appendHermesSkillChildren expands Hermes's category hierarchy into actual
+// SKILL.md identities. The shared HERMES_HOME/skills root mixes
+// installer-synced, hub, and operator skills, so only unchanged entries backed
+// by .bundled_manifest receive bundled provenance.
+func (s *ContinuousDiscoveryService) appendHermesSkillChildren(evidence *[]AIEvidence, root string) (bool, string) {
+	remaining := maxEvidencePerSignal - len(*evidence)
+	if remaining <= 0 {
+		return true, CoverageReasonCapExceeded
+	}
+	entries, err := hermesskills.Discover(root, hermesskills.DefaultDirectoryLimit)
+	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return true, CoverageReasonPermissionDenied
+		}
+		if errors.Is(err, hermesskills.ErrDirectoryLimit) {
+			return true, CoverageReasonCapExceeded
+		}
+		return true, CoverageReasonReadError
+	}
+	partial := len(entries) > remaining
+	if partial {
+		entries = entries[:remaining]
+	}
+	for _, entry := range entries {
+		origin := "user"
+		if entry.Bundled {
+			origin = "bundled"
+		}
+		ev := AIEvidence{
+			Type:     "skill_entry",
+			Basename: sanitizeBasenameValue(entry.Name),
+			PathHash: hashPath(entry.Path),
+			Origin:   origin,
+			Bundled:  entry.Bundled,
+		}
+		if s.opts.StoreRawLocalPaths {
+			ev.RawPath = entry.Path
+		}
+		*evidence = append(*evidence, ev)
+	}
+	if partial {
+		return true, CoverageReasonCapExceeded
+	}
+	return false, ""
 }
 
 // appendSystemSkillChildren enumerates one level below a Codex `.system`

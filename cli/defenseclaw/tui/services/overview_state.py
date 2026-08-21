@@ -18,10 +18,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from defenseclaw.connector_paths import (
+    cleanup_only_guidance,
     connector_config_files,
     connector_home,
     hermes_config_path,
     hermes_home,
+    is_cleanup_only,
 )
 from defenseclaw.observability.custody_status import (
     NativeDeliveryStatus,
@@ -1460,14 +1462,14 @@ def friendly_connector_name(connector: str) -> str:
 
 def connector_source_label(connector: str, category: str) -> str:
     connector = (connector or "").strip().lower()
+    if is_cleanup_only(connector):
+        return cleanup_only_guidance(connector)
     hermes_root = hermes_home()
     hermes_config = hermes_config_path()
     claude_root = connector_home("claudecode")
     codex_root = connector_home("codex")
     claude_config = connector_config_files("claudecode")[0]
     codex_config = connector_config_files("codex")[0]
-    gemini_root = connector_home("geminicli")
-    gemini_config = connector_config_files("geminicli")[0]
     opencode_plugin = connector_config_files("opencode")[0]
     opencode_mcp_sources = [
         "authenticated remote .well-known/opencode (mcp; provenance unverified locally)",
@@ -1508,11 +1510,6 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.devin/skills",
             "./.agents/skills",
         ),
-        ("geminicli", "skills"): (
-            os.path.join(gemini_root, "skills"),
-            "./.gemini/skills",
-            "./.agents/skills",
-        ),
         ("copilot", "skills"): ("./.github/skills", "./.agents/skills", "~/.copilot/skills"),
         ("openhands", "skills"): ("~/.openhands/skills", "~/.openhands/microagents", "~/.agents/skills"),
         ("antigravity", "skills"): (
@@ -1520,7 +1517,12 @@ def connector_source_label(connector: str, category: str) -> str:
             "<workspace>/.agents/skills/<skill>/SKILL.md",
             "~/.gemini/antigravity-cli/skills/*.md (discovery-only)",
         ),
-        ("opencode", "skills"): ("unsupported/hooks-only surface",),
+        ("opencode", "skills"): (
+            "~/.config/opencode/{skill,skills}",
+            "<workspace-through-nearest-git-root>/.opencode/{skill,skills}",
+            "~/.opencode/{skill,skills} and OPENCODE_CONFIG_DIR/{skill,skills}",
+            "<project-or-user>/.claude/skills and .agents/skills",
+        ),
         ("amp", "skills"): (
             "~/.config/agents/skills",
             "~/.agents/skills",
@@ -1543,10 +1545,6 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.devin/mcp_config.json",
             "./.devin/mcp_config.local.json (read-only)",
             "./.devin/config*.json (legacy read-only compatibility)",
-        ),
-        ("geminicli", "mcps"): (
-            "./.gemini/settings.json (mcpServers)",
-            f"{gemini_config} (mcpServers)",
         ),
         ("copilot", "mcps"): ("~/.copilot/mcp-config.json", "./.github/mcp.json", "./.mcp.json"),
         ("openhands", "mcps"): ("~/.openhands/mcp.json",),
@@ -1577,7 +1575,6 @@ def connector_source_label(connector: str, category: str) -> str:
         ),
         ("cursor", "plugins"): ("unsupported",),
         ("devin", "plugins"): ("unsupported (closed beta; no general plugin claim)",),
-        ("geminicli", "plugins"): (os.path.join(gemini_root, "extensions"),),
         ("copilot", "plugins"): ("copilot plugins list --kind plugin --json",),
         ("openhands", "plugins"): ("unsupported",),
         ("antigravity", "plugins"): (
@@ -1585,7 +1582,24 @@ def connector_source_label(connector: str, category: str) -> str:
             "~/.gemini/antigravity-cli/plugins/<plugin>/ (discovery-only)",
             "<workspace>/.agents/plugins/<plugin>/ (read/write)",
         ),
-        ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
+        ("opencode", "plugins"): (
+            "<global/project/custom>/.opencode/{plugin,plugins}/*.{js,ts}",
+            "opencode.json/jsonc plugin package list (discovery-only)",
+            f"{opencode_plugin} (managed bridge; excluded from inventory and scans)",
+        ),
+        ("opencode", "agents"): (
+            "<global/project/custom>/.opencode/{agent,agents}/**/*.md",
+            "opencode.json/jsonc agent map",
+        ),
+        ("opencode", "rules"): (
+            "global/project AGENTS.md with CLAUDE.md fallback",
+            "opencode.json/jsonc instructions (local bounded files only)",
+        ),
+        ("opencode", "tools"): (
+            "<global/project/custom>/.opencode/{tool,tools}/*.{js,ts}",
+            "<global/project/custom>/.opencode/{command,commands}/**/*.md",
+            "opencode.json/jsonc command map (tools permission map is not an asset)",
+        ),
         ("amp", "plugins"): (
             "~/.config/amp/plugins/defenseclaw.ts (DefenseClaw policy plugin)",
             "<workspace>/.amp/plugins",
@@ -1601,11 +1615,13 @@ def connector_source_label(connector: str, category: str) -> str:
             *tuple(devin_configs),
             "./.devin/hooks.v1.json",
         ),
-        ("geminicli", "config"): (gemini_config, "./.gemini/settings.json"),
         ("copilot", "config"): ("./.github/hooks/*.json",),
         ("openhands", "config"): ("~/.openhands/hooks.json",),
         ("antigravity", "config"): ("~/.gemini/config/hooks.json",),
-        ("opencode", "config"): (opencode_plugin,),
+        ("opencode", "config"): (
+            f"{opencode_plugin} (managed bridge; lifecycle custody only)",
+            "global/project/custom opencode.json and opencode.jsonc",
+        ),
         ("amp", "config"): (
             "~/.config/amp/plugins/defenseclaw.ts",
             "~/.config/amp/settings.json or settings.jsonc",

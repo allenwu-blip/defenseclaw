@@ -199,6 +199,13 @@ bundled/Nix, user, and pip `hermes_agent.plugins` plugins with activation
 provenance. Project plugins depend on launch cwd/environment and are reported
 unverified; named-profile conditional sources are unsupported.
 
+Hermes stores installer-synced and operator-authored skills in the same tree.
+DefenseClaw marks a skill vendor-bundled only while its manifest hash, installed
+copy, and matching `hermes-agent/skills` source all agree. Those unchanged
+vendor skills remain visible but are discovery-only: they are never scanned,
+blocked, disabled, or quarantined. Modified, untracked, linked, or unverifiable
+copies remain ordinary scanable skills.
+
 ## Hook capabilities
 
 <HookEventsList connector="hermes" />

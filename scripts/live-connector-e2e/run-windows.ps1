@@ -880,7 +880,9 @@ function Initialize-PackageLiveEvidenceAuthority {
         -not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
         throw 'package live evidence checkout lacks the reviewed harness/workflow files'
     }
-    $git = (Get-Command 'git.exe' -CommandType Application -ErrorAction Stop).Source
+    $gitApplication = Get-Command 'git.exe' -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $git = [string]$gitApplication.Source
     $head = Invoke-NativeProcess -FilePath $git -ArgumentList @(
         '-C', $checkout, 'rev-parse', 'HEAD'
     ) -TimeoutSeconds 30
@@ -1115,7 +1117,9 @@ function Assert-AuthenticatedAntigravitySourceCheckout {
         -not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
         throw 'authenticated Antigravity source checkout lacks the reviewed harness/workflow files'
     }
-    $git = (Get-Command 'git.exe' -CommandType Application -ErrorAction Stop).Source
+    $gitApplication = Get-Command 'git.exe' -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $git = [string]$gitApplication.Source
     $head = Invoke-NativeProcess -FilePath $git -ArgumentList @(
         '-C', $checkout, 'rev-parse', 'HEAD'
     ) -TimeoutSeconds 30
@@ -7313,7 +7317,9 @@ function Assert-ProtectedCopilotSourceCheckout {
         -not (Test-Path -LiteralPath $workflowPath -PathType Leaf)) {
         throw 'protected Copilot source checkout lacks the reviewed harness/workflow files'
     }
-    $git = (Get-Command 'git.exe' -CommandType Application -ErrorAction Stop).Source
+    $gitApplication = Get-Command 'git.exe' -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+    $git = [string]$gitApplication.Source
     $head = Invoke-NativeProcess -FilePath $git -ArgumentList @(
         '-C', $checkout, 'rev-parse', 'HEAD'
     ) -TimeoutSeconds 30

@@ -85,6 +85,7 @@ from defenseclaw.file_permissions import (
     open_regular_file_no_follow,
     reject_reparse_path,
 )
+from defenseclaw.platform_support import DEPRECATED_CONNECTORS
 from defenseclaw.safety import is_symlink
 
 _MCP_CONFIG_MAX_BYTES = 2 * 1024 * 1024
@@ -306,6 +307,36 @@ def is_known(connector: str | None) -> bool:
     """Return True iff *connector* (after :func:`normalize`) is in
     :data:`KNOWN_CONNECTORS`."""
     return normalize(connector) in KNOWN_CONNECTORS
+
+
+def is_cleanup_only(connector: str | None) -> bool:
+    """Return whether *connector* is retained only for managed cleanup.
+
+    Cleanup-only connectors stay in :data:`KNOWN_CONNECTORS` so historical
+    receipts, aliases, and exact teardown paths remain resolvable. They must
+    not participate in new asset discovery or mutation surfaces.
+    """
+
+    return normalize(connector) in DEPRECATED_CONNECTORS
+
+
+def cleanup_only_guidance(connector: str | None) -> str:
+    """Operator guidance for a retired connector's blocked active surface."""
+
+    name = normalize(connector)
+    if name == "geminicli":
+        return (
+            "Gemini CLI is retired and cleanup-only; use the Antigravity "
+            "connector. Remove existing DefenseClaw-managed Gemini CLI state "
+            "with `defenseclaw setup remove geminicli --yes`."
+        )
+    if name == "windsurf":
+        return (
+            "Windsurf/Cascade is retired and cleanup-only; use Devin. "
+            "DefenseClaw upgrade and uninstall retain authenticated legacy "
+            "receipt cleanup without exposing new Windsurf asset surfaces."
+        )
+    return f"Connector {name!r} is retired and cleanup-only."
 
 
 # ---------------------------------------------------------------------------
@@ -1471,8 +1502,8 @@ def connector_config_files(
         ]
     elif name == "opencode":
         # opencode auto-loads plugins from ~/.config/opencode/plugins/;
-        # DefenseClaw installs a single bridge plugin there. There is no
-        # command-hook config file to patch.
+        # DefenseClaw owns only this exact bridge. Operator JSON/JSONC remains
+        # outside lifecycle snapshots and rollback custody.
         paths = [
             os.path.join(connector_home("opencode"), "plugins", "defenseclaw.js"),
         ]
@@ -1660,6 +1691,8 @@ def skill_dirs(
     ``~/.openclaw/openclaw.json``).
     """
     name = normalize(connector)
+    if is_cleanup_only(name):
+        return []
     if name == "claudecode":
         return _claudecode_skill_dirs(workspace_dir)
     if name == "codex":
@@ -1674,8 +1707,6 @@ def skill_dirs(
         return _cursor_skill_dirs(workspace_dir)
     if name == "devin":
         return _devin_skill_dirs(workspace_dir)
-    if name == "geminicli":
-        return _gemini_skill_dirs(workspace_dir)
     if name == "copilot":
         return _copilot_skill_dirs(workspace_dir)
     if name == "openhands":
@@ -1683,7 +1714,7 @@ def skill_dirs(
     if name == "antigravity":
         return _antigravity_skill_dirs(workspace_dir)
     if name == "opencode":
-        return []
+        return _opencode_skill_dirs(workspace_dir)
     if name == "omnigent":
         return []
     return _openclaw_skill_dirs(openclaw_home, openclaw_config)
@@ -1705,6 +1736,8 @@ def skill_write_dirs(
     install behavior.
     """
 
+    if is_cleanup_only(connector):
+        return []
     if normalize(connector) == "amp":
         workspace = _workspace_dir(workspace_dir)
         if workspace:
@@ -1715,6 +1748,11 @@ def skill_write_dirs(
         if workspace:
             return [os.path.join(workspace, ".devin", "skills")]
         return [os.path.join(devin_config_home(), "skills")]
+    if normalize(connector) == "opencode":
+        workspace = _workspace_dir(workspace_dir)
+        if workspace:
+            return [os.path.join(workspace, ".opencode", "skills")]
+        return [os.path.join(connector_home("opencode"), "skills")]
     return skill_dirs(
         connector,
         openclaw_home=openclaw_home,
@@ -1741,6 +1779,8 @@ def plugin_dirs(
     * OpenClaw:    ``<home_dir>/extensions``
     """
     name = normalize(connector)
+    if is_cleanup_only(name):
+        return []
     if name == "claudecode":
         return _claudecode_plugin_dirs(workspace_dir)
     if name == "codex":
@@ -1755,8 +1795,6 @@ def plugin_dirs(
         return []
     if name == "devin":
         return []
-    if name == "geminicli":
-        return _gemini_plugin_dirs(workspace_dir)
     if name == "copilot":
         return []
     if name == "openhands":
@@ -1787,6 +1825,8 @@ def plugin_inventory_dirs(
 
     if normalize(connector) == "cursor":
         return [os.path.join(str(Path.home()), ".cursor", "plugins", "local")]
+    if normalize(connector) == "opencode":
+        return _opencode_plugin_dirs(workspace_dir)
     return plugin_dirs(
         connector,
         openclaw_home=openclaw_home,
@@ -1808,6 +1848,8 @@ def agent_dirs(
     owned by their existing inventory adapters.
     """
     name = normalize(connector)
+    if is_cleanup_only(name):
+        return []
     if name == "codex":
         return _dedup(
             [
@@ -1830,13 +1872,6 @@ def agent_dirs(
                 os.path.join(home, ".codex", "agents"),
             ]
         )
-    if name == "geminicli":
-        return _dedup(
-            [
-                os.path.join(gemini_config_home(), "agents"),
-                _workspace_path(workspace_dir, ".gemini", "agents"),
-            ]
-        )
     if name == "devin":
         return _dedup(
             [
@@ -1845,6 +1880,8 @@ def agent_dirs(
                 _workspace_path(workspace_dir, ".agents", "agents"),
             ]
         )
+    if name == "opencode":
+        return _opencode_component_dirs("agent", workspace_dir)
     return []
 
 
@@ -1862,6 +1899,8 @@ def rule_dirs(
     omitted on native Windows.
     """
     name = normalize(connector)
+    if is_cleanup_only(name):
+        return []
     if name == "copilot":
         return copilot_instruction_paths(workspace_dir)
     if name == "cursor":
@@ -1873,13 +1912,8 @@ def rule_dirs(
                 _workspace_path(workspace_dir, ".devin", "rules"),
             ]
         )
-    if name == "geminicli":
-        return _dedup(
-            [
-                os.path.join(gemini_config_home(), "skills"),
-                _workspace_path(workspace_dir, ".agents", "skills"),
-            ]
-        )
+    if name == "opencode":
+        return _opencode_instruction_roots(workspace_dir)
     if name != "codex":
         return []
     paths = [
@@ -1922,6 +1956,8 @@ def mcp_servers(
     prefix.
     """
     name = normalize(connector)
+    if is_cleanup_only(name):
+        return []
     if name == "claudecode":
         return _claudecode_mcp_servers(workspace_dir)
     if name == "codex":
@@ -1936,8 +1972,6 @@ def mcp_servers(
         return _cursor_mcp_servers(workspace_dir)
     if name == "devin":
         return _devin_mcp_servers(workspace_dir)
-    if name == "geminicli":
-        return _gemini_mcp_servers(workspace_dir)
     if name == "copilot":
         return _copilot_mcp_servers(workspace_dir)
     if name == "openhands":
@@ -2687,18 +2721,100 @@ def _opencode_config_dir() -> str:
     return ""
 
 
-def _opencode_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+def _opencode_project_dirs(workspace_dir: str | None = None) -> list[str]:
+    """Return the pinned directory through its nearest Git worktree root.
+
+    OpenCode resolves project assets upward from the client's working
+    directory. DefenseClaw requires an explicit workspace and never borrows
+    the daemon cwd. A real ``.git`` directory and a regular ``.git`` file
+    (linked worktree) are both valid stopping markers; outside a repository we
+    inspect only the explicitly pinned directory.
+    """
+
+    workspace = _workspace_dir(workspace_dir)
+    if not workspace:
+        return []
+    project_root = _claudecode_repository_root(workspace)
+    stop = project_root or workspace
+    roots: list[str] = []
+    current = workspace
+    while True:
+        roots.append(current)
+        if os.path.normcase(current) == os.path.normcase(stop):
+            break
+        parent = os.path.dirname(current)
+        if os.path.normcase(parent) == os.path.normcase(current):
+            break
+        current = parent
+    return _dedup(roots)
+
+
+def _opencode_config_component_dirs(workspace_dir: str | None = None) -> list[str]:
+    """Return local OpenCode config-component roots in discovery order."""
+
     home = str(Path.home())
     custom = _opencode_config_dir()
     return _dedup(
         [
-            _workspace_path(workspace_dir, ".opencode", "skills"),
-            _workspace_path(workspace_dir, ".claude", "skills"),
-            _workspace_path(workspace_dir, ".agents", "skills"),
-            os.path.join(home, ".config", "opencode", "skills"),
+            os.path.join(home, ".config", "opencode"),
+            *[
+                os.path.join(root, ".opencode")
+                for root in _opencode_project_dirs(workspace_dir)
+            ],
+            os.path.join(home, ".opencode"),
+            custom,
+        ]
+    )
+
+
+def _opencode_component_dirs(
+    component: str,
+    workspace_dir: str | None = None,
+) -> list[str]:
+    """Return singular/plural OpenCode component directories."""
+
+    paths: list[str] = []
+    for root in _opencode_config_component_dirs(workspace_dir):
+        paths.extend(
+            [
+                os.path.join(root, component),
+                os.path.join(root, f"{component}s"),
+            ]
+        )
+    return _dedup(paths)
+
+
+def _opencode_skill_dirs(workspace_dir: str | None = None) -> list[str]:
+    home = str(Path.home())
+    project = _opencode_project_dirs(workspace_dir)
+    native: list[str] = []
+    for root in _opencode_config_component_dirs(workspace_dir):
+        native.extend(
+            [
+                os.path.join(root, "skill"),
+                os.path.join(root, "skills"),
+            ]
+        )
+    return _dedup(
+        [
+            *native,
+            *[os.path.join(root, ".claude", "skills") for root in project],
+            *[os.path.join(root, ".agents", "skills") for root in project],
             os.path.join(home, ".claude", "skills"),
             os.path.join(home, ".agents", "skills"),
-            os.path.join(custom, "skills") if custom else "",
+        ]
+    )
+
+
+def _opencode_instruction_roots(workspace_dir: str | None = None) -> list[str]:
+    """Return local roots that can contribute OpenCode instructions."""
+
+    return _dedup(
+        [
+            connector_home("opencode"),
+            os.path.join(str(Path.home()), ".claude"),
+            *_opencode_project_dirs(workspace_dir),
+            *_opencode_config_paths(workspace_dir),
         ]
     )
 
@@ -3036,15 +3152,7 @@ def _hermes_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
 
 
 def _opencode_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
-    home = str(Path.home())
-    custom = _opencode_config_dir()
-    return _dedup(
-        [
-            _workspace_path(workspace_dir, ".opencode", "plugins"),
-            os.path.join(home, ".config", "opencode", "plugins"),
-            os.path.join(custom, "plugins") if custom else "",
-        ]
-    )
+    return _opencode_component_dirs("plugin", workspace_dir)
 
 
 def _antigravity_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
@@ -3459,7 +3567,7 @@ def _resolve_opencode_config(workspace_dir: str | None = None) -> OpenCodeConfig
     process never substitutes its own cwd for the OpenCode client's cwd.
     """
     home = str(Path.home())
-    root = _workspace_dir(workspace_dir)
+    project_dirs = _opencode_project_dirs(workspace_dir)
     candidates: list[tuple[str, str]] = [
         (os.path.join(home, ".config", "opencode", "config.json"), "global"),
         (os.path.join(home, ".config", "opencode", "opencode.json"), "global"),
@@ -3486,7 +3594,7 @@ def _resolve_opencode_config(workspace_dir: str | None = None) -> OpenCodeConfig
                     reason="relative path has no explicit workspace",
                 ),
             )
-    if root:
+    for root in reversed(project_dirs):
         candidates.extend(
             [
                 (os.path.join(root, "opencode.json"), "project"),
@@ -3705,9 +3813,11 @@ def _load_json_or_jsonc(path: str) -> Any:
     the file carries comments). Callers treat ``None`` as "no data".
     """
     try:
-        with open(path) as f:
-            raw = f.read()
-    except OSError:
+        raw = _read_bounded_stable_file(
+            path,
+            max_bytes=_MCP_CONFIG_MAX_BYTES,
+        ).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
         return None
     return _load_json_or_jsonc_content(raw)
 
@@ -4167,6 +4277,8 @@ def set_mcp_server(
                      (for example OpenHands writes ``~/.openhands/mcp.json``).
     """
     name_n = normalize(connector)
+    if is_cleanup_only(name_n):
+        raise MCPWriteUnsupportedError(cleanup_only_guidance(name_n))
     if name_n == "openclaw":
         if openclaw_config_setter is None:
             raise RuntimeError(
@@ -4211,15 +4323,6 @@ def set_mcp_server(
         return
     if name_n == "devin":
         path = _devin_mcp_write_path(workspace_dir)
-        _atomic_json_merge(path, ("mcpServers", name), entry)
-        return
-    if name_n == "geminicli":
-        workspace = _workspace_dir(workspace_dir)
-        path = (
-            os.path.join(workspace, ".gemini", "settings.json")
-            if workspace
-            else os.path.join(gemini_config_home(), "settings.json")
-        )
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
     if name_n == "copilot":
@@ -4274,6 +4377,8 @@ def unset_mcp_server(
     :class:`MCPWriteUnsupportedError`.
     """
     name_n = normalize(connector)
+    if is_cleanup_only(name_n):
+        raise MCPWriteUnsupportedError(cleanup_only_guidance(name_n))
     if name_n == "openclaw":
         if openclaw_config_unsetter is None:
             raise RuntimeError(
@@ -4318,15 +4423,6 @@ def unset_mcp_server(
         return
     if name_n == "devin":
         path = _devin_mcp_write_path(workspace_dir)
-        _atomic_json_delete(path, ("mcpServers", name))
-        return
-    if name_n == "geminicli":
-        workspace = _workspace_dir(workspace_dir)
-        path = (
-            os.path.join(workspace, ".gemini", "settings.json")
-            if workspace
-            else os.path.join(gemini_config_home(), "settings.json")
-        )
         _atomic_json_delete(path, ("mcpServers", name))
         return
     if name_n == "copilot":

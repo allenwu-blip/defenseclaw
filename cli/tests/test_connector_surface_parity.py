@@ -101,3 +101,13 @@ def test_guardrail_labels_cover_every_known_connector() -> None:
 
     missing = KNOWN - set(_GUARDRAIL_LABELS)
     assert not missing, f"guardrail labels missing: {missing}"
+
+
+def test_retired_windsurf_labels_never_present_cascade_as_active_devin() -> None:
+    from defenseclaw.commands.cmd_guardrail import _CONNECTOR_LABELS as _GUARDRAIL_LABELS
+    from defenseclaw.commands.cmd_status import _FRIENDLY_CONNECTOR_NAMES
+
+    expected = "Retired Cascade (cleanup only)"
+    assert _CONNECTOR_LABELS["windsurf"] == expected
+    assert _GUARDRAIL_LABELS["windsurf"] == expected
+    assert _FRIENDLY_CONNECTOR_NAMES["windsurf"] == expected

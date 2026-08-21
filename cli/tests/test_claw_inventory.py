@@ -2826,6 +2826,90 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         self.assertEqual(result.target, inv["connector_config_files"][0])
         self.assertTrue(all(f.location == result.target for f in result.findings))
 
+    def test_opencode_inventory_discovers_native_assets_but_not_managed_bridge(self):
+        cfg = _make_cfg_for_connector(self.tmp, "opencode")
+        home = Path(self.tmp) / "home"
+        repository = Path(self.tmp) / "repo"
+        workspace = repository / "apps" / "api"
+        workspace.mkdir(parents=True)
+        (repository / ".git").mkdir()
+        cfg.connector_workspace_dir = lambda: str(workspace)  # type: ignore[method-assign]
+
+        global_root = home / ".config" / "opencode"
+        managed_bridge = global_root / "plugins" / "defenseclaw.js"
+        managed_bridge.parent.mkdir(parents=True)
+        managed_bridge.write_text("// managed bridge\n", encoding="utf-8")
+        (global_root / "plugin").mkdir(parents=True)
+        (global_root / "plugin" / "global-plugin.ts").write_text(
+            "export default {}\n", encoding="utf-8"
+        )
+        (global_root / "AGENTS.md").write_text("global instructions\n", encoding="utf-8")
+
+        project_root = workspace / ".opencode"
+        _seed_skill(str(project_root / "skills"), "reviewer")
+        (project_root / "plugins").mkdir(parents=True)
+        (project_root / "plugins" / "project-plugin.js").write_text(
+            "export default {}\n", encoding="utf-8"
+        )
+        (project_root / "agents").mkdir(parents=True)
+        (project_root / "agents" / "file-agent.md").write_text(
+            "---\nname: file-agent\n---\n", encoding="utf-8"
+        )
+        (project_root / "tools").mkdir(parents=True)
+        (project_root / "tools" / "lint.ts").write_text(
+            "export default {}\n", encoding="utf-8"
+        )
+        (project_root / "commands" / "nested").mkdir(parents=True)
+        (project_root / "commands" / "nested" / "deploy.md").write_text(
+            "deploy\n", encoding="utf-8"
+        )
+        (workspace / "rules").mkdir()
+        (workspace / "rules" / "security.md").write_text(
+            "secure instructions\n", encoding="utf-8"
+        )
+        (repository / "AGENTS.md").write_text("project instructions\n", encoding="utf-8")
+
+        global_root.mkdir(parents=True, exist_ok=True)
+        (global_root / "opencode.json").write_text(
+            json.dumps(
+                {
+                    "plugin": ["npm-third-party", str(managed_bridge)],
+                    "agent": {"config-agent": {"description": "review"}},
+                    "command": {"release": {"description": "release"}},
+                    "tools": {"bash": False},
+                    "instructions": ["rules/*.md"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(
+            os.environ,
+            {"HOME": str(home), "USERPROFILE": str(home)},
+            clear=False,
+        ):
+            inv = build_claw_aibom(cfg, live=True)
+
+        self.assertIn("reviewer", {row["id"] for row in inv["skills"]})
+        self.assertEqual(
+            inv["connector_config_files"],
+            [str(managed_bridge)],
+        )
+        self.assertIn(str(global_root / "opencode.json"), inv["connector_mcp_files"])
+        plugin_ids = {row["id"] for row in inv["plugins"]}
+        self.assertIn("global-plugin", plugin_ids)
+        self.assertIn("project-plugin", plugin_ids)
+        self.assertIn("npm-third-party", plugin_ids)
+        self.assertNotIn("defenseclaw", plugin_ids)
+        self.assertNotIn(str(managed_bridge), plugin_ids)
+        self.assertTrue({"file-agent", "config-agent"} <= {row["id"] for row in inv["agents"]})
+        self.assertTrue(
+            {"AGENTS.md", "security.md"} <= {row["id"] for row in inv["rules"]}
+        )
+        tool_ids = {row["id"] for row in inv["tools"]}
+        self.assertTrue({"lint", "nested/deploy", "release"} <= tool_ids)
+        self.assertNotIn("bash", tool_ids)
+
     def test_connector_inventory_mode_follows_scanned_connector(self):
         """The AIBOM ``Mode:`` line (inv['claw_mode']) must report the
         *scanned* connector, not the global cfg.claw.mode. In a
@@ -2923,7 +3007,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
 
         self.assertEqual({row["id"] for row in agents}, {"global-reviewer"})
 
-    def test_gemini_agents_use_private_home_and_pinned_workspace_not_cwd(self):
+    def test_gemini_agents_are_cleanup_only_and_not_discovered(self):
         cfg = _make_cfg_for_connector(self.tmp, "geminicli")
         bound = Path(self.tmp) / "authenticated" / ".gemini"
         hostile = Path(self.tmp) / "hostile-home"
@@ -2955,10 +3039,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
         ):
             agents = _agents_for_connector("geminicli", cfg)
 
-        self.assertEqual(
-            {row["id"] for row in agents},
-            {"user-agent", "project-agent"},
-        )
+        self.assertEqual(agents, [])
 
     def test_cursor_inventory_recurses_skills_rules_and_agents_with_precedence(self):
         cfg = _make_cfg_for_connector(self.tmp, "cursor")
@@ -3397,7 +3478,7 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
 
         self.assertEqual([row[0] for row in rows], [expected])
 
-    def test_opencode_catalog_limits_unproven_asset_surfaces(self):
+    def test_opencode_catalogs_proven_native_asset_surfaces(self):
         cfg = _make_cfg_for_connector(self.tmp, "opencode")
         home = self.tmp
         root = os.path.join(home, ".config", "opencode")
@@ -3432,9 +3513,11 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
             inv = build_claw_aibom(cfg, live=True)
 
         self.assertEqual(inv["connector"], "opencode")
-        self.assertEqual(inv["skills"], [])
+        self.assertEqual([row["id"] for row in inv["skills"]], ["oc-skill"])
+        # OpenCode plugins are direct JS/TS files; a package directory is not
+        # silently treated as a native plugin.
         self.assertEqual(inv["plugins"], [])
-        self.assertEqual(inv["tools"], [])
+        self.assertEqual([row["id"] for row in inv["tools"]], ["file-tool"])
         self.assertEqual([row["id"] for row in inv["mcp"]], ["proven-mcp"])
 
     def test_antigravity_catalog_surfaces_skills_plugins_and_commands(self):

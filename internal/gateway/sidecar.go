@@ -2377,6 +2377,11 @@ func (s *Sidecar) runWatcher(ctx context.Context) error {
 	w := watcher.New(s.currentConfig(), skillDirs, pluginDirs, s.store, s.logger, s.shell, s.opa, func(r watcher.AdmissionResult) {
 		s.handleAdmissionResult(r)
 	})
+	if conn != nil {
+		w.SetManagedArtifacts(connector.ManagedPluginArtifacts(conn, connector.SetupOpts{
+			WorkspaceDir: s.currentConfig().ConnectorWorkspaceDir(),
+		}))
+	}
 	watcherRuntime, _ := s.observabilityV8LifecycleRuntime().(watcher.ObservabilityV8Runtime)
 	w.BindObservabilityV8(watcherRuntime)
 	if webhooks := s.webhooksSnapshot(); webhooks != nil {

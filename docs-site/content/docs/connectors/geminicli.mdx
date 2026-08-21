@@ -15,6 +15,12 @@ Gemini CLI has been removed from installers, setup pickers, the TUI, active
 connector matrices, and live-test lanes. An explicit `defenseclaw setup
 geminicli` command now refuses before changing configuration.
 
+Gemini CLI is also excluded from AI-asset discovery and from skill, plugin,
+MCP, and CodeGuard catalog or install operations. MCP set/unset is disabled;
+use Antigravity's supported asset surfaces for new work. The legacy Gemini CLI
+home and `settings.json` paths remain resolvable only for doctor, verified
+receipt migration, teardown, and uninstall cleanup.
+
 ## Remove an existing managed installation
 
 DefenseClaw retains the old Gemini CLI lifecycle code only so existing users

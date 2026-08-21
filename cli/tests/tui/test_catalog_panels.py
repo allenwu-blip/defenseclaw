@@ -116,6 +116,7 @@ def test_skill_actions_and_intents_match_go_branches() -> None:
     assert action_keys(skill_actions("clean")) == ["s", "i", "b", "a", "d", "q", "n"]
     for status in ("blocked", "allowed", "quarantined", "disabled", "clean", ""):
         assert_no_duplicate_keys(skill_actions(status))
+    assert action_keys(skill_actions("active", bundled=True)) == ["i"]
 
     panel = SkillsPanelModel()
     panel.apply_loaded([SkillRow(name="tutor", status="active")])
@@ -127,6 +128,31 @@ def test_skill_actions_and_intents_match_go_branches() -> None:
 
     panel.apply_loaded([SkillRow(name="tutor", status="blocked")])
     assert panel.handle_key("u").intent.args == ("skill", "unblock", "tutor")
+
+
+def test_bundled_skill_row_is_discovery_only_in_tui() -> None:
+    panel = SkillsPanelModel(connector="hermes")
+    panel.apply_json(
+        json.dumps(
+            [{"name": "vendor-docs", "connector": "hermes", "bundled": True}]
+        )
+    )
+
+    assert panel.selected() == SkillRow(
+        name="vendor-docs",
+        connector="hermes",
+        bundled=True,
+    )
+    assert action_keys(panel.menu_actions()) == ["i"]
+    for key in ("s", "b", "a", "d", "q", "n"):
+        assert panel.action_intent(key) is None
+    assert panel.action_intent("i").args == (
+        "skill",
+        "info",
+        "vendor-docs",
+        "--connector",
+        "hermes",
+    )
 
 
 def test_skills_filter_cursor_registry_and_click_selection() -> None:
@@ -254,15 +280,15 @@ def test_mcp_actions_name_connector_specific_unset_targets(monkeypatch, tmp_path
         "hermes": str(hermes_config),
         "cursor": "./.cursor/mcp.json",
         "devin": str(devin_config / "mcp_config.json"),
-        "geminicli": (
-            f"{gemini_home / 'settings.json'} / "
-            "<workspace>/.gemini/settings.json"
-        ),
+        "geminicli": connector_paths.cleanup_only_guidance("geminicli"),
         "copilot": "./.github/mcp.json",
         "antigravity": "~/.gemini/config/mcp_config.json / <workspace>/.agents/mcp_config.json",
     }
     for connector, want in cases.items():
         assert mcp_unset_target_for_connector(connector) == want
+        if connector == "geminicli":
+            assert mcp_actions("blocked", connector) == ()
+            continue
         unset = next(action for action in mcp_actions("blocked", connector) if action.key == "x")
         assert want in unset.description
 
@@ -305,26 +331,45 @@ def test_catalog_empty_connector_stays_unowned_and_hook_connector_labels_contrac
     assert "enterprise precedence excluded" in connector_source_label("opencode", "mcps")
     assert str(opencode_home / "opencode.json") in mcp_unset_target_for_connector("opencode")
     assert "<workspace>/opencode.json" in mcp_unset_target_for_connector("opencode")
-    assert "unsupported" in connector_source_label("opencode", "skills")
+    assert ".opencode/{skill,skills}" in connector_source_label("opencode", "skills")
+    assert "excluded from inventory and scans" in connector_source_label(
+        "opencode", "plugins"
+    )
+    assert "tools permission map is not an asset" in connector_source_label(
+        "opencode", "tools"
+    )
 
 
-def test_catalog_gemini_labels_use_authenticated_user_and_project_settings(
+def test_catalog_gemini_labels_are_cleanup_only_and_route_to_antigravity(
     monkeypatch,
     tmp_path,
 ) -> None:
     gemini_home = tmp_path / "authenticated" / ".gemini"
     monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
 
-    assert connector_source_label("geminicli", "plugins") == str(
-        gemini_home / "extensions"
-    )
-    mcps = connector_source_label("geminicli", "mcps")
-    assert str(gemini_home / "settings.json") in mcps
-    assert "./.gemini/settings.json" in mcps
-    assert "./.mcp.json" not in mcps
-    assert connector_source_label("geminicli", "config").startswith(
-        str(gemini_home / "settings.json")
-    )
+    guidance = connector_paths.cleanup_only_guidance("geminicli")
+    for category in ("skills", "plugins", "mcps", "config"):
+        assert connector_source_label("geminicli", category) == guidance
+    assert "Antigravity" in guidance
+    assert "setup remove geminicli --yes" in guidance
+
+
+def test_catalog_gemini_panels_expose_no_active_actions() -> None:
+    skills = SkillsPanelModel(connector="geminicli")
+    skills.apply_json(json.dumps([{"name": "legacy-skill"}]))
+    mcps = MCPsPanelModel(connector="geminicli")
+    mcps.apply_json(json.dumps([{"name": "legacy-mcp"}]))
+    plugins = PluginsPanelModel(connector="geminicli")
+    plugins.apply_json(json.dumps([{"id": "legacy-plugin", "name": "legacy-plugin"}]))
+
+    for panel in (skills, mcps, plugins):
+        assert panel.menu_actions() == ()
+        assert panel.action_intent("b") is None
+        refresh = panel.handle_key("r")
+        assert refresh.intent is None
+        assert "Antigravity" in refresh.hint
+
+    assert mcps.handle_key("+").open_mcp_set_form is False
 
 
 def test_catalog_codex_labels_use_current_official_asset_layouts() -> None:

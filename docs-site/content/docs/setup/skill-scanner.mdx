@@ -13,7 +13,7 @@ keywords:
 
 Agents are getting comfortable installing skills. A "skill" is a small bundle — instructions, optional tools, sometimes auto-applied — that an LLM picks up and follows. The same shape is also a great place to hide a prompt-injection or an exfiltration tool.
 
-DefenseClaw integrates Cisco's open-source [`cisco-ai-skill-scanner`](https://github.com/cisco-ai-defense/skill-scanner) so every skill on disk gets a deterministic + LLM-assisted review before an agent is allowed to use it. Verdicts feed the `skill_actions` admission policy by severity bucket, and the install watcher quarantines new skills until the scan resolves.
+DefenseClaw integrates Cisco's open-source [`cisco-ai-skill-scanner`](https://github.com/cisco-ai-defense/skill-scanner) so operator-installed and modified skills get a deterministic + LLM-assisted review before an agent is allowed to use them. Verdicts feed the `skill_actions` admission policy by severity bucket, and the install watcher quarantines new skills until the scan resolves. Exact proven vendor bundles remain visible as discovery-only inventory and do not enter scanner or enforcement paths.
 
 <DefenseClawDemo scenario="skill-quarantine" variant="critical" />
 
@@ -160,6 +160,12 @@ those remain scan-required. Only the exact vendor cache at
 `$CODEX_HOME/skills/.system` is discovery-only and excluded from every scanner
 and enforcement entrypoint. An unrelated `.system` directory receives no
 exemption.
+
+Hermes mixes installer-synced and operator-authored skills under
+`$HERMES_HOME/skills`. DefenseClaw grants discovery-only status only when the
+`.bundled_manifest` hash, installed copy, and matching
+`$HERMES_HOME/hermes-agent/skills` source tree all agree. Modified, untracked,
+linked, oversized, or otherwise unverifiable copies remain scan-required.
 
 To switch profiles for the entire `skill_actions` table:
 

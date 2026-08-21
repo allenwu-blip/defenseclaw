@@ -44,12 +44,16 @@ NOT_CERTIFIED: SupportStatus = "not_certified"
 UNSUPPORTED: SupportStatus = "unsupported"
 
 PROXY_CONNECTORS: frozenset[str] = frozenset({"openclaw", "zeptoclaw"})
-DEPRECATED_CONNECTORS: frozenset[str] = frozenset({"geminicli"})
+DEPRECATED_CONNECTORS: frozenset[str] = frozenset({"geminicli", "windsurf"})
 
 _DEPRECATED_REASONS: dict[str, str] = {
     "geminicli": (
         "Gemini CLI integration is deprecated; use the Antigravity connector. "
         "Existing managed Gemini CLI state remains removable through teardown and uninstall."
+    ),
+    "windsurf": (
+        "Windsurf/Cascade is retired; use Devin. Existing authenticated "
+        "Windsurf state remains recognizable only for upgrade and uninstall cleanup."
     ),
 }
 

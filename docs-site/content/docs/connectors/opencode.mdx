@@ -178,10 +178,32 @@ and rejects sanitizer collisions or prefix ambiguity instead of guessing.
 
 For local MCP servers, `mcp set` refuses commands outside trusted install
 prefixes unless you explicitly trust the directory or force that one write.
-The managed `defenseclaw.js` registration is reported as connector
-configuration, but ordinary skills, rules, plugins, agents, and custom-tool
-inventory remain unsupported and return no connector assets in v1;
-DefenseClaw does not imply enforcement or quarantine coverage for them.
+The managed `defenseclaw.js` registration is connector configuration, not an
+operator plugin. DefenseClaw excludes that exact managed file from ordinary
+plugin inventory, scans, and blocking. Operator and third-party assets remain
+eligible for their normal inventory and policy flows.
+
+Local discovery follows OpenCode's bounded v1.18.10-v1.18.19 surfaces on
+Windows, macOS, and Linux:
+
+| Asset | Local sources |
+| --- | --- |
+| Skills | Singular/plural `skill` and `skills` component directories plus project/user `.claude/skills` and `.agents/skills` |
+| Plugins | Direct JS/TS files in singular/plural `plugin` and `plugins` directories plus the config `plugin` package list |
+| Agents | Markdown files in singular/plural `agent` and `agents` directories plus the config `agent` map |
+| Instructions | Global and project `AGENTS.md`, `CLAUDE.md` fallback, and local bounded paths from config `instructions` |
+| Tools and commands | Direct JS/TS files in `tool`/`tools`, Markdown commands in `command`/`commands`, and the config `command` map |
+
+Project discovery starts only from the explicitly pinned workspace and walks
+up through its nearest `.git` directory or regular `.git` file. It never
+borrows the DefenseClaw daemon's current directory, follows directory aliases,
+or searches above that repository. The legacy config `tools` object is a
+permission map and is deliberately not reported as custom tools. Skill install
+uses the native `<workspace>/.opencode/skills` target when a workspace is
+pinned, otherwise `$OPENCODE_CONFIG_DIR/skills` (default
+`~/.config/opencode/skills`). Plugin/config assets remain discovery-only;
+DefenseClaw does not install third-party OpenCode plugins or rewrite those
+asset declarations.
 
 ## Hook capabilities
 

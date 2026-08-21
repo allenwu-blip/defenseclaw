@@ -45,6 +45,7 @@ from defenseclaw.commands.cmd_skill import (
 )
 from defenseclaw.config import SeverityAction
 from defenseclaw.enforce.policy import PolicyEngine
+from defenseclaw.hermes_skills import directory_md5
 from defenseclaw.models import ActionState, Finding, ScanResult
 
 from tests.environment import requires_symlink_privilege
@@ -90,6 +91,11 @@ class TestSkillInstallTargets(unittest.TestCase):
             [("amp", "/workspace/.agents/skills")],
         )
 
+        self.assertEqual(
+            _skill_install_targets(app, ["opencode"], explicit_connector=True),
+            [("opencode", "/workspace/.agents/skills")],
+        )
+
 
 class TestSkillBlock(SkillCommandTestBase):
     def test_block_adds_to_block_list(self):
@@ -113,6 +119,58 @@ class TestSkillBlock(SkillCommandTestBase):
         self.invoke(["block", "/path/to/evil-skill"])
         pe = PolicyEngine(self.app.store)
         self.assertTrue(pe.is_blocked("skill", "evil-skill"))
+
+    def test_hermes_unchanged_bundled_skill_cannot_be_blocked_or_quarantined(self):
+        hermes_home = os.path.join(self.tmp_dir, "hermes")
+        skill_root = os.path.join(hermes_home, "skills")
+        skill_dir = os.path.join(skill_root, "productivity", "vendor-docs")
+        os.makedirs(skill_dir)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: vendor-docs\n---\n")
+        source_dir = os.path.join(
+            hermes_home,
+            "hermes-agent",
+            "skills",
+            "productivity",
+            "vendor-docs",
+        )
+        os.makedirs(source_dir)
+        with open(os.path.join(source_dir, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: vendor-docs\n---\n")
+        origin_hash = directory_md5(skill_dir)
+        self.assertTrue(origin_hash)
+        with open(os.path.join(skill_root, ".bundled_manifest"), "w", encoding="utf-8") as handle:
+            handle.write(f"vendor-docs:{origin_hash}\n")
+
+        self.app.cfg.active_connector = lambda: "hermes"  # type: ignore[method-assign]
+        self.app.cfg.active_connectors = lambda: ["hermes"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda _connector=None: [skill_root]  # type: ignore[method-assign]
+        with patch.dict(os.environ, {"HERMES_HOME": hermes_home}):
+            blocked = self.invoke(["block", "vendor-docs", "--connector", "hermes"])
+            quarantined = self.invoke(
+                ["quarantine", "vendor-docs", "--connector", "hermes"]
+            )
+
+        self.assertEqual(blocked.exit_code, 2, blocked.output)
+        self.assertEqual(quarantined.exit_code, 2, quarantined.output)
+        self.assertTrue(os.path.isfile(os.path.join(skill_dir, "SKILL.md")))
+        self.assertFalse(
+            self.app.store.has_action(
+                "skill",
+                "vendor-docs",
+                "install",
+                "block",
+                "hermes",
+            )
+        )
+        self.assertEqual(
+            self.app.store.list_quarantine_records(
+                "skill",
+                "vendor-docs",
+                "hermes",
+            ),
+            [],
+        )
 
 
 class TestSkillAllow(SkillCommandTestBase):
@@ -3023,24 +3081,21 @@ class TestSkillListMultiConnectorDefault(SkillCommandTestBase):
         self.assertNotIn("connector", data[0])
 
 
-class TestSkillListOpencodeEmpty(SkillCommandTestBase):
-    """SK-1 (re-scope): opencode exposes no skills surface — listing it must
-    say so and never fall back to OpenClaw's skill directories. The path arm
-    itself lives in connector_paths (already returns []); this guards the
-    CLI-visible behaviour from regressing."""
-
-    @patch(
-        "defenseclaw.commands.cmd_skill._list_openclaw_skills_full",
-        return_value={"skills": []},
-    )
-    def test_opencode_lists_no_skills_not_openclaw_paths(self, _mock_list):
+class TestSkillListOpencodeNative(SkillCommandTestBase):
+    def test_opencode_lists_native_skill_not_openclaw_paths(self):
+        root = os.path.join(self.tmp_dir, ".opencode", "skills")
+        skill_dir = os.path.join(root, "reviewer")
+        os.makedirs(skill_dir)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("---\nname: reviewer\ndescription: Review code\n---\n")
         self.app.cfg.active_connector = lambda: "opencode"  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["opencode"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda connector=None: [root] if connector == "opencode" else []  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--connector", "opencode"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("No skills found for connector='opencode'", result.output)
+        self.assertIn("reviewer", result.output)
         self.assertNotIn(".openclaw", result.output)
 
 

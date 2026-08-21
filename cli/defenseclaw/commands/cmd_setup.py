@@ -4219,7 +4219,10 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     },
     "opencode": {
         "label": "OpenCode",
-        "description": ("auto-loaded JS bridge plugin (~/.config/opencode/plugins); tool.execute.before blocking"),
+        "description": (
+            "auto-loaded JS bridge with tool.execute.before blocking; "
+            "bounded native local skills, plugins, agents, instructions, tools, and commands"
+        ),
         "tool_mode": "both",
         "subprocess_policy": "none",
     },
@@ -4350,6 +4353,15 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
             "~/.config/opencode/plugins/defenseclaw.js — DefenseClaw bridge "
             "plugin auto-loaded by opencode; no opencode.json edit and no "
             "shell-hook config patch"
+        ),
+        (
+            "<workspace>/.opencode/skills or ~/.config/opencode/skills — "
+            "native target only when the operator installs a skill"
+        ),
+        (
+            "other local OpenCode skills, plugins, agents, instructions, tools, "
+            "and commands are discovered read-only; the managed bridge is not "
+            "ordinary plugin inventory and is never scanned or blocked"
         ),
     ),
     "amp": (

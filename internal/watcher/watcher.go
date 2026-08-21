@@ -34,6 +34,7 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/enforce"
+	"github.com/defenseclaw/defenseclaw/internal/hermesskills"
 	"github.com/defenseclaw/defenseclaw/internal/policy"
 	"github.com/defenseclaw/defenseclaw/internal/sandbox"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
@@ -106,13 +107,17 @@ type InstallWatcher struct {
 	cfg        *config.Config
 	skillDirs  []string
 	pluginDirs []string
-	store      *audit.Store
-	logger     *audit.Logger
-	shell      *sandbox.OpenShell
-	opa        *policy.Engine
-	webhooks   WebhookDispatcher
-	debounce   time.Duration
-	onAdmit    OnAdmission
+	// managedArtifacts are exact connector-owned plugin files. They remain
+	// visible to connector lifecycle/Doctor, but ordinary plugin scanners must
+	// not inspect or quarantine DefenseClaw's own bridge artifact.
+	managedArtifacts []string
+	store            *audit.Store
+	logger           *audit.Logger
+	shell            *sandbox.OpenShell
+	opa              *policy.Engine
+	webhooks         WebhookDispatcher
+	debounce         time.Duration
+	onAdmit          OnAdmission
 
 	mu      sync.Mutex
 	pending map[string]time.Time // path → first-seen, for debounce
@@ -161,6 +166,42 @@ func New(cfg *config.Config, skillDirs, pluginDirs []string, store *audit.Store,
 		policyFileHashes: make(map[string]string),
 		policyListSnap:   make(map[string][]string),
 	}
+}
+
+// SetManagedArtifacts binds exact connector-owned plugin paths before Run.
+// Paths are matched exactly; parent directories and sibling plugins receive no
+// exemption.
+func (w *InstallWatcher) SetManagedArtifacts(paths []string) {
+	w.managedArtifacts = w.managedArtifacts[:0]
+	for _, path := range paths {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(filepath.Clean(trimmed))
+		if err != nil {
+			continue
+		}
+		duplicate := false
+		for _, existing := range w.managedArtifacts {
+			if sameWatcherPath(existing, absolute) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			w.managedArtifacts = append(w.managedArtifacts, absolute)
+		}
+	}
+}
+
+func (w *InstallWatcher) isManagedArtifact(path string) bool {
+	for _, managedPath := range w.managedArtifacts {
+		if sameWatcherPath(path, managedPath) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetWebhookDispatcher attaches a webhook dispatcher for outbound notifications.
@@ -293,12 +334,47 @@ func (w *InstallWatcher) processPending(ctx context.Context) {
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
-		evt := w.classifyEvent(path)
-		result := w.runAdmission(ctx, evt)
-		if w.onAdmit != nil {
-			w.onAdmit(result)
+		for _, evt := range w.pendingInstallEvents(path) {
+			result := w.runAdmission(ctx, evt)
+			if w.onAdmit != nil {
+				w.onAdmit(result)
+			}
 		}
 	}
+}
+
+// pendingInstallEvents expands a top-level Hermes category notification into
+// the actual nested SKILL.md identities. A provenance/discovery failure keeps
+// the original category event so it fails open to scanning.
+func (w *InstallWatcher) pendingInstallEvents(path string) []InstallEvent {
+	fallback := w.classifyEvent(path)
+	for _, root := range w.skillDirs {
+		if !hermesskills.IsRoot(root) || !watcherPathAtOrBelow(path, root) {
+			continue
+		}
+		entries, err := hermesskills.Discover(root, hermesskills.DefaultDirectoryLimit)
+		if err != nil {
+			return []InstallEvent{fallback}
+		}
+		out := make([]InstallEvent, 0, len(entries))
+		for _, entry := range entries {
+			if !watcherPathAtOrBelow(entry.Path, path) {
+				continue
+			}
+			out = append(out, InstallEvent{
+				Type:      InstallSkill,
+				Name:      entry.Name,
+				Path:      entry.Path,
+				Connector: "hermes",
+				Timestamp: time.Now().UTC(),
+			})
+		}
+		if len(out) > 0 {
+			return out
+		}
+		return []InstallEvent{fallback}
+	}
+	return []InstallEvent{fallback}
 }
 
 func (w *InstallWatcher) classifyEvent(path string) InstallEvent {
@@ -380,9 +456,16 @@ func (w *InstallWatcher) eventConnector(evt InstallEvent) string {
 // When the OPA engine is available it delegates the verdict decision to
 // Rego policy; otherwise it falls back to the built-in Go logic.
 func (w *InstallWatcher) runAdmission(ctx context.Context, evt InstallEvent) (res AdmissionResult) {
-	// Vendor-managed Codex .system skills remain visible to inventory, but
+	if evt.Type == InstallPlugin && w.isManagedArtifact(evt.Path) {
+		return AdmissionResult{
+			Event:   evt,
+			Verdict: VerdictAllowed,
+			Reason:  "connector-managed plugin is lifecycle-owned and discovery-only",
+		}
+	}
+	// Vendor-managed skills remain visible to inventory, but
 	// must never enter scanner or enforcement paths. Check both the lexical
-	// and resolved path so an alias outside .system cannot bypass the boundary.
+	// and resolved path so an alias outside a bundle cannot bypass the boundary.
 	if evt.Type == InstallSkill && isBundledSkillWatchPath(evt.Path) {
 		return AdmissionResult{
 			Event:   evt,
@@ -1054,6 +1137,20 @@ func sameWatcherPath(left, right string) bool {
 		return strings.EqualFold(leftAbs, rightAbs)
 	}
 	return leftAbs == rightAbs
+}
+
+func watcherPathAtOrBelow(path, root string) bool {
+	pathAbs, pathErr := filepath.Abs(filepath.Clean(path))
+	rootAbs, rootErr := filepath.Abs(filepath.Clean(root))
+	if pathErr != nil || rootErr != nil {
+		return false
+	}
+	relative, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." &&
+		!strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func (w *InstallWatcher) emitQuarantineFailure(ctx context.Context, path string, err error) {

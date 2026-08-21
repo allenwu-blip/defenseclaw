@@ -849,7 +849,7 @@ func TestOpenCodeProfileRespond(t *testing.T) {
 	}
 }
 
-func TestOpenCodeCapabilitiesExposeOnlySupportedMCPSurface(t *testing.T) {
+func TestOpenCodeCapabilitiesExposeReviewedAssetSurfaces(t *testing.T) {
 	home := t.TempDir()
 	workspace := filepath.Join(t.TempDir(), "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
@@ -880,17 +880,23 @@ func TestOpenCodeCapabilitiesExposeOnlySupportedMCPSurface(t *testing.T) {
 		"plugins": caps.Plugins,
 		"agents":  caps.Agents,
 	} {
-		if surface.Supported {
-			t.Errorf("OpenCode ordinary %s surface was overclaimed: %+v", name, surface)
+		if !surface.Supported {
+			t.Errorf("OpenCode reviewed %s surface is missing: %+v", name, surface)
 		}
 	}
-	if caps.CodeGuard.Supported {
-		t.Fatalf("OpenCode CodeGuard capability was overclaimed: %+v", caps.CodeGuard)
+	if !caps.Skills.RequiresOptIn || caps.Skills.DiscoveryOnly || len(caps.Skills.WritePaths) == 0 {
+		t.Fatalf("OpenCode skill capability=%+v", caps.Skills)
+	}
+	if !caps.Rules.DiscoveryOnly || !caps.Plugins.DiscoveryOnly || !caps.Agents.DiscoveryOnly {
+		t.Fatalf("OpenCode discovery-only capability mismatch: rules=%+v plugins=%+v agents=%+v", caps.Rules, caps.Plugins, caps.Agents)
+	}
+	if !caps.CodeGuard.Supported {
+		t.Fatalf("OpenCode CodeGuard skill capability is missing: %+v", caps.CodeGuard)
 	}
 
 	targets := conn.ComponentTargets(workspace)
-	if len(targets) != 1 || len(targets["mcp"]) == 0 {
-		t.Fatalf("OpenCode component targets=%v want MCP only", targets)
+	if len(targets) != 5 || len(targets["mcp"]) == 0 {
+		t.Fatalf("OpenCode component targets=%v want all five reviewed surfaces", targets)
 	}
 	for _, want := range []string{
 		filepath.Join(home, ".config", "opencode", "opencode.json"),
@@ -901,14 +907,24 @@ func TestOpenCodeCapabilitiesExposeOnlySupportedMCPSurface(t *testing.T) {
 			t.Errorf("OpenCode MCP component targets=%v missing %q", targets["mcp"], want)
 		}
 	}
+	for surface, want := range map[string]string{
+		"skill":  filepath.Join(workspace, ".opencode", "skill"),
+		"rule":   filepath.Join(workspace, "AGENTS.md"),
+		"plugin": filepath.Join(home, ".config", "opencode", "plugins"),
+		"agent":  filepath.Join(workspace, ".opencode", "agents"),
+	} {
+		if !openCodeTestPathContains(targets[surface], want) {
+			t.Errorf("OpenCode %s component targets=%v missing %q", surface, targets[surface], want)
+		}
+	}
 
 	locations := ResolvedConnectorLocations(opts, conn)
 	if len(locations.Surfaces) != 5 || !locations.Surfaces["mcp"].Supported {
 		t.Fatalf("OpenCode resolved locations=%+v", locations)
 	}
 	for _, name := range []string{"skills", "rules", "plugins", "agents"} {
-		if locations.Surfaces[name].Supported {
-			t.Errorf("OpenCode resolved %s surface was overclaimed: %+v", name, locations.Surfaces[name])
+		if !locations.Surfaces[name].Supported {
+			t.Errorf("OpenCode resolved %s surface is missing: %+v", name, locations.Surfaces[name])
 		}
 	}
 }
@@ -956,6 +972,58 @@ func TestOpenCodeCapabilitiesMirrorWriterPrecedenceAndRefusals(t *testing.T) {
 	caps = conn.Capabilities(SetupOpts{})
 	if !caps.MCP.DiscoveryOnly || len(caps.MCP.WritePaths) != 0 {
 		t.Fatalf("unresolved relative OpenCode config dir must be discovery-only: %+v", caps.MCP)
+	}
+}
+
+func TestOpenCodeCapabilitiesWalkProjectAssetsToWorktreeRoot(t *testing.T) {
+	home := t.TempDir()
+	repository := filepath.Join(t.TempDir(), "repository")
+	workspace := filepath.Join(repository, "nested", "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Git worktrees use a regular .git file rather than a directory. Both
+	// forms are authoritative stop markers for OpenCode's upward discovery.
+	if err := os.WriteFile(filepath.Join(repository, ".git"), []byte("gitdir: elsewhere\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restoreHome, err := BindUserHomeDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restoreHome)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+
+	targets := NewOpenCodeConnector().ComponentTargets(workspace)
+	for _, want := range []string{
+		filepath.Join(home, ".config", "opencode", "skill"),
+		filepath.Join(home, ".opencode", "skills"),
+		filepath.Join(workspace, ".opencode", "skills"),
+		filepath.Join(filepath.Dir(workspace), ".agents", "skills"),
+		filepath.Join(repository, ".claude", "skills"),
+		filepath.Join(repository, "opencode.json"),
+		filepath.Join(repository, "AGENTS.md"),
+		filepath.Join(repository, ".opencode", "plugins"),
+		filepath.Join(repository, ".opencode", "agents"),
+	} {
+		found := false
+		for _, paths := range targets {
+			if openCodeTestPathContains(paths, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("OpenCode project targets=%v missing %q", targets, want)
+		}
+	}
+	outside := filepath.Join(filepath.Dir(repository), "AGENTS.md")
+	for _, paths := range targets {
+		if openCodeTestPathContains(paths, outside) {
+			t.Fatalf("OpenCode project targets escaped worktree root to %q: %v", outside, targets)
+		}
 	}
 }
 

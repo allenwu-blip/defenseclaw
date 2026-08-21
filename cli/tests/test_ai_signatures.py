@@ -165,6 +165,34 @@ def test_antigravity_signature_tracks_mcp_and_customization_paths():
     assert "antigravity.google" in antigravity.domain_patterns
 
 
+def test_opencode_signature_tracks_native_local_asset_layouts():
+    signatures = {sig.id: sig for sig in load_ai_signatures()}
+    opencode = signatures["opencode"]
+
+    assert {
+        "~/.config/opencode/agents",
+        "~/.config/opencode/commands",
+        "~/.config/opencode/plugins",
+        "~/.config/opencode/skills",
+        "~/.config/opencode/tools",
+        "~/.claude/CLAUDE.md",
+        "~/.agents/skills",
+        ".opencode/agents",
+        ".opencode/commands",
+        ".opencode/plugins",
+        ".opencode/skills",
+        ".opencode/tools",
+        "AGENTS.md",
+        "CLAUDE.md",
+    } <= set(opencode.config_paths)
+    assert {
+        "~/.config/opencode/plugin",
+        "~/.config/opencode/plugins",
+        ".opencode/plugin",
+        ".opencode/plugins",
+    } <= set(opencode.plugin_paths)
+
+
 def test_codex_signature_tracks_current_official_asset_layouts():
     signatures = {sig.id: sig for sig in load_ai_signatures()}
     codex = signatures["codex"]

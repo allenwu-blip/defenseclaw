@@ -46,6 +46,7 @@ from defenseclaw.inventory.plugin_identity import (
 from defenseclaw.safety import is_symlink, is_within_roots
 
 _MAX_AMP_PLUGIN_BYTES = 2_097_152
+_MAX_OPENCODE_PLUGIN_BYTES = 2_097_152
 _CODEX_MANIFEST = ".codex-plugin/plugin.json"
 _CLAUDE_MANIFEST = ".claude-plugin/plugin.json"
 _MAX_MANIFEST_BYTES = 1_048_576
@@ -117,6 +118,48 @@ def _amp_plugin_files(root: str, connector: str) -> list[tuple[str, str]]:
         plugin_id = entry.name[:-3].strip()
         if plugin_id:
             plugins.append((plugin_id, entry.path))
+    return plugins
+
+
+def _opencode_plugin_files(root: str, connector: str) -> list[tuple[str, str]]:
+    """Return direct OpenCode JS/TS plugins, excluding our exact bridge."""
+
+    if (connector or "").casefold().replace("-", "") != "opencode":
+        return []
+    config_root = (os.environ.get("OPENCODE_CONFIG_DIR") or "").strip()
+    if config_root:
+        config_root = os.path.abspath(os.path.expanduser(config_root))
+    else:
+        config_root = os.path.join(str(Path.home()), ".config", "opencode")
+    managed_bridge = os.path.normcase(
+        os.path.abspath(os.path.join(config_root, "plugins", "defenseclaw.js"))
+    )
+    try:
+        reject_reparse_path(root)
+        entries = sorted(os.scandir(root), key=lambda entry: entry.name.casefold())
+    except OSError:
+        return []
+    plugins: list[tuple[str, str]] = []
+    for entry in entries:
+        stem, extension = os.path.splitext(entry.name)
+        if (
+            entry.name.startswith(".")
+            or extension.casefold() not in {".js", ".ts"}
+            or not stem.strip()
+        ):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                continue
+            if entry.stat(follow_symlinks=False).st_size > _MAX_OPENCODE_PLUGIN_BYTES:
+                continue
+            reject_reparse_path(entry.path)
+        except OSError:
+            continue
+        if os.path.normcase(os.path.abspath(entry.path)) == managed_bridge:
+            continue
+        if is_within_roots(entry.path, root):
+            plugins.append((stem.strip(), entry.path))
     return plugins
 
 
@@ -739,33 +782,34 @@ def discover_plugin_directories(
 
     plugins: list[PluginDirectory] = []
     claimed: dict[str, str] = {}
-    for entry, path in _child_directories(root):
-        if entry == "cache" or entry.startswith("."):
-            continue
-        try:
-            plugin_id, manifest = canonical_plugin_id(path)
-        except PluginIdentityError as exc:
-            if not str(exc).startswith(
-                ("invalid plugin manifest", "could not read plugin manifest")
-            ):
-                raise
-            plugin_id, manifest = entry, ""
-        key = filesystem_identity_key(plugin_id, root)
-        if key in claimed:
-            raise AmbiguousPluginIdentityError(
-                f"ambiguous plugin identity {plugin_id!r}: {claimed[key]}, {path}; "
-                "remove or rename duplicate directories"
+    if (connector or "").casefold().replace("-", "") != "opencode":
+        for entry, path in _child_directories(root):
+            if entry == "cache" or entry.startswith("."):
+                continue
+            try:
+                plugin_id, manifest = canonical_plugin_id(path)
+            except PluginIdentityError as exc:
+                if not str(exc).startswith(
+                    ("invalid plugin manifest", "could not read plugin manifest")
+                ):
+                    raise
+                plugin_id, manifest = entry, ""
+            key = filesystem_identity_key(plugin_id, root)
+            if key in claimed:
+                raise AmbiguousPluginIdentityError(
+                    f"ambiguous plugin identity {plugin_id!r}: {claimed[key]}, {path}; "
+                    "remove or rename duplicate directories"
+                )
+            claimed[key] = path
+            plugins.append(
+                PluginDirectory(
+                    id=plugin_id,
+                    name=plugin_id,
+                    path=path,
+                    origin=root,
+                    manifest=manifest,
+                )
             )
-        claimed[key] = path
-        plugins.append(
-            PluginDirectory(
-                id=plugin_id,
-                name=plugin_id,
-                path=path,
-                origin=root,
-                manifest=manifest,
-            )
-        )
     for plugin_id, path in _amp_plugin_files(root, connector):
         key = filesystem_identity_key(plugin_id, root)
         if key in claimed:
@@ -782,6 +826,23 @@ def discover_plugin_directories(
                 origin=root,
                 # Amp's source file is the plugin artifact; there is no
                 # separate manifest requirement for direct TypeScript plugins.
+                manifest=os.path.basename(path),
+            )
+        )
+    for plugin_id, path in _opencode_plugin_files(root, connector):
+        key = filesystem_identity_key(plugin_id, root)
+        if key in claimed:
+            raise AmbiguousPluginIdentityError(
+                f"ambiguous plugin identity {plugin_id!r}: {claimed[key]}, {path}; "
+                "remove or rename duplicate plugins"
+            )
+        claimed[key] = path
+        plugins.append(
+            PluginDirectory(
+                id=plugin_id,
+                name=plugin_id,
+                path=path,
+                origin=root,
                 manifest=os.path.basename(path),
             )
         )

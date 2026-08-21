@@ -1226,10 +1226,38 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 				"Authenticated remote .well-known configuration and Windows ProgramData enterprise policy are unverified; OPENCODE_CONFIG_CONTENT and unresolved relative environment paths make this surface discovery-only.",
 			},
 		}
-		caps.Skills = unsupportedSurface("OpenCode ordinary skill installation and inventory are unsupported by the DefenseClaw v1 connector.")
-		caps.Rules = unsupportedSurface("OpenCode ordinary rules and instruction assets are unsupported by the DefenseClaw v1 connector.")
-		caps.Plugins = unsupportedSurface("The managed DefenseClaw policy bridge is connector wiring, not a general OpenCode plugin inventory or install surface.")
-		caps.Agents = unsupportedSurface("OpenCode ordinary agent assets are unsupported by the DefenseClaw v1 connector.")
+		caps.Skills = SurfaceCapability{
+			Supported:      true,
+			Scope:          "workspace,user,custom",
+			ReadPaths:      opencodeSkillReadPaths(opts),
+			WritePaths:     opencodeSkillWritePaths(opts),
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes:          []string{"OpenCode loads Agent Skills from project .opencode/.claude/.agents roots and matching user/custom roots. DefenseClaw installs only to OpenCode's native .opencode or configuration-home skill target."},
+		}
+		caps.CodeGuard.Supported = true
+		caps.CodeGuard.InstallTargets = []string{"skill"}
+		caps.Rules = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user,custom",
+			ReadPaths:     opencodeRuleReadPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"OpenCode AGENTS.md, CLAUDE.md fallback files, and config instructions are bounded discovery-only sources; DefenseClaw never overwrites operator instructions."},
+		}
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user,custom",
+			ReadPaths:     opencodePluginReadPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"Third-party direct JS/TS plugins and configured plugin packages are inventory-only. Setup separately owns only the exact defenseclaw.js policy bridge with authenticated backup and restore custody."},
+		}
+		caps.Agents = SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user,custom",
+			ReadPaths:     opencodeAgentReadPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"OpenCode singular/plural agent directories and config agent maps are discovery-only; DefenseClaw does not install or modify agents."},
+		}
 	case "openhands":
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
@@ -3692,12 +3720,12 @@ func opencodeMCPReadPaths(opts SetupOpts) []string {
 	if explicit := opencodeEnvPath(os.Getenv("OPENCODE_CONFIG"), workspace); explicit != "" {
 		paths = append(paths, explicit)
 	}
-	if workspace != "" {
+	for _, root := range opencodeProjectRoots(opts) {
 		paths = append(paths,
-			filepath.Join(workspace, "opencode.json"),
-			filepath.Join(workspace, "opencode.jsonc"),
-			filepath.Join(workspace, ".opencode", "opencode.json"),
-			filepath.Join(workspace, ".opencode", "opencode.jsonc"),
+			filepath.Join(root, "opencode.json"),
+			filepath.Join(root, "opencode.jsonc"),
+			filepath.Join(root, ".opencode", "opencode.json"),
+			filepath.Join(root, ".opencode", "opencode.jsonc"),
 		)
 	}
 	paths = append(paths,
@@ -3778,6 +3806,124 @@ func opencodePreferredConfigPath(root string) string {
 		return jsonc
 	}
 	return filepath.Join(root, "opencode.json")
+}
+
+func opencodeConfigRoot(opts SetupOpts) string {
+	if custom := opencodeEnvPath(os.Getenv("OPENCODE_CONFIG_DIR"), strings.TrimSpace(opts.WorkspaceDir)); custom != "" {
+		return custom
+	}
+	return homePath(".config", "opencode")
+}
+
+func opencodeConfigComponentRoots(opts SetupOpts) []string {
+	paths := []string{homePath(".config", "opencode")}
+	for _, root := range opencodeProjectRoots(opts) {
+		paths = append(paths, filepath.Join(root, ".opencode"))
+	}
+	paths = append(paths, homePath(".opencode"))
+	if custom := opencodeEnvPath(os.Getenv("OPENCODE_CONFIG_DIR"), strings.TrimSpace(opts.WorkspaceDir)); custom != "" {
+		paths = append(paths, custom)
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+// opencodeProjectRoots returns the launch directory through its nearest Git
+// root. Without a repository marker, OpenCode treats only the pinned launch
+// directory as project state; DefenseClaw must not scan unrelated ancestors.
+func opencodeProjectRoots(opts SetupOpts) []string {
+	workspace := strings.TrimSpace(opts.WorkspaceDir)
+	if workspace == "" {
+		return nil
+	}
+	workspace = filepath.Clean(workspace)
+	stop := workspace
+	for probe := workspace; probe != ""; {
+		if _, err := os.Stat(filepath.Join(probe, ".git")); err == nil {
+			stop = probe
+			break
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			break
+		}
+		probe = parent
+	}
+	roots := []string{}
+	for root := workspace; root != ""; {
+		roots = append(roots, root)
+		if root == stop {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			break
+		}
+		root = parent
+	}
+	return uniqueNonEmptyStrings(roots)
+}
+
+func opencodeSkillReadPaths(opts SetupOpts) []string {
+	paths := []string{homePath(".claude", "skills"), homePath(".agents", "skills")}
+	for _, root := range opencodeConfigComponentRoots(opts) {
+		paths = append(paths,
+			filepath.Join(root, "skill"),
+			filepath.Join(root, "skills"),
+		)
+	}
+	for _, root := range opencodeProjectRoots(opts) {
+		paths = append(paths,
+			filepath.Join(root, ".claude", "skills"),
+			filepath.Join(root, ".agents", "skills"),
+		)
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func opencodeSkillWritePaths(opts SetupOpts) []string {
+	paths := []string{filepath.Join(opencodeConfigRoot(opts), "skills")}
+	if workspace := strings.TrimSpace(opts.WorkspaceDir); workspace != "" {
+		paths = append(paths, filepath.Join(workspace, ".opencode", "skills"))
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func opencodeRuleReadPaths(opts SetupOpts) []string {
+	configRoot := opencodeConfigRoot(opts)
+	paths := []string{
+		filepath.Join(configRoot, "AGENTS.md"),
+		filepath.Join(configRoot, "CLAUDE.md"),
+	}
+	paths = append(paths, opencodeMCPReadPaths(opts)...)
+	for _, root := range opencodeProjectRoots(opts) {
+		paths = append(paths,
+			filepath.Join(root, "AGENTS.md"),
+			filepath.Join(root, "CLAUDE.md"),
+		)
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func opencodePluginReadPaths(opts SetupOpts) []string {
+	paths := []string{}
+	for _, root := range opencodeConfigComponentRoots(opts) {
+		paths = append(paths,
+			filepath.Join(root, "plugin"),
+			filepath.Join(root, "plugins"),
+		)
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+func opencodeAgentReadPaths(opts SetupOpts) []string {
+	paths := []string{}
+	for _, root := range opencodeConfigComponentRoots(opts) {
+		paths = append(paths,
+			filepath.Join(root, "agent"),
+			filepath.Join(root, "agents"),
+		)
+	}
+	return uniqueNonEmptyStrings(paths)
 }
 
 func copilotSkillReadPaths(opts SetupOpts) []string {

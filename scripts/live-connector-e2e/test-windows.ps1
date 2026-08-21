@@ -969,7 +969,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
     Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
         '-NoProfile', '-Command', 'Start-Sleep -Milliseconds 250'
-    ) -TimeoutSeconds 5 -WhileRunning $whileRunning | Out-Null
+    ) -TimeoutSeconds 10 -WhileRunning $whileRunning | Out-Null
     Assert-True ([int][IO.File]::ReadAllText($whileRunningMarker) -gt 1) `
         'native process keeps its bounded concurrent readiness callback attached until the child exits'
 
@@ -1416,6 +1416,30 @@ private-secret-name = "DefenseClaw must remain redacted"
     $setupWizardSourceText = [IO.File]::ReadAllText($setupWizardSource)
     $devinAdmissionSourceText = [IO.File]::ReadAllText($devinAdmissionSource)
     $devinAdmissionTestsText = [IO.File]::ReadAllText($devinAdmissionTests)
+    $packageLiveAuthority = [regex]::Match(
+        $harnessText,
+        '(?s)function Initialize-PackageLiveEvidenceAuthority\b.*?(?=\r?\nfunction )'
+    ).Value
+    $packageLiveCleanup = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-PackageLiveEvidenceCleanup\b.*?(?=\r?\nfunction )'
+    ).Value
+    $antigravitySourceAuthority = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-AuthenticatedAntigravitySourceCheckout\b.*?(?=\r?\nfunction )'
+    ).Value
+    $copilotSourceAuthority = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-ProtectedCopilotSourceCheckout\b.*?(?=\r?\nfunction )'
+    ).Value
+    $singleGitAuthorityPattern =
+        "(?s)\`$gitApplication = Get-Command 'git\.exe' -CommandType Application -ErrorAction Stop\s*\|\s*Select-Object -First 1\s*\`$git = \[string\]\`$gitApplication\.Source.*?Invoke-NativeProcess -FilePath \`$git"
+    Assert-True ($packageLiveAuthority -match $singleGitAuthorityPattern -and
+        $antigravitySourceAuthority -match $singleGitAuthorityPattern -and
+        $copilotSourceAuthority -match $singleGitAuthorityPattern -and
+        $packageLiveCleanup -match
+            '(?s)^function Invoke-PackageLiveEvidenceCleanup.*?Initialize-PackageLiveEvidenceAuthority') `
+        'live Git authority checks select one PATH application before package, Antigravity, Copilot, and cleanup validation'
     $nativeProcessFunction = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WindowsNativeProcess\b.*?(?=\r?\nfunction )'

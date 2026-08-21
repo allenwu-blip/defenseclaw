@@ -17,6 +17,8 @@
 package inventory
 
 import (
+	"crypto/md5"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -156,6 +158,54 @@ func TestCodexHomeOverrideDoesNotTrustDefaultHomeSystemContainer(t *testing.T) {
 	}
 	if !s.isCodexBundledSkillContainer(overrideContainer) {
 		t.Fatal("exact CODEX_HOME .system was not classified bundled")
+	}
+}
+
+func TestSignalFromDirectoryChildrenExpandsHermesNestedSkillsWithProvenance(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HERMES_HOME", home)
+	root := filepath.Join(home, "skills")
+	bundled := filepath.Join(root, "productivity", "vendor-docs")
+	sourceBundled := filepath.Join(home, "hermes-agent", "skills", "productivity", "vendor-docs")
+	user := filepath.Join(root, "operator-skill")
+	bundledMarker := []byte("---\nname: vendor-docs\n---\n")
+	for path, marker := range map[string][]byte{
+		bundled:       bundledMarker,
+		sourceBundled: bundledMarker,
+		user:          []byte("---\nname: operator-skill\n---\n"),
+	} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatalf("prepare skill: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "SKILL.md"), marker, 0o600); err != nil {
+			t.Fatalf("write skill: %v", err)
+		}
+	}
+	origin := md5.Sum(append([]byte("SKILL.md"), bundledMarker...)) // #nosec G401 -- Hermes compatibility fixture.
+	if err := os.WriteFile(
+		filepath.Join(root, ".bundled_manifest"),
+		[]byte(fmt.Sprintf("vendor-docs:%x\n", origin)),
+		0o600,
+	); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	s := &ContinuousDiscoveryService{opts: AIDiscoveryOptions{HomeDir: home, StoreRawLocalPaths: true}}
+	signal := s.signalFromDirectoryChildren(AISignature{ID: "hermes"}, SignalSkill, "skill", root)
+	entries := make(map[string]AIEvidence)
+	for _, evidence := range signal.Evidence {
+		if evidence.Type == "skill_entry" {
+			entries[evidence.Basename] = evidence
+		}
+	}
+	if _, ok := entries["productivity"]; ok {
+		t.Fatal("Hermes category directory was emitted as a skill")
+	}
+	if got := entries["vendor-docs"]; !got.Bundled || got.Origin != "bundled" || got.RawPath != bundled {
+		t.Fatalf("bundled Hermes evidence = %+v", got)
+	}
+	if got := entries["operator-skill"]; got.Bundled || got.Origin != "user" || got.RawPath != user {
+		t.Fatalf("user Hermes evidence = %+v", got)
 	}
 }
 

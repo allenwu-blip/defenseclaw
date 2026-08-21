@@ -2224,6 +2224,38 @@ func isBundledSkillScanPath(path string) bool {
 	return err == nil && enforce.IsBundledSkillPath(resolved)
 }
 
+func (a *APIServer) isManagedPluginScanTarget(target string) bool {
+	if a == nil || a.scannerCfg == nil || strings.TrimSpace(target) == "" {
+		return false
+	}
+	reg := connector.NewDefaultRegistry()
+	opts := connector.SetupOpts{WorkspaceDir: a.scannerCfg.ConnectorWorkspaceDir()}
+	for _, name := range a.scannerCfg.ActiveConnectors() {
+		conn, ok := reg.Get(name)
+		if !ok {
+			continue
+		}
+		for _, managedPath := range connector.ManagedPluginArtifacts(conn, opts) {
+			if sameAPIScanPath(target, managedPath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameAPIScanPath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(leftAbs, rightAbs)
+	}
+	return leftAbs == rightAbs
+}
+
 func (a *APIServer) handlePluginScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -2237,6 +2269,12 @@ func (a *APIServer) handlePluginScan(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Target == "" {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
+		return
+	}
+	if a.isManagedPluginScanTarget(req.Target) {
+		a.writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "connector-managed plugins are lifecycle-owned and are not scanned",
+		})
 		return
 	}
 
