@@ -148,11 +148,11 @@ func TestPatchCodexConfigReplacesTrustedMatrixAfterDataDirChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve replacement Codex hook contract: %v", err)
 	}
-	if err := verifyTrustedCodexHookMatrixForGroups(
+	if err := verifyTrustedCodexHookMatrix(
 		hooks,
 		configPath,
 		filepath.Join(dataDirB, "hooks"),
-		expectedGroups,
+		second,
 	); err != nil {
 		t.Fatalf("replacement matrix is not trusted: %v", err)
 	}

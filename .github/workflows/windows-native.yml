@@ -613,6 +613,31 @@ jobs:
         run: |
           $fixture = Join-Path $env:DC_ARTIFACT_ROOT 'release'
           [IO.Directory]::CreateDirectory($fixture) | Out-Null
+          function Invoke-AuthenticatedReleaseAssetDownload {
+            param(
+              [Parameter(Mandatory)] [string] $Asset,
+              [Parameter(Mandatory)] [string] $FailureMessage
+            )
+            $maxAttempts = 3
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              gh release download $env:BOOTSTRAP_FIXTURE_VERSION `
+                --repo $env:GITHUB_REPOSITORY `
+                --pattern $Asset `
+                --dir $fixture `
+                --clobber
+              if ($LASTEXITCODE -eq 0) {
+                return
+              }
+              if ($attempt -eq $maxAttempts) {
+                throw $FailureMessage
+              }
+              Write-Warning (
+                "Authenticated release asset download failed for $Asset " +
+                "(attempt $attempt/$maxAttempts); retrying."
+              )
+              Start-Sleep -Seconds $attempt
+            }
+          }
           foreach ($asset in @(
             'DefenseClawSetup-x64.exe',
             'DefenseClawSetup-x64.exe.provenance.json',
@@ -622,13 +647,9 @@ jobs:
             'checksums.txt.pem',
             'checksums.txt.bundle'
           )) {
-            gh release download $env:BOOTSTRAP_FIXTURE_VERSION `
-              --repo $env:GITHUB_REPOSITORY `
-              --pattern $asset `
-              --dir $fixture
-            if ($LASTEXITCODE -ne 0) {
-              throw "Could not download authenticated bootstrap fixture asset: $asset"
-            }
+            Invoke-AuthenticatedReleaseAssetDownload `
+              -Asset $asset `
+              -FailureMessage "Could not download authenticated bootstrap fixture asset: $asset"
           }
           $installerAssetCount = (
             gh release view $env:BOOTSTRAP_FIXTURE_VERSION `
@@ -643,13 +664,9 @@ jobs:
             throw 'The immutable release contains duplicate install.ps1 assets'
           }
           if ([int]$installerAssetCount -eq 1) {
-            gh release download $env:BOOTSTRAP_FIXTURE_VERSION `
-              --repo $env:GITHUB_REPOSITORY `
-              --pattern install.ps1 `
-              --dir $fixture
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Could not download the immutable install.ps1 asset'
-            }
+            Invoke-AuthenticatedReleaseAssetDownload `
+              -Asset install.ps1 `
+              -FailureMessage 'Could not download the immutable install.ps1 asset'
           } elseif ($env:BOOTSTRAP_FIXTURE_VERSION -cne '0.8.7') {
             throw (
               'The authenticated release is missing its exact immutable ' +

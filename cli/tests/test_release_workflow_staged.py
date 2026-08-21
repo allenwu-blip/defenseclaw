@@ -1189,13 +1189,18 @@ def test_windows_pr_ci_executes_public_bootstrap_against_authenticated_fixture()
     assert "Could not resolve bootstrap fixture release" in rendered
     assert "$global:LASTEXITCODE = 0" in rendered
     assert "gh release download" in rendered
+    assert "function Invoke-AuthenticatedReleaseAssetDownload" in release_download
+    assert "$maxAttempts = 3" in release_download
+    assert "--clobber" in release_download
+    assert "Start-Sleep -Seconds $attempt" in release_download
     assert "actions/download-artifact@" in rendered
     assert "checksums.txt.bundle" in rendered
     assert 'select(.name == "install.ps1")' in release_download
     assert "$installerAssetCount -notmatch '^[0-9]+$'" in release_download
     assert "[int]$installerAssetCount -gt 1" in release_download
     assert "[int]$installerAssetCount -eq 1" in release_download
-    assert "--pattern install.ps1" in release_download
+    assert "--pattern $Asset" in release_download
+    assert "-Asset install.ps1" in release_download
     assert "$env:BOOTSTRAP_FIXTURE_VERSION -cne '0.8.7'" in release_download
     assert "The authenticated release is missing its exact immutable install.ps1 asset" in release_messages
     assert "Pinned legacy 0.8.7 has no install.ps1 asset" in release_download

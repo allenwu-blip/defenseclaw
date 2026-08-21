@@ -3013,6 +3013,14 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
         await pilot.press("0")
         await pilot.pause()
 
+        # The mount-time v8 status worker rebuilds Setup sections. Wait for
+        # that one unrelated refresh before installing this test's synthetic
+        # edit so a loaded runner cannot race it with the save review.
+        await _wait_for_background(
+            lambda: not app._observability_status_load_running  # noqa: SLF001
+            and not app._observability_status_reload_pending  # noqa: SLF001
+        )
+
         # Install the edit after startup status loading has settled; the
         # canonical Observability status refresh rebuilds Setup sections.
         setup.mode = "config"
@@ -3033,12 +3041,12 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
 
         diff_screen = app.screen_stack[-1]
         assert diff_screen.__class__.__name__ == "ConfigDiffScreen"
-        # This integration owns the save callback, not Textual's queued button
-        # dispatch (pointer and keyboard activation have dedicated screen
-        # tests). Resolve the already-mounted modal directly, then bound the
-        # callback wait so a lost UI message can never hold a Windows shard and
-        # its background subprocesses until the 900-second job timeout.
-        diff_screen.action_save()  # type: ignore[attr-defined]
+        assert diff_screen.model.has_changes  # type: ignore[attr-defined]
+        # Pointer and keyboard activation have dedicated screen tests. This
+        # integration awaits Textual's exact screen-pop boundary so the worker
+        # consuming push_screen_wait cannot lag behind a loaded Windows runner.
+        await diff_screen.dismiss(diff_screen.model.result())  # type: ignore[attr-defined]
+        await pilot.pause()
         await asyncio.wait_for(config_saved.wait(), timeout=8.0)
 
         assert cfg["notifications"]["enabled"] is False
