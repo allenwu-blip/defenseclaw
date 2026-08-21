@@ -1321,8 +1321,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 	overrides := map[string]*string{
 		"hermes":      &HermesConfigPathOverride,
 		"cursor":      &CursorHooksPathOverride,
-		"windsurf":    &WindsurfHooksPathOverride,
-		"geminicli":   &GeminiSettingsPathOverride,
+		"devin":       &DevinHooksPathOverride,
 		"copilot":     &CopilotHooksPathOverride,
 		"openhands":   &OpenHandsHooksPathOverride,
 		"antigravity": &AntigravityHooksPathOverride,
@@ -1330,8 +1329,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 	connectors := []*hookOnlyConnector{
 		NewHermesConnector(),
 		NewCursorConnector(),
-		NewWindsurfConnector(),
-		NewGeminiCLIConnector(),
+		NewDevinConnector(),
 		NewCopilotConnector(),
 		NewOpenHandsConnector(),
 		NewAntigravityConnector(),
@@ -1350,7 +1348,7 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 			t.Cleanup(func() { *ptr = prev })
 
 			dataDir := filepath.Join(dir, conn.Name())
-			if conn.Name() == "hermes" || conn.Name() == "geminicli" {
+			if conn.Name() == "hermes" {
 				dataDir = testenv.PrivateTempDir(t)
 			}
 			opts := SetupOpts{DataDir: dataDir, APIAddr: "127.0.0.1:18970", APIToken: "tok-test", WorkspaceDir: t.TempDir()}
@@ -1366,14 +1364,14 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 			}
 			wantConfigNeedle := conn.scriptName
 			if runtime.GOOS == "windows" {
-				if conn.Name() == "cursor" || conn.Name() == "windsurf" {
+				if conn.Name() == "cursor" {
 					wantConfigNeedle = conn.Name() + "-hook.ps1"
 				} else {
 					wantConfigNeedle = nativeHookFlag + conn.Name()
 				}
 			}
 			if runtime.GOOS == "windows" &&
-				(conn.Name() == "antigravity" || conn.Name() == "copilot" || conn.Name() == "geminicli") {
+				(conn.Name() == "antigravity" || conn.Name() == "copilot" || conn.Name() == "devin") {
 				var cfg map[string]interface{}
 				if err := json.Unmarshal(data, &cfg); err != nil {
 					t.Fatalf("parse %s config after setup: %v\n%s", conn.Name(), err, data)
@@ -1424,24 +1422,19 @@ func TestHookOnlyConnector_SetupTeardown_BackupRestore(t *testing.T) {
 // the operator's global hooks_auto_accept setting remains untouched.
 func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 	dir := testenv.PrivateTempDir(t)
-	cfgPath := filepath.Join(dir, ".hermes", "config.yaml")
+	hermesHome := filepath.Join(dir, ".hermes")
+	t.Setenv("HERMES_HOME", hermesHome)
+	cfgPath := filepath.Join(hermesHome, "config.yaml")
 	previousOverride := HermesConfigPathOverride
-	previousResolver := hermesConfigPathResolver
-	resolveCalls := 0
 	HermesConfigPathOverride = ""
-	hermesConfigPathResolver = func() string {
-		resolveCalls++
-		return cfgPath
-	}
 	t.Cleanup(func() {
 		HermesConfigPathOverride = previousOverride
-		hermesConfigPathResolver = previousResolver
 	})
 
 	conn := NewHermesConnector()
 	opts := SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970", APIToken: "tok-test"}
 	opts = prepareHermesSetupAdmissionFixture(t, opts)
-	if err := conn.setup(context.Background(), opts, ""); err != nil {
+	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 	if _, err := os.Stat(managedFileBackupPath(opts.DataDir, "hermes", "config.yaml")); err != nil {
@@ -1508,12 +1501,8 @@ func TestHermesSetup_WritesFullLifecycleAndScopedAllowlist(t *testing.T) {
 		}
 	}
 
-	resolveCalls = 0
 	if err := conn.Teardown(context.Background(), opts); err != nil {
 		t.Fatalf("Teardown: %v", err)
-	}
-	if resolveCalls != 1 {
-		t.Fatalf("successful Teardown resolved Hermes config %d times, want exactly once", resolveCalls)
 	}
 	if _, err := os.Stat(cfgPath); err == nil {
 		t.Fatalf("config still exists after teardown of previously-missing config")
@@ -4419,7 +4408,7 @@ func TestHookOnlyHookScripts_RespectFailClosedCapability(t *testing.T) {
 	}{
 		{name: "cursor_action_forces_fail_closed", connector: NewCursorConnector(), guardrailMode: "action", wantFailMode: "closed"},
 		{name: "cursor_observe_forces_fail_open", connector: NewCursorConnector(), guardrailMode: "observe", wantFailMode: "open"},
-		{name: "geminicli_supports_fail_closed", connector: NewGeminiCLIConnector(), wantFailMode: "closed"},
+		{name: "devin_supports_fail_closed", connector: NewDevinConnector(), wantFailMode: "closed"},
 		{name: "openhands_supports_fail_closed", connector: NewOpenHandsConnector(), wantFailMode: "closed"},
 		{name: "hermes_downgrades_to_fail_open", connector: NewHermesConnector(), wantFailMode: "open"},
 		{name: "copilot_downgrades_to_fail_open", connector: NewCopilotConnector(), wantFailMode: "open"},

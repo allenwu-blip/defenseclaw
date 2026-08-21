@@ -36,10 +36,11 @@ set -euo pipefail
 DC_E2E_CONNECTOR="${1:?usage: contract-smoke.sh <connector>}"
 export DC_E2E_CONNECTOR
 
-# Layer A deliberately runs with NO upstream agent installed — it feeds golden
-# stdin payloads into the installed hook entrypoint, never the real CLI. With no
-# agent on disk the cached agent version is empty, so ResolveHookContract returns
-# "unversioned". In action mode the gateway boot path
+# Layer A deliberately runs without a real upstream agent — it feeds golden
+# stdin payloads into the installed hook entrypoint, never the real CLI. The
+# macOS OpenHands cell supplies a version-only executable fixture so its
+# protected setup selection can be exercised; every other cell remains
+# agent-less and resolves an "unversioned" contract. In action mode the gateway boot path
 # (internal/gateway/sidecar.go) then refuses to run Connector.Setup() unless this
 # override is set, which would leave ~/.defenseclaw/hooks/<connector>-hook.sh
 # unwritten and make every hook invocation exit 127. This is exactly the
@@ -86,9 +87,9 @@ if [ -f "${cfg}" ]; then
 else
   rm -f "${cfg_baseline}"
 fi
-# Layer A has no upstream agent/version by design. The payload assertions below
-# are its verification surface; setup readiness cannot validate an absent
-# vendor executable and would reject the intentionally unversioned lock.
+# Layer A has no runnable upstream agent by design. The payload assertions below
+# are its verification surface; setup readiness cannot validate an absent real
+# vendor client (the macOS OpenHands fixture supports only --version).
 if ! dc_setup_connector "${DC_E2E_CONNECTOR}" action --no-verify; then
   rm -f "${cfg_baseline}"
   exit 1

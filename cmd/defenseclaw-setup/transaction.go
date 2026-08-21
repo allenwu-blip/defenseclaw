@@ -319,11 +319,20 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	defaultWindsurfUserHome, err := defaultProfileRoot()
-	if err != nil {
-		return setupTransaction{}, fmt.Errorf("resolve Windsurf user profile: %w", err)
+	legacyWindsurfManaged := stringSliceContains(previousConnectors, "windsurf")
+	legacyGeminiManaged := stringSliceContains(previousConnectors, "geminicli")
+	defaultLegacyUserHome := ""
+	if legacyWindsurfManaged || legacyGeminiManaged {
+		defaultLegacyUserHome, err = defaultProfileRoot()
+		if err != nil {
+			return setupTransaction{}, fmt.Errorf("resolve retired connector user profile: %w", err)
+		}
+		defaultLegacyUserHome = filepath.Clean(defaultLegacyUserHome)
 	}
-	defaultWindsurfUserHome = filepath.Clean(defaultWindsurfUserHome)
+	defaultWindsurfUserHome := ""
+	if legacyWindsurfManaged {
+		defaultWindsurfUserHome = defaultLegacyUserHome
+	}
 	defaultAntigravityConfigDir, err := defaultConnectorConfigHome(filepath.Join(".gemini", "config"))
 	if err != nil {
 		return setupTransaction{}, err
@@ -364,15 +373,14 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	// location. A predecessor's custom binding is recovered separately below
 	// only so Setup can restore and migrate the exact file it previously owned.
 	antigravityConfigDir := defaultAntigravityConfigDir
-	// GEMINI_CLI_HOME is the vendor-documented home root. Gemini CLI appends its
-	// own .gemini directory, so persist both the validated root and the derived
-	// config directory. Because Gemini CLI honors every non-empty value, reject
-	// an invalid ambient binding instead of silently installing somewhere else.
-	geminiCLIHome, err := resolveGeminiCLIHome(defaultWindsurfUserHome)
-	if err != nil {
-		return setupTransaction{}, err
+	// Gemini CLI is retired. Current installs never consult ambient
+	// GEMINI_CLI_HOME or create new custody. Retain only the default needed to
+	// clean an authenticated predecessor that is present in PreviousConnectors.
+	geminiCLIHome, geminiConfigDir := "", ""
+	if legacyGeminiManaged {
+		geminiCLIHome = defaultLegacyUserHome
+		geminiConfigDir = filepath.Join(geminiCLIHome, ".gemini")
 	}
-	geminiConfigDir := filepath.Join(geminiCLIHome, ".gemini")
 	openCodeConfigDir, err := transactionConfigHome("OPENCODE_CONFIG_DIR", defaultOpenCodeConfigDir)
 	if err != nil {
 		return setupTransaction{}, err
@@ -394,10 +402,14 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		previousDevinState = oldState.DevinConfigDir
 		previousDevinExecutable = oldState.DevinExecutable
 		previousHermesState = oldState.HermesHome
-		previousWindsurfState = oldState.WindsurfUserHome
+		if legacyWindsurfManaged {
+			previousWindsurfState = oldState.WindsurfUserHome
+		}
 		previousAntigravityState = oldState.AntigravityConfigDir
-		previousGeminiCLIState = oldState.GeminiCLIHome
-		previousGeminiState = oldState.GeminiConfigDir
+		if legacyGeminiManaged {
+			previousGeminiCLIState = oldState.GeminiCLIHome
+			previousGeminiState = oldState.GeminiConfigDir
+		}
 		previousOpenCodeState = oldState.OpenCodeConfigDir
 		previousOmnigentState = oldState.OmnigentConfigHome
 	}
@@ -482,7 +494,11 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	windsurfUserHome := defaultWindsurfUserHome
+	// Current install state never establishes new custody for retired
+	// Windsurf or Gemini CLI. Previous* remains the sole cleanup authority.
+	windsurfUserHome := ""
+	geminiCLIHome = ""
+	geminiConfigDir = ""
 	if preserveConnectorConfiguration {
 		// A quiet repair/upgrade without a connector choice services the exact
 		// homes already owned by the installation. Environment drift must not
@@ -1035,21 +1051,6 @@ func transactionConfigHome(name, fallback string) (string, error) {
 		return override, nil
 	}
 	return fallback, nil
-}
-
-func resolveGeminiCLIHome(fallback string) (string, error) {
-	value, ok := os.LookupEnv("GEMINI_CLI_HOME")
-	if !ok || value == "" {
-		return fallback, nil
-	}
-	if strings.TrimSpace(value) != value || containsPathControl(value) ||
-		!filepath.IsAbs(value) || filepath.Clean(value) != value {
-		return "", errors.New("GEMINI_CLI_HOME must be an absolute, normalized path without surrounding whitespace or control characters")
-	}
-	if err := rejectReparseAncestors(value); err != nil {
-		return "", fmt.Errorf("validate GEMINI_CLI_HOME: %w", err)
-	}
-	return value, nil
 }
 
 func containsPathControl(value string) bool {

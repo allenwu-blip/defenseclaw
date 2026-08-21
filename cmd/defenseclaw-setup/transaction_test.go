@@ -1905,72 +1905,13 @@ func TestGeminiTransactionRoundTripRehydratesVendorRootAndPrivateCustody(t *test
 	}
 }
 
-func TestResolveGeminiCLIHomeUsesOnlyAbsoluteNormalizedControlFreeAmbientValue(t *testing.T) {
-	fallback := filepath.Join(t.TempDir(), "profile")
-	valid := filepath.Join(t.TempDir(), "gemini-cli-home")
-	previous, hadPrevious := os.LookupEnv("GEMINI_CLI_HOME")
-	if err := os.Unsetenv("GEMINI_CLI_HOME"); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if hadPrevious {
-			_ = os.Setenv("GEMINI_CLI_HOME", previous)
-		} else {
-			_ = os.Unsetenv("GEMINI_CLI_HOME")
-		}
-	})
-	got, err := resolveGeminiCLIHome(fallback)
-	if err != nil {
-		t.Fatalf("resolve absent GEMINI_CLI_HOME: %v", err)
-	}
-	if !samePath(got, fallback) {
-		t.Fatalf("absent GEMINI_CLI_HOME = %q, want fallback %q", got, fallback)
-	}
-
-	t.Setenv("GEMINI_CLI_HOME", valid)
-	got, err = resolveGeminiCLIHome(fallback)
-	if err != nil {
-		t.Fatalf("resolve valid GEMINI_CLI_HOME: %v", err)
-	}
-	if !samePath(got, valid) {
-		t.Fatalf("valid GEMINI_CLI_HOME = %q, want %q", got, valid)
-	}
-
-	for _, invalid := range []string{
-		"relative",
-		valid + string(filepath.Separator) + "child" + string(filepath.Separator) + "..",
-		valid + "\nredirect",
-		valid + "\tredirect",
-		" ",
-		valid + " ",
-	} {
-		t.Run(fmt.Sprintf("invalid-%q", invalid), func(t *testing.T) {
-			t.Setenv("GEMINI_CLI_HOME", invalid)
-			if got, err := resolveGeminiCLIHome(fallback); err == nil {
-				t.Fatalf("invalid GEMINI_CLI_HOME %q resolved to %q without error", invalid, got)
-			} else if !strings.Contains(err.Error(), "GEMINI_CLI_HOME") {
-				t.Fatalf("invalid GEMINI_CLI_HOME %q error = %q", invalid, err)
-			}
-		})
-	}
-
-	t.Setenv("GEMINI_CLI_HOME", "")
-	got, err = resolveGeminiCLIHome(fallback)
-	if err != nil {
-		t.Fatalf("resolve empty GEMINI_CLI_HOME: %v", err)
-	}
-	if !samePath(got, fallback) {
-		t.Fatalf("empty GEMINI_CLI_HOME = %q, want fallback %q", got, fallback)
-	}
-}
-
-func TestNewSetupTransactionRejectsInvalidNonemptyGeminiCLIHome(t *testing.T) {
+func TestNewSetupTransactionIgnoresRetiredConnectorAmbientAndCreatesNoCustody(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native Windows Setup transaction contract")
 	}
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	t.Setenv("GEMINI_CLI_HOME", "relative-gemini-home")
-	_, err := newSetupTransaction(
+	transaction, err := newSetupTransaction(
 		"install",
 		installRoot,
 		dataRoot,
@@ -1980,34 +1921,17 @@ func TestNewSetupTransactionRejectsInvalidNonemptyGeminiCLIHome(t *testing.T) {
 		nil,
 		options{Action: "install", Connector: "none", Mode: "observe"},
 	)
-	if err == nil || !strings.Contains(err.Error(), "GEMINI_CLI_HOME") {
-		t.Fatalf("invalid nonempty GEMINI_CLI_HOME setup error = %v", err)
+	if err != nil {
+		t.Fatalf("fresh unrelated setup consulted retired GEMINI_CLI_HOME: %v", err)
 	}
-}
-
-func TestResolveGeminiCLIHomeRejectsReparseAncestor(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("Windows reparse-point validation")
-	}
-	root := t.TempDir()
-	target := filepath.Join(root, "target")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	redirect := filepath.Join(root, "redirect")
-	if err := os.Symlink(target, redirect); err != nil {
-		if output, junctionErr := exec.Command(
-			"cmd.exe", "/D", "/C", "mklink", "/J", redirect, target,
-		).CombinedOutput(); junctionErr != nil {
-			t.Fatalf("create Gemini reparse fixture after symlink error %v: %v\n%s", err, junctionErr, output)
+	for label, value := range map[string]string{
+		"WindsurfUserHome": transaction.WindsurfUserHome,
+		"GeminiCLIHome":    transaction.GeminiCLIHome,
+		"GeminiConfigDir":  transaction.GeminiConfigDir,
+	} {
+		if value != "" {
+			t.Fatalf("fresh unrelated setup created retired %s custody %q", label, value)
 		}
-	}
-	t.Cleanup(func() { _ = os.Remove(redirect) })
-	t.Setenv("GEMINI_CLI_HOME", filepath.Join(redirect, "gemini-home"))
-	if got, err := resolveGeminiCLIHome(filepath.Join(root, "fallback")); err == nil {
-		t.Fatalf("reparse GEMINI_CLI_HOME resolved to %q without error", got)
-	} else if !strings.Contains(err.Error(), "validate GEMINI_CLI_HOME") {
-		t.Fatalf("reparse GEMINI_CLI_HOME error = %v", err)
 	}
 }
 

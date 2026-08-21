@@ -92,16 +92,9 @@ func TestHandleAgentHook_FullChain_PerConnector(t *testing.T) {
 			expectAction:   "block",
 		},
 		{
-			connector:      "windsurf",
-			event:          "pre_run_command",
-			toolName:       "run_command",
-			topLevelOutput: "hook_output",
-			expectAction:   "block",
-		},
-		{
-			connector:      "geminicli",
-			event:          "BeforeTool",
-			toolName:       "RunShellCommand",
+			connector:      "devin",
+			event:          "PreToolUse",
+			toolName:       "exec",
 			topLevelOutput: "hook_output",
 			expectAction:   "block",
 		},
@@ -617,17 +610,17 @@ func TestHandleAgentHook_FullChain_PanicFailsOpen(t *testing.T) {
 	hookEvaluatorPanicHook = func() { panic("synthetic panic in unified chain") }
 	defer func() { hookEvaluatorPanicHook = prev }()
 
-	// Use a generic connector (geminicli) so the panic in
+	// Use a generic active connector (devin) so the panic in
 	// evaluateAgentHook triggers safeEvaluateHook's recover.
 	api := &APIServer{}
-	handler := http.HandlerFunc(api.handleAgentHook("geminicli"))
+	handler := http.HandlerFunc(api.handleAgentHook("devin"))
 	body, _ := json.Marshal(map[string]interface{}{
-		"hook_event_name": "preToolUse",
+		"hook_event_name": "PreToolUse",
 		"session_id":      "session-panic-e2e",
-		"agent_id":        "gemini-panic-test",
+		"agent_id":        "devin-panic-test",
 		"tool_name":       "RunShellCommand",
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/geminicli/hook", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/devin/hook", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -645,7 +638,7 @@ func TestHandleAgentHook_FullChain_PanicFailsOpen(t *testing.T) {
 	if wb, _ := parsed["would_block"].(bool); !wb {
 		t.Errorf("panic-path would_block = false, want true")
 	}
-	// The wire-shape key is still hook_output (geminicli), not a
+	// The wire-shape key is still hook_output (devin), not a
 	// generic error stanza — the panic recovery preserves the
 	// connector contract.
 	if _, ok := parsed["hook_output"]; !ok {
@@ -670,6 +663,11 @@ func TestHandleAgentHook_FullChain_PanicFailsOpen(t *testing.T) {
 // a registered hook handler. The test below documents it.
 func TestConnectorRegistry_ScopeAndHookHandlerInSync(t *testing.T) {
 	for _, scope := range connector.OTLPPathTokenScopes() {
+		if scope == connector.OTLPScopeGeminiCLI {
+			// This scope remains readable only so teardown can revoke
+			// credentials from older Gemini CLI installs.
+			continue
+		}
 		if _, ok := connectorHookHandlerByName[string(scope)]; !ok {
 			t.Errorf("OTLP scope %q has no registered hook handler; misconfigured connector estate", scope)
 		}

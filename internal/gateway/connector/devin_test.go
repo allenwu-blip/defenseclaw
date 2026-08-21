@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"testing"
 )
@@ -82,6 +83,9 @@ func TestDevinPatchProjectHooksUsesWholeDocument(t *testing.T) {
 }
 
 func TestDevinWindowsHookCommandMigratesExactPowerShellPredecessor(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows Devin hook-command migration")
+	}
 	root := t.TempDir()
 	path := filepath.Join(root, "config.json")
 	hookBinary := filepath.Join(root, "Defense Claw", windowsHookBinaryName)

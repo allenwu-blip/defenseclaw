@@ -140,7 +140,7 @@ func TestCorrelationAuthorityRequiresExactFieldEvidence(t *testing.T) {
 
 func TestHookProfilesCarryResolvedCorrelationVersion(t *testing.T) {
 	reg := NewDefaultRegistry()
-	for _, name := range []string{"codex", "claudecode", "hermes", "cursor", "devin", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"} {
+	for _, name := range []string{"codex", "claudecode", "hermes", "cursor", "devin", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"} {
 		conn, _ := reg.Get(name)
 		profile := conn.(HookProfileProvider).HookProfile(SetupOpts{})
 		if profile.Correlation.ProfileVersion == "" || profile.Correlation.ProfileVersion == CorrelationProfileExplicitV1 {
@@ -267,7 +267,7 @@ func TestConnectorScopedTurnMappingsDoNotCrossKinds(t *testing.T) {
 		want    string
 	}{
 		{name: "cursor", payload: map[string]interface{}{"generation_id": "generation-7"}, want: "generation-7"},
-		{name: "windsurf", payload: map[string]interface{}{"execution_id": "execution-9"}, want: "execution-9"},
+		{name: "devin", payload: map[string]interface{}{"prompt_id": "prompt-9"}, want: "prompt-9"},
 		{name: "zeptoclaw", payload: map[string]interface{}{"provider_request_id": "provider-1"}, want: ""},
 		{name: "antigravity", payload: map[string]interface{}{"stepIdx": 9}, want: ""},
 	}
@@ -332,7 +332,7 @@ func TestNativeTelemetryRegistryIsExplicit(t *testing.T) {
 		"openclaw": NativeTelemetryNone, "zeptoclaw": NativeTelemetryNone,
 		"codex": NativeTelemetryStable, "claudecode": NativeTelemetryBeta,
 		"hermes": NativeTelemetryNone, "cursor": NativeTelemetryNone, "devin": NativeTelemetryNone,
-		"geminicli": NativeTelemetryStable, "copilot": NativeTelemetryNone,
+		"copilot":   NativeTelemetryNone,
 		"openhands": openhandsStability, "antigravity": NativeTelemetryNone,
 		"opencode": NativeTelemetryNone, "omnigent": NativeTelemetryExperimental,
 		"amp": NativeTelemetryNone,
@@ -359,6 +359,9 @@ func TestNativeTelemetryRegistryIsExplicit(t *testing.T) {
 
 func TestEveryDeclaredCorrelationSurfaceHasReviewedBindings(t *testing.T) {
 	for _, name := range NewDefaultRegistry().Names() {
+		if name == "geminicli" {
+			continue // retained in the internal registry for legacy cleanup only
+		}
 		spec := DefaultCorrelationSpec(name)
 		if err := spec.Validate(); err != nil {
 			t.Fatalf("%s profile invalid: %v", name, err)
@@ -513,7 +516,7 @@ func TestCorrelationRegistryRetainsAllTypedNativeIdentifiers(t *testing.T) {
 
 func TestHookLifecycleBindingsUseOnlyReviewedContractEvents(t *testing.T) {
 	for _, name := range []string{
-		"codex", "claudecode", "hermes", "cursor", "devin", "geminicli",
+		"codex", "claudecode", "hermes", "cursor", "devin",
 		"copilot", "openhands", "antigravity", "opencode", "omnigent", "amp",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -545,7 +548,6 @@ func TestConnectorLifecycleSemantics(t *testing.T) {
 		{"hermes", "pre_llm_call", CorrelationLifecycleTurnStart},
 		{"cursor", "beforeSubmitPrompt", CorrelationLifecycleTurnStart},
 		{"devin", "Stop", CorrelationLifecycleTurnEnd},
-		{"geminicli", "BeforeTool", CorrelationLifecycleToolStart},
 		{"copilot", "userPromptSubmitted", CorrelationLifecycleTurnStart},
 		{"openhands", "user_prompt_submit", CorrelationLifecycleTurnStart},
 		{"antigravity", "PostInvocation", CorrelationLifecycleTurnEnd},
@@ -565,6 +567,9 @@ func TestConnectorLifecycleSemantics(t *testing.T) {
 
 func TestNativeRegistryNeverRecognizesNonStandardGenAIRequestID(t *testing.T) {
 	for _, name := range NewDefaultRegistry().Names() {
+		if name == "geminicli" {
+			continue // retained in the internal registry for legacy cleanup only
+		}
 		spec := DefaultCorrelationSpec(name)
 		if got, ok := spec.NativeOTLPValue(map[string]interface{}{"gen_ai.request.id": "not-standard"}, CorrelationTargetModelRequest); ok {
 			t.Errorf("%s accepted non-standard gen_ai.request.id as %+v", name, got)
@@ -584,8 +589,7 @@ func TestAllBuiltinCorrelationProfilesUseConnectorExactIDs(t *testing.T) {
 		{"claudecode", map[string]interface{}{"session_id": "s", "prompt_id": "p", "tool_use_id": "tc"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "p", CorrelationTargetTool: "tc"}},
 		{"hermes", map[string]interface{}{"extra": map[string]interface{}{"session_id": "s", "turn_id": "t", "event_id": "e", "tool_call_id": "tc"}}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "t", CorrelationTargetSourceEvent: "e", CorrelationTargetTool: "tc"}},
 		{"cursor", map[string]interface{}{"conversation_id": "s", "generation_id": "t", "messageId": "m", "tool_use_id": "tc"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "t", CorrelationTargetSourceEvent: "m", CorrelationTargetTool: "tc"}},
-		{"windsurf", map[string]interface{}{"trajectory_id": "s", "execution_id": "t", "stepIndex": 3, "tool_call_id": "tc"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "t", CorrelationTargetExecution: "t", CorrelationTargetSourceSeq: "3", CorrelationTargetTool: "tc"}},
-		{"geminicli", map[string]interface{}{"session_id": "s", "prompt_id": "p", "response_id": "rs"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "p", CorrelationTargetModelResponse: "rs"}},
+		{"devin", map[string]interface{}{"session_id": "s", "prompt_id": "p"}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetTurn: "p"}},
 		{"copilot", map[string]interface{}{"sessionId": "s"}, map[CorrelationTarget]string{CorrelationTargetSession: "s"}},
 		{"openhands", map[string]interface{}{"session_id": "s"}, map[CorrelationTarget]string{CorrelationTargetSession: "s"}},
 		{"antigravity", map[string]interface{}{"conversationId": "s", "stepIdx": 4, "invocationNum": 8, "toolCall": map[string]interface{}{"id": "tc"}}, map[CorrelationTarget]string{CorrelationTargetSession: "s", CorrelationTargetStep: "4", CorrelationTargetExecution: "8", CorrelationTargetTool: "tc"}},
@@ -784,20 +788,6 @@ func TestClaudeDocumentedHookIDsAndCorrelationVersionFloor(t *testing.T) {
 	}
 	if !spec.AllowsMirrorTarget(CorrelationTargetTool) || spec.AllowsMirrorTarget(CorrelationTargetModelResponse) {
 		t.Fatalf("Claude mirror targets=%v want tool only", spec.MirrorIdentityTargets)
-	}
-}
-
-func TestGeminiNativeToolCallUsesDocumentedUnderscoreSpelling(t *testing.T) {
-	spec := DefaultCorrelationSpec("geminicli")
-	tool, ok := spec.NativeOTLPValue(map[string]interface{}{"gen_ai.tool.call_id": "gemini-call-1"}, CorrelationTargetTool)
-	if !ok || tool.Value != "gemini-call-1" || tool.Path != "gen_ai.tool.call_id" || tool.IDKind != "tool_invocation" {
-		t.Fatalf("Gemini native tool=(%+v,%v)", tool, ok)
-	}
-	if value, found := spec.HookValue(map[string]interface{}{"toolCallId": "not-documented"}, CorrelationTargetTool); found {
-		t.Fatalf("undocumented Gemini hook toolCallId was accepted: %+v", value)
-	}
-	if spec.AllowsMirrorTarget(CorrelationTargetTool) {
-		t.Fatal("Gemini hook/native tool mirror is enabled without a shared documented hook ID")
 	}
 }
 

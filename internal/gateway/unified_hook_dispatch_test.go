@@ -50,8 +50,7 @@ func TestUnifiedHookDispatch_SingleEntryPoint(t *testing.T) {
 		"claudecode": "hook event name is required",
 		"hermes":     "hook event name is required",
 		"cursor":     "hook event name is required",
-		"windsurf":   "hook event name is required",
-		"geminicli":  "hook event name is required",
+		"devin":      "hook event name is required",
 		"copilot":    "Copilot hook event registration is required",
 		"openhands":  "hook event name is required",
 		"made-up":    "hook event name is required",
@@ -98,7 +97,7 @@ func TestHookProfileForConnector(t *testing.T) {
 		// generic decoder's ContentEnvelopeKey fallback.
 		{"hermes", "hermes", "hermes", false, true, true},
 		{"cursor", "cursor", "cursor", true, true, true},
-		{"windsurf", "windsurf", "windsurf", true, true, true},
+		{"devin", "devin", "devin", true, true, true},
 		{"openhands", "openhands", "openhands", false, true, true},
 		{"unknown_returns_zero", "made-up", "made-up", false, false, false},
 	}
@@ -155,8 +154,7 @@ func TestUnifiedDispatch_PreservesConnectorWireShape(t *testing.T) {
 		{"claudecode", "claude_code_output"},
 		{"hermes", "hook_output"},
 		{"cursor", "hook_output"},
-		{"windsurf", "hook_output"},
-		{"geminicli", "hook_output"},
+		{"devin", "hook_output"},
 		{"copilot", "hook_output"},
 		{"openhands", "hook_output"},
 		{"made-up", "hook_output"},

@@ -447,7 +447,7 @@ func printHookGuardianStatus() {
 // _FRIENDLY_CONNECTOR_NAMES (cli/defenseclaw/commands/cmd_status.py) so the
 // Go gateway status and the Python `defenseclaw status` agree on every
 // connector's display name instead of title-casing the raw id (e.g.
-// "geminicli" -> "Gemini CLI", not "Geminicli"). Duplicated rather than
+// "geminicli" -> "Retired Gemini CLI (cleanup only)", not "Geminicli"). Duplicated rather than
 // shared to avoid pulling the TUI/Bubble Tea graph into the CLI binary.
 func friendlyConnectorName(name string) string {
 	switch strings.TrimSpace(name) {
@@ -468,7 +468,7 @@ func friendlyConnectorName(name string) string {
 	case "windsurf":
 		return "Retired Cascade (cleanup only)"
 	case "geminicli":
-		return "Gemini CLI"
+		return "Retired Gemini CLI (cleanup only)"
 	case "copilot":
 		return "GitHub Copilot CLI"
 	case "openhands":

@@ -354,14 +354,19 @@ func TestIsLoopback(t *testing.T) {
 
 func TestRegistry_DefaultContainsAllBuiltins(t *testing.T) {
 	r := NewDefaultRegistry()
-	expected := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "devin", "geminicli", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
-	for _, name := range expected {
+	active := []string{"openclaw", "zeptoclaw", "claudecode", "codex", "hermes", "cursor", "devin", "copilot", "openhands", "antigravity", "opencode", "omnigent", "amp"}
+	for _, name := range active {
 		if _, ok := r.Get(name); !ok {
 			t.Errorf("default registry missing %q", name)
 		}
 	}
-	if r.Len() != len(expected) {
-		t.Errorf("registry has %d connectors, want %d", r.Len(), len(expected))
+	// Gemini CLI remains internally resolvable only for teardown of older
+	// managed state; it is not part of the active connector matrix.
+	if _, ok := r.Get("geminicli"); !ok {
+		t.Error("default registry missing Gemini CLI cleanup connector")
+	}
+	if r.Len() != len(active)+1 {
+		t.Errorf("registry has %d connectors, want %d active plus one cleanup-only", r.Len(), len(active))
 	}
 }
 
@@ -2968,16 +2973,10 @@ func TestEveryHookOwner_TeardownLeavesTombstone(t *testing.T) {
 			setup:      hookOnlySetup(".yaml", NewHermesConnector, &HermesConfigPathOverride),
 		},
 		{
-			name:       "windsurf",
-			hookScript: "windsurf-hook.sh",
-			hookAPI:    "/api/v1/windsurf/hook",
-			setup:      hookOnlySetup(".json", NewWindsurfConnector, &WindsurfHooksPathOverride),
-		},
-		{
-			name:       "geminicli",
-			hookScript: "geminicli-hook.sh",
-			hookAPI:    "/api/v1/geminicli/hook",
-			setup:      hookOnlySetup(".json", NewGeminiCLIConnector, &GeminiSettingsPathOverride),
+			name:       "devin",
+			hookScript: "devin-hook.sh",
+			hookAPI:    "/api/v1/devin/hook",
+			setup:      hookOnlySetup(".json", NewDevinConnector, &DevinHooksPathOverride),
 		},
 		{
 			name:       "copilot",
@@ -6002,7 +6001,7 @@ func TestCodexOtelBlockLooksManaged_AcceptsLegacyExporterOnlyBlock(t *testing.T)
 		"remote host":       "http://collector.example/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs",
 		"query":             "http://127.0.0.1:18970/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs?x=1",
 		"empty query":       "http://127.0.0.1:18970/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs?",
-		"other scope":       "http://127.0.0.1:18970/otlp/geminicli/" + strings.Repeat("a", 64) + "/v1/logs",
+		"other scope":       "http://127.0.0.1:18970/otlp/openhands/" + strings.Repeat("a", 64) + "/v1/logs",
 		"missing port":      "http://localhost/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs",
 		"zero port":         "http://localhost:0/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs",
 		"oversized port":    "http://localhost:70000/otlp/codex/" + strings.Repeat("a", 64) + "/v1/logs",
@@ -7399,8 +7398,8 @@ func containsAuthBearer(curlArgs, token string) bool {
 
 func TestHookScripts_ReturnsList(t *testing.T) {
 	scripts := HookScripts()
-	if len(scripts) != 13 {
-		t.Errorf("HookScripts() returned %d scripts, want 13", len(scripts))
+	if len(scripts) != 14 {
+		t.Errorf("HookScripts() returned %d scripts, want 14", len(scripts))
 	}
 }
 
@@ -10690,8 +10689,7 @@ func TestConnector_AgentPathProvider_AllBuiltinsImplement(t *testing.T) {
 		{"claudecode", func() Connector { return NewClaudeCodeConnector() }},
 		{"hermes", func() Connector { return NewHermesConnector() }},
 		{"cursor", func() Connector { return NewCursorConnector() }},
-		{"windsurf", func() Connector { return NewWindsurfConnector() }},
-		{"geminicli", func() Connector { return NewGeminiCLIConnector() }},
+		{"devin", func() Connector { return NewDevinConnector() }},
 		{"copilot", func() Connector { return NewCopilotConnector() }},
 		{"openhands", func() Connector { return NewOpenHandsConnector() }},
 	}
@@ -10784,10 +10782,8 @@ func TestConnector_AgentPaths_HookScriptsCoverAll(t *testing.T) {
 		return out
 	}
 	cursorScripts := withVendor("cursor-hook.sh")
-	windsurfScripts := withVendor("windsurf-hook.sh")
 	if runtime.GOOS == "windows" {
 		cursorScripts = append(cursorScripts, "cursor-hook.ps1")
-		windsurfScripts = append(windsurfScripts, "windsurf-hook.ps1")
 	}
 
 	cases := []struct {
@@ -10801,8 +10797,7 @@ func TestConnector_AgentPaths_HookScriptsCoverAll(t *testing.T) {
 		{func() Connector { return NewClaudeCodeConnector() }, "claudecode", withVendor("claude-code-hook.sh")},
 		{func() Connector { return NewHermesConnector() }, "hermes", withVendor("hermes-hook.sh")},
 		{func() Connector { return NewCursorConnector() }, "cursor", cursorScripts},
-		{func() Connector { return NewWindsurfConnector() }, "windsurf", windsurfScripts},
-		{func() Connector { return NewGeminiCLIConnector() }, "geminicli", withVendor("geminicli-hook.sh")},
+		{func() Connector { return NewDevinConnector() }, "devin", withVendor("devin-hook.sh")},
 		{func() Connector { return NewCopilotConnector() }, "copilot", withVendor("copilot-hook.sh")},
 		{func() Connector { return NewOpenHandsConnector() }, "openhands", withVendor("openhands-hook.sh")},
 		{func() Connector { return NewAntigravityConnector() }, "antigravity", withVendor("antigravity-hook.sh")},
@@ -10851,8 +10846,7 @@ func TestConnector_HookScriptProvider_MatchesAgentPaths(t *testing.T) {
 		NewClaudeCodeConnector(),
 		NewHermesConnector(),
 		NewCursorConnector(),
-		NewWindsurfConnector(),
-		NewGeminiCLIConnector(),
+		NewDevinConnector(),
 		NewCopilotConnector(),
 		NewOpenHandsConnector(),
 	}
@@ -10894,8 +10888,7 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 		{"claudecode", func() Connector { return NewClaudeCodeConnector() }, []EnvScope{EnvScopeNone}},
 		{"hermes", func() Connector { return NewHermesConnector() }, []EnvScope{EnvScopeNone}},
 		{"cursor", func() Connector { return NewCursorConnector() }, []EnvScope{EnvScopeNone}},
-		{"windsurf", func() Connector { return NewWindsurfConnector() }, []EnvScope{EnvScopeNone}},
-		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []EnvScope{EnvScopeNone}},
+		{"devin", func() Connector { return NewDevinConnector() }, []EnvScope{EnvScopeNone}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []EnvScope{EnvScopeNone}},
 		{"openhands", func() Connector { return NewOpenHandsConnector() }, []EnvScope{EnvScopeNone}},
 		{"antigravity", func() Connector { return NewAntigravityConnector() }, []EnvScope{EnvScopeNone}},
@@ -10947,7 +10940,7 @@ func TestConnector_EnvRequirementsProvider_AllBuiltinsImplement(t *testing.T) {
 // contract: every proxy-bound built-in connector exposes a
 // HasUsableProviders() hook so the sidecar boot path can refuse to
 // start when no LLM upstream is configured. Hook-only connectors
-// (codex, claudecode, hermes, cursor, windsurf, geminicli, copilot,
+// (codex, claudecode, hermes, cursor, devin, copilot,
 // openhands)
 // do not interpose on chat traffic, so the probe does not apply.
 func TestConnector_ProviderProbe_ProxyBuiltinsImplement(t *testing.T) {
@@ -11101,10 +11094,8 @@ func TestOpenClaw_AgentPaths_Specifics(t *testing.T) {
 //   - zeptoclaw  owns no vendor template (config-only)
 func TestHookScriptOwner_BuiltinSurface(t *testing.T) {
 	cursorHooks := []string{"cursor-hook.sh"}
-	windsurfHooks := []string{"windsurf-hook.sh"}
 	if runtime.GOOS == "windows" {
 		cursorHooks = append(cursorHooks, "cursor-hook.ps1")
-		windsurfHooks = append(windsurfHooks, "windsurf-hook.ps1")
 	}
 	cases := []struct {
 		name string
@@ -11115,8 +11106,7 @@ func TestHookScriptOwner_BuiltinSurface(t *testing.T) {
 		{"codex", func() Connector { return NewCodexConnector() }, []string{"codex-hook.sh"}},
 		{"hermes", func() Connector { return NewHermesConnector() }, []string{"hermes-hook.sh"}},
 		{"cursor", func() Connector { return NewCursorConnector() }, cursorHooks},
-		{"windsurf", func() Connector { return NewWindsurfConnector() }, windsurfHooks},
-		{"geminicli", func() Connector { return NewGeminiCLIConnector() }, []string{"geminicli-hook.sh"}},
+		{"devin", func() Connector { return NewDevinConnector() }, []string{"devin-hook.sh"}},
 		{"copilot", func() Connector { return NewCopilotConnector() }, []string{"copilot-hook.sh"}},
 		{"openhands", func() Connector { return NewOpenHandsConnector() }, []string{"openhands-hook.sh"}},
 		{"antigravity", func() Connector { return NewAntigravityConnector() }, []string{"antigravity-hook.sh"}},
