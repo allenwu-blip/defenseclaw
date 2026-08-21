@@ -861,13 +861,25 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
 
     $pwsh = (Get-Process -Id $PID).Path
-    $profileTest = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
-        '-NoProfile', '-File', $nativeHarness, '-Operation', 'self-test',
-        '-StateRoot', (Join-Path $temp 'isolated-profile')
-    ) -TimeoutSeconds 30
+    $originalNativeBase = [Environment]::GetEnvironmentVariable('DC_WINDOWS_NATIVE_BASE_ROOT')
+    try {
+        # The native self-test validates and rebinds its own base after it
+        # creates an isolated USERPROFILE. Do not leak the workflow's real-
+        # profile base into that child; restore it before the outer path-gate
+        # tests below exercise the workflow contract.
+        Remove-Item Env:DC_WINDOWS_NATIVE_BASE_ROOT -ErrorAction SilentlyContinue
+        $profileTest = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
+            '-NoProfile', '-File', $nativeHarness, '-Operation', 'self-test',
+            '-StateRoot', (Join-Path $temp 'isolated-profile')
+        ) -TimeoutSeconds 30
+    } finally {
+        [Environment]::SetEnvironmentVariable(
+            'DC_WINDOWS_NATIVE_BASE_ROOT',
+            $originalNativeBase
+        )
+    }
     Assert-True ($profileTest.ExitCode -eq 0 -and $profileTest.StdOut -match 'self-test passed') 'disposable Windows profile and PATH isolation'
 
-    $originalNativeBase = [Environment]::GetEnvironmentVariable('DC_WINDOWS_NATIVE_BASE_ROOT')
     $originalGithubActions = [Environment]::GetEnvironmentVariable('GITHUB_ACTIONS')
     $originalRunnerEnvironment = [Environment]::GetEnvironmentVariable('RUNNER_ENVIRONMENT')
     $originalRunnerTemp = [Environment]::GetEnvironmentVariable('RUNNER_TEMP')
@@ -1508,6 +1520,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText,
         '(?s)function Add-WindowsNativeDiagnosticTail\b.*?(?=\r?\nfunction )'
     ).Value
+    $nativeSelfTestFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Invoke-SelfTest\b.*?(?=\r?\nif \(-not \$NoRun\))'
+    ).Value
     $connectorContractJob = [regex]::Match(
         $nativeWorkflowText,
         '(?ms)^  connector-contract:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
@@ -1600,6 +1616,21 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativePathInitializerText -match 'DC_WINDOWS_NATIVE_BASE_ROOT=\$stateBase' -and
         $nativePathInitializerText -match 'DC_STATE_ROOT=\$stateRoot') `
         'shared initializer roots short mutable state below the trusted user profile'
+    $initializeProfileIndex = $nativeSelfTestFunction.IndexOf(
+        '$profile = Initialize-IsolatedProfile $root',
+        [StringComparison]::Ordinal
+    )
+    $rebindNativeBaseIndex = $nativeSelfTestFunction.IndexOf(
+        '$env:DC_WINDOWS_NATIVE_BASE_ROOT = Resolve-SafeWindowsNativeBase $selfTestNativeBase',
+        [StringComparison]::Ordinal
+    )
+    Assert-True ($initializeProfileIndex -ge 0 -and
+        $rebindNativeBaseIndex -gt $initializeProfileIndex -and
+        $nativeSelfTestFunction -match
+            "\`$selfTestNativeBase = Join-Path \`$nativeBaseProfile '\.dc-ci\\self-test'" -and
+        $nativeSelfTestFunction -notmatch
+            '\$env:DC_WINDOWS_NATIVE_BASE_ROOT\s*=\s*\$root') `
+        'native self-test rebinds child-only authority below the Profile Known Folder without weakening the shared guard'
     Assert-True ($nativePathInitializerText -match 'Join-Path \$env:RUNNER_TEMP \$DiagnosticsLeaf' -and
         $nativePathInitializerText -match 'Join-Path \$env:RUNNER_TEMP \$ArtifactLeaf' -and
         [regex]::Matches($nativeWorkflowText, '-ArtifactLeaf windows-native-dist').Count -eq 4) `

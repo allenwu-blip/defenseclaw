@@ -3576,6 +3576,7 @@ class TestBareSetupBatch(_BaseSetup):
             return (mode or "").strip().lower() != "action"
 
         with contextlib.ExitStack() as stack:
+            stack.enter_context(patch("defenseclaw.ux.unicode_output_enabled", return_value=True))
             stack.enter_context(patch("defenseclaw.commands.cmd_setup._restart_services", return_value=None))
             stack.enter_context(patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=True))
             stack.enter_context(patch("defenseclaw.commands.cmd_setup._maybe_bring_up_local_stack", return_value=None))
@@ -3606,9 +3607,7 @@ class TestBareSetupBatch(_BaseSetup):
 
         self.assertEqual(res.exit_code, 0, msg=res.output)
         self.assertIn("Gemini CLI: requested action mode was refused", res.output)
-        # CliRunner captures redirected output, whose stable presentation is
-        # deliberately ASCII-safe.
-        self.assertIn("Devin Desktop - legacy Cascade: requested action mode was refused", res.output)
+        self.assertIn("Devin Desktop — legacy Cascade: requested action mode was refused", res.output)
         gc = self.app.cfg.guardrail
         self.assertEqual(gc.effective_mode("geminicli"), "observe")
         self.assertEqual(gc.effective_mode("windsurf"), "observe")

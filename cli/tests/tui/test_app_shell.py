@@ -3031,13 +3031,15 @@ async def test_setup_global_shortcuts_save_restart_clear_and_revert() -> None:
         await pilot.press("S")
         await pilot.pause()
 
-        assert app.screen_stack[-1].__class__.__name__ == "ConfigDiffScreen"
-        # This integration owns the save callback, not pointer hit-testing.
-        # Posting Button.Pressed through the mounted widget makes event
-        # delivery deterministic even while a loaded shard is rendering other
-        # panels; pointer and keyboard activation have dedicated screen tests.
-        app.screen.query_one("#config-diff-save", Button).press()
-        await config_saved.wait()
+        diff_screen = app.screen_stack[-1]
+        assert diff_screen.__class__.__name__ == "ConfigDiffScreen"
+        # This integration owns the save callback, not Textual's queued button
+        # dispatch (pointer and keyboard activation have dedicated screen
+        # tests). Resolve the already-mounted modal directly, then bound the
+        # callback wait so a lost UI message can never hold a Windows shard and
+        # its background subprocesses until the 900-second job timeout.
+        diff_screen.action_save()  # type: ignore[attr-defined]
+        await asyncio.wait_for(config_saved.wait(), timeout=8.0)
 
         assert cfg["notifications"]["enabled"] is False
         assert setup.restart_queue.pending is True

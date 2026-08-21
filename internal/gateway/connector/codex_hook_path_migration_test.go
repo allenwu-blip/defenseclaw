@@ -140,6 +140,14 @@ func TestPatchCodexConfigReplacesTrustedMatrixAfterDataDirChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve expected Codex hook contract: %v", err)
 	}
+	firstContract, err := codexHookContractForSetup(first)
+	if err != nil {
+		t.Fatalf("resolve predecessor Codex hook contract: %v", err)
+	}
+	secondContract, err := codexHookContractForSetup(second)
+	if err != nil {
+		t.Fatalf("resolve replacement Codex hook contract: %v", err)
+	}
 	if err := verifyTrustedCodexHookMatrixForGroups(
 		hooks,
 		configPath,
@@ -150,8 +158,20 @@ func TestPatchCodexConfigReplacesTrustedMatrixAfterDataDirChange(t *testing.T) {
 	}
 
 	for _, group := range expectedGroups {
-		oldCount := codexTestCommandCount(hooks[group.eventType], hookScriptA)
-		newCount := codexTestCommandCount(hooks[group.eventType], hookScriptB)
+		oldCommand := codexHookCommandForPlatform(
+			runtime.GOOS,
+			group.eventType,
+			firstContract.ContractID,
+			hookScriptA,
+		)
+		newCommand := codexHookCommandForPlatform(
+			runtime.GOOS,
+			group.eventType,
+			secondContract.ContractID,
+			hookScriptB,
+		)
+		oldCount := codexTestCommandCount(hooks[group.eventType], oldCommand)
+		newCount := codexTestCommandCount(hooks[group.eventType], newCommand)
 		if oldCount != 0 || newCount != 1 {
 			t.Errorf(
 				"%s handler counts: predecessor=%d replacement=%d, want 0 and 1",

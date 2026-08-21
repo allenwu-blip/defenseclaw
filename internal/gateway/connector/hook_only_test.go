@@ -2614,8 +2614,8 @@ func TestGeminiHookReconciliationMigratesExactWindowsCommandsAndPreservesForeign
 		t.Fatal("mixed Gemini group did not preserve its foreign hook and operator fields")
 	}
 	conn := NewGeminiCLIConnector()
-	if err := conn.VerifyClean(opts); err == nil {
-		t.Fatal("VerifyClean did not recognize the JSON-escaped encoded Gemini command")
+	if err := conn.verifyGeminiSettingsCleanForOS("windows", opts, settingsPath, desired, patched); err == nil {
+		t.Fatal("Windows VerifyClean did not recognize the JSON-escaped encoded Gemini command")
 	}
 
 	if err := removeGeminiConfigEntries(settingsPath, desired, owned...); err != nil {

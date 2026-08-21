@@ -7937,9 +7937,23 @@ function Invoke-SelfTest {
     Assert-NativeWindowsX64
     Test-WindowsNativeDoctorJsonParser
     $root = Assert-SafeStateRoot $StateRoot
-    $env:DC_WINDOWS_NATIVE_BASE_ROOT = $root
     $originalProfile = $env:USERPROFILE
+    $nativeBaseProfile = [Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::UserProfile
+    ).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($nativeBaseProfile)) {
+        throw 'native self-test could not resolve the current user profile'
+    }
     $profile = Initialize-IsolatedProfile $root
+    # The calling workflow may publish a short native base below its real
+    # runner profile. Rebind only this disposable child process to its own
+    # strict descendant of the authoritative Profile Known Folder. The
+    # env-only profile remains isolated below StateRoot, the production path
+    # guard remains unchanged, and the parent workflow environment is not
+    # mutated. This path is authority metadata only; the self-test never
+    # creates or writes it.
+    $selfTestNativeBase = Join-Path $nativeBaseProfile '.dc-ci\self-test'
+    $env:DC_WINDOWS_NATIVE_BASE_ROOT = Resolve-SafeWindowsNativeBase $selfTestNativeBase
     foreach ($name in @(
         'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP',
         'DEFENSECLAW_HOME', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'HERMES_HOME',

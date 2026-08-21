@@ -1800,13 +1800,7 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		if parseErr != nil {
 			return fmt.Errorf("%s teardown verification could not parse settings %s: %w", c.name, path, parseErr)
 		}
-		if structuredHookCommandReferences(cfg, geminiOwnedHookCommands(opts, needle)) {
-			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
-		}
-		if removeManagedGeminiTelemetry(cfg) {
-			return fmt.Errorf("%s teardown incomplete: managed native telemetry still present at %s", c.name, path)
-		}
-		return nil
+		return c.verifyGeminiSettingsCleanForOS(runtime.GOOS, opts, path, needle, cfg)
 	}
 	if c.name == "antigravity" {
 		ownedCommands := antigravityOwnedHookCommands(needle)
@@ -1830,6 +1824,26 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		return verifyHermesCleanup(opts, configPath, hermesConfiguredHookCommand(needle, opts.HookExecutable))
 	}
 	return c.verifyCursorHookArtifactsClean(opts)
+}
+
+// verifyGeminiSettingsCleanForOS keeps teardown ownership tied to the exact
+// commands DefenseClaw emitted on the target platform. The parameterized core
+// also lets host-independent tests exercise JSON-decoded Windows
+// EncodedCommand registrations without broadening Unix cleanup authority.
+func (c *hookOnlyConnector) verifyGeminiSettingsCleanForOS(
+	goos string,
+	opts SetupOpts,
+	path string,
+	hookCommand string,
+	cfg map[string]interface{},
+) error {
+	if structuredHookCommandReferences(cfg, geminiOwnedHookCommandsForOS(goos, opts, hookCommand)) {
+		return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+	}
+	if removeManagedGeminiTelemetry(cfg) {
+		return fmt.Errorf("%s teardown incomplete: managed native telemetry still present at %s", c.name, path)
+	}
+	return nil
 }
 
 func verifyHermesCleanup(opts SetupOpts, configPath, command string) error {
