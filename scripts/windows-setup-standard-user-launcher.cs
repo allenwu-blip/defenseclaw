@@ -1061,6 +1061,14 @@ namespace DefenseClaw
                     launchTokenKind,
                     "suspended Setup child");
                 process = Process.GetProcessById(checked((int)processInfo.dwProcessId));
+                // GetProcessById is PID-backed until a native handle is requested.
+                // Materialize that handle while the exact child is still suspended so
+                // fast exits retain their authoritative exit code until Dispose.
+                if (process.Handle == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException(
+                        "suspended Setup child has no process handle");
+                }
                 if (captureOutput)
                 {
                     capturedProcess = new RestrictedSetupProcess(process, stdoutPipe, stderrPipe);

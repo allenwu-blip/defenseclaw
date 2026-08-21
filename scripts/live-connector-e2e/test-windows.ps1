@@ -294,6 +294,8 @@ $payload = [ordered]@{
         ).Value
         Assert-True ([string]$restrictedLaunch.LaunchContext -ceq
                 'verified-restricted-lua-default-token-noncertification' -and
+            $null -ne $restrictedLaunch.ExitCode -and
+            [int]$restrictedLaunch.ExitCode -eq 0 -and
             -not [bool]$restrictedOwner.elevated -and
             [bool]$restrictedOwner.restricted_or_limited -and
             [string]$restrictedOwner.user_sid -ceq
@@ -2240,6 +2242,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupStandardUserLauncherText -match
             'if \(!IsTokenRestricted\(token\)\)') `
         'restricted-LUA fallback keeps fail-closed validation and restricts writes to the current token user SID'
+    Assert-True ($setupStandardUserLauncherText -match
+            '(?s)process = Process\.GetProcessById\(.*?process\.Handle == IntPtr\.Zero.*?ResumeThread\(processInfo\.hThread\)') `
+        'restricted Setup retains the exact suspended child handle before it can exit'
     Assert-True ([regex]::Matches(
             $standardUserCIText,
             'DisposableFileGuard\]::ComputeSha256Hex'
