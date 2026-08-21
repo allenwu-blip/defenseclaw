@@ -465,37 +465,37 @@ class TestScanAllUX(_SkillScanUXBase):
     @patch("defenseclaw.scanner.skill.SkillScannerWrapper")
     def test_scoped_empty_connector_names_connector_and_no_dirs(self, mock_cls) -> None:
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
-        self.app.cfg.active_connectors = lambda: ["codex", "windsurf"]  # type: ignore[method-assign]
+        self.app.cfg.active_connectors = lambda: ["codex", "omnigent"]  # type: ignore[method-assign]
         self.app.cfg.skill_dirs = lambda connector=None: {  # type: ignore[method-assign]
             "codex": [self.tmp_dir],
-            "windsurf": [],
+            "omnigent": [],
         }.get(connector, [self.tmp_dir])
 
-        result = self.invoke(["scan", "--connector", "windsurf"])
+        result = self.invoke(["scan", "--connector", "omnigent"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("No skills found for connector='windsurf'", result.output)
+        self.assertIn("No skills found for connector='omnigent'", result.output)
         self.assertIn(
-            "(no skill directories configured for connector='windsurf')",
+            "(no skill directories configured for connector='omnigent')",
             result.output,
         )
         mock_cls.return_value.scan.assert_not_called()
 
     @patch("defenseclaw.scanner.skill.SkillScannerWrapper")
     def test_scoped_empty_connector_lists_checked_dirs(self, mock_cls) -> None:
-        empty = os.path.join(self.tmp_dir, "windsurf-skills")
+        empty = os.path.join(self.tmp_dir, "omnigent-skills")
         os.makedirs(empty, exist_ok=True)
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
-        self.app.cfg.active_connectors = lambda: ["codex", "windsurf"]  # type: ignore[method-assign]
+        self.app.cfg.active_connectors = lambda: ["codex", "omnigent"]  # type: ignore[method-assign]
         self.app.cfg.skill_dirs = lambda connector=None: {  # type: ignore[method-assign]
             "codex": [self.tmp_dir],
-            "windsurf": [empty],
+            "omnigent": [empty],
         }.get(connector, [self.tmp_dir])
 
-        result = self.invoke(["scan", "--connector", "windsurf"])
+        result = self.invoke(["scan", "--connector", "omnigent"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("No skills found for connector='windsurf'", result.output)
+        self.assertIn("No skills found for connector='omnigent'", result.output)
         self.assertIn(empty, result.output)
         mock_cls.return_value.scan.assert_not_called()
 
