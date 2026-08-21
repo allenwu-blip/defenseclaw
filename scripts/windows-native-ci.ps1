@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -7369,6 +7369,7 @@ function Invoke-Contract {
         throw "native setup executable not found: $setup"
     }
     $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    $roamingAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
     $realProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
     $installRoot = Join-Path $localAppData 'Programs\DefenseClaw'
     $dataRoot = Join-Path $realProfile '.defenseclaw'
@@ -7416,6 +7417,10 @@ function Invoke-Contract {
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.cursor')).TrimEnd('\')
     $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
     $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
+    $devinHome = [IO.Path]::GetFullPath((Join-Path $roamingAppData 'devin')).TrimEnd('\')
+    $devinConfig = Join-Path $devinHome 'config.json'
+    $devinCLIHome = [IO.Path]::GetFullPath((Join-Path $localAppData 'devin\cli')).TrimEnd('\')
+    $devinExecutable = Join-Path $devinCLIHome 'bin\devin.exe'
     $geminiCLIHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'gemini-cli-home')).TrimEnd('\')
     $geminiConfigHome = Join-Path $geminiCLIHome '.gemini'
     $geminiSettings = Join-Path $geminiConfigHome 'settings.json'
@@ -7454,6 +7459,39 @@ function Invoke-Contract {
         }
         foreach ($path in @($ampPluginDir, $openCodePluginDir)) {
             New-ProductPrivateTestDirectory $path
+        }
+        if ($Connector -eq 'devin') {
+            $devinArchiveName = 'devin-3000.4.25-x86_64-pc-windows.zip'
+            $devinArchiveHash = '926EF4C2139D593BE564B93382D5A80F8AF0EE8AD7201CD35D50EEC9CD289808'
+            $devinArchive = Join-Path ([IO.Path]::GetFullPath($ArtifactRoot)) $devinArchiveName
+            if (-not (Test-Path -LiteralPath $devinArchive -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $devinArchive -Algorithm SHA256).Hash -cne $devinArchiveHash) {
+                throw 'Devin contract input does not match the pinned official 3000.4.25 archive'
+            }
+            if (Test-Path -LiteralPath $devinCLIHome) {
+                throw "refusing to replace an existing fixed-path Devin CLI: $devinCLIHome"
+            }
+            [IO.Directory]::CreateDirectory($devinCLIHome) | Out-Null
+            Expand-Archive -LiteralPath $devinArchive -DestinationPath $devinCLIHome
+            if (-not (Test-Path -LiteralPath $devinExecutable -PathType Leaf)) {
+                throw "pinned Devin archive did not publish its fixed-path executable: $devinExecutable"
+            }
+            $devinSignature = Get-AuthenticodeSignature -FilePath $devinExecutable
+            $devinSigner = if ($null -ne $devinSignature.SignerCertificate) {
+                $devinSignature.SignerCertificate.GetNameInfo(
+                    [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+                    $false
+                )
+            } else { '' }
+            if ($devinSignature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
+                $devinSigner -cne 'Exafunction, Inc.') {
+                throw 'pinned Devin executable does not have the required valid Exafunction signature'
+            }
+            $devinVersion = Invoke-WindowsNativeProcess $devinExecutable @('--version') `
+                -TimeoutSeconds 30
+            if ($devinVersion.StdOut.Trim() -cne 'devin 3000.4.25 (7e8e528a)') {
+                throw "pinned Devin executable returned an unexpected version: $($devinVersion.StdOut)"
+            }
         }
         # Setup records the trusted connector homes in installed state. The
         # launcher intentionally rejects later ambient overrides.
@@ -7514,6 +7552,10 @@ function Invoke-Contract {
                 throw "fresh native Setup install state retained deprecated connector custody: $retiredProperty"
             }
         }
+        if ([string]$contractInstallState.devin_config_dir -cne $devinHome -or
+            [string]$contractInstallState.devin_executable -cne $devinExecutable) {
+            throw 'fresh native Setup install state did not bind Devin to its exact current-user fixed paths'
+        }
         # Retired connector variables are hostile ambient input, not fresh
         # install custody. Remove them before the active connector contract.
         Remove-Item Env:GEMINI_CLI_HOME -ErrorAction SilentlyContinue
@@ -7523,6 +7565,7 @@ function Invoke-Contract {
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath (Join-Path $defaultCursorHome 'hooks.json')) -or
+            (Test-Path -LiteralPath $devinConfig) -or
             (Test-Path -LiteralPath $defaultHermesHome) -or
             (Test-Path -LiteralPath $profileGeminiSettings) -or
             (Test-Path -LiteralPath $geminiSettings) -or
@@ -7553,6 +7596,7 @@ function Invoke-Contract {
             $defaultCodexHome,
             $defaultClaudeHome,
             (Join-Path $defaultCursorHome 'hooks.json'),
+            $devinConfig,
             $defaultHermesHome,
             $defaultGeminiSettings,
             $defaultOpenCodeHome
@@ -7588,6 +7632,7 @@ function Invoke-Contract {
             claudecode = Join-Path $claudeHome 'settings.json'
             copilot = Join-Path $copilotHome 'hooks\defenseclaw.json'
             cursor = Join-Path $cursorHome 'hooks.json'
+            devin = $devinConfig
             hermes = Join-Path $hermesHome 'config.yaml'
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
             geminicli = $geminiSettings

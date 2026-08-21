@@ -499,6 +499,11 @@ def test_hermes_latest_source_recheck_matches_the_pinned_contract() -> None:
         "max_exclusive": "0.21.0",
     }
     assert validated["live"] is False
+    assert validated["os"]["windows"] == {
+        "last_validated_version": "",
+        "last_validated_at": "",
+        "run_url": "",
+    }
     assert "v2026.8.3 (0.20.0)" in validated["notes"]
 
     connector_text = " ".join(connector_page.split())
@@ -515,6 +520,18 @@ def test_hermes_latest_source_recheck_matches_the_pinned_contract() -> None:
     assert "DefenseClaw status: **supported**" in research
     assert "authentic-client evidence and certification metadata" in research
     assert "latest rechecked tag [`v2026.8.3`]" in acceptance
+
+
+def test_amp_validation_status_is_boolean_and_pending_note_is_explicit() -> None:
+    validated = json.loads(
+        (ROOT / "cli/defenseclaw/inventory/validated_versions.json").read_text(
+            encoding="utf-8"
+        )
+    )["connectors"]["amp"]
+
+    assert validated["live"] is False
+    assert "pending" in validated["notes"]
+    assert "live=false" in validated["notes"]
 
 
 def test_windows_live_harness_avoids_automatic_variable_assignments() -> None:
@@ -555,6 +572,7 @@ def test_omnigent_required_ci_claims_remain_degraded_and_non_live() -> None:
         "codex",
         "copilot",
         "cursor",
+        "devin",
         "hermes",
         "omnigent",
         "opencode",

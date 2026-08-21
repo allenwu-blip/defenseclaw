@@ -858,7 +858,7 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			caps.Skills = SurfaceCapability{Supported: true, Scope: "user", InstallTargets: []string{"skill"}, RequiresOptIn: true}
 			caps.CodeGuard.Supported = true
 			caps.CodeGuard.InstallTargets = []string{"skill"}
-			caps.Plugins = SurfaceCapability{Supported: true, Scope: "user,installation"}
+			caps.Plugins = SurfaceCapability{Supported: true, Scope: "user,installation", DiscoveryOnly: true}
 			caps.Rules = SurfaceCapability{Supported: true, Scope: "user", DiscoveryOnly: true}
 			caps.Agents = unsupportedSurface("Hermes subagent/agent asset locations are not installed by DefenseClaw v1.")
 			break
@@ -888,9 +888,10 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill"}
 		caps.Plugins = SurfaceCapability{
-			Supported: true,
-			Scope:     "user,installation",
-			ReadPaths: hermesPluginPaths(configPath),
+			Supported:     true,
+			Scope:         "user,installation",
+			ReadPaths:     hermesPluginPaths(configPath),
+			DiscoveryOnly: true,
 			Notes: []string{
 				"Hermes plugins are inventory/discovery-only in DefenseClaw v1; connector setup does not install or modify them.",
 				"Inventory includes the default-profile user directory, the official HERMES_HOME/hermes-agent checkout, and the vendor HERMES_BUNDLED_PLUGINS override when present; official-venv Python entry-point activation is reported by the CLI inventory adapter.",
@@ -1026,10 +1027,10 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Supported:      true,
 			Scope:          "user,workspace",
 			ReadPaths:      devinSkillPaths(opts),
-			WritePaths:     []string{workspacePath(opts, ".agents", "skills")},
+			WritePaths:     devinSkillWritePaths(opts),
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
-			Notes:          []string{"Discovery covers Devin's user skills directory and the documented .agents/skills and .devin/skills project roots."},
+			Notes:          []string{"Discovery covers Devin's user skills directory and the documented .agents/skills and .devin/skills project roots; installs use the native .devin/skills root."},
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:      true,
@@ -1043,7 +1044,13 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.CodeGuard.Supported = true
 		caps.CodeGuard.InstallTargets = []string{"skill", "rule"}
 		caps.Plugins = unsupportedSurface("Devin plugins are closed beta; DefenseClaw makes no general plugin discovery or installation claim.")
-		caps.Agents = unsupportedSurface("Subagents are not installed or managed by this native hook connector.")
+		caps.Agents = SurfaceCapability{
+			Supported:     true,
+			Scope:         "user,workspace",
+			ReadPaths:     devinAgentPaths(opts),
+			DiscoveryOnly: true,
+			Notes:         []string{"Custom Devin subagent definitions are inventoried read-only; DefenseClaw does not install or modify them."},
+		}
 	case "geminicli":
 		geminiHome := geminiConfigHome(opts)
 		geminiSettings := geminiSettingsPaths(opts)

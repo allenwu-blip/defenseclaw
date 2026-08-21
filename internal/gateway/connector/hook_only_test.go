@@ -242,11 +242,30 @@ func TestHermesConfigPathHonorsHermesHomeAndExplicitOverride(t *testing.T) {
 	if got, want := caps.Skills.ReadPaths, []string{filepath.Join(hermesHome, "skills")}; len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("Hermes skill paths = %v, want %v", got, want)
 	}
+	if !caps.Plugins.Supported || !caps.Plugins.DiscoveryOnly || len(caps.Plugins.WritePaths) != 0 {
+		t.Fatalf("Hermes plugins must be read-only discovery: %+v", caps.Plugins)
+	}
 
 	explicit := filepath.Join(t.TempDir(), "explicit-config.yaml")
 	HermesConfigPathOverride = explicit
 	if got := hermesConfigPath(SetupOpts{}); got != explicit {
 		t.Fatalf("HermesConfigPathOverride lost precedence: got %q, want %q", got, explicit)
+	}
+}
+
+func TestHermesUnavailableConfigCapabilitiesKeepPluginsDiscoveryOnly(t *testing.T) {
+	previousOverride := HermesConfigPathOverride
+	previousResolver := hermesConfigPathResolver
+	HermesConfigPathOverride = ""
+	hermesConfigPathResolver = func() string { return "" }
+	t.Cleanup(func() {
+		HermesConfigPathOverride = previousOverride
+		hermesConfigPathResolver = previousResolver
+	})
+
+	caps := NewHermesConnector().Capabilities(SetupOpts{})
+	if !caps.Plugins.Supported || !caps.Plugins.DiscoveryOnly || len(caps.Plugins.WritePaths) != 0 {
+		t.Fatalf("Hermes plugins must remain read-only discovery when config is unavailable: %+v", caps.Plugins)
 	}
 }
 

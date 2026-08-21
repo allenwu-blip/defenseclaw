@@ -7074,8 +7074,19 @@ def _capture_setup_config_snapshot(
     raise OSError("setup rollback authority changed while runtime evidence was captured")
 
 
-def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapshot) -> None:
-    """Atomically republish prior desired config, hint, and authority receipt."""
+def _restore_setup_config_snapshot(
+    app: AppContext,
+    snapshot: _SetupConfigSnapshot,
+    *,
+    restore_hook_contract_lock: bool = True,
+) -> None:
+    """Atomically republish prior desired config, hint, and authority receipt.
+
+    Exact runtime rollback temporarily preserves the failed generation's hook
+    lock so the gateway still has complete teardown authority for that active
+    generation. The gateway replaces it with the restored generation's lock
+    during reconciliation.
+    """
 
     cfg = _restore_setup_config_in_memory(app, snapshot)
     restore_errors: list[str] = []
@@ -7101,10 +7112,11 @@ def _restore_setup_config_snapshot(app: AppContext, snapshot: _SetupConfigSnapsh
             _restore_setup_agent_selection_snapshot(cfg, snapshot)
         except Exception as exc:  # noqa: BLE001 — report exact protected-receipt failure.
             restore_errors.append(f"agent_selection.json [{_setup_runtime_ref(type(exc).__name__)}]")
-        try:
-            _restore_setup_hook_contract_lock_snapshot(cfg, snapshot)
-        except Exception as exc:  # noqa: BLE001 — report exact sealed-authority failure.
-            restore_errors.append(f"hook_contract_lock.json [{_setup_runtime_ref(type(exc).__name__)}]")
+        if restore_hook_contract_lock:
+            try:
+                _restore_setup_hook_contract_lock_snapshot(cfg, snapshot)
+            except Exception as exc:  # noqa: BLE001 — report exact sealed-authority failure.
+                restore_errors.append(f"hook_contract_lock.json [{_setup_runtime_ref(type(exc).__name__)}]")
     if restore_errors:
         raise OSError("setup rollback was incomplete: " + "; ".join(restore_errors))
 
@@ -7346,6 +7358,28 @@ def _verify_restored_setup_persistence(
     return failures
 
 
+def _verify_preserved_setup_hook_contract_lock(
+    cfg,
+    expected: tuple[bool, bytes, tuple[int, int, int, int] | None],
+) -> list[str]:
+    """Prove the failed generation's teardown authority did not change."""
+
+    data_dir = getattr(cfg, "data_dir", None)
+    if not data_dir:
+        return ["failed-generation hook authority data directory is unavailable"]
+    try:
+        actual = _capture_protected_setup_file(
+            os.path.join(os.path.abspath(os.fspath(data_dir)), _HOOK_CONTRACT_LOCK_FILENAME),
+            _HOOK_CONTRACT_LOCK_MAX_BYTES,
+            "hook_contract_lock.json",
+        )
+    except Exception as exc:  # noqa: BLE001 - caller continues bounded rollback verification.
+        return [f"failed-generation hook authority verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]"]
+    if actual != expected:
+        return ["failed-generation hook authority changed before runtime reconciliation"]
+    return []
+
+
 def _setup_runtime_manifest_mismatches(
     expected: _SetupAppliedRuntimeEvidence,
     actual: _SetupAppliedRuntimeEvidence,
@@ -7560,6 +7594,7 @@ def _rollback_failed_connector_application(
     rollback_errors: list[str] = []
     secret_rollback_failed = False
     failed_registration_locations: tuple[_SetupRegistrationLocationEvidence, ...] | None = None
+    failed_hook_authority: tuple[bool, bytes, tuple[int, int, int, int] | None] | None = None
     if exact_runtime:
         try:
             failed_registration_locations = _capture_failed_setup_registration_locations(app.cfg)
@@ -7569,9 +7604,25 @@ def _rollback_failed_connector_application(
             rollback_errors.append(
                 f"failed-generation registration evidence unavailable [{_setup_runtime_ref(type(exc).__name__)}]"
             )
+        try:
+            failed_hook_authority = _capture_protected_setup_file(
+                os.path.join(os.path.abspath(os.fspath(app.cfg.data_dir)), _HOOK_CONTRACT_LOCK_FILENAME),
+                _HOOK_CONTRACT_LOCK_MAX_BYTES,
+                "hook_contract_lock.json",
+            )
+        except BaseException as exc:  # Preserve the lock only after exact protected capture.
+            if not isinstance(exc, Exception) and not _secret_safe:
+                raise
+            rollback_errors.append(
+                f"failed-generation hook authority unavailable [{_setup_runtime_ref(type(exc).__name__)}]"
+            )
     restore_complete = True
     try:
-        _restore_setup_config_snapshot(app, snapshot)
+        _restore_setup_config_snapshot(
+            app,
+            snapshot,
+            restore_hook_contract_lock=not exact_runtime,
+        )
     except BaseException as exc:  # Preserve the original non-secret readiness failure too.
         if _secret_safe:
             secret_rollback_failed = True
@@ -7590,7 +7641,11 @@ def _rollback_failed_connector_application(
     pre_reconcile_failures: list[str] = []
     if exact_runtime:
         try:
-            pre_reconcile_failures = _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=True)
+            pre_reconcile_failures = _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=False)
+            if failed_hook_authority is not None:
+                pre_reconcile_failures.extend(
+                    _verify_preserved_setup_hook_contract_lock(app.cfg, failed_hook_authority)
+                )
         except BaseException as exc:  # Continue to every other independently feasible phase.
             if not isinstance(exc, Exception) and not _secret_safe:
                 raise
@@ -7599,11 +7654,25 @@ def _rollback_failed_connector_application(
                 f"pre-reconciliation persistence verification unavailable [{_setup_runtime_ref(type(exc).__name__)}]"
             )
     rollback_errors.extend(pre_reconcile_failures)
-    authority_safe = restore_complete and pre_verification_complete and not pre_reconcile_failures
+    failed_authority_complete = (
+        not exact_runtime
+        or (failed_registration_locations is not None and failed_hook_authority is not None)
+    )
+    authority_safe = (
+        restore_complete
+        and pre_verification_complete
+        and not pre_reconcile_failures
+        and failed_authority_complete
+    )
     if authority_safe:
         try:
             if exact_runtime:
                 _restore_prior_setup_lifecycle(app, snapshot)
+                # Reconciliation consumed the preserved failed-generation
+                # lock to remove that active registration and republished the
+                # prior connector generation. Restore the exact captured lock
+                # bytes only after that teardown boundary has succeeded.
+                _restore_setup_hook_contract_lock_snapshot(app.cfg, snapshot)
             else:
                 _restart_restored_connector_runtime(app)
         except BaseException as exc:  # Report both non-secret transaction failures.
@@ -7626,7 +7695,7 @@ def _rollback_failed_connector_application(
         verification_checks: list[tuple[str, Any]] = [
             (
                 "post-reconciliation persistence",
-                lambda: _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=False),
+                lambda: _verify_restored_setup_persistence(app.cfg, snapshot, include_lock=True),
             ),
             (
                 "applied runtime",

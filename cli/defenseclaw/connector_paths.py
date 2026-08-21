@@ -1838,6 +1838,7 @@ def agent_dirs(
     if name == "devin":
         return _dedup(
             [
+                os.path.join(devin_config_home(), "agents"),
                 _workspace_path(workspace_dir, ".devin", "agents"),
                 _workspace_path(workspace_dir, ".agents", "agents"),
             ]

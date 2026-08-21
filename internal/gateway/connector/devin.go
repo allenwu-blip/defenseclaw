@@ -47,7 +47,7 @@ var devinBlockEvents = []string{
 func NewDevinConnector() *hookOnlyConnector {
 	return &hookOnlyConnector{
 		name:        "devin",
-		description: "native Devin CLI lifecycle hooks with MCP, skills, and rules discovery",
+		description: "native Devin CLI lifecycle hooks with MCP, skills, rules, and agent discovery",
 		apiPath:     "/api/v1/devin/hook",
 		scriptName:  "devin-hook.sh",
 		configPath:  devinHooksPath,
@@ -114,6 +114,21 @@ func devinSkillPaths(opts SetupOpts) []string {
 		homePath(".agents", "skills"),
 		workspacePath(opts, ".devin", "skills"),
 		workspacePath(opts, ".agents", "skills"),
+	})
+}
+
+func devinSkillWritePaths(opts SetupOpts) []string {
+	if workspace := strings.TrimSpace(opts.WorkspaceDir); workspace != "" {
+		return []string{filepath.Join(filepath.Clean(workspace), ".devin", "skills")}
+	}
+	return []string{filepath.Join(devinConfigRoot(opts), "skills")}
+}
+
+func devinAgentPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		filepath.Join(devinConfigRoot(opts), "agents"),
+		workspacePath(opts, ".devin", "agents"),
+		workspacePath(opts, ".agents", "agents"),
 	})
 }
 

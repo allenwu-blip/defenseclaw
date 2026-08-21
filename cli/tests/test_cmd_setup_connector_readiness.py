@@ -230,7 +230,7 @@ def test_real_doctor_dispatch_exercises_exact_eleven(monkeypatch, tmp_path: Path
 
     assert observed_labels == expected_labels
     expected_native_calls = (
-        ["codex", "claudecode", "copilot", "antigravity", "hermes"]
+        ["codex", "claudecode", "devin", "copilot", "antigravity", "hermes"]
         if agent_selection.os.name == "nt"
         else []
     )

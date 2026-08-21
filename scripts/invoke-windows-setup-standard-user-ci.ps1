@@ -19,7 +19,7 @@ param(
     [Parameter(Mandatory)]
     [ValidateSet('setup-acceptance', 'bootstrap-acceptance', 'wizard-smoke', 'contract', 'omnigent-native-degraded')]
     [string]$Mode,
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [Parameter(Mandatory)][string]$ArtifactRoot,
     [Parameter(Mandatory)][string]$StateRoot,
     [string]$TargetVersion = '',
@@ -846,7 +846,7 @@ function Publish-BoundedDisposableContractResults {
         [Parameter(Mandatory)][string]$SourceRoot,
         [Parameter(Mandatory)][string]$DestinationPath,
         [Parameter(Mandatory)][string]$DestinationRoot,
-        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')]
+        [Parameter(Mandatory)][ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')]
         [string]$ExpectedConnector
     )
 
@@ -1009,6 +1009,8 @@ $childState = ''
 $childDiagnostics = ''
 $childResults = ''
 $childSetup = ''
+$devinArchiveSource = ''
+$childDevinArchive = ''
 $result = ''
 $wmiFixtureRecord = ''
 $progressRecord = ''
@@ -1167,6 +1169,31 @@ try {
         ) -cne
         $expectedSetupHash) {
         throw 'disposable-user Setup copy does not match the exact input artifact'
+    }
+    if ($Mode -eq 'contract' -and $Connector -eq 'devin') {
+        $devinArchiveName = 'devin-3000.4.25-x86_64-pc-windows.zip'
+        $devinArchiveHash = '926EF4C2139D593BE564B93382D5A80F8AF0EE8AD7201CD35D50EEC9CD289808'
+        $devinArchiveSource = Join-Path $artifactSource $devinArchiveName
+        $null = Assert-DisposableNoReparseAncestors -Path $devinArchiveSource `
+            -AllowedRoot $artifactSource -RequireExists
+        $sourceItem = Get-Item -LiteralPath $devinArchiveSource -Force -ErrorAction Stop
+        if ($sourceItem.PSIsContainer -or
+            ($sourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $sourceItem.Length -gt 268435456 -or
+            (Get-FileHash -LiteralPath $devinArchiveSource -Algorithm SHA256).Hash -cne
+                $devinArchiveHash) {
+            throw 'Devin contract archive is not the pinned bounded official 3000.4.25 input'
+        }
+        $childDevinArchive = Join-Path $childArtifacts $devinArchiveName
+        [void][DefenseClaw.DisposableFileGuard]::CopyBoundedRegularFile(
+            $devinArchiveSource,
+            $childDevinArchive,
+            268435456
+        )
+        if ((Get-FileHash -LiteralPath $childDevinArchive -Algorithm SHA256).Hash -cne
+            $devinArchiveHash) {
+            throw 'disposable-user Devin archive copy does not match the pinned input'
+        }
     }
     if ($Mode -eq 'bootstrap-acceptance') {
         foreach ($assetName in $bootstrapCandidateAssets) {
@@ -1368,6 +1395,15 @@ try {
     if ($sourceHashAfter -cne $expectedSetupHash -or
         $childHashAfter -cne $expectedSetupHash) {
         throw 'exact Setup artifact hash changed during disposable-user lifecycle acceptance'
+    }
+    if ($Mode -eq 'contract' -and $Connector -eq 'devin') {
+        $devinArchiveHash = '926EF4C2139D593BE564B93382D5A80F8AF0EE8AD7201CD35D50EEC9CD289808'
+        if ((Get-FileHash -LiteralPath $devinArchiveSource -Algorithm SHA256).Hash -cne
+                $devinArchiveHash -or
+            (Get-FileHash -LiteralPath $childDevinArchive -Algorithm SHA256).Hash -cne
+                $devinArchiveHash) {
+            throw 'exact pinned Devin contract input changed during disposable-user execution'
+        }
     }
     if ($Mode -eq 'bootstrap-acceptance') {
         foreach ($assetName in $bootstrapCandidateAssets) {

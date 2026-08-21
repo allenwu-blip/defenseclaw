@@ -2423,6 +2423,39 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         lifecycle.assert_called_once_with(self.app, snapshot)
         runtime.assert_called_once_with(self.app.cfg, snapshot, ())
 
+    def test_exact_rollback_preserves_failed_lock_until_gateway_reconciliation(self):
+        snapshot, prior_lock = self._snapshot_with_registration_lock(
+            {"claudecode": {"locations": {}}}
+        )
+        failed_lock = self._lock_body({"devin": {"locations": {}}})
+        lock_path = os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json")
+        atomic_write_private_bytes(lock_path, failed_lock)
+        observed: list[bytes] = []
+
+        def reconcile(_app, _snapshot):
+            with open(lock_path, "rb") as handle:
+                observed.append(handle.read())
+            atomic_write_private_bytes(lock_path, prior_lock)
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                side_effect=reconcile,
+            ),
+            patch("defenseclaw.commands.cmd_setup._verify_restored_setup_runtime", return_value=[]),
+            self.assertRaises(click.ClickException) as raised,
+        ):
+            cmd_setup._rollback_failed_connector_application(
+                self.app,
+                snapshot,
+                RuntimeError("readiness failed"),
+            )
+
+        self.assertEqual(observed, [failed_lock])
+        with open(lock_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_lock)
+        self.assertIn("restored the prior connector configuration and runtime", str(raised.exception))
+
 
 class TestPerConnectorModeAndPreserve(unittest.TestCase):
     """SU-01 (per-connector mode write) + SU-02/ND-1 (preserve judge/strategy,

@@ -25,9 +25,12 @@ authenticated live-client certification record.
   `PostToolUse`. Exit `2` blocks; every other hook error fails open.
 - Correlation uses `session_id` and per-turn `prompt_id`. Devin publishes no
   stable per-tool invocation ID, so paired tool state is detection-only.
-- MCP inventory covers `mcp_config.json`. Skills and rules are read from the
-  documented `.agents` and `.devin` surfaces. Plugins are closed beta and are
-  not advertised as a generally available connector capability.
+- MCP inventory covers `mcp_config.json`. Skills are read from the documented
+  `.agents` and `.devin` surfaces; explicit DefenseClaw installs use the native
+  project `.devin/skills` or user config `skills` root. Custom subagent files
+  under the user config root and project `.devin/agents` or `.agents/agents`
+  are discovered read-only. Rules are discovered locally. Plugins are closed
+  beta and are not advertised as a generally available connector capability.
 
 ## Explicit limitations
 

@@ -31,6 +31,7 @@ from defenseclaw.commands import cmd_doctor
 from defenseclaw.commands.cmd_doctor import (
     _check_claudecode_hooks,
     _check_codex_hooks,
+    _check_devin_hooks,
     _check_hook_contract_lock,
     _DoctorResult,
 )
@@ -862,6 +863,25 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertIn("other hook errors fail open", check.detail)
         self.assertIn("Restricted Mode disables hooks and agents", check.detail)
         self.assertIn("native OTLP, proxy, ACP, cloud, and plugins are unclaimed", check.detail)
+
+    def test_devin_services_uses_native_semantic_validator_on_windows(self) -> None:
+        config, runtime = self._devin_config()
+        result = _DoctorResult(passive=True, quiet=True)
+
+        _check_devin_hooks(
+            self.cfg,
+            result,
+            platform_name="nt",
+            config_path=str(config),
+            install_root=str(self.install),
+            search_path=str(runtime.parent),
+            pathext=".EXE",
+        )
+
+        rows = [row for row in result.checks if row["label"] == "Devin hooks"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["status"], "pass", rows[0]["detail"])
+        self.assertIn("healthy Windows-native executable registration", rows[0]["detail"])
 
     def test_devin_legacy_direct_bash_command_parses_literal_shell_metacharacters(self) -> None:
         target = r"C:/Users/Kevin O'Brien/Defense Claw $Preview/defenseclaw-hook.exe"

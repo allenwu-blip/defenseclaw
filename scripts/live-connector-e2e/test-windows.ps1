@@ -1438,10 +1438,10 @@ private-secret-name = "DefenseClaw must remain redacted"
     )
     $requiredContractConnectors = @(
         'amp', 'antigravity', 'claudecode', 'codex', 'copilot',
-        'cursor', 'hermes', 'omnigent', 'opencode'
+        'cursor', 'devin', 'hermes', 'omnigent', 'opencode'
     )
     $excludedContractConnectors = @(
-        'devin', 'geminicli', 'openhands', 'openclaw', 'windsurf', 'zeptoclaw'
+        'geminicli', 'openhands', 'openclaw', 'windsurf', 'zeptoclaw'
     )
     $genericContractConnectors = if ($connectorMatrix.Success) {
         @($connectorMatrix.Groups[1].Value -split '\s*,\s*')
@@ -1460,10 +1460,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $actualContractConnectors.Count -eq $requiredContractConnectors.Count -and
         ($actualContractConnectors | Sort-Object) -join ',' -ceq
             ($requiredContractConnectors | Sort-Object) -join ','
-    ) 'required Windows contract coverage is exactly the nine deterministic packaged connector lanes'
+    ) 'required Windows contract coverage is exactly the ten deterministic packaged connector lanes'
     Assert-True (@($excludedContractConnectors | Where-Object {
         $actualContractConnectors -ccontains $_
-    }).Count -eq 0) 'packaged coverage excludes deprecated or unsupported connectors and Devin, whose signed fixed-path admission is unit/static validated'
+    }).Count -eq 0) 'packaged coverage excludes deprecated or unsupported connectors'
     Assert-True ($devinAdmissionSourceText -match 'const devinPinnedCLIVersion = "3000\.4\.25"' -and
         $devinAdmissionSourceText -match 'rejectReparseAncestors\(executable\)' -and
         $devinAdmissionSourceText -match 'verifyEmbeddedAuthenticodeTrust\(executable\)' -and
@@ -1473,7 +1473,13 @@ private-secret-name = "DefenseClaw must remain redacted"
         $devinAdmissionTestsText -match 'TestValidateDevinExecutableIdentityRequiresExactFixedPath' -and
         $devinAdmissionTestsText -match 'TestValidateDevinSignerRequiresExactExafunctionIdentity' -and
         $devinAdmissionTestsText -match 'TestValidateDevinVersionOutputPins3000425') `
-        'Devin Windows readiness is covered by fixed-path, signed-publisher, exact-version admission checks instead of a synthetic packaged lane'
+        'Devin packaged readiness retains fixed-path, signed-publisher, and exact-version admission checks without claiming authenticated or live-client evidence'
+    Assert-True ($connectorContractJob -match 'https://static\.devin\.ai/cli/3000\.4\.25/devin-3000\.4\.25-x86_64-pc-windows\.zip' -and
+        $connectorContractJob -match '926EF4C2139D593BE564B93382D5A80F8AF0EE8AD7201CD35D50EEC9CD289808' -and
+        $standardUserCIText -match 'disposable-user Devin archive copy does not match the pinned input' -and
+        $nativeHarnessText -match 'pinned Devin executable does not have the required valid Exafunction signature' -and
+        $nativeHarnessText -match 'devin 3000\.4\.25 \(7e8e528a\)') `
+        'Devin contract uses one digest-pinned official archive and revalidates signer, version, and immutable child handoff'
     $requiredFanInJob = [regex]::Match(
         $nativeWorkflowText,
         '(?ms)^  windows-native-required:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
@@ -1900,7 +1906,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $standardUserCIText -match '-Operation contract -Connector \$Connector' -and
         $standardUserCIText -match '\$arguments \+= @\(''-Connector'', \$Connector\)' -and
         $standardUserCIText -match 'live-connector-e2e\\run-windows\.ps1' -and
-        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode'\)" -and
+        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode'\)" -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_allow.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_block.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\session_start.json') -and

@@ -871,7 +871,7 @@ def test_amp_native_windows_coverage_is_separate_from_the_release_channel() -> N
         assert secret not in release
 
     assert (
-        "connector: [codex, claudecode, amp, copilot, cursor, hermes, "
+        "connector: [codex, claudecode, amp, copilot, cursor, devin, hermes, "
         "antigravity, opencode]"
     ) in windows_native
     assert "connector: [codex, claudecode, amp, cursor, opencode]" in connector_live

@@ -247,7 +247,8 @@ func TestDevinReadinessRequiresExactlyOneManagedGroupPerEvent(t *testing.T) {
 
 func TestDevinCapabilityPathsAreScopedToDocumentedFiles(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "workspace")
-	opts := SetupOpts{ConfigHome: filepath.Join(t.TempDir(), "devin"), WorkspaceDir: workspace}
+	configHome := filepath.Join(t.TempDir(), "devin")
+	opts := SetupOpts{ConfigHome: configHome, WorkspaceDir: workspace}
 	caps := NewDevinConnector().Capabilities(opts)
 	if slices.Contains(caps.MCP.ConfigPaths, workspace) {
 		t.Fatalf("raw workspace root leaked into MCP file inventory: %v", caps.MCP.ConfigPaths)
@@ -255,7 +256,30 @@ func TestDevinCapabilityPathsAreScopedToDocumentedFiles(t *testing.T) {
 	if !slices.Contains(caps.MCP.WritePaths, filepath.Join(workspace, ".devin", "mcp_config.json")) {
 		t.Fatalf("project MCP target missing: %v", caps.MCP.WritePaths)
 	}
+	if !slices.Equal(caps.Skills.WritePaths, []string{filepath.Join(workspace, ".devin", "skills")}) {
+		t.Fatalf("project skill write paths = %v, want native .devin/skills target", caps.Skills.WritePaths)
+	}
+	if !caps.Agents.Supported || !caps.Agents.DiscoveryOnly || len(caps.Agents.WritePaths) != 0 {
+		t.Fatalf("Devin agents must be read-only discovery: %+v", caps.Agents)
+	}
+	for _, want := range []string{
+		filepath.Join(configHome, "agents"),
+		filepath.Join(workspace, ".devin", "agents"),
+		filepath.Join(workspace, ".agents", "agents"),
+	} {
+		if !slices.Contains(caps.Agents.ReadPaths, want) {
+			t.Fatalf("Devin agent read paths = %v, missing %q", caps.Agents.ReadPaths, want)
+		}
+	}
 	if caps.Plugins.Supported {
 		t.Fatalf("closed-beta Devin plugins were advertised: %+v", caps.Plugins)
+	}
+}
+
+func TestDevinGlobalSkillWritePathUsesNativeConfigRoot(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "devin")
+	caps := NewDevinConnector().Capabilities(SetupOpts{ConfigHome: configHome})
+	if !slices.Equal(caps.Skills.WritePaths, []string{filepath.Join(configHome, "skills")}) {
+		t.Fatalf("global skill write paths = %v, want native user config target", caps.Skills.WritePaths)
 	}
 }

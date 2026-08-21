@@ -12,7 +12,10 @@ The merge gate covers:
 
 - native Go tests, including current-user Windows DACL regressions, followed by
   `go vet` and gateway/hook builds;
-- the Python suite and headless TUI checks;
+- the ordinary Python suite plus focused native Windows telemetry-registry
+  updater and headless TUI checks on pull requests; main and
+  manual/release-candidate runs retain both exhaustive telemetry-registry
+  modules and the complete TUI suite;
 - PowerShell parsing, timeout, redaction, and process-tree cleanup contracts;
 - a release-shaped Windows amd64 gateway archive and Python wheel;
 - a disposable-user fresh installation;
@@ -21,20 +24,23 @@ The merge gate covers:
 - installed CLI, gateway lifecycle, doctor, scanner, and dependency checks;
 - Setup build and native install/repair/uninstall acceptance, including the
   staged connector selection, repair, custody, and exact-restoration paths;
-- deterministic Codex, Claude Code, and OpenCode connector contract tests.
-  OpenCode's contract imports the installed JavaScript bridge, proves
+- deterministic packaged connector contract tests for Codex, Claude Code,
+  Amp, Copilot, Cursor, Devin, Hermes, Antigravity, and OpenCode. OpenCode's
+  contract imports the installed JavaScript bridge, proves
   `tool.execute.before` permits on normal return and blocks on a thrown error,
-  and treats `tool.execute.after` as observation only; and
-- a required Amp PowerShell contract cell covering setup, observe/action
+  and treats `tool.execute.after` as observation only. Devin's cell stages the
+  digest-pinned official `3000.4.25` Windows archive solely to retain the
+  product's exact fixed-path, Authenticode-signer, and version admission; it
+  does not log in, run an interactive client session, or claim live-client
+  evidence; and
+- the Amp cell covers setup, observe/action
   allow/block behavior, audit correlation, gateway-generated connector
   telemetry, bounded timeout handling, teardown, and cleanup. It additionally
   proves all five documented plugin callbacks, the Task/subagent boundary, a
   private managed plugin, self-heal, and tamper-recovery behavior.
 
-The staged Copilot Setup lifecycle is exercised as pre-certification evidence.
-It does not add Copilot to the certified Windows connector matrix; packaged
-and real official-client certification evidence is still required before that
-support status can change.
+These deterministic packaged cells do not certify authenticated official-client
+behavior. Secret-bearing real-client evidence remains a separate manual layer.
 
 The packaged test artifact is built once and reused by the disposable lifecycle
 jobs. The public-bootstrap shard uses the authenticated `0.8.7` release—the

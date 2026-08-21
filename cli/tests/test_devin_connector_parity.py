@@ -72,6 +72,7 @@ def test_devin_local_catalog_paths_match_the_documented_contract(
         str(workspace / ".devin" / "skills")
     ]
     assert connector_paths.agent_dirs("devin", workspace_dir=str(workspace)) == [
+        str(config_root / "agents"),
         str(workspace / ".devin" / "agents"),
         str(workspace / ".agents" / "agents"),
     ]

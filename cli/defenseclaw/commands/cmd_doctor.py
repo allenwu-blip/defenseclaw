@@ -3609,6 +3609,32 @@ def _check_hermes_hooks(
     _check_hook_health(cfg, "hermes", r)
 
 
+def _check_devin_hooks(
+    cfg,
+    r: _DoctorResult,
+    *,
+    platform_name: str | None = None,
+    config_path: str | None = None,
+    install_root: str | None = None,
+    search_path: str | None = None,
+    pathext: str | None = None,
+) -> None:
+    """Validate Devin's encoded native command instead of raw marker text."""
+    if (platform_name or os.name) == "nt":
+        _check_windows_native_hooks(
+            cfg,
+            "devin",
+            "Devin hooks",
+            r,
+            config_path=config_path,
+            install_root=install_root,
+            search_path=search_path,
+            pathext=pathext,
+        )
+        return
+    _check_hook_health(cfg, "devin", r)
+
+
 # ---------------------------------------------------------------------------
 # Generic per-connector hook-health (D4)
 # ---------------------------------------------------------------------------
@@ -5129,7 +5155,7 @@ def _check_connector_hooks(cfg, connector: str, r: _DoctorResult) -> None:
     elif connector == "codex":
         _check_codex_hooks(cfg, r)
     elif connector == "devin":
-        _check_hook_health(cfg, connector, r)
+        _check_devin_hooks(cfg, r)
     elif connector == "hermes":
         _check_hermes_hooks(cfg, r)
     elif connector == "zeptoclaw":

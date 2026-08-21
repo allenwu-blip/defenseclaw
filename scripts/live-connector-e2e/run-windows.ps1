@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
     [ValidateSet('contract', 'live')][string]$Layer = 'contract',
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')][string]$Connector = 'codex',
     [string]$WorkspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$StateRoot = (Join-Path $env:TEMP 'defenseclaw-windows-e2e'),
     [string]$HomeRoot = '',
@@ -144,8 +144,21 @@ function Protect-LogText([AllowNull()][string]$Text) {
 }
 
 function Resolve-EffectiveConnectorHome(
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
+    if ($ConnectorName -eq 'devin') {
+        $configured = [Environment]::GetEnvironmentVariable(
+            'DEFENSECLAW_DEVIN_CONFIG_HOME'
+        )
+        if (-not [string]::IsNullOrWhiteSpace($configured)) {
+            return [IO.Path]::GetFullPath($configured).TrimEnd('\')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+            return [IO.Path]::GetFullPath(
+                (Join-Path $env:APPDATA 'devin')
+            ).TrimEnd('\')
+        }
+    }
     if ($ConnectorName -eq 'amp') {
         if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
             throw 'USERPROFILE is unavailable for the native Amp config layout'
@@ -180,6 +193,7 @@ function Resolve-EffectiveConnectorHome(
         'claudecode' { '.claude' }
         'copilot' { '.copilot' }
         'cursor' { '.cursor' }
+        'devin' { 'AppData\Roaming\devin' }
         'hermes' { 'AppData\Local\hermes' }
         'antigravity' { '.gemini\config' }
         'opencode' { '.config\opencode' }
@@ -188,7 +202,7 @@ function Resolve-EffectiveConnectorHome(
 }
 
 function Get-EffectiveConnectorConfigPath(
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'devin', 'hermes', 'antigravity', 'opencode')][string]$ConnectorName
 ) {
     $fileName = switch ($ConnectorName) {
         'codex' { 'managed_config.toml' }
@@ -196,6 +210,7 @@ function Get-EffectiveConnectorConfigPath(
         'amp' { 'plugins\defenseclaw.ts' }
         'copilot' { 'hooks\defenseclaw.json' }
         'cursor' { 'hooks.json' }
+        'devin' { 'config.json' }
         'hermes' { 'config.yaml' }
         'antigravity' { 'hooks.json' }
         'opencode' { 'plugins\defenseclaw.js' }
@@ -234,6 +249,14 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         Protect-TestDirectory $hermesHome
     }
     $openCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
+    $devinRoaming = Get-CurrentUserKnownFolderPath `
+        ([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D')
+    if ([string]::IsNullOrWhiteSpace($devinRoaming)) {
+        throw 'packaged Devin contract could not resolve current-user RoamingAppData'
+    }
+    $devinHome = [IO.Path]::GetFullPath(
+        (Join-Path $devinRoaming 'devin')
+    ).TrimEnd('\')
     # Cursor publishes no configuration-home override. Its official .cursor
     # directory is intentionally nested beneath ProfileHome; every connector
     # with a real override remains pairwise disjoint from that profile.
@@ -271,6 +294,10 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $homes[4]
     $env:HERMES_HOME = $homes[5]
     $env:OPENCODE_CONFIG_DIR = $homes[6]
+    # Devin publishes no operator config-home override. This private binding
+    # mirrors the exact Known Folder value authenticated by native install
+    # state; every packaged executable independently reloads the same value.
+    $env:DEFENSECLAW_DEVIN_CONFIG_HOME = $devinHome
     $ampHome = [IO.Path]::GetFullPath($ampHome).TrimEnd('\')
     if (-not (Test-PathWithin $ampHome $homes[0])) {
         throw "packaged Amp home must be a strict child of the disposable profile: $ampHome"
@@ -436,6 +463,7 @@ function Get-CurrentUserKnownFolderPath([Guid]$FolderID, [uint32]$Flags = 0) {
     if ($null -eq ('DefenseClaw.LiveConnectorKnownFolders' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 
 namespace DefenseClaw {
@@ -448,16 +476,42 @@ namespace DefenseClaw {
             out IntPtr path
         );
 
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool OpenProcessToken(
+            IntPtr process,
+            uint desiredAccess,
+            out IntPtr token
+        );
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
         public static string GetPath(Guid folderID, uint flags) {
-            IntPtr value;
-            int result = SHGetKnownFolderPath(ref folderID, flags, IntPtr.Zero, out value);
-            if (result != 0) {
-                Marshal.ThrowExceptionForHR(result);
+            const uint TOKEN_QUERY = 0x0008;
+            const uint TOKEN_IMPERSONATE = 0x0004;
+            IntPtr token;
+            if (!OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_IMPERSONATE,
+                    out token)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+            IntPtr value;
             try {
-                return Marshal.PtrToStringUni(value);
+                int result = SHGetKnownFolderPath(ref folderID, flags, token, out value);
+                if (result != 0) {
+                    Marshal.ThrowExceptionForHR(result);
+                }
+                try {
+                    return Marshal.PtrToStringUni(value);
+                } finally {
+                    Marshal.FreeCoTaskMem(value);
+                }
             } finally {
-                Marshal.FreeCoTaskMem(value);
+                CloseHandle(token);
             }
         }
     }
@@ -4605,10 +4659,10 @@ function Get-RegisteredHookEvent([string]$EventName, [string]$PayloadPath) {
 }
 
 function Get-NativeHookArguments([string]$RegisteredEvent) {
-    if ($Connector -eq 'geminicli') {
-        # Gemini CLI's registered command infers the lifecycle event from its
-        # stdin document; exercise that exact three-argument launcher shape.
-        return @('hook', '--connector', 'geminicli')
+    if ($Connector -in @('devin', 'geminicli')) {
+        # Devin and retired Gemini CLI registrations infer the lifecycle event
+        # from stdin; exercise their exact three-argument launcher shape.
+        return @('hook', '--connector', $Connector)
     }
     $arguments = @('hook', '--connector', $Connector, '--event', $RegisteredEvent)
     if ($Connector -eq 'codex') {
@@ -4636,10 +4690,26 @@ function Invoke-RegisteredNativeHook(
     [int]$TimeoutSeconds = $CommandTimeoutSeconds,
     [string]$LogLabel = 'hook'
 ) {
-    if ($Connector -ne 'geminicli') {
+    if ($Connector -notin @('devin', 'geminicli')) {
         return Invoke-Tool -Name (Resolve-ContractHookTool) `
             -Arguments (Get-NativeHookArguments $RegisteredEvent) `
             -Allowed $AllowedExitCodes -InputPath $InputPath -Timeout $TimeoutSeconds
+    }
+
+    if ($Connector -eq 'devin') {
+        $configPath = Get-EffectiveConnectorConfigPath 'devin'
+        $config = [IO.File]::ReadAllText($configPath)
+        $document = $config | ConvertFrom-Json -ErrorAction Stop
+        $command = [string]@($document.hooks.PreToolUse)[0].hooks[0].command
+        $parsed = Get-DevinWindowsHookCommand $command 'Devin PreToolUse'
+        $safeLabel = $LogLabel -replace '[^A-Za-z0-9.-]', '_'
+        $logPath = Join-Path $script:LogRoot (
+            '{0:D3}-devin-registered-{1}.log' -f (++$script:CommandIndex), $safeLabel
+        )
+        return Invoke-NativeProcess -FilePath $parsed.PowerShell -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $parsed.Encoded
+        ) -InputPath $InputPath -TimeoutSeconds $TimeoutSeconds `
+            -AllowedExitCodes $AllowedExitCodes -LogPath $logPath
     }
 
     $settingsPath = Get-EffectiveConnectorConfigPath 'geminicli'
@@ -4862,7 +4932,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
             } else {
                 $toolPath
             }
-            $toolResult = if ($Connector -eq 'geminicli') {
+            $toolResult = if ($Connector -in @('devin', 'geminicli')) {
                 Invoke-RegisteredNativeHook $toolEvent $toolInputPath @(0, 2) `
                     $probeTimeout "gateway-readiness-$attempt-tool"
             } else {
@@ -5081,6 +5151,7 @@ function Invoke-Setup([string]$Mode) {
         'claudecode' { 'claude-code' }
         'amp' { 'amp' }
         'cursor' { 'cursor' }
+        'devin' { 'devin' }
         'hermes' { 'hermes' }
         'antigravity' { 'antigravity' }
         'geminicli' { 'geminicli' }
@@ -5118,6 +5189,7 @@ function Get-ConnectorHookLabel {
         'amp' { 'Amp policy plugin' }
         'copilot' { 'Copilot hooks' }
         'cursor' { 'Cursor hooks' }
+        'devin' { 'Devin hooks' }
         'hermes' { 'Hermes hooks (fail-open)' }
         'antigravity' { 'Antigravity hooks' }
         'geminicli' { 'Gemini CLI hooks' }
@@ -5132,6 +5204,7 @@ function Get-ConnectorRepairSubcommand {
         'amp' { 'amp' }
         'copilot' { 'copilot' }
         'cursor' { 'cursor' }
+        'devin' { 'devin' }
         'hermes' { 'hermes' }
         'antigravity' { 'antigravity' }
         'geminicli' { 'geminicli' }
@@ -5143,6 +5216,7 @@ function Get-ConnectorToolName {
         'claudecode' { 'PowerShell' }
         'copilot' { 'powershell' }
         'cursor' { 'run_terminal_cmd' }
+        'devin' { 'exec' }
         'hermes' { 'execute_command' }
         'geminicli' { 'RunShellCommand' }
         default { 'shell' }
@@ -5367,6 +5441,54 @@ function Assert-AntigravityWindowsHookCommands([string]$Config) {
             $script -match '(?i)\$LASTEXITCODE') {
             throw "Antigravity $event does not use the exact synchronous event-bound native command"
         }
+    }
+}
+
+function Get-DevinWindowsHookCommand([string]$Command, [string]$Context) {
+    $systemPowerShell = Join-Path (
+        [Environment]::SystemDirectory
+    ) 'WindowsPowerShell\v1.0\powershell.exe'
+    $bashPowerShell = $systemPowerShell.Replace('\', '/')
+    $prefix = "'$bashPowerShell' -NoLogo -NoProfile -NonInteractive -EncodedCommand "
+    if (-not $Command.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        throw "$Context does not use the exact POSIX-quoted system Windows PowerShell launcher"
+    }
+    $encoded = $Command.Substring($prefix.Length)
+    if ($encoded -cnotmatch '^[A-Za-z0-9+/]+={0,2}$') {
+        throw "$Context has invalid EncodedCommand content"
+    }
+    try {
+        $scriptBody = [Text.Encoding]::Unicode.GetString(
+            [Convert]::FromBase64String($encoded)
+        )
+    } catch {
+        throw "$Context has invalid EncodedCommand content: $($_.Exception.Message)"
+    }
+    $pattern = "(?i)^\`$ErrorActionPreference='Stop'; \`$env:NoDefaultCurrentDirectoryInExePath='1'; \`$hookProcess=Microsoft\.PowerShell\.Management\\Start-Process -FilePath (?<file>'(?:''|[^'])+') -ArgumentList @\('hook','--connector','devin'\) -NoNewWindow -Wait -PassThru; exit \`$hookProcess\.ExitCode$"
+    $match = [regex]::Match($scriptBody, $pattern)
+    $target = if ($match.Success) {
+        $literal = $match.Groups['file'].Value
+        $literal.Substring(1, $literal.Length - 2).Replace("''", "'")
+    } else {
+        ''
+    }
+    $expectedTarget = Get-StableHookRuntimeExecutable
+    if (-not $match.Success -or
+        -not [IO.Path]::IsPathFullyQualified($target) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($target),
+            [IO.Path]::GetFullPath($expectedTarget),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        $scriptBody -match '(?i)\$LASTEXITCODE') {
+        throw "$Context does not use the exact synchronous native Devin hook command"
+    }
+    return [pscustomobject]@{
+        Command = $Command
+        Encoded = $encoded
+        Script = $scriptBody
+        PowerShell = $systemPowerShell
+        Target = $target
     }
 }
 
@@ -5869,6 +5991,7 @@ function Initialize-DefenseClawEnv {
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\amp'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\copilot'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\cursor'),
+        (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\devin'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\hermes'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\antigravity'),
         (Join-Path $env:DEFENSECLAW_HOME 'connector_backups\geminicli'),
@@ -6511,6 +6634,11 @@ function Assert-DoctorWindowsHookRegistration {
             }
         }
         if (-not $nativeHookFound) { throw 'claudecode setup did not register the Windows native exec-form hook command' }
+    } elseif ($Connector -eq 'devin') {
+        try { $devinSettings = $config | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "Devin setup config is not valid JSON: $($_.Exception.Message)" }
+        $devinCommand = [string]@($devinSettings.hooks.PreToolUse)[0].hooks[0].command
+        $null = Get-DevinWindowsHookCommand $devinCommand 'Devin setup PreToolUse'
     } elseif ($Connector -eq 'cursor') {
         $cursorAdapter = Assert-CursorSynchronousWindowsHookCommand $config ($script:LastSetupMode -eq 'action') 'Cursor setup'
     } elseif ($Connector -eq 'antigravity') {
@@ -6594,6 +6722,12 @@ function Assert-DoctorWindowsHookRegistration {
          $label -notmatch 'fail-open')) {
         throw "Doctor did not expose Hermes's exact event inventory and forced fail-open posture: $($check.detail)"
     }
+    if ($Connector -eq 'devin' -and
+        ($check.detail -notmatch 'entries=8' -or
+         $check.detail -notmatch 'Restricted Mode disables hooks and agents' -or
+         $check.detail -notmatch 'native OTLP, proxy, ACP, cloud, and plugins are unclaimed')) {
+        throw "Doctor did not expose Devin's exact event inventory and limitations: $($check.detail)"
+    }
     if ($check.detail -match '(?i)\x2esh\b|\bbash\b|\bwsl\b|\bchmod\b|\bunset\b|hook script') {
         throw "Doctor returned obsolete shell-hook guidance for native Windows: $($check.detail)"
     }
@@ -6614,6 +6748,19 @@ function Assert-DoctorWindowsHookRegistration {
         $tamperedScript = [regex]::Replace($codexCommand.Script, '(?i)defenseclaw-hook\.exe', 'defenseclaw-gateway.exe')
         $tamperedEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($tamperedScript))
         $tamperedConfig = $config.Replace($codexCommand.Encoded, $tamperedEncoded)
+    } elseif ($Connector -eq 'devin') {
+        $document = $config | ConvertFrom-Json -ErrorAction Stop
+        $command = [string]@($document.hooks.PreToolUse)[0].hooks[0].command
+        $parsed = Get-DevinWindowsHookCommand $command 'Devin tamper contract'
+        $tamperedScript = [regex]::Replace(
+            $parsed.Script,
+            '(?i)defenseclaw-hook\.exe',
+            'defenseclaw-gateway.exe'
+        )
+        $tamperedEncoded = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($tamperedScript)
+        )
+        $tamperedConfig = $config.Replace($parsed.Encoded, $tamperedEncoded)
     } elseif ($Connector -eq 'amp') {
         $tamperedConfig = $config.Replace(
             'DefenseClaw Amp policy bridge',
@@ -6657,6 +6804,7 @@ function Assert-DoctorWindowsHookRegistration {
         $expectedTamperDetail = switch ($Connector) {
             'codex' { 'cannot be resolved' }
             'claudecode' { 'does not use the native hook runtime' }
+            'devin' { 'registered hook uses the obsolete gateway launcher' }
             'amp' { 'does not reference DefenseClaw' }
             'copilot' {
                 $missingGatewayLauncher = [regex]::Replace(
@@ -10306,6 +10454,7 @@ if (-not $NoRun) {
         $env:CLAUDE_CONFIG_DIR = Join-Path $env:USERPROFILE '.claude'
         $env:COPILOT_HOME = Join-Path $env:USERPROFILE '.copilot'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $env:USERPROFILE '.cursor'
+        $env:DEFENSECLAW_DEVIN_CONFIG_HOME = Join-Path $env:USERPROFILE 'AppData\Roaming\devin'
         $env:HERMES_HOME = Join-Path $env:USERPROFILE 'AppData\Local\hermes'
         $env:OPENCODE_CONFIG_DIR = Join-Path $env:USERPROFILE '.config\opencode'
         $env:GEMINI_CLI_HOME = $env:USERPROFILE
