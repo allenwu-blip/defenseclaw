@@ -261,6 +261,7 @@ struct SkillItem: Identifiable, Sendable {
     var skillDescription: String = ""
     var connector: String = ""
     var fromFilesystem: Bool = false  // listed by SkillScanner, read-only
+    var bundled: Bool = false         // vendor-managed; discovery/info only
     var status: String = "inactive"
     var verdict: String = "-"
     var scan: CatalogScanState?
@@ -276,6 +277,7 @@ struct MCPItem: Identifiable, Sendable {
     var source: String = ""           // registry file the entry came from (filesystem rows)
     var connector: String = ""
     var fromFilesystem: Bool = false  // discovered by MCPScanner, read-only
+    var bundled: Bool = false         // vendor-managed; discovery/info only
     var status: String = "active"
     var verdict: String = "-"
     var scan: CatalogScanState?

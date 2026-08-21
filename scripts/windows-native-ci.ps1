@@ -319,6 +319,78 @@ function Test-WindowsNativeProcessElevated {
     )
 }
 
+function Get-WindowsNativeCurrentUserKnownFolderPath(
+    [Guid]$FolderID,
+    [uint32]$Flags = 0
+) {
+    if ($null -eq ('DefenseClaw.WindowsNative.CurrentUserKnownFolders' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+
+namespace DefenseClaw.WindowsNative {
+    public static class CurrentUserKnownFolders {
+        [DllImport("shell32.dll")]
+        private static extern int SHGetKnownFolderPath(
+            [In] ref Guid rfid,
+            uint flags,
+            IntPtr token,
+            out IntPtr path
+        );
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentProcess();
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool OpenProcessToken(
+            IntPtr process,
+            uint desiredAccess,
+            out IntPtr token
+        );
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        public static string GetPath(Guid folderID, uint flags) {
+            const uint TOKEN_QUERY = 0x0008;
+            const uint TOKEN_IMPERSONATE = 0x0004;
+            IntPtr token;
+            if (!OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_IMPERSONATE,
+                    out token)) {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            IntPtr value;
+            try {
+                int result = SHGetKnownFolderPath(ref folderID, flags, token, out value);
+                if (result != 0) {
+                    Marshal.ThrowExceptionForHR(result);
+                }
+                try {
+                    return Marshal.PtrToStringUni(value);
+                } finally {
+                    Marshal.FreeCoTaskMem(value);
+                }
+            } finally {
+                CloseHandle(token);
+            }
+        }
+    }
+}
+'@
+    }
+    $value = [DefenseClaw.WindowsNative.CurrentUserKnownFolders]::GetPath(
+        $FolderID,
+        $Flags
+    )
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        throw "Known Folder $FolderID resolved to an empty path"
+    }
+    return [IO.Path]::GetFullPath($value).TrimEnd('\')
+}
+
 function Set-CurrentUserAsDefaultOwner {
     # GitHub's elevated Windows runner token can use BUILTIN\Administrators as
     # its default owner even though processes run as the runner user. That
@@ -2810,8 +2882,21 @@ $utf8 = [Text.UTF8Encoding]::new($false)
 $pidPath = Join-Path $DataRoot 'gateway.pid'
 $jsonlPath = Join-Path $DataRoot 'gateway.jsonl'
 # Initialize the NetTCPIP command and its CIM provider before publishing sampler
-# readiness so their fresh-process cost cannot consume the sample deadline.
-$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort $ApiPort -ErrorAction Stop)
+# readiness so their fresh-process cost cannot consume the sample deadline. A
+# newly started listener can briefly be absent from a cold CIM provider, so
+# retry that exact query within a small bound instead of terminating the sampler.
+$prewarmDeadline = [DateTime]::UtcNow.AddSeconds(20)
+do {
+    $prewarmListeners = @()
+    try {
+        $prewarmListeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort $ApiPort -ErrorAction Stop)
+    } catch { }
+    if ($prewarmListeners.Count -gt 0) { break }
+    if ([DateTime]::UtcNow -ge $prewarmDeadline) {
+        throw 'Setup health sampler listener prewarm timed out'
+    }
+    Start-Sleep -Milliseconds 100
+} while ($true)
 $stream = [IO.FileStream]::new($OutcomePath, 'CreateNew', 'Write', 'Read')
 try {
     $header = $utf8.GetBytes("schema=1`n")
@@ -2998,7 +3083,10 @@ try {
     try {
         $started = $process.Start()
         if (-not $started) { throw 'failed to start Setup health sampler' }
-        $deadline = [DateTime]::UtcNow.AddSeconds(10)
+        # This is a polling watchdog, not a delay: healthy samplers return as
+        # soon as the readiness file appears. Leave headroom for a cold CIM
+        # provider on contended Windows runners while retaining a hard bound.
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
         while (-not (Test-Path -LiteralPath $outcome -PathType Leaf)) {
             $process.Refresh()
             if ($process.HasExited) { throw "Setup health sampler exited with $($process.ExitCode)" }
@@ -3007,12 +3095,18 @@ try {
         }
         return [pscustomobject]@{ Process = $process }
     } catch {
-        if ($started -and -not $process.HasExited) {
-            $process.Kill($true)
-            $process.WaitForExit(5000) | Out-Null
+        $failure = $_
+        try {
+            if ($started -and -not $process.HasExited) {
+                $process.Kill($true)
+                if (-not $process.WaitForExit(5000)) {
+                    throw 'Setup health sampler readiness cleanup timed out'
+                }
+            }
+        } finally {
+            $process.Dispose()
         }
-        $process.Dispose()
-        throw
+        throw $failure
     }
 }
 
@@ -7368,9 +7462,16 @@ function Invoke-Contract {
     if (-not (Test-Path -LiteralPath $setup -PathType Leaf)) {
         throw "native setup executable not found: $setup"
     }
-    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
-    $roamingAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
-    $realProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    # CreateProcessWithLogonW loads the disposable account's profile but can
+    # inherit the caller's process environment. Bind these production paths to
+    # the current process token so ambient profile variables cannot redirect
+    # either native Setup expectations or the Devin contract fixture.
+    $localAppData = Get-WindowsNativeCurrentUserKnownFolderPath `
+        ([Guid]'F1B32785-6FBA-4FCF-9D55-7B8E7F157091')
+    $roamingAppData = Get-WindowsNativeCurrentUserKnownFolderPath `
+        ([Guid]'3EB685DB-65F9-4CF6-A03A-E3EF65729F3D')
+    $realProfile = Get-WindowsNativeCurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
     $installRoot = Join-Path $localAppData 'Programs\DefenseClaw'
     $dataRoot = Join-Path $realProfile '.defenseclaw'
     $arpKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\DefenseClaw'

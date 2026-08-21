@@ -184,6 +184,13 @@ def test_codex_signature_tracks_current_official_asset_layouts():
     } <= set(codex.config_paths)
     assert {".mcp.json", "~/.codex/skills", ".codex/skills"}.isdisjoint(codex.config_paths)
     assert set(codex.mcp_paths) == {"~/.codex/config.toml", ".codex/config.toml"}
+    assert {
+        "~/.codex/skills",
+        "$CODEX_HOME/skills",
+        "~/.agents/skills",
+        ".codex/skills",
+        ".agents/skills",
+    } <= set(codex.skill_paths)
 
 
 def test_custom_signature_pack_loads_from_managed_dir(tmp_path):

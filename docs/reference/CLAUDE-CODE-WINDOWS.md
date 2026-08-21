@@ -1,9 +1,10 @@
 # Claude Code native Windows reference
 
-This is the evidence gate and reusable coverage checklist for the DefenseClaw
-Claude Code connector preview on native Windows. It was reverified on
-**2026-07-30**. No immutable packaged plus official-client Windows validation
-record is persisted, so this document does not establish certification.
+This is the evidence gate and reusable coverage checklist for the supported
+DefenseClaw Claude Code connector on native Windows. It was reverified on
+**2026-07-30**. Supported availability does not populate validation metadata.
+No immutable packaged plus official-client Windows validation record is
+persisted, so this document does not establish certification.
 The eligible platform is a Windows process launched directly from PowerShell
 or CMD with Windows paths and native executables. WSL, Docker, virtual
 machines, Bash, Git Bash, Cygwin, MSYS, and compatibility shims are not valid

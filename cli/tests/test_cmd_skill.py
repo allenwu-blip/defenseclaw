@@ -882,7 +882,7 @@ class TestSkillScan(SkillCommandTestBase):
 
         scanner.scan.assert_called_once_with(skill_dir)
 
-    def test_scan_all_nonactive_codex_expands_system_child_skills(self):
+    def test_scan_all_nonactive_codex_discovers_but_does_not_scan_system_skills(self):
         from defenseclaw.commands.cmd_skill import _scan_all
 
         codex_root = os.path.join(self.tmp_dir, ".codex", "skills")
@@ -911,12 +911,89 @@ class TestSkillScan(SkillCommandTestBase):
             duration=timedelta(seconds=0.1),
         )
 
-        _scan_all(self.app, scanner, as_json=False, connector="codex")
+        with patch.dict(
+            os.environ,
+            {"CODEX_HOME": os.path.join(self.tmp_dir, ".codex")},
+        ):
+            _scan_all(self.app, scanner, as_json=False, connector="codex")
 
         scanned = [call.args[0] for call in scanner.scan.call_args_list]
-        self.assertEqual(scanned, [regular, child_a, child_b])
+        self.assertEqual(scanned, [regular])
         self.assertNotIn(system_root, scanned)
+        self.assertNotIn(child_a, scanned)
+        self.assertNotIn(child_b, scanned)
         self.assertNotIn(os.path.join(system_root, "not-a-skill"), scanned)
+
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_scan_all_remote_skips_bundled_entries(self, mock_list):
+        from defenseclaw.commands.cmd_skill import _scan_all_remote
+
+        regular = os.path.join(self.tmp_dir, ".codex", "skills", "operator-skill")
+        bundled = os.path.join(self.tmp_dir, ".codex", "skills", ".system", "imagegen")
+        mock_list.return_value = {
+            "skills": [
+                {"name": "operator-skill", "baseDir": regular, "bundled": False},
+                {"name": "imagegen", "baseDir": bundled, "bundled": True},
+            ]
+        }
+        client = MagicMock()
+        client.scan_skill.return_value = {"findings": [], "max_severity": "INFO"}
+
+        with patch("defenseclaw.commands.cmd_skill._sidecar_client", return_value=client):
+            _scan_all_remote(self.app, as_json=False, connector="codex")
+
+        client.scan_skill.assert_called_once_with(target=regular, name="operator-skill")
+
+    def test_explicit_bundled_skill_scan_is_skipped_without_scanner_or_action(self):
+        bundled = os.path.join(
+            self.tmp_dir, ".codex", "skills", ".system", "imagegen"
+        )
+        os.makedirs(bundled, exist_ok=True)
+        with open(os.path.join(bundled, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("# bundled\n")
+        self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
+        self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda connector=None: [  # type: ignore[method-assign]
+            os.path.join(self.tmp_dir, ".codex", "skills")
+        ]
+
+        with (
+            patch.dict(
+                os.environ,
+                {"CODEX_HOME": os.path.join(self.tmp_dir, ".codex")},
+            ),
+            patch("defenseclaw.scanner.skill.SkillScannerWrapper") as scanner_cls,
+        ):
+            result = self.invoke(["scan", "imagegen", "--path", bundled, "--action"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("vendor-bundled skills are discovery-only", result.output)
+        scanner_cls.return_value.scan.assert_not_called()
+        self.assertIsNone(self.app.store.get_action("skill", "imagegen"))
+
+    def test_explicit_arbitrary_system_directory_remains_scan_eligible(self):
+        target = os.path.join(self.tmp_dir, "workspace", ".system", "operator-skill")
+        os.makedirs(target, exist_ok=True)
+        with open(os.path.join(target, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write("# operator\n")
+        codex_home = os.path.join(self.tmp_dir, "real-codex-home")
+        clean = ScanResult(
+            scanner="skill-scanner",
+            target=target,
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+            duration=timedelta(seconds=0.1),
+        )
+
+        with (
+            patch.dict(os.environ, {"CODEX_HOME": codex_home}),
+            patch("defenseclaw.scanner.skill.SkillScannerWrapper") as scanner_cls,
+        ):
+            scanner_cls.return_value.scan.return_value = clean
+            result = self.invoke(["scan", "operator-skill", "--path", target])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        scanner_cls.return_value.scan.assert_called_once_with(target)
 
 
 class TestSkillScanContainment(SkillCommandTestBase):
@@ -3380,9 +3457,9 @@ class TestSkillBareNameResolution(SkillCommandTestBase):
         result = self.invoke(["scan", "dup"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("── connector: codex ──", result.output)
+        self.assertRegex(result.output, r"(?:──|--) connector: codex (?:──|--)")
         self.assertIn("Scanning 1 skill on codex", result.output)
-        self.assertIn("── connector: hermes ──", result.output)
+        self.assertRegex(result.output, r"(?:──|--) connector: hermes (?:──|--)")
         self.assertIn("Scanning 1 skill on hermes", result.output)
         self.assertEqual(mock_scan.call_count, 2)
 
@@ -3451,11 +3528,14 @@ class TestSkillBareNameResolution(SkillCommandTestBase):
         result = self.invoke(["scan", "dc-skill-final", "--no-use-llm"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("── connector: antigravity ──", result.output)
+        self.assertRegex(
+            result.output,
+            r"(?:──|--) connector: antigravity (?:──|--)",
+        )
         self.assertIn("Scanning 1 skill on antigravity", result.output)
-        self.assertIn("── connector: hermes ──", result.output)
+        self.assertRegex(result.output, r"(?:──|--) connector: hermes (?:──|--)")
         self.assertIn("Scanning 1 skill on hermes", result.output)
-        self.assertIn("── connector: opencode ──", result.output)
+        self.assertRegex(result.output, r"(?:──|--) connector: opencode (?:──|--)")
         self.assertIn("Scanning 1 skill on opencode", result.output)
         self.assertEqual(
             [call.args[0] for call in mock_scan.call_args_list],

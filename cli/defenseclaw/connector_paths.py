@@ -200,6 +200,7 @@ class MCPServerEntry:
     source: str = ""
     source_scope: str = ""
     trust_required: bool = False
+    bundled: bool = False
 
 
 @dataclass(frozen=True)
@@ -1647,7 +1648,8 @@ def skill_dirs(
 
     Codex follows its current cross-client skill layout: ``.agents/skills``
     at every repository directory from the active workspace to the project
-    root, then ``$HOME/.agents/skills`` and the Unix admin directory
+    root, then ``$HOME/.agents/skills``. Its own managed installer and bundled
+    system cache live under ``$CODEX_HOME/skills``; the Unix admin directory is
     ``/etc/codex/skills``. For OpenClaw — and any unknown
     name — we walk ``openclaw.json`` to honor any ``skills.load.extraDirs``
     overrides, then add the home_dir/skills fallback.
@@ -2191,6 +2193,7 @@ def _codex_skill_dirs(workspace_dir: str | None = None) -> list[str]:
             for layer in _codex_project_layer_dirs(workspace_dir)
         ],
         os.path.join(str(Path.home()), ".agents", "skills"),
+        os.path.join(codex_home(), "skills"),
     ]
     if os.name != "nt":
         paths.append(os.path.join(os.sep, "etc", "codex", "skills"))
@@ -3266,9 +3269,42 @@ def _read_codex_config_toml(
                 source=path,
                 source_scope=source_scope,
                 trust_required=trust_required,
+                bundled=_is_codex_bundled_mcp_entry(
+                    path,
+                    source_scope=source_scope,
+                    name=name,
+                    config=cfg,
+                ),
             )
         )
     return out
+
+
+def _is_codex_bundled_mcp_entry(
+    path: str,
+    *,
+    source_scope: str,
+    name: str,
+    config: dict[str, Any],
+) -> bool:
+    """Recognize the one evidence-backed Codex built-in MCP registration.
+
+    A name or URL match alone is insufficient because any connector or project
+    config can reuse them.  The exemption is limited to the canonical Codex
+    user config and the exact URL-only table generated for OpenAI developer
+    documentation.  Any additional transport, auth, header, command, query, or
+    policy field makes the entry operator-controlled and therefore scannable.
+    """
+
+    if source_scope != "user" or name != "openaiDeveloperDocs":
+        return False
+    expected = os.path.realpath(
+        os.path.abspath(os.path.join(codex_home(), "config.toml"))
+    )
+    candidate = os.path.realpath(os.path.abspath(path))
+    if os.path.normcase(candidate) != os.path.normcase(expected):
+        return False
+    return config == {"url": "https://developers.openai.com/mcp"}
 
 
 def _zeptoclaw_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:

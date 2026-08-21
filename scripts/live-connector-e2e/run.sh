@@ -18,7 +18,8 @@
 #
 # Layer A targets every registry connector (golden payload -> installed hook
 # entrypoint). Layer B only targets connectors that ship a driver under
-# drivers/; contract-only connectors (hermes and devin) are
+# drivers/; contract-only connectors (Hermes, Devin, OpenCode, OmniGent, and
+# Antigravity) are
 # skipped with a recorded `skip` so the matrix stays honest.
 
 set -euo pipefail
@@ -45,7 +46,7 @@ done
 [ -n "${CONNECTOR}" ] || dc_die "--connector <name|all> is required"
 
 # Registry connectors (Layer A covers all; Layer B covers those with drivers).
-ALL_CONNECTORS=(codex claudecode amp cursor copilot openhands hermes devin antigravity)
+ALL_CONNECTORS=(codex claudecode amp cursor copilot openhands hermes devin antigravity opencode omnigent)
 
 resolve_connectors() {
   if [ "${CONNECTOR}" = "all" ]; then

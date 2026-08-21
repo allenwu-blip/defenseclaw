@@ -803,6 +803,10 @@ def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
     assert "event_correlation" in start
     assert "$_.Exception" not in start
     assert "runtime\\python" not in start
+    assert "$prewarmDeadline = [DateTime]::UtcNow.AddSeconds(20)" in start
+    assert "if ($prewarmListeners.Count -gt 0) { break }" in start
+    assert "$deadline = [DateTime]::UtcNow.AddSeconds(30)" in start
+    assert "Setup health sampler readiness cleanup timed out" in start
     assert "$process.Kill($true)" in stop
     assert "started_at = $startedAt" in contract
     assert "uptime_ms = 1" in contract

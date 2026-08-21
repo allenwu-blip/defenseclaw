@@ -75,6 +75,7 @@ on:
           - hermes
           - devin
           - antigravity
+          - omnigent
       os:
         description: "OS to run (or 'all')"
         type: choice
@@ -160,7 +161,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Gate — decide which contract cells to run for this event.
   #
-  #   schedule / workflow_dispatch → full 2-OS x 10 Unix matrix.
+  #   schedule / workflow_dispatch → full 2-OS x 11 Unix matrix.
   #   pull_request                 → just the always-on macOS smoke cell,
   #                                  unless the PR touches connector / hook /
   #                                  registry / contract-script / workflow
@@ -186,7 +187,7 @@ jobs:
           set -euo pipefail
           # The Unix harness retains the full supported connector matrix.
           # Native Windows contract validation is a separate, explicit x64 matrix.
-          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","cursor","copilot","openhands","hermes","devin","antigravity"]}'
+          full='{"os":["ubuntu-latest","macos-latest"],"connector":["codex","claudecode","amp","cursor","copilot","openhands","hermes","devin","antigravity","opencode","omnigent"]}'
           # Always-on PR smoke: one connector on one cross-platform OS. macOS is
           # chosen because windows-native.yml separately checks the native
           # Windows hook contract on every PR. This adds the missing native macOS

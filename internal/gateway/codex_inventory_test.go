@@ -32,6 +32,9 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 	active := filepath.Join(repo, "packages", "service")
 	paths := []string{
 		filepath.Join(home, ".agents", "skills", "personal-skill"),
+		filepath.Join(home, ".agents", "skills", ".system"),
+		filepath.Join(codexHome, "skills", "managed-user-skill"),
+		filepath.Join(codexHome, "skills", ".system", "vendor-skill"),
 		filepath.Join(codexHome, "plugins", "cache", "market", "installed-plugin", "local"),
 		filepath.Join(codexHome, "agents"),
 		filepath.Join(codexHome, "rules"),
@@ -76,6 +79,8 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 		expected := map[string][]string{
 			"skill": {
 				filepath.Join(home, ".agents", "skills", "personal-skill"),
+				filepath.Join(home, ".agents", "skills", ".system"),
+				filepath.Join(codexHome, "skills", "managed-user-skill"),
 				filepath.Join(repo, ".agents", "skills", "repo-skill"),
 			},
 			"plugin": {
@@ -106,6 +111,8 @@ func TestCodexComponentTargetsExpandCurrentOfficialFiles(t *testing.T) {
 			}
 		}
 		for _, stale := range []string{
+			filepath.Join(codexHome, "skills", ".system"),
+			filepath.Join(codexHome, "skills", ".system", "vendor-skill"),
 			filepath.Join(repo, ".codex", "skills"),
 			filepath.Join(repo, ".mcp.json"),
 			filepath.Join(repo, ".codex", "plugins"),

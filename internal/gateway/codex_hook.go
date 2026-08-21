@@ -38,6 +38,7 @@ import (
 	"mvdan.cc/sh/v3/syntax"
 
 	"github.com/defenseclaw/defenseclaw/internal/actionfacts"
+	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/notifier"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
@@ -3695,8 +3696,16 @@ func (a *APIServer) scanCodexComponents(ctx context.Context, req codexHookReques
 	targets := codexComponentTargets(req.CWD)
 	count := 0
 	for component, paths := range targets {
+		if component == "mcp" {
+			paths = codexMCPEntryScanTargets(paths)
+		}
 		for _, p := range paths {
-			if _, err := os.Stat(p); err != nil {
+			if component != "mcp" {
+				if _, err := os.Stat(p); err != nil {
+					continue
+				}
+			}
+			if strings.TrimSpace(p) == "" {
 				continue
 			}
 			if a.scanCodexComponent(ctx, component, p) {
@@ -3705,6 +3714,51 @@ func (a *APIServer) scanCodexComponents(ctx context.Context, req codexHookReques
 		}
 	}
 	return count
+}
+
+// codexMCPEntryScanTargets expands Codex config files into per-server scan
+// targets. The exact vendor-managed developer-docs registration remains
+// discoverable through inventory but is never handed to the MCP scanner.
+// A same-named project entry and every other user entry remain scan-eligible.
+func codexMCPEntryScanTargets(configPaths []string) []string {
+	userConfig := filepath.Join(connector.CodexHomeDir(), "config.toml")
+	var targets []string
+	for _, configPath := range configPaths {
+		var (
+			entries []config.MCPServerEntry
+			err     error
+		)
+		if sameCleanPath(configPath, userConfig) {
+			entries, err = config.ReadMCPFromCodexUserConfigTOML(configPath)
+		} else {
+			entries, err = config.ReadMCPFromCodexConfigTOML(configPath)
+		}
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.Bundled {
+				continue
+			}
+			target := strings.TrimSpace(entry.URL)
+			if target == "" {
+				target = strings.TrimSpace(entry.Name)
+			}
+			if target != "" {
+				targets = append(targets, target)
+			}
+		}
+	}
+	seen := make(map[string]struct{}, len(targets))
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		out = append(out, target)
+	}
+	return out
 }
 
 func (a *APIServer) codexComponentScanDue() bool {
@@ -3741,6 +3795,7 @@ func codexComponentTargets(cwd string) map[string][]string {
 		targets["skill"] = append(targets["skill"], childDirs(personalSkills)...)
 	}
 	if strings.TrimSpace(codexHome) != "" {
+		targets["skill"] = append(targets["skill"], childDirs(filepath.Join(codexHome, "skills"))...)
 		targets["plugin"] = append(targets["plugin"],
 			codexInstalledPluginDirs(filepath.Join(codexHome, "plugins", "cache"))...)
 		targets["mcp"] = append(targets["mcp"], existingFiles(filepath.Join(codexHome, "config.toml"))...)
@@ -3764,6 +3819,15 @@ func codexComponentTargets(cwd string) map[string][]string {
 			childFilesWithExtension(filepath.Join(root, ".codex", "rules"), ".rules")...)
 	}
 	for k, paths := range targets {
+		if k == "skill" {
+			filtered := paths[:0]
+			for _, path := range paths {
+				if !isBundledSkillScanPath(path) {
+					filtered = append(filtered, path)
+				}
+			}
+			paths = filtered
+		}
 		targets[k] = uniqueExistingPaths(paths)
 	}
 	return targets
@@ -3905,6 +3969,9 @@ func uniqueExistingPaths(paths []string) []string {
 
 func (a *APIServer) scanCodexComponent(ctx context.Context, component, target string) bool {
 	if a.scannerCfg == nil {
+		return false
+	}
+	if component == "skill" && isBundledSkillScanPath(target) {
 		return false
 	}
 	var (

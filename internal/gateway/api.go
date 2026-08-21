@@ -2145,6 +2145,12 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target is required"})
 		return
 	}
+	if isBundledSkillScanPath(req.Target) {
+		a.writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "vendor-bundled skills are discovery-only and are not scanned or blocked",
+		})
+		return
+	}
 
 	// Verify target exists on this host.
 	// If the path doesn't exist locally, the scanner will fail with a clear
@@ -2159,7 +2165,6 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner not configured"})
 		return
 	}
-
 	// Route through the unified resolver so top-level ``llm:`` defaults
 	// flow into the skill scanner with ``scanners.skill.llm:`` overrides
 	// applied on top. ``NewSkillScannerFromLLM`` is the post-v5
@@ -2187,6 +2192,36 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.writeJSON(w, http.StatusOK, scanAPIResponseEnvelope(result))
+}
+
+func (a *APIServer) isBundledMCPScanRequest(req mcpScanRequest) bool {
+	if a == nil || a.scannerCfg == nil {
+		return false
+	}
+	servers, err := a.scannerCfg.ReadMCPServersForConnector("codex")
+	if err != nil {
+		return false
+	}
+	for _, server := range servers {
+		if !server.Bundled {
+			continue
+		}
+		if req.Target == server.Name {
+			return true
+		}
+		if req.Name == server.Name && (req.Target == server.Name || req.Target == server.URL) {
+			return true
+		}
+	}
+	return false
+}
+
+func isBundledSkillScanPath(path string) bool {
+	if enforce.IsBundledSkillPath(path) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && enforce.IsBundledSkillPath(resolved)
 }
 
 func (a *APIServer) handlePluginScan(w http.ResponseWriter, r *http.Request) {
@@ -2261,6 +2296,12 @@ func (a *APIServer) handleMCPScan(w http.ResponseWriter, r *http.Request) {
 
 	if a.scannerCfg == nil {
 		a.writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "scanner not configured"})
+		return
+	}
+	if a.isBundledMCPScanRequest(req) {
+		a.writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "vendor-bundled MCP servers are discovery-only and are not scanned",
+		})
 		return
 	}
 

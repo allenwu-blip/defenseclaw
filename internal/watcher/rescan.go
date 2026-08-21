@@ -162,6 +162,9 @@ func (w *InstallWatcher) enumerateTargets() []InstallEvent {
 				continue
 			}
 			path := filepath.Join(dir, e.Name())
+			if isBundledSkillWatchPath(path) {
+				continue
+			}
 			if watcherConnectorName(w.cfg) == "claudecode" &&
 				isClaudeSkillsPlugin(path) {
 				continue
@@ -212,7 +215,7 @@ func (w *InstallWatcher) enumerateTargets() []InstallEvent {
 		return targets
 	}
 	for _, server := range servers {
-		if strings.TrimSpace(server.Name) == "" {
+		if strings.TrimSpace(server.Name) == "" || server.Bundled {
 			continue
 		}
 		targets = append(targets, InstallEvent{
@@ -349,6 +352,9 @@ func enumerateClaudeWatcherPlugins(root string) []string {
 // Targets whose content and scanner fingerprint are unchanged are skipped
 // without invoking the scanner or writing a scan_results row.
 func (w *InstallWatcher) rescanTarget(ctx context.Context, evt InstallEvent, fpCache map[InstallType]string) rescanOutcome {
+	if evt.Type == InstallSkill && isBundledSkillWatchPath(evt.Path) {
+		return rescanSkipped
+	}
 	currentSnap, err := w.snapshotForEvent(evt)
 	if errors.Is(err, os.ErrNotExist) {
 		return rescanSkipped

@@ -34,9 +34,8 @@ from typing import Any, BinaryIO
 from defenseclaw.file_permissions import make_private_directory
 
 # Bundled-skill container name. Mirrors internal/enforce/bundled_skill.go
-# BundledSkillContainer. A `.system` segment anywhere in a skill path
-# marks a vendor-managed bundled entry that must never be blocked,
-# disabled, or quarantined. Keep in sync with the Go constant.
+# BundledSkillContainer. Only the exact `$CODEX_HOME/skills/.system` tree is
+# vendor-managed; a user-created `.system` directory elsewhere is untrusted.
 BUNDLED_SKILL_CONTAINER = ".system"
 
 
@@ -52,25 +51,30 @@ class BundledSkillRefusedError(Exception):
 
 
 def is_bundled_skill_path(path: str) -> bool:
-    """Component-wise check for a `.system` segment in path.
+    """Return whether *path* is in Codex's exact system-skill cache.
 
     Path is normalized before check. Symlink resolution is the
     caller's responsibility: mutation surfaces MUST realpath the
-    input before calling this — otherwise a symlink outside the
-    bundled tree pointing INTO `.system/hello` bypasses the guard.
+    input before calling this. A directory merely named ``.system`` outside
+    ``$CODEX_HOME/skills`` remains eligible for scanning and enforcement.
 
     Returns False for an empty path; the missing-provenance rule at
     a layer above handles the path-less case as non-actionable.
     """
     if not path or not path.strip():
         return False
-    cleaned = os.path.normpath(path.strip())
-    # Split on the OS separator so a Windows path (`\`) and a POSIX
-    # path (`/`) both match the same reserved-name check.
-    for part in cleaned.split(os.sep):
-        if part == BUNDLED_SKILL_CONTAINER:
-            return True
-    return False
+    from defenseclaw.connector_paths import codex_home
+
+    candidate = os.path.normcase(os.path.abspath(os.path.normpath(path.strip())))
+    root = os.path.normcase(
+        os.path.abspath(
+            os.path.join(codex_home(), "skills", BUNDLED_SKILL_CONTAINER)
+        )
+    )
+    try:
+        return os.path.commonpath((candidate, root)) == root
+    except ValueError:
+        return False
 
 
 class SkillEnforcer:

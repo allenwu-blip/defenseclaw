@@ -1573,6 +1573,21 @@ def scan(
         info = _get_openclaw_skill_info(target, app, connector=connector_flag or None)
         if info and _skill_info_path(info):
             scan_dir = _skill_info_path(info) or ""
+            if bool(info.get("bundled")):
+                payload = _skill_scan_skipped_json_payload(
+                    str(info.get("name") or target),
+                    scan_dir,
+                    reason="vendor-bundled",
+                    connector=connector_flag,
+                )
+                if as_json:
+                    _emit_skill_json_payload(payload)
+                else:
+                    click.echo(
+                        f"SKIPPED: {target} — vendor-bundled skills are "
+                        "discovery-only and are not scanned or blocked"
+                    )
+                return
             if connector_flag:
                 from defenseclaw.commands import resolve_list_connector as _resolve_scan_connector
                 scan_connector = _resolve_scan_connector(app, connector_flag)
@@ -1696,6 +1711,22 @@ def _scan_one_local_skill(
     from defenseclaw.enforce import PolicyEngine
 
     name = os.path.basename(scan_dir)
+
+    if _is_bundled_skill_scan_path(scan_dir):
+        payload = _skill_scan_skipped_json_payload(
+            name,
+            scan_dir,
+            reason="vendor-bundled",
+            connector=connector,
+        )
+        if as_json:
+            _emit_skill_json_payload(payload, json_sink=json_sink)
+        else:
+            click.echo(
+                f"SKIPPED: {name} — vendor-bundled skills are discovery-only "
+                "and are not scanned or blocked"
+            )
+        return payload
 
     pe = PolicyEngine(app.store)
 
@@ -2178,6 +2209,8 @@ def _scan_all(
         for info in skill_entries:
             name = str(info["name"])
             base_dir = _skill_info_path(info)
+            if bool(info.get("bundled")) or _is_bundled_skill_scan_path(base_dir):
+                continue
             if not base_dir:
                 resolved_info = _get_openclaw_skill_info(
                     name,
@@ -2226,6 +2259,8 @@ def _scan_all(
             ):
                 entry = discovered.name
                 path = discovered.path
+                if discovered.bundled or _is_bundled_skill_scan_path(path):
+                    continue
                 if entry in seen_names:
                     continue
                 if skill_entries and entry not in unresolved_names:
@@ -2566,6 +2601,22 @@ def _scan_via_sidecar(
     so one connector's remote error (e.g. a sidecar 500 on a malformed skill
     dir) is reported per-target and the rest of the fleet still gets scanned.
     """
+    if _is_bundled_skill_scan_path(target):
+        payload = _skill_scan_skipped_json_payload(
+            name,
+            target,
+            reason="vendor-bundled",
+            connector=connector,
+        )
+        if as_json:
+            _emit_skill_json_payload(payload, json_sink=json_sink)
+        else:
+            click.echo(
+                f"SKIPPED: {name} — vendor-bundled skills are discovery-only "
+                "and are not scanned or blocked"
+            )
+        return payload
+
     client = _sidecar_client(app)
 
     if not as_json:
@@ -2650,6 +2701,8 @@ def _scan_all_remote(
     for s in oc_list["skills"]:
         name = s.get("name", "")
         base_dir = s.get("baseDir") or s.get("filePath") or ""
+        if bool(s.get("bundled")) or _is_bundled_skill_scan_path(base_dir):
+            continue
         if not base_dir:
             click.echo(f"[scan] warning: no path for {name}", err=True)
             continue
@@ -2665,6 +2718,21 @@ def _scan_all_remote(
         if not as_json:
             click.echo()
     return json_rows
+
+
+def _is_bundled_skill_scan_path(path: str) -> bool:
+    """True when *path* is inside a vendor-managed ``.system`` tree.
+
+    The lexical and resolved forms are both checked so an alias outside the
+    container cannot make a bundled skill eligible for scanning. Discovery
+    continues to report these skills; only scanner/enforcement entrypoints use
+    this predicate.
+    """
+    if not path or not path.strip():
+        return False
+    from defenseclaw.enforce.skill_enforcer import is_bundled_skill_path
+
+    return is_bundled_skill_path(path) or is_bundled_skill_path(os.path.realpath(path))
 
 
 # ---------------------------------------------------------------------------

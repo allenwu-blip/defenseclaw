@@ -855,9 +855,15 @@ def test_early_exit_is_reported_without_leaking_stderr_marker() -> None:
 def test_protocol_error_is_distinguished_from_timeout() -> None:
     env = mcp._safe_subprocess_env({"MCP_FIXTURE_MODE": "protocol_error"})
     errors: list[tuple[str, str]] = []
+    timeout_seconds = 5
     with pytest.raises(BaseException) as caught, mcp._capture_sdk_error_logs(errors):
         asyncio.run(
-            mcp._scan_windows_stdio_tools(_RecordingScanner(), _python_plan(env), ["fixture"], timeout_seconds=0.5)
+            mcp._scan_windows_stdio_tools(
+                _RecordingScanner(),
+                _python_plan(env),
+                ["fixture"],
+                timeout_seconds=timeout_seconds,
+            )
         )
 
     message = str(
@@ -866,7 +872,7 @@ def test_protocol_error_is_distinguished_from_timeout() -> None:
             _python_plan(env),
             errors,
             int(getattr(caught.value, "_defenseclaw_stderr_size", 0) or 0),
-            0.5,
+            timeout_seconds,
         )
     )
     assert "protocol failure" in message

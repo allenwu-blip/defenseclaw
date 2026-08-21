@@ -58,7 +58,10 @@
       "local_endpoints": [],
       "skill_paths": [
         "~/.codex/skills",
-        ".codex/skills"
+        "$CODEX_HOME/skills",
+        "~/.agents/skills",
+        ".codex/skills",
+        ".agents/skills"
       ],
       "rule_paths": [
         "~/.codex/rules",

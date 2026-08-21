@@ -102,16 +102,44 @@ class QuickstartProfileDefaultsTests(unittest.TestCase):
         self.assertTrue(migration_state.is_applied(state, "0.8.5"))
 
     def test_openclaw_defaults_to_observe_profile(self):
-        result = self._invoke([
-            "--connector",
-            "openclaw",
-            "--skip-gateway",
-            "--json-summary",
-        ])
+        with patch("defenseclaw.platform_support.host_os", return_value="linux"):
+            result = self._invoke([
+                "--connector",
+                "openclaw",
+                "--skip-gateway",
+                "--json-summary",
+            ])
         self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
         summary = json.loads(result.output)
         self.assertEqual(summary["connector"], "openclaw")
         self.assertEqual(summary["profile"], "observe")
+
+    def test_windows_rejects_unsupported_connectors_before_first_run_writes(self):
+        forbidden = AssertionError("unsupported connector reached first-run mutation")
+        for connector in ("openclaw", "zeptoclaw", "openhands"):
+            with (
+                self.subTest(connector=connector),
+                patch("defenseclaw.platform_support.host_os", return_value="windows"),
+                patch("defenseclaw.bootstrap.run_first_run", side_effect=forbidden) as first_run,
+            ):
+                result = self._invoke(
+                    ["--connector", connector, "--skip-gateway", "--json-summary"]
+                )
+
+            self.assertNotEqual(result.exit_code, 0)
+            output = result.output + (result.stderr or "")
+            self.assertIn(f"connector '{connector}' is unsupported on windows", output)
+            first_run.assert_not_called()
+            self.assertFalse(os.path.exists(os.path.join(self.tmp_dir, "config.yaml")))
+
+    def test_non_windows_proxy_connector_behavior_is_preserved(self):
+        with patch("defenseclaw.platform_support.host_os", return_value="linux"):
+            result = self._invoke(
+                ["--connector", "zeptoclaw", "--skip-gateway", "--json-summary"]
+            )
+
+        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
+        self.assertEqual(json.loads(result.output)["connector"], "zeptoclaw")
 
     def test_explicit_mode_overrides_connector_default(self):
         result = self._invoke([

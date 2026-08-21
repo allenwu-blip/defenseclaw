@@ -1208,6 +1208,7 @@ class DefenseClawTUI(App[None]):
                     yield Button("Plugins", id="inventory-tab-plugins", compact=True)
                     yield Button("MCPs", id="inventory-tab-mcp", compact=True)
                     yield Button("Agents", id="inventory-tab-agents", compact=True)
+                    yield Button("Tools", id="inventory-tab-tools", compact=True)
                     yield Button("Models", id="inventory-tab-models", compact=True)
                     yield Button("Memory", id="inventory-tab-memory", compact=True)
                     yield Button("All scope", id="inventory-scope-all", compact=True)

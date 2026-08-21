@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1927,17 +1928,16 @@ func (s *ContinuousDiscoveryService) signalFromDirectoryChildren(sig AISignature
 				if name == "" {
 					continue
 				}
-				// Skill-only special case: a `.system` container is a
-				// vendor-shipped bundled-skill directory (see Codex's
-				// bundled-skills contract). Do NOT emit the container
-				// itself as an ordinary skill_entry — recurse one
-				// level and emit each of its children with
-				// origin="bundled" so downstream mutation surfaces
-				// can hard-refuse. Any other detector (rule / plugin)
-				// treats `.system` as an ordinary child.
-				if detector == "skill" && enforce.IsBundledSkillContainerName(entry.Name()) {
+				// Codex uses `.system` as a one-level skill container. Expand
+				// its children instead of presenting the container as a skill.
+				// Only the exact per-user `$CODEX_HOME/skills/.system` cache is
+				// vendor-bundled; a same-named container under `.agents` or a
+				// workspace stays user-owned and scan/enforcement eligible.
+				if detector == "skill" && strings.EqualFold(strings.TrimSpace(sig.ID), "codex") &&
+					enforce.IsBundledSkillContainerName(entry.Name()) {
 					systemDir := filepath.Join(path, entry.Name())
-					if childPartial, childReason := s.appendBundledSkillChildren(&evidence, systemDir); childPartial {
+					bundled := s.isCodexBundledSkillContainer(systemDir)
+					if childPartial, childReason := s.appendSystemSkillChildren(&evidence, systemDir, bundled); childPartial {
 						partial = true
 						if coverageReason == "" {
 							coverageReason = childReason
@@ -1975,18 +1975,17 @@ func (s *ContinuousDiscoveryService) signalFromDirectoryChildren(sig AISignature
 	return out
 }
 
-// appendBundledSkillChildren enumerates one level below a `.system`
-// container and emits each child as a skill_entry with
-// origin="bundled", bundled=true. Nested bundled subtrees are not
-// recursed into — Codex's contract is one level of vendor children,
-// not a general bundled-tree. Cap check mirrors the parent walker so
-// a pathological bundled directory can't blow up payload size.
+// appendSystemSkillChildren enumerates one level below a Codex `.system`
+// container. Exact vendor-cache children are stamped bundled; children below
+// any other root are stamped user-owned. Nested subtrees are not recursed into.
+// The cap mirrors the parent walker so a pathological directory cannot blow up
+// payload size.
 //
 // Returns (partial, coverageReason) so the caller can propagate
 // truncation state up to the outer signal — a bundled read error
 // leaves the operator's snapshot incomplete just as a user-skill
 // read error does.
-func (s *ContinuousDiscoveryService) appendBundledSkillChildren(evidence *[]AIEvidence, systemDir string) (bool, string) {
+func (s *ContinuousDiscoveryService) appendSystemSkillChildren(evidence *[]AIEvidence, systemDir string, bundled bool) (bool, string) {
 	entries, err := os.ReadDir(systemDir)
 	if err != nil {
 		switch {
@@ -2005,12 +2004,16 @@ func (s *ContinuousDiscoveryService) appendBundledSkillChildren(evidence *[]AIEv
 			continue
 		}
 		child := filepath.Join(systemDir, entry.Name())
+		origin := "user"
+		if bundled {
+			origin = "bundled"
+		}
 		ev := AIEvidence{
 			Type:     "skill_entry",
 			Basename: name,
 			PathHash: hashPath(child),
-			Origin:   "bundled",
-			Bundled:  true,
+			Origin:   origin,
+			Bundled:  bundled,
 		}
 		if s.opts.StoreRawLocalPaths {
 			ev.RawPath = child
@@ -2018,6 +2021,34 @@ func (s *ContinuousDiscoveryService) appendBundledSkillChildren(evidence *[]AIEv
 		*evidence = append(*evidence, ev)
 	}
 	return false, ""
+}
+
+func (s *ContinuousDiscoveryService) isCodexBundledSkillContainer(path string) bool {
+	configured := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if configured != "" {
+		if !filepath.IsAbs(configured) || filepath.Clean(configured) != configured {
+			return false
+		}
+		return sameInventoryPath(path, filepath.Join(configured, "skills", enforce.BundledSkillContainer))
+	}
+	for _, home := range s.homesToScan() {
+		if sameInventoryPath(path, filepath.Join(home, ".codex", "skills", enforce.BundledSkillContainer)) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameInventoryPath(left, right string) bool {
+	leftAbs, leftErr := filepath.Abs(filepath.Clean(left))
+	rightAbs, rightErr := filepath.Abs(filepath.Clean(right))
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(leftAbs, rightAbs)
+	}
+	return leftAbs == rightAbs
 }
 
 // sanitizeBasenameValue returns the trimmed name if it is a legitimate

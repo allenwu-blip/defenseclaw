@@ -39,8 +39,8 @@ import (
 func TestSignalFromDirectoryChildrenExpandsBundledSkillContainer(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	skillsRoot := filepath.Join(root, "skills")
+	home := t.TempDir()
+	skillsRoot := filepath.Join(home, ".codex", "skills")
 	if err := os.MkdirAll(filepath.Join(skillsRoot, ".system", "hello"), 0o755); err != nil {
 		t.Fatalf("prepare bundled hello: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestSignalFromDirectoryChildrenExpandsBundledSkillContainer(t *testing.T) {
 		t.Fatalf("prepare user custom-review: %v", err)
 	}
 
-	s := &ContinuousDiscoveryService{}
+	s := &ContinuousDiscoveryService{opts: AIDiscoveryOptions{HomeDir: home}}
 	sig := AISignature{ID: "codex"}
 	signal := s.signalFromDirectoryChildren(sig, SignalSkill, "skill", skillsRoot)
 
@@ -113,6 +113,49 @@ func TestSignalFromDirectoryChildrenExpandsBundledSkillContainer(t *testing.T) {
 	}
 	if userCount != 2 {
 		t.Fatalf("user skill_entry count: got %d, want 2 (hello + custom-review)", userCount)
+	}
+}
+
+func TestSignalFromDirectoryChildrenKeepsArbitrarySystemChildrenUserOwned(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	skillsRoot := filepath.Join(home, ".agents", "skills")
+	operatorSkill := filepath.Join(skillsRoot, ".system", "operator-skill")
+	if err := os.MkdirAll(operatorSkill, 0o755); err != nil {
+		t.Fatalf("prepare operator skill: %v", err)
+	}
+
+	s := &ContinuousDiscoveryService{opts: AIDiscoveryOptions{HomeDir: home}}
+	signal := s.signalFromDirectoryChildren(AISignature{ID: "codex"}, SignalSkill, "skill", skillsRoot)
+
+	var entries []AIEvidence
+	for _, ev := range signal.Evidence {
+		if ev.Type == "skill_entry" {
+			entries = append(entries, ev)
+		}
+	}
+	if len(entries) != 1 {
+		t.Fatalf("skill entries = %#v, want one expanded operator child", entries)
+	}
+	if entries[0].Basename != "operator-skill" || entries[0].Origin != "user" || entries[0].Bundled {
+		t.Fatalf("operator .system child provenance = %#v, want user-owned", entries[0])
+	}
+}
+
+func TestCodexHomeOverrideDoesNotTrustDefaultHomeSystemContainer(t *testing.T) {
+	home := t.TempDir()
+	override := filepath.Join(t.TempDir(), "codex-override")
+	t.Setenv("CODEX_HOME", override)
+
+	s := &ContinuousDiscoveryService{opts: AIDiscoveryOptions{HomeDir: home}}
+	defaultContainer := filepath.Join(home, ".codex", "skills", ".system")
+	overrideContainer := filepath.Join(override, "skills", ".system")
+	if s.isCodexBundledSkillContainer(defaultContainer) {
+		t.Fatal("default home .system remained bundled after CODEX_HOME override")
+	}
+	if !s.isCodexBundledSkillContainer(overrideContainer) {
+		t.Fatal("exact CODEX_HOME .system was not classified bundled")
 	}
 }
 

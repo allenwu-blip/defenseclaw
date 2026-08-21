@@ -312,6 +312,34 @@ func TestConnectorSetupOptsCarryCodexOtelEnvironment(t *testing.T) {
 	}
 }
 
+func TestConnectorSetupOptsCarryLifecycleBoundDevinConfigHome(t *testing.T) {
+	s := multiBootSidecar(t)
+	bound := filepath.Join(t.TempDir(), "token-profile", "AppData", "Roaming", "devin")
+	hostile := filepath.Join(t.TempDir(), "hostile-profile", "AppData", "Roaming")
+	t.Setenv("DEFENSECLAW_DEVIN_CONFIG_HOME", bound)
+	t.Setenv("APPDATA", hostile)
+	conn := connector.NewDevinConnector()
+
+	opts := mustConnectorSetupOpts(t, s, conn, "tok", "127.0.0.1:4000", "127.0.0.1:18970")
+	if opts.ConfigHome != bound {
+		t.Fatalf("Devin setup config home = %q, want lifecycle binding %q", opts.ConfigHome, bound)
+	}
+	wantConfig := filepath.Join(bound, "config.json")
+	if got := conn.Capabilities(opts).Hooks.ConfigPath; got != wantConfig {
+		t.Fatalf("Devin hook config path = %q, want %q", got, wantConfig)
+	}
+}
+
+func TestConnectorSetupOptsRejectInvalidLifecycleBoundDevinConfigHome(t *testing.T) {
+	s := multiBootSidecar(t)
+	t.Setenv("DEFENSECLAW_DEVIN_CONFIG_HOME", "relative")
+	conn := connector.NewDevinConnector()
+
+	if _, err := s.connectorSetupOptsChecked(conn, "tok", "127.0.0.1:4000", "127.0.0.1:18970"); err == nil || !strings.Contains(err.Error(), "DEFENSECLAW_DEVIN_CONFIG_HOME is invalid") {
+		t.Fatalf("invalid Devin lifecycle binding error = %v", err)
+	}
+}
+
 // TestSetupOneConnector_SetupErrorReturnsWithoutRollback verifies that a
 // Setup() failure surfaces as an error and does NOT trigger a teardown: there
 // is nothing to roll back because Setup never reached a verified state.

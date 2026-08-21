@@ -357,14 +357,24 @@ def discover_skill_directories(
 ) -> list[SkillDirectory]:
     """Return immediate skills, expanding connector-owned containers.
 
-    Codex reserves ``.system`` as a container for bundled skills. Treating the
-    container itself as a skill produces a false "missing SKILL.md" result, so
-    enumerate only its marked child skill directories. Ordinary top-level
-    skills are returned first so an operator-installed skill with the same
-    name takes precedence over a bundled child.
+    Codex reserves ``.system`` as a container of child skills. Treating the
+    container itself as one skill produces a false "missing SKILL.md" result,
+    so enumerate only its marked child skill directories. Children are bundled
+    only under Codex's exact ``$CODEX_HOME/skills/.system`` cache; a coincidental
+    ``.system`` below an operator root remains user-owned and scan-eligible.
+    Ordinary top-level skills are returned first so an operator-installed skill
+    with the same name takes precedence over a container child.
     """
     normalized_connector = (connector or "").strip().lower().replace("-", "")
-    system_containers = {".system"} if normalized_connector == "codex" else set()
+    system_containers: set[str] = set()
+    system_children_bundled = False
+    if normalized_connector == "codex":
+        from defenseclaw.enforce.skill_enforcer import is_bundled_skill_path
+
+        system_containers.add(".system")
+        system_children_bundled = is_bundled_skill_path(
+            os.path.join(skill_root, ".system")
+        )
     claude_skills = normalized_connector in {"claude", "claudecode"}
     claude_commands = claude_skills and os.path.basename(
         os.path.normpath(skill_root)
@@ -396,7 +406,7 @@ def discover_skill_directories(
         return []
 
     regular: list[SkillDirectory] = []
-    bundled: list[SkillDirectory] = []
+    container_children: list[SkillDirectory] = []
     selected_identities: list[tuple[str, os.stat_result]] = []
     for entry, full, entry_identity in entries:
         if entry not in system_containers:
@@ -411,8 +421,13 @@ def discover_skill_directories(
         for child, child_path, child_identity in children:
             if not skill_dir_is_eligible(child_path):
                 continue
-            bundled.append(
-                SkillDirectory(child, child_path, full, bundled=True)
+            container_children.append(
+                SkillDirectory(
+                    child,
+                    child_path,
+                    full,
+                    bundled=system_children_bundled,
+                )
             )
             selected_identities.append((child_path, child_identity))
         if not _directory_unchanged(full, entry_identity):
@@ -424,7 +439,7 @@ def discover_skill_directories(
         for path, identity in selected_identities
     ):
         return []
-    return regular + bundled
+    return regular + container_children
 
 
 def _discover_cursor_skill_directories(skill_root: str) -> list[SkillDirectory]:

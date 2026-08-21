@@ -2492,7 +2492,8 @@ class TestBuildAibomFromFilesystem(unittest.TestCase):
 
         with self._patch_skill_dirs([skill_root]), \
              self._patch_plugin_dirs([]), \
-             self._patch_mcp([]):
+             self._patch_mcp([]), \
+             patch.dict(os.environ, {"CODEX_HOME": os.path.join(self.tmp, ".codex")}):
             inv = build_claw_aibom(cfg, live=True)
 
         by_id = {row["id"]: row for row in inv["skills"]}

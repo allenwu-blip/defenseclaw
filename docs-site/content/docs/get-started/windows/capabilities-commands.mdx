@@ -84,7 +84,7 @@ or an advanced operation; it does not mean every listed subcommand is broken.
 | `observability` | `destination test`, `plan` | **Limited** to configured destinations and their network/credential contract. |
 | `plugin` | `allow`, `block`, `disable`, `enable`, `info`, `install`, `list`, `quarantine`, `remove`, `restore`, `scan`, `unblock` | **Limited** by connector runtime-disable and quarantine guarantees. |
 | `policy` | `activate`, `create`, `delete`; `edit actions/firewall/guardrail/scanner`; `list`, `show`, `test`, `validate` | **Supported**. Optional remote judge/provider behavior is separately configured. |
-| `quickstart` | no subcommands | **Limited** to supported native connectors; Windows sandbox/proxy choices are rejected. |
+| `quickstart` | no subcommands | **Limited** to Amp, Antigravity, Claude Code, Codex, Copilot CLI, Cursor, Devin, Hermes, OmniGent, and OpenCode. OpenHands and the OpenClaw/ZeptoClaw proxy connectors are rejected before setup writes; Windows sandbox choices remain unsupported. |
 | `registry` | `add`, `approve`, `edit`, `entries`, `list`, `reject`, `remove`, `require`, `show`, `sync`, `test`, `wizard` | **Limited**; sync/test can require network and registry trust policy. |
 | `reset` | no subcommands | **Supported** but destructive and confirmation-gated. It is not uninstall. |
 | `sandbox` | `init`, `setup` | **Unsupported** on native Windows. |

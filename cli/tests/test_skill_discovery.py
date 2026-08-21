@@ -16,6 +16,14 @@ from defenseclaw.skill_discovery import discover_skill_directories
 from tests.environment import requires_symlink_privilege
 
 
+def _codex_skill_root(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    root = codex_home / "skills"
+    root.mkdir(parents=True)
+    monkeypatch.setenv("CODEX_HOME", os.fspath(codex_home))
+    return root
+
+
 def test_copilot_markdown_commands_are_stable_alternative_skills(tmp_path, monkeypatch) -> None:
     commands = tmp_path / ".claude" / "commands"
     commands.mkdir(parents=True)
@@ -42,15 +50,16 @@ def test_copilot_markdown_commands_reject_linked_files(tmp_path) -> None:
 
 
 @requires_symlink_privilege
-def test_codex_system_child_rejects_symlinked_marker(tmp_path) -> None:
-    system_root = tmp_path / ".system"
+def test_codex_system_child_rejects_symlinked_marker(tmp_path, monkeypatch) -> None:
+    root = _codex_skill_root(tmp_path, monkeypatch)
+    system_root = root / ".system"
     skill = system_root / "linked-marker"
     skill.mkdir(parents=True)
     real_marker = tmp_path / "outside.md"
     real_marker.write_text("# outside", encoding="utf-8")
     os.symlink(real_marker, skill / "SKILL.md")
 
-    discovered = discover_skill_directories(os.fspath(tmp_path), connector="codex")
+    discovered = discover_skill_directories(os.fspath(root), connector="codex")
 
     assert "linked-marker" not in {entry.name for entry in discovered}
 
@@ -71,18 +80,19 @@ def test_skill_discovery_rejects_linked_root(tmp_path) -> None:
 
 
 @requires_symlink_privilege
-def test_codex_system_container_rejects_linked_ancestry(tmp_path) -> None:
+def test_codex_system_container_rejects_linked_ancestry(tmp_path, monkeypatch) -> None:
+    root = _codex_skill_root(tmp_path, monkeypatch)
     outside_system = tmp_path / "outside-system"
     skill = outside_system / "outside"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# outside", encoding="utf-8")
-    (tmp_path / ".system").symlink_to(
+    (root / ".system").symlink_to(
         outside_system,
         target_is_directory=True,
     )
 
     assert discover_skill_directories(
-        os.fspath(tmp_path),
+        os.fspath(root),
         connector="codex",
     ) == []
 
@@ -106,7 +116,8 @@ def test_codex_system_container_rejects_windows_reparse_attribute(
     tmp_path,
     monkeypatch,
 ) -> None:
-    system_root = tmp_path / ".system"
+    root = _codex_skill_root(tmp_path, monkeypatch)
+    system_root = root / ".system"
     skill = system_root / "bundled"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# bundled", encoding="utf-8")
@@ -130,20 +141,35 @@ def test_codex_system_container_rejects_windows_reparse_attribute(
     monkeypatch.setattr(skill_discovery_module.os, "stat", stat_with_reparse)
 
     assert discover_skill_directories(
-        os.fspath(tmp_path),
+        os.fspath(root),
         connector="codex",
     ) == []
 
 
-def test_codex_system_child_keeps_regular_marker(tmp_path) -> None:
-    skill = tmp_path / ".system" / "legitimate"
+def test_codex_system_child_keeps_regular_marker(tmp_path, monkeypatch) -> None:
+    root = _codex_skill_root(tmp_path, monkeypatch)
+    skill = root / ".system" / "legitimate"
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("# legitimate", encoding="utf-8")
 
-    discovered = discover_skill_directories(os.fspath(tmp_path), connector="codex")
+    discovered = discover_skill_directories(os.fspath(root), connector="codex")
 
     assert [(entry.name, entry.path, entry.bundled) for entry in discovered] == [
         ("legitimate", os.fspath(skill), True),
+    ]
+
+
+def test_codex_arbitrary_system_directory_is_not_bundled(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_HOME", os.fspath(tmp_path / "real-codex-home"))
+    root = tmp_path / "workspace-skills"
+    skill = root / ".system" / "operator-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# operator controlled", encoding="utf-8")
+
+    discovered = discover_skill_directories(os.fspath(root), connector="codex")
+
+    assert [(entry.name, entry.path, entry.bundled) for entry in discovered] == [
+        ("operator-skill", os.fspath(skill), False),
     ]
 
 

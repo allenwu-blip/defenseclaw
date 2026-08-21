@@ -773,7 +773,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $profileTest = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
             '-NoProfile', '-File', $nativeHarness, '-Operation', 'self-test',
             '-StateRoot', (Join-Path $temp 'isolated-profile')
-        ) -TimeoutSeconds 60
+        ) -TimeoutSeconds 90
     } finally {
         [Environment]::SetEnvironmentVariable(
             'DC_WINDOWS_NATIVE_BASE_ROOT',
@@ -1842,6 +1842,24 @@ private-secret-name = "DefenseClaw must remain redacted"
         $contractFunction -notmatch 'Install-PackagedArtifacts' -and
         $contractFunction -notmatch 'scripts\\install\.ps1') `
         'connector contract installs, validates, and removes the exact native Setup artifact'
+    $knownFolderResolver = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Get-WindowsNativeCurrentUserKnownFolderPath\b.*?(?=\r?\nfunction )'
+    ).Value
+    $contractPathPreamble = [regex]::Match(
+        $contractFunction,
+        '(?s)^.*?(?=\r?\n    \$installRoot = )'
+    ).Value
+    Assert-True ($knownFolderResolver -match 'OpenProcessToken' -and
+        $knownFolderResolver -match 'TOKEN_QUERY \| TOKEN_IMPERSONATE' -and
+        $knownFolderResolver -match 'SHGetKnownFolderPath\(ref folderID, flags, token, out value\)' -and
+        $contractPathPreamble -match "F1B32785-6FBA-4FCF-9D55-7B8E7F157091" -and
+        $contractPathPreamble -match "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D" -and
+        $contractPathPreamble -match "5E6C858F-0E22-4760-9AFE-EA3317B67173" -and
+        $contractPathPreamble -notmatch 'Environment\+SpecialFolder' -and
+        $contractFunction.IndexOf('$env:APPDATA =', [StringComparison]::Ordinal) -gt
+            $contractFunction.IndexOf("3EB685DB-65F9-4CF6-A03A-E3EF65729F3D", [StringComparison]::Ordinal)) `
+        'connector contract binds Profile, LocalAppData, and RoamingAppData to the current process token before hostile environment isolation'
     Assert-True ($nativeWorkflowText -match '(?s)Required setup, allow/block, audit, telemetry, timeout, and teardown contract.*?invoke-windows-setup-standard-user-ci\.ps1.*?-Mode contract.*?-Connector \$env:CONNECTOR.*?-DiagnosticsRoot \$env:DC_DIAGNOSTICS' -and
         $nativeWorkflowText -notmatch '\./scripts/windows-native-ci\.ps1 -Operation contract') `
         'hosted connector contracts run as disposable real standard users and preserve the matrix connector'
@@ -2342,7 +2360,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     $hasHealthSamplerPrewarm = {
         param([string]$Source)
         $prewarm = $Source.IndexOf(
-            "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)",
+            "`$prewarmListeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)",
             [StringComparison]::Ordinal
         )
         $readiness = $Source.IndexOf(
@@ -2353,15 +2371,20 @@ private-secret-name = "DefenseClaw must remain redacted"
     }
     Assert-True (& $hasHealthSamplerPrewarm $setupHealthSampler) `
         'Setup health sampler initializes its listener provider before publishing readiness'
+    Assert-True ($setupHealthSampler -match '\$prewarmDeadline = \[DateTime\]::UtcNow\.AddSeconds\(20\)' -and
+        $setupHealthSampler -match '(?s)do \{.*?Get-NetTCPConnection.*?\$prewarmListeners\.Count -gt 0.*?Start-Sleep -Milliseconds 100.*?\} while \(\$true\)' -and
+        $setupHealthSampler -match '\$deadline = \[DateTime\]::UtcNow\.AddSeconds\(30\)' -and
+        $setupHealthSampler -match "Setup health sampler readiness cleanup timed out") `
+        'Setup health sampler cold-provider retry, readiness polling, and cleanup remain bounded'
     Assert-True (-not (& $hasHealthSamplerPrewarm $setupHealthSampler.Replace(
-                "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
+                "`$prewarmListeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
             ))) `
         'Setup health sampler prewarm predicate rejects a missing listener-provider initialization'
     $reorderedHealthSampler = $setupHealthSampler.Replace(
-        "`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
+        "`$prewarmListeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)", ''
     ).Replace(
         "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')",
-        "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')`n`$null = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)"
+        "`$stream = [IO.FileStream]::new(`$OutcomePath, 'CreateNew', 'Write', 'Read')`n`$prewarmListeners = @(Get-NetTCPConnection -State Listen -LocalAddress '127.0.0.1' -LocalPort `$ApiPort -ErrorAction Stop)"
     )
     Assert-True (-not (& $hasHealthSamplerPrewarm $reorderedHealthSampler)) `
         'Setup health sampler prewarm predicate rejects readiness published before preload'

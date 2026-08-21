@@ -389,7 +389,7 @@ func readMCPServersUnderHomeForOS(connectorName, home, goos string) [][]config.M
 	}
 	switch strings.ToLower(strings.TrimSpace(connectorName)) {
 	case "codex":
-		tryFile(config.ReadMCPFromCodexConfigTOML, ".codex/config.toml")
+		tryFile(config.ReadMCPFromCodexUserConfigTOML, ".codex/config.toml")
 	case "claudecode":
 		// Honor CLAUDE_CONFIG_DIR the same way readMCPServersClaudeCode does:
 		// when the operator has redirected Claude Code to a custom directory,

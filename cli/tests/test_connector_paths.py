@@ -321,7 +321,17 @@ class TestSkillDirs:
         dirs = connector_paths.skill_dirs("codex")
         home = str(Path.home())
         assert os.path.join(home, ".agents", "skills") in dirs
-        assert os.path.join(home, ".codex", "skills") not in dirs
+        assert os.path.join(home, ".codex", "skills") in dirs
+
+    def test_codex_includes_effective_home_user_and_system_skill_root(
+        self, tmp_path, monkeypatch
+    ):
+        codex_home = tmp_path / "codex-home"
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        dirs = connector_paths.skill_dirs("codex")
+
+        assert str(codex_home / "skills") in dirs
 
     def test_codex_scans_skill_layers_from_active_dir_to_repo_root(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"

@@ -72,6 +72,12 @@ type MCPServerEntry struct {
 	Source           string            `json:"source,omitempty"`
 	SourceScope      string            `json:"source_scope,omitempty"`
 	TrustRequired    bool              `json:"trust_required,omitempty"`
+	Bundled          bool              `json:"bundled,omitempty"`
+
+	// codexBuiltinShape records an exact parser-level match before the caller
+	// proves that the table came from a user-scope Codex config. It is never
+	// serialized and must not be treated as provenance on its own.
+	codexBuiltinShape bool
 }
 
 // expandPath expands ~ to home directory.
@@ -721,11 +727,12 @@ func (c *Config) SkillDirsForConnector(connector string) []string {
 		dirs = append(dirs, claudecodepath.ProjectSkillDirs(cwd)...)
 		return dedupNonEmpty(dirs)
 	case "codex":
-		dirs := make([]string, 0, 4)
+		dirs := make([]string, 0, 5)
 		for _, layer := range gatewayconnector.CodexProjectLayerDirs(cwd) {
 			dirs = append(dirs, filepath.Join(layer, ".agents", "skills"))
 		}
 		dirs = append(dirs, gatewayconnector.CodexPersonalSkillsPath())
+		dirs = append(dirs, filepath.Join(c.ConnectorHomeDir("codex"), "skills"))
 		if runtime.GOOS != "windows" {
 			dirs = append(dirs, filepath.FromSlash("/etc/codex/skills"))
 		}
@@ -1055,8 +1062,7 @@ func readMCPServersCodex(workspaceDir string) ([]MCPServerEntry, error) {
 		}
 	}
 	userPath := filepath.Join(connectorEnvHome("CODEX_HOME", ".codex"), "config.toml")
-	if e, err := readMCPFromCodexConfigTOML(userPath); err == nil {
-		e = annotateCodexMCPEntries(e, userPath, "user", false)
+	if e, err := ReadMCPFromCodexUserConfigTOML(userPath); err == nil {
 		entries = append(entries, e...)
 	}
 	return dedupMCPEntries(entries), nil
@@ -1069,6 +1075,22 @@ func annotateCodexMCPEntries(entries []MCPServerEntry, source, scope string, tru
 		entries[index].TrustRequired = trustRequired
 	}
 	return entries
+}
+
+// ReadMCPFromCodexUserConfigTOML reads a path that the caller has already
+// resolved as a Codex user-scope config. Only this provenance-aware entry point
+// can promote an exact built-in table shape to Bundled; project and generic
+// TOML readers intentionally leave the same name/URL scan-eligible.
+func ReadMCPFromCodexUserConfigTOML(path string) ([]MCPServerEntry, error) {
+	entries, err := readMCPFromCodexConfigTOML(path)
+	if err != nil {
+		return nil, err
+	}
+	entries = annotateCodexMCPEntries(entries, path, "user", false)
+	for index := range entries {
+		entries[index].Bundled = entries[index].codexBuiltinShape
+	}
+	return entries, nil
 }
 
 const maxCodexInventoryConfigBytes = 1 << 20
@@ -1101,18 +1123,33 @@ func readMCPFromCodexConfigTOML(path string) ([]MCPServerEntry, error) {
 	if err := tomlUnmarshal(data, &doc); err != nil {
 		return nil, err
 	}
+	var rawDoc struct {
+		MCPServers map[string]map[string]any `toml:"mcp_servers"`
+	}
+	if err := tomlUnmarshal(data, &rawDoc); err != nil {
+		return nil, err
+	}
 	out := make([]MCPServerEntry, 0, len(doc.MCPServers))
 	for name, cfg := range doc.MCPServers {
 		out = append(out, MCPServerEntry{
-			Name:      name,
-			Command:   cfg.Command,
-			Args:      cfg.Args,
-			Env:       cfg.Env,
-			URL:       cfg.URL,
-			Transport: cfg.Transport,
+			Name:              name,
+			Command:           cfg.Command,
+			Args:              cfg.Args,
+			Env:               cfg.Env,
+			URL:               cfg.URL,
+			Transport:         cfg.Transport,
+			codexBuiltinShape: isCodexBuiltinMCPShape(name, rawDoc.MCPServers[name]),
 		})
 	}
 	return out, nil
+}
+
+func isCodexBuiltinMCPShape(name string, raw map[string]any) bool {
+	if name != "openaiDeveloperDocs" || len(raw) != 1 {
+		return false
+	}
+	url, ok := raw["url"].(string)
+	return ok && url == "https://developers.openai.com/mcp"
 }
 
 func readMCPServersZeptoClaw(workspaceDir string) ([]MCPServerEntry, error) {

@@ -417,6 +417,25 @@ func TestDriftDelta_JSONRoundtrip(t *testing.T) {
 	}
 }
 
+func TestEnumerateTargetsSkipsBundledSkillRoot(t *testing.T) {
+	cfg, store, logger, skillDir := setupTestEnv(t)
+	t.Setenv("CODEX_HOME", filepath.Dir(skillDir))
+	cfg.Guardrail.Connector = "codex"
+	systemRoot := filepath.Join(skillDir, ".system")
+	if err := os.MkdirAll(filepath.Join(systemRoot, "imagegen"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := &InstallWatcher{
+		cfg: cfg, skillDirs: []string{systemRoot}, store: store, logger: logger,
+	}
+
+	for _, target := range w.enumerateTargets() {
+		if target.Type == InstallSkill {
+			t.Fatalf("bundled skill entered periodic rescan targets: %+v", target)
+		}
+	}
+}
+
 func TestEnumerateTargets_IncludesConfiguredMCPServers(t *testing.T) {
 	cfg, store, logger, skillDir := setupTestEnv(t)
 	t.Setenv("PATH", "")

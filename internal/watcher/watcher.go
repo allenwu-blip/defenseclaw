@@ -380,6 +380,17 @@ func (w *InstallWatcher) eventConnector(evt InstallEvent) string {
 // When the OPA engine is available it delegates the verdict decision to
 // Rego policy; otherwise it falls back to the built-in Go logic.
 func (w *InstallWatcher) runAdmission(ctx context.Context, evt InstallEvent) (res AdmissionResult) {
+	// Vendor-managed Codex .system skills remain visible to inventory, but
+	// must never enter scanner or enforcement paths. Check both the lexical
+	// and resolved path so an alias outside .system cannot bypass the boundary.
+	if evt.Type == InstallSkill && isBundledSkillWatchPath(evt.Path) {
+		return AdmissionResult{
+			Event:   evt,
+			Verdict: VerdictAllowed,
+			Reason:  "vendor-bundled skill is discovery-only",
+		}
+	}
+
 	pe := enforce.NewPolicyEngine(w.store)
 	targetType := string(evt.Type)
 	policyID := enforce.PolicyStableID(w.cfg.PolicyDir)
@@ -1093,6 +1104,9 @@ func (w *InstallWatcher) isDirectChildDir(path string) bool {
 	for _, dir := range w.skillDirs {
 		dirAbs, _ := filepath.Abs(dir)
 		if parentAbs == dirAbs {
+			if isBundledSkillWatchPath(path) {
+				return false
+			}
 			return true
 		}
 	}
@@ -1108,6 +1122,14 @@ func (w *InstallWatcher) isDirectChildDir(path string) bool {
 		}
 	}
 	return false
+}
+
+func isBundledSkillWatchPath(path string) bool {
+	if enforce.IsBundledSkillPath(path) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && enforce.IsBundledSkillPath(resolved)
 }
 
 func (w *InstallWatcher) recordAdmission(ctx context.Context, decision, targetType string) {

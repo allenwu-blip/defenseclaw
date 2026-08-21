@@ -29,12 +29,13 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/enforce"
 	"github.com/defenseclaw/defenseclaw/internal/sandbox"
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 func setupTestEnv(t *testing.T) (cfg *config.Config, store *audit.Store, logger *audit.Logger, skillDir string) {
 	t.Helper()
 
-	tmpDir := t.TempDir()
+	tmpDir := testenv.PrivateTempDir(t)
 	skillDir = filepath.Join(tmpDir, "skills")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -224,6 +225,49 @@ func TestAdmission_AllowedSkill(t *testing.T) {
 
 	if result.Verdict != VerdictAllowed {
 		t.Errorf("expected verdict %q, got %q", VerdictAllowed, result.Verdict)
+	}
+}
+
+func TestAdmission_BundledSkillIsDiscoveryOnly(t *testing.T) {
+	cfg, store, logger, skillDir := setupTestEnv(t)
+	t.Setenv("CODEX_HOME", filepath.Dir(skillDir))
+	cfg.Guardrail.Connector = "codex"
+	shell := sandbox.New(cfg.OpenShell.Binary, cfg.OpenShell.PolicyDir)
+	w := New(cfg, []string{skillDir}, nil, store, logger, shell, nil, nil)
+
+	skillPath := filepath.Join(skillDir, enforce.BundledSkillContainer, "imagegen")
+	if err := os.MkdirAll(skillPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	evt := InstallEvent{
+		Type: InstallSkill, Name: "imagegen", Path: skillPath, Timestamp: time.Now(),
+	}
+
+	result := w.runAdmission(context.Background(), evt)
+
+	if result.Verdict != VerdictAllowed || result.Reason != "vendor-bundled skill is discovery-only" {
+		t.Fatalf("bundled admission = %+v", result)
+	}
+	if w.isDirectChildDir(filepath.Join(skillDir, enforce.BundledSkillContainer)) {
+		t.Fatal(".system container entered realtime watcher admission")
+	}
+	if action, err := store.GetAction("skill", "imagegen"); err != nil || action != nil {
+		t.Fatalf("bundled skill action = %+v, err=%v", action, err)
+	}
+	scans, err := store.LatestScansByScanner("skill-scanner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scans) != 0 {
+		t.Fatalf("bundled skill produced scanner rows: %+v", scans)
+	}
+}
+
+func TestBundledSkillWatchPathDoesNotExemptArbitrarySystemDirectory(t *testing.T) {
+	t.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex-home"))
+	target := filepath.Join(t.TempDir(), "skills", ".system", "operator-skill")
+	if isBundledSkillWatchPath(target) {
+		t.Fatalf("arbitrary .system path was incorrectly exempted: %s", target)
 	}
 }
 

@@ -2809,6 +2809,10 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("connector %s scoped hook token: %w", conn.Name(), err)
 	}
+	configHome, err := s.connectorLifecycleConfigHome(conn)
+	if err != nil {
+		return fmt.Errorf("connector %s lifecycle config home: %w", conn.Name(), err)
+	}
 
 	workspaceDir := s.currentConfig().ConnectorWorkspaceDir()
 	agentVersion := connector.LoadCachedAgentVersion(s.currentConfig().DataDir, conn.Name())
@@ -2817,6 +2821,7 @@ func (s *Sidecar) runGuardrail(ctx context.Context) error {
 	setupOpts := connector.SetupOpts{
 		DataDir:              s.currentConfig().DataDir,
 		CodexOtelEnvironment: s.currentConfig().Environment,
+		ConfigHome:           configHome,
 		ProxyAddr:            proxyAddr,
 		APIAddr:              apiAddr,
 		// Bake the gateway token into hook scripts so claude-code-hook.sh
@@ -4261,9 +4266,14 @@ func (s *Sidecar) connectorSetupOptsChecked(conn connector.Connector, apiToken, 
 	if err != nil {
 		return connector.SetupOpts{}, err
 	}
+	configHome, err := s.connectorLifecycleConfigHome(conn)
+	if err != nil {
+		return connector.SetupOpts{}, err
+	}
 	return connector.SetupOpts{
 		DataDir:              s.currentConfig().DataDir,
 		CodexOtelEnvironment: s.currentConfig().Environment,
+		ConfigHome:           configHome,
 		ProxyAddr:            proxyAddr,
 		APIAddr:              apiAddr,
 		APIToken:             setupTokens.connectorToken,
@@ -4278,6 +4288,30 @@ func (s *Sidecar) connectorSetupOptsChecked(conn connector.Connector, apiToken, 
 		AgentExecutable:      agentExecutable,
 		HookContractID:       contractResolution.Contract.ContractID,
 	}, nil
+}
+
+// connectorLifecycleConfigHome carries installer-authenticated custody into
+// connector SetupOpts without inventing a Devin vendor environment override.
+// Source installs retain the connector's documented platform defaults when
+// the DefenseClaw-private native lifecycle binding is absent.
+func (s *Sidecar) connectorLifecycleConfigHome(conn connector.Connector) (string, error) {
+	if s == nil || s.currentConfig() == nil || conn == nil ||
+		!strings.EqualFold(strings.TrimSpace(conn.Name()), "devin") {
+		return "", nil
+	}
+	boundHome, bound := os.LookupEnv("DEFENSECLAW_DEVIN_CONFIG_HOME")
+	if !bound {
+		return "", nil
+	}
+	home := s.currentConfig().ConnectorHomeDir("devin")
+	// ConnectorHomeDir is the canonical validator for this private binding. It
+	// returns empty for a non-absolute, non-normalized, or control-bearing path;
+	// require its result to remain the exact installed value so no platform
+	// fallback can silently replace malformed custody.
+	if strings.TrimSpace(home) == "" || home != boundHome {
+		return "", errors.New("DEFENSECLAW_DEVIN_CONFIG_HOME is invalid")
+	}
+	return home, nil
 }
 
 type connectorSetupTokens struct {

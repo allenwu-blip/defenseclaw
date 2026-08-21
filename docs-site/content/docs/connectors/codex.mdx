@@ -137,15 +137,27 @@ DefenseClaw follows the current Codex layouts rather than Claude Code's
 `.mcp.json` convention:
 
 - Skills: `.agents/skills` at every directory from the active working
-  directory to the detected repository root, then `$HOME/.agents/skills`;
-  `/etc/codex/skills` is also included on Unix. `CODEX_HOME` does not redirect
-  personal `.agents/skills`. DefenseClaw intentionally rejects linked or
-  reparse-point skill roots, `.system` containers, children, and markers,
-  including Windows junctions. Codex may load a linked skill, but DefenseClaw
-  does not silently report it as scanned or eligible; copy it into a real
-  contained directory before relying on inventory coverage.
+  directory to the detected repository root, then `$HOME/.agents/skills`, plus
+  `$CODEX_HOME/skills`; `/etc/codex/skills` is also included on Unix.
+  `CODEX_HOME` does not redirect personal `.agents/skills`. Operator-installed
+  children of `$CODEX_HOME/skills` are scanned normally. The exact
+  `$CODEX_HOME/skills/.system` children are vendor-bundled: DefenseClaw lists
+  them in inventory but never scans, blocks, disables, or quarantines them. A
+  directory merely named `.system` anywhere else is not exempt. Linked or
+  reparse-point roots, children, and markers (including Windows junctions) are
+  rejected; copy a linked skill into a real contained directory before relying
+  on inventory coverage.
 - MCP: `[mcp_servers.*]` in candidate project `.codex/config.toml` layers,
-  closest layer first, followed by `$CODEX_HOME/config.toml`.
+  closest layer first, followed by `$CODEX_HOME/config.toml`. The exact
+  URL-only `openaiDeveloperDocs = https://developers.openai.com/mcp` entry in
+  the canonical user config is vendor-bundled: it remains visible with
+  `bundled: true`, but DefenseClaw never scans or enforces it. A same-named
+  project entry, or a user entry with any command, auth, header, query,
+  transport, or other added field, is not exempt. Codex's generated
+  `node_repl` currently has no stable published provenance/schema contract, so
+  it intentionally remains scan-eligible even when the observed local runtime
+  binary is OpenAI-signed. MCP manifests shipped inside Amp skills are also
+  user/workspace assets and remain scan-eligible.
 - Custom agents: standalone `.toml` files in candidate project
   `.codex/agents/` layers and `$CODEX_HOME/agents/`. Inventory validates the
   required `name`, `description`, and `developer_instructions` fields without
