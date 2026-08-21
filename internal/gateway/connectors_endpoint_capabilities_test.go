@@ -71,7 +71,7 @@ func TestConnectorsEndpointPublishesCodexAndClaudeCapabilities(t *testing.T) {
 	}
 }
 
-func TestConnectorsEndpointPublishesOpenCodeMCPOnly(t *testing.T) {
+func TestConnectorsEndpointPublishesOpenCodeReviewedAssets(t *testing.T) {
 	home := t.TempDir()
 	restoreHome, err := connector.BindUserHomeDir(home)
 	if err != nil {
@@ -117,8 +117,14 @@ func TestConnectorsEndpointPublishesOpenCodeMCPOnly(t *testing.T) {
 		"plugins": entry.Capabilities.Plugins,
 		"agents":  entry.Capabilities.Agents,
 	} {
-		if surface.Supported {
-			t.Errorf("OpenCode API overclaimed ordinary %s: %+v", name, surface)
+		if !surface.Supported {
+			t.Errorf("OpenCode API omitted reviewed %s surface: %+v", name, surface)
 		}
+	}
+	if entry.Capabilities.Skills.DiscoveryOnly || !entry.Capabilities.Skills.RequiresOptIn || len(entry.Capabilities.Skills.WritePaths) == 0 {
+		t.Fatalf("OpenCode API skill capability=%+v", entry.Capabilities.Skills)
+	}
+	if !entry.Capabilities.Rules.DiscoveryOnly || !entry.Capabilities.Plugins.DiscoveryOnly || !entry.Capabilities.Agents.DiscoveryOnly {
+		t.Fatalf("OpenCode API discovery-only mismatch: rules=%+v plugins=%+v agents=%+v", entry.Capabilities.Rules, entry.Capabilities.Plugins, entry.Capabilities.Agents)
 	}
 }
