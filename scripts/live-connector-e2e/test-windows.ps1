@@ -218,6 +218,91 @@ try {
     . $workflowRunPathHelper
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
 
+    # GitHub-hosted Windows disables UAC and starts Actions with an elevated
+    # default token whose default owner can be BUILTIN\Administrators. The
+    # shared live lane deliberately uses the reviewed restricted-LUA fallback,
+    # so exercise the exact owner normalization and suspended-child validation
+    # used by that workflow whenever this host exposes the same token shape.
+    if ([DefenseClaw.SetupStandardUserLauncher]::IsCurrentProcessElevated() -and
+        -not [DefenseClaw.SetupStandardUserLauncher]::CurrentElevatedTokenHasLinkedLimitedToken()) {
+        $restrictedOwnerScript = Join-Path $temp 'restricted-owner-probe.ps1'
+        $restrictedOwnerOutput = Join-Path $temp 'restricted-owner-probe.json'
+        $restrictedOwnerBody = @'
+param(
+    [Parameter(Mandatory)][string]$OutputPath,
+    [Parameter(Mandatory)][string]$LauncherSource
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Add-Type -Path $LauncherSource
+$output = [IO.Path]::GetFullPath($OutputPath)
+$stream = [IO.FileStream]::new(
+    $output,
+    [IO.FileMode]::CreateNew,
+    [IO.FileAccess]::Write,
+    [IO.FileShare]::None
+)
+try {
+    $bytes = [Text.Encoding]::ASCII.GetBytes('{}')
+    $stream.Write($bytes, 0, $bytes.Length)
+    $stream.Flush($true)
+} finally {
+    $stream.Dispose()
+}
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$security = [IO.FileSystemAclExtensions]::GetAccessControl(
+    [IO.FileInfo]::new($output),
+    [Security.AccessControl.AccessControlSections]::Owner
+)
+$owner = $security.GetOwner([Security.Principal.SecurityIdentifier])
+$payload = [ordered]@{
+    user_sid = $identity.User.Value
+    owner_sid = $owner.Value
+    elevated = [DefenseClaw.SetupStandardUserLauncher]::IsCurrentProcessElevated()
+    restricted_or_limited = [DefenseClaw.SetupStandardUserLauncher]::IsCurrentProcessRestrictedOrLimited()
+}
+[IO.File]::WriteAllText(
+    $output,
+    ($payload | ConvertTo-Json -Compress),
+    [Text.UTF8Encoding]::new($false)
+)
+'@
+        [IO.File]::WriteAllText(
+            $restrictedOwnerScript,
+            $restrictedOwnerBody,
+            [Text.UTF8Encoding]::new($false)
+        )
+        Set-CurrentUserAsDefaultOwner
+        $probePowerShell = Join-Path $PSHOME 'pwsh.exe'
+        $restrictedLaunch = Invoke-WindowsSetupStandardUserProcess -FilePath $probePowerShell `
+            -ArgumentList @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
+                $restrictedOwnerScript, '-OutputPath', $restrictedOwnerOutput,
+                '-LauncherSource', $setupStandardUserLauncher
+            ) -TimeoutSeconds 30 -WorkingDirectory $temp `
+            -AllowRestrictedLuaFallback -SuppressOutput
+        $restrictedOwner = [IO.File]::ReadAllText(
+            $restrictedOwnerOutput,
+            [Text.Encoding]::UTF8
+        ) | ConvertFrom-Json -ErrorAction Stop
+        $restrictedOwnerSecurity = [IO.FileSystemAclExtensions]::GetAccessControl(
+            [IO.FileInfo]::new($restrictedOwnerOutput),
+            [Security.AccessControl.AccessControlSections]::Owner
+        )
+        $restrictedOwnerSID = $restrictedOwnerSecurity.GetOwner(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+        Assert-True ([string]$restrictedLaunch.LaunchContext -ceq
+                'verified-restricted-lua-default-token-noncertification' -and
+            -not [bool]$restrictedOwner.elevated -and
+            [bool]$restrictedOwner.restricted_or_limited -and
+            [string]$restrictedOwner.user_sid -ceq
+                [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -and
+            [string]$restrictedOwner.owner_sid -ceq [string]$restrictedOwner.user_sid -and
+            $restrictedOwnerSID -ceq [string]$restrictedOwner.user_sid) `
+            'hosted restricted-LUA child is non-elevated, token-validated, and creates current-user-owned files'
+    }
+
     foreach ($acceptedWorkflowRunPath in @(
         '.github/workflows/windows-native.yml',
         '.github/workflows/windows-native.yml@main',
@@ -2336,6 +2421,26 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($windowsLiveJob -notmatch 'shell:\s*bash') 'Windows live jobs never select Bash'
     Assert-True ($windowsLiveJob -match "github.event_name == 'workflow_dispatch'") `
         'Connector Live Windows radar remains manual-only'
+    Assert-True (
+        [regex]::Matches(
+            $windowsLiveJob,
+            '(?m)^\s+\. ./scripts/windows-native-ci\.ps1 -NoRun\s*$'
+        ).Count -eq 3 -and
+        [regex]::Matches(
+            $windowsLiveJob,
+            '(?m)^\s+Set-CurrentUserAsDefaultOwner\s*$'
+        ).Count -eq 3 -and
+        [regex]::Matches(
+            $windowsLiveJob,
+            'Invoke-WindowsSetupStandardUserProcess -FilePath \$pwsh'
+        ).Count -eq 3 -and
+        [regex]::Matches(
+            $windowsLiveJob,
+            '-AllowRestrictedLuaFallback \| Out-Null'
+        ).Count -eq 3 -and
+        $windowsLiveJob -match "'-Operation', 'capture'" -and
+        $windowsLiveJob -match "'-Operation', 'cleanup'"
+    ) 'hosted Windows live run, capture, and cleanup normalize default ownership and use the validated standard-user launcher'
     Assert-True ($releaseWorkflowText -notmatch '(?m)^  windows-real-client-certification:' -and
         $releaseWorkflowText -notmatch 'secrets\.OPENAI_API_KEY' -and
         $releaseWorkflowText -notmatch 'secrets\.ANTHROPIC_API_KEY' -and

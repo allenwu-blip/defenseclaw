@@ -737,20 +737,27 @@ jobs:
           AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
           CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
         run: |
-          ./scripts/live-connector-e2e/run-windows.ps1 `
-            -Layer live `
-            -Connector '${{ matrix.connector }}' `
-            -PackageLiveEvidence `
-            -PackagedSetupPath (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe') `
-            -ExpectedPackageSourceCommit '${{ github.sha }}' `
-            -ExpectedHarnessSourceCommit '${{ github.sha }}' `
-            -ExpectedPackageRunID '${{ steps.package.outputs.package_run_id }}' `
-            -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}' `
-            -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}' `
-            -ExpectedWorkflowRepository '${{ github.repository }}' `
-            -StateRoot $env:DC_WINDOWS_STATE `
-            -ResultsPath $env:DC_E2E_RESULTS `
-            -ArtifactPath (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+          . ./scripts/windows-native-ci.ps1 -NoRun
+          Set-CurrentUserAsDefaultOwner
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          $liveHarness = (Resolve-Path './scripts/live-connector-e2e/run-windows.ps1').Path
+          Invoke-WindowsSetupStandardUserProcess -FilePath $pwsh -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $liveHarness,
+            '-Layer', 'live',
+            '-Connector', '${{ matrix.connector }}',
+            '-PackageLiveEvidence',
+            '-PackagedSetupPath', (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe'),
+            '-ExpectedPackageSourceCommit', '${{ github.sha }}',
+            '-ExpectedHarnessSourceCommit', '${{ github.sha }}',
+            '-ExpectedPackageRunID', '${{ steps.package.outputs.package_run_id }}',
+            '-ExpectedPackageArtifactID', '${{ steps.package.outputs.artifact_id }}',
+            '-ExpectedPackageArtifactDigest', '${{ steps.package.outputs.artifact_digest }}',
+            '-ExpectedWorkflowRepository', '${{ github.repository }}',
+            '-StateRoot', $env:DC_WINDOWS_STATE,
+            '-ResultsPath', $env:DC_E2E_RESULTS,
+            '-ArtifactPath', (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+          ) -TimeoutSeconds 1800 -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -AllowRestrictedLuaFallback | Out-Null
       - name: Upload Windows live results
         if: ${{ always() && steps.select.outputs.run == 'true' && steps.package.outputs.package_run_id != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -762,21 +769,28 @@ jobs:
       - name: Capture Windows diagnostics
         if: ${{ (failure() || cancelled()) && steps.select.outputs.run == 'true' && steps.package.outputs.package_run_id != '' }}
         shell: pwsh
-        run: >-
-          ./scripts/live-connector-e2e/run-windows.ps1
-          -Operation capture
-          -Layer live
-          -Connector '${{ matrix.connector }}'
-          -PackageLiveEvidence
-          -PackagedSetupPath (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe')
-          -ExpectedPackageSourceCommit '${{ github.sha }}'
-          -ExpectedHarnessSourceCommit '${{ github.sha }}'
-          -ExpectedPackageRunID '${{ steps.package.outputs.package_run_id }}'
-          -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}'
-          -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}'
-          -ExpectedWorkflowRepository '${{ github.repository }}'
-          -StateRoot $env:DC_WINDOWS_STATE
-          -ArtifactPath (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+        run: |
+          . ./scripts/windows-native-ci.ps1 -NoRun
+          Set-CurrentUserAsDefaultOwner
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          $liveHarness = (Resolve-Path './scripts/live-connector-e2e/run-windows.ps1').Path
+          Invoke-WindowsSetupStandardUserProcess -FilePath $pwsh -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $liveHarness,
+            '-Operation', 'capture',
+            '-Layer', 'live',
+            '-Connector', '${{ matrix.connector }}',
+            '-PackageLiveEvidence',
+            '-PackagedSetupPath', (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe'),
+            '-ExpectedPackageSourceCommit', '${{ github.sha }}',
+            '-ExpectedHarnessSourceCommit', '${{ github.sha }}',
+            '-ExpectedPackageRunID', '${{ steps.package.outputs.package_run_id }}',
+            '-ExpectedPackageArtifactID', '${{ steps.package.outputs.artifact_id }}',
+            '-ExpectedPackageArtifactDigest', '${{ steps.package.outputs.artifact_digest }}',
+            '-ExpectedWorkflowRepository', '${{ github.repository }}',
+            '-StateRoot', $env:DC_WINDOWS_STATE,
+            '-ArtifactPath', (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+          ) -TimeoutSeconds 600 -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -AllowRestrictedLuaFallback | Out-Null
       - name: Upload Windows diagnostics on failure
         if: ${{ (failure() || cancelled()) && steps.select.outputs.run == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -789,20 +803,27 @@ jobs:
       - name: Windows cleanup safety net
         if: ${{ always() && steps.select.outputs.run == 'true' && steps.package.outputs.package_run_id != '' }}
         shell: pwsh
-        run: >-
-          ./scripts/live-connector-e2e/run-windows.ps1
-          -Operation cleanup
-          -Layer live
-          -Connector '${{ matrix.connector }}'
-          -PackageLiveEvidence
-          -PackagedSetupPath (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe')
-          -ExpectedPackageSourceCommit '${{ github.sha }}'
-          -ExpectedHarnessSourceCommit '${{ github.sha }}'
-          -ExpectedPackageRunID '${{ steps.package.outputs.package_run_id }}'
-          -ExpectedPackageArtifactID '${{ steps.package.outputs.artifact_id }}'
-          -ExpectedPackageArtifactDigest '${{ steps.package.outputs.artifact_digest }}'
-          -ExpectedWorkflowRepository '${{ github.repository }}'
-          -StateRoot $env:DC_WINDOWS_STATE
+        run: |
+          . ./scripts/windows-native-ci.ps1 -NoRun
+          Set-CurrentUserAsDefaultOwner
+          $pwsh = Join-Path $PSHOME 'pwsh.exe'
+          $liveHarness = (Resolve-Path './scripts/live-connector-e2e/run-windows.ps1').Path
+          Invoke-WindowsSetupStandardUserProcess -FilePath $pwsh -ArgumentList @(
+            '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $liveHarness,
+            '-Operation', 'cleanup',
+            '-Layer', 'live',
+            '-Connector', '${{ matrix.connector }}',
+            '-PackageLiveEvidence',
+            '-PackagedSetupPath', (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe'),
+            '-ExpectedPackageSourceCommit', '${{ github.sha }}',
+            '-ExpectedHarnessSourceCommit', '${{ github.sha }}',
+            '-ExpectedPackageRunID', '${{ steps.package.outputs.package_run_id }}',
+            '-ExpectedPackageArtifactID', '${{ steps.package.outputs.artifact_id }}',
+            '-ExpectedPackageArtifactDigest', '${{ steps.package.outputs.artifact_digest }}',
+            '-ExpectedWorkflowRepository', '${{ github.repository }}',
+            '-StateRoot', $env:DC_WINDOWS_STATE
+          ) -TimeoutSeconds 1200 -WorkingDirectory $env:GITHUB_WORKSPACE `
+            -AllowRestrictedLuaFallback | Out-Null
 
   # Protected delta-only lane for Copilot's supported native Windows Setup
   # bootstrap. The public CLI/TUI classification remains supported; live=false
