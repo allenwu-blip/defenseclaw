@@ -544,7 +544,7 @@ func TestConnectorLifecycleSemantics(t *testing.T) {
 		{"claudecode", "PostToolUseFailure", CorrelationLifecycleToolEnd},
 		{"hermes", "pre_llm_call", CorrelationLifecycleTurnStart},
 		{"cursor", "beforeSubmitPrompt", CorrelationLifecycleTurnStart},
-		{"windsurf", "post_cascade_response", CorrelationLifecycleTurnEnd},
+		{"devin", "Stop", CorrelationLifecycleTurnEnd},
 		{"geminicli", "BeforeTool", CorrelationLifecycleToolStart},
 		{"copilot", "userPromptSubmitted", CorrelationLifecycleTurnStart},
 		{"openhands", "user_prompt_submit", CorrelationLifecycleTurnStart},

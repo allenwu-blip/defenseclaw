@@ -28,8 +28,8 @@ def test_windows_release_metadata_is_exact() -> None:
         "codex",
         "copilot",
         "cursor",
+        "devin",
         "hermes",
-        "windsurf",
         "opencode",
         "omnigent",
         "antigravity",
@@ -65,7 +65,7 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
     assert "Windows ARM64" in text and "Not certified" in text
     assert "| Codex | `codex` | **Supported**" in text
     assert "| Claude Code | `claudecode` | **Supported**" in text
-    assert "| Devin Desktop — legacy Cascade only | `windsurf` | **Supported**" in text
+    assert "| Devin | `devin` | **Supported**" in text
     assert "| OpenCode | `opencode` | **Supported**" in text
     assert "| OmniGent | `omnigent` | **Supported — native degraded**" in text
     assert "| Copilot CLI, Antigravity | `copilot`, `antigravity` | **Supported**" in text
@@ -128,7 +128,7 @@ def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> Non
 
     assert "| Claude Code connector setup | **Supported**" in capabilities
     assert "| Copilot CLI and Antigravity setup | **Supported**" in capabilities
-    assert "`amp`, `claude-code`, `codex`, `cursor`, `windsurf`, `hermes`" in capabilities
+    assert "`amp`, `claude-code`, `codex`, `cursor`, `devin`, `hermes`" in capabilities
     assert "`copilot`, and `antigravity` are supported and selectable" in capabilities
     assert "selectable previews" not in capabilities
     assert "`claude-code` is the certified connector alias" not in capabilities
@@ -268,7 +268,7 @@ def test_connector_matrix_delegates_current_support_to_the_website() -> None:
         "codex",
         "claudecode",
         "cursor",
-        "windsurf",
+        "devin",
         "copilot",
         "antigravity",
         "opencode",
@@ -280,6 +280,29 @@ def test_connector_matrix_delegates_current_support_to_the_website() -> None:
         "zeptoclaw",
     ):
         assert f'<ConnectorLabel id="{connector_id}" />' in compatibility
+
+
+def test_public_docs_expose_devin_and_no_windsurf_setup_surface() -> None:
+    docs_root = ROOT / "docs-site"
+    public_sources = [
+        *sorted((docs_root / "content").rglob("*.mdx")),
+        *sorted((docs_root / "data").glob("*.json")),
+        *sorted((docs_root / "data").glob("*.ts")),
+        *sorted((docs_root / "lib").glob("*.ts")),
+    ]
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in public_sources)
+
+    assert "defenseclaw setup windsurf" not in combined
+    assert "/docs/connectors/windsurf" not in combined
+    assert '<ConnectorLabel id="windsurf"' not in combined
+    assert '"id": "windsurf"' not in combined
+    assert "id: 'windsurf'" not in combined
+    assert "legacy Cascade" not in combined
+    assert "Devin Desktop" not in combined
+    assert "defenseclaw setup devin" in combined
+    assert "/docs/connectors/devin" in combined
+    assert '<ConnectorLabel id="devin" />' in combined
+    assert '"id": "devin"' in combined
 
 
 def test_codex_compatibility_docs_list_current_versioned_contracts() -> None:
@@ -535,7 +558,6 @@ def test_omnigent_required_ci_claims_remain_degraded_and_non_live() -> None:
         "hermes",
         "omnigent",
         "opencode",
-        "windsurf",
     }
     assert required_connectors.isdisjoint({"openhands", "openclaw", "zeptoclaw"})
     omnigent_job = jobs["omnigent-native-degraded"]

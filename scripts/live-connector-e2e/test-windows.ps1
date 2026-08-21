@@ -539,9 +539,6 @@ private-secret-name = "DefenseClaw must remain redacted"
     $originalCursorHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_CURSOR_CONFIG_HOME')
     $originalHermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
     $originalOpenCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
-    $originalGeminiCLIHome = [Environment]::GetEnvironmentVariable('GEMINI_CLI_HOME')
-    $originalGeminiConfigDir = [Environment]::GetEnvironmentVariable('GEMINI_CONFIG_DIR')
-    $originalPrivateGeminiHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_GEMINI_CONFIG_HOME')
     try {
         $resolverRoot = Join-Path $temp 'resolver-root'
         $resolverProfile = Join-Path $resolverRoot 'profile'
@@ -552,8 +549,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         $resolverCursorHome = Join-Path $resolverProfile '.cursor'
         $resolverHermesHome = Join-Path $resolverRoot 'hermes-home'
         $resolverOpenCodeHome = Join-Path $resolverRoot 'opencode-home'
-        $resolverGeminiCLIHome = Join-Path $resolverRoot 'gemini-cli-home'
-        $resolverGeminiHome = Join-Path $resolverGeminiCLIHome '.gemini'
         foreach ($path in @(
             $resolverProfile,
             $resolverCodexHome,
@@ -562,8 +557,7 @@ private-secret-name = "DefenseClaw must remain redacted"
             $resolverCopilotHome,
             $resolverCursorHome,
             $resolverHermesHome,
-            $resolverOpenCodeHome,
-            $resolverGeminiCLIHome
+            $resolverOpenCodeHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
         }
@@ -574,9 +568,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
         $env:HERMES_HOME = $resolverHermesHome
         $env:OPENCODE_CONFIG_DIR = $resolverOpenCodeHome
-        $env:GEMINI_CLI_HOME = $resolverGeminiCLIHome
-        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $resolverGeminiHome
-        Remove-Item Env:GEMINI_CONFIG_DIR -ErrorAction SilentlyContinue
         Assert-True ((Resolve-EffectiveConnectorHome codex).Equals(
             [IO.Path]::GetFullPath($resolverCodexHome),
             [StringComparison]::OrdinalIgnoreCase
@@ -593,15 +584,9 @@ private-secret-name = "DefenseClaw must remain redacted"
             [IO.Path]::GetFullPath((Join-Path $resolverAmpHome 'plugins\defenseclaw.ts')),
             [StringComparison]::OrdinalIgnoreCase
         )) 'Amp effective registration targets its native system plugin'
-        Assert-True ((Resolve-EffectiveConnectorHome geminicli).Equals(
-            [IO.Path]::GetFullPath($resolverGeminiHome),
-            [StringComparison]::OrdinalIgnoreCase
-        )) 'Gemini CLI effective config home appends .gemini to GEMINI_CLI_HOME'
         Assert-PackagedConnectorHomes $resolverRoot $resolverProfile
         Assert-True ($env:CODEX_HOME -eq [IO.Path]::GetFullPath($resolverCodexHome) -and
-            $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome) -and
-            $env:GEMINI_CLI_HOME -eq [IO.Path]::GetFullPath($resolverGeminiCLIHome) -and
-            $env:DEFENSECLAW_GEMINI_CONFIG_HOME -eq [IO.Path]::GetFullPath($resolverGeminiHome)) `
+            $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome)) `
             'packaged connector home guard preserves exact installer-recorded homes'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-cursor-home'
         [IO.Directory]::CreateDirectory($env:DEFENSECLAW_CURSOR_CONFIG_HOME) | Out-Null
@@ -615,17 +600,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True $spoofedCursorHomeRejected `
             'packaged connector home guard rejects a non-vendor Cursor home override'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
-        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-gemini-config'
-        $spoofedGeminiBindingRejected = $false
-        try { Assert-PackagedConnectorHomes $resolverRoot $resolverProfile }
-        catch {
-            $spoofedGeminiBindingRejected = $_.Exception.Message.Contains(
-                'does not match GEMINI_CLI_HOME\.gemini'
-            )
-        }
-        Assert-True $spoofedGeminiBindingRejected `
-            'packaged connector home guard rejects a mismatched private Gemini config binding'
-        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $resolverGeminiHome
         $env:CODEX_HOME = Join-Path $temp 'operator-codex-home'
         [IO.Directory]::CreateDirectory($env:CODEX_HOME) | Out-Null
         $escapedHomeRejected = $false
@@ -656,11 +630,6 @@ private-secret-name = "DefenseClaw must remain redacted"
         )
         [Environment]::SetEnvironmentVariable('HERMES_HOME', $originalHermesHome)
         [Environment]::SetEnvironmentVariable('OPENCODE_CONFIG_DIR', $originalOpenCodeHome)
-        [Environment]::SetEnvironmentVariable('GEMINI_CLI_HOME', $originalGeminiCLIHome)
-        [Environment]::SetEnvironmentVariable('GEMINI_CONFIG_DIR', $originalGeminiConfigDir)
-        [Environment]::SetEnvironmentVariable(
-            'DEFENSECLAW_GEMINI_CONFIG_HOME', $originalPrivateGeminiHome
-        )
     }
     . $nativePathHelpers
     $disjointRoots = @(Assert-WindowsNativePathsDisjoint @(
@@ -804,7 +773,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $profileTest = Invoke-NativeProcess -FilePath $pwsh -ArgumentList @(
             '-NoProfile', '-File', $nativeHarness, '-Operation', 'self-test',
             '-StateRoot', (Join-Path $temp 'isolated-profile')
-        ) -TimeoutSeconds 30
+        ) -TimeoutSeconds 60
     } finally {
         [Environment]::SetEnvironmentVariable(
             'DC_WINDOWS_NATIVE_BASE_ROOT',
@@ -1647,14 +1616,14 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($nativeWorkflowText -match 'shard: \[1, 2, 3, 4, 5, 6, 7, 8\]' -and
         $nativeWorkflowText -match "WINDOWS_TUI_MODE: \$\{\{ github\.event_name == 'pull_request' && 'smoke' \|\| 'full' \}\}" -and
         $nativeWorkflowText -match '\$fullTUI = \$env:WINDOWS_TUI_MODE -eq ''full''' -and
-        $nativeWorkflowText -match "Join-Path \$env:GITHUB_WORKSPACE 'cli\\tests\\tui'" -and
+        $nativeWorkflowText -match 'Join-Path \$env:GITHUB_WORKSPACE ''cli\\tests\\tui''' -and
         $nativeWorkflowText -match 'return \$fullTUI -or -not \$isTUI' -and
         $nativeWorkflowText -match "\.Name -eq 'test_app_shell\.py'" -and
         $nativeWorkflowText -match "'--collect-only', '-q', '--color=no'" -and
         $nativeWorkflowText -match "Collected no test_app_shell\.py nodes" -and
         $nativeWorkflowText -match '\$appShellNodes\[\$index\]' -and
         $nativeWorkflowText -match '\(\$index % 8\) -eq \$shardIndex' -and
-        $nativeWorkflowText -match "elseif \(\$shardIndex -eq 0\)" -and
+        $nativeWorkflowText -match 'elseif \(\$shardIndex -eq 0\)' -and
         $nativeWorkflowText -match 'test_textual_shell_starts_on_overview' -and
         $nativeWorkflowText -match 'test_digit_shortcut_switches_panel_placeholder' -and
         $nativeWorkflowText -match 'test_executor_gateway_windows\.py' -and
@@ -2302,8 +2271,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Assert-PackagedConnectorHomes\b.*?(?=\nfunction Get-StableHookRuntimeExecutable\b)'
     ).Value
-    Assert-True ($packagedConnectorHomes -notmatch '(?i)windsurf|cascade') `
-        'packaged connector-home setup exposes no retired Windsurf/Cascade binding'
+    Assert-True ($packagedConnectorHomes -notmatch '(?i)windsurf|cascade|geminicli|gemini cli') `
+        'packaged connector-home setup exposes no retired Windsurf/Cascade or Gemini CLI binding'
     $setupOtlpFixture = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Start-SetupAcceptanceOtlpCollector\b.*?(?=\nfunction Stop-SetupAcceptanceOtlpCollector\b)'

@@ -23,7 +23,7 @@ import (
 )
 
 var windowsSupportedConnectorNames = []string{
-	"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf",
+	"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "devin", "hermes", "omnigent", "opencode",
 }
 
 var windowsPreviewConnectorNames = []string{}

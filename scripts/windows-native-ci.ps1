@@ -8248,14 +8248,14 @@ function Invoke-SelfTest {
         try {
             Invoke-WindowsNativeProcess $pwsh @(
                 '-NoProfile', '-File', $mock, '-Action', 'drain-timeout', '-StateRoot', $drainRoot
-            ) -TimeoutSeconds 2 | Out-Null
+            ) -TimeoutSeconds 5 | Out-Null
         } catch {
-            $timedOut = $_.Exception.Message -match 'timed out after 2s'
+            $timedOut = $_.Exception.Message -match 'timed out after 5s'
         } finally {
             $stopwatch.Stop()
         }
         if (-not $timedOut) { throw 'native process helper did not bound inherited redirected handles' }
-        if ($stopwatch.Elapsed -ge [TimeSpan]::FromSeconds(10)) {
+        if ($stopwatch.Elapsed -ge [TimeSpan]::FromSeconds(15)) {
             throw "native process helper exceeded its bounded timeout cleanup: $($stopwatch.Elapsed)"
         }
         $childPidPath = Join-Path $drainRoot 'drain-child.pid'

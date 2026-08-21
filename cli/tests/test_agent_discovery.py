@@ -91,7 +91,7 @@ def test_devin_windows_version_probes_exact_cli_for_supported_version(monkeypatc
         "_version_for_binary",
         lambda path, args, **kwargs: (
             calls.append((path, args, kwargs["require_trusted_binary_paths"]))
-            or "3000.4.25",
+            or "devin 3000.4.25 (7e8e528a)",
             "",
         ),
     )
@@ -111,6 +111,34 @@ def test_devin_windows_version_probes_exact_cli_for_supported_version(monkeypatc
             True,
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "Devin 3000.4.25 (7e8e528a)",
+        "devin 03000.4.25 (7e8e528a)",
+        "devin 3000.4.25 (7e8e528g)",
+        "devin 3000.4.25 (7e8e528a) extra",
+        "prefix devin 3000.4.25 (7e8e528a)",
+        "devin 3000.4.25 runtime 1.2.3",
+    ),
+)
+def test_devin_version_probe_does_not_extract_from_noncanonical_output(
+    monkeypatch,
+    output: str,
+) -> None:
+    monkeypatch.setattr(ad, "_is_windows_host", lambda: False)
+    monkeypatch.setattr(ad, "_version_for_binary", lambda *_args, **_kwargs: (output, ""))
+
+    version, error = ad._version_for_agent_binary(
+        "devin",
+        "/opt/devin/bin/devin",
+        ("--version",),
+    )
+
+    assert error == ""
+    assert version == output
 
 
 def test_antigravity_windows_version_probe_requires_canonical_stable_digest(monkeypatch) -> None:

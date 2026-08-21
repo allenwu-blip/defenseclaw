@@ -6,7 +6,7 @@ keywords:
   - DefenseClaw Windows Claude Code
   - DefenseClaw Windows Amp
   - DefenseClaw Windows Cursor
-  - DefenseClaw Windows legacy Cascade
+  - DefenseClaw Windows Devin
   - DefenseClaw Windows Hermes Agent
   - DefenseClaw Windows OpenCode
   - DefenseClaw Windows OmniGent
@@ -17,9 +17,9 @@ keywords:
 
 Native Windows enforcement is connector-native and proxy-free. An available
 agent invokes its managed native hook or awaited policy path. Codex, Claude Code,
-and Hermes invoke `defenseclaw-hook.exe`; Amp loads an owner-only TypeScript
-system-policy plugin; Cursor and legacy Cascade use managed native PowerShell
-adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
+Devin, and Hermes invoke `defenseclaw-hook.exe`; Amp loads an owner-only TypeScript
+system-policy plugin; Cursor uses a managed native PowerShell adapter;
+OpenCode auto-loads the DefenseClaw JavaScript bridge;
 OmniGent imports a Python policy bridge into its selected native `uv tool`
 environment.
 The hook or plugin
@@ -52,7 +52,7 @@ defenseclaw setup codex --mode observe
 defenseclaw setup claude-code --mode observe
 defenseclaw setup amp --mode observe
 defenseclaw setup cursor --mode observe
-defenseclaw setup windsurf --mode observe
+defenseclaw setup devin --mode observe
 defenseclaw setup hermes --mode observe
 defenseclaw setup opencode --mode observe
 defenseclaw setup omnigent --mode observe
@@ -69,7 +69,7 @@ defenseclaw setup claude-code --mode action
 defenseclaw setup amp --mode action
 # Cursor action uses event-native deny and failClosed=true; native HITL stays disabled.
 defenseclaw setup cursor --mode action --no-human-approval
-defenseclaw setup windsurf --mode action
+defenseclaw setup devin --mode action
 defenseclaw setup hermes --mode action
 defenseclaw setup opencode --mode action
 defenseclaw setup omnigent --mode action
@@ -252,61 +252,46 @@ same-name selection remain unverified. The payload `cursor_version` identifies
 the Cursor application/Desktop; `agent --version` remains separate Agent CLI
 evidence. Supported availability does not fill or imply that evidence.
 
-## Legacy Cascade (`windsurf`)
+## Devin
 
-This connector covers only the legacy Cascade agent in Devin Desktop. Devin Local
-is the current default for new tabs and uses separate lifecycle hooks and
-configuration; Devin Local, cloud agents, and ACP are unsupported by this
-connector.
+The native Devin connector is pinned to CLI `3000.4.25`. Windows Setup accepts
+only `%LOCALAPPDATA%\devin\cli\bin\devin.exe` for the current user after an
+exact version check, a regular non-reparse path check, a valid Authenticode
+chain, and an exact `Exafunction, Inc.` signer check. A different PATH-resolved
+binary does not satisfy admission.
 
-DefenseClaw binds the connector to the signed-in user's Windows Profile Known
-Folder and manages only
-`<bound-profile>\.codeium\windsurf\hooks.json`. The binding is persisted for
-repair, upgrade, reconciliation, and uninstall; maintenance never guesses from
-an ambient `USERPROFILE`. Existing top-level values, events, and foreign hook
-handlers are preserved.
+DefenseClaw manages `%APPDATA%\devin\config.json` for user hooks or an
+explicitly pinned `<workspace>\.devin\hooks.v1.json` for project hooks. It
+preserves foreign JSONC content and does not write Devin's Claude-compatibility
+hook locations. The registered command invokes the exact packaged
+`defenseclaw-hook.exe` directly; no PowerShell adapter, Bash, Git Bash,
+Cygwin/MSYS, WSL, Docker, VM, or proxy is required.
 
-The connector captures the managed backup for this exact file before writing.
-It then requires one native DefenseClaw handler on every documented event,
-publishes the `windsurf-hooks-v1` lock/runtime metadata, and only afterward
-publishes Windsurf as active. Failure rolls back the partial connector instead
-of leaving another connector setup to repair it. The optional bound-profile
-`mcp_config.json` is inventory only and is not a hook-health prerequisite.
+The `devin-hooks-v1` contract registers exactly eight events:
 
-System/`ProgramData` and workspace hook files plus enterprise, Team,
-cloud-dashboard, and MDM policy are not managed. Their precedence and effective
-deployment remain unverified, so this per-user connector does not claim
-authoritative enforcement across those layers.
-
-Cascade's documented Windows transport runs a hook's `powershell` field via
-`powershell -Command`. DefenseClaw writes no `command` fallback. Its generated
-`windsurf-hook.ps1` adapter uses only native Windows processes, forwards the
-vendor JSON stdin and child stdout/stderr, waits for the exact packaged
-`defenseclaw-hook.exe`, and returns the child status unchanged. There is no
-Bash, Git Bash, Cygwin/MSYS, WSL, Docker, VM, or PATH-resolved executable in
-this path.
-
-The registration covers all twelve documented Cascade events:
-
-| Role | Events |
+| Devin event | Action-mode role |
 | --- | --- |
-| Blocking pre-hooks | `pre_user_prompt`, `pre_read_code`, `pre_write_code`, `pre_run_command`, `pre_mcp_tool_use` |
-| Non-blocking post-hooks | `post_read_code`, `post_write_code`, `post_run_command`, `post_mcp_tool_use`, `post_setup_worktree` |
-| Asynchronous response hooks | `post_cascade_response`, `post_cascade_response_with_transcript` |
+| `PreToolUse` | Can return top-level `decision: "block"` before execution. |
+| `PostToolUse` | Inspects `tool_response`; completed work cannot be undone. Additional context may be returned. |
+| `PermissionRequest` | Can return a block decision; no native resumable ask is claimed. |
+| `UserPromptSubmit` | Can block before the turn or return additional context. |
+| `Stop` | Can return a block decision through the documented response. |
+| `PostCompaction` | Observation only. |
+| `SessionStart` | Lifecycle observation; may return additional context. |
+| `SessionEnd` | Lifecycle teardown observation. |
 
-Cascade's exit contract is exact: exit `0` proceeds, exit `2` blocks only the
-five pre-hooks and shows stderr to the agent, and every other exit proceeds.
-Post-hooks cannot block; the two Cascade response hooks run asynchronously.
-Restricted Mode disables hooks entirely, so DefenseClaw cannot claim
-enforcement while that workspace mode is active. `defenseclaw doctor` reports
-these boundaries with adapter/hash/registration drift. Because Restricted Mode
-is a workspace UI state with no documented passive local signal, Doctor marks
-that state unverified instead of inferring it from event counters. Zero
-counters do not prove activation, failure, or certification.
+Exit `2` blocks and every other hook error fails open. `session_id` and
+per-turn `prompt_id` support conversation/turn correlation, but Devin publishes
+no stable per-tool invocation ID, so cross-event tool pairing remains
+detection-only. Restricted Mode disables hooks and agents entirely. A
+`confirm` verdict remains available in audit but cannot be approved and
+resumed from the DefenseClaw TUI.
 
-Cascade has no native hook ask/HITL response. A `confirm` verdict uses the
-connector's configured immediate fallback and remains visible as `raw_action`
-in audit; it cannot be approved and resumed from the DefenseClaw TUI.
+Cloud Devin execution, proxy/ACP transport, native OTLP, closed-beta plugins,
+sandboxing, and managed higher-layer enforcement are outside this connector's
+support boundary. Old Windsurf/Cascade state is recognized only inside
+receipt-bound installer cleanup and migration; it is not a setup target or
+runtime connector.
 
 ## OpenCode
 
@@ -455,16 +440,15 @@ defenseclaw guardrail fail-mode
 defenseclaw guardrail fail-mode closed --connector codex --yes
 defenseclaw guardrail fail-mode closed --connector claudecode --yes
 defenseclaw guardrail fail-mode closed --connector cursor --yes
-defenseclaw guardrail fail-mode closed --connector windsurf --yes
+defenseclaw guardrail fail-mode closed --connector devin --yes
 defenseclaw guardrail fail-mode closed --connector opencode --yes
 defenseclaw guardrail status
 ```
 
-For legacy Cascade, “closed” means DefenseClaw adapter availability or invalid
-response failures become the vendor's blocking exit `2`. It does not broaden
-Cascade's semantics: arbitrary non-`2` hook errors still fail open, only the
-five documented pre-hooks can block, and Restricted Mode still disables all
-hooks.
+For Devin, “closed” means DefenseClaw availability or invalid-response failures
+become the vendor's blocking exit `2` only on the four declared block-capable
+events. It does not make other hook errors blocking, and Restricted Mode still
+disables all hooks and agents.
 
 <Callout type="warning" title="Hermes failures are always fail open">
 Hermes only honors a valid synchronous JSON response. Its official hook

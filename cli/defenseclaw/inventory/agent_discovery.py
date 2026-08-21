@@ -1780,7 +1780,7 @@ def _version_for_agent_binary(
             return "", "official Antigravity CLI changed during its version probe"
         return version, ""
 
-    return _version_for_binary(
+    version, error = _version_for_binary(
         binary_path,
         version_args,
         require_trusted_binary_paths=(
@@ -1788,6 +1788,40 @@ def _version_for_agent_binary(
         ),
         data_dir=data_dir,
     )
+    if name == "devin" and not error:
+        version = _normalize_devin_cli_version_output(version)
+    return version, error
+
+
+def _normalize_devin_cli_version_output(output: str) -> str:
+    """Extract the version from Devin's exact canonical ``--version`` banner.
+
+    The native CLI reports ``devin <semver> (<8-char git revision>)``.  Keep
+    this parser deliberately narrower than general version discovery: any
+    extra field, non-canonical numeric component, or malformed revision is
+    returned unchanged so the exact connector-contract gate rejects it.
+    """
+
+    fields = output.split(" ")
+    if len(fields) != 3 or fields[0] != "devin":
+        return output
+
+    version = fields[1]
+    components = version.split(".")
+    if len(components) != 3:
+        return output
+    for component in components:
+        if not component or any(character not in "0123456789" for character in component):
+            return output
+        if len(component) > 1 and component.startswith("0"):
+            return output
+
+    revision = fields[2]
+    if len(revision) != 10 or not revision.startswith("(") or not revision.endswith(")"):
+        return output
+    if any(character not in "0123456789abcdef" for character in revision[1:-1]):
+        return output
+    return version
 
 
 def _is_canonical_antigravity_windows_binary(binary_path: str) -> bool:

@@ -57,7 +57,7 @@
         "name": "connector",
         "label": "Connector",
         "type": "custom",
-        "query": "openclaw,codex,claudecode,zeptoclaw,hermes,cursor,windsurf,copilot,openhands,antigravity,opencode,amp,omnigent",
+        "query": "openclaw,codex,claudecode,zeptoclaw,hermes,cursor,devin,copilot,openhands,antigravity,opencode,amp,omnigent",
         "multi": true,
         "includeAll": true,
         "allValue": ".+",
@@ -101,8 +101,8 @@
             "value": "cursor"
           },
           {
-            "text": "windsurf",
-            "value": "windsurf"
+            "text": "devin",
+            "value": "devin"
           },
           {
             "text": "copilot",

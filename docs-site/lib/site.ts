@@ -72,7 +72,7 @@ export const defaultKeywords = [
   'Claude Code',
   'Codex',
   'Cursor',
-  'Windsurf',
+  'Devin',
   'GitHub Copilot CLI',
   'MCP scanner',
   'AI policy',

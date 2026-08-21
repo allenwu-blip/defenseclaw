@@ -604,6 +604,27 @@ func TestHookInvocationCommand(t *testing.T) {
 		t.Errorf("isNativeHookCommand(%q) = false, want true", hermes)
 	}
 
+	// Devin feeds its command field to bash on Windows. The immutable system
+	// PowerShell path is a POSIX literal and the encoded script synchronously
+	// waits for the GUI-subsystem hook while preserving its standard handles.
+	devin := hookInvocationCommandFor("windows", "devin", unix)
+	wantDevin := windowsDevinBashHookCommand(windowsExe)
+	if devin != wantDevin {
+		t.Errorf("devin command = %q, want %q", devin, wantDevin)
+	}
+	wantOuter := "'" + strings.ReplaceAll(windowsSystemPowerShellExe(), `\`, "/") + "' -NoLogo"
+	if !strings.HasPrefix(devin, wantOuter) || strings.Contains(devin, "& ") ||
+		strings.Contains(strings.ToLower(devin), "bash") || strings.Contains(devin, ".ps1") {
+		t.Errorf("devin command contains an invalid awaited wrapper: %q", devin)
+	}
+	decodedDevin := decodePowerShellEncodedCommandForTest(t, devin)
+	if want := windowsNativePowerShellStartForTest(windowsExe, "devin"); !strings.Contains(decodedDevin, want) {
+		t.Errorf("decoded devin command = %q, want invocation %q", decodedDevin, want)
+	}
+	if !isNativeHookCommand(devin) {
+		t.Errorf("isNativeHookCommand(%q) = false, want true", devin)
+	}
+
 	// Antigravity's direct-exec parser does not dequote command paths. Keep the
 	// visible command tokenizer-safe and put the absolute managed hook path in a
 	// PowerShell encoded command so install roots containing spaces still work.
@@ -694,6 +715,92 @@ func TestWindowsHermesDirectHookCommandQuotesAndRejectsUnsafePaths(t *testing.T)
 		if got := windowsHermesDirectHookCommand(invalid); got != "" {
 			t.Errorf("unsafe Hermes path %q produced command %q", invalid, got)
 		}
+	}
+}
+
+func TestWindowsDevinBashHookCommandUsesAwaitedPowerShellBoundaryAndRejectsUnsafePaths(t *testing.T) {
+	valid := `C:\Users\Kevin O'Brien\Defense Claw $Preview\defenseclaw-hook.exe`
+	setHookBinaryOverride(t, valid)
+	inner := windowsNativePowerShellHookCommandForBinary("devin", valid)
+	powershell := windowsSystemPowerShellExe()
+	want := "'" + strings.ReplaceAll(powershell, `\`, "/") + "'" + inner[len(powershell):]
+	if got := windowsDevinBashHookCommand(valid); got != want {
+		t.Fatalf("Devin awaited command = %q, want %q", got, want)
+	}
+	if !isNativeHookCommand(want) {
+		t.Fatalf("quoted Devin direct command was not recognized as owned: %q", want)
+	}
+	for _, invalid := range []string{
+		`defenseclaw-hook.exe`,
+		`C:\Defense"Claw\defenseclaw-hook.exe`,
+		"C:\\DefenseClaw\\defenseclaw-hook.exe\nother.exe",
+	} {
+		if got := windowsDevinBashHookCommand(invalid); got != "" {
+			t.Errorf("unsafe Devin path %q produced command %q", invalid, got)
+		}
+	}
+}
+
+func TestWindowsDevinBashHookCommandAwaitsGUIHookWithStdio(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows hook integration is Windows-specific")
+	}
+
+	root := t.TempDir()
+	home := filepath.Join(root, "state")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatalf("create isolated hook home: %v", err)
+	}
+	helperDir := filepath.Join(root, "Defense Claw $Preview")
+	if err := os.MkdirAll(helperDir, 0o700); err != nil {
+		t.Fatalf("create hook binary directory: %v", err)
+	}
+	helper := filepath.Join(helperDir, "defenseclaw-hook.exe")
+	packageDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("resolve connector package directory: %v", err)
+	}
+	repoRoot := packageDir
+	for i := 0; i < 3; i++ {
+		repoRoot = filepath.Dir(repoRoot)
+	}
+	build := exec.Command("go", "build", "-ldflags", "-H=windowsgui", "-o", helper, "./cmd/defenseclaw-hook")
+	build.Dir = repoRoot
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build real GUI hook: %v\n%s", buildErr, output)
+	}
+	setHookBinaryOverride(t, helper)
+
+	command := windowsDevinBashHookCommand(helper)
+	ctx, cancel := context.WithTimeout(context.Background(), windowsNativePowerShellTestTimeout)
+	defer cancel()
+	bash, lookErr := exec.LookPath("bash.exe")
+	if lookErr != nil {
+		t.Skip("bash.exe unavailable for Devin's documented Windows shell boundary")
+	}
+	cmd := exec.CommandContext(ctx, bash, "-lc", command)
+	cmd.Env = minimalWindowsHookTestEnvironment(
+		"PSModuleAnalysisCachePath="+filepath.Join(root, "module-analysis-cache"),
+		"DEFENSECLAW_HOME="+home,
+		"DEFENSECLAW_STRICT_AVAILABILITY=1",
+		"DEFENSECLAW_GATEWAY_ADDR=127.0.0.1:1",
+	)
+	cmd.Stdin = strings.NewReader(`{"hook_event_name":"SessionStart","session_id":"fixture"}`)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("Devin awaited command exceeded %s: %v", windowsNativePowerShellTestTimeout, ctx.Err())
+	}
+	if got := windowsProcessExitCodeForTest(t, runErr); got != 2 {
+		t.Fatalf("Devin awaited command exit = %d, want fail-closed 2\nstdout: %s\nstderr: %s", got, stdout.String(), stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != `{"decision":"block","reason":"DefenseClaw hook failed closed"}` {
+		t.Fatalf("Devin awaited command stdout = %q", got)
+	}
+	if !strings.Contains(strings.ToLower(stderr.String()), "missing gateway token") {
+		t.Fatalf("Devin awaited command lost native hook stderr: %q", stderr.String())
 	}
 }
 

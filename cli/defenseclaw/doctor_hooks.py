@@ -2994,7 +2994,16 @@ def _command_target(
         value = value[len(prefix) :].strip()
     if any(char in value for char in "\r\n\x00|<>"):
         raise _InspectionError("malformed", "registered hook command contains shell control operators")
-    parts = _split_windows(value)
+    if connector == "devin" and value.startswith("'"):
+        # Migration-only support for the direct POSIX-quoted form emitted
+        # before authentic testing proved that bash does not await the release
+        # GUI-subsystem hook with inherited stdin/stdout.
+        try:
+            parts = shlex.split(value, posix=True)
+        except ValueError as exc:
+            raise _InspectionError("malformed", f"cannot parse registered hook command: {exc}") from exc
+    else:
+        parts = _split_windows(value)
     if not parts:
         raise _InspectionError("malformed", "registered hook command is empty")
     call_operator = parts[0] == "&"
@@ -3007,14 +3016,14 @@ def _command_target(
     if first_base in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
         lowered = [part.casefold() for part in parts]
         if "-encodedcommand" in lowered:
-            if connector == "antigravity":
+            if connector in {"antigravity", "devin"}:
                 expected_powershell = _windows_system_powershell_path()
                 if not expected_powershell or ntpath.normcase(
                     ntpath.normpath(parts[0])
                 ) != ntpath.normcase(ntpath.normpath(expected_powershell)):
                     raise _InspectionError(
                         "stale",
-                        "Antigravity hook does not use the trusted system Windows PowerShell",
+                        f"{connector} hook does not use the trusted system Windows PowerShell",
                     )
             encoded_index = lowered.index("-encodedcommand")
             if encoded_index + 2 != len(parts):

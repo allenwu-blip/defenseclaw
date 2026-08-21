@@ -231,12 +231,13 @@ func devinHooksObject(path string, cfg map[string]interface{}) map[string]interf
 	return ensureJSONObject(cfg, "hooks")
 }
 
-func patchDevinHooks(path, hookScript string) error {
+func patchDevinHooks(path, hookScript string, ownedHookScripts ...string) error {
 	cfg, err := readDevinJSONObject(path)
 	if err != nil {
 		return err
 	}
 	hooks := devinHooksObject(path, cfg)
+	ownedHookScripts = uniqueNonEmptyStrings(append([]string{hookScript}, ownedHookScripts...))
 	for _, event := range devinHookEvents {
 		entry := map[string]interface{}{
 			"matcher": "",
@@ -248,16 +249,16 @@ func patchDevinHooks(path, hookScript string) error {
 				},
 			},
 		}
-		hooks[event] = replaceManagedDevinHooks(hooks[event], hookScript, entry)
+		hooks[event] = replaceManagedDevinHooks(hooks[event], ownedHookScripts, entry)
 	}
 	return writeJSONObject(path, cfg)
 }
 
-func replaceManagedDevinHooks(raw interface{}, hookScript string, entry map[string]interface{}) []interface{} {
+func replaceManagedDevinHooks(raw interface{}, ownedHookScripts []string, entry map[string]interface{}) []interface{} {
 	list, _ := raw.([]interface{})
 	out := make([]interface{}, 0, len(list)+1)
 	for _, item := range list {
-		if devinHookGroupReferences(item, hookScript) {
+		if devinHookGroupReferences(item, ownedHookScripts...) {
 			continue
 		}
 		out = append(out, item)
@@ -265,7 +266,7 @@ func replaceManagedDevinHooks(raw interface{}, hookScript string, entry map[stri
 	return append(out, entry)
 }
 
-func devinHookGroupReferences(raw interface{}, hookScript string) bool {
+func devinHookGroupReferences(raw interface{}, hookScripts ...string) bool {
 	group, ok := raw.(map[string]interface{})
 	if !ok {
 		return false
@@ -277,14 +278,17 @@ func devinHookGroupReferences(raw interface{}, hookScript string) bool {
 			continue
 		}
 		command, _ := entry["command"].(string)
-		if strings.TrimSpace(command) == strings.TrimSpace(hookScript) && command != "" {
-			return true
+		command = strings.TrimSpace(command)
+		for _, hookScript := range hookScripts {
+			if command != "" && command == strings.TrimSpace(hookScript) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func removeDevinHookReferences(path, hookScript string) error {
+func removeDevinHookReferences(path string, hookScripts ...string) error {
 	cfg, err := readDevinJSONObject(path)
 	if err != nil {
 		return err
@@ -295,7 +299,7 @@ func removeDevinHookReferences(path, hookScript string) error {
 		list, _ := hooks[event].([]interface{})
 		out := make([]interface{}, 0, len(list))
 		for _, item := range list {
-			if devinHookGroupReferences(item, hookScript) {
+			if devinHookGroupReferences(item, hookScripts...) {
 				changed = true
 				continue
 			}
@@ -316,7 +320,7 @@ func removeDevinHookReferences(path, hookScript string) error {
 	return writeJSONObject(path, cfg)
 }
 
-func devinConfigReferencesHook(path, hookScript string) (bool, error) {
+func devinConfigReferencesHook(path string, hookScripts ...string) (bool, error) {
 	cfg, err := readDevinJSONObject(path)
 	if err != nil {
 		return false, err
@@ -325,12 +329,35 @@ func devinConfigReferencesHook(path, hookScript string) (bool, error) {
 	for _, event := range devinHookEvents {
 		list, _ := hooks[event].([]interface{})
 		for _, item := range list {
-			if devinHookGroupReferences(item, hookScript) {
+			if devinHookGroupReferences(item, hookScripts...) {
 				return true, nil
 			}
 		}
 	}
 	return false, nil
+}
+
+func devinOwnedHookCommands(opts SetupOpts, hookScript string) []string {
+	return devinOwnedHookCommandsForOS(runtime.GOOS, opts, hookScript)
+}
+
+func devinOwnedHookCommandsForOS(goos string, opts SetupOpts, hookScript string) []string {
+	commands := []string{hookScript}
+	if strings.TrimSpace(opts.DataDir) != "" {
+		commands = append(commands, filepath.Join(opts.DataDir, "hooks", "devin-hook.sh"))
+	}
+	if goos != "windows" {
+		return uniqueNonEmptyStrings(commands)
+	}
+	for _, hookBinary := range nativeHookBinaryOwnershipCandidates() {
+		commands = append(commands,
+			windowsDevinBashHookCommand(hookBinary),
+			legacyWindowsDevinDirectBashHookCommandForBinary(hookBinary),
+			legacyWindowsDevinUnquotedPowerShellHookCommandForBinary(hookBinary),
+			legacyWindowsDevinPowerShellHookCommandForBinary(hookBinary),
+		)
+	}
+	return uniqueNonEmptyStrings(commands)
 }
 
 func devinOwnedHooksPresent(conn *hookOnlyConnector, opts SetupOpts) (bool, error) {

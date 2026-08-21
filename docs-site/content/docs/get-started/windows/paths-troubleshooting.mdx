@@ -47,10 +47,12 @@ intact when diagnosing a problem.
 | `%GEMINI_CLI_HOME%\.gemini\settings.json` | Retired Gemini CLI integration state only. | New setup is unavailable. `defenseclaw setup remove geminicli --yes` uses the authenticated receipt to remove only DefenseClaw-owned legacy entries. |
 | `%USERPROFILE%\.gemini\config\hooks.json` | Google Antigravity's native hook configuration. | This nested Antigravity document is separate from retired Gemini CLI root settings; lifecycle operations must not cross those ownership boundaries. |
 | `%USERPROFILE%\.cursor\hooks.json` | Cursor user hooks plus DefenseClaw-managed entries. | Cursor has no documented configuration-home environment variable. Setup records this exact native path for repair, upgrade, and teardown. |
-| `%USERPROFILE%\.codeium\windsurf\hooks.json` | Legacy Cascade user hook configuration in Devin Desktop. DefenseClaw appends one PowerShell handler to each documented Cascade event and preserves foreign hooks. Devin Local uses separate hooks and is unsupported. | Do not copy this file between profiles or replace individual managed entries; use setup/remove. |
-| `%USERPROFILE%\.codeium\windsurf\mcp_config.json` | Optional read-only legacy Cascade MCP inventory. It is not hook configuration and its absence does not make the connector unhealthy. | Manage MCP servers through Devin Desktop. DefenseClaw does not create this file or use it to repair hooks. |
-| `%USERPROFILE%\.defenseclaw\connector_backups\windsurf\config.json` | Managed ownership/restore receipt for the exact bound Cascade `hooks.json`. | Do not edit or copy it; setup/teardown use it for exact lifecycle custody. |
-| `%USERPROFILE%\.defenseclaw\hook_contract_lock.json` | Versioned connector readiness metadata. An active `windsurf` entry must identify `windsurf-hooks-v1` and the same bound `hooks.json`. | If Doctor reports a missing Windsurf lock, rerun `defenseclaw setup windsurf --yes --restart`; another connector setup is not a repair path. |
+| `%APPDATA%\devin\config.json` | Canonical Devin user configuration. DefenseClaw adds one managed command-hook group to each of the eight lifecycle events under `hooks` and preserves foreign JSONC content. | Do not replace individual managed entries; use setup/remove. |
+| `<workspace>\.devin\hooks.v1.json` | Canonical project hook document when an explicit workspace is selected. The hook map is the whole JSONC document. | Keep project and user custody separate; use setup/remove. |
+| `%APPDATA%\devin\mcp_config.json`, `<workspace>\.devin\mcp_config.json` | Canonical Devin MCP read/write locations. Higher-precedence local compatibility files may be inventoried read-only. | Manage through Devin or DefenseClaw MCP commands; do not copy credentials into support output. |
+| `%USERPROFILE%\.defenseclaw\connector_backups\devin\config.json` | Managed ownership/restore receipt for the exact Devin hook document. | Do not edit or copy it; setup/teardown use it for exact lifecycle custody. |
+| `%USERPROFILE%\.defenseclaw\connector_backups\windsurf\config.json` | Retired predecessor receipt retained only when an older authenticated install still owns cleanup work. | Do not edit or copy it. Upgrade/uninstall consumes only its receipt-bound managed entries; it is not active connector state. |
+| `%USERPROFILE%\.defenseclaw\hook_contract_lock.json` | Versioned connector readiness metadata. An active `devin` entry must identify `devin-hooks-v1` and the exact user or project hook document. | If Doctor reports a missing Devin lock, rerun `defenseclaw setup devin --yes --restart`; another connector setup is not a repair path. |
 | `%OPENCODE_CONFIG_DIR%\plugins\defenseclaw.js` | OpenCode bridge plugin. Default config root is `%USERPROFILE%\.config\opencode`. | Carries a connector-scoped token. Do not edit or copy; Doctor detects digest drift and Setup reconciles it. Restart OpenCode after lifecycle changes. |
 | `%HERMES_HOME%\config.yaml` | Supported Hermes native hook configuration. Default is `%LOCALAPPDATA%\hermes`. | Do not add a shell wrapper or edit DefenseClaw-owned handlers; use setup/remove. |
 
@@ -65,7 +67,7 @@ not a user-facing rollback directory.
 configuration overrides honored by their respective implementations. Set them
 to absolute, normalized native Windows paths before initial Setup or connector
 setup. The installer validates and records them; reparse ancestors are refused.
-Antigravity, Cursor, and legacy Cascade publish no equivalent public
+Antigravity, Cursor, and Devin publish no equivalent public
 configuration-home override. The retired Gemini CLI cleanup path can still read
 its previously authenticated `GEMINI_CLI_HOME` custody record; it is not a
 supported new setup override. Antigravity's distinct global hook path is fixed at
@@ -73,8 +75,8 @@ supported new setup override. Antigravity's distinct global hook path is fixed a
 path only as internal custody needed for exact migration and restoration.
 Legacy cleanup records Gemini's vendor root and derived `.gemini` directory
 independently from Antigravity's nested home so one connector cannot restore or
-delete the other's document. Cursor and legacy Cascade likewise record their
-exact native paths internally.
+delete the other's document. Cursor and Devin likewise record their exact
+native paths internally.
 Amp has no connector-home override: its supported system plugin path is fixed
 beneath the current `%USERPROFILE%` at
 `.config\amp\plugins\defenseclaw.ts`.
@@ -106,12 +108,12 @@ Changing an environment value after installation does not authorize lifecycle
 commands to abandon the recorded home. Re-run supported connector setup or
 repair deliberately; do not move the directory and edit installer state.
 
-The legacy Cascade connector has no public user-home override. Setup resolves the signed-in
-user's Windows Profile Known Folder, validates it, and persists that exact
-profile-root binding. Repair, upgrade, reconciliation, and uninstall use only
-the persisted binding or the exact target in DefenseClaw's managed backup.
-They do not inherit a maintenance process's `USERPROFILE`, infer a profile
-from the data directory, or scan other users' `.codeium` trees.
+The Devin connector has no public configuration-home or executable override in
+packaged Windows Setup. Setup resolves `%APPDATA%\devin` and the fixed
+`%LOCALAPPDATA%\devin\cli\bin\devin.exe` path from the signed-in user's Known
+Folders, validates both, and persists them. Repair, upgrade, reconciliation,
+and uninstall use only that custody; they do not follow ambient profile drift
+or scan another user's configuration.
 
 The generic runtime recognizes `DEFENSECLAW_HOME`, but the native packaged
 Setup, launchers, logon helper, repair, and upgrade lifecycle deliberately pin
@@ -356,8 +358,8 @@ Complete this without real secrets or destructive tools:
   not a stale checkout or copied binary.
 - Confirm each configured connector has loaded its configuration, restarting
   the official client where documented, then repeat the harmless per-connector
-  event check above. For legacy Cascade, use an interactive native Windows desktop
-  session; a CLI, WSL, or shell substitute is not valid evidence.
+  event check above. For Devin, use the admitted native CLI in the same Windows
+  user session; WSL or a shell substitute is not valid evidence.
 - Verify optional destinations with `defenseclaw observability plan` and the
   destination-specific test command. A destination failure does not erase the
   mandatory local audit, but it must be treated as degraded delivery.

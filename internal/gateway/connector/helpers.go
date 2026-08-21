@@ -203,6 +203,14 @@ func hookInvocationCommandFor(goos, connector, unixCommand string) string {
 	if connector == "hermes" {
 		return windowsHermesDirectHookCommand(defenseclawHookBinary())
 	}
+	// Devin evaluates command hooks through bash even on Windows. Release hook
+	// launchers use the GUI subsystem, which bash does not synchronously await
+	// with inherited stdin/stdout. Run the existing encoded system-PowerShell
+	// wait boundary as a normal bash command so the hook payload, response, and
+	// exit status stay synchronous without exposing mutable values in argv.
+	if connector == "devin" {
+		return windowsDevinBashHookCommand(defenseclawHookBinary())
+	}
 	// Claude Code evaluates hook command strings with PowerShell on Windows.
 	// A quoted executable path alone is only a string expression there; the
 	// call operator is required to invoke it. Use a single-quoted literal so an
@@ -217,6 +225,51 @@ func windowsHermesDirectHookCommand(binary string) string {
 	}
 	binary = strings.ReplaceAll(binary, `\`, "/")
 	return `"` + binary + `" ` + nativeHookFlag + "hermes"
+}
+
+func windowsDevinBashHookCommand(binary string) string {
+	if strings.TrimSpace(binary) == "" || strings.ContainsAny(binary, "\"\x00\r\n") || !isWindowsAbsolutePath(binary) {
+		return ""
+	}
+	command := windowsNativePowerShellHookCommandForBinary("devin", binary)
+	powershell := windowsSystemPowerShellExe()
+	if !strings.HasPrefix(command, powershell+" ") {
+		return ""
+	}
+	// Bash consumes backslashes in an unquoted Windows executable path. Emit
+	// only the immutable outer PowerShell path as one POSIX literal; the
+	// remaining switches and base64 payload are already shell-safe tokens.
+	outer := strings.ReplaceAll(powershell, `\`, "/")
+	outer = "'" + strings.ReplaceAll(outer, "'", `'\''`) + "'"
+	return outer + command[len(powershell):]
+}
+
+// legacyWindowsDevinDirectBashHookCommandForBinary reconstructs the direct
+// POSIX-quoted command emitted before authentic testing proved that bash does
+// not await the release GUI-subsystem hook with inherited standard handles.
+// It remains an exact migration/teardown identity and is never generated.
+func legacyWindowsDevinDirectBashHookCommandForBinary(binary string) string {
+	binary = strings.TrimSpace(binary)
+	if binary == "" || strings.ContainsAny(binary, "\"\x00\r\n") || !isWindowsAbsolutePath(binary) {
+		return ""
+	}
+	binary = strings.ReplaceAll(binary, `\`, "/")
+	return "'" + strings.ReplaceAll(binary, "'", `'\''`) + "' " + nativeHookFlag + "devin"
+}
+
+// legacyWindowsDevinUnquotedPowerShellHookCommandForBinary reconstructs the
+// first awaited bridge shape, whose Windows outer path bash interpreted as
+// backslash escapes. Keep it only so a refresh removes that exact no-fire
+// registration before installing the POSIX-quoted outer command.
+func legacyWindowsDevinUnquotedPowerShellHookCommandForBinary(binary string) string {
+	return windowsNativePowerShellHookCommandForBinary("devin", binary)
+}
+
+// legacyWindowsDevinPowerShellHookCommandForBinary reconstructs the exact
+// command briefly emitted before Devin's Windows bash execution boundary was
+// verified. It remains an ownership identity for migration and teardown only.
+func legacyWindowsDevinPowerShellHookCommandForBinary(binary string) string {
+	return "& " + powershellQuoteLiteral(binary) + " " + nativeHookFlag + "devin"
 }
 
 // defenseclawHookBinary returns the stable native HookRuntime launcher on
@@ -726,6 +779,9 @@ func isNativeHookCommand(cmd string) bool {
 	if isHermesDirectNativeHookCommand(cmd) {
 		return true
 	}
+	if isDevinBashNativeHookCommand(cmd) {
+		return true
+	}
 	// Current Codex, Gemini CLI, and Antigravity registrations use a system PowerShell
 	// EncodedCommand so an absolute path containing spaces reaches CreateProcess
 	// without shell interpolation. Compare against the exact commands we emit;
@@ -809,6 +865,11 @@ func isNativeHookCommand(cmd string) bool {
 
 func isHermesDirectNativeHookCommand(command string) bool {
 	expected := windowsHermesDirectHookCommand(defenseclawHookBinary())
+	return expected != "" && command == expected
+}
+
+func isDevinBashNativeHookCommand(command string) bool {
+	expected := windowsDevinBashHookCommand(defenseclawHookBinary())
 	return expected != "" && command == expected
 }
 

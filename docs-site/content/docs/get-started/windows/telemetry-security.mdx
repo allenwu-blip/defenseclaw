@@ -22,7 +22,7 @@ the same local audit and optional outbound observability pipeline.
 | Claude Code | Version-selected 28 events on `>=2.1.154,<2.1.219` or 29 on `>=2.1.219`; hooks are the only enforcement surface, while v2 `DirectoryAdded` is observation-only and cannot block. | OTLP logs and metrics over HTTP/JSON; traces are explicitly disabled. | Marked hooks and OTLP environment entries in `%CLAUDE_CONFIG_DIR%\settings.json`. |
 | Amp | Five plugin callbacks; `tool.call` gates execution and `tool.result` can withhold output before model delivery. The other three are observation-only. | No documented customer native-OTLP exporter or W3C `traceparent` surface. DefenseClaw generates canonical logs, metrics, and spans from the callbacks. | Owner-only TypeScript system plugin at `%USERPROFILE%\.config\amp\plugins\defenseclaw.ts`. |
 | Cursor | 21 documented command-hook events; the only enforcement path. | No documented native OTLP surface; hook results still produce connector-attributed audit and telemetry. | DefenseClaw entries in `%USERPROFILE%\.cursor\hooks.json` plus the managed PowerShell adapter. |
-| Devin Desktop legacy Cascade | Twelve Cascade events; only five pre-hooks can block. Devin Local/cloud/ACP are unsupported. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | PowerShell-only entries in the bound profile's `.codeium\windsurf\hooks.json`; generated adapter under `%USERPROFILE%\.defenseclaw\hooks`. Managed/system layers are unverified. |
+| Devin | Eight native CLI lifecycle events; `PreToolUse`, `PermissionRequest`, `UserPromptSubmit`, and `Stop` can block. | No documented native OTLP surface; hook telemetry and mandatory local audit remain active. | Managed command-hook groups in `%APPDATA%\devin\config.json` or `<workspace>\.devin\hooks.v1.json`; cloud/proxy/ACP and managed higher layers are excluded. |
 | Copilot CLI | Fourteen current documented events; event-specific hooks are the only DefenseClaw enforcement and telemetry input. | Upstream documents optional OTel traces and metrics, but DefenseClaw does not configure, authenticate, or certify that native surface. Authentication, HITL, and live evidence remain unverified and unclaimed. | PowerShell-only entries in `%COPILOT_HOME%\hooks\defenseclaw.json` or an explicitly pinned workspace hook file; hook credential remains in the protected DefenseClaw runtime. |
 | Hermes Agent | All 23 v0.19 events are registered and independently classified; only a valid `pre_tool_call` JSON block can veto a tool. | No official native OTLP logs, metrics, or traces. Hook-derived events enter the same v8 audit pipeline. | Owned handlers in `%HERMES_HOME%\config.yaml`; no native exporter settings are invented. |
 | Google Antigravity | Five documented events; only `PreToolUse` can block or return native ask. Upstream failures remain fail-open. | No documented native OTLP surface; hook-derived events enter the same audit and telemetry pipeline. | DefenseClaw handlers in `%USERPROFILE%\.gemini\config\hooks.json`; retired Gemini CLI state in the sibling root settings file remains a separate cleanup boundary. |
@@ -34,7 +34,7 @@ source/client identity. Codex does not place the credential in the endpoint
 URL. Claude Code stores the managed exporter settings in its configuration,
 not in the interactive shell. OpenCode embeds a separate connector-scoped hook
 token in its managed plugin and has no native OTLP credential. Cursor and
-legacy Cascade use protected connector-scoped hook credentials without placing them
+Devin use protected connector-scoped hook credentials without placing them
 in the vendor hook JSON. Copilot follows the same hook-token boundary and does
 not receive a DefenseClaw credential through its upstream OTel environment
 variables. Hermes uses its own connector-scoped hook credential. Amp has no
@@ -182,7 +182,7 @@ substitute for that gate. In particular, an authenticated Amp turn requires
 the packaged native Windows support classification.
 
 That artifact trust chain does not fabricate connector evidence. Supported
-availability for Codex, Cursor, legacy Cascade, Hermes, OpenCode, OmniGent,
+availability for Codex, Cursor, Devin, Hermes, OpenCode, OmniGent,
 Copilot, and Antigravity does not populate validation fields or change
 `live=false`; authentic official-client evidence remains independently gated.
 

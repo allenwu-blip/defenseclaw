@@ -62,7 +62,7 @@ func TestHookProfileMatrix(t *testing.T) {
 		// synchronously. The client has no native ask/HITL response, but action
 		// mode can block and fail closed on the reviewed event contract.
 		{"cursor", true, "", true, false, true, true},
-		{"windsurf", true, "", true, false, true, true},
+		{"devin", true, "", true, false, true, true},
 		{"hermes", true, "", true, false, false, true},
 		// opencode's JS bridge does not propagate W3C traceparent, so
 		// SupportsTraceparent is false; it can block and fail closed.

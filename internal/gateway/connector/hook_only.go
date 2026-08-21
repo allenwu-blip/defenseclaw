@@ -2023,7 +2023,10 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 		}
 	}
 	if c.name == "devin" {
-		present, parseErr := devinConfigReferencesHook(path, needle)
+		present, parseErr := devinConfigReferencesHook(
+			path,
+			devinOwnedHookCommands(opts, needle)...,
+		)
 		if parseErr != nil {
 			return fmt.Errorf("%s teardown verification could not parse hook config %s: %w", c.name, path, parseErr)
 		}
@@ -2423,7 +2426,7 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			filepath.Join(opts.DataDir, "hooks", c.scriptName),
 		)
 	case "devin":
-		err = patchDevinHooks(path, hookScript)
+		err = patchDevinHooks(path, hookScript, devinOwnedHookCommands(opts, hookScript)...)
 	case "geminicli":
 		if err = patchGeminiHooks(path, hookScript, geminiOwnedCommands...); err == nil {
 			err = patchGeminiTelemetry(path, opts)
@@ -2626,7 +2629,7 @@ func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string, opts Se
 	case "copilot", "openhands":
 		return removeJSONHookReferences(path, hookScript)
 	case "devin":
-		return removeDevinHookReferences(path, hookScript)
+		return removeDevinHookReferences(path, devinOwnedHookCommands(opts, hookScript)...)
 	case "windsurf":
 		return removeJSONHookReferences(path, hookScript, legacyWindsurfWindowsHookCommand())
 	case "antigravity":

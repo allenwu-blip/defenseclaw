@@ -165,9 +165,11 @@ class WindowsHookDoctorTests(unittest.TestCase):
                 "-NoNewWindow -Wait -PassThru; exit $hookProcess.ExitCode"
             )
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        outer = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if connector == "devin":
+            outer = "'" + outer.replace("\\", "/") + "'"
         return (
-            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe "
-            f"-NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
+            f"{outer} -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
         )
 
     @staticmethod
@@ -516,7 +518,7 @@ class WindowsHookDoctorTests(unittest.TestCase):
 
     def _devin_config(self, *, foreign: bool = False) -> tuple[Path, Path]:
         runtime = self._runtime()
-        command = f'"{runtime}" hook --connector devin'
+        command = self._encoded_hook_command(runtime, "devin")
         events: dict[str, list[dict[str, object]]] = {}
         for event in doctor_hooks._DEVIN_EVENTS:
             groups: list[dict[str, object]] = [
@@ -860,6 +862,26 @@ class WindowsHookDoctorTests(unittest.TestCase):
         self.assertIn("other hook errors fail open", check.detail)
         self.assertIn("Restricted Mode disables hooks and agents", check.detail)
         self.assertIn("native OTLP, proxy, ACP, cloud, and plugins are unclaimed", check.detail)
+
+    def test_devin_legacy_direct_bash_command_parses_literal_shell_metacharacters(self) -> None:
+        target = r"C:/Users/Kevin O'Brien/Defense Claw $Preview/defenseclaw-hook.exe"
+        command = r"'C:/Users/Kevin O'\''Brien/Defense Claw $Preview/defenseclaw-hook.exe' hook --connector devin"
+
+        parsed, args, kind = doctor_hooks._command_target(command, "devin")
+
+        self.assertEqual(parsed, target)
+        self.assertEqual(args, ["hook", "--connector", "devin"])
+        self.assertEqual(kind, "direct")
+
+    def test_devin_current_encoded_command_parses_awaited_gui_runtime(self) -> None:
+        runtime = self._runtime()
+        command = self._encoded_hook_command(runtime, "devin")
+
+        parsed, args, kind = doctor_hooks._command_target(command, "devin")
+
+        self.assertEqual(os.path.normcase(parsed), os.path.normcase(str(runtime)))
+        self.assertEqual(args, ["hook", "--connector", "devin"])
+        self.assertEqual(kind, "direct")
 
     def test_devin_rejects_duplicate_handler_and_incomplete_matrix(self) -> None:
         for mutation, expected in (

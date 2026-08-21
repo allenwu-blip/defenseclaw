@@ -17,7 +17,7 @@ Authoritative source for any flag is `defenseclaw <command> --help`. These group
 <Callout title="Command availability is platform-specific">
 A registered command or connector alias is not, by itself, a native Windows
 support claim. Native Windows supports Amp plus Codex, Claude Code, Cursor,
-Windsurf, GitHub Copilot CLI, Antigravity, OpenCode, Hermes, and OmniGent.
+Devin, GitHub Copilot CLI, Antigravity, OpenCode, Hermes, and OmniGent.
 Gemini CLI setup is deprecated on every platform; existing managed state remains
 removable; use `defenseclaw setup antigravity` for new Google agent setup.
 OpenHands, OpenClaw, and ZeptoClaw remain unavailable there. Some
@@ -94,7 +94,7 @@ Hook setup aliases (`setup codex`, `setup claude-code`, `setup hermes`, and the 
 | `defenseclaw setup claude-code` | Hook setup alias for Claude Code; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup codex` | Hook setup alias for Codex; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup cursor` | Native Windows user-hook alias for Cursor; defaults to observe, while `--mode action` uses event-native deny with `failClosed: true`. Native human approval is not enabled. |
-| `defenseclaw setup windsurf` | Native Windows compatibility alias for Devin Desktop legacy Cascade; Devin Local/cloud/ACP are unsupported. Defaults to observe; pass `--mode action` to block only on supported Cascade pre-hooks. |
+| `defenseclaw setup devin` | Native Devin CLI hook alias; defaults to observe, while `--mode action` can block only on the four documented block-capable events. |
 | `defenseclaw setup copilot` | Hook setup alias for GitHub Copilot CLI; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup hermes` | Hook setup alias for Hermes; defaults to observe, pass `--mode action` to block hook-side. |
 | `defenseclaw setup openhands` | Hook setup alias for OpenHands on supported non-Windows platforms; it is unsupported in the native Windows release. Defaults to observe, pass `--mode action` to block hook-side. |

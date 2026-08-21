@@ -154,49 +154,6 @@ function Resolve-EffectiveConnectorHome(
             (Join-Path $env:USERPROFILE '.config\amp')
         ).TrimEnd('\')
     }
-    if ($ConnectorName -eq 'geminicli') {
-        # Gemini CLI treats GEMINI_CLI_HOME as a home root and appends .gemini.
-        # An authenticated packaged launcher supplies the captured root; source
-        # runs bind it explicitly below. Only an absent or exactly empty value
-        # uses the current token's Profile Known Folder.
-        $geminiCLIHome = [Environment]::GetEnvironmentVariable('GEMINI_CLI_HOME')
-        if ($null -eq $geminiCLIHome -or $geminiCLIHome.Length -eq 0) {
-            $geminiCLIHome = [Environment]::GetFolderPath(
-                [Environment+SpecialFolder]::UserProfile
-            )
-            if ([string]::IsNullOrWhiteSpace($geminiCLIHome)) {
-                throw 'Windows user profile known folder is unavailable for the Gemini CLI home-root binding'
-            }
-        }
-        if ($geminiCLIHome.Trim() -cne $geminiCLIHome -or
-            $geminiCLIHome -match '[\x00-\x1f\x7f]' -or
-            -not [IO.Path]::IsPathRooted($geminiCLIHome)) {
-            throw 'GEMINI_CLI_HOME must be an absolute, normalized, control-free path without surrounding whitespace'
-        }
-        $normalizedGeminiCLIHome = [IO.Path]::GetFullPath($geminiCLIHome)
-        if (-not [string]::Equals(
-                $geminiCLIHome,
-                $normalizedGeminiCLIHome,
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            throw 'GEMINI_CLI_HOME must be an absolute, normalized, control-free path without surrounding whitespace'
-        }
-        $geminiConfigHome = [IO.Path]::GetFullPath(
-            (Join-Path $normalizedGeminiCLIHome '.gemini')
-        ).TrimEnd('\')
-        $privateBinding = [Environment]::GetEnvironmentVariable(
-            'DEFENSECLAW_GEMINI_CONFIG_HOME'
-        )
-        if ($null -ne $privateBinding -and $privateBinding.Length -gt 0 -and
-            -not [string]::Equals(
-                [IO.Path]::GetFullPath($privateBinding).TrimEnd('\'),
-                $geminiConfigHome,
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            throw 'DefenseClaw Gemini config binding does not match GEMINI_CLI_HOME\.gemini'
-        }
-        return $geminiConfigHome
-    }
     $environmentName = switch ($ConnectorName) {
         'codex' { 'CODEX_HOME' }
         'claudecode' { 'CLAUDE_CONFIG_DIR' }
@@ -241,7 +198,6 @@ function Get-EffectiveConnectorConfigPath(
         'cursor' { 'hooks.json' }
         'hermes' { 'config.yaml' }
         'antigravity' { 'hooks.json' }
-        'geminicli' { 'settings.json' }
         'opencode' { 'plugins\defenseclaw.js' }
     }
     return Join-Path (Resolve-EffectiveConnectorHome $ConnectorName) $fileName
@@ -278,27 +234,6 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
         Protect-TestDirectory $hermesHome
     }
     $openCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
-    $geminiCLIHome = [Environment]::GetEnvironmentVariable('GEMINI_CLI_HOME')
-    if ([string]::IsNullOrEmpty($geminiCLIHome)) {
-        throw 'packaged contract is missing authenticated GEMINI_CLI_HOME'
-    }
-    $geminiHome = Resolve-EffectiveConnectorHome 'geminicli'
-    $privateGeminiHome = [Environment]::GetEnvironmentVariable(
-        'DEFENSECLAW_GEMINI_CONFIG_HOME'
-    )
-    if ([string]::IsNullOrEmpty($privateGeminiHome) -or
-        -not [string]::Equals(
-            [IO.Path]::GetFullPath($privateGeminiHome).TrimEnd('\'),
-            $geminiHome,
-            [StringComparison]::OrdinalIgnoreCase
-        )) {
-        throw 'packaged contract is missing the authenticated DefenseClaw Gemini config binding'
-    }
-    if (-not [string]::IsNullOrWhiteSpace(
-            [Environment]::GetEnvironmentVariable('GEMINI_CONFIG_DIR')
-        )) {
-        throw 'packaged contract inherited unsupported GEMINI_CONFIG_DIR'
-    }
     # Cursor publishes no configuration-home override. Its official .cursor
     # directory is intentionally nested beneath ProfileHome; every connector
     # with a real override remains pairwise disjoint from that profile.
@@ -336,8 +271,6 @@ function Assert-PackagedConnectorHomes([string]$Root, [string]$ProfileHome) {
     $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $homes[4]
     $env:HERMES_HOME = $homes[5]
     $env:OPENCODE_CONFIG_DIR = $homes[6]
-    $env:GEMINI_CLI_HOME = [IO.Path]::GetFullPath($geminiCLIHome)
-    $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $geminiHome
     $ampHome = [IO.Path]::GetFullPath($ampHome).TrimEnd('\')
     if (-not (Test-PathWithin $ampHome $homes[0])) {
         throw "packaged Amp home must be a strict child of the disposable profile: $ampHome"

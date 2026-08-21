@@ -11,7 +11,7 @@ for current behavior.
 ## [Unreleased] — Hook collector unification
 
 This rollup unifies the agent hook collector across all 8 hook-first
-connectors (codex, claudecode, hermes, cursor, windsurf, geminicli,
+connectors (codex, claudecode, hermes, cursor, devin, antigravity,
 copilot, openhands) onto a single declarative `HookProfile`-driven pipeline.
 There are **no new environment variables** — the unification is the
 default and only path; the V1 OTLP builders and the per-phase
@@ -507,7 +507,7 @@ are addressed in this rollup.
 - **M6 — End-to-end integration coverage per connector.** The new
   `agent_hook_e2e_test.go` drives an HTTP request through
   `handleAgentHook` for every registered connector
-  (claudecode, codex, hermes, cursor, windsurf, geminicli, copilot, openhands)
+  (claudecode, codex, hermes, cursor, devin, antigravity, copilot, openhands)
   and asserts:
 
   - HTTP 200 with valid JSON,
@@ -630,7 +630,7 @@ Claude Code now talk directly to their native upstreams in both
   its own permission flow. `--mode observe` (the default) keeps the
   previous record-only behavior.
 - The shared connector-alias factory used by the other hook-
-  enforced connectors (`hermes`, `cursor`, `windsurf`, `geminicli`,
+  enforced connectors (`hermes`, `cursor`, `devin`, `antigravity`,
   `copilot`, `openhands`) gains the same `--mode {observe,action}`
   knob.
 - The interactive wizard (`defenseclaw setup guardrail`) drops the

@@ -102,7 +102,7 @@ def test_seeded_env_contains_only_the_current_connector_keys() -> None:
     assert _case_writes(seed_script, "amp") == {"AMP_API_KEY"}
     assert _case_writes(seed_script, "cursor") == {"CURSOR_API_KEY"}
     assert _case_writes(seed_script, "openhands") == {"OPENAI_API_KEY", "LLM_API_KEY"}
-    assert _case_writes(seed_script, "copilot|hermes|windsurf|antigravity") == set()
+    assert _case_writes(seed_script, "copilot|hermes|devin|antigravity") == set()
     for alternative_secret in (
         "AZURE_OPENAI_API_KEY",
         "AWS_BEARER_TOKEN_BEDROCK",

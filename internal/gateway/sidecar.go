@@ -4855,6 +4855,14 @@ func reconcileOrphanedConnectorRegistrations(
 	for _, name := range orphans {
 		entry := entries[name]
 		conn, ok := registry.Get(name)
+		if !ok && name == "windsurf" {
+			// Windsurf is retired from the active registry, but authenticated
+			// lock evidence from an older installation must remain removable.
+			// Resolve its connector only inside this cleanup transaction so it
+			// cannot reappear in discovery, setup, routing, or public APIs.
+			conn = connector.NewWindsurfConnector()
+			ok = true
+		}
 		if !ok {
 			return fmt.Errorf("protected lock-only connector %q is not registered", name)
 		}
