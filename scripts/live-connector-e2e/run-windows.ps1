@@ -5898,6 +5898,11 @@ function Assert-DoctorHookRegistration {
         if (-not [string]::Equals($adapter, $expectedHookExecutable, [StringComparison]::OrdinalIgnoreCase)) {
             throw "setup-created Cursor registration uses unexpected adapter: $adapter"
         }
+    } elseif ($Connector -eq 'devin') {
+        try { $devinSettings = $registration | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw "setup-created Devin config is not valid JSON: $($_.Exception.Message)" }
+        $devinCommand = [string]@($devinSettings.hooks.PreToolUse)[0].hooks[0].command
+        $null = Get-DevinWindowsHookCommand $devinCommand 'setup-created Devin PreToolUse'
     } elseif ($Connector -eq 'hermes') {
         Assert-HermesWindowsHookConfig $config 'setup-created Hermes registration'
     } elseif ($Connector -eq 'antigravity') {
