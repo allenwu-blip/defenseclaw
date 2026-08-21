@@ -2080,7 +2080,13 @@ func telemetryReadinessFailureDetail(details map[string]interface{}) string {
 		"scrape_failed", "scrape_recovered", "server_failed", "drain_started")
 	failureCodes := allowed("", "queue_full", "retryable_delivery", "partial_delivery", "delivery_failed",
 		"origin_loop", "generation_mismatch", "pipeline_failed", "projection_failed", "route_identity_mismatch",
-		"unsupported_shape", "payload_failed", "queue_rejected", "panic_isolated", "compatibility_projection_failed")
+		"unsupported_shape", "payload_failed", "queue_rejected", "panic_isolated", "compatibility_projection_failed",
+		"unspecified", "size_estimate_rejected", "size_estimator_panic", "adapter_panic",
+		"adapter_result_invalid", "adapter_input_invalid", "projection_invalid", "envelope_encode_failed",
+		"envelope_size_invalid", "request_build_failed", "endpoint_prohibited", "resolution_failed",
+		"connection_failed", "request_canceled", "request_timeout", "acknowledgement_lost", "transport_failed",
+		"http_authentication", "http_retryable", "http_rejected", "hec_ack_invalid",
+		"hec_ack_authentication", "hec_ack_retryable", "hec_ack_rejected")
 	retentionStates := allowed("", "waiting_for_readiness", "healthy", "degraded", "disabled", "stopped")
 	retentionFailures := allowed("", "run_failed", "scheduler_failed")
 	historyFailures := allowed("", "projection_rejected", "integrity_unsigned", "integrity_signing_failed", "sqlite_write_failed")

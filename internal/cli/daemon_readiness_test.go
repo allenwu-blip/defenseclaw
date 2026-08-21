@@ -1272,8 +1272,8 @@ func TestWaitForStartedDaemonStopsExactPIDOnFirstFatalTelemetrySnapshot(t *testi
 				"generation": float64(11),
 				"destinations": []interface{}{
 					map[string]interface{}{
-						"name": "gateway-console", "kind": "console", "enabled": true,
-						"generation": float64(11), "state": "healthy", "reason": "activated", "failure": "projection_failed",
+						"name": "issue-768-hec", "kind": "splunk_hec", "enabled": true,
+						"generation": float64(11), "state": "failing", "reason": "delivery_failed", "failure": "hec_ack_rejected",
 					},
 				},
 			},
@@ -1292,7 +1292,7 @@ func TestWaitForStartedDaemonStopsExactPIDOnFirstFatalTelemetrySnapshot(t *testi
 		5*time.Millisecond,
 		daemonReadinessRequirements{guardrailEnabled: true, telemetryEnabled: true},
 	)
-	if err == nil || ready || !strings.Contains(err.Error(), "failure=projection_failed") {
+	if err == nil || ready || !strings.Contains(err.Error(), "failure=hec_ack_rejected") {
 		t.Fatalf("fatal telemetry readiness = %v, error = %v, want bounded immediate failure", ready, err)
 	}
 	if got := probes.Load(); got != 1 {

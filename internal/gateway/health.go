@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/defenseclaw/defenseclaw/internal/audit"
+	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/gateway/connector"
 	"github.com/defenseclaw/defenseclaw/internal/observability"
 	"github.com/defenseclaw/defenseclaw/internal/observability/delivery"
@@ -409,6 +410,9 @@ func (h *SidecarHealth) observeObservabilityV8Failure(
 }
 
 func validObservabilityV8FailureCode(code string) bool {
+	if delivery.IsFailureCode(delivery.FailureCode(code)) {
+		return true
+	}
 	switch code {
 	case string(delivery.HealthReasonQueueFull), string(delivery.HealthReasonRetryable),
 		string(delivery.HealthReasonPartial), string(delivery.HealthReasonDeliveryFailed),
@@ -969,6 +973,7 @@ func renderObservabilityV8Health(
 	details["generation"] = snapshot.Generation
 	destinations := make([]map[string]interface{}, 0, len(snapshot.Destinations))
 	aggregate := StateRunning
+	optionalFailures := make([]string, 0, len(snapshot.Destinations))
 	for _, destination := range snapshot.Destinations {
 		row := map[string]interface{}{
 			"name": destination.Name, "kind": string(destination.Kind),
@@ -992,6 +997,9 @@ func renderObservabilityV8Health(
 		}
 		if destination.LastFailureClass != "" {
 			row["last_failure_class"] = string(destination.LastFailureClass)
+		}
+		if destination.LastFailureCode != "" {
+			row["last_failure_code"] = string(destination.LastFailureCode)
 		}
 		if destination.Queue != nil {
 			row["queue"] = renderObservabilityV8Queue(*destination.Queue, destination.Counters)
@@ -1021,6 +1029,9 @@ func renderObservabilityV8Health(
 			if source.LastFailureClass != "" {
 				signalRow["last_failure_class"] = string(source.LastFailureClass)
 			}
+			if source.LastFailureCode != "" {
+				signalRow["last_failure_code"] = string(source.LastFailureCode)
+			}
 			if source.Queue != nil {
 				queue := renderObservabilityV8Queue(*source.Queue, source.Counters)
 				signalRow["queue"] = queue
@@ -1044,6 +1055,9 @@ func renderObservabilityV8Health(
 				if source.LastFailureClass != "" {
 					queueRow["last_failure_class"] = string(source.LastFailureClass)
 				}
+				if source.LastFailureCode != "" {
+					queueRow["last_failure_code"] = string(source.LastFailureCode)
+				}
 				queueRows = append(queueRows, queueRow)
 			}
 			signalRows = append(signalRows, signalRow)
@@ -1055,14 +1069,18 @@ func renderObservabilityV8Health(
 			row["queues"] = queueRows
 		}
 		lastFailure := destination.LastFailure
+		activeFailureCode := string(destination.LastFailureCode)
+		destinationDegraded := destination.Enabled && (destination.State == delivery.HealthDegraded ||
+			destination.State == delivery.HealthFailing || destination.State == delivery.HealthStopped)
 		if observed, ok := failures[destination.Name]; ok &&
 			observed.generation == snapshot.Generation &&
 			!destination.LastSuccess.After(observed.occurredAt) {
 			row["failure"] = observed.code
+			activeFailureCode = observed.code
+			destinationDegraded = true
 			if observed.occurredAt.After(lastFailure) {
 				lastFailure = observed.occurredAt
 			}
-			aggregate = StateError
 		}
 		if !destination.LastSuccess.IsZero() {
 			row["last_success_at"] = destination.LastSuccess.UTC().Format(time.RFC3339Nano)
@@ -1070,14 +1088,26 @@ func renderObservabilityV8Health(
 		if !lastFailure.IsZero() {
 			row["last_failure_at"] = lastFailure.UTC().Format(time.RFC3339Nano)
 		}
-		if destination.Enabled && (destination.State == delivery.HealthDegraded ||
-			destination.State == delivery.HealthFailing || destination.State == delivery.HealthStopped) {
-			aggregate = StateError
+		if destinationDegraded {
+			if destination.Kind == config.ObservabilityV8DestinationLocalSQLite {
+				aggregate = StateError
+			} else {
+				optionalFailures = append(optionalFailures, observabilityV8OptionalFailureSummary(
+					destination.Name, destination.State, destination.Reason, activeFailureCode,
+				))
+			}
 		}
 		destinations = append(destinations, row)
 	}
 	details["destination_count"] = len(destinations)
 	details["destinations"] = destinations
+	sort.Strings(optionalFailures)
+	details["optional_destination_state"] = "healthy"
+	details["optional_destination_failure_count"] = len(optionalFailures)
+	if len(optionalFailures) > 0 {
+		details["optional_destination_state"] = "degraded"
+		details["optional_destination_failure_summary"] = boundedObservabilityV8FailureSummary(optionalFailures)
+	}
 	if validObservabilityV8RetentionState(retentionState) {
 		details["retention_state"] = retentionState
 		details["retention_days"] = retentionDays
@@ -1093,6 +1123,57 @@ func renderObservabilityV8Health(
 	}
 	appendObservabilityV8EventHistoryDetails(details, eventHistory)
 	return SubsystemHealth{State: aggregate, Since: since, Details: details}
+}
+
+const (
+	observabilityV8MaxFailureSummaryItems = 8
+	observabilityV8MaxFailureSummaryBytes = 512
+)
+
+func observabilityV8OptionalFailureSummary(
+	destination string,
+	state delivery.HealthState,
+	reason string,
+	code string,
+) string {
+	if code == "" {
+		code = reason
+	}
+	if code == "" {
+		code = string(delivery.FailureCodeUnspecified)
+	}
+	return destination + ":" + string(state) + ":" + code
+}
+
+func boundedObservabilityV8FailureSummary(failures []string) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	limit := len(failures)
+	if limit > observabilityV8MaxFailureSummaryItems {
+		limit = observabilityV8MaxFailureSummaryItems
+	}
+	var summary strings.Builder
+	for index := 0; index < limit; index++ {
+		separator := ""
+		if summary.Len() > 0 {
+			separator = ","
+		}
+		remaining := observabilityV8MaxFailureSummaryBytes - summary.Len() - len(separator)
+		if remaining <= 0 {
+			break
+		}
+		value := failures[index]
+		if len(value) > remaining {
+			value = value[:remaining]
+		}
+		summary.WriteString(separator)
+		summary.WriteString(value)
+		if len(value) == remaining {
+			break
+		}
+	}
+	return summary.String()
 }
 
 func appendObservabilityV8EventHistoryDetails(

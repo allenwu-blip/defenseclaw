@@ -579,6 +579,9 @@ func TestOnlyTransientAndAmbiguousOutcomesRetry(t *testing.T) {
 			if got := dispatcher.Counters(); got.Rejected != 1 || got.Retried != 0 {
 				t.Fatalf("counters=%+v", got)
 			}
+			if got := dispatcher.DeliveryHealthSnapshot().LastFailureCode; got != delivery.FailureCodeUnspecified {
+				t.Fatalf("blank failure code normalized to %q", got)
+			}
 		})
 	}
 }
@@ -624,7 +627,13 @@ func TestMalformedAdapterItemCountsFailClosedWithoutRetry(t *testing.T) {
 		{name: "partial-under-count", result: delivery.DeliveryResult{Outcome: delivery.OutcomePartial, DeliveredItems: 1, RejectedItems: 1}},
 		{name: "partial-over-count", result: delivery.DeliveryResult{Outcome: delivery.OutcomePartial, DeliveredItems: 2, RejectedItems: 2}},
 		{name: "delivered-with-counts", result: delivery.DeliveryResult{Outcome: delivery.OutcomeDelivered, DeliveredItems: 3}},
+		{name: "delivered-with-failure-code", result: delivery.DeliveryResult{
+			Outcome: delivery.OutcomeDelivered, FailureCode: delivery.FailureCodeHTTPRejected,
+		}},
 		{name: "retry-with-counts", result: delivery.DeliveryResult{Outcome: delivery.OutcomeTransient, RejectedItems: 3}},
+		{name: "untrusted-failure-code", result: delivery.DeliveryResult{
+			Outcome: delivery.OutcomePermanentPayload, FailureCode: delivery.FailureCode("secret-token-value"),
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -649,6 +658,9 @@ func TestMalformedAdapterItemCountsFailClosedWithoutRetry(t *testing.T) {
 			}
 			if got := dispatcher.Health(); got != delivery.HealthFailing {
 				t.Fatalf("malformed health = %q", got)
+			}
+			if got := dispatcher.DeliveryHealthSnapshot().LastFailureCode; got != delivery.FailureCodeAdapterResultInvalid {
+				t.Fatalf("malformed failure code = %q", got)
 			}
 			closeDispatcher(t, dispatcher)
 		})
@@ -703,6 +715,9 @@ func TestSingleProjectionWhoseWrapperExceedsBatchCeilingIsRejectedWithoutAllocat
 	if got := dispatcher.Counters(); got.Rejected != 1 || got.Delivered != 0 {
 		t.Fatalf("counters=%+v", got)
 	}
+	if got := dispatcher.DeliveryHealthSnapshot().LastFailureCode; got != delivery.FailureCodeSizeEstimateRejected {
+		t.Fatalf("failure code=%q", got)
+	}
 }
 
 func TestEstimatorCannotUndercountProjectedBytesAndAdapterPanicsAreContained(t *testing.T) {
@@ -718,13 +733,17 @@ func TestEstimatorCannotUndercountProjectedBytesAndAdapterPanicsAreContained(t *
 		if adapter.calls.Load() != 0 || dispatcher.Counters().Rejected != 1 {
 			t.Fatalf("calls=%d counters=%+v", adapter.calls.Load(), dispatcher.Counters())
 		}
+		if got := dispatcher.DeliveryHealthSnapshot().LastFailureCode; got != delivery.FailureCodeSizeEstimateRejected {
+			t.Fatalf("failure code=%q", got)
+		}
 	})
 	for _, test := range []struct {
-		name    string
-		adapter panicAdapter
+		name     string
+		adapter  panicAdapter
+		wantCode delivery.FailureCode
 	}{
-		{name: "estimator", adapter: panicAdapter{panicSize: true}},
-		{name: "delivery", adapter: panicAdapter{panicDeliver: true}},
+		{name: "estimator", adapter: panicAdapter{panicSize: true}, wantCode: delivery.FailureCodeSizeEstimatorPanic},
+		{name: "delivery", adapter: panicAdapter{panicDeliver: true}, wantCode: delivery.FailureCodeAdapterPanic},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dispatcher, err := delivery.NewDispatcher(testConfig("panic-"+test.name), test.adapter)
@@ -736,6 +755,9 @@ func TestEstimatorCannotUndercountProjectedBytesAndAdapterPanicsAreContained(t *
 			closeDispatcher(t, dispatcher)
 			if dispatcher.Counters().Rejected != 1 || dispatcher.Health() != delivery.HealthStopped {
 				t.Fatalf("counters=%+v health=%s", dispatcher.Counters(), dispatcher.Health())
+			}
+			if got := dispatcher.DeliveryHealthSnapshot().LastFailureCode; got != test.wantCode {
+				t.Fatalf("failure code=%q want=%q", got, test.wantCode)
 			}
 		})
 	}
@@ -937,6 +959,7 @@ func TestHealthTransitionsRecoveryAndCoalescing(t *testing.T) {
 	})
 	adapter := &fakeAdapter{outcomes: []delivery.DeliveryOutcome{delivery.OutcomeTransient, delivery.OutcomeDelivered}}
 	config := testConfig("health")
+	config.Signal = "logs"
 	config.Observer = observer
 	config.ObserverInterval = 0
 	dispatcher, err := delivery.NewDispatcher(config, adapter)
@@ -973,6 +996,9 @@ func TestHealthTransitionsRecoveryAndCoalescing(t *testing.T) {
 		states = append(states, transition.Current)
 		if transition.Destination != "health" {
 			t.Fatalf("transition disclosed unexpected destination=%q", transition.Destination)
+		}
+		if transition.Signal != "logs" {
+			t.Fatalf("transition signal=%q", transition.Signal)
 		}
 	}
 	want := []delivery.HealthState{
