@@ -2822,10 +2822,7 @@ func mergeOwnedCodexHooks(
 	if err != nil {
 		return fmt.Errorf("inspect predecessor DefenseClaw Codex hooks: %w", err)
 	}
-	isManaged := func(rawHook interface{}) bool {
-		if isOwnedCodexHookHandler(rawHook, hooksDir) {
-			return true
-		}
+	isInferredManaged := func(rawHook interface{}) bool {
 		handler, ok := rawHook.(map[string]interface{})
 		if !ok {
 			return false
@@ -2833,6 +2830,12 @@ func mergeOwnedCodexHooks(
 		command, _ := handler["command"].(string)
 		_, ok = managedCommands[command]
 		return ok
+	}
+	isManaged := func(rawHook interface{}) bool {
+		if isOwnedCodexHookHandler(rawHook, hooksDir) {
+			return true
+		}
+		return isInferredManaged(rawHook)
 	}
 	if _, err := removeCodexHookStateMatching(hooks, configPath, isManaged); err != nil {
 		return fmt.Errorf("inspect existing DefenseClaw Codex hook trust: %w", err)
@@ -2866,7 +2869,19 @@ func mergeOwnedCodexHooks(
 	for eventType, value := range generatedHooks {
 		newEntries, _ := value.([]interface{})
 		existing, _ := hooks[eventType].([]interface{})
-		merged, err := replaceCodexHookInPlace(existing, newEntries, isManaged)
+		merged, err := replaceCodexHookInPlace(
+			existing,
+			newEntries,
+			isManaged,
+			func(_ map[string]interface{}, handlers []interface{}) bool {
+				// inferTrustedCodexManagedHookCommands already proved this exact
+				// singleton belongs to a complete shipped profile with matching
+				// positional trust. It is therefore safe to discard an accumulated
+				// predecessor even when a later reviewed contract changed only the
+				// generated matcher (for example SessionStart adding compact).
+				return len(handlers) == 1 && isInferredManaged(handlers[0])
+			},
+		)
 		if err != nil {
 			return fmt.Errorf("repair Codex hooks.%s: %w", eventType, err)
 		}
@@ -3004,7 +3019,8 @@ func codexShippedManagedHookProfiles() [][]codexHookGroup {
 		codexHookGroup{"PostCompact", "", 30},
 		sixEvents[len(sixEvents)-1],
 	)
-	tenEvents := append([]codexHookGroup(nil), codexHookGroups...)
+	legacyTenEvents := append([]codexHookGroup(nil), codexHookGroups...)
+	tenEvents := append([]codexHookGroup(nil), legacyTenEvents...)
 	// The v3 and v4 contracts have always emitted compact as a reviewed
 	// SessionStart matcher. The shared registry keeps the narrower legacy
 	// matcher so v1/v2 rendering is not broadened.
@@ -3017,6 +3033,7 @@ func codexShippedManagedHookProfiles() [][]codexHookGroup {
 		elevenEvents,
 		preClampElevenEvents,
 		tenEvents,
+		legacyTenEvents,
 		eightEvents,
 		sixEvents,
 		fiveEvents,
@@ -3412,6 +3429,7 @@ func replaceOwnedCodexHookInPlace(existing, generated []interface{}, hooksDir st
 func replaceCodexHookInPlace(
 	existing, generated []interface{},
 	isManaged func(interface{}) bool,
+	canRemoveReviewedDuplicate ...func(map[string]interface{}, []interface{}) bool,
 ) ([]interface{}, error) {
 	if len(generated) != 1 {
 		return nil, fmt.Errorf("generated group count = %d, want 1", len(generated))
@@ -3452,7 +3470,12 @@ func replaceCodexHookInPlace(
 				// group is safe to remove automatically. Shared or edited groups
 				// remain an explicit manual-repair case because deleting one handler
 				// could re-index unrelated positional trust state.
-				if !codexDuplicateGroupCanBeRemoved(group, generatedGroup, handlers) {
+				removable := codexDuplicateGroupCanBeRemoved(group, generatedGroup, handlers)
+				if !removable && len(canRemoveReviewedDuplicate) > 0 &&
+					canRemoveReviewedDuplicate[0] != nil {
+					removable = canRemoveReviewedDuplicate[0](group, handlers)
+				}
+				if !removable {
 					return nil, fmt.Errorf("multiple DefenseClaw handlers require manual repair")
 				}
 				duplicateRemoved = true
