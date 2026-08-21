@@ -7505,26 +7505,20 @@ function Invoke-Contract {
         }
         $contractInstallState = Get-Content -LiteralPath $contractInstallStatePath `
             -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-        if (-not [string]::Equals(
-                [IO.Path]::GetFullPath([string]$contractInstallState.gemini_cli_home),
-                [IO.Path]::GetFullPath($geminiCLIHome),
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            throw 'native Setup install state did not persist exact GEMINI_CLI_HOME root custody'
+        $installStatePropertyNames = @($contractInstallState.PSObject.Properties.Name)
+        foreach ($retiredProperty in @(
+            'gemini_cli_home', 'gemini_config_dir',
+            'windsurf_user_home', 'windsurf_hooks_path'
+        )) {
+            if ($installStatePropertyNames -contains $retiredProperty) {
+                throw "fresh native Setup install state retained deprecated connector custody: $retiredProperty"
+            }
         }
-        if (-not [string]::Equals(
-                [IO.Path]::GetFullPath([string]$contractInstallState.gemini_config_dir),
-                [IO.Path]::GetFullPath($geminiConfigHome),
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            throw 'native Setup install state did not persist GEMINI_CLI_HOME\.gemini custody'
-        }
-        # The harness is not itself launched through the installed shim. Mirror
-        # the launcher's authenticated rehydration after proving the signed
-        # state, and remove the unsupported ambient config-dir alias.
-        $env:GEMINI_CLI_HOME = [string]$contractInstallState.gemini_cli_home
-        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = [string]$contractInstallState.gemini_config_dir
+        # Retired connector variables are hostile ambient input, not fresh
+        # install custody. Remove them before the active connector contract.
+        Remove-Item Env:GEMINI_CLI_HOME -ErrorAction SilentlyContinue
         Remove-Item Env:GEMINI_CONFIG_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:DEFENSECLAW_GEMINI_CONFIG_HOME -ErrorAction SilentlyContinue
 
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or

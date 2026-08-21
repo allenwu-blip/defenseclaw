@@ -344,7 +344,7 @@ class ResidueArtifactsContractTests(unittest.TestCase):
     def test_built_in_connectors_present(self):
         expected = {
             "amp", "antigravity", "claudecode", "codex", "copilot", "cursor",
-            "geminicli", "hermes", "omnigent", "opencode", "openhands",
+            "devin", "geminicli", "hermes", "omnigent", "opencode", "openhands",
             "windsurf", "zeptoclaw",
         }
         self.assertEqual(set(_CONNECTOR_RESIDUE_ARTIFACTS), expected)

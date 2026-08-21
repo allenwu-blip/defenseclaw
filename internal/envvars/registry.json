@@ -221,6 +221,37 @@
       "security_note": "Trusted Setup custody binding only. This is not a Cursor vendor environment variable and must never be used for ordinary Cursor discovery."
     },
     {
+      "name": "DEFENSECLAW_DEVIN_CONFIG_HOME",
+      "category": "upgrade_internal",
+      "purpose": "Carries the exact Devin configuration directory captured and validated by the native Windows Setup transaction into isolated connector maintenance children. Devin itself never reads this private DefenseClaw binding.",
+      "default": "unset",
+      "accepted_values": ["absolute normalized path selected by the Setup transaction", "unset"],
+      "security_impact": "medium",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "cmd/defenseclaw-setup/transaction.go", "description": "Scrubs ambient copies and passes only the transaction-bound Devin configuration directory to connector lifecycle children"},
+        {"location": "cmd/defenseclaw-setup/main.go", "description": "Requires one absolute normalized value and converts it to the hidden --config-home argument"},
+        {"location": "internal/nativeinstallstate/state.go", "description": "Rehydrates the authenticated Devin configuration directory for direct gateway and launcher recovery"}
+      ],
+      "since": "0.8.10",
+      "security_note": "Private authenticated lifecycle binding only. This is not a Devin vendor environment variable and has no authority unless it came from protected native install state or the Setup transaction."
+    },
+    {
+      "name": "DEFENSECLAW_DEVIN_EXECUTABLE",
+      "category": "upgrade_internal",
+      "purpose": "Carries the exact Devin executable selected and admitted by native Windows Setup through isolated maintenance and recovery child environments. Ambient copies are always scrubbed before the authenticated value is published.",
+      "default": "unset",
+      "accepted_values": ["absolute normalized current-user Devin executable admitted by Setup", "unset"],
+      "security_impact": "high",
+      "surface_in_doctor": false,
+      "consumers": [
+        {"location": "cmd/defenseclaw-setup/transaction.go", "description": "Scrubs ambient copies and publishes only the Setup-admitted Devin executable to connector lifecycle children"},
+        {"location": "internal/nativeinstallstate/state.go", "description": "Rehydrates the authenticated Devin executable from protected native install state"}
+      ],
+      "since": "0.8.10",
+      "security_note": "Private authenticated executable binding only. It must remain tied to the exact signed Devin binary admitted by Setup and must never be treated as a general operator path override."
+    },
+    {
       "name": "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME",
       "category": "upgrade_internal",
       "purpose": "Carries the exact Antigravity configuration home already captured and validated by the native Windows Setup transaction into its isolated connector maintenance child. The child converts it to the hidden --config-home binding; Antigravity itself never reads this variable.",

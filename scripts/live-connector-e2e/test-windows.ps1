@@ -3467,6 +3467,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True ($homeCapture -ge 0 -and $homeCapture -lt $contractInstall) `
             "connector contract captures recorded home before native Setup: $homeAssignment"
     }
+    Assert-True ($contractFunction -match 'fresh native Setup install state retained deprecated connector custody' -and
+        $contractFunction -match "'gemini_cli_home', 'gemini_config_dir'" -and
+        $contractFunction -match "'windsurf_user_home', 'windsurf_hooks_path'" -and
+        $contractFunction -notmatch '\$contractInstallState\.(gemini_cli_home|gemini_config_dir|windsurf_user_home|windsurf_hooks_path)') `
+        'connector contract rejects fresh retired Gemini/Windsurf custody without dereferencing absent state properties'
     $contractCleanupTry = $contractFunction.IndexOf('    try {', [StringComparison]::Ordinal)
     $contractProfileCreate = $contractFunction.IndexOf(
         '[IO.Directory]::CreateDirectory($path)',
