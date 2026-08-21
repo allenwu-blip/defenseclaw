@@ -25,7 +25,7 @@ the release actually qualifies.
 | OmniGent 0.7.0 connector setup | **Supported — native degraded** | Same-user native `uv tool` environment and awaited Python policy calls from server/SDK harnesses. Terminal wrappers and filesystem/network/L7 sandboxing remain unavailable; `live=false`. |
 | Hermes connector setup | **Supported** | Same-user Tier-1 native Hermes, direct absolute forward-slash `defenseclaw-hook.exe` argv, and authenticated loopback gateway. Running-client state remains pending reload and `live=false`. |
 | Copilot CLI and Antigravity setup | **Supported** | Ordinary Setup is available. Provider authentication remains required; HITL and official-client live evidence are unverified and unclaimed, validation metadata remains empty, and `live=false`. |
-| Gemini CLI setup | **Excluded** | Native Windows support is intentionally excluded; existing non-Windows behavior is unchanged. |
+| Gemini CLI setup | **Preview** | Native system-PowerShell hooks and authenticated `<GEMINI_CLI_HOME>\.gemini` lifecycle custody are implemented (Profile Known Folder default); packaged and authenticated official-client evidence remains pending and `live=false`. |
 | OpenHands, OpenClaw, and ZeptoClaw setup | **Unsupported** | Their required WSL or proxy topology is not hosted by native Windows DefenseClaw. |
 | Python CLI | **Supported** | Packaged launcher and embedded runtime; PowerShell and cmd. Individual optional/network subcommands retain their caveats below. |
 | TUI | **Supported** | Native console input, UTF-8 output, clipboard support, managed process cancellation, and safe fallback when redraw is unavailable. |
@@ -126,7 +126,8 @@ through ordinary CLI/TUI setup. Copilot and Antigravity retain their normal prov
 authentication requirements; their HITL and official-client live evidence remain
 unverified and unclaimed, validation metadata remains empty, and `live=false`. Other aliases may remain
 visible because this is one cross-platform CLI; their presence does not override
-the platform gate. Gemini CLI is excluded from native Windows. Local
+the platform gate. Gemini CLI is a selectable native Windows preview with
+packaged and official-client evidence still pending. Local
 observability, Splunk, providers, webhooks, Galileo, registries, and remote
 destinations are optional and retain their own prerequisites.
 

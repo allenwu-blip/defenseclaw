@@ -900,11 +900,13 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     codex_home = tmp_path / "codex-home"
     opencode_home = tmp_path / "opencode-home"
     windsurf_profile = tmp_path / "windsurf-profile"
+    gemini_home = tmp_path / "gemini-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("OPENCODE_CONFIG_DIR", str(opencode_home))
     monkeypatch.setenv("WINDSURF_USER_HOME", str(windsurf_profile))
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
     cases = {
         "hermes": "Hermes",
         "cursor": "Cursor",
@@ -934,7 +936,14 @@ def test_connector_labels_cover_hook_surface_connectors(monkeypatch, tmp_path) -
     assert str(windsurf_profile / ".codeium" / "windsurf" / "hooks.json") in connector_source_label(
         "windsurf", "config"
     )
-    assert ".gemini/extensions" in connector_source_label("geminicli", "plugins")
+    assert connector_source_label("geminicli", "plugins") == str(gemini_home / "extensions")
+    gemini_mcps = connector_source_label("geminicli", "mcps")
+    assert str(gemini_home / "settings.json") in gemini_mcps
+    assert "./.gemini/settings.json" in gemini_mcps
+    assert "./.mcp.json" not in gemini_mcps
+    assert connector_source_label("geminicli", "config").startswith(
+        str(gemini_home / "settings.json")
+    )
     assert ".github/mcp.json" in connector_source_label("copilot", "mcps")
     # opencode MCP is now managed by DefenseClaw (read+write via the bridge
     # path layer), so the source label points at its real config and no longer

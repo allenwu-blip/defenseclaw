@@ -135,13 +135,13 @@ def test_amp_is_reachable_through_contract_and_manual_live_layers() -> None:
     assert "if: ${{ github.event_name == 'workflow_dispatch' }}" in live
     assert "{ connector: amp,        os: ubuntu-latest,  dcos: linux }" in live
     assert "{ connector: amp,        os: macos-latest,   dcos: macos }" in live
-    assert "AMP_API_KEY: ${{ secrets.AMP_API_KEY }}" in live
+    assert "AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}" in live
     assert "AMP_VERSION:" in live
 
     windows = workflow.split("  windows-live:", 1)[1].split("  report:", 1)[0]
     assert "github.event_name == 'workflow_dispatch'" in windows
     assert "connector: [codex, claudecode, amp, cursor, opencode]" in windows
-    assert "AMP_API_KEY: ${{ secrets.AMP_API_KEY }}" in windows
+    assert "AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}" in windows
     assert "AMP_VERSION: ${{ inputs.version }}" in windows
 
     run = (ROOT / "scripts/live-connector-e2e/run.sh").read_text(encoding="utf-8")

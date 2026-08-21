@@ -26,12 +26,11 @@ var windowsSupportedConnectorNames = []string{
 	"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf",
 }
 
-var windowsPreviewConnectorNames = []string{}
+var windowsPreviewConnectorNames = []string{"geminicli"}
 
 var windowsNotCertifiedConnectorNames = []string{}
 
 var windowsUnsupportedConnectorNames = []string{
-	"geminicli",
 	"openclaw",
 	"openhands",
 	"zeptoclaw",
@@ -150,6 +149,9 @@ func TestValidateConnectorSupportedOnOS(t *testing.T) {
 			t.Fatalf("supported connector %s should remain available: %v", name, err)
 		}
 	}
+	if err := validateConnectorSupportedOnOS("geminicli", "windows"); err != nil {
+		t.Fatalf("preview Gemini CLI connector should remain available: %v", err)
+	}
 	err := validateConnectorSupportedOnOS("openhands", "windows")
 	if err == nil || !strings.Contains(err.Error(), "requires WSL") {
 		t.Fatalf("expected clear OpenHands Windows rejection, got %v", err)
@@ -167,6 +169,12 @@ func TestCheckPlatformSupportPreservesOperatorWording(t *testing.T) {
 		if err != nil || warning != "" {
 			t.Fatalf("supported %s result warning=%q err=%v", name, warning, err)
 		}
+	}
+
+	warning, err = CheckPlatformSupport("geminicli", "windows")
+	wantWarning := "connector geminicli is preview on windows: " + windowsConnectorSupport["geminicli"].Reason
+	if err != nil || warning != wantWarning {
+		t.Fatalf("preview Gemini CLI result warning=%q err=%v, want warning %q", warning, err, wantWarning)
 	}
 
 	warning, err = CheckPlatformSupport("openhands", "windows")

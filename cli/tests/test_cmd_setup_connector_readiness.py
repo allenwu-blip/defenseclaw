@@ -20,13 +20,14 @@ from defenseclaw.doctor_hooks import WindowsHookCheck
 from defenseclaw.fail_mode import connector_registration_lock_state
 from defenseclaw.file_permissions import atomic_write_private_bytes
 
-TEN_CONNECTORS = (
+ELEVEN_CONNECTORS = (
     "codex",
     "claudecode",
     "cursor",
     "windsurf",
     "copilot",
     "antigravity",
+    "geminicli",
     "opencode",
     "amp",
     "hermes",
@@ -88,8 +89,8 @@ def _patch_registration_ready(monkeypatch, entry: dict[str, object]) -> None:
     )
 
 
-@pytest.mark.parametrize("connector", TEN_CONNECTORS)
-def test_contract_lock_accepts_exact_ten(connector: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize("connector", ELEVEN_CONNECTORS)
+def test_contract_lock_accepts_exact_eleven(connector: str, tmp_path: Path) -> None:
     assert connector_lock_contract_invariant(connector, _entry(connector, tmp_path)) == ""
 
 
@@ -161,11 +162,12 @@ def test_protected_executable_reports_identity_location_and_digest(monkeypatch, 
     assert agent_selection.setup_agent_lock_executable_invariant(str(tmp_path), "amp", stale_digest) == "digest"
 
 
-def test_real_doctor_dispatch_exercises_exact_ten(monkeypatch, tmp_path: Path) -> None:
+def test_real_doctor_dispatch_exercises_exact_eleven(monkeypatch, tmp_path: Path) -> None:
     cfg = _config(tmp_path)
+    assert set(cmd_doctor._SETUP_READINESS_PRIMARY_LABELS) == set(ELEVEN_CONNECTORS)
     config_paths: dict[str, str] = {}
     runtime_paths: dict[str, list[str]] = {}
-    for connector in TEN_CONNECTORS:
+    for connector in ELEVEN_CONNECTORS:
         config = tmp_path / f"{connector}.json"
         runtime = tmp_path / f"{connector}.bin"
         config.write_text("defenseclaw", encoding="utf-8")
@@ -216,7 +218,7 @@ def test_real_doctor_dispatch_exercises_exact_ten(monkeypatch, tmp_path: Path) -
 
     expected_labels = set(cmd_doctor._SETUP_READINESS_PRIMARY_LABELS.values())
     observed_labels: set[str] = set()
-    for connector in TEN_CONNECTORS:
+    for connector in ELEVEN_CONNECTORS:
         result = cmd_doctor._DoctorResult(passive=True, quiet=True)
         cmd_doctor._check_connector_hooks(cfg, connector, result)
         observed_labels.update(row["label"] for row in result.checks if row["label"] in expected_labels)
@@ -418,6 +420,7 @@ def test_restart_services_labels_hermes_pending_reload_without_live_claim(
 ) -> None:
     hints: list[str] = []
     monkeypatch.setattr(cmd_setup, "_restart_defense_gateway", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cmd_setup, "_wait_for_defense_gateway_api", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         cmd_setup,
         "_wait_for_connector_runtime",
@@ -474,7 +477,7 @@ def test_upstream_fail_open_remains_distinct_from_configured_mode(monkeypatch, t
     assert readiness.detail == "configured=closed; effective=open"
 
 
-@pytest.mark.parametrize("connector", ("codex", "claudecode", "windsurf", "amp", "opencode"))
+@pytest.mark.parametrize("connector", ("codex", "claudecode", "windsurf", "geminicli", "amp", "opencode"))
 def test_observe_readiness_compares_lock_to_mode_aware_desired_fail_mode(
     monkeypatch,
     tmp_path: Path,
@@ -633,15 +636,15 @@ def test_readiness_lock_reports_digest_drift(monkeypatch, tmp_path: Path) -> Non
 
 
 def test_snapshot_reports_one_peer_contract_drift(tmp_path: Path) -> None:
-    lock = {"version": 2, "connectors": {name: _entry(name, tmp_path) for name in TEN_CONNECTORS}}
+    lock = {"version": 2, "connectors": {name: _entry(name, tmp_path) for name in ELEVEN_CONNECTORS}}
     lock["connectors"]["copilot"]["contract_id"] = "wrong"
-    state = {"version": 3, "names": list(TEN_CONNECTORS), "inactive_names": []}
+    state = {"version": 3, "names": list(ELEVEN_CONNECTORS), "inactive_names": []}
     result = cmd_setup._connector_runtime_snapshot_failure(
         state,
         2,
         lock,
         2,
-        expected=set(TEN_CONNECTORS),
+        expected=set(ELEVEN_CONNECTORS),
         previous_state_marker=1,
         previous_lock_marker=1,
     )
@@ -649,15 +652,15 @@ def test_snapshot_reports_one_peer_contract_drift(tmp_path: Path) -> None:
     assert (result.connector, result.invariant) == ("copilot", "contract")
 
 
-def test_snapshot_accepts_exact_ten_roster(tmp_path: Path) -> None:
-    lock = {"version": 2, "connectors": {name: _entry(name, tmp_path) for name in TEN_CONNECTORS}}
-    state = {"version": 3, "names": list(TEN_CONNECTORS), "inactive_names": []}
+def test_snapshot_accepts_exact_eleven_roster(tmp_path: Path) -> None:
+    lock = {"version": 2, "connectors": {name: _entry(name, tmp_path) for name in ELEVEN_CONNECTORS}}
+    state = {"version": 3, "names": list(ELEVEN_CONNECTORS), "inactive_names": []}
     assert cmd_setup._connector_runtime_snapshot_ready(
         state,
         2,
         lock,
         2,
-        expected=set(TEN_CONNECTORS),
+        expected=set(ELEVEN_CONNECTORS),
         previous_state_marker=1,
         previous_lock_marker=1,
     )

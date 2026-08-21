@@ -746,6 +746,113 @@ func (c *CodexConnector) HookCapabilities(opts SetupOpts) HookCapability {
 	}
 }
 
+// Capabilities implements ConnectorCapabilityProvider. Inventory paths come
+// from ComponentTargets so API metadata, connector-state locks, and the
+// continuous component scanner describe the same Codex project layers.
+// Writable paths are intentionally narrower than discovery: DefenseClaw can
+// manage MCP registrations and opt-in skills, but it only inventories Codex
+// rules, custom agents, and marketplace/plugin caches.
+func (c *CodexConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
+	targets := c.ComponentTargets(opts.WorkspaceDir)
+	profile := c.HookProfile(opts)
+
+	mcpWritePaths := uniqueNonEmptyStrings([]string{
+		workspacePath(opts, ".codex", "config.toml"),
+		codexConfigPath(),
+	})
+	skillWritePaths := uniqueNonEmptyStrings([]string{
+		workspacePath(opts, ".agents", "skills"),
+		CodexPersonalSkillsPath(),
+	})
+	skillScope := "workspace,user"
+	if runtime.GOOS != "windows" {
+		skillScope += ",system"
+	}
+	telemetryEndpoint := ""
+	if profile.NativeOTLP != nil {
+		telemetryEndpoint = profile.NativeOTLP.Endpoint
+	}
+
+	return ConnectorCapabilities{
+		LLMTrafficMode: LLMTrafficModeForConnector(c.Name()),
+		Hooks:          c.HookCapabilities(opts),
+		MCP: SurfaceCapability{
+			Supported:       true,
+			Scope:           "workspace,user",
+			ConfigPaths:     uniqueNonEmptyStrings(targets["mcp"]),
+			ReadPaths:       uniqueNonEmptyStrings(targets["mcp"]),
+			WritePaths:      mcpWritePaths,
+			SupportsBackup:  true,
+			SupportsRestore: true,
+			Notes: []string{
+				"Codex MCP servers are read from trusted project .codex/config.toml layers followed by the user config; DefenseClaw writes only the explicitly selected workspace layer or user config.",
+				"Filesystem discovery does not infer Codex's private project-trust decision.",
+			},
+		},
+		Skills: SurfaceCapability{
+			Supported:      true,
+			Scope:          skillScope,
+			ReadPaths:      uniqueNonEmptyStrings(targets["skill"]),
+			WritePaths:     skillWritePaths,
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes: []string{
+				"Codex Agent Skills are discovered from project and personal .agents/skills roots; /etc/codex/skills is additionally read-only on Unix.",
+			},
+		},
+		Rules: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     uniqueNonEmptyStrings(targets["rule"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Codex *.rules files are inventoried beside candidate active config layers; DefenseClaw does not create or modify general Codex rules.",
+			},
+		},
+		Plugins: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user,cache",
+			ReadPaths:     uniqueNonEmptyStrings(targets["plugin"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Codex plugin inventory follows declared local marketplace sources and observed installed cache entries; DefenseClaw does not claim activation or custody of those plugin roots.",
+			},
+		},
+		Agents: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     uniqueNonEmptyStrings(targets["agent"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Codex custom-agent TOML files are inventory-only and project entries still require Codex project trust.",
+			},
+		},
+		CodeGuard: CodeGuardCapability{
+			Supported:      true,
+			InstallTargets: []string{"skill"},
+			OptInOnly:      true,
+			AutoInstall:    false,
+			Idempotent:     true,
+			ConflictSafe:   true,
+			Notes: []string{
+				"Explicit CodeGuard setup installs the managed software-security skill under the personal .agents/skills root and records an ownership receipt for safe teardown.",
+			},
+		},
+		Telemetry: TelemetryCapability{
+			NativeOTLP:       profile.NativeOTLP != nil,
+			NativeSignals:    []string{"logs", "metrics", "traces"},
+			HookSignals:      []string{"logs", "metrics", "traces"},
+			ConfigPaths:      []string{codexConfigPath()},
+			AuthMode:         "header-token",
+			EndpointTemplate: telemetryEndpoint,
+			SourceModes:      []string{"native", "hook"},
+			Notes: []string{
+				"Codex emits native OTLP directly to the loopback gateway with a connector-scoped Authorization header; hook and agent-turn-complete notify records are independent channels.",
+			},
+		},
+	}
+}
+
 // HookProfile implements HookProfileProvider. The profile is the
 // single declarative description of the connector consumed by:
 //   - the unified hook collector (Decode/MapVerdict/Respond callbacks
@@ -1270,9 +1377,9 @@ var codexHookGroups = []codexHookGroup{
 }
 
 // SessionEnd first appears in the official 0.145.0 v4 schema and remains
-// advisory. Its current host budget is sixty seconds; the legacy three-second
-// profile remains recognized below only for safe teardown of older installs.
-var codexSessionEndHookGroup = codexHookGroup{"SessionEnd", "", 60}
+// advisory. The client caps this teardown hook at three seconds, so emitting a
+// larger value is misleading even though the client would clamp it at load.
+var codexSessionEndHookGroup = codexHookGroup{"SessionEnd", "", 3}
 
 func codexHookContractForSetup(opts SetupOpts) (HookContract, error) {
 	var contract HookContract
@@ -2865,10 +2972,11 @@ func inferTrustedCodexManagedHookCommands(
 // actually emitted. The five-event profile predates PermissionRequest; the
 // six-event profile added it; the eight-event profile added compact lifecycle
 // coverage; the ten-event profile added subagent lifecycle coverage. SessionEnd
-// is the sole extension to that current matrix; its first shipped timeout was
-// three seconds before the current sixty-second budget. Keeping these profiles
-// explicit prevents a trusted-looking subset or edited superset from being
-// absorbed as product-owned state.
+// is the sole extension to that current matrix. DefenseClaw briefly emitted a
+// sixty-second value that Codex clamps to its official three-second maximum;
+// retain that predecessor shape only for safe migration and teardown. Keeping
+// these profiles explicit prevents a trusted-looking subset or edited superset
+// from being absorbed as product-owned state.
 func codexShippedManagedHookProfiles() [][]codexHookGroup {
 	fiveEvents := []codexHookGroup{
 		{"SessionStart", "startup|resume|clear", 30},
@@ -2889,11 +2997,11 @@ func codexShippedManagedHookProfiles() [][]codexHookGroup {
 	tenEvents := append([]codexHookGroup(nil), codexHookGroups...)
 	elevenEvents := append([]codexHookGroup(nil), tenEvents...)
 	elevenEvents = append(elevenEvents, codexSessionEndHookGroup)
-	legacyElevenEvents := append([]codexHookGroup(nil), tenEvents...)
-	legacyElevenEvents = append(legacyElevenEvents, codexHookGroup{"SessionEnd", "", 3})
+	preClampElevenEvents := append([]codexHookGroup(nil), tenEvents...)
+	preClampElevenEvents = append(preClampElevenEvents, codexHookGroup{"SessionEnd", "", 60})
 	return [][]codexHookGroup{
 		elevenEvents,
-		legacyElevenEvents,
+		preClampElevenEvents,
 		tenEvents,
 		eightEvents,
 		sixEvents,

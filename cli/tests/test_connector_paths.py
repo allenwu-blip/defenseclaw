@@ -108,6 +108,145 @@ def test_windsurf_paths_use_explicit_profile_binding_not_ambient_home(
     ]
 
 
+def test_gemini_paths_use_private_install_binding_across_every_user_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = tmp_path / "official-profile" / ".gemini"
+    hostile = tmp_path / "hostile-profile"
+    workspace = tmp_path / "workspace"
+    bound.mkdir(parents=True)
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(hostile))
+    monkeypatch.setenv("USERPROFILE", str(hostile))
+    monkeypatch.setenv("GEMINI_CONFIG_DIR", str(hostile / "vendor-override"))
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(hostile / "official-vendor-root"))
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(bound))
+    monkeypatch.setattr(Path, "home", lambda: hostile)
+
+    settings = bound / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "existing": {"command": "bound-mcp"},
+                    "user-only": {"command": "user-mcp"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    project_settings = workspace / ".gemini" / "settings.json"
+    project_settings.parent.mkdir()
+    project_settings.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "existing": {"command": "project-mcp"},
+                    "project-only": {"command": "project-only-mcp"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert connector_paths.connector_home("geminicli") == str(bound)
+    assert connector_paths.connector_config_files(
+        "geminicli", workspace_dir=str(workspace)
+    ) == [
+        str(settings),
+        str(workspace / ".gemini" / "settings.json"),
+    ]
+    assert connector_paths.skill_dirs("geminicli", workspace_dir=str(workspace)) == [
+        str(bound / "skills"),
+        str(workspace / ".gemini" / "skills"),
+        str(workspace / ".agents" / "skills"),
+    ]
+    assert connector_paths.plugin_dirs("geminicli", workspace_dir=str(workspace)) == [
+        str(bound / "extensions"),
+    ]
+    assert connector_paths.agent_dirs("geminicli", workspace_dir=str(workspace)) == [
+        str(bound / "agents"),
+        str(workspace / ".gemini" / "agents"),
+    ]
+    assert connector_paths.rule_dirs("geminicli", workspace_dir=str(workspace)) == [
+        str(bound / "skills"),
+        str(workspace / ".agents" / "skills"),
+    ]
+    assert [
+        (entry.name, entry.command)
+        for entry in connector_paths.mcp_servers(
+            "geminicli",
+            workspace_dir=str(workspace),
+        )
+    ] == [
+        ("existing", "project-mcp"),
+        ("project-only", "project-only-mcp"),
+        ("user-only", "user-mcp"),
+    ]
+
+    connector_paths.set_mcp_server("geminicli", "added", {"command": "added-mcp"})
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    assert document["mcpServers"]["added"]["command"] == "added-mcp"
+    connector_paths.unset_mcp_server("geminicli", "added")
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    assert "added" not in document["mcpServers"]
+
+    connector_paths.set_mcp_server(
+        "geminicli",
+        "workspace-added",
+        {"command": "workspace-mcp"},
+        workspace_dir=str(workspace),
+    )
+    project_document = json.loads(project_settings.read_text(encoding="utf-8"))
+    assert project_document["mcpServers"]["workspace-added"]["command"] == "workspace-mcp"
+    assert "workspace-added" not in document["mcpServers"]
+    connector_paths.unset_mcp_server(
+        "geminicli",
+        "workspace-added",
+        workspace_dir=str(workspace),
+    )
+    project_document = json.loads(project_settings.read_text(encoding="utf-8"))
+    assert "workspace-added" not in project_document["mcpServers"]
+    assert not (hostile / ".gemini" / "settings.json").exists()
+
+
+@pytest.mark.parametrize(
+    "binding",
+    ["", "relative", " trailing ", "bad\npath"],
+)
+def test_gemini_private_install_binding_rejects_invalid_paths(
+    binding: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", binding)
+    with pytest.raises(ValueError, match="absolute normalized path"):
+        connector_paths.connector_home("geminicli")
+
+
+def test_gemini_source_paths_follow_official_cli_home_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    vendor_root = tmp_path / "gemini-home-root"
+    monkeypatch.delenv("DEFENSECLAW_GEMINI_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(vendor_root))
+
+    assert connector_paths.connector_home("geminicli") == str(
+        vendor_root / ".gemini"
+    )
+    assert connector_paths.plugin_dirs("geminicli") == [
+        str(vendor_root / ".gemini" / "extensions")
+    ]
+
+
+@pytest.mark.parametrize("binding", ["relative", " trailing ", "bad\npath"])
+def test_gemini_official_cli_home_rejects_invalid_nonempty_paths(
+    binding: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("DEFENSECLAW_GEMINI_CONFIG_HOME", raising=False)
+    monkeypatch.setenv("GEMINI_CLI_HOME", binding)
+    with pytest.raises(ValueError, match="GEMINI_CLI_HOME.*absolute normalized path"):
+        connector_paths.connector_home("geminicli")
+
+
 def test_windsurf_profile_binding_rejects_non_normalized_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -998,7 +1137,7 @@ class TestPluginDirs:
         ]
         assert connector_paths.plugin_dirs("windsurf") == []
         assert os.path.join(str(tmp_path / "home"), ".gemini", "extensions") in connector_paths.plugin_dirs("geminicli")
-        assert os.path.join(str(tmp_path), ".gemini", "extensions") in connector_paths.plugin_dirs(
+        assert os.path.join(str(tmp_path), ".gemini", "extensions") not in connector_paths.plugin_dirs(
             "geminicli",
             workspace_dir=str(tmp_path),
         )

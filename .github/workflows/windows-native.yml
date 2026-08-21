@@ -6,9 +6,9 @@
 #
 # Real provider-secret Codex/Claude tests remain in connector-live-e2e.yml and
 # are workflow_dispatch-only. They are regression radar, not a merge gate.
-# Hermes is included in the required deterministic connector-contract matrix
-# but remains preview/not-certified. Its packaged and official-client gates in
-# docs/research/HERMES-NATIVE-WINDOWS.md are separate and currently unfulfilled.
+# Hermes setup is supported and included in the required deterministic
+# connector-contract matrix. Packaged and official-client evidence is tracked
+# separately; a green synthetic contract cell does not manufacture that evidence.
 
 name: Windows Native CI
 
@@ -760,9 +760,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Contract coverage does not certify preview/not-certified connectors;
-        # promotion still requires packaged and official-client evidence.
-        connector: [codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, opencode]
+        # Gemini CLI participates only in this deterministic packaged contract
+        # while it remains Preview. This matrix is not authenticated live or
+        # official-client evidence and does not certify preview connectors.
+        connector: [codex, claudecode, amp, copilot, cursor, hermes, windsurf, antigravity, geminicli, opencode]
     env:
       CONNECTOR: ${{ matrix.connector }}
     steps:

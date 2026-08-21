@@ -107,6 +107,39 @@ func TestValidateInstallStateForRootsRequiresExactWindsurfHooksTarget(t *testing
 	}
 }
 
+func TestValidateInstallStateForRootsRequiresConsistentGeminiCLIHomeBinding(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	state := testInstallState(
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		testCurrentTransactionID,
+		"1.0.0",
+	)
+	state.Connector = "geminicli"
+	state.GeminiCLIHome = filepath.Join(t.TempDir(), "gemini-cli-home")
+	state.GeminiConfigDir = filepath.Join(state.GeminiCLIHome, ".gemini")
+	if err := validateInstallStateForRoots(&state, installRoot, dataRoot, maintenancePath); err != nil {
+		t.Fatalf("consistent Gemini CLI binding was rejected: %v", err)
+	}
+
+	state.GeminiConfigDir = filepath.Join(t.TempDir(), ".gemini")
+	if err := validateInstallStateForRoots(&state, installRoot, dataRoot, maintenancePath); err == nil ||
+		!strings.Contains(err.Error(), "inconsistent Gemini CLI home binding") {
+		t.Fatalf("mismatched Gemini CLI binding error = %v", err)
+	}
+
+	state.GeminiCLIHome = ""
+	if err := validateInstallStateForRoots(&state, installRoot, dataRoot, maintenancePath); err != nil {
+		t.Fatalf("predecessor config-only Gemini state was rejected: %v", err)
+	}
+	state.GeminiConfigDir += " "
+	if err := validateInstallStateForRoots(&state, installRoot, dataRoot, maintenancePath); err == nil ||
+		!strings.Contains(err.Error(), "invalid Gemini CLI configuration dir") {
+		t.Fatalf("surrounding-whitespace Gemini state error = %v", err)
+	}
+}
+
 func writeInstallTree(t *testing.T, tree string, state installState) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(tree, "installer"), 0o755); err != nil {
@@ -932,6 +965,71 @@ func TestValidateSetupTransactionAntigravityHomeIgnoresSpoofedDataRoot(t *testin
 	}
 }
 
+func TestValidateSetupTransactionGeminiHomeBindingIgnoresSpoofedDataRoot(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	transaction := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, nil)
+	geminiCLIHome := filepath.Join(t.TempDir(), "gemini-cli-home")
+	spoofedDataRoot := filepath.Join(t.TempDir(), "spoofed-profile", ".defenseclaw")
+	transaction.DataRoot = spoofedDataRoot
+	transaction.TargetConnector = "geminicli"
+	transaction.GeminiCLIHome = geminiCLIHome
+	transaction.GeminiConfigDir = filepath.Join(geminiCLIHome, ".gemini")
+	expected := setupTransactionExpectations{
+		InstallRoot:     installRoot,
+		DataRoot:        spoofedDataRoot,
+		MaintenancePath: maintenancePath,
+	}
+	if err := validateSetupTransaction(transaction, expected); err != nil {
+		t.Fatalf("valid Gemini home changed with a spoofed DataRoot: %v", err)
+	}
+	transaction.GeminiCLIHome += " "
+	transaction.GeminiConfigDir = filepath.Join(transaction.GeminiCLIHome, ".gemini")
+	if err := validateSetupTransaction(transaction, expected); err == nil ||
+		!strings.Contains(err.Error(), "invalid Gemini CLI home override") {
+		t.Fatalf("surrounding-whitespace Gemini transaction error = %v", err)
+	}
+	transaction.GeminiCLIHome = geminiCLIHome
+	transaction.GeminiConfigDir = connectorDefaultHomeBesideDataRoot(spoofedDataRoot, "geminicli")
+	if err := validateSetupTransaction(transaction, expected); err == nil ||
+		!strings.Contains(err.Error(), "inconsistent Gemini CLI home binding") {
+		t.Fatalf("spoofed DataRoot redirected Gemini custody: %v", err)
+	}
+}
+
+func TestValidateSetupTransactionGeminiSchemaTwoCompatibilityIsFailClosed(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	expected := setupTransactionExpectations{
+		InstallRoot:     installRoot,
+		DataRoot:        dataRoot,
+		MaintenancePath: maintenancePath,
+	}
+	preGemini := testSetupTransactionForRoots("install", installRoot, dataRoot, maintenancePath, nil)
+	preGemini.GeminiConfigDir = ""
+	if err := validateSetupTransaction(preGemini, expected); err != nil {
+		t.Fatalf("pre-Gemini schema-2 transaction was rejected: %v", err)
+	}
+
+	selected := preGemini
+	selected.TargetConnector = "geminicli"
+	if err := validateSetupTransaction(selected, expected); err == nil ||
+		!strings.Contains(err.Error(), "no valid Gemini CLI home binding") {
+		t.Fatalf("Gemini selection without a bound home was accepted: %v", err)
+	}
+
+	previouslyManaged := preGemini
+	previouslyManaged.PreviousConnectors = []string{"geminicli"}
+	if err := validateSetupTransaction(previouslyManaged, expected); err == nil ||
+		!strings.Contains(err.Error(), "no valid Gemini CLI home binding") {
+		t.Fatalf("Gemini-bearing predecessor transaction without a bound home was accepted: %v", err)
+	}
+
+	predecessorConfigOnly := selected
+	predecessorConfigOnly.GeminiConfigDir = filepath.Join(t.TempDir(), "legacy-home", ".gemini")
+	if err := validateSetupTransaction(predecessorConfigOnly, expected); err != nil {
+		t.Fatalf("canonical predecessor config-only binding was rejected: %v", err)
+	}
+}
+
 func TestSetupJournalRoundTripsAntigravityConfigHomeCustody(t *testing.T) {
 	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
 	previous := testInstallState(
@@ -1754,6 +1852,159 @@ func TestTransactionChildEnvReplacesAmbientWindsurfBindings(t *testing.T) {
 	}
 }
 
+func TestGeminiTransactionRoundTripRehydratesVendorRootAndPrivateCustody(t *testing.T) {
+	root := t.TempDir()
+	previousCLIHome := filepath.Join(root, "previous")
+	currentCLIHome := filepath.Join(root, "current")
+	transaction := setupTransaction{
+		DataRoot:                filepath.Join(root, ".defenseclaw"),
+		PreviousGeminiCLIHome:   previousCLIHome,
+		PreviousGeminiConfigDir: filepath.Join(previousCLIHome, ".gemini"),
+		GeminiCLIHome:           currentCLIHome,
+		GeminiConfigDir:         filepath.Join(currentCLIHome, ".gemini"),
+	}
+	t.Setenv("GEMINI_CLI_HOME", filepath.Join(root, "ambient-vendor-root"))
+	t.Setenv("GEMINI_CONFIG_DIR", filepath.Join(root, "ambient-vendor"))
+	t.Setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", filepath.Join(root, "ambient-internal"))
+
+	body, err := json.Marshal(transaction)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored setupTransaction
+	if err := json.Unmarshal(body, &restored); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		env    []string
+		root   string
+		config string
+	}{
+		{name: "current", env: transactionChildEnv(restored), root: transaction.GeminiCLIHome, config: transaction.GeminiConfigDir},
+		{name: "previous", env: transactionPreviousChildEnv(restored), root: transaction.PreviousGeminiCLIHome, config: transaction.PreviousGeminiConfigDir},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := envValue(test.env, "GEMINI_CLI_HOME"); !samePath(got, test.root) {
+				t.Fatalf("vendor Gemini CLI home = %q, want %q", got, test.root)
+			}
+			if got := envValue(test.env, "DEFENSECLAW_GEMINI_CONFIG_HOME"); !samePath(got, test.config) {
+				t.Fatalf("internal Gemini custody binding = %q, want %q", got, test.config)
+			}
+			if got := envValue(test.env, "GEMINI_CONFIG_DIR"); got != "" {
+				t.Fatalf("ambient GEMINI_CONFIG_DIR survived as %q", got)
+			}
+			if got, err := connectorLifecycleConfigHome(test.env, "geminicli"); err != nil || !samePath(got, test.config) {
+				t.Fatalf("Gemini lifecycle config home = %q, %v; want %q", got, err, test.config)
+			}
+		})
+	}
+}
+
+func TestResolveGeminiCLIHomeUsesOnlyAbsoluteNormalizedControlFreeAmbientValue(t *testing.T) {
+	fallback := filepath.Join(t.TempDir(), "profile")
+	valid := filepath.Join(t.TempDir(), "gemini-cli-home")
+	previous, hadPrevious := os.LookupEnv("GEMINI_CLI_HOME")
+	if err := os.Unsetenv("GEMINI_CLI_HOME"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv("GEMINI_CLI_HOME", previous)
+		} else {
+			_ = os.Unsetenv("GEMINI_CLI_HOME")
+		}
+	})
+	got, err := resolveGeminiCLIHome(fallback)
+	if err != nil {
+		t.Fatalf("resolve absent GEMINI_CLI_HOME: %v", err)
+	}
+	if !samePath(got, fallback) {
+		t.Fatalf("absent GEMINI_CLI_HOME = %q, want fallback %q", got, fallback)
+	}
+
+	t.Setenv("GEMINI_CLI_HOME", valid)
+	got, err = resolveGeminiCLIHome(fallback)
+	if err != nil {
+		t.Fatalf("resolve valid GEMINI_CLI_HOME: %v", err)
+	}
+	if !samePath(got, valid) {
+		t.Fatalf("valid GEMINI_CLI_HOME = %q, want %q", got, valid)
+	}
+
+	for _, invalid := range []string{
+		"relative",
+		valid + string(filepath.Separator) + "child" + string(filepath.Separator) + "..",
+		valid + "\nredirect",
+		valid + "\tredirect",
+		" ",
+		valid + " ",
+	} {
+		t.Run(fmt.Sprintf("invalid-%q", invalid), func(t *testing.T) {
+			t.Setenv("GEMINI_CLI_HOME", invalid)
+			if got, err := resolveGeminiCLIHome(fallback); err == nil {
+				t.Fatalf("invalid GEMINI_CLI_HOME %q resolved to %q without error", invalid, got)
+			} else if !strings.Contains(err.Error(), "GEMINI_CLI_HOME") {
+				t.Fatalf("invalid GEMINI_CLI_HOME %q error = %q", invalid, err)
+			}
+		})
+	}
+
+	t.Setenv("GEMINI_CLI_HOME", "")
+	got, err = resolveGeminiCLIHome(fallback)
+	if err != nil {
+		t.Fatalf("resolve empty GEMINI_CLI_HOME: %v", err)
+	}
+	if !samePath(got, fallback) {
+		t.Fatalf("empty GEMINI_CLI_HOME = %q, want fallback %q", got, fallback)
+	}
+}
+
+func TestNewSetupTransactionRejectsInvalidNonemptyGeminiCLIHome(t *testing.T) {
+	installRoot, dataRoot, maintenancePath := testTransactionRoots(t)
+	t.Setenv("GEMINI_CLI_HOME", "relative-gemini-home")
+	_, err := newSetupTransaction(
+		"install",
+		installRoot,
+		dataRoot,
+		maintenancePath,
+		"",
+		"0.8.6",
+		nil,
+		options{Action: "install", Connector: "none", Mode: "observe"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "GEMINI_CLI_HOME") {
+		t.Fatalf("invalid nonempty GEMINI_CLI_HOME setup error = %v", err)
+	}
+}
+
+func TestResolveGeminiCLIHomeRejectsReparseAncestor(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows reparse-point validation")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	redirect := filepath.Join(root, "redirect")
+	if err := os.Symlink(target, redirect); err != nil {
+		if output, junctionErr := exec.Command(
+			"cmd.exe", "/D", "/C", "mklink", "/J", redirect, target,
+		).CombinedOutput(); junctionErr != nil {
+			t.Fatalf("create Gemini reparse fixture after symlink error %v: %v\n%s", err, junctionErr, output)
+		}
+	}
+	t.Cleanup(func() { _ = os.Remove(redirect) })
+	t.Setenv("GEMINI_CLI_HOME", filepath.Join(redirect, "gemini-home"))
+	if got, err := resolveGeminiCLIHome(filepath.Join(root, "fallback")); err == nil {
+		t.Fatalf("reparse GEMINI_CLI_HOME resolved to %q without error", got)
+	} else if !strings.Contains(err.Error(), "validate GEMINI_CLI_HOME") {
+		t.Fatalf("reparse GEMINI_CLI_HOME error = %v", err)
+	}
+}
+
 func TestInferManagedConnectorHomeUsesBoundTarget(t *testing.T) {
 	dataRoot := t.TempDir()
 	backupPath := filepath.Join(dataRoot, "connector_backups", "codex", "config.toml.json")
@@ -1876,6 +2127,49 @@ func TestInferManagedOpenCodeHomeRejectsMalformedPluginTarget(t *testing.T) {
 			_, err := inferManagedConnectorHome(dataRoot, "opencode", "config", filepath.Join(t.TempDir(), "fallback"))
 			if err == nil || !strings.Contains(err.Error(), "invalid plugin target path") {
 				t.Fatalf("malformed OpenCode backup error = %v", err)
+			}
+		})
+	}
+}
+
+func TestInferManagedGeminiHomeRequiresSettingsTarget(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		filename  string
+		wantError bool
+	}{
+		{name: "canonical settings", filename: "settings.json"},
+		{name: "foreign file", filename: "operator.json", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataRoot := t.TempDir()
+			backupPath := filepath.Join(dataRoot, "connector_backups", "geminicli", "config.json")
+			if err := os.MkdirAll(filepath.Dir(backupPath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			want := filepath.Join(t.TempDir(), ".gemini")
+			if err := os.WriteFile(
+				backupPath,
+				[]byte(fmt.Sprintf(`{"path":%q}`, filepath.Join(want, test.filename))),
+				0o600,
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := inferManagedConnectorHome(
+				dataRoot, "geminicli", "config", filepath.Join(t.TempDir(), "fallback"),
+			)
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "invalid settings target path") {
+					t.Fatalf("malformed Gemini backup error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !samePath(got, want) {
+				t.Fatalf("inferred Gemini home = %q, want %q", got, want)
 			}
 		})
 	}

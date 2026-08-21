@@ -18,7 +18,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) 'defenseclaw-windows-native-ci'),
     [string]$ArtifactRoot = '',
     [string]$DiagnosticsRoot = '',
-    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode')][string]$Connector = 'codex',
+    [ValidateSet('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'geminicli', 'opencode')][string]$Connector = 'codex',
     [switch]$AllowCurrentUserSetupAcceptance,
     [switch]$NoRun
 )
@@ -1788,6 +1788,12 @@ function Initialize-IsolatedProfile([string]$Root) {
     $safeRoot = Assert-SafeStateRoot $Root
     [IO.Directory]::CreateDirectory($safeRoot) | Out-Null
     $originalProfile = $env:USERPROFILE
+    $hostPowerShell = [IO.Path]::GetFullPath((Get-Process -Id $PID -ErrorAction Stop).Path)
+    $hostPowerShellHome = [IO.Path]::GetDirectoryName($hostPowerShell).TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($hostPowerShellHome) -or
+        -not (Test-Path -LiteralPath $hostPowerShell -PathType Leaf)) {
+        throw 'could not resolve the active PowerShell runtime directory'
+    }
     $profile = Join-Path $safeRoot 'profile'
     $temp = Join-Path $safeRoot 'temp'
     $tools = Join-Path $safeRoot 'tools'
@@ -1831,7 +1837,7 @@ function Initialize-IsolatedProfile([string]$Root) {
     $bin = Join-Path $profile '.local\bin'
     $venvScripts = Join-Path $env:DEFENSECLAW_HOME '.venv\Scripts'
     $systemPaths = @(
-        $bin, $venvScripts, $tools, $PSHOME,
+        $bin, $venvScripts, $tools, $hostPowerShellHome,
         (Join-Path $env:SystemRoot 'System32'), $env:SystemRoot,
         (Join-Path $env:SystemRoot 'System32\Wbem')
     ) | Select-Object -Unique
@@ -1844,7 +1850,14 @@ function Initialize-IsolatedProfile([string]$Root) {
 
     if ($originalProfile) {
         foreach ($entry in ($env:PATH -split ';')) {
-            if ($entry -and (Test-PathWithin $entry $originalProfile) -and -not (Test-PathWithin $entry $safeRoot)) {
+            # Hermetic hosts (including Codex) may install the running pwsh
+            # beneath USERPROFILE. Permit only that exact immutable runtime
+            # directory; every other runner-profile PATH entry remains banned.
+            $isHostPowerShellHome = $entry -and [IO.Path]::GetFullPath($entry).TrimEnd('\').Equals(
+                $hostPowerShellHome, [StringComparison]::OrdinalIgnoreCase
+            )
+            if ($entry -and (Test-PathWithin $entry $originalProfile) -and
+                -not (Test-PathWithin $entry $safeRoot) -and -not $isHostPowerShellHome) {
                 throw "isolated PATH retained an entry from the runner profile: $entry"
             }
         }
@@ -1856,6 +1869,7 @@ function Initialize-IsolatedProfile([string]$Root) {
         VenvScripts = $venvScripts
         Temp = $temp
         Tools = $tools
+        HostPowerShellHome = $hostPowerShellHome
     }
 }
 
@@ -7456,18 +7470,23 @@ function Invoke-Contract {
     $cursorHome = [IO.Path]::GetFullPath((Join-Path $contractHome '.cursor')).TrimEnd('\')
     $hermesHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'hermes-home')).TrimEnd('\')
     $openCodeHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'opencode-home')).TrimEnd('\')
+    $geminiCLIHome = [IO.Path]::GetFullPath((Join-Path $contractProfileRoot 'gemini-cli-home')).TrimEnd('\')
+    $geminiConfigHome = Join-Path $geminiCLIHome '.gemini'
+    $geminiSettings = Join-Path $geminiConfigHome 'settings.json'
     $openCodePluginDir = Join-Path $openCodeHome 'plugins'
     $null = Assert-WindowsNativePathsDisjoint @(
-        $contractHome, $codexHome, $claudeHome, $copilotHome, $hermesHome, $openCodeHome
+        $contractHome, $codexHome, $claudeHome, $copilotHome, $hermesHome,
+        $openCodeHome, $geminiCLIHome
     )
     $defaultCodexHome = Join-Path $contractHome '.codex'
     $defaultClaudeHome = Join-Path $contractHome '.claude'
-    $unrelatedGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
+    $defaultGeminiSettings = Join-Path $contractHome '.gemini\settings.json'
     $defaultCursorHome = Join-Path $contractHome '.cursor'
     $defaultHermesHome = Join-Path $contractHome 'AppData\Local\hermes'
     # Native Setup binds Cascade-only Windsurf custody to FOLDERID_Profile;
     # changing process USERPROFILE below must not redirect that vendor path.
     $officialWindsurfConfig = Join-Path $realProfile '.codeium\windsurf\hooks.json'
+    $profileGeminiSettings = Join-Path $realProfile '.gemini\settings.json'
     $defaultOpenCodeHome = Join-Path $contractHome '.config\opencode'
     try {
         if ($disposableGithubRunner) {
@@ -7484,7 +7503,8 @@ function Invoke-Contract {
             $ampHome,
             $cursorHome,
             $hermesHome,
-            $openCodeHome
+            $openCodeHome,
+            $geminiCLIHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
             Protect-TestDirectory $path
@@ -7500,6 +7520,12 @@ function Invoke-Contract {
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome
         $env:HERMES_HOME = $hermesHome
         $env:OPENCODE_CONFIG_DIR = $openCodeHome
+        # Gemini CLI treats GEMINI_CLI_HOME as a home root and appends .gemini.
+        # Setup must capture that official vendor root while ignoring hostile
+        # obsolete/private config-dir inputs.
+        $env:GEMINI_CLI_HOME = $geminiCLIHome
+        $env:GEMINI_CONFIG_DIR = Join-Path $contractProfileRoot 'hostile-obsolete-gemini-config'
+        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = Join-Path $contractProfileRoot 'hostile-private-gemini-config'
         foreach ($name in @(
             'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'AZURE_OPENAI_API_KEY',
             'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY',
@@ -7530,11 +7556,41 @@ function Invoke-Contract {
         }
         Assert-ManagedDistributionIntegrity (Join-Path $managedPython 'python.exe') $managedPython
 
+        $contractInstallStatePath = Join-Path $installRoot 'installer\install-state.json'
+        if (-not (Test-Path -LiteralPath $contractInstallStatePath -PathType Leaf)) {
+            throw "native Setup contract is missing install state: $contractInstallStatePath"
+        }
+        $contractInstallState = Get-Content -LiteralPath $contractInstallStatePath `
+            -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        if (-not [string]::Equals(
+                [IO.Path]::GetFullPath([string]$contractInstallState.gemini_cli_home),
+                [IO.Path]::GetFullPath($geminiCLIHome),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'native Setup install state did not persist exact GEMINI_CLI_HOME root custody'
+        }
+        if (-not [string]::Equals(
+                [IO.Path]::GetFullPath([string]$contractInstallState.gemini_config_dir),
+                [IO.Path]::GetFullPath($geminiConfigHome),
+                [StringComparison]::OrdinalIgnoreCase
+            )) {
+            throw 'native Setup install state did not persist GEMINI_CLI_HOME\.gemini custody'
+        }
+        # The harness is not itself launched through the installed shim. Mirror
+        # the launcher's authenticated rehydration after proving the signed
+        # state, and remove the unsupported ambient config-dir alias.
+        $env:GEMINI_CLI_HOME = [string]$contractInstallState.gemini_cli_home
+        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = [string]$contractInstallState.gemini_config_dir
+        Remove-Item Env:GEMINI_CONFIG_DIR -ErrorAction SilentlyContinue
+
         if ((Test-Path -LiteralPath $defaultCodexHome) -or
             (Test-Path -LiteralPath $defaultClaudeHome) -or
             (Test-Path -LiteralPath (Join-Path $defaultCursorHome 'hooks.json')) -or
             (Test-Path -LiteralPath $defaultHermesHome) -or
             (Test-Path -LiteralPath $officialWindsurfConfig) -or
+            (Test-Path -LiteralPath $profileGeminiSettings) -or
+            (Test-Path -LiteralPath $geminiSettings) -or
+            (Test-Path -LiteralPath $defaultGeminiSettings) -or
             (Test-Path -LiteralPath $defaultOpenCodeHome)) {
             throw 'contract installation touched a default connector home before connector setup'
         }
@@ -7563,6 +7619,7 @@ function Invoke-Contract {
             (Join-Path $defaultCursorHome 'hooks.json'),
             $defaultHermesHome,
             $officialWindsurfConfig,
+            $defaultGeminiSettings,
             $defaultOpenCodeHome
         )
         if ($Connector -eq 'cursor') {
@@ -7602,6 +7659,7 @@ function Invoke-Contract {
             hermes = Join-Path $hermesHome 'config.yaml'
             windsurf = $officialWindsurfConfig
             antigravity = Join-Path $contractHome '.gemini\config\hooks.json'
+            geminicli = $geminiSettings
             opencode = Join-Path $openCodeHome 'plugins\defenseclaw.js'
         }
         $unrelatedConfigs = @(
@@ -7613,9 +7671,6 @@ function Invoke-Contract {
             if (Test-Path -LiteralPath $unrelatedConfig) {
                 throw "connector contract wrote to the unrelated agent home: $unrelatedConfig"
             }
-        }
-        if (Test-Path -LiteralPath $unrelatedGeminiSettings) {
-            throw "connector contract wrote to excluded Gemini settings: $unrelatedGeminiSettings"
         }
         if ($Connector -eq 'claudecode') {
             Assert-PackagedClaudeTokenRotation `
@@ -7721,6 +7776,50 @@ function Stop-StateProcesses([string]$Root) {
 
 function Test-WindowsNativeReparsePoint([IO.FileSystemInfo]$Item) {
     return (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+function New-WindowsNativeFixtureReparsePoint(
+    [string]$Path,
+    [string]$FileTarget,
+    [string]$DirectoryTarget
+) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($null -ne (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue)) {
+        throw "native reparse fixture already exists: $full"
+    }
+    if (-not (Test-Path -LiteralPath $FileTarget -PathType Leaf)) {
+        throw "native reparse fixture file target is missing: $FileTarget"
+    }
+    if (-not (Test-Path -LiteralPath $DirectoryTarget -PathType Container)) {
+        throw "native reparse fixture directory target is missing: $DirectoryTarget"
+    }
+
+    try {
+        # Standard Windows users can create file symlinks only when Developer
+        # Mode or SeCreateSymbolicLinkPrivilege is available. Keep that stronger
+        # fixture where supported, but fall back to a junction: it is available
+        # to standard users and still crosses the same kernel reparse boundary.
+        New-Item -ItemType SymbolicLink -Path $full -Target $FileTarget `
+            -ErrorAction Stop | Out-Null
+    } catch {
+        $symlinkFailure = $_.Exception.Message
+        if ($null -ne (Get-Item -LiteralPath $full -Force -ErrorAction SilentlyContinue)) {
+            throw "failed file-symlink fixture left an unexpected path at ${full}: $symlinkFailure"
+        }
+        try {
+            New-Item -ItemType Junction -Path $full -Target $DirectoryTarget `
+                -ErrorAction Stop | Out-Null
+        } catch {
+            throw "could not create a standard-user reparse fixture at ${full}; " +
+                "file symlink failed: $symlinkFailure; junction failed: $($_.Exception.Message)"
+        }
+    }
+
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    if (-not (Test-WindowsNativeReparsePoint $item)) {
+        throw "native reparse fixture is not a reparse point: $full"
+    }
+    return $item
 }
 
 function Get-WindowsNativeCaptureFiles([string]$Root) {
@@ -7858,7 +7957,11 @@ function Invoke-SelfTest {
     }
     if ($originalProfile) {
         foreach ($entry in ($env:PATH -split ';')) {
-            if ($entry -and (Test-PathWithin $entry $originalProfile) -and -not (Test-PathWithin $entry $root)) {
+            $isHostPowerShellHome = $entry -and [IO.Path]::GetFullPath($entry).TrimEnd('\').Equals(
+                [string]$profile.HostPowerShellHome, [StringComparison]::OrdinalIgnoreCase
+            )
+            if ($entry -and (Test-PathWithin $entry $originalProfile) -and
+                -not (Test-PathWithin $entry $root) -and -not $isHostPowerShellHome) {
                 throw "isolated PATH contains the original runner profile: $entry"
             }
         }
@@ -8067,7 +8170,7 @@ function Invoke-SelfTest {
         $symlinkTarget = Join-Path $outsideCaptureRoot 'outside-capture-secret.bin'
         $symlinkPath = Join-Path $captureFixture 'doctor.log'
         Set-Content -LiteralPath $symlinkTarget -Value 'sensitive diagnostic fixture' -NoNewline
-        New-Item -ItemType SymbolicLink -Path $symlinkPath -Target $symlinkTarget -ErrorAction Stop | Out-Null
+        New-WindowsNativeFixtureReparsePoint $symlinkPath $symlinkTarget $outsideCaptureRoot | Out-Null
 
         $captureFiles = @(Get-WindowsNativeCaptureFiles $root)
         if (-not ($captureFiles | Where-Object {
@@ -8116,7 +8219,7 @@ function Invoke-SelfTest {
             throw 'capture leaf-swap fixture was not selected before replacement'
         }
         [IO.File]::Delete($leafSwapPath)
-        New-Item -ItemType SymbolicLink -Path $leafSwapPath -Target $symlinkTarget -ErrorAction Stop | Out-Null
+        New-WindowsNativeFixtureReparsePoint $leafSwapPath $symlinkTarget $outsideCaptureRoot | Out-Null
         $leafSwapRejected = $false
         try {
             $null = $captureReader.ReadBoundedUtf8($leafCandidate.FullName, 1048576)

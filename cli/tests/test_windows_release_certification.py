@@ -872,10 +872,10 @@ def test_amp_native_windows_coverage_is_separate_from_the_release_channel() -> N
 
     assert (
         "connector: [codex, claudecode, amp, copilot, cursor, hermes, "
-        "windsurf, antigravity, opencode]"
+        "windsurf, antigravity, geminicli, opencode]"
     ) in windows_native
     assert "connector: [codex, claudecode, amp, cursor, opencode]" in connector_live
-    assert "AMP_API_KEY: ${{ secrets.AMP_API_KEY }}" in connector_live
+    assert "AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}" in connector_live
     assert "AMP_VERSION: ${{ inputs.version }}" in connector_live
     assert "-Layer live" in connector_live
 

@@ -653,7 +653,7 @@ func LoadHookContractLockEntry(dataDir, connectorName string) HookContractLockEn
 	}
 	connectorName = normalizeConnectorName(connectorName)
 	entry := lock.Connectors[connectorName]
-	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes" || connectorName == "opencode" || connectorName == "amp") {
+	if runtime.GOOS == "windows" && (connectorName == "codex" || connectorName == "hermes" || connectorName == "omnigent" || connectorName == "opencode" || connectorName == "amp") {
 		if _, ok := supersedingProtectedSetupSelection(dataDir, connectorName, entry); ok {
 			// An explicit setup action selected and protected newer executable
 			// evidence. Treat the previous lock as absent for this one repair so
@@ -1177,14 +1177,27 @@ func surfaceLocations(cap SurfaceCapability) SurfaceLocations {
 	return SurfaceLocations{
 		Supported:      cap.Supported,
 		Scope:          cap.Scope,
-		ConfigPaths:    uniqueNonEmptyStrings(cap.ConfigPaths),
-		ReadPaths:      uniqueNonEmptyStrings(cap.ReadPaths),
-		WritePaths:     uniqueNonEmptyStrings(cap.WritePaths),
-		InstallTargets: uniqueNonEmptyStrings(cap.InstallTargets),
+		ConfigPaths:    canonicalSurfaceStrings(cap.ConfigPaths),
+		ReadPaths:      canonicalSurfaceStrings(cap.ReadPaths),
+		WritePaths:     canonicalSurfaceStrings(cap.WritePaths),
+		InstallTargets: canonicalSurfaceStrings(cap.InstallTargets),
 		DiscoveryOnly:  cap.DiscoveryOnly,
 		RequiresOptIn:  cap.RequiresOptIn,
 		Notes:          append([]string(nil), cap.Notes...),
 	}
+}
+
+// canonicalSurfaceStrings matches JSON's omitempty representation before a
+// HookContractLockEntry is compared with its decoded predecessor. Without the
+// nil normalization, a newly resolved empty-but-non-nil path slice compares
+// different from the omitted slice read back from disk and needlessly refreshes
+// an unrelated connector's custody timestamp during roster reconciliation.
+func canonicalSurfaceStrings(values []string) []string {
+	values = uniqueNonEmptyStrings(values)
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 func HookContractLockDrifted(previous, current HookContractLockEntry) bool {

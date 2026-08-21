@@ -41,6 +41,13 @@ func cleanupPreparedDiscoveryService(t *testing.T, svc *ContinuousDiscoveryServi
 	})
 }
 
+func stubProcessSnapshotSource(t *testing.T, source func() ([]processInfo, error)) {
+	t.Helper()
+	previous := processSnapshotSource
+	processSnapshotSource = source
+	t.Cleanup(func() { processSnapshotSource = previous })
+}
+
 func TestContinuousDiscoveryServiceRunClosesInventoryStoreAcrossRestarts(t *testing.T) {
 	dataDir := t.TempDir()
 	homeDir := t.TempDir()
@@ -64,29 +71,9 @@ func TestContinuousDiscoveryServiceRunClosesInventoryStoreAcrossRestarts(t *test
 			t.Fatalf("restart %d: inventory store did not retain an open pool before Run", restart)
 		}
 
-		startupComplete := make(chan struct{}, 1)
-		svc.AddReportObserver(func(context.Context, AIDiscoveryReport) {
-			select {
-			case startupComplete <- struct{}{}:
-			default:
-			}
-		})
 		ctx, cancel := context.WithCancel(context.Background())
-		runDone := make(chan error, 1)
-		go func() { runDone <- svc.Run(ctx) }()
-		select {
-		case <-startupComplete:
-		case <-time.After(5 * time.Second):
-			cancel()
-			t.Fatalf("restart %d: startup scan did not complete", restart)
-		}
 		cancel()
-		var runErr error
-		select {
-		case runErr = <-runDone:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("restart %d: Run did not stop after cancellation", restart)
-		}
+		runErr := svc.Run(ctx)
 		if err := runErr; !errors.Is(err, context.Canceled) {
 			t.Fatalf("restart %d: Run error = %v, want context.Canceled", restart, err)
 		}
@@ -2008,29 +1995,59 @@ func TestRunScan_SingleFlight(t *testing.T) {
 		t.Fatal("expected non-nil service")
 	}
 	cleanupPreparedDiscoveryService(t, svc)
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	stubProcessSnapshotSource(t, func() ([]processInfo, error) {
+		entered <- struct{}{}
+		<-release
+		return nil, nil
+	})
 
-	// Spawn N concurrent runScan goroutines; if the mutex is wired
-	// correctly all of them should complete without races (a -race
-	// build catches concurrent map writes / store.Save races
-	// otherwise). Each call is allowed to fail due to environmental
-	// reasons (e.g. detectors finding nothing on a clean tmp tree);
-	// what we are asserting is the absence of a panic and a clean
-	// exit for every goroutine.
+	// Spawn N concurrent process-only scans. The deterministic process seam
+	// holds the first scan inside the detector so the test can prove that no
+	// second scan crosses the per-service mutex. Avoiding a full scan keeps this
+	// synchronization test independent of host filesystem and AppsFolder state.
 	const N = 8
 	done := make(chan struct{}, N)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	for i := 0; i < N; i++ {
 		go func() {
 			defer func() { done <- struct{}{} }()
-			_, _ = svc.runScan(context.Background(), true, "test-concurrent")
+			_, _ = svc.runScan(ctx, false, "test-concurrent")
 		}()
 	}
-	timeout := time.After(15 * time.Second)
-	for i := 0; i < N; i++ {
+	failure := ""
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		failure = "first runScan goroutine did not reach the deterministic process detector"
+	}
+	if failure == "" {
+		select {
+		case <-entered:
+			failure = "concurrent runScan goroutines entered the process detector"
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if failure != "" {
+		cancel()
+	}
+	close(release)
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	completed := 0
+	for completed < N {
 		select {
 		case <-done:
-		case <-timeout:
+			completed++
+		case <-timer.C:
+			cancel()
 			t.Fatalf("runScan goroutines did not finish — possible deadlock or unbounded wait")
 		}
+	}
+	if failure != "" {
+		t.Fatal(failure)
 	}
 }
 

@@ -216,12 +216,13 @@ func TestResolveWatcherDirs_NilConnectorFallsBackToConfigDefault(t *testing.T) {
 // claudecode/codex matrix above and are pinned here:
 //
 //  1. Hermes exposes documented user/workspace plugins as read-only
-//     inventory, and Cursor exposes its documented local plugin cache as
-//     read-only inventory, so both contribute plugin watcher paths. The
-//     other hook-only connectors in this matrix advertise no plugin
-//     inventory and must fall back to cfg.PluginDirs(). This keeps watcher
-//     ownership aligned with each vendor surface rather than applying one
-//     connector's plugin semantics to all hook-only connectors.
+//     inventory, Cursor exposes its documented local plugin cache, and Gemini
+//     CLI exposes its bound-user extensions directory, so all three contribute
+//     plugin watcher paths. The other hook-only connectors in this matrix
+//     advertise no plugin inventory and must fall back to cfg.PluginDirs().
+//     This keeps watcher ownership aligned with each vendor surface rather
+//     than applying one connector's plugin semantics to all hook-only
+//     connectors.
 //
 //  2. Skills support varies: hermes/cursor/windsurf/geminicli/copilot/openhands
 //     advertise their own skill paths so src.Skill must be
@@ -270,11 +271,12 @@ func TestResolveWatcherDirs_HookOnlyConnectorMatrix(t *testing.T) {
 			expectPluginSrc: watcherDirsFromDefault,
 		},
 		{
-			name:            "geminicli",
-			ctor:            func() connector.Connector { return connector.NewGeminiCLIConnector() },
-			expectSkillSrc:  watcherDirsFromConnector,
-			expectSkillFrag: filepath.Join(".gemini", "skills"),
-			expectPluginSrc: watcherDirsFromDefault,
+			name:             "geminicli",
+			ctor:             func() connector.Connector { return connector.NewGeminiCLIConnector() },
+			expectSkillSrc:   watcherDirsFromConnector,
+			expectSkillFrag:  filepath.Join(".gemini", "skills"),
+			expectPluginSrc:  watcherDirsFromConnector,
+			expectPluginFrag: filepath.Join(".gemini", "extensions"),
 		},
 		{
 			// With no workspace pinned in cfg the connector

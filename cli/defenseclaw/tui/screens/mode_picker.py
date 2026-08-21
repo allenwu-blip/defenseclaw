@@ -70,7 +70,7 @@ MODE_PICKER_CHOICES: tuple[ModeChoice, ...] = (
         "Gemini CLI",
         "g",
         False,
-        "continuing paid/enterprise product; settings.json hooks + structured deny responses",
+        "settings.json hooks + structured deny responses; native Windows preview",
     ),
     ModeChoice("copilot", "Copilot", "p", False, "workspace hooks + native pre-tool approval"),
     ModeChoice("openhands", "OpenHands", "n", False, "command hooks via ~/.openhands/hooks.json"),

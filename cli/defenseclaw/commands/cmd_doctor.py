@@ -5177,6 +5177,7 @@ _SETUP_READINESS_PRIMARY_LABELS = {
     "windsurf": "Legacy Cascade hooks",
     "copilot": "Copilot hooks",
     "antigravity": "Antigravity hooks",
+    "geminicli": "Gemini CLI hooks",
     "opencode": "OpenCode hooks",
     "amp": "Amp policy plugin",
     "hermes": "Hermes hooks (fail-open)",
@@ -9213,11 +9214,6 @@ def _check_hook_contract_lock(
         detail += f" normalized={normalized}"
     if script_version:
         detail += f" script={script_version}"
-    if connector == "geminicli":
-        detail += (
-            " audience=continuing-enterprise/Google-Cloud/paid-API-key-only"
-            " consumer-free-AI-Pro-Ultra-ended=2026-06-18"
-        )
     locations = entry.get("locations") or {}
     native_runtime = None
     if (platform_name or os.name) == "nt" and connector in {
@@ -9334,6 +9330,14 @@ def _discovered_agent_signal(data_dir: str, connector: str) -> dict[str, object]
 # next to its config or a managed backup under connector_backups/, so it
 # is handled separately by :func:`_check_connector_residue`.
 _CONNECTOR_RESIDUE_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    "amp": (
+        os.path.join("connector_backups", "amp", "config.json"),
+    ),
+    "antigravity": (
+        os.path.join("connector_backups", "antigravity", "hooks.json.json"),
+        # Pre-canonicalization builds used the generic logical name.
+        os.path.join("connector_backups", "antigravity", "config.json"),
+    ),
     "claudecode": (
         "claudecode_backup.json",
         os.path.join("connector_backups", "claudecode", "settings.json.json"),
@@ -9342,9 +9346,38 @@ _CONNECTOR_RESIDUE_ARTIFACTS: dict[str, tuple[str, ...]] = {
         "codex_backup.json",
         "codex_config_backup.json",
         os.path.join("connector_backups", "codex", "config.toml.json"),
+        os.path.join("connector_backups", "codex", "managed_config.toml.json"),
+    ),
+    "copilot": (
+        os.path.join("connector_backups", "copilot", "config.json"),
+    ),
+    "cursor": (
+        os.path.join("connector_backups", "cursor", "config.json"),
+        # Older native-Windows builds named the receipt after hooks.json.
+        os.path.join("connector_backups", "cursor", "hooks.json.json"),
+    ),
+    "geminicli": (
+        os.path.join("connector_backups", "geminicli", "config.json"),
+    ),
+    "hermes": (
+        os.path.join("connector_backups", "hermes", "config.yaml.json"),
+        os.path.join("connector_backups", "hermes", "shell-hooks-allowlist.json.json"),
+        # Pre-canonicalization builds used the generic logical name.
+        os.path.join("connector_backups", "hermes", "config.json"),
+    ),
+    "omnigent": (
+        os.path.join("connector_backups", "omnigent", "config.json"),
+        os.path.join("connector_backups", "omnigent", "module.json"),
+        os.path.join("connector_backups", "omnigent", "pth.json"),
     ),
     "opencode": (
         os.path.join("connector_backups", "opencode", "config.json"),
+    ),
+    "openhands": (
+        os.path.join("connector_backups", "openhands", "config.json"),
+    ),
+    "windsurf": (
+        os.path.join("connector_backups", "windsurf", "config.json"),
     ),
     "zeptoclaw": (
         "zeptoclaw_backup.json",

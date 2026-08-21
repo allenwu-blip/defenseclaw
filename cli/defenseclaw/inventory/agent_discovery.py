@@ -1083,6 +1083,11 @@ def _scan_agent(
         config_candidates = (config_path,)
     elif name == "windsurf":
         config_candidates = (windsurf_hook_config_path(),)
+    elif name == "geminicli":
+        # The packaged launcher binds Gemini's user settings to authenticated
+        # install state. Do not reuse the static ~/.gemini candidate from the
+        # catalog when HOME/USERPROFILE may belong to a hostile caller.
+        config_candidates = tuple(connector_config_files("geminicli"))
     config_path = _first_existing_file(config_candidates)
     binary_candidates = _binary_candidates_for_agent(name, spec)
     binary_path = binary_candidates[0] if binary_candidates else ""
@@ -1698,6 +1703,12 @@ def _version_for_binary(
         timeout = 8.0
     if binary_name == "openhands":
         env = {**os.environ, "OPENHANDS_SUPPRESS_BANNER": "1"}
+    elif binary_name == "gemini":
+        # DEFENSECLAW_GEMINI_CONFIG_HOME is DefenseClaw's private derived
+        # config-directory authority and must not reach the vendor. Preserve
+        # Gemini's official GEMINI_CLI_HOME parent-root contract.
+        env = dict(os.environ)
+        env.pop("DEFENSECLAW_GEMINI_CONFIG_HOME", None)
 
     try:
         result = subprocess.run(

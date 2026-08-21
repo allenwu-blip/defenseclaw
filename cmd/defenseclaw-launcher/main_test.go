@@ -46,6 +46,9 @@ func TestLauncherEnvRehydratesManagedConnectorHomes(t *testing.T) {
 	t.Setenv("CLAUDE_CONFIG_DIR", `C:\project\claude`)
 	t.Setenv("WINDSURF_USER_HOME", `C:\project\windsurf`)
 	t.Setenv("WINDSURF_HOOK_CONFIG_PATH", `C:\project\windsurf\hooks.json`)
+	t.Setenv("GEMINI_CLI_HOME", `C:\project\gemini-cli-home`)
+	t.Setenv("GEMINI_CONFIG_DIR", `C:\project\gemini-vendor`)
+	t.Setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", `C:\project\gemini-internal`)
 	t.Setenv("DEFENSECLAW_HOME", `C:\project\defenseclaw`)
 	state := nativeinstallstate.State{
 		InstallRoot:       `C:\Users\tester\Programs\DefenseClaw`,
@@ -54,6 +57,8 @@ func TestLauncherEnvRehydratesManagedConnectorHomes(t *testing.T) {
 		ClaudeConfigDir:   `D:\Agent Profiles\Claude`,
 		WindsurfUserHome:  `D:\Agent Profiles\Windsurf`,
 		WindsurfHooksPath: `D:\Agent Profiles\Windsurf\.codeium\windsurf\hooks.json`,
+		GeminiCLIHome:     `D:\Agent Profiles\Gemini`,
+		GeminiConfigDir:   `D:\Agent Profiles\Gemini\.gemini`,
 	}
 	env := launcherEnv(
 		`C:\Users\tester\Programs\DefenseClaw\bin`,
@@ -68,6 +73,8 @@ func TestLauncherEnvRehydratesManagedConnectorHomes(t *testing.T) {
 		"CLAUDE_CONFIG_DIR=" + state.ClaudeConfigDir,
 		"WINDSURF_USER_HOME=" + state.WindsurfUserHome,
 		"WINDSURF_HOOK_CONFIG_PATH=" + state.WindsurfHooksPath,
+		"GEMINI_CLI_HOME=" + state.GeminiCLIHome,
+		"DEFENSECLAW_GEMINI_CONFIG_HOME=" + state.GeminiConfigDir,
 		"DEFENSECLAW_HOME=" + state.DataRoot,
 		"DEFENSECLAW_INSTALL_ROOT=" + state.InstallRoot,
 	} {
@@ -79,6 +86,9 @@ func TestLauncherEnvRehydratesManagedConnectorHomes(t *testing.T) {
 		`C:\project\codex`,
 		`C:\project\claude`,
 		`C:\project\windsurf`,
+		`C:\project\gemini-cli-home`,
+		`C:\project\gemini-vendor`,
+		`C:\project\gemini-internal`,
 		`C:\project\defenseclaw`,
 	} {
 		if strings.Contains(joined, inherited) {

@@ -848,3 +848,186 @@ func TestOpenCodeProfileRespond(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenCodeCapabilitiesExposeOnlySupportedMCPSurface(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	restoreHome, err := BindUserHomeDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restoreHome)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+
+	opts := SetupOpts{WorkspaceDir: workspace}
+	conn := NewOpenCodeConnector()
+	caps := conn.Capabilities(opts)
+	if !caps.MCP.Supported || caps.MCP.DiscoveryOnly || !caps.MCP.SupportsBackup || !caps.MCP.SupportsRestore {
+		t.Fatalf("OpenCode MCP capability=%+v", caps.MCP)
+	}
+	wantWrite := filepath.Join(workspace, "opencode.json")
+	if len(caps.MCP.WritePaths) != 1 || filepath.Clean(caps.MCP.WritePaths[0]) != wantWrite {
+		t.Fatalf("OpenCode MCP write paths=%v want [%s]", caps.MCP.WritePaths, wantWrite)
+	}
+	for name, surface := range map[string]SurfaceCapability{
+		"skills":  caps.Skills,
+		"rules":   caps.Rules,
+		"plugins": caps.Plugins,
+		"agents":  caps.Agents,
+	} {
+		if surface.Supported {
+			t.Errorf("OpenCode ordinary %s surface was overclaimed: %+v", name, surface)
+		}
+	}
+	if caps.CodeGuard.Supported {
+		t.Fatalf("OpenCode CodeGuard capability was overclaimed: %+v", caps.CodeGuard)
+	}
+
+	targets := conn.ComponentTargets(workspace)
+	if len(targets) != 1 || len(targets["mcp"]) == 0 {
+		t.Fatalf("OpenCode component targets=%v want MCP only", targets)
+	}
+	for _, want := range []string{
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(workspace, "opencode.json"),
+		filepath.Join(workspace, ".opencode", "opencode.jsonc"),
+	} {
+		if !openCodeTestPathContains(targets["mcp"], want) {
+			t.Errorf("OpenCode MCP component targets=%v missing %q", targets["mcp"], want)
+		}
+	}
+
+	locations := ResolvedConnectorLocations(opts, conn)
+	if len(locations.Surfaces) != 5 || !locations.Surfaces["mcp"].Supported {
+		t.Fatalf("OpenCode resolved locations=%+v", locations)
+	}
+	for _, name := range []string{"skills", "rules", "plugins", "agents"} {
+		if locations.Surfaces[name].Supported {
+			t.Errorf("OpenCode resolved %s surface was overclaimed: %+v", name, locations.Surfaces[name])
+		}
+	}
+}
+
+func TestOpenCodeCapabilitiesMirrorWriterPrecedenceAndRefusals(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	custom := filepath.Join(t.TempDir(), "custom")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(custom, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	customJSONC := filepath.Join(custom, "opencode.jsonc")
+	if err := os.WriteFile(customJSONC, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restoreHome, err := BindUserHomeDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restoreHome)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", custom)
+
+	conn := NewOpenCodeConnector()
+	caps := conn.Capabilities(SetupOpts{WorkspaceDir: workspace})
+	if len(caps.MCP.WritePaths) != 1 || filepath.Clean(caps.MCP.WritePaths[0]) != customJSONC {
+		t.Fatalf("custom JSONC write precedence=%v want [%s]", caps.MCP.WritePaths, customJSONC)
+	}
+	if !openCodeTestPathContains(caps.MCP.ReadPaths, customJSONC) {
+		t.Fatalf("custom config missing from OpenCode read paths: %v", caps.MCP.ReadPaths)
+	}
+
+	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"mcp":{}}`)
+	caps = conn.Capabilities(SetupOpts{WorkspaceDir: workspace})
+	if !caps.MCP.Supported || !caps.MCP.DiscoveryOnly || len(caps.MCP.WritePaths) != 0 {
+		t.Fatalf("inline OpenCode config must fail closed to discovery-only: %+v", caps.MCP)
+	}
+
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "relative-config")
+	caps = conn.Capabilities(SetupOpts{})
+	if !caps.MCP.DiscoveryOnly || len(caps.MCP.WritePaths) != 0 {
+		t.Fatalf("unresolved relative OpenCode config dir must be discovery-only: %+v", caps.MCP)
+	}
+}
+
+func TestOpenCodeMCPInventorySignatureMatchesCapabilities(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	restoreHome, err := BindUserHomeDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restoreHome)
+	t.Setenv("OPENCODE_CONFIG", "")
+	t.Setenv("OPENCODE_CONFIG_DIR", "")
+	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
+
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(source), "..", "..", ".."))
+	raw, err := os.ReadFile(filepath.Join(repoRoot, "internal", "inventory", "ai_signatures.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inventory struct {
+		Signatures []struct {
+			ID       string   `json:"id"`
+			MCPPaths []string `json:"mcp_paths"`
+		} `json:"signatures"`
+	}
+	if err := json.Unmarshal(raw, &inventory); err != nil {
+		t.Fatal(err)
+	}
+	var signaturePaths []string
+	for _, signature := range inventory.Signatures {
+		if signature.ID == "opencode" {
+			signaturePaths = signature.MCPPaths
+			break
+		}
+	}
+	if len(signaturePaths) == 0 {
+		t.Fatal("OpenCode inventory signature has no MCP paths")
+	}
+
+	conn := NewOpenCodeConnector()
+	caps := conn.Capabilities(SetupOpts{WorkspaceDir: workspace})
+	targets := conn.ComponentTargets(workspace)["mcp"]
+	for _, rawPath := range signaturePaths {
+		path := filepath.FromSlash(rawPath)
+		if strings.HasPrefix(rawPath, "~/") {
+			path = filepath.Join(home, filepath.FromSlash(strings.TrimPrefix(rawPath, "~/")))
+		} else if !filepath.IsAbs(path) {
+			path = filepath.Join(workspace, path)
+		}
+		if !openCodeTestPathContains(caps.MCP.ConfigPaths, path) {
+			t.Errorf("OpenCode capability config paths=%v missing inventory signature %q", caps.MCP.ConfigPaths, rawPath)
+		}
+		if !openCodeTestPathContains(targets, path) {
+			t.Errorf("OpenCode component targets=%v missing inventory signature %q", targets, rawPath)
+		}
+	}
+}
+
+func openCodeTestPathContains(paths []string, want string) bool {
+	want = filepath.Clean(want)
+	for _, path := range paths {
+		if filepath.Clean(path) == want {
+			return true
+		}
+	}
+	return false
+}

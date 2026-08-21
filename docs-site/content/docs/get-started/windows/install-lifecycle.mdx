@@ -91,6 +91,10 @@ Double-click the EXE without **Run as administrator**. Choose one of:
 - **Codex**, **Cursor Agent**, **Devin Desktop legacy Cascade**, or **Hermes Agent** to configure
   their supported native Windows hook lifecycles.
 - **OpenCode** to configure the supported direct native bridge.
+- **Gemini CLI (preview)** to configure its awaited native hooks and scoped
+  native telemetry under `<GEMINI_CLI_HOME>\.gemini` (default
+  `%USERPROFILE%\.gemini`). Packaged and
+  authenticated official-client evidence remains pending.
 - **OmniGent (native degraded)** for its server/SDK custom-policy
   surface without terminal or sandbox parity.
 - **Copilot CLI** or **Antigravity** to configure their supported native hook
@@ -143,9 +147,12 @@ DefenseClawSetup-x64.exe /quiet /norestart INSTALLSCOPE=user CONNECTOR=codex MOD
 
 Use `CONNECTOR=amp` for Amp, `CONNECTOR=claudecode` for Claude Code, or select
 `codex`, `cursor`, `windsurf`, `hermes`, `opencode`, `omnigent`, `copilot`, or
-`antigravity` as another supported connector. Copilot and Antigravity retain
+`antigravity` as another supported connector, or `geminicli` as a preview
+connector. Copilot and Antigravity retain
 their normal provider login requirements, and supported setup does not claim
-authentication, HITL, or official-client live evidence. Gemini CLI is not a Windows Setup choice. To
+authentication, HITL, or official-client live evidence. Gemini CLI uses
+`<GEMINI_CLI_HOME>\.gemini`, defaulting to `%USERPROFILE%\.gemini`; its packaged and official-client live
+evidence remains pending. To
 install without configuring an agent or starting the gateway, use
 `CONNECTOR=none STARTGATEWAY=0`. Every configured connector requires gateway
 startup and current-user logon integration.
@@ -157,7 +164,7 @@ Public Setup properties are:
 | Action | fresh install, `/repair`, `/upgrade`, or `/uninstall` |
 | UI | interactive or `/quiet` (`/qn` alias); `/norestart` is accepted |
 | Scope | `INSTALLSCOPE=user` only |
-| Connector | `CONNECTOR=amp`, `antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `hermes`, `omnigent`, `opencode`, `windsurf`, or `none` |
+| Connector | `CONNECTOR=amp`, `antigravity`, `codex`, `claudecode`, `copilot`, `cursor`, `geminicli`, `hermes`, `omnigent`, `opencode`, `windsurf`, or `none` |
 | Policy mode | `MODE=observe` or `action` |
 | Gateway | `STARTGATEWAY=1` or `0`, subject to the connector rule above |
 | User data on uninstall | `DELETEUSERDATA=0` (default) or `1` |
@@ -186,9 +193,10 @@ defenseclaw setup omnigent --mode observe
 defenseclaw setup opencode --mode observe
 defenseclaw setup copilot --mode observe
 defenseclaw setup antigravity --mode observe
+defenseclaw setup geminicli --mode observe
 ```
 
-One local gateway can host all eight. Add connectors without removing the
+One local gateway can host all eleven native lifecycle connectors. Add connectors without removing the
 first:
 
 ```powershell
@@ -201,18 +209,28 @@ defenseclaw setup `
   --connector hermes `
   --connector omnigent `
   --connector opencode `
+  --connector copilot `
+  --connector antigravity `
+  --connector geminicli `
   --mode observe `
   --restart `
   --yes
 ```
 
 Setup records validated `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `COPILOT_HOME`,
-`OMNIGENT_CONFIG_HOME`, and `OPENCODE_CONFIG_DIR` values when they are used,
-plus `HERMES_HOME` when Hermes is selected. Google publishes no Antigravity
-configuration-home override, so new Antigravity registrations always use
-`%USERPROFILE%\.gemini\config`. A predecessor custom path is retained only as
+`OMNIGENT_CONFIG_HOME`, `OPENCODE_CONFIG_DIR`, and `GEMINI_CLI_HOME` values when
+they are used, plus `HERMES_HOME` when Hermes is selected. Gemini CLI interprets
+`GEMINI_CLI_HOME` as a home root and uses its nested `.gemini` directory. Only
+an absent or exactly empty value defaults to the Profile Known Folder; a
+non-empty value that is relative, non-normalized, control-bearing, surrounded
+by whitespace, or beneath unsafe reparse ancestry makes Setup fail closed.
+`GEMINI_CONFIG_DIR` is ignored. Antigravity has no equivalent public override
+and uses the separate nested
+`%USERPROFILE%\.gemini\config` home. A predecessor custom path is retained only as
 internal custody long enough to restore its exact file and migrate the managed
-registration to the official path. Cursor publishes no configuration-home
+registration to the official path. Setup records the two `.gemini` ownership
+boundaries independently so repair, rollback, and teardown cannot cross them.
+Cursor publishes no configuration-home
 environment variable, so Setup records its exact configuration home
 internally. The legacy Cascade connector likewise uses the exact Windows Profile Known Folder
 rather than an invented vendor override. Repair and upgrade preserve all other
@@ -266,7 +284,8 @@ trusted maintenance copy:
 
 Repair republishes the packaged files and reconciles connector wiring while
 preserving user configuration, audit history, the connector roster and modes,
-recorded connector homes (including `HERMES_HOME`), current/previous connector
+recorded connector homes (including `HERMES_HOME`, Gemini CLI's authenticated
+vendor root, and its derived `.gemini` directory), current/previous connector
 backup custody, and the prior gateway/watchdog running state.
 
 Do not replace files in the install tree by hand. If a foreground DefenseClaw
@@ -345,7 +364,9 @@ optional network operations, not offline guarantees.
 
 Normal uninstall removes product-owned application files, the maintenance
 cache, Installed Apps registration, the owned user `PATH` entry, the owned Run
-value, and supported connector wiring. For Hermes, teardown removes only the
+value, and supported connector wiring. Gemini teardown removes only
+DefenseClaw-owned groups and telemetry fields from its recorded `settings.json`
+and never touches Antigravity's nested `config\hooks.json`. For Hermes, teardown removes only the
 owned handlers and marker or restores the pre-Setup `config.yaml` bytes exactly;
 an unresolved current or previous home is retained for deferred cleanup rather
 than declared clean. It preserves

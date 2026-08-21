@@ -367,9 +367,12 @@ func (s NativeOTLPSpec) JSONBlock() (map[string]interface{}, error) {
 	}
 	out := map[string]interface{}{
 		"enabled":      true,
+		"traces":       true,
 		"target":       "local",
 		"useCollector": true,
+		"useCliAuth":   false,
 		"otlpProtocol": "http",
+		"outfile":      "",
 		"logPrompts":   s.LogUserPrompts,
 	}
 	endpoint := s.pathTokenBaseEndpoint()

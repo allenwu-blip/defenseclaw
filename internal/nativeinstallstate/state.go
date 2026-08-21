@@ -38,15 +38,19 @@ type State struct {
 	WindsurfUserHome     string `json:"windsurf_user_home,omitempty"`
 	WindsurfHooksPath    string `json:"windsurf_hooks_path,omitempty"`
 	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
+	GeminiCLIHome        string `json:"gemini_cli_home,omitempty"`
+	GeminiConfigDir      string `json:"gemini_config_dir,omitempty"`
 	OpenCodeConfigDir    string `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome   string `json:"omnigent_config_home,omitempty"`
 	HermesHome           string `json:"hermes_home,omitempty"`
 }
 
 // Environment removes ambient profile selectors and restores the documented
-// installer-owned values. AntigravityConfigDir remains internal custody state
-// for migration/restoration only; no invented Antigravity or Gemini config-home
-// environment variable is exported to child processes.
+// installer-owned values. AntigravityConfigDir remains custody state used only
+// by isolated Setup maintenance. GeminiCLIHome is the vendor-documented home
+// root, while GeminiConfigDir is its derived <root>/.gemini directory and is
+// also rehydrated through a DefenseClaw-private binding. The obsolete
+// GEMINI_CONFIG_DIR selector is never set.
 func (state State) Environment(base []string) []string {
 	owned := map[string]bool{
 		"DEFENSECLAW_INSTALL_ROOT":            true,
@@ -61,10 +65,12 @@ func (state State) Environment(base []string) []string {
 		"OMNIGENT_CONFIG_HOME":                true,
 		"HERMES_HOME":                         true,
 		"ANTIGRAVITY_CONFIG_DIR":              true,
+		"GEMINI_CLI_HOME":                     true,
 		"GEMINI_CONFIG_DIR":                   true,
 		"DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME": true,
+		"DEFENSECLAW_GEMINI_CONFIG_HOME":      true,
 	}
-	result := make([]string, 0, len(base)+11)
+	result := make([]string, 0, len(base)+12)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || owned[strings.ToUpper(name)] {
@@ -102,6 +108,16 @@ func (state State) Environment(base []string) []string {
 	}
 	if state.HermesHome != "" {
 		result = append(result, "HERMES_HOME="+state.HermesHome)
+	}
+	geminiCLIHome := state.GeminiCLIHome
+	if geminiCLIHome == "" {
+		geminiCLIHome = geminiHomeForConfigDir(state.GeminiConfigDir)
+	}
+	if geminiBindingConsistent(geminiCLIHome, state.GeminiConfigDir) {
+		result = append(result, "GEMINI_CLI_HOME="+geminiCLIHome)
+	}
+	if state.GeminiConfigDir != "" {
+		result = append(result, "DEFENSECLAW_GEMINI_CONFIG_HOME="+state.GeminiConfigDir)
 	}
 	return result
 }
@@ -188,6 +204,8 @@ func loadAt(executable, installRoot string) (State, error) {
 		state.WindsurfUserHome,
 		state.WindsurfHooksPath,
 		state.AntigravityConfigDir,
+		state.GeminiCLIHome,
+		state.GeminiConfigDir,
 		state.OpenCodeConfigDir,
 		state.OmnigentConfigHome,
 		state.HermesHome,
@@ -206,7 +224,42 @@ func loadAt(executable, installRoot string) (State, error) {
 		)) {
 		return State{}, errors.New("native install state has an inconsistent Windsurf hooks path")
 	}
+	if state.GeminiCLIHome != "" && !geminiBindingConsistent(state.GeminiCLIHome, state.GeminiConfigDir) {
+		return State{}, errors.New("native install state has an inconsistent Gemini CLI home binding")
+	}
+	for _, path := range []string{state.GeminiCLIHome, state.GeminiConfigDir} {
+		if path != "" && (strings.TrimSpace(path) != path || containsPathControl(path)) {
+			return State{}, errors.New("native install state has an invalid Gemini CLI home binding")
+		}
+	}
 	return state, nil
+}
+
+func geminiHomeForConfigDir(configDir string) string {
+	if configDir == "" || !strings.EqualFold(filepath.Base(configDir), ".gemini") {
+		return ""
+	}
+	root := filepath.Dir(configDir)
+	if root == configDir || root == "." {
+		return ""
+	}
+	return root
+}
+
+func geminiBindingConsistent(home, configDir string) bool {
+	return home != "" && configDir != "" && strings.EqualFold(
+		filepath.Join(home, ".gemini"),
+		configDir,
+	)
+}
+
+func containsPathControl(path string) bool {
+	for _, char := range path {
+		if char < 0x20 || char == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func absoluteCleanPath(path string) bool {

@@ -489,8 +489,8 @@ func TestNativeOTLPShape_Omnigent(t *testing.T) {
 
 // TestNativeOTLPShape_GeminiCLI pins the Gemini CLI telemetry
 // sub-object to the schema the vendor's settings.json loader
-// requires: enabled/target/useCollector/otlpEndpoint/otlpProtocol/
-// logPrompts, with the path-scoped endpoint that the gateway's
+// requires: enabled/target/useCollector/useCliAuth/otlpEndpoint/
+// otlpProtocol/outfile/logPrompts, with the path-scoped endpoint that the gateway's
 // tokenAuth middleware accepts for the gemini scope.
 func TestNativeOTLPShape_GeminiCLI(t *testing.T) {
 	t.Parallel()
@@ -509,10 +509,13 @@ func TestNativeOTLPShape_GeminiCLI(t *testing.T) {
 
 	want := map[string]interface{}{
 		"enabled":      true,
+		"traces":       true,
 		"target":       "local",
 		"useCollector": true,
+		"useCliAuth":   false,
 		"otlpEndpoint": "http://127.0.0.1:18970/otlp/geminicli/" + fixedToken,
 		"otlpProtocol": "http",
+		"outfile":      "",
 		"logPrompts":   spec.LogUserPrompts,
 	}
 

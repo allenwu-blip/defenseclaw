@@ -2,20 +2,23 @@
 
 Last verified: **2026-08-04**
 
-DefenseClaw status: **preview / not certified**
+DefenseClaw status: **supported** (authentic-client evidence and certification
+metadata are still pending)
 Latest upstream version examined: **Hermes Agent v0.20.0, tag `v2026.8.3`,
 released 2026-08-03**, commit
 [`3c27eb6234bf91b8ceee9e9071591b31e9b148cb`](https://github.com/NousResearch/hermes-agent/commit/3c27eb6234bf91b8ceee9e9071591b31e9b148cb).
 
 ## Eligibility decision
 
-Hermes is eligible for a DefenseClaw native-Windows **preview**. Upstream calls
+Hermes is a supported DefenseClaw native-Windows connector. Upstream calls
 Windows 10/11 x86_64 and aarch64 Tier 1, offers Hermes Desktop and
 `install.ps1`, and documents direct Hermes CLI use from PowerShell. The
 DefenseClaw integration does not install, find, configure, invoke, or depend on
 WSL, Docker, a VM, Git Bash, MSYS, Cygwin, or another compatibility layer. It
 registers one absolute `defenseclaw-hook.exe` command and Hermes starts that
-argv with `subprocess.run(..., shell=False)`.
+argv with `subprocess.run(..., shell=False)`. Supported status describes the
+implemented native contract; it does not imply that packaged or authentic
+official-client validation metadata has been recorded.
 
 DefenseClaw reports a healthy installed Hermes v0.17.0 as
 `detected-but-unsupported-version`. A requested action setup emits that exact
@@ -117,11 +120,11 @@ Cell vocabulary is **Implemented**, **Officially limited**, **N/A**, or
 **Blocked**. Claude Code and Codex are coverage references; this task changes
 only Hermes-owned gaps.
 
-| # | Surface | Hermes preview | Claude Code reference | Codex reference |
+| # | Surface | Hermes supported connector | Claude Code reference | Codex reference |
 | --- | --- | --- | --- | --- |
-| 1 | Go/Python registry, discovery, version, platform mirrors | **Implemented** — Go/Python registries, `hermes --version`, `HERMES_HOME`/LocalAppData paths, `hermes-hooks-v1 >=0.19.0`, and Windows `preview` mirrors. Installed v0.17.0 is detected but unsupported, produces one observe downgrade with upgrade guidance, and is never accepted for the 23-event contract. Official v0.20.0 source retains the reviewed v0.19 shape; packaged compatibility remains uncertified. | **Implemented** — supported native-Windows registry and versioned hook contract. | **Implemented** — supported native-Windows registry and versioned hook contracts. |
+| 1 | Go/Python registry, discovery, version, platform mirrors | **Implemented** — Go/Python registries, `hermes --version`, `HERMES_HOME`/LocalAppData paths, `hermes-hooks-v1 >=0.19.0`, and mirrored Windows `supported` status. Installed v0.17.0 is detected but unsupported, produces one observe downgrade with upgrade guidance, and is never accepted for the 23-event contract. Official v0.20.0 source retains the reviewed v0.19 shape; packaged and authentic-client validation metadata remain pending. | **Implemented** — supported native-Windows registry and versioned hook contract. | **Implemented** — supported native-Windows registry and versioned hook contracts. |
 | 2 | CLI commands/help/aliases/parity | **Implemented** — `setup hermes`, guardrail lifecycle, hidden connector reconcile/teardown/verify, Windows bootstrap and Setup quiet `CONNECTOR=hermes`. **Officially limited:** no Hermes ask or fail-closed command claim. | **Implemented** — `claude-code` alias and lifecycle commands. | **Implemented** — `codex` alias and lifecycle commands. |
-| 3 | TUI visibility/setup/status/health/repair | **Implemented/limited** — visible as `(preview)` with direct-JSON-block, fail-open, no-ask wording; Doctor reports pending reload as unhealthy and rejects named/multiplex profile topologies. | **Implemented** — supported picker/status/Doctor path. | **Implemented** — supported picker/status/Doctor path and effective managed policy check. |
+| 3 | TUI visibility/setup/status/health/repair | **Implemented/limited** — visible as supported without a preview badge, with direct-JSON-block, fail-open, no-ask wording; Doctor reports pending reload as unhealthy and rejects named/multiplex profile topologies. | **Implemented** — supported picker/status/Doctor path. | **Implemented** — supported picker/status/Doctor path and effective managed policy check. |
 | 4 | Windows Setup GUI/quiet/bootstrap/transaction/repair/upgrade/reconcile/uninstall | **Implemented/limited** — default-profile config plus exact allowlist custody, transactional rollback, exact restore, reconcile, VerifyClean, and direct-native disabled teardown tombstone. Registration/revocation remains pending reload; named/multiplex and managed/ProgramData surfaces are unsupported/unverified. | **Implemented** reference. | **Implemented** reference. |
 | 5 | Hook/policy version, events, matcher, wire, wait/timeout, modes | **Implemented** — all 23 v0.19 events above, flat YAML entry shape, JSON stdin/stdout, synchronous wait, and 30-second DefenseClaw registration. **Officially limited:** block only `pre_tool_call`; context at `pre_llm_call`; bounded continue at `pre_verify`; transform/gateway/approval/API/Kanban/lifecycle behavior classified independently; no DefenseClaw ask; failures open. | **Implemented** — connector-specific documented matrix; ask/block/fail-mode varies by event. | **Implemented** — connector-specific documented matrix; no native ask. |
 | 6 | Native process adapter/path quoting/provenance/no fallback | **Implemented** — directly quoted absolute stable PE plus fixed argv; `shlex.split`/`shell=False`; passive provenance inspection; no compatibility fallback. | **Implemented** — native executable command through the host's documented PowerShell command evaluator. | **Implemented** — native executable through the Codex Windows command boundary. |
@@ -130,7 +133,7 @@ only Hermes-owned gaps.
 | 9 | Observability/audit/OTLP/correlation/alerts/attribution | **Implemented downstream** — hook-derived logs/metrics/traces, v8 audit and connector/session/event correlation, alerts/export routing. **Officially limited:** Hermes has no documented native OTLP; source is attributed as hook-derived, never native. | **Implemented** — native OTLP where host documents it plus hook audit. | **Implemented** — native OTLP where host documents it plus hook audit/notify. |
 | 10 | Skills/MCP/plugins/rules/agents/config inventory | **Implemented where applicable for the default profile** — config and MCP in resolved `config.yaml`; local skills plus existing `skills.external_dirs`; `SOUL.md`; built-in memory files and `memory.provider` provenance; bundled/Nix, user, and pip plugins with activation provenance. **Unverified:** project plugins depend on launch cwd/environment, and named-profile/project-conditional rules or context sources are not claimed. | **Implemented/limited by documented host roots.** | **Implemented/limited by documented host roots.** |
 | 11 | Docs/site/CLI matrices/operator limits | **Implemented** — connector page, Windows platform/enforcement/capability/lifecycle pages, connector matrix, install guide, and this evidence matrix. | **Implemented** reference. | **Implemented** reference. |
-| 12 | Deterministic/packaged/live/manual validation definitions | **Implemented definitions** — focused unit/Doctor/lifecycle tests plus Windows contract fixture. **Blocked for certification:** packaged `windows-latest`, signed-Setup lifecycle, and real official-client block-visibility/manual tests are deferred to the single integration pass. | **Implemented/certified** reference gates. | **Implemented/certified** reference gates. |
+| 12 | Deterministic/packaged/live/manual validation definitions | **Implemented definitions** — focused unit/Doctor/lifecycle tests plus Windows contract fixture. **Certification metadata pending:** packaged `windows-latest`, signed-Setup lifecycle, and real official-client block-visibility/manual tests are deferred to the single integration pass and must not be represented as completed evidence. | **Implemented/certified** reference gates. | **Implemented/certified** reference gates. |
 
 ## DefenseClaw feature compatibility audit
 
@@ -147,14 +150,15 @@ only Hermes-owned gaps.
 | Notifications/webhooks/alerts | **Implemented downstream:** correlated audit findings can create alerts and route to configured webhooks/native Windows notifications. **Officially limited:** Hermes exposes no additional native DefenseClaw notification callback in this contract. |
 | Inventory/policy monitoring | **Implemented where applicable for the default profile:** config/MCP, local and external skills, `SOUL.md`, built-in memory/provider provenance, and bundled/Nix, user, and pip plugins are bounded and read-only except the existing opt-in user-skill write surface. Project-conditional and named-profile sources are explicitly unverified. |
 | Tamper/drift watcher | **Implemented:** owned hook presence, exact command/config/allowlist reference, allowlist ownership markers, hook lock, version, token/runtime, pending-reload state, and current/previous home drift feed reconciliation and Doctor. Plugin inventory does not grant mutation ownership. |
-| Status/TUI/Doctor | **Implemented/limited:** preview/not-certified, `live:false`, action/observe posture, fail-open/no-ask limits, pending reload, unsupported profile topology, passive native runtime evidence, drift, and repair guidance. |
+| Status/TUI/Doctor | **Implemented/limited:** supported with `live:false`, action/observe posture, fail-open/no-ask limits, pending reload, unsupported profile topology, passive native runtime evidence, drift, and repair guidance. Packaged and authentic-client certification metadata remain pending. |
 | SIEM/exporter routing | **Implemented downstream:** authenticated canonical events retain connector/correlation labels through v8 routing to configured OpenTelemetry and Splunk sinks. Export availability depends on the selected sink, credentials, and network. |
 | Sandbox/firewall/egress | **N/A for connector parity:** Hermes is hook-only and retains its direct upstream/model/tool topology. DefenseClaw does not claim a Hermes native sandbox, proxy firewall, or terminal egress interception. Generic policy can evaluate observed hook content only. |
 
-## Certification blockers and later broad pass
+## Pending authentic-client evidence and certification metadata
 
-Do not promote Hermes beyond preview/not-certified until one integrated
-Windows pass has:
+Hermes is already classified as supported. Do not claim authentic-client live
+evidence or completed certification metadata until one integrated Windows pass
+has:
 
 1. built the packaged x64 distribution and signed/release-equivalent Setup;
 2. exercised fresh GUI and quiet install, repair, same-version repair, upgrade,

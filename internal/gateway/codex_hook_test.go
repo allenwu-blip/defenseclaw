@@ -1198,13 +1198,33 @@ func TestEvaluateCodexHook_PostToolUseFixtureSymlinkKeepsDataDetection(t *testin
 	if err := os.MkdirAll(fixtureDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	livePath := filepath.Join(repoRoot, ".env")
+	liveDir := filepath.Join(repoRoot, "live-data")
+	if err := os.Mkdir(liveDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	livePath := filepath.Join(liveDir, "live-secret")
 	if err := os.WriteFile(livePath, []byte("live\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(fixtureDir, "live-secret")
 	if err := os.Symlink(livePath, linkPath); err != nil {
-		t.Fatal(err)
+		if runtime.GOOS != "windows" {
+			t.Fatal(err)
+		}
+		// Standard Windows users commonly lack symbolic-link privilege. A
+		// directory junction needs no elevation and still proves the important
+		// boundary: fixture-shaped lexical input must not launder physically
+		// redirected live data into source-only scanning.
+		if removeErr := os.Remove(fixtureDir); removeErr != nil {
+			t.Fatalf("remove empty fixture directory after symlink error %v: %v", err, removeErr)
+		}
+		output, junctionErr := exec.Command(
+			"cmd.exe", "/D", "/C", "mklink", "/J", fixtureDir, liveDir,
+		).CombinedOutput()
+		if junctionErr != nil {
+			t.Fatalf("create fixture junction after symlink error %v: %v\n%s", err, junctionErr, output)
+		}
+		t.Cleanup(func() { _ = os.Remove(fixtureDir) })
 	}
 
 	resp := api.evaluateCodexHook(t.Context(), codexHookRequest{

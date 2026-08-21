@@ -1850,5 +1850,30 @@ def test_windsurf_readiness_uses_bound_profile_not_ambient(
     assert result.status == "pass"
 
 
+def test_gemini_readiness_uses_private_binding_not_hostile_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bound = tmp_path / "authenticated" / ".gemini"
+    hostile = tmp_path / "hostile"
+    settings = bound / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text("{}", encoding="utf-8")
+    hostile_settings = hostile / ".gemini" / "settings.json"
+    hostile_settings.parent.mkdir(parents=True)
+    hostile_settings.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(hostile))
+    monkeypatch.setenv("USERPROFILE", str(hostile))
+    monkeypatch.setenv("GEMINI_CONFIG_DIR", str(hostile / "vendor-override"))
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(bound))
+    monkeypatch.setattr(Path, "home", lambda: hostile)
+
+    result = _connector_readiness(SimpleNamespace(), "geminicli")
+    assert result.status == "pass"
+
+    settings.unlink()
+    result = _connector_readiness(SimpleNamespace(), "geminicli")
+    assert result.status == "warn"
+
+
 if __name__ == "__main__":
     unittest.main()

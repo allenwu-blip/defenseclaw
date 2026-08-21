@@ -1386,14 +1386,14 @@
               "BeforeModel",
               "BeforeTool",
               "AfterTool",
+              "AfterModel",
               "AfterAgent"
             ],
             "supports_fail_closed": true,
             "scope": "user"
           },
           "notes": [
-            "Gemini CLI 0.26.0 enabled hooks by default.",
-            "Gemini CLI consumer/free/Google AI Pro/Ultra service ended on 2026-06-18; this contract applies only to continuing enterprise, Google Cloud, and paid API-key access."
+            "Gemini CLI 0.26.0 enabled hooks by default."
           ]
         }
       ]

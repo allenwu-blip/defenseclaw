@@ -1633,7 +1633,10 @@ def mcp_unset_target_for_connector(connector: str) -> str:
         case "windsurf":
             return connector_config_files("windsurf")[0]
         case "geminicli":
-            return "~/.gemini/settings.json"
+            return (
+                f"{connector_config_files('geminicli')[0]} / "
+                "<workspace>/.gemini/settings.json"
+            )
         case "copilot":
             return "./.github/mcp.json"
         case "openhands":
@@ -1709,6 +1712,8 @@ def connector_source_label(connector: str, category: str) -> str:
     codex_root = connector_home("codex")
     claude_config = connector_config_files("claudecode")[0]
     codex_config = connector_config_files("codex")[0]
+    gemini_root = connector_home("geminicli")
+    gemini_config = connector_config_files("geminicli")[0]
     opencode_plugin = connector_config_files("opencode")[0]
     opencode_mcp_sources = [
         "authenticated remote .well-known/opencode (mcp; provenance unverified locally)",
@@ -1740,6 +1745,11 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.agents/skills (active directory to repository root)",
         ),
         ("zeptoclaw", "skills"): ("~/.zeptoclaw/skills", "./.zeptoclaw/skills"),
+        ("geminicli", "skills"): (
+            os.path.join(gemini_root, "skills"),
+            "./.gemini/skills",
+            "./.agents/skills",
+        ),
         ("antigravity", "skills"): (
             "~/.gemini/config/skills/<skill>/SKILL.md",
             "<workspace>/.agents/skills/<skill>/SKILL.md",
@@ -1761,6 +1771,10 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.codex/config.toml ([mcp_servers]; trusted projects only)",
         ),
         ("zeptoclaw", "mcps"): ("~/.zeptoclaw/config.json (mcp.servers)", "./.mcp.json"),
+        ("geminicli", "mcps"): (
+            "./.gemini/settings.json (mcpServers)",
+            f"{gemini_config} (mcpServers)",
+        ),
         ("antigravity", "mcps"): (
             "~/.gemini/config/mcp_config.json",
             "<workspace>/.agents/mcp_config.json",
@@ -1774,6 +1788,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("opencode", "mcps"): tuple(opencode_mcp_sources),
         ("omnigent", "mcps"): ("unsupported/unverified by the OmniGent connector",),
         ("openclaw", "plugins"): ("~/.openclaw/extensions",),
+        ("geminicli", "plugins"): (os.path.join(gemini_root, "extensions"),),
         ("codex", "plugins"): (
             "./.agents/plugins/marketplace.json",
             "./.claude-plugin/marketplace.json (legacy-compatible)",
@@ -1795,6 +1810,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ),
         ("opencode", "plugins"): (f"{opencode_plugin} (DefenseClaw bridge only)",),
         ("omnigent", "plugins"): ("unsupported by the OmniGent connector",),
+        ("geminicli", "config"): (gemini_config, "./.gemini/settings.json"),
         ("opencode", "config"): (opencode_plugin,),
         ("omnigent", "config"): ("$OMNIGENT_CONFIG, $OMNIGENT_CONFIG_HOME/config.yaml, or ~/.omnigent/config.yaml; CLI server requires --config",),
     }

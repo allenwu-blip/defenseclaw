@@ -239,10 +239,12 @@ def test_mcp_actions_name_connector_specific_unset_targets(monkeypatch, tmp_path
     claude_config = tmp_path / "claude-home" / "settings.json"
     codex_config = tmp_path / "codex-home" / "config.toml"
     windsurf_profile = tmp_path / "windsurf-profile"
+    gemini_home = tmp_path / "gemini-home"
     monkeypatch.setenv("HERMES_HOME", str(hermes_config.parent))
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_config.parent))
     monkeypatch.setenv("CODEX_HOME", str(codex_config.parent))
     monkeypatch.setenv("WINDSURF_USER_HOME", str(windsurf_profile))
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
     cases = {
         "openclaw": "OpenClaw config",
         "claudecode": str(claude_config),
@@ -251,7 +253,10 @@ def test_mcp_actions_name_connector_specific_unset_targets(monkeypatch, tmp_path
         "hermes": str(hermes_config),
         "cursor": "./.cursor/mcp.json",
         "windsurf": str(windsurf_profile / ".codeium" / "windsurf" / "mcp_config.json"),
-        "geminicli": "~/.gemini/settings.json",
+        "geminicli": (
+            f"{gemini_home / 'settings.json'} / "
+            "<workspace>/.gemini/settings.json"
+        ),
         "copilot": "./.github/mcp.json",
         "antigravity": "~/.gemini/config/mcp_config.json / <workspace>/.agents/mcp_config.json",
     }
@@ -300,6 +305,25 @@ def test_catalog_empty_connector_stays_unowned_and_hook_connector_labels_contrac
     assert str(opencode_home / "opencode.json") in mcp_unset_target_for_connector("opencode")
     assert "<workspace>/opencode.json" in mcp_unset_target_for_connector("opencode")
     assert "unsupported" in connector_source_label("opencode", "skills")
+
+
+def test_catalog_gemini_labels_use_authenticated_user_and_project_settings(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    gemini_home = tmp_path / "authenticated" / ".gemini"
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", str(gemini_home))
+
+    assert connector_source_label("geminicli", "plugins") == str(
+        gemini_home / "extensions"
+    )
+    mcps = connector_source_label("geminicli", "mcps")
+    assert str(gemini_home / "settings.json") in mcps
+    assert "./.gemini/settings.json" in mcps
+    assert "./.mcp.json" not in mcps
+    assert connector_source_label("geminicli", "config").startswith(
+        str(gemini_home / "settings.json")
+    )
 
 
 def test_catalog_codex_labels_use_current_official_asset_layouts() -> None:

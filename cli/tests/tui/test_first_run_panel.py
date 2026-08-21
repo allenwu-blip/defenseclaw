@@ -145,12 +145,14 @@ def test_first_run_passes_hitl_flags_only_in_action_profile() -> None:
 def test_connector_preview_badge_uses_stable_kind_not_label(monkeypatch) -> None:
     monkeypatch.setattr(
         "defenseclaw.tui.panels.first_run.connector_preview_on_os",
-        lambda _value: True,
+        lambda value: value == "geminicli",
     )
 
-    field = FirstRunField("Renamed display label", "connector", "hermes")
+    preview = FirstRunField("Renamed display label", "connector", "geminicli")
+    supported = FirstRunField("Renamed display label", "connector", "hermes")
 
-    assert field.display_value == "hermes (preview)"
+    assert preview.display_value == "geminicli (preview)"
+    assert supported.display_value == "hermes"
 
 
 def test_first_run_fail_mode_cycles_to_closed() -> None:

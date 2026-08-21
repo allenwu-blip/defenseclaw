@@ -89,6 +89,7 @@ $ConnectorChoices = @(
     "claudecode",
     "copilot",
     "cursor",
+    "geminicli",
     "hermes",
     "omnigent",
     "opencode",

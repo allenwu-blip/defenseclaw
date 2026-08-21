@@ -1467,6 +1467,8 @@ def connector_source_label(connector: str, category: str) -> str:
     codex_root = connector_home("codex")
     claude_config = connector_config_files("claudecode")[0]
     codex_config = connector_config_files("codex")[0]
+    gemini_root = connector_home("geminicli")
+    gemini_config = connector_config_files("geminicli")[0]
     opencode_plugin = connector_config_files("opencode")[0]
     opencode_mcp_sources = [
         "authenticated remote .well-known/opencode (mcp; provenance unverified locally)",
@@ -1508,7 +1510,11 @@ def connector_source_label(connector: str, category: str) -> str:
             "./.windsurf/skills",
             "./.agents/skills",
         ),
-        ("geminicli", "skills"): ("./.gemini/skills", "./.agents/skills"),
+        ("geminicli", "skills"): (
+            os.path.join(gemini_root, "skills"),
+            "./.gemini/skills",
+            "./.agents/skills",
+        ),
         ("copilot", "skills"): ("./.github/skills", "./.agents/skills", "~/.copilot/skills"),
         ("openhands", "skills"): ("~/.openhands/skills", "~/.openhands/microagents", "~/.agents/skills"),
         ("antigravity", "skills"): (
@@ -1535,7 +1541,10 @@ def connector_source_label(connector: str, category: str) -> str:
         ("hermes", "mcps"): (f"{hermes_config} (mcp.servers)",),
         ("cursor", "mcps"): ("./.cursor/mcp.json", "~/.cursor/mcp.json"),
         ("windsurf", "mcps"): tuple(windsurf_configs),
-        ("geminicli", "mcps"): ("~/.gemini/settings.json (mcpServers)", "./.mcp.json"),
+        ("geminicli", "mcps"): (
+            "./.gemini/settings.json (mcpServers)",
+            f"{gemini_config} (mcpServers)",
+        ),
         ("copilot", "mcps"): ("~/.copilot/mcp-config.json", "./.github/mcp.json", "./.mcp.json"),
         ("openhands", "mcps"): ("~/.openhands/mcp.json",),
         ("antigravity", "mcps"): (
@@ -1565,7 +1574,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ),
         ("cursor", "plugins"): ("unsupported",),
         ("windsurf", "plugins"): ("unsupported",),
-        ("geminicli", "plugins"): ("./.gemini/extensions",),
+        ("geminicli", "plugins"): (os.path.join(gemini_root, "extensions"),),
         ("copilot", "plugins"): ("copilot plugins list --kind plugin --json",),
         ("openhands", "plugins"): ("unsupported",),
         ("antigravity", "plugins"): (
@@ -1586,7 +1595,7 @@ def connector_source_label(connector: str, category: str) -> str:
         ("hermes", "config"): (hermes_config,),
         ("cursor", "config"): ("~/.cursor/hooks.json",),
         ("windsurf", "config"): (windsurf_hooks,),
-        ("geminicli", "config"): ("~/.gemini/settings.json",),
+        ("geminicli", "config"): (gemini_config, "./.gemini/settings.json"),
         ("copilot", "config"): ("./.github/hooks/*.json",),
         ("openhands", "config"): ("~/.openhands/hooks.json",),
         ("antigravity", "config"): ("~/.gemini/config/hooks.json",),

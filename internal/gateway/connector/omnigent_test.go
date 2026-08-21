@@ -231,7 +231,7 @@ func TestOmnigentSetupAndTeardown(t *testing.T) {
 }
 
 func TestOmnigentSetupRefreshesHookTokenInsideLifecycleTransaction(t *testing.T) {
-	root := t.TempDir()
+	root := testenv.PrivateTempDir(t)
 	dataDir := filepath.Join(root, "defenseclaw")
 	configPath := filepath.Join(root, "config", "config.yaml")
 	sitePackages := filepath.Join(root, "site-packages")
@@ -300,8 +300,20 @@ func TestOmnigentSetupRefreshesHookTokenInsideLifecycleTransaction(t *testing.T)
 	}
 	oldEncoded := base64.StdEncoding.EncodeToString([]byte(oldToken))
 	newEncoded := base64.StdEncoding.EncodeToString([]byte(newToken))
-	if bytes.Contains(module, []byte(oldEncoded)) || !bytes.Contains(module, []byte(newEncoded)) {
-		t.Fatal("managed policy was not rendered with the token refreshed inside the lifecycle lock")
+	if bytes.Contains(module, []byte(oldEncoded)) || bytes.Contains(module, []byte(newEncoded)) {
+		t.Fatal("managed policy embedded a scoped token instead of loading the protected sidecar")
+	}
+	tokenPath, err := HookAPITokenFilePath(dataDir, "omnigent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenPath, err = filepath.Abs(tokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedTokenPath := base64.StdEncoding.EncodeToString([]byte(tokenPath))
+	if !bytes.Contains(module, []byte(encodedTokenPath)) {
+		t.Fatal("managed policy was not bound to the token sidecar refreshed inside the lifecycle lock")
 	}
 }
 
@@ -817,8 +829,10 @@ print(json.dumps(module.defenseclaw_policy(event)))
 		want string
 	}{{"open", "ALLOW"}, {"closed", "DENY"}} {
 		t.Run(tc.mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
-			rendered := renderOmnigentPolicy(string(templateBytes), "127.0.0.1:1", "", tc.mode)
+			root := t.TempDir()
+			tokenPath := writeOmnigentScopedToken(t, filepath.Join(root, "dc"), strings.Repeat("c", 64))
+			path := filepath.Join(root, "defenseclaw_omnigent_policy.py")
+			rendered := renderOmnigentPolicy(string(templateBytes), "127.0.0.1:1", tokenPath, tc.mode)
 			if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -864,15 +878,17 @@ print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})
 			defer proxy.Close()
 
 			var gatewayCalls int
-			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gatewayCalls++
-				http.Redirect(w, nil, proxy.URL+"/leak", http.StatusFound)
+				http.Redirect(w, r, proxy.URL+"/leak", http.StatusFound)
 			}))
 			defer gateway.Close()
 			gatewayAddr := strings.TrimPrefix(gateway.URL, "http://")
 
-			modulePath := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
-			rendered := renderOmnigentPolicy(string(templateBytes), gatewayAddr, "scoped-secret", mode)
+			root := t.TempDir()
+			tokenPath := writeOmnigentScopedToken(t, filepath.Join(root, "dc"), strings.Repeat("c", 64))
+			modulePath := filepath.Join(root, "defenseclaw_omnigent_policy.py")
+			rendered := renderOmnigentPolicy(string(templateBytes), gatewayAddr, tokenPath, mode)
 			if err := os.WriteFile(modulePath, []byte(rendered), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -931,11 +947,13 @@ print(json.dumps(module.defenseclaw_policy({"type": "request", "data": "hello"})
 		want string
 	}{{"open", "ALLOW"}, {"closed", "DENY"}} {
 		t.Run(tc.mode, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
+			root := t.TempDir()
+			tokenPath := writeOmnigentScopedToken(t, filepath.Join(root, "dc"), strings.Repeat("c", 64))
+			path := filepath.Join(root, "defenseclaw_omnigent_policy.py")
 			rendered := renderOmnigentPolicy(
 				string(templateBytes),
 				strings.TrimPrefix(server.URL, "http://"),
-				"",
+				tokenPath,
 				tc.mode,
 			)
 			if err := os.WriteFile(path, []byte(rendered), 0o600); err != nil {
@@ -1359,8 +1377,10 @@ print(json.dumps(module.defenseclaw_policy(event)))
 		want string
 	}{{"open", "ALLOW"}, {"closed", "DENY"}} {
 		t.Run(tc.mode, func(t *testing.T) {
-			modulePath := filepath.Join(t.TempDir(), "defenseclaw_omnigent_policy.py")
-			rendered := renderOmnigentPolicy(string(templateBytes), "127.0.0.1:1", "", tc.mode)
+			root := t.TempDir()
+			tokenPath := writeOmnigentScopedToken(t, filepath.Join(root, "dc"), strings.Repeat("c", 64))
+			modulePath := filepath.Join(root, "defenseclaw_omnigent_policy.py")
+			rendered := renderOmnigentPolicy(string(templateBytes), "127.0.0.1:1", tokenPath, tc.mode)
 			if err := os.WriteFile(modulePath, []byte(rendered), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -1457,8 +1477,12 @@ func TestOmnigentFreshLockSurvivesRemovedSetupReceipt(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("native protected executable evidence is Windows-only")
 	}
-	dataDir := t.TempDir()
-	executable := filepath.Join(t.TempDir(), "omnigent.exe")
+	root := testenv.PrivateTempDir(t)
+	dataDir := filepath.Join(root, "defenseclaw")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(root, "omnigent.exe")
 	if err := os.WriteFile(executable, []byte("MZ official omnigent fixture"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -1470,6 +1494,7 @@ func TestOmnigentFreshLockSurvivesRemovedSetupReceipt(t *testing.T) {
 	rawVersion := "omnigent 0.7.0"
 	receipt := agentSelectionReceipt{
 		SchemaVersion: agentSelectionSchemaVersion,
+		UpdatedAt:     now.Format(time.RFC3339),
 		Selections: map[string]agentSelectionEvidence{
 			"omnigent": {
 				Connector:         "omnigent",
@@ -1500,7 +1525,8 @@ func TestOmnigentFreshLockSurvivesRemovedSetupReceipt(t *testing.T) {
 	entry := NewHookContractLockEntry(opts, NewOmnigentConnector(), "test-build")
 	if entry.AgentExecutableSource != "setup-selected" ||
 		!strings.EqualFold(entry.AgentExecutable, stableExecutable) ||
-		entry.AgentExecutableSHA256 != digest {
+		entry.AgentExecutableSHA256 != digest ||
+		!validSetupSelectedAgentExecutableEvidence(entry, "omnigent") {
 		t.Fatalf("sealed OmniGent executable evidence = %+v", entry)
 	}
 	if err := SaveFreshHookContractLockEntry(dataDir, entry); err != nil {
@@ -1508,6 +1534,10 @@ func TestOmnigentFreshLockSurvivesRemovedSetupReceipt(t *testing.T) {
 	}
 	if err := os.Remove(receiptPath); err != nil {
 		t.Fatal(err)
+	}
+	if locked, exists := loadProtectedHookContractEntry(dataDir, "omnigent"); !exists ||
+		!validSetupSelectedAgentExecutableEvidence(locked, "omnigent") {
+		t.Fatalf("protected OmniGent lock after receipt removal: exists=%v entry=%+v", exists, locked)
 	}
 
 	if got := LoadCachedAgentVersion(dataDir, "omnigent"); got != rawVersion {
@@ -1518,6 +1548,97 @@ func TestOmnigentFreshLockSurvivesRemovedSetupReceipt(t *testing.T) {
 	}
 	if _, err := validateOmnigentWindowsExecutable(opts, stableExecutable); err != nil {
 		t.Fatalf("revalidate locked OmniGent executable after receipt removal: %v", err)
+	}
+}
+
+func TestOmnigentNewerSetupSelectionSupersedesThenFreshSealRegainsAuthority(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected OmniGent setup selections are native-Windows authority")
+	}
+	root := testenv.PrivateTempDir(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	oldExecutable := filepath.Join(root, "old", "omnigent.exe")
+	if err := os.MkdirAll(filepath.Dir(oldExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(oldExecutable, []byte("old OmniGent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldEntry := NewHookContractLockEntry(
+		SetupOpts{DataDir: root, AgentVersion: "omnigent 0.7.0", AgentExecutable: oldExecutable},
+		NewOmnigentConnector(),
+		"old-build",
+	)
+	if !validSetupSelectedAgentExecutableEvidence(oldEntry, "omnigent") {
+		t.Fatalf("old OmniGent lock lacks sealed executable evidence: %+v", oldEntry)
+	}
+	oldEntry.UpdatedAt = now.Add(-2 * time.Minute).Format(time.RFC3339)
+	lock := hookContractLock{
+		Version:    hookContractLockVersion,
+		UpdatedAt:  oldEntry.UpdatedAt,
+		Connectors: map[string]HookContractLockEntry{"omnigent": oldEntry},
+	}
+	lockBody, err := json.Marshal(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(root, hookContractLockFile), lockBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newExecutable := filepath.Join(root, "current", "omnigent.exe")
+	if err := os.MkdirAll(filepath.Dir(newExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(newExecutable, []byte("current OmniGent"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stableExecutable, digest, ok := setupSelectedAgentExecutableEvidence(newExecutable)
+	if !ok {
+		t.Fatal("could not create replacement OmniGent executable evidence")
+	}
+	selection := agentSelectionEvidence{
+		Connector:         "omnigent",
+		Source:            "setup-selected",
+		Executable:        stableExecutable,
+		RawVersion:        "omnigent 0.7.0",
+		NormalizedVersion: "0.7.0",
+		SHA256:            digest,
+		SelectedAt:        now.Format(time.RFC3339),
+		ExpiresAt:         now.Add(agentSelectionMaxLifetime).Format(time.RFC3339),
+	}
+	receiptBody, err := json.Marshal(agentSelectionReceipt{
+		SchemaVersion: agentSelectionSchemaVersion,
+		UpdatedAt:     now.Format(time.RFC3339),
+		Selections:    map[string]agentSelectionEvidence{"omnigent": selection},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(filepath.Join(root, agentSelectionFile), receiptBody, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if selected, supersedes := supersedingProtectedSetupSelection(root, "omnigent", oldEntry); !supersedes ||
+		selected.Executable != selection.Executable || selected.SHA256 != selection.SHA256 {
+		t.Fatalf("newer OmniGent selection did not supersede old lock: supersedes=%v selection=%+v", supersedes, selected)
+	}
+	if previous := LoadHookContractLockEntry(root, "omnigent"); previous.Connector != "" {
+		t.Fatalf("newer OmniGent selection remained blocked by the old lock: %+v", previous)
+	}
+
+	newEntry := NewHookContractLockEntry(
+		SetupOpts{DataDir: root, AgentVersion: selection.RawVersion, AgentExecutable: selection.Executable},
+		NewOmnigentConnector(),
+		"new-build",
+	)
+	if err := SaveFreshHookContractLockEntry(root, newEntry); err != nil {
+		t.Fatalf("persist repaired OmniGent lock: %v", err)
+	}
+	sealed := LoadHookContractLockEntry(root, "omnigent")
+	if !validSetupSelectedAgentExecutableEvidence(sealed, "omnigent") ||
+		!protectedSelectionMatchesLock(selection, sealed) {
+		t.Fatalf("fresh OmniGent seal did not regain authority: %+v", sealed)
 	}
 }
 

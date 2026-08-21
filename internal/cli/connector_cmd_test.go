@@ -875,6 +875,37 @@ func TestConnectorReconcileCopilotSupportsOrdinaryPath(t *testing.T) {
 	}
 }
 
+func TestConnectorReconcileGeminiSupportsInstallerBoundNativePath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Setup maintenance contract")
+	}
+	dataDir := testenv.PrivateTempDir(t)
+	home := filepath.Join(testenv.PrivateTempDir(t), ".gemini")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ambientHome := filepath.Join(testenv.PrivateTempDir(t), "ambient-gemini")
+	t.Setenv("GEMINI_CONFIG_DIR", ambientHome)
+	defer withConnectorState(t, dataDir, "geminicli")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.Connectors = map[string]config.PerConnectorGuardrailConfig{
+		"geminicli": {HookFailMode: "closed"},
+	}
+
+	stdout, stderr, exitCode := runConnectorCmd(t, "reconcile", "--connector", "geminicli", "--json")
+	if exitCode != 0 || !strings.Contains(stdout, `"connector":"geminicli"`) {
+		t.Fatalf("ordinary Gemini reconcile failed: exit=%d stdout=%q stderr=%q", exitCode, stdout, stderr)
+	}
+	assertConnectorReconcileStderr(t, "geminicli", stderr)
+	if _, err := os.Stat(filepath.Join(home, "settings.json")); err != nil {
+		t.Fatalf("bound Gemini reconcile did not publish settings.json: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ambientHome, "settings.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Gemini reconcile trusted ambient GEMINI_CONFIG_DIR: %v", err)
+	}
+}
+
 func TestConnectorReconcileMixedModesKeepsBothContractsCurrent(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	seedCodexSelectionForTest(t, dataDir)

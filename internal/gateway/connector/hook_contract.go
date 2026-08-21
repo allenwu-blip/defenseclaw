@@ -689,15 +689,9 @@ var builtinHookContracts = map[string][]HookContract{
 		},
 		AIDSurfaces: []string{"prompt", "tool_call", "tool_result"},
 		Capabilities: HookCapability{
-			CanBlock:     true,
-			CanAskNative: false,
-			BlockEvents: []string{
-				"BeforeAgent",
-				"BeforeModel",
-				"BeforeTool",
-				"AfterTool",
-				"AfterAgent",
-			},
+			CanBlock:           true,
+			CanAskNative:       false,
+			BlockEvents:        append([]string(nil), geminiCLIBlockEvents...),
 			SupportsFailClosed: true,
 			Scope:              "user",
 		},
@@ -706,7 +700,6 @@ var builtinHookContracts = map[string][]HookContract{
 		ToolCallLifecycle:   geminiCLIToolCallLifecycle(),
 		Notes: []string{
 			"Gemini CLI 0.26.0 enabled hooks by default.",
-			"Gemini CLI consumer/free/Google AI Pro/Ultra service ended on 2026-06-18; this contract applies only to continuing enterprise, Google Cloud, and paid API-key access.",
 		},
 	}},
 	"copilot": {

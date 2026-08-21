@@ -22,7 +22,7 @@ param(
     [string]$StateRoot = (Join-Path ([IO.Path]::GetTempPath()) "defenseclaw-wizard-smoke-$PID"),
     [ValidateRange(1, 60)]
     [int]$TimeoutSeconds = 15,
-    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'copilot', 'cursor', 'hermes', 'windsurf', 'omnigent', 'opencode')]
+    [ValidateSet('none', 'codex', 'claudecode', 'amp', 'antigravity', 'geminicli', 'copilot', 'cursor', 'hermes', 'windsurf', 'omnigent', 'opencode')]
     [string]$Connector = 'claudecode',
     [ValidateSet('observe', 'action')]
     [string]$Mode = 'observe',
@@ -265,6 +265,26 @@ function Set-AndAssertComboSelection([IntPtr]$Control, [int]$Index, [string]$Lab
     }
 }
 
+function Get-BoundedComboItemText([IntPtr]$Control, [int]$Index, [string]$Label) {
+    $length = Invoke-BoundedWindowMessage -Window $Control -Message 0x0149 `
+        -WParam ([UIntPtr]$Index) # CB_GETLBTEXTLEN
+    if ($length -gt 32767) {
+        throw "$Label item $Index returned an invalid text length $length."
+    }
+    $characters = [int]$length + 1
+    $buffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($characters * 2)
+    try {
+        $copied = Invoke-BoundedWindowMessage -Window $Control -Message 0x0148 `
+            -WParam ([UIntPtr]$Index) -LParam $buffer # CB_GETLBTEXT
+        if ($copied -ne $length) {
+            throw "$Label item $Index copied $copied characters; expected $length."
+        }
+        return [Runtime.InteropServices.Marshal]::PtrToStringUni($buffer)
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($buffer)
+    }
+}
+
 function Set-AndAssertCheckState([IntPtr]$Control, [bool]$Checked) {
     $expected = if ($Checked) { 1 } else { 0 }
     $null = Invoke-BoundedWindowMessage -Window $Control -Message 0x00F1 -WParam ([UIntPtr]$expected)
@@ -370,12 +390,30 @@ $connectorIndices = @{
     claudecode = 2
     amp = 3
     antigravity = 4
-    copilot = 5
-    cursor = 6
-    hermes = 7
-    windsurf = 8
-    omnigent = 9
-    opencode = 10
+    geminicli = 5
+    copilot = 6
+    cursor = 7
+    hermes = 8
+    windsurf = 9
+    omnigent = 10
+    opencode = 11
+}
+$connectorLabels = @(
+    'Configure later',
+    'Codex CLI',
+    'Claude Code',
+    'Amp',
+    'Google Antigravity',
+    'Gemini CLI (preview)',
+    'GitHub Copilot CLI',
+    'Cursor Agent',
+    'Hermes Agent',
+    'Legacy Cascade',
+    'OmniGent (native degraded)',
+    'OpenCode'
+)
+if ($connectorLabels.Count -ne $connectorIndices.Count) {
+    throw 'Wizard connector label and index contracts have different lengths.'
 }
 $modeIndices = @{ observe = 0; action = 1 }
 $process = $null
@@ -466,6 +504,14 @@ try {
     $control = [Diagnostics.Stopwatch]::StartNew()
     foreach ($index in 0..($connectorIndices.Count - 1)) {
         Set-AndAssertComboSelection $connectorControl $index 'Connector'
+        $observedLabel = Get-BoundedComboItemText $connectorControl $index 'Connector'
+        if (-not [string]::Equals(
+            $observedLabel,
+            $connectorLabels[$index],
+            [StringComparison]::Ordinal
+        )) {
+            throw "Connector item $index was '$observedLabel'; expected '$($connectorLabels[$index])'."
+        }
     }
     foreach ($index in 0..1) {
         Set-AndAssertComboSelection $modeControl $index 'Mode'

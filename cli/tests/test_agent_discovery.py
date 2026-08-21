@@ -2006,6 +2006,31 @@ def test_claude_version_probe_gets_longer_timeout_with_exe_suffix(monkeypatch):
     assert calls[0][1]["timeout"] == 8.0
 
 
+def test_gemini_version_probe_does_not_receive_private_path_authority(monkeypatch):
+    calls = []
+    monkeypatch.setenv("DEFENSECLAW_GEMINI_CONFIG_HOME", "/authenticated/.gemini")
+    monkeypatch.setenv("GEMINI_CLI_HOME", "/authenticated")
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda _path, **_kwargs: True)
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="0.26.0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ad.subprocess, "run", fake_run)
+
+    version, error = ad._version_for_binary("/opt/bin/gemini", ("--version",))
+
+    assert error == ""
+    assert version == "0.26.0"
+    assert "DEFENSECLAW_GEMINI_CONFIG_HOME" not in calls[0][1]["env"]
+    assert calls[0][1]["env"]["GEMINI_CLI_HOME"] == "/authenticated"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows PATHEXT regression")
 def test_which_discovers_cmd_wrapper(monkeypatch, tmp_path):
     wrapper = tmp_path / "cursor.CMD"

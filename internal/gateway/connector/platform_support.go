@@ -69,8 +69,8 @@ var windowsConnectorSupport = map[string]PlatformSupport{
 		Reason: "Legacy Cascade-only hooks and the native PowerShell adapter are supported on Windows x64. Devin Local (the current default), its separate lifecycle hooks, cloud, ACP, and managed higher-layer enforcement are not covered; packaged and official-client validation metadata is not recorded.",
 	},
 	"geminicli": {
-		Status: PlatformUnsupported,
-		Reason: "Gemini CLI native Windows support is excluded from this release because the intended product and audience path was discontinued; existing non-Windows support is unchanged.",
+		Status: PlatformPreview,
+		Reason: "Gemini CLI native Windows hooks are available in preview; packaged and official-client validation metadata is not recorded and live evidence remains false.",
 	},
 	"copilot": {
 		Status: PlatformSupported,

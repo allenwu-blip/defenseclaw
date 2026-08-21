@@ -51,6 +51,7 @@ type deferredVerifyInstallState struct {
 	CursorHome           string `json:"cursor_home,omitempty"`
 	WindsurfUserHome     string `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir string `json:"antigravity_config_dir,omitempty"`
+	GeminiConfigDir      string `json:"gemini_config_dir,omitempty"`
 	OpenCodeConfigDir    string `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome   string `json:"omnigent_config_home,omitempty"`
 	HermesHome           string `json:"hermes_home,omitempty"`
@@ -70,6 +71,7 @@ type deferredVerifyTransaction struct {
 	PreviousCursorHome           string                      `json:"previous_cursor_home,omitempty"`
 	PreviousWindsurfUserHome     string                      `json:"previous_windsurf_user_home,omitempty"`
 	PreviousAntigravityConfigDir string                      `json:"previous_antigravity_config_dir,omitempty"`
+	PreviousGeminiConfigDir      string                      `json:"previous_gemini_config_dir,omitempty"`
 	PreviousOpenCodeConfigDir    string                      `json:"previous_opencode_config_dir,omitempty"`
 	PreviousOmnigentConfigHome   string                      `json:"previous_omnigent_config_home,omitempty"`
 	PreviousHermesHome           string                      `json:"previous_hermes_home,omitempty"`
@@ -79,6 +81,7 @@ type deferredVerifyTransaction struct {
 	CursorHome                   string                      `json:"cursor_home,omitempty"`
 	WindsurfUserHome             string                      `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir         string                      `json:"antigravity_config_dir,omitempty"`
+	GeminiConfigDir              string                      `json:"gemini_config_dir,omitempty"`
 	OpenCodeConfigDir            string                      `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome           string                      `json:"omnigent_config_home,omitempty"`
 	HermesHome                   string                      `json:"hermes_home,omitempty"`
@@ -373,6 +376,12 @@ func deferredVerifyConfigHomes(transaction deferredVerifyTransaction, connectorN
 			add(previous.AntigravityConfigDir)
 		}
 		add(filepath.Join(filepath.Dir(transaction.DataRoot), ".gemini", "config"))
+	case "geminicli":
+		add(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir)
+		if previous != nil {
+			add(previous.GeminiConfigDir)
+		}
+		add(filepath.Join(filepath.Dir(transaction.DataRoot), ".gemini"))
 	case "opencode":
 		add(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir)
 		if previous != nil {

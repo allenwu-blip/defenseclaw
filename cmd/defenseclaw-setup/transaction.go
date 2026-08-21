@@ -95,6 +95,8 @@ type setupTransaction struct {
 	PreviousHermesHome             string                   `json:"previous_hermes_home,omitempty"`
 	PreviousWindsurfUserHome       string                   `json:"previous_windsurf_user_home,omitempty"`
 	PreviousAntigravityConfigDir   string                   `json:"previous_antigravity_config_dir,omitempty"`
+	PreviousGeminiCLIHome          string                   `json:"previous_gemini_cli_home,omitempty"`
+	PreviousGeminiConfigDir        string                   `json:"previous_gemini_config_dir,omitempty"`
 	PreviousOpenCodeConfigDir      string                   `json:"previous_opencode_config_dir,omitempty"`
 	PreviousOmnigentConfigHome     string                   `json:"previous_omnigent_config_home,omitempty"`
 	CodexHome                      string                   `json:"codex_home,omitempty"`
@@ -103,6 +105,8 @@ type setupTransaction struct {
 	CursorHome                     string                   `json:"cursor_home,omitempty"`
 	WindsurfUserHome               string                   `json:"windsurf_user_home,omitempty"`
 	AntigravityConfigDir           string                   `json:"antigravity_config_dir,omitempty"`
+	GeminiCLIHome                  string                   `json:"gemini_cli_home,omitempty"`
+	GeminiConfigDir                string                   `json:"gemini_config_dir,omitempty"`
 	OpenCodeConfigDir              string                   `json:"opencode_config_dir,omitempty"`
 	OmnigentConfigHome             string                   `json:"omnigent_config_home,omitempty"`
 	HermesHome                     string                   `json:"hermes_home,omitempty"`
@@ -347,6 +351,15 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	// location. A predecessor's custom binding is recovered separately below
 	// only so Setup can restore and migrate the exact file it previously owned.
 	antigravityConfigDir := defaultAntigravityConfigDir
+	// GEMINI_CLI_HOME is the vendor-documented home root. Gemini CLI appends its
+	// own .gemini directory, so persist both the validated root and the derived
+	// config directory. Because Gemini CLI honors every non-empty value, reject
+	// an invalid ambient binding instead of silently installing somewhere else.
+	geminiCLIHome, err := resolveGeminiCLIHome(defaultWindsurfUserHome)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	geminiConfigDir := filepath.Join(geminiCLIHome, ".gemini")
 	openCodeConfigDir, err := transactionConfigHome("OPENCODE_CONFIG_DIR", defaultOpenCodeConfigDir)
 	if err != nil {
 		return setupTransaction{}, err
@@ -359,7 +372,7 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousHermesState, previousWindsurfState, previousAntigravityState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", "", ""
+	previousCodexState, previousClaudeState, previousCopilotState, previousCursorState, previousHermesState, previousWindsurfState, previousAntigravityState, previousGeminiCLIState, previousGeminiState, previousOpenCodeState, previousOmnigentState := "", "", "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		previousCodexState = oldState.CodexHome
 		previousClaudeState = oldState.ClaudeConfigDir
@@ -368,6 +381,8 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		previousHermesState = oldState.HermesHome
 		previousWindsurfState = oldState.WindsurfUserHome
 		previousAntigravityState = oldState.AntigravityConfigDir
+		previousGeminiCLIState = oldState.GeminiCLIHome
+		previousGeminiState = oldState.GeminiConfigDir
 		previousOpenCodeState = oldState.OpenCodeConfigDir
 		previousOmnigentState = oldState.OmnigentConfigHome
 	}
@@ -392,6 +407,17 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 	)
 	if err != nil {
 		return setupTransaction{}, err
+	}
+	previousGeminiConfigDir, err := resolvePreviousConnectorHome(
+		previousGeminiState, previousConnectors, dataRoot, "geminicli", "config", geminiConfigDir,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousGeminiCLIHome := geminiCLIHomeForConfigDir(previousGeminiConfigDir)
+	if previousGeminiCLIState != "" &&
+		geminiCLIConfigBindingConsistent(previousGeminiCLIState, previousGeminiConfigDir) {
+		previousGeminiCLIHome = previousGeminiCLIState
 	}
 	previousClaudeConfigDir, err := resolvePreviousConnectorHome(
 		previousClaudeState, previousConnectors, dataRoot, "claudecode", "settings.json", claudeConfigDir,
@@ -445,6 +471,10 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		windsurfUserHome = previousWindsurfUserHome
 		openCodeConfigDir = previousOpenCodeConfigDir
 		omnigentConfigHome = previousOmnigentConfigHome
+		if previousGeminiCLIHome != "" {
+			geminiCLIHome = previousGeminiCLIHome
+			geminiConfigDir = previousGeminiConfigDir
+		}
 	}
 	maintenanceSHA256 := ""
 	maintenanceExisted, previousMaintenanceSHA256, err := snapshotMaintenanceFile(maintenancePath)
@@ -498,6 +528,8 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		PreviousHermesHome:             previousHermesHome,
 		PreviousWindsurfUserHome:       previousWindsurfUserHome,
 		PreviousAntigravityConfigDir:   previousAntigravityConfigDir,
+		PreviousGeminiCLIHome:          previousGeminiCLIHome,
+		PreviousGeminiConfigDir:        previousGeminiConfigDir,
 		PreviousOpenCodeConfigDir:      previousOpenCodeConfigDir,
 		PreviousOmnigentConfigHome:     previousOmnigentConfigHome,
 		CodexHome:                      codexHome,
@@ -507,6 +539,8 @@ func newSetupTransaction(action, installRoot, dataRoot, maintenancePath, fromVer
 		HermesHome:                     hermesHome,
 		WindsurfUserHome:               windsurfUserHome,
 		AntigravityConfigDir:           antigravityConfigDir,
+		GeminiCLIHome:                  geminiCLIHome,
+		GeminiConfigDir:                geminiConfigDir,
 		OpenCodeConfigDir:              openCodeConfigDir,
 		OmnigentConfigHome:             omnigentConfigHome,
 		MaintenanceSHA256:              maintenanceSHA256,
@@ -576,6 +610,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
+	defaultGeminiCLIHome := defaultWindsurfUserHome
+	defaultGeminiConfigDir := filepath.Join(defaultGeminiCLIHome, ".gemini")
 	defaultOpenCodeConfigDir, err := defaultConnectorConfigHome(filepath.Join(".config", "opencode"))
 	if err != nil {
 		return setupTransaction{}, err
@@ -588,7 +624,7 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	if err != nil {
 		return setupTransaction{}, err
 	}
-	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredHermesHome, configuredWindsurfHome, configuredAntigravityHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", "", ""
+	configuredCodexHome, configuredClaudeHome, configuredCopilotHome, configuredCursorHome, configuredHermesHome, configuredWindsurfHome, configuredAntigravityHome, configuredGeminiCLIHome, configuredGeminiHome, configuredOpenCodeHome, configuredOmnigentHome := "", "", "", "", "", "", "", "", "", "", ""
 	if oldState != nil {
 		configuredCodexHome = oldState.CodexHome
 		configuredClaudeHome = oldState.ClaudeConfigDir
@@ -597,6 +633,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		configuredHermesHome = oldState.HermesHome
 		configuredWindsurfHome = oldState.WindsurfUserHome
 		configuredAntigravityHome = oldState.AntigravityConfigDir
+		configuredGeminiCLIHome = oldState.GeminiCLIHome
+		configuredGeminiHome = oldState.GeminiConfigDir
 		configuredOpenCodeHome = oldState.OpenCodeConfigDir
 		configuredOmnigentHome = oldState.OmnigentConfigHome
 	}
@@ -622,6 +660,10 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	legacyAntigravityFallback := source.AntigravityConfigDir
 	if legacyAntigravityFallback == "" {
 		legacyAntigravityFallback = defaultAntigravityConfigDir
+	}
+	legacyGeminiFallback := source.GeminiConfigDir
+	if legacyGeminiFallback == "" {
+		legacyGeminiFallback = defaultGeminiConfigDir
 	}
 	legacyOpenCodeFallback := source.OpenCodeConfigDir
 	if legacyOpenCodeFallback == "" {
@@ -691,6 +733,25 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 	)
 	if err != nil {
 		return setupTransaction{}, err
+	}
+	previousGeminiConfigDir, err := resolvePreviousConnectorHome(
+		configuredGeminiHome,
+		previousConnectors,
+		source.DataRoot,
+		"geminicli",
+		"config",
+		legacyGeminiFallback,
+	)
+	if err != nil {
+		return setupTransaction{}, err
+	}
+	previousGeminiCLIHome := geminiCLIHomeForConfigDir(previousGeminiConfigDir)
+	if configuredGeminiCLIHome != "" &&
+		geminiCLIConfigBindingConsistent(configuredGeminiCLIHome, previousGeminiConfigDir) {
+		previousGeminiCLIHome = configuredGeminiCLIHome
+	} else if source.GeminiCLIHome != "" &&
+		geminiCLIConfigBindingConsistent(source.GeminiCLIHome, previousGeminiConfigDir) {
+		previousGeminiCLIHome = source.GeminiCLIHome
 	}
 	previousOpenCodeConfigDir, err := resolvePreviousConnectorHome(
 		configuredOpenCodeHome,
@@ -801,6 +862,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		PreviousHermesHome:           previousHermesHome,
 		PreviousWindsurfUserHome:     previousWindsurfUserHome,
 		PreviousAntigravityConfigDir: previousAntigravityConfigDir,
+		PreviousGeminiCLIHome:        previousGeminiCLIHome,
+		PreviousGeminiConfigDir:      previousGeminiConfigDir,
 		PreviousOpenCodeConfigDir:    previousOpenCodeConfigDir,
 		PreviousOmnigentConfigHome:   previousOmnigentConfigHome,
 		CodexHome:                    previousCodexHome,
@@ -810,6 +873,8 @@ func newUninstallHandoffTransaction(source setupTransaction, oldState *installSt
 		HermesHome:                   previousHermesHome,
 		WindsurfUserHome:             previousWindsurfUserHome,
 		AntigravityConfigDir:         previousAntigravityConfigDir,
+		GeminiCLIHome:                previousGeminiCLIHome,
+		GeminiConfigDir:              previousGeminiConfigDir,
 		OpenCodeConfigDir:            previousOpenCodeConfigDir,
 		OmnigentConfigHome:           previousOmnigentConfigHome,
 		DeleteUserData:               opts.DeleteUserData,
@@ -900,6 +965,45 @@ func transactionConfigHome(name, fallback string) (string, error) {
 	return fallback, nil
 }
 
+func resolveGeminiCLIHome(fallback string) (string, error) {
+	value, ok := os.LookupEnv("GEMINI_CLI_HOME")
+	if !ok || value == "" {
+		return fallback, nil
+	}
+	if strings.TrimSpace(value) != value || containsPathControl(value) ||
+		!filepath.IsAbs(value) || filepath.Clean(value) != value {
+		return "", errors.New("GEMINI_CLI_HOME must be an absolute, normalized path without surrounding whitespace or control characters")
+	}
+	if err := rejectReparseAncestors(value); err != nil {
+		return "", fmt.Errorf("validate GEMINI_CLI_HOME: %w", err)
+	}
+	return value, nil
+}
+
+func containsPathControl(value string) bool {
+	for _, char := range value {
+		if char < 0x20 || char == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+func geminiCLIHomeForConfigDir(configDir string) string {
+	if configDir == "" || !strings.EqualFold(filepath.Base(configDir), ".gemini") {
+		return ""
+	}
+	home := filepath.Dir(configDir)
+	if home == configDir || home == "." {
+		return ""
+	}
+	return home
+}
+
+func geminiCLIConfigBindingConsistent(home, configDir string) bool {
+	return home != "" && configDir != "" && samePath(filepath.Join(home, ".gemini"), configDir)
+}
+
 func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback string) (string, error) {
 	logicalNames := []string{logicalName}
 	if connectorName == "antigravity" && logicalName == "hooks.json" {
@@ -952,6 +1056,9 @@ func inferManagedConnectorHome(dataRoot, connectorName, logicalName, fallback st
 			return "", errors.New("opencode managed backup has an invalid plugin target path")
 		}
 		home = filepath.Dir(home)
+	}
+	if connectorName == "geminicli" && !strings.EqualFold(filepath.Base(target), "settings.json") {
+		return "", errors.New("geminicli managed backup has an invalid settings target path")
 	}
 	return home, nil
 }
@@ -1039,6 +1146,8 @@ func transactionChildEnv(transaction setupTransaction) []string {
 		transaction.CursorHome,
 		transaction.WindsurfUserHome,
 		transaction.AntigravityConfigDir,
+		transaction.GeminiCLIHome,
+		transaction.GeminiConfigDir,
 		transaction.OpenCodeConfigDir,
 		transaction.OmnigentConfigHome,
 		transaction.HermesHome,
@@ -1054,6 +1163,8 @@ func transactionPreviousChildEnv(transaction setupTransaction) []string {
 		transaction.PreviousCursorHome,
 		transaction.PreviousWindsurfUserHome,
 		transaction.PreviousAntigravityConfigDir,
+		transaction.PreviousGeminiCLIHome,
+		transaction.PreviousGeminiConfigDir,
 		transaction.PreviousOpenCodeConfigDir,
 		transaction.PreviousOmnigentConfigHome,
 		transaction.PreviousHermesHome,
@@ -1077,6 +1188,8 @@ func transactionChildEnvForHomes(
 		transaction.CursorHome,
 		transaction.WindsurfUserHome,
 		antigravityConfigDir,
+		transaction.GeminiCLIHome,
+		transaction.GeminiConfigDir,
 		transaction.OpenCodeConfigDir,
 		transaction.OmnigentConfigHome,
 		transaction.HermesHome,
@@ -1095,6 +1208,8 @@ func transactionChildEnvForAllHomes(
 		transaction.CursorHome,
 		transaction.WindsurfUserHome,
 		transaction.AntigravityConfigDir,
+		transaction.GeminiCLIHome,
+		transaction.GeminiConfigDir,
 		openCodeConfigDir,
 		transaction.OmnigentConfigHome,
 		transaction.HermesHome,
@@ -1103,10 +1218,10 @@ func transactionChildEnvForAllHomes(
 
 func transactionChildEnvForConnectorHomes(
 	transaction setupTransaction,
-	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
+	codexHome, claudeConfigDir, copilotHome, cursorHome, windsurfUserHome, antigravityConfigDir, geminiCLIHome, geminiConfigDir, openCodeConfigDir, omnigentConfigHome, hermesHome string,
 ) []string {
 	base := managedChildEnv(transaction.DataRoot)
-	filtered := make([]string, 0, len(base)+10)
+	filtered := make([]string, 0, len(base)+12)
 	for _, entry := range base {
 		name, _, ok := strings.Cut(entry, "=")
 		if ok && (strings.EqualFold(name, "CODEX_HOME") ||
@@ -1116,8 +1231,10 @@ func transactionChildEnvForConnectorHomes(
 			strings.EqualFold(name, "WINDSURF_USER_HOME") ||
 			strings.EqualFold(name, "WINDSURF_HOOK_CONFIG_PATH") ||
 			strings.EqualFold(name, "ANTIGRAVITY_CONFIG_DIR") ||
+			strings.EqualFold(name, "GEMINI_CLI_HOME") ||
 			strings.EqualFold(name, "GEMINI_CONFIG_DIR") ||
 			strings.EqualFold(name, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME") ||
+			strings.EqualFold(name, "DEFENSECLAW_GEMINI_CONFIG_HOME") ||
 			strings.EqualFold(name, "OPENCODE_CONFIG_DIR") ||
 			strings.EqualFold(name, "OMNIGENT_CONFIG_HOME") ||
 			strings.EqualFold(name, "HERMES_HOME")) {
@@ -1154,6 +1271,19 @@ func transactionChildEnvForConnectorHomes(
 		// plumbing consumes it; Antigravity never receives a vendor-looking
 		// configuration override.
 		filtered = append(filtered, "DEFENSECLAW_ANTIGRAVITY_CONFIG_HOME="+antigravityConfigDir)
+	}
+	if geminiConfigDir != "" {
+		if geminiCLIHome == "" {
+			// Predecessor journals did not persist the vendor root. Rehydrate it
+			// only when the old config binding has the exact <root>/.gemini shape.
+			geminiCLIHome = geminiCLIHomeForConfigDir(geminiConfigDir)
+		}
+		if geminiCLIConfigBindingConsistent(geminiCLIHome, geminiConfigDir) {
+			filtered = append(filtered, "GEMINI_CLI_HOME="+geminiCLIHome)
+		}
+		// DefenseClaw consumers receive the exact authenticated config directory
+		// alongside the official vendor-facing home root.
+		filtered = append(filtered, "DEFENSECLAW_GEMINI_CONFIG_HOME="+geminiConfigDir)
 	}
 	if openCodeConfigDir != "" {
 		filtered = append(filtered, "OPENCODE_CONFIG_DIR="+openCodeConfigDir)
@@ -1360,6 +1490,23 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		if !samePath(transaction.AntigravityConfigDir, officialAntigravityHome) {
 			return errors.New("install transaction has a non-official Antigravity configuration home")
 		}
+		// Gemini fields were added after the schema-2 transaction envelope was
+		// published. A predecessor journal can omit both or carry only its
+		// canonical <root>/.gemini config path. New journals persist and validate
+		// the official vendor root and DefenseClaw's derived private binding.
+		geminiRequired := transaction.GeminiCLIHome != "" || transaction.GeminiConfigDir != "" ||
+			transaction.TargetConnector == "geminicli" ||
+			stringSliceContains(transaction.PreviousConnectors, "geminicli")
+		if geminiRequired {
+			if transaction.GeminiCLIHome == "" {
+				if geminiCLIHomeForConfigDir(transaction.GeminiConfigDir) == "" {
+					return errors.New("install transaction has no valid Gemini CLI home binding")
+				}
+			} else if containsPathControl(transaction.GeminiCLIHome) ||
+				!geminiCLIConfigBindingConsistent(transaction.GeminiCLIHome, transaction.GeminiConfigDir) {
+				return errors.New("install transaction has an inconsistent Gemini CLI home binding")
+			}
+		}
 	}
 	if transaction.PreserveConnectorConfiguration {
 		if transaction.Action != "install" || !transaction.HadInstall || transaction.PreviousState == nil {
@@ -1379,10 +1526,16 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 			!samePath(transaction.PreviousHermesHome, transaction.HermesHome) {
 			return errors.New("connector-preserving transaction changed a connector configuration home")
 		}
-		// Antigravity is the deliberate equality exception above: older builds
-		// could persist a DefenseClaw-only custom home. Its Previous*
-		// path remains exact restoration authority while the universal install
-		// check above pins the current registration to the official home.
+		if transaction.PreviousGeminiCLIHome != "" &&
+			(!samePath(transaction.PreviousGeminiCLIHome, transaction.GeminiCLIHome) ||
+				!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir)) {
+			return errors.New("connector-preserving transaction changed the Gemini CLI home binding")
+		}
+		// Antigravity remains an equality exception because its Previous* path is
+		// exact restoration authority while current registration is pinned to the
+		// official nested .gemini/config tree. A pre-GEMINI_CLI_HOME predecessor
+		// with a noncanonical config path is likewise migrated rather than trusted
+		// as a vendor home root.
 		if len(transaction.PreviousConnectors) != 0 && !transaction.TargetServices.Gateway {
 			return errors.New("connector-preserving transaction disabled the required gateway")
 		}
@@ -1404,6 +1557,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"previous Cursor home":                   transaction.PreviousCursorHome,
 		"previous Windsurf user home":            transaction.PreviousWindsurfUserHome,
 		"previous Antigravity configuration dir": transaction.PreviousAntigravityConfigDir,
+		"previous Gemini CLI home":               transaction.PreviousGeminiCLIHome,
+		"previous Gemini CLI configuration dir":  transaction.PreviousGeminiConfigDir,
 		"previous OpenCode configuration dir":    transaction.PreviousOpenCodeConfigDir,
 		"previous OmniGent configuration home":   transaction.PreviousOmnigentConfigHome,
 		"Codex home":                             transaction.CodexHome,
@@ -1412,6 +1567,8 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		"Cursor home":                            transaction.CursorHome,
 		"Windsurf user home":                     transaction.WindsurfUserHome,
 		"Antigravity configuration dir":          transaction.AntigravityConfigDir,
+		"Gemini CLI home":                        transaction.GeminiCLIHome,
+		"Gemini CLI configuration dir":           transaction.GeminiConfigDir,
 		"OpenCode configuration dir":             transaction.OpenCodeConfigDir,
 		"OmniGent configuration home":            transaction.OmnigentConfigHome,
 		"previous Hermes home":                   transaction.PreviousHermesHome,
@@ -1423,6 +1580,18 @@ func validateSetupTransaction(transaction setupTransaction, expected setupTransa
 		if !filepath.IsAbs(value) || filepath.Clean(value) != value {
 			return fmt.Errorf("setup transaction has an invalid %s override", label)
 		}
+		if strings.Contains(strings.ToLower(label), "gemini cli") &&
+			(strings.TrimSpace(value) != value || containsPathControl(value)) {
+			return fmt.Errorf("setup transaction has an invalid %s override", label)
+		}
+	}
+	if transaction.PreviousGeminiCLIHome != "" &&
+		!geminiCLIConfigBindingConsistent(transaction.PreviousGeminiCLIHome, transaction.PreviousGeminiConfigDir) {
+		return errors.New("setup transaction has an inconsistent previous Gemini CLI home binding")
+	}
+	if transaction.GeminiCLIHome != "" &&
+		!geminiCLIConfigBindingConsistent(transaction.GeminiCLIHome, transaction.GeminiConfigDir) {
+		return errors.New("setup transaction has an inconsistent Gemini CLI home binding")
 	}
 	if !transaction.PreviousAutoStart.Existed && transaction.PreviousAutoStart.Value != "" {
 		return errors.New("setup transaction has an inconsistent absent auto-start snapshot")
@@ -1506,11 +1675,17 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 		"Windsurf user home":            state.WindsurfUserHome,
 		"Windsurf hooks path":           state.WindsurfHooksPath,
 		"Antigravity configuration dir": state.AntigravityConfigDir,
+		"Gemini CLI home":               state.GeminiCLIHome,
+		"Gemini CLI configuration dir":  state.GeminiConfigDir,
 		"OpenCode configuration dir":    state.OpenCodeConfigDir,
 		"OmniGent configuration home":   state.OmnigentConfigHome,
 		"Hermes home":                   state.HermesHome,
 	} {
 		if value != "" && (!filepath.IsAbs(value) || filepath.Clean(value) != value) {
+			return fmt.Errorf("installer state has an invalid %s", label)
+		}
+		if value != "" && strings.Contains(strings.ToLower(label), "gemini cli") &&
+			(strings.TrimSpace(value) != value || containsPathControl(value)) {
 			return fmt.Errorf("installer state has an invalid %s", label)
 		}
 	}
@@ -1520,6 +1695,10 @@ func validateInstallStateForRoots(state *installState, installRoot, dataRoot, ma
 			filepath.Join(state.WindsurfUserHome, ".codeium", "windsurf", "hooks.json"),
 		)) {
 		return errors.New("installer state has an inconsistent Windsurf hooks path")
+	}
+	if state.GeminiCLIHome != "" &&
+		!geminiCLIConfigBindingConsistent(state.GeminiCLIHome, state.GeminiConfigDir) {
+		return errors.New("installer state has an inconsistent Gemini CLI home binding")
 	}
 	return nil
 }
@@ -3455,6 +3634,9 @@ func connectorHomeChanged(transaction setupTransaction, connectorName string) bo
 		return !samePath(transaction.PreviousWindsurfUserHome, transaction.WindsurfUserHome)
 	case "antigravity":
 		return !samePath(transaction.PreviousAntigravityConfigDir, transaction.AntigravityConfigDir)
+	case "geminicli":
+		return !samePath(transaction.PreviousGeminiCLIHome, transaction.GeminiCLIHome) ||
+			!samePath(transaction.PreviousGeminiConfigDir, transaction.GeminiConfigDir)
 	case "opencode":
 		return !samePath(transaction.PreviousOpenCodeConfigDir, transaction.OpenCodeConfigDir)
 	case "omnigent":

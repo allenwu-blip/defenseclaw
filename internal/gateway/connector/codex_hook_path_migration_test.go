@@ -290,24 +290,24 @@ func TestMergeOwnedCodexHooksCollapsesAccumulatedTrustedMatrices(t *testing.T) {
 	}
 	profiles := codexShippedManagedHookProfiles()
 	profilesBySize := make(map[int][]codexHookGroup, len(profiles))
-	var legacyElevenEvents, currentElevenEvents []codexHookGroup
+	var currentElevenEvents, preClampElevenEvents []codexHookGroup
 	for _, profile := range profiles {
 		if len(profile) == 11 {
 			switch profile[len(profile)-1].timeout {
 			case 3:
-				legacyElevenEvents = profile
-			case 60:
 				currentElevenEvents = profile
+			case 60:
+				preClampElevenEvents = profile
 			}
 			continue
 		}
 		profilesBySize[len(profile)] = profile
 	}
-	if legacyElevenEvents == nil || currentElevenEvents == nil {
+	if currentElevenEvents == nil || preClampElevenEvents == nil {
 		t.Fatalf(
-			"SessionEnd profiles: legacy=%v current=%v, want both shipped timeout variants",
-			legacyElevenEvents,
+			"SessionEnd profiles: current=%v pre-clamp=%v, want both shipped timeout variants",
 			currentElevenEvents,
+			preClampElevenEvents,
 		)
 	}
 	for _, size := range []int{5, 6, 8, 10} {
@@ -336,8 +336,8 @@ func TestMergeOwnedCodexHooksCollapsesAccumulatedTrustedMatrices(t *testing.T) {
 			groups:  profilesBySize[10],
 		},
 		{
-			command: filepath.Join(root, "dc-connector-upgrade.unit-eleven-legacy", "hooks", "codex-hook.sh"),
-			groups:  legacyElevenEvents,
+			command: filepath.Join(root, "dc-connector-upgrade.unit-eleven-pre-clamp", "hooks", "codex-hook.sh"),
+			groups:  preClampElevenEvents,
 		},
 		{
 			command: filepath.Join(root, "dc-connector-upgrade.unit-eleven-current", "hooks", "codex-hook.sh"),

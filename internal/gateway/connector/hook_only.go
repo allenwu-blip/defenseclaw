@@ -17,15 +17,19 @@
 package connector
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -353,24 +357,41 @@ var windsurfCascadeHookEvents = []string{
 	"post_setup_worktree",
 }
 
+var geminiCLIHookEvents = []string{
+	"SessionStart",
+	"SessionEnd",
+	"BeforeAgent",
+	"AfterAgent",
+	"BeforeModel",
+	"AfterModel",
+	"BeforeToolSelection",
+	"BeforeTool",
+	"AfterTool",
+	"PreCompress",
+	"Notification",
+}
+
+var geminiCLIBlockEvents = []string{
+	"BeforeAgent",
+	"BeforeModel",
+	"BeforeTool",
+	"AfterTool",
+	"AfterModel",
+	"AfterAgent",
+}
+
 func NewGeminiCLIConnector() *hookOnlyConnector {
 	return &hookOnlyConnector{
 		name:        "geminicli",
-		description: "enterprise/Cloud/paid-key settings.json hooks with native OTLP, MCP, skills, extensions, and agents",
+		description: "settings.json hooks with native OTLP, MCP, skills, extensions, and agents",
 		apiPath:     "/api/v1/geminicli/hook",
 		scriptName:  "geminicli-hook.sh",
 		configPath:  geminiSettingsPath,
 		capability: func(opts SetupOpts) HookCapability {
 			return HookCapability{
-				CanBlock:     true,
-				CanAskNative: false,
-				BlockEvents: []string{
-					"BeforeAgent",
-					"BeforeModel",
-					"BeforeTool",
-					"AfterTool",
-					"AfterAgent",
-				},
+				CanBlock:           true,
+				CanAskNative:       false,
+				BlockEvents:        append([]string(nil), geminiCLIBlockEvents...),
 				SupportsFailClosed: true,
 				Scope:              "user",
 				ConfigPath:         geminiSettingsPath(opts),
@@ -940,35 +961,48 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 		caps.Plugins = pluginsAreOpenClawOnly()
 		caps.Agents = unsupportedSurface("Legacy Cascade has no supported agent/subagent asset surface; Devin Local and ACP agents are outside this connector.")
 	case "geminicli":
+		geminiHome := geminiConfigHome(opts)
+		geminiSettings := geminiSettingsPaths(opts)
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
-			Scope:           "user",
-			ConfigPaths:     []string{geminiSettingsPath(opts)},
-			WritePaths:      []string{geminiSettingsPath(opts)},
+			Scope:           "workspace,user",
+			ConfigPaths:     geminiSettings,
+			ReadPaths:       geminiSettings,
+			WritePaths:      geminiSettings,
 			SupportsBackup:  true,
 			SupportsRestore: true,
+			Notes:           []string{"A pinned workspace uses <workspace>/.gemini/settings.json ahead of the bound user settings file; system-level MCP definitions remain operator-managed."},
 		}
 		caps.Skills = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{homePath(".gemini", "skills"), workspacePath(opts, ".gemini", "skills"), workspacePath(opts, ".agents", "skills")},
-			WritePaths:     []string{homePath(".gemini", "skills"), workspacePath(opts, ".gemini", "skills")},
+			ReadPaths:      []string{geminiHomePath(geminiHome, "skills"), workspacePath(opts, ".gemini", "skills"), workspacePath(opts, ".agents", "skills")},
+			WritePaths:     []string{geminiHomePath(geminiHome, "skills"), workspacePath(opts, ".gemini", "skills")},
 			InstallTargets: []string{"skill"},
 			RequiresOptIn:  true,
 		}
-		caps.Plugins = pluginsAreOpenClawOnly()
+		caps.Plugins = SurfaceCapability{
+			Supported:     true,
+			Scope:         "user",
+			ReadPaths:     []string{geminiHomePath(geminiHome, "extensions")},
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Gemini CLI loads installed extensions from the bound user profile; workspace settings can enable or disable those installations but do not define a second extension root.",
+				"DefenseClaw does not install, remove, or modify Gemini extensions.",
+			},
+		}
 		caps.Agents = SurfaceCapability{
 			Supported:      true,
 			Scope:          "workspace,user",
-			ReadPaths:      []string{homePath(".gemini", "agents"), workspacePath(opts, ".gemini", "agents")},
-			WritePaths:     []string{homePath(".gemini", "agents"), workspacePath(opts, ".gemini", "agents")},
+			ReadPaths:      []string{geminiHomePath(geminiHome, "agents"), workspacePath(opts, ".gemini", "agents")},
+			WritePaths:     []string{geminiHomePath(geminiHome, "agents"), workspacePath(opts, ".gemini", "agents")},
 			InstallTargets: []string{"agent"},
 			RequiresOptIn:  true,
 		}
 		caps.Rules = SurfaceCapability{
 			Supported:      true,
-			Scope:          "workspace",
-			ReadPaths:      []string{homePath(".gemini", "skills"), workspacePath(opts, ".agents", "skills")},
+			Scope:          "workspace,user",
+			ReadPaths:      []string{geminiHomePath(geminiHome, "skills"), workspacePath(opts, ".agents", "skills")},
 			InstallTargets: []string{"rule"},
 			RequiresOptIn:  true,
 			Notes:          []string{"Gemini rule-style guidance is represented through skills/agents, not a guessed standalone rules file."},
@@ -979,11 +1013,14 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			NativeOTLP:       true,
 			NativeSignals:    []string{"logs", "metrics", "traces"},
 			HookSignals:      []string{"logs", "metrics", "traces"},
-			ConfigPaths:      []string{geminiSettingsPath(opts)},
+			ConfigPaths:      geminiSettings,
 			AuthMode:         "path-token-loopback",
 			EndpointTemplate: "http://" + opts.APIAddr + "/otlp/geminicli/<token>",
 			SourceModes:      []string{"native", "hook"},
-			Notes:            []string{"Gemini CLI telemetry is configured in settings.json with a path token because custom OTLP headers are not documented."},
+			Notes: []string{
+				"Gemini CLI telemetry is configured in the bound user settings.json with a path token because custom OTLP headers are not documented.",
+				"Setup and health inspect the pinned workspace and system settings for effective overrides; an unpinned future workspace or per-process environment can still change Gemini's effective telemetry.",
+			},
 		}
 	case "copilot":
 		caps.MCP = SurfaceCapability{
@@ -1080,6 +1117,28 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 			Notes:         []string{"Antigravity agents under ~/.gemini/config/agents, <workspace>/.agents/agents, and <plugin>/agents are discovery-only; DefenseClaw does not install or modify them."},
 		}
 		caps.CodeGuard.Supported = false
+	case "opencode":
+		readPaths := opencodeMCPReadPaths(opts)
+		writePaths := opencodeMCPWritePaths(opts)
+		caps.MCP = SurfaceCapability{
+			Supported:       true,
+			Scope:           "workspace,user,custom",
+			ConfigPaths:     readPaths,
+			ReadPaths:       readPaths,
+			WritePaths:      writePaths,
+			DiscoveryOnly:   len(writePaths) == 0,
+			SupportsBackup:  true,
+			SupportsRestore: true,
+			Notes: []string{
+				"OpenCode MCP servers are read from locally representable global, project, home-component, and explicit OPENCODE_CONFIG/OPENCODE_CONFIG_DIR layers in client merge order.",
+				"DefenseClaw writes the same authoritative local target as the CLI adapter and unsets a server from every active local file layer so a shadowed lower-precedence declaration cannot silently resurface.",
+				"Authenticated remote .well-known configuration and Windows ProgramData enterprise policy are unverified; OPENCODE_CONFIG_CONTENT and unresolved relative environment paths make this surface discovery-only.",
+			},
+		}
+		caps.Skills = unsupportedSurface("OpenCode ordinary skill installation and inventory are unsupported by the DefenseClaw v1 connector.")
+		caps.Rules = unsupportedSurface("OpenCode ordinary rules and instruction assets are unsupported by the DefenseClaw v1 connector.")
+		caps.Plugins = unsupportedSurface("The managed DefenseClaw policy bridge is connector wiring, not a general OpenCode plugin inventory or install surface.")
+		caps.Agents = unsupportedSurface("OpenCode ordinary agent assets are unsupported by the DefenseClaw v1 connector.")
 	case "openhands":
 		caps.MCP = SurfaceCapability{
 			Supported:       true,
@@ -1140,7 +1199,40 @@ func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
 			return c.setup(ctx, opts, configPath)
 		})
 	}
+	if c.name == "geminicli" {
+		return c.setupGeminiWithTokenRollback(ctx, opts)
+	}
 	return c.setup(ctx, opts, "")
+}
+
+// setupGeminiWithTokenRollback provisions the connector-scoped OTLP token as
+// one lifecycle unit with Gemini's settings registration. A token that existed
+// before Setup belongs to an earlier successful registration and must survive
+// a retry failure. Conversely, a token minted by this attempt is revoked when
+// any later setup step fails so an unsuccessful install does not leave a live
+// credential behind.
+func (c *hookOnlyConnector) setupGeminiWithTokenRollback(ctx context.Context, opts SetupOpts) error {
+	existingToken, err := LoadOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI)
+	if err != nil {
+		return fmt.Errorf("geminicli inspect scoped OTLP token: %w", err)
+	}
+	suppliedToken := strings.TrimSpace(opts.OTLPPathToken)
+	otlpToken, err := resolveSetupOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI, suppliedToken)
+	if err != nil {
+		return fmt.Errorf("geminicli scoped OTLP token: %w", err)
+	}
+	freshlyMinted := suppliedToken == "" && existingToken == ""
+	opts.OTLPPathToken = otlpToken
+
+	if err := c.setup(ctx, opts, ""); err != nil {
+		if freshlyMinted {
+			if revokeErr := RemoveOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); revokeErr != nil {
+				return errors.Join(err, fmt.Errorf("geminicli revoke scoped OTLP token after failed setup: %w", revokeErr))
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesConfigPath string) error {
@@ -1183,6 +1275,15 @@ func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesCon
 			return errors.New("cursor persisted hook contract does not match the requested mode")
 		}
 	}
+	if c.name == "geminicli" {
+		present, err := c.geminiOwnedHookContractPresent(opts)
+		if err != nil {
+			return fmt.Errorf("geminicli verify effective hook/telemetry contract: %w", err)
+		}
+		if !present {
+			return errors.New("geminicli persisted hook/telemetry contract does not match the requested mode")
+		}
+	}
 	return nil
 }
 
@@ -1192,6 +1293,9 @@ func (c *hookOnlyConnector) setup(ctx context.Context, opts SetupOpts, hermesCon
 // plugin is instead authoritative when its exact versioned ownership marker
 // is present in the installed regular file.
 func (c *hookOnlyConnector) ownedHookContractPresent(opts SetupOpts) (bool, error) {
+	if c.name == "geminicli" {
+		return c.geminiOwnedHookContractPresent(opts)
+	}
 	if !c.pluginArtifact {
 		return ownedHooksPresentInConfig(c, opts)
 	}
@@ -1216,6 +1320,65 @@ func (c *hookOnlyConnector) ownedHookContractPresent(opts SetupOpts) (bool, erro
 	installedMarker, _, _ := bytes.Cut(data, []byte("\n"))
 	installedMarker = bytes.TrimSuffix(installedMarker, []byte("\r"))
 	return bytes.Equal(installedMarker, marker), nil
+}
+
+func (c *hookOnlyConnector) geminiOwnedHookContractPresent(opts SetupOpts) (bool, error) {
+	path := c.configPath(opts)
+	cfg, err := readGeminiSettingsObject(path)
+	if err != nil {
+		return false, err
+	}
+	hooks, ok := cfg["hooks"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+	expected := c.hookCommand(opts)
+	for _, event := range geminiCLIHookEvents {
+		groups, ok := hooks[event].([]interface{})
+		if !ok {
+			return false, nil
+		}
+		managed := 0
+		for _, group := range groups {
+			if geminiManagedHookGroupCurrent(group, expected) {
+				managed++
+			}
+		}
+		if managed != 1 {
+			return false, nil
+		}
+	}
+	if err := validateGeminiEffectiveSettings(opts, path, false); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func geminiManagedHookGroupCurrent(raw interface{}, expectedCommand string) bool {
+	group, ok := raw.(map[string]interface{})
+	if !ok || len(group) != 2 || group["matcher"] != "*" {
+		return false
+	}
+	hooks, ok := group["hooks"].([]interface{})
+	if !ok || len(hooks) != 1 {
+		return false
+	}
+	hook, ok := hooks[0].(map[string]interface{})
+	if !ok || len(hook) != 5 || hook["name"] != "defenseclaw" ||
+		hook["type"] != "command" || hook["command"] != shellWord(expectedCommand) ||
+		hook["description"] != "DefenseClaw hook inspection" {
+		return false
+	}
+	switch timeout := hook["timeout"].(type) {
+	case json.Number:
+		return timeout.String() == "30000"
+	case float64:
+		return timeout == 30000
+	case int:
+		return timeout == 30000
+	default:
+		return false
+	}
 }
 
 // setupPluginArtifact renders the embedded bridge-plugin template
@@ -1493,6 +1656,14 @@ func (c *hookOnlyConnector) teardown(ctx context.Context, opts SetupOpts, hermes
 	if len(errs) > 0 {
 		return fmt.Errorf("%s teardown: %s", c.name, strings.Join(errs, "; "))
 	}
+	if c.name == "geminicli" {
+		if err := c.VerifyClean(opts); err != nil {
+			return fmt.Errorf("geminicli teardown: verify clean before token revocation: %w", err)
+		}
+		if err := RemoveOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI); err != nil {
+			return fmt.Errorf("geminicli teardown: revoke scoped OTLP token: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -1623,6 +1794,19 @@ func (c *hookOnlyConnector) VerifyClean(opts SetupOpts) error {
 			}) {
 			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
 		}
+	}
+	if c.name == "geminicli" {
+		cfg, parseErr := parseGeminiSettingsObject(data, path)
+		if parseErr != nil {
+			return fmt.Errorf("%s teardown verification could not parse settings %s: %w", c.name, path, parseErr)
+		}
+		if structuredHookCommandReferences(cfg, geminiOwnedHookCommands(opts, needle)) {
+			return fmt.Errorf("%s teardown incomplete: config still references %s", c.name, c.scriptName)
+		}
+		if removeManagedGeminiTelemetry(cfg) {
+			return fmt.Errorf("%s teardown incomplete: managed native telemetry still present at %s", c.name, path)
+		}
+		return nil
 	}
 	if c.name == "antigravity" {
 		ownedCommands := antigravityOwnedHookCommands(needle)
@@ -1943,8 +2127,24 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			return err
 		}
 	}
+	if c.name == "geminicli" {
+		if err := validateGeminiEffectiveSettings(opts, path, true); err != nil {
+			return fmt.Errorf("Gemini effective hook/telemetry policy: %w", err)
+		}
+	}
 	logicalName := c.managedBackupLogicalName()
-	if err := captureManagedFileBackup(opts.DataDir, c.name, logicalName, path); err != nil {
+	var geminiOwnedCommands []string
+	if c.name == "geminicli" {
+		geminiOwnedCommands = geminiOwnedHookCommands(opts, hookScript)
+		if err := captureGeminiManagedFileBackup(
+			opts.DataDir,
+			logicalName,
+			path,
+			uniqueNonEmptyStrings(append([]string{hookScript}, geminiOwnedCommands...)),
+		); err != nil {
+			return err
+		}
+	} else if err := captureManagedFileBackup(opts.DataDir, c.name, logicalName, path); err != nil {
 		return err
 	}
 
@@ -1964,7 +2164,7 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 			filepath.Join(opts.DataDir, "hooks", c.scriptName),
 		)
 	case "geminicli":
-		if err = patchGeminiHooks(path, hookScript); err == nil {
+		if err = patchGeminiHooks(path, hookScript, geminiOwnedCommands...); err == nil {
 			err = patchGeminiTelemetry(path, opts)
 		}
 	case "copilot":
@@ -1984,6 +2184,130 @@ func (c *hookOnlyConnector) patchConfig(opts SetupOpts, hookScript string) error
 		return err
 	}
 	return updateManagedFileBackupPostHash(opts.DataDir, c.name, logicalName, path)
+}
+
+// captureGeminiManagedFileBackup records the operator-owned Gemini settings
+// that teardown should restore, excluding exact DefenseClaw registrations
+// left by an older installation. Without this normalization, setup over an
+// orphaned legacy hook would treat that hook as pristine vendor state and an
+// otherwise unchanged teardown would revive it verbatim.
+//
+// Existing receipts retain their target and post-write custody hash, but an
+// authenticated receipt created by an older DefenseClaw release is migrated
+// when its pristine JSON contains only exact recognized managed entries. This
+// prevents already-captured legacy hooks from being revived on uninstall.
+func captureGeminiManagedFileBackup(
+	dataDir, logicalName, targetPath string,
+	ownedHookScripts []string,
+) error {
+	const connectorName = "geminicli"
+
+	boundPath, err := normalizeManagedTargetPath(targetPath)
+	if err != nil {
+		return fmt.Errorf("bind managed backup target: %w", err)
+	}
+	backupPath := managedFileBackupPath(dataDir, connectorName, logicalName)
+	existing, err := loadManagedFileBackupPath(backupPath)
+	if err == nil {
+		if _, err = validateManagedFileBackupTarget(existing, connectorName, logicalName, boundPath); err != nil {
+			return err
+		}
+		if !existing.Existed {
+			if existing.PristineSHA256 != managedBackupMissingHash {
+				return errors.New("Gemini managed backup missing-state hash is invalid")
+			}
+			return nil
+		}
+		if existing.PristineSHA256 != sha256Hex(existing.PristineBytes) {
+			return errors.New("Gemini managed backup pristine hash does not match its payload")
+		}
+		sanitized, changed, absent, err := sanitizeGeminiPristineJSON(
+			existing.PristineBytes,
+			ownedHookScripts,
+			boundPath,
+		)
+		if err != nil || !changed {
+			return err
+		}
+		if absent {
+			existing.Existed = false
+			existing.Mode = 0
+			existing.PristineBytes = nil
+			existing.PristineSHA256 = managedBackupMissingHash
+		} else {
+			existing.PristineBytes = sanitized
+			existing.PristineSHA256 = sha256Hex(sanitized)
+		}
+		existing.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		return writeManagedFileBackup(backupPath, existing)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("load managed backup: %w", err)
+	}
+
+	backup := managedFileBackup{
+		Version:     managedBackupVersion,
+		Connector:   connectorName,
+		LogicalName: logicalName,
+		Path:        boundPath,
+		CapturedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	data, info, err := readManagedTarget(boundPath)
+	if err != nil {
+		return err
+	}
+	if info == nil {
+		backup.PristineSHA256 = managedBackupMissingHash
+		return writeManagedFileBackup(backupPath, backup)
+	}
+
+	backup.Existed = true
+	backup.Mode = uint32(info.Mode().Perm())
+	backup.PristineBytes = data
+	backup.PristineSHA256 = sha256Hex(data)
+	sanitized, changed, absent, err := sanitizeGeminiPristineJSON(data, ownedHookScripts, boundPath)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return writeManagedFileBackup(backupPath, backup)
+	}
+	if absent {
+		backup.Existed = false
+		backup.Mode = 0
+		backup.PristineBytes = nil
+		backup.PristineSHA256 = managedBackupMissingHash
+		return writeManagedFileBackup(backupPath, backup)
+	}
+
+	backup.PristineBytes = sanitized
+	backup.PristineSHA256 = sha256Hex(sanitized)
+	return writeManagedFileBackup(backupPath, backup)
+}
+
+func sanitizeGeminiPristineJSON(
+	data []byte,
+	ownedHookScripts []string,
+	path string,
+) (sanitized []byte, changed bool, absent bool, err error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return data, false, false, nil
+	}
+	cfg, err := parseGeminiSettingsObject(data, path)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("parse settings before Gemini backup capture: %w", err)
+	}
+	if !pruneGeminiConfigEntries(cfg, ownedHookScripts) {
+		return data, false, false, nil
+	}
+	if len(cfg) == 0 {
+		return nil, true, true, nil
+	}
+	sanitized, err = json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, false, false, fmt.Errorf("serialize sanitized Gemini backup: %w", err)
+	}
+	return append(sanitized, '\n'), true, false, nil
 }
 
 func (c *hookOnlyConnector) managedBackupLogicalName() string {
@@ -2035,7 +2359,7 @@ func (c *hookOnlyConnector) removeConfigEntries(path, hookScript string, opts Se
 	case "hermes":
 		return removeHermesHooks(path, hookScript, nil)
 	case "geminicli":
-		return removeGeminiConfigEntries(path, hookScript)
+		return removeGeminiConfigEntries(path, hookScript, geminiOwnedHookCommands(opts, hookScript)...)
 	case "cursor":
 		return removeJSONHookReferences(path, cursorOwnedHookCommands(opts)...)
 	case "copilot", "openhands":
@@ -2192,11 +2516,606 @@ func sameCleanPath(left, right string) bool {
 	return left == right
 }
 
-func geminiSettingsPath(SetupOpts) string {
+func geminiSettingsPath(opts SetupOpts) string {
 	if GeminiSettingsPathOverride != "" {
 		return GeminiSettingsPathOverride
 	}
-	return homePath(".gemini", "settings.json")
+	return geminiHomePath(geminiConfigHome(opts), "settings.json")
+}
+
+func geminiWorkspaceSettingsPath(opts SetupOpts) string {
+	root := strings.TrimSpace(opts.WorkspaceDir)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(root, ".gemini", "settings.json")
+}
+
+// geminiEffectiveWorkspaceSettingsPath follows the vendor's runtime behavior:
+// when Setup/Verify does not carry an explicitly pinned workspace, Gemini uses
+// the process working directory. Capability/write-target reporting remains
+// explicit-only through geminiWorkspaceSettingsPath so inventory never guesses
+// a project mutation target.
+func geminiEffectiveWorkspaceSettingsPath(opts SetupOpts) (string, error) {
+	root := strings.TrimSpace(opts.WorkspaceDir)
+	if root == "" {
+		var err error
+		root, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve Gemini current workspace: %w", err)
+		}
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve Gemini workspace %s: %w", root, err)
+	}
+	return filepath.Join(filepath.Clean(absRoot), ".gemini", "settings.json"), nil
+}
+
+// geminiSettingsPaths is ordered from the most specific locally writable
+// scope to the user fallback, matching Gemini's workspace-over-user MCP
+// precedence. System MCP policy remains operator-managed and is inspected as
+// an effective layer rather than advertised as a DefenseClaw write target.
+func geminiSettingsPaths(opts SetupOpts) []string {
+	return uniqueNonEmptyStrings([]string{
+		geminiWorkspaceSettingsPath(opts),
+		geminiSettingsPath(opts),
+	})
+}
+
+// geminiConfigHome resolves all user-scoped Gemini surfaces through one
+// custody binding. Isolated Setup maintenance supplies ConfigHome directly;
+// packaged CLI/gateway processes receive the authenticated install-state path
+// through DefenseClaw's private environment variable. Source installs without
+// that binding follow Gemini's official GEMINI_CLI_HOME parent-root contract
+// and append .gemini exactly once. GEMINI_CONFIG_DIR is not a Gemini CLI
+// contract and is intentionally ignored.
+func geminiConfigHome(opts SetupOpts) string {
+	if opts.ConfigHome != "" {
+		return normalizedGeminiConfigHome(opts.ConfigHome)
+	}
+	if raw, exists := os.LookupEnv("DEFENSECLAW_GEMINI_CONFIG_HOME"); exists {
+		return normalizedGeminiConfigHome(raw)
+	}
+	if raw, exists := os.LookupEnv("GEMINI_CLI_HOME"); exists && raw != "" {
+		root := normalizedGeminiConfigHome(raw)
+		if root == "" {
+			return ""
+		}
+		return filepath.Join(root, ".gemini")
+	}
+	return homePath(".gemini")
+}
+
+func normalizedGeminiConfigHome(raw string) string {
+	if strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\x00\r\n") ||
+		!filepath.IsAbs(raw) || filepath.Clean(raw) != raw {
+		return ""
+	}
+	return raw
+}
+
+func geminiHomePath(home string, parts ...string) string {
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{home}, parts...)...)
+}
+
+type geminiSettingsLayer struct {
+	name     string
+	path     string
+	settings map[string]interface{}
+}
+
+func geminiSystemSettingsPaths() (defaultsPath, overridesPath string, err error) {
+	switch runtime.GOOS {
+	case "windows":
+		overridesPath = `C:\ProgramData\gemini-cli\settings.json`
+	case "darwin":
+		overridesPath = "/Library/Application Support/GeminiCli/settings.json"
+	default:
+		overridesPath = "/etc/gemini-cli/settings.json"
+	}
+	if raw, exists := os.LookupEnv("GEMINI_CLI_SYSTEM_SETTINGS_PATH"); exists && raw != "" {
+		overridesPath = raw
+	}
+	overridesPath, err = normalizeGeminiSettingsLayerPath("GEMINI_CLI_SYSTEM_SETTINGS_PATH", overridesPath)
+	if err != nil {
+		return "", "", err
+	}
+	defaultsPath = filepath.Join(filepath.Dir(overridesPath), "system-defaults.json")
+	if raw, exists := os.LookupEnv("GEMINI_CLI_SYSTEM_DEFAULTS_PATH"); exists && raw != "" {
+		defaultsPath = raw
+	}
+	defaultsPath, err = normalizeGeminiSettingsLayerPath("GEMINI_CLI_SYSTEM_DEFAULTS_PATH", defaultsPath)
+	if err != nil {
+		return "", "", err
+	}
+	return defaultsPath, overridesPath, nil
+}
+
+func normalizeGeminiSettingsLayerPath(label, path string) (string, error) {
+	if strings.TrimSpace(path) != path || strings.ContainsAny(path, "\x00\r\n") ||
+		!filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", fmt.Errorf("%s is not an absolute normalized path", label)
+	}
+	return path, nil
+}
+
+func loadGeminiSettingsLayers(opts SetupOpts, userPath string) ([]geminiSettingsLayer, error) {
+	defaultsPath, systemPath, err := geminiSystemSettingsPaths()
+	if err != nil {
+		return nil, err
+	}
+	workspacePath, err := geminiEffectiveWorkspaceSettingsPath(opts)
+	if err != nil {
+		return nil, err
+	}
+	specs := []struct {
+		name string
+		path string
+	}{
+		{"system defaults", defaultsPath},
+		{"user", userPath},
+		{"current workspace", workspacePath},
+		{"system overrides", systemPath},
+	}
+	layers := make([]geminiSettingsLayer, 0, len(specs))
+	seenPaths := make([]string, 0, len(specs))
+	for _, spec := range specs {
+		if strings.TrimSpace(spec.path) == "" {
+			continue
+		}
+		duplicate := false
+		for _, seen := range seenPaths {
+			if sameCleanPath(spec.path, seen) {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			// Gemini can resolve user and project settings to the same file
+			// when launched from its home root. The managed user write updates
+			// that single file; replaying its pristine bytes as a second layer
+			// would manufacture an override that the post-write process cannot
+			// observe.
+			continue
+		}
+		settings, err := readGeminiSettingsObject(spec.path)
+		if err != nil {
+			return nil, fmt.Errorf("read Gemini %s settings %s: %w", spec.name, spec.path, err)
+		}
+		settings = expandGeminiSettingEnvironment(settings).(map[string]interface{})
+		layers = append(layers, geminiSettingsLayer{
+			name:     spec.name,
+			path:     spec.path,
+			settings: settings,
+		})
+		seenPaths = append(seenPaths, spec.path)
+	}
+	return layers, nil
+}
+
+var geminiSettingEnvironmentRE = regexp.MustCompile(`\$(?:[A-Za-z0-9_]+|\{[^}]+\})`)
+
+// expandGeminiSettingEnvironment mirrors Gemini CLI's envVarResolver for the
+// decoded settings tree. Expansion happens before settings layers merge and is
+// distinct from the later dotenv load, which only fills process variables that
+// were absent when settings were parsed.
+func expandGeminiSettingEnvironment(raw interface{}) interface{} {
+	switch value := raw.(type) {
+	case string:
+		return geminiSettingEnvironmentRE.ReplaceAllStringFunc(value, func(match string) string {
+			name := strings.TrimPrefix(match, "$")
+			fallback := ""
+			hasFallback := false
+			if strings.HasPrefix(name, "{") && strings.HasSuffix(name, "}") {
+				name = strings.TrimSuffix(strings.TrimPrefix(name, "{"), "}")
+				if separator := strings.Index(name, ":-"); separator >= 0 {
+					fallback = name[separator+2:]
+					name = name[:separator]
+					hasFallback = true
+				}
+			}
+			if resolved, exists := os.LookupEnv(name); exists {
+				return resolved
+			}
+			if hasFallback {
+				return fallback
+			}
+			return match
+		})
+	case []interface{}:
+		out := make([]interface{}, len(value))
+		for index, item := range value {
+			out[index] = expandGeminiSettingEnvironment(item)
+		}
+		return out
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(value))
+		for key, item := range value {
+			out[key] = expandGeminiSettingEnvironment(item)
+		}
+		return out
+	default:
+		return raw
+	}
+}
+
+func geminiDesiredTelemetryBlock(opts SetupOpts, provision bool) (map[string]interface{}, error) {
+	var (
+		token string
+		err   error
+	)
+	if provision {
+		token, err = resolveSetupOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI, opts.OTLPPathToken)
+	} else if supplied := strings.TrimSpace(opts.OTLPPathToken); supplied != "" {
+		if !otlpTokenHexRE.MatchString(supplied) {
+			return nil, errors.New("invalid supplied Gemini CLI OTLP path-token")
+		}
+		token = supplied
+	} else {
+		token, err = LoadOTLPPathToken(opts.DataDir, OTLPScopeGeminiCLI)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("resolve scoped Gemini CLI OTLP token: %w", err)
+	}
+	if token == "" {
+		return nil, errors.New("Gemini CLI OTLP path-token is not provisioned")
+	}
+	spec := geminiCLINativeOTLPSpec(opts)
+	if spec == nil {
+		return nil, errors.New("geminicli: nil NativeOTLPSpec")
+	}
+	spec.PathToken = token
+	block, err := spec.JSONBlock()
+	if err != nil {
+		return nil, fmt.Errorf("geminicli: render OTLP block: %w", err)
+	}
+	return block, nil
+}
+
+// validateGeminiEffectiveSettings mirrors the vendor's documented merge
+// order: system defaults < user < pinned workspace < system overrides.
+// hooksConfig.disabled is a union across layers while enabled and telemetry
+// scalar values use the highest-precedence definition. Setup refuses a
+// registration that a known higher layer would make inert or redirect.
+func validateGeminiEffectiveSettings(opts SetupOpts, userPath string, provisionToken bool) error {
+	layers, err := loadGeminiSettingsLayers(opts, userPath)
+	if err != nil {
+		return err
+	}
+	hooksEnabled := true
+	enabledSource := "built-in default"
+	disabledSource := ""
+	for _, layer := range layers {
+		rawConfig, present := layer.settings["hooksConfig"]
+		if !present {
+			continue
+		}
+		config, ok := rawConfig.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("Gemini hooksConfig in %s settings %s is not an object", layer.name, layer.path)
+		}
+		if rawEnabled, present := config["enabled"]; present {
+			value, ok := rawEnabled.(bool)
+			if !ok {
+				return fmt.Errorf("Gemini hooksConfig.enabled in %s settings %s is not boolean", layer.name, layer.path)
+			}
+			hooksEnabled = value
+			enabledSource = layer.path
+		}
+		if rawDisabled, present := config["disabled"]; present {
+			entries, ok := rawDisabled.([]interface{})
+			if !ok {
+				return fmt.Errorf("Gemini hooksConfig.disabled in %s settings %s is not an array", layer.name, layer.path)
+			}
+			for _, rawEntry := range entries {
+				entry, ok := rawEntry.(string)
+				if !ok {
+					return fmt.Errorf("Gemini hooksConfig.disabled in %s settings %s contains a non-string entry", layer.name, layer.path)
+				}
+				if strings.EqualFold(strings.TrimSpace(entry), "defenseclaw") && disabledSource == "" {
+					disabledSource = layer.path
+				}
+			}
+		}
+	}
+	if !hooksEnabled {
+		return fmt.Errorf("Gemini hooks are disabled by effective hooksConfig.enabled=false at %s", enabledSource)
+	}
+	if disabledSource != "" {
+		return fmt.Errorf("Gemini hook name defenseclaw is disabled by effective hooksConfig.disabled at %s", disabledSource)
+	}
+
+	desired, err := geminiDesiredTelemetryBlock(opts, provisionToken)
+	if err != nil {
+		return err
+	}
+	effective := map[string]interface{}{}
+	sources := map[string]string{}
+	for _, layer := range layers {
+		if rawTelemetry, present := layer.settings["telemetry"]; present {
+			telemetry, ok := rawTelemetry.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("Gemini telemetry in %s settings %s is not an object", layer.name, layer.path)
+			}
+			for key, value := range telemetry {
+				effective[key] = value
+				sources[key] = layer.path
+			}
+		}
+		if sameCleanPath(layer.path, userPath) {
+			for key, value := range desired {
+				effective[key] = value
+				sources[key] = userPath
+			}
+		}
+	}
+	for key, want := range desired {
+		got, present := effective[key]
+		if !present || !geminiScalarSettingEqual(got, want) {
+			return fmt.Errorf("Gemini telemetry %s is overridden by effective setting at %s", key, sources[key])
+		}
+	}
+	if err := validateGeminiTelemetryEnvironment(desired); err != nil {
+		return err
+	}
+	return validateGeminiTelemetryDotEnv(opts, layers)
+}
+
+func geminiScalarSettingEqual(got, want interface{}) bool {
+	switch expected := want.(type) {
+	case bool:
+		actual, ok := got.(bool)
+		return ok && actual == expected
+	case string:
+		actual, ok := got.(string)
+		return ok && actual == expected
+	default:
+		return false
+	}
+}
+
+func validateGeminiTelemetryEnvironment(desired map[string]interface{}) error {
+	desiredEndpoint, ok := desired["otlpEndpoint"].(string)
+	if !ok || strings.TrimSpace(desiredEndpoint) == "" {
+		return errors.New("Gemini managed telemetry endpoint is unresolved")
+	}
+	desiredLogPrompts, ok := desired["logPrompts"].(bool)
+	if !ok {
+		return errors.New("Gemini managed telemetry logPrompts value is unresolved")
+	}
+	desiredUseCLIAuth, ok := desired["useCliAuth"].(bool)
+	if !ok {
+		return errors.New("Gemini managed telemetry useCliAuth value is unresolved")
+	}
+	desiredOutfile, ok := desired["outfile"].(string)
+	if !ok {
+		return errors.New("Gemini managed telemetry outfile value is unresolved")
+	}
+	trueValue := func(value string) bool {
+		value = strings.ToLower(strings.TrimSpace(value))
+		return value == "true" || value == "1"
+	}
+	booleanValue := func(want bool) func(string) bool {
+		return func(value string) bool { return trueValue(value) == want }
+	}
+	checks := []struct {
+		name  string
+		valid func(string) bool
+	}{
+		{"GEMINI_TELEMETRY_ENABLED", booleanValue(true)},
+		{"GEMINI_TELEMETRY_TRACES_ENABLED", booleanValue(true)},
+		{"GEMINI_TELEMETRY_TARGET", func(value string) bool {
+			return strings.EqualFold(strings.TrimSpace(value), "local")
+		}},
+		{"GEMINI_TELEMETRY_OTLP_ENDPOINT", func(value string) bool {
+			return value == desiredEndpoint
+		}},
+		{"OTEL_EXPORTER_OTLP_ENDPOINT", func(value string) bool {
+			return value == desiredEndpoint
+		}},
+		{"GEMINI_TELEMETRY_OTLP_PROTOCOL", func(value string) bool {
+			return strings.EqualFold(strings.TrimSpace(value), "http")
+		}},
+		{"GEMINI_TELEMETRY_LOG_PROMPTS", booleanValue(desiredLogPrompts)},
+		{"GEMINI_TELEMETRY_OUTFILE", func(value string) bool {
+			// An outfile duplicates native telemetry outside the authenticated
+			// gateway path. Only an explicitly empty override is equivalent to
+			// DefenseClaw's managed settings block.
+			return value == desiredOutfile
+		}},
+		{"GEMINI_TELEMETRY_USE_COLLECTOR", booleanValue(true)},
+		{"GEMINI_TELEMETRY_USE_CLI_AUTH", booleanValue(desiredUseCLIAuth)},
+	}
+	for _, check := range checks {
+		if value, exists := os.LookupEnv(check.name); exists && !check.valid(value) {
+			return fmt.Errorf("%s overrides DefenseClaw's managed Gemini telemetry contract", check.name)
+		}
+	}
+	return nil
+}
+
+var geminiTelemetryEnvironmentNames = []string{
+	"GEMINI_TELEMETRY_ENABLED",
+	"GEMINI_TELEMETRY_TRACES_ENABLED",
+	"GEMINI_TELEMETRY_TARGET",
+	"GEMINI_TELEMETRY_OTLP_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+	"GEMINI_TELEMETRY_OTLP_PROTOCOL",
+	"GEMINI_TELEMETRY_LOG_PROMPTS",
+	"GEMINI_TELEMETRY_OUTFILE",
+	"GEMINI_TELEMETRY_USE_COLLECTOR",
+	"GEMINI_TELEMETRY_USE_CLI_AUTH",
+}
+
+// validateGeminiTelemetryDotEnv models the first .env file Gemini will load for
+// the current (or explicitly pinned) workspace. Gemini does not overwrite a
+// process variable that is already present, so those names were already
+// validated above and are ignored here. We conservatively treat the workspace
+// as trusted: that prevents Setup from claiming an enforceable native telemetry
+// route which would become redirectable as soon as the operator trusts it.
+func validateGeminiTelemetryDotEnv(opts SetupOpts, layers []geminiSettingsLayer) error {
+	ignoreLocalEnv, excluded, err := geminiEffectiveEnvPolicy(layers)
+	if err != nil {
+		return err
+	}
+	workspaceSettings, err := geminiEffectiveWorkspaceSettingsPath(opts)
+	if err != nil {
+		return err
+	}
+	workspaceRoot := filepath.Dir(filepath.Dir(workspaceSettings))
+	configHome := geminiConfigHome(opts)
+	if configHome == "" {
+		return errors.New("Gemini config home is unresolved")
+	}
+	homeRoot := filepath.Dir(configHome)
+	envPath, geminiSpecific, err := findGeminiEffectiveEnvFile(workspaceRoot, homeRoot, ignoreLocalEnv)
+	if err != nil || envPath == "" {
+		return err
+	}
+	data, err := safefile.ReadRegularFileBounded(envPath, safefile.MaxDotEnvBytes)
+	if err != nil {
+		return fmt.Errorf("read Gemini effective environment file %s: %w", envPath, err)
+	}
+	relevant := make(map[string]struct{}, len(geminiTelemetryEnvironmentNames))
+	for _, name := range geminiTelemetryEnvironmentNames {
+		if _, alreadySet := os.LookupEnv(name); !alreadySet {
+			relevant[geminiTelemetryEnvironmentKeyForOS(name, runtime.GOOS)] = struct{}{}
+		}
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 1024), safefile.MaxDotEnvBytes)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "export ") {
+			line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+		}
+		separator := strings.IndexAny(line, "=:")
+		if separator <= 0 {
+			continue
+		}
+		name := strings.TrimSpace(line[:separator])
+		canonicalName := geminiTelemetryEnvironmentKeyForOS(name, runtime.GOOS)
+		if _, watched := relevant[canonicalName]; !watched {
+			continue
+		}
+		if !geminiSpecific {
+			if _, filtered := excluded[name]; filtered {
+				continue
+			}
+		}
+		return fmt.Errorf("%s in Gemini's effective environment file %s overrides DefenseClaw's managed telemetry contract", name, envPath)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("parse Gemini effective environment file %s: %w", envPath, err)
+	}
+	return nil
+}
+
+func geminiTelemetryEnvironmentKeyForOS(name, goos string) string {
+	if goos == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+func geminiEffectiveEnvPolicy(layers []geminiSettingsLayer) (bool, map[string]struct{}, error) {
+	ignoreLocalEnv := false
+	excluded := map[string]struct{}{}
+	for _, layer := range layers {
+		rawAdvanced, present := layer.settings["advanced"]
+		if !present {
+			continue
+		}
+		advanced, ok := rawAdvanced.(map[string]interface{})
+		if !ok {
+			return false, nil, fmt.Errorf("Gemini advanced settings in %s settings %s is not an object", layer.name, layer.path)
+		}
+		if rawIgnore, present := advanced["ignoreLocalEnv"]; present {
+			value, ok := rawIgnore.(bool)
+			if !ok {
+				return false, nil, fmt.Errorf("Gemini advanced.ignoreLocalEnv in %s settings %s is not boolean", layer.name, layer.path)
+			}
+			ignoreLocalEnv = value
+		}
+		if rawExcluded, present := advanced["excludedEnvVars"]; present {
+			entries, ok := rawExcluded.([]interface{})
+			if !ok {
+				return false, nil, fmt.Errorf("Gemini advanced.excludedEnvVars in %s settings %s is not an array", layer.name, layer.path)
+			}
+			excluded = map[string]struct{}{}
+			for _, rawEntry := range entries {
+				entry, ok := rawEntry.(string)
+				if !ok {
+					return false, nil, fmt.Errorf("Gemini advanced.excludedEnvVars in %s settings %s contains a non-string entry", layer.name, layer.path)
+				}
+				excluded[entry] = struct{}{}
+			}
+		}
+	}
+	return ignoreLocalEnv, excluded, nil
+}
+
+func findGeminiEffectiveEnvFile(workspaceRoot, homeRoot string, ignoreLocalEnv bool) (string, bool, error) {
+	current, err := filepath.Abs(workspaceRoot)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Gemini environment workspace %s: %w", workspaceRoot, err)
+	}
+	home, err := filepath.Abs(homeRoot)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve Gemini environment home %s: %w", homeRoot, err)
+	}
+	find := func(path string) (bool, error) {
+		_, err := os.Lstat(path)
+		if err == nil {
+			return true, nil
+		}
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for {
+		geminiPath := filepath.Join(current, ".gemini", ".env")
+		if exists, statErr := find(geminiPath); statErr != nil {
+			return "", false, fmt.Errorf("inspect Gemini environment file %s: %w", geminiPath, statErr)
+		} else if exists {
+			return geminiPath, true, nil
+		}
+		envPath := filepath.Join(current, ".env")
+		if !ignoreLocalEnv || sameCleanPath(current, home) {
+			if exists, statErr := find(envPath); statErr != nil {
+				return "", false, fmt.Errorf("inspect Gemini environment file %s: %w", envPath, statErr)
+			} else if exists {
+				return envPath, false, nil
+			}
+		}
+		parent := filepath.Dir(current)
+		if sameCleanPath(parent, current) {
+			break
+		}
+		current = parent
+	}
+	for _, candidate := range []struct {
+		path           string
+		geminiSpecific bool
+	}{
+		{filepath.Join(home, ".gemini", ".env"), true},
+		{filepath.Join(home, ".env"), false},
+	} {
+		if exists, statErr := find(candidate.path); statErr != nil {
+			return "", false, fmt.Errorf("inspect Gemini environment file %s: %w", candidate.path, statErr)
+		} else if exists {
+			return candidate.path, candidate.geminiSpecific, nil
+		}
+	}
+	return "", false, nil
 }
 
 const copilotSettingsMaxBytes int64 = 1 << 20
@@ -2290,6 +3209,18 @@ func readCopilotDisableAllHooks(path string) (bool, bool, error) {
 }
 
 func normalizeCopilotJSONC(input []byte) ([]byte, error) {
+	withoutComments, err := stripJSONComments(input)
+	if err != nil {
+		return nil, err
+	}
+	return stripJSONTrailingCommas(withoutComments), nil
+}
+
+// stripJSONComments mirrors the comment handling used by Gemini CLI's
+// strip-json-comments loader. It deliberately leaves trailing commas intact:
+// Gemini passes the result to JSON.parse, so a trailing comma remains invalid.
+// Copilot applies its separate trailing-comma normalization after this helper.
+func stripJSONComments(input []byte) ([]byte, error) {
 	input = bytes.TrimPrefix(input, []byte{0xEF, 0xBB, 0xBF})
 	withoutComments := make([]byte, 0, len(input))
 	inString := false
@@ -2341,12 +3272,15 @@ func normalizeCopilotJSONC(input []byte) ([]byte, error) {
 		}
 		withoutComments = append(withoutComments, current)
 	}
+	return withoutComments, nil
+}
 
-	out := make([]byte, 0, len(withoutComments))
-	inString = false
-	escaped = false
-	for i := 0; i < len(withoutComments); i++ {
-		current := withoutComments[i]
+func stripJSONTrailingCommas(input []byte) []byte {
+	out := make([]byte, 0, len(input))
+	inString := false
+	escaped := false
+	for i := 0; i < len(input); i++ {
+		current := input[i]
 		if inString {
 			out = append(out, current)
 			if escaped {
@@ -2365,16 +3299,16 @@ func normalizeCopilotJSONC(input []byte) ([]byte, error) {
 		}
 		if current == ',' {
 			next := i + 1
-			for next < len(withoutComments) && (withoutComments[next] == ' ' || withoutComments[next] == '\t' || withoutComments[next] == '\r' || withoutComments[next] == '\n') {
+			for next < len(input) && (input[next] == ' ' || input[next] == '\t' || input[next] == '\r' || input[next] == '\n') {
 				next++
 			}
-			if next < len(withoutComments) && (withoutComments[next] == '}' || withoutComments[next] == ']') {
+			if next < len(input) && (input[next] == '}' || input[next] == ']') {
 				continue
 			}
 		}
 		out = append(out, current)
 	}
-	return out, nil
+	return out
 }
 
 func copilotHooksPath(opts SetupOpts) string {
@@ -2446,6 +3380,109 @@ func workspacePath(opts SetupOpts, parts ...string) string {
 	}
 	all := append([]string{root}, parts...)
 	return filepath.Join(all...)
+}
+
+// opencodeMCPReadPaths mirrors the locally representable file layers in the
+// Python connector-path adapter. Remote authenticated .well-known state,
+// inline OPENCODE_CONFIG_CONTENT, and Windows ProgramData enterprise policy
+// deliberately have no local path and are therefore not watched here.
+func opencodeMCPReadPaths(opts SetupOpts) []string {
+	home := strings.TrimSpace(homePath())
+	workspace := strings.TrimSpace(opts.WorkspaceDir)
+	paths := []string{
+		filepath.Join(home, ".config", "opencode", "config.json"),
+		filepath.Join(home, ".config", "opencode", "opencode.json"),
+		filepath.Join(home, ".config", "opencode", "opencode.jsonc"),
+	}
+	if explicit := opencodeEnvPath(os.Getenv("OPENCODE_CONFIG"), workspace); explicit != "" {
+		paths = append(paths, explicit)
+	}
+	if workspace != "" {
+		paths = append(paths,
+			filepath.Join(workspace, "opencode.json"),
+			filepath.Join(workspace, "opencode.jsonc"),
+			filepath.Join(workspace, ".opencode", "opencode.json"),
+			filepath.Join(workspace, ".opencode", "opencode.jsonc"),
+		)
+	}
+	paths = append(paths,
+		filepath.Join(home, ".opencode", "opencode.json"),
+		filepath.Join(home, ".opencode", "opencode.jsonc"),
+	)
+	if custom := opencodeEnvPath(os.Getenv("OPENCODE_CONFIG_DIR"), workspace); custom != "" {
+		paths = append(paths,
+			filepath.Join(custom, "opencode.json"),
+			filepath.Join(custom, "opencode.jsonc"),
+		)
+	}
+	return uniqueNonEmptyStrings(paths)
+}
+
+// opencodeMCPWritePaths resolves the one local document selected by the
+// Python set/unset adapter. Returning no target is intentional when the
+// adapter itself fails closed: inline configuration cannot be restored
+// atomically, and relative environment overrides require a pinned workspace.
+func opencodeMCPWritePaths(opts SetupOpts) []string {
+	if strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_CONTENT")) != "" {
+		return nil
+	}
+	workspace := strings.TrimSpace(opts.WorkspaceDir)
+	customRaw := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG_DIR"))
+	explicitRaw := strings.TrimSpace(os.Getenv("OPENCODE_CONFIG"))
+	custom := opencodeEnvPath(customRaw, workspace)
+	explicit := opencodeEnvPath(explicitRaw, workspace)
+	if (customRaw != "" && custom == "") || (explicitRaw != "" && explicit == "") {
+		return nil
+	}
+	if custom != "" {
+		return []string{opencodePreferredConfigPath(custom)}
+	}
+	homeComponent := homePath(".opencode")
+	if info, err := os.Stat(homeComponent); err == nil && info.IsDir() {
+		return []string{opencodePreferredConfigPath(homeComponent)}
+	}
+	if workspace != "" {
+		projectComponent := filepath.Join(workspace, ".opencode")
+		if info, err := os.Stat(projectComponent); err == nil && info.IsDir() {
+			return []string{opencodePreferredConfigPath(projectComponent)}
+		}
+		return []string{opencodePreferredConfigPath(workspace)}
+	}
+	if explicit != "" {
+		return []string{explicit}
+	}
+	return []string{opencodePreferredConfigPath(homePath(".config", "opencode"))}
+}
+
+func opencodeEnvPath(raw, workspace string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if value == "~" {
+		value = homePath()
+	} else if strings.HasPrefix(value, "~/") || strings.HasPrefix(value, `~\`) {
+		value = filepath.Join(homePath(), value[2:])
+	}
+	if !filepath.IsAbs(value) {
+		if strings.TrimSpace(workspace) == "" {
+			return ""
+		}
+		value = filepath.Join(workspace, value)
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return ""
+	}
+	return filepath.Clean(absolute)
+}
+
+func opencodePreferredConfigPath(root string) string {
+	jsonc := filepath.Join(root, "opencode.jsonc")
+	if _, err := os.Lstat(jsonc); err == nil {
+		return jsonc
+	}
+	return filepath.Join(root, "opencode.json")
 }
 
 func copilotSkillReadPaths(opts SetupOpts) []string {
@@ -4017,25 +5054,42 @@ func replaceManagedWindsurfHooks(raw interface{}, hookScript, legacyShellScript 
 	return append(out, entry)
 }
 
-func patchGeminiHooks(path, hookScript string) error {
-	cfg, err := readJSONObject(path)
+func geminiOwnedHookCommands(opts SetupOpts, hookScript string) []string {
+	return geminiOwnedHookCommandsForOS(runtime.GOOS, opts, hookScript)
+}
+
+// geminiOwnedHookCommandsForOS returns only byte-exact commands DefenseClaw
+// has emitted for this connector. The finite list lets setup migrate legacy
+// Windows launchers and teardown remove them without treating arbitrary
+// encoded PowerShell as owned. The POSIX script identity remains included for
+// profiles upgraded in place from a non-native registration.
+func geminiOwnedHookCommandsForOS(goos string, opts SetupOpts, hookScript string) []string {
+	commands := []string{hookScript}
+	if strings.TrimSpace(opts.DataDir) != "" {
+		commands = append(commands, filepath.Join(opts.DataDir, "hooks", "geminicli-hook.sh"))
+	}
+	if goos != "windows" {
+		return uniqueNonEmptyStrings(commands)
+	}
+	for _, hookBinary := range nativeHookBinaryOwnershipCandidates() {
+		commands = append(commands,
+			windowsNativePowerShellHookCommandForBinary("geminicli", hookBinary),
+			legacyUnqualifiedWindowsNativePowerShellHookCommandForBinary("geminicli", hookBinary),
+			legacyWindowsNativePowerShellHookCommandForBinary("geminicli", hookBinary),
+			legacyWindowsGeminiCallOperatorHookCommandForBinary(hookBinary),
+		)
+	}
+	return uniqueNonEmptyStrings(commands)
+}
+
+func patchGeminiHooks(path, hookScript string, ownedHookScripts ...string) error {
+	cfg, err := readGeminiSettingsObject(path)
 	if err != nil {
 		return err
 	}
 	hooks := ensureJSONObject(cfg, "hooks")
-	for _, event := range []string{
-		"SessionStart",
-		"SessionEnd",
-		"BeforeAgent",
-		"AfterAgent",
-		"BeforeModel",
-		"AfterModel",
-		"BeforeToolSelection",
-		"BeforeTool",
-		"AfterTool",
-		"PreCompress",
-		"Notification",
-	} {
+	ownedHookScripts = uniqueNonEmptyStrings(append([]string{hookScript}, ownedHookScripts...))
+	for _, event := range geminiCLIHookEvents {
 		group := map[string]interface{}{
 			"matcher": "*",
 			"hooks": []interface{}{
@@ -4048,7 +5102,7 @@ func patchGeminiHooks(path, hookScript string) error {
 				},
 			},
 		}
-		hooks[event] = appendUniqueGeminiHookGroup(hooks[event], hookScript, group)
+		hooks[event] = reconcileGeminiHookGroups(hooks[event], ownedHookScripts, group)
 	}
 	return writeJSONObject(path, cfg)
 }
@@ -4079,7 +5133,7 @@ func patchGeminiHooks(path, hookScript string) error {
 // readable configuration, and leaking it must not grant /api/v1/*
 // authority or cross-namespace OTLP access.
 func patchGeminiTelemetry(path string, opts SetupOpts) error {
-	cfg, err := readJSONObject(path)
+	cfg, err := readGeminiSettingsObject(path)
 	if err != nil {
 		return err
 	}
@@ -4093,7 +5147,8 @@ func patchGeminiTelemetry(path string, opts SetupOpts) error {
 	// NativeOTLPSpec via spec.JSONBlock(). The spec emits the same
 	// shape Gemini CLI's settings.json schema requires
 	// (https://geminicli.com/docs/reference/configuration/):
-	// enabled/target/useCollector/otlpEndpoint/otlpProtocol/logPrompts.
+	// enabled/traces/target/useCollector/useCliAuth/otlpEndpoint/
+	// otlpProtocol/outfile/logPrompts.
 	//
 	// We always override spec.PathToken with the canonical token
 	// just resolved above, so the disk-write path is the single
@@ -4104,9 +5159,9 @@ func patchGeminiTelemetry(path string, opts SetupOpts) error {
 	// the current Gemini schema and would crash `gemini` startup
 	// if a stale settings.json is upgraded in place, so we delete
 	// them unconditionally — that is also how
-	// removeManagedGeminiTelemetry detects DefenseClaw-managed
-	// blocks for teardown (it keys on the path-scoped endpoint URL
-	// containing "/otlp/geminicli/").
+	// removeManagedGeminiTelemetry detects DefenseClaw-managed blocks for
+	// teardown using only the exact loopback path-token endpoint shape (or the
+	// explicit legacy managedBy marker), never a path substring alone.
 	spec := geminiCLINativeOTLPSpec(opts)
 	if spec == nil {
 		return fmt.Errorf("geminicli: nil NativeOTLPSpec")
@@ -4347,6 +5402,52 @@ func readJSONObject(path string) (map[string]interface{}, error) {
 	return out, nil
 }
 
+const geminiSettingsReadLimit int64 = 4 << 20
+
+// readGeminiSettingsObject accepts the JSON-with-comments format used by the
+// official Gemini CLI settings loader while retaining DefenseClaw's bounded,
+// regular-file read contract. Gemini strips comments before JSON.parse; it
+// does not accept trailing commas, and this reader intentionally matches that
+// behavior. Managed writes are canonical JSON, so comments are reformatted
+// only when DefenseClaw actually updates the settings file.
+func readGeminiSettingsObject(path string) (map[string]interface{}, error) {
+	data, err := safefile.ReadRegularFileBounded(path, geminiSettingsReadLimit)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]interface{}{}, nil
+		}
+		return nil, err
+	}
+	return parseGeminiSettingsObject(data, path)
+}
+
+func parseGeminiSettingsObject(data []byte, path string) (map[string]interface{}, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return map[string]interface{}{}, nil
+	}
+	normalized, err := stripJSONComments(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse Gemini settings %s: %w", path, err)
+	}
+	var out map[string]interface{}
+	decoder := json.NewDecoder(bytes.NewReader(normalized))
+	decoder.UseNumber()
+	if err := decoder.Decode(&out); err != nil {
+		return nil, fmt.Errorf("parse Gemini settings %s: %w", path, err)
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return nil, fmt.Errorf("parse Gemini settings %s: %w", path, err)
+	}
+	if out == nil {
+		return nil, fmt.Errorf("parse Gemini settings %s: root must be a JSON object", path)
+	}
+	return out, nil
+}
+
 func writeJSONObject(path string, cfg map[string]interface{}) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -4394,6 +5495,80 @@ func reconcileCopilotFlatHook(raw interface{}, hookScript string, entry map[stri
 	return out
 }
 
+// reconcileGeminiHookGroups removes every exact current/legacy DefenseClaw
+// handler and appends one canonical current group. Foreign handlers sharing a
+// matcher group, plus unknown group fields, are preserved verbatim. This is
+// deliberately narrower than removeHookScriptReferences: ownership of one
+// nested handler does not confer ownership of the surrounding vendor group.
+func reconcileGeminiHookGroups(raw interface{}, ownedHookScripts []string, group map[string]interface{}) []interface{} {
+	list, ok := raw.([]interface{})
+	if !ok {
+		return []interface{}{group}
+	}
+	pruned, _ := pruneGeminiHookGroups(list, ownedHookScripts)
+	return append(pruned, group)
+}
+
+func pruneGeminiHookGroups(list []interface{}, ownedHookScripts []string) ([]interface{}, bool) {
+	out := make([]interface{}, 0, len(list))
+	changed := false
+	for _, item := range list {
+		group, ok := item.(map[string]interface{})
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		rawHooks, ok := group["hooks"].([]interface{})
+		if !ok {
+			out = append(out, item)
+			continue
+		}
+		remaining := make([]interface{}, 0, len(rawHooks))
+		removed := false
+		for _, rawHook := range rawHooks {
+			if managedGeminiHookEntry(rawHook, ownedHookScripts) {
+				removed = true
+				changed = true
+				continue
+			}
+			remaining = append(remaining, rawHook)
+		}
+		if !removed {
+			out = append(out, item)
+			continue
+		}
+		if len(remaining) == 0 && canonicalGeminiManagedGroup(group) {
+			// DefenseClaw creates exactly {matcher:"*", hooks:[...]}; once its
+			// handlers are gone, that whole publication unit is ours to remove.
+			continue
+		}
+		preserved := make(map[string]interface{}, len(group))
+		for key, value := range group {
+			preserved[key] = value
+		}
+		preserved["hooks"] = remaining
+		out = append(out, preserved)
+	}
+	return out, changed
+}
+
+func managedGeminiHookEntry(raw interface{}, ownedHookScripts []string) bool {
+	for _, hookScript := range ownedHookScripts {
+		if managedHookCommandEntry(raw, hookScript) {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalGeminiManagedGroup(group map[string]interface{}) bool {
+	if len(group) != 2 {
+		return false
+	}
+	matcher, ok := group["matcher"].(string)
+	return ok && matcher == "*"
+}
+
 func appendUniqueGeminiHookGroup(raw interface{}, hookScript string, group map[string]interface{}) []interface{} {
 	list, _ := raw.([]interface{})
 	for _, item := range list {
@@ -4419,45 +5594,80 @@ func removeJSONHookReferences(path string, hookScripts ...string) error {
 	return writeJSONObject(path, pruned)
 }
 
-func removeGeminiConfigEntries(path, hookScript string) error {
-	cfg, err := readJSONObject(path)
+func removeGeminiConfigEntries(path, hookScript string, ownedHookScripts ...string) error {
+	cfg, err := readGeminiSettingsObject(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	pruned, _ := removeHookScriptReferences(cfg, hookScript).(map[string]interface{})
-	if pruned == nil {
-		pruned = map[string]interface{}{}
-	}
-	removeManagedGeminiTelemetry(pruned)
-	return writeJSONObject(path, pruned)
+	ownedHookScripts = uniqueNonEmptyStrings(append([]string{hookScript}, ownedHookScripts...))
+	pruneGeminiConfigEntries(cfg, ownedHookScripts)
+	return writeJSONObject(path, cfg)
 }
 
-func removeManagedGeminiTelemetry(cfg map[string]interface{}) {
+// pruneGeminiConfigEntries removes only exact current/legacy DefenseClaw
+// Gemini registrations from an already-decoded settings object. It is shared
+// by live teardown and pristine-backup normalization so both paths use the
+// same narrow ownership predicate.
+func pruneGeminiConfigEntries(cfg map[string]interface{}, ownedHookScripts []string) bool {
+	changed := false
+	if hooks, ok := cfg["hooks"].(map[string]interface{}); ok {
+		hooksChanged := false
+		for event, raw := range hooks {
+			list, ok := raw.([]interface{})
+			if !ok {
+				continue
+			}
+			remaining, groupChanged := pruneGeminiHookGroups(list, ownedHookScripts)
+			if !groupChanged {
+				continue
+			}
+			hooksChanged = true
+			if len(remaining) == 0 {
+				delete(hooks, event)
+			} else {
+				hooks[event] = remaining
+			}
+		}
+		if hooksChanged && len(hooks) == 0 {
+			delete(cfg, "hooks")
+		}
+		changed = hooksChanged
+	}
+	return removeManagedGeminiTelemetry(cfg) || changed
+}
+
+func removeManagedGeminiTelemetry(cfg map[string]interface{}) bool {
 	telemetry, ok := cfg["telemetry"].(map[string]interface{})
 	if !ok {
-		return
+		return false
 	}
 	// Detect both current and legacy DefenseClaw-managed telemetry:
-	//   - current: endpoint contains "/otlp/geminicli/<token>"
-	//   - legacy:  managedBy == "defenseclaw" (pre-schema-fix installs)
-	// Either signal is unique enough to attribute ownership safely.
+	//   - current: exact loopback HTTP endpoint with the canonical
+	//     /otlp/geminicli/<64-lowercase-hex> shape
+	//   - legacy: managedBy == "defenseclaw" (pre-schema-fix installs)
+	// A mere path substring is not ownership: an operator collector such as
+	// https://operator.example/otlp/geminicli/team must survive lifecycle
+	// reconciliation and pristine-receipt migration.
 	managedBy, _ := telemetry["managedBy"].(string)
 	endpoint, _ := telemetry["otlpEndpoint"].(string)
-	if !strings.EqualFold(strings.TrimSpace(managedBy), "defenseclaw") && !strings.Contains(endpoint, "/otlp/geminicli/") {
-		return
+	if !strings.EqualFold(strings.TrimSpace(managedBy), "defenseclaw") && !managedGeminiOTLPEndpoint(endpoint) {
+		return false
 	}
 	// Delete both the current schema keys and the legacy keys
 	// ("protocol", "managedBy") so an upgrade from an older
 	// defenseclaw install also leaves a clean settings.json.
 	for _, key := range []string{
 		"enabled",
+		"traces",
 		"target",
 		"otlpEndpoint",
 		"otlpProtocol",
 		"useCollector",
+		"useCliAuth",
+		"outfile",
 		"logPrompts",
 		// legacy keys, harmless if absent
 		"protocol",
@@ -4468,6 +5678,26 @@ func removeManagedGeminiTelemetry(cfg map[string]interface{}) {
 	if len(telemetry) == 0 {
 		delete(cfg, "telemetry")
 	}
+	return true
+}
+
+func managedGeminiOTLPEndpoint(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Port() == "" {
+		return false
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return false
+	}
+	const prefix = "/otlp/geminicli/"
+	if !strings.HasPrefix(parsed.EscapedPath(), prefix) {
+		return false
+	}
+	token := strings.TrimPrefix(parsed.EscapedPath(), prefix)
+	return !strings.Contains(token, "/") && otlpTokenHexRE.MatchString(token)
 }
 
 func removeHookScriptReferences(raw interface{}, hookScripts ...string) interface{} {

@@ -7,6 +7,7 @@ keywords:
   - DefenseClaw Windows Amp
   - DefenseClaw Windows Cursor
   - DefenseClaw Windows legacy Cascade
+  - DefenseClaw Windows Gemini CLI
   - DefenseClaw Windows Hermes Agent
   - DefenseClaw Windows OpenCode
   - DefenseClaw Windows OmniGent
@@ -15,11 +16,12 @@ keywords:
   - DefenseClaw Windows hooks
 ---
 
-Native Windows enforcement is connector-native and proxy-free. A supported
+Native Windows enforcement is connector-native and proxy-free. An available
 agent invokes its managed native hook or awaited policy path. Codex, Claude Code,
 and Hermes invoke `defenseclaw-hook.exe`; Amp loads an owner-only TypeScript
 system-policy plugin; Cursor and legacy Cascade use managed native
-PowerShell adapters; OpenCode auto-loads the DefenseClaw JavaScript bridge;
+PowerShell adapters; Gemini CLI preview uses an awaited system-PowerShell
+launcher bound to the protected native executable; OpenCode auto-loads the DefenseClaw JavaScript bridge;
 OmniGent imports a Python policy bridge into its selected native `uv tool`
 environment.
 The hook or plugin
@@ -58,6 +60,7 @@ defenseclaw setup opencode --mode observe
 defenseclaw setup omnigent --mode observe
 defenseclaw setup copilot --mode observe
 defenseclaw setup antigravity --mode observe
+defenseclaw setup geminicli --mode observe
 ```
 
 After reviewing the event inventory and policy, promote one connector at a
@@ -75,6 +78,7 @@ defenseclaw setup opencode --mode action
 defenseclaw setup omnigent --mode action
 defenseclaw setup copilot --mode action
 defenseclaw setup antigravity --mode action
+defenseclaw setup geminicli --mode action
 defenseclaw guardrail status
 ```
 
@@ -307,6 +311,31 @@ counters do not prove activation, failure, or certification.
 Cascade has no native hook ask/HITL response. A `confirm` verdict uses the
 connector's configured immediate fallback and remains visible as `raw_action`
 in audit; it cannot be approved and resumed from the DefenseClaw TUI.
+
+## Gemini CLI — preview
+
+Gemini CLI's native Windows integration is preview. DefenseClaw owns only its
+exact handlers in `<GEMINI_CLI_HOME>\.gemini\settings.json` (Profile Known
+Folder default); Antigravity's sibling
+`.gemini\config` subtree remains separate. Setup persists current and previous
+home custody, reconciles upgrades, and restores only the exact managed handlers
+and telemetry fields during teardown.
+
+All 11 documented lifecycle events are registered through an awaited encoded
+system-PowerShell command. It launches the protected native DefenseClaw hook
+executable synchronously, preserves JSON stdin/stdout and the exit code, and
+does not register a `.ps1`, Bash, Git Bash, MSYS, WSL, or compatibility fallback.
+
+The six control events are `BeforeAgent`, `BeforeModel`, `BeforeTool`,
+`AfterTool`, `AfterModel`, and `AfterAgent`. Gemini CLI has no native ask
+surface; confirm falls back to an alert/context result. `BeforeToolSelection`,
+`SessionStart`, `SessionEnd`, `Notification`, and `PreCompress` retain their
+event-specific advisory or observation-only shapes. Native OTLP logs, metrics,
+and traces use a connector-scoped path token rather than placing a bearer token
+in settings.
+
+Packaged and authenticated official-client Windows evidence is still pending;
+preview availability is not a certification claim.
 
 ## OpenCode
 

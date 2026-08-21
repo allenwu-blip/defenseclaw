@@ -158,7 +158,7 @@
         "canBlock": true,
         "canAskNative": false,
         "askEvents": [],
-        "blockEvents": ["BeforeAgent", "BeforeModel", "BeforeTool", "AfterTool", "AfterAgent"],
+        "blockEvents": ["BeforeAgent", "BeforeModel", "BeforeTool", "AfterTool", "AfterModel", "AfterAgent"],
         "supportsFailClosed": true,
         "scope": "user"
       },

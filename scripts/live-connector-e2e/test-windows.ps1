@@ -31,7 +31,43 @@ $setupMainTests = Join-Path $root 'cmd\defenseclaw-setup\main_test.go'
 $setupWizardSource = Join-Path $root 'cmd\defenseclaw-setup\wizard_windows.go'
 $mock = Join-Path $PSScriptRoot 'testdata\windows-mock.ps1'
 $ampGoldenRoot = Join-Path $PSScriptRoot 'golden\amp'
-$temp = Join-Path ([IO.Path]::GetTempPath()) ("dc-windows-harness-test-" + [guid]::NewGuid().ToString('N'))
+$tempCandidates = [Collections.Generic.List[string]]::new()
+if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    $tempCandidates.Add($env:RUNNER_TEMP)
+}
+$tempCandidates.Add([IO.Path]::GetTempPath())
+$tempParent = $null
+foreach ($candidate in $tempCandidates) {
+    try {
+        $fullCandidate = [IO.Path]::GetFullPath($candidate)
+        if ($fullCandidate.Length -gt
+            [IO.Path]::GetPathRoot($fullCandidate).Length) {
+            $fullCandidate = $fullCandidate.TrimEnd('\')
+        }
+        $item = Get-Item -LiteralPath $fullCandidate -Force -ErrorAction Stop
+        $regularChain = $item.PSIsContainer
+        $cursor = $item
+        while ($regularChain -and $null -ne $cursor) {
+            $cursor.Refresh()
+            if (-not $cursor.Exists -or
+                ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                $regularChain = $false
+                break
+            }
+            $cursor = $cursor.Parent
+        }
+        if ($regularChain) {
+            $tempParent = $fullCandidate
+            break
+        }
+    } catch {
+        # Fall through to the next existing temp root.
+    }
+}
+if ([string]::IsNullOrWhiteSpace($tempParent)) {
+    throw 'Windows harness tests require an existing, non-reparse temporary directory'
+}
+$temp = Join-Path $tempParent ("dc-windows-harness-test-" + [guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($temp) | Out-Null
 $script:LogRoot = Join-Path $temp 'logs'
 [IO.Directory]::CreateDirectory($script:LogRoot) | Out-Null
@@ -124,7 +160,9 @@ try {
     Assert-True ([string]$subagentFixture.tool_name -ceq 'Task' -and
         [bool]$subagentFixture.delegation_boundary) `
         'Amp subagent fixture marks the native Task tool as a delegation boundary'
-    $heldStateFixtureRoot = 'D:\dc-antigravity-held-state-fixture-' + [Guid]::NewGuid().ToString('N')
+    $heldStateFixtureRoot = Join-Path $temp (
+        'dc-antigravity-held-state-fixture-' + [Guid]::NewGuid().ToString('N')
+    )
     $fixturePowerShell = (Get-Command 'pwsh.exe' -CommandType Application -ErrorAction Stop |
         Select-Object -First 1).Source
     $heldStateFixtureOutput = @(& $fixturePowerShell -NoLogo -NoProfile -NonInteractive `
@@ -137,9 +175,10 @@ try {
         'authenticated Antigravity held-state dynamic fixture: PASS') `
         'authenticated Antigravity held-state dynamic fixture did not report PASS'
     Assert-True (-not (Test-Path -LiteralPath $heldStateFixtureRoot)) `
-        'authenticated Antigravity held-state dynamic fixture left its D: root behind'
-    $localAuthorityFixtureRoot = 'D:\dc-antigravity-local-authority-fixture-' + `
-        [Guid]::NewGuid().ToString('N')
+        'authenticated Antigravity held-state dynamic fixture left its task root behind'
+    $localAuthorityFixtureRoot = Join-Path $temp (
+        'dc-antigravity-local-authority-fixture-' + [Guid]::NewGuid().ToString('N')
+    )
     $localAuthorityFixtureOutput = @(& $fixturePowerShell `
         -NoLogo -NoProfile -NonInteractive -File $harness `
         -LocalAuthorityFixture -StateRoot $localAuthorityFixtureRoot 2>&1)
@@ -151,7 +190,7 @@ try {
         'authenticated Antigravity local-authority dynamic fixture: PASS') `
         'authenticated Antigravity local-authority fixture did not report PASS'
     Assert-True (-not (Test-Path -LiteralPath $localAuthorityFixtureRoot)) `
-        'authenticated Antigravity local-authority fixture left its D: root behind'
+        'authenticated Antigravity local-authority fixture left its task root behind'
     & $standardUserSafetyTest
     if (-not ('DefenseClaw.DisposableStandardUserLauncher' -as [type])) {
         Add-Type -Path $standardUserLauncher
@@ -544,6 +583,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     $originalCursorHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_CURSOR_CONFIG_HOME')
     $originalHermesHome = [Environment]::GetEnvironmentVariable('HERMES_HOME')
     $originalOpenCodeHome = [Environment]::GetEnvironmentVariable('OPENCODE_CONFIG_DIR')
+    $originalGeminiCLIHome = [Environment]::GetEnvironmentVariable('GEMINI_CLI_HOME')
+    $originalGeminiConfigDir = [Environment]::GetEnvironmentVariable('GEMINI_CONFIG_DIR')
+    $originalPrivateGeminiHome = [Environment]::GetEnvironmentVariable('DEFENSECLAW_GEMINI_CONFIG_HOME')
     $originalWindsurfUserHome = [Environment]::GetEnvironmentVariable('WINDSURF_USER_HOME')
     $originalWindsurfHooksPath = [Environment]::GetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH')
     try {
@@ -556,6 +598,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         $resolverCursorHome = Join-Path $resolverProfile '.cursor'
         $resolverHermesHome = Join-Path $resolverRoot 'hermes-home'
         $resolverOpenCodeHome = Join-Path $resolverRoot 'opencode-home'
+        $resolverGeminiCLIHome = Join-Path $resolverRoot 'gemini-cli-home'
+        $resolverGeminiHome = Join-Path $resolverGeminiCLIHome '.gemini'
         foreach ($path in @(
             $resolverProfile,
             $resolverCodexHome,
@@ -564,7 +608,8 @@ private-secret-name = "DefenseClaw must remain redacted"
             $resolverCopilotHome,
             $resolverCursorHome,
             $resolverHermesHome,
-            $resolverOpenCodeHome
+            $resolverOpenCodeHome,
+            $resolverGeminiCLIHome
         )) {
             [IO.Directory]::CreateDirectory($path) | Out-Null
         }
@@ -575,6 +620,9 @@ private-secret-name = "DefenseClaw must remain redacted"
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
         $env:HERMES_HOME = $resolverHermesHome
         $env:OPENCODE_CONFIG_DIR = $resolverOpenCodeHome
+        $env:GEMINI_CLI_HOME = $resolverGeminiCLIHome
+        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $resolverGeminiHome
+        Remove-Item Env:GEMINI_CONFIG_DIR -ErrorAction SilentlyContinue
         $knownProfile = [Environment]::GetFolderPath(
             [Environment+SpecialFolder]::UserProfile
         )
@@ -599,9 +647,15 @@ private-secret-name = "DefenseClaw must remain redacted"
             [IO.Path]::GetFullPath((Join-Path $resolverAmpHome 'plugins\defenseclaw.ts')),
             [StringComparison]::OrdinalIgnoreCase
         )) 'Amp effective registration targets its native system plugin'
+        Assert-True ((Resolve-EffectiveConnectorHome geminicli).Equals(
+            [IO.Path]::GetFullPath($resolverGeminiHome),
+            [StringComparison]::OrdinalIgnoreCase
+        )) 'Gemini CLI effective config home appends .gemini to GEMINI_CLI_HOME'
         Assert-PackagedConnectorHomes $resolverRoot $resolverProfile
         Assert-True ($env:CODEX_HOME -eq [IO.Path]::GetFullPath($resolverCodexHome) -and
-            $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome)) `
+            $env:CLAUDE_CONFIG_DIR -eq [IO.Path]::GetFullPath($resolverClaudeHome) -and
+            $env:GEMINI_CLI_HOME -eq [IO.Path]::GetFullPath($resolverGeminiCLIHome) -and
+            $env:DEFENSECLAW_GEMINI_CONFIG_HOME -eq [IO.Path]::GetFullPath($resolverGeminiHome)) `
             'packaged connector home guard preserves exact installer-recorded homes'
         $expectedWindsurfHome = [IO.Path]::GetFullPath($knownProfile).TrimEnd('\')
         $expectedWindsurfHooks = Join-Path $expectedWindsurfHome '.codeium\windsurf\hooks.json'
@@ -626,6 +680,17 @@ private-secret-name = "DefenseClaw must remain redacted"
         Assert-True $spoofedCursorHomeRejected `
             'packaged connector home guard rejects a non-vendor Cursor home override'
         $env:DEFENSECLAW_CURSOR_CONFIG_HOME = $resolverCursorHome
+        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = Join-Path $resolverRoot 'spoofed-gemini-config'
+        $spoofedGeminiBindingRejected = $false
+        try { Assert-PackagedConnectorHomes $resolverRoot $resolverProfile }
+        catch {
+            $spoofedGeminiBindingRejected = $_.Exception.Message.Contains(
+                'does not match GEMINI_CLI_HOME\.gemini'
+            )
+        }
+        Assert-True $spoofedGeminiBindingRejected `
+            'packaged connector home guard rejects a mismatched private Gemini config binding'
+        $env:DEFENSECLAW_GEMINI_CONFIG_HOME = $resolverGeminiHome
         $env:CODEX_HOME = Join-Path $temp 'operator-codex-home'
         [IO.Directory]::CreateDirectory($env:CODEX_HOME) | Out-Null
         $escapedHomeRejected = $false
@@ -656,6 +721,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         )
         [Environment]::SetEnvironmentVariable('HERMES_HOME', $originalHermesHome)
         [Environment]::SetEnvironmentVariable('OPENCODE_CONFIG_DIR', $originalOpenCodeHome)
+        [Environment]::SetEnvironmentVariable('GEMINI_CLI_HOME', $originalGeminiCLIHome)
+        [Environment]::SetEnvironmentVariable('GEMINI_CONFIG_DIR', $originalGeminiConfigDir)
+        [Environment]::SetEnvironmentVariable(
+            'DEFENSECLAW_GEMINI_CONFIG_HOME', $originalPrivateGeminiHome
+        )
         [Environment]::SetEnvironmentVariable('WINDSURF_USER_HOME', $originalWindsurfUserHome)
         [Environment]::SetEnvironmentVariable('WINDSURF_HOOK_CONFIG_PATH', $originalWindsurfHooksPath)
     }
@@ -1448,9 +1518,9 @@ private-secret-name = "DefenseClaw must remain redacted"
     )
     $requiredContractConnectors = @(
         'amp', 'antigravity', 'claudecode', 'codex', 'copilot',
-        'cursor', 'hermes', 'omnigent', 'opencode', 'windsurf'
+        'cursor', 'geminicli', 'hermes', 'omnigent', 'opencode', 'windsurf'
     )
-    $excludedContractConnectors = @('geminicli', 'openhands', 'openclaw', 'zeptoclaw')
+    $excludedContractConnectors = @('openhands', 'openclaw', 'zeptoclaw')
     $genericContractConnectors = if ($connectorMatrix.Success) {
         @($connectorMatrix.Groups[1].Value -split '\s*,\s*')
     } else {
@@ -1468,17 +1538,17 @@ private-secret-name = "DefenseClaw must remain redacted"
         $actualContractConnectors.Count -eq $requiredContractConnectors.Count -and
         ($actualContractConnectors | Sort-Object) -join ',' -ceq
             ($requiredContractConnectors | Sort-Object) -join ','
-    ) 'required Windows contract coverage is exactly the ten integrated native hook connectors'
+    ) 'required Windows contract coverage is exactly the eleven integrated native hook connectors'
     Assert-True (@($excludedContractConnectors | Where-Object {
         $actualContractConnectors -ccontains $_
-    }).Count -eq 0) 'required Windows contract coverage excludes exactly the four preview connectors'
+    }).Count -eq 0) 'required Windows contract coverage excludes exactly the three unsupported connectors'
     $requiredFanInJob = [regex]::Match(
         $nativeWorkflowText,
         '(?ms)^  windows-native-required:.*?(?=^  [a-z0-9][a-z0-9-]*:|\z)'
     ).Value
     Assert-True ($requiredFanInJob -match '(?m)^\s{6}- connector-contract\s*$' -and
         $requiredFanInJob -match '(?m)^\s{6}- omnigent-native-degraded\s*$') `
-        'required Windows aggregate depends on all ten connector contracts'
+        'required Windows aggregate depends on all eleven connector contracts'
     $invokeHookFunction = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-Hook\b.*?(?=\r?\nfunction )'
@@ -1683,12 +1753,13 @@ private-secret-name = "DefenseClaw must remain redacted"
         'claudecode = 2',
         'amp = 3',
         'antigravity = 4',
-        'copilot = 5',
-        'cursor = 6',
-        'hermes = 7',
-        'windsurf = 8',
-        'omnigent = 9',
-        'opencode = 10'
+        'geminicli = 5',
+        'copilot = 6',
+        'cursor = 7',
+        'hermes = 8',
+        'windsurf = 9',
+        'omnigent = 10',
+        'opencode = 11'
     )) {
         Assert-True ($wizardHarnessText.Contains($wizardChoice)) `
             "wizard driver preserves the integrated selection contract: $wizardChoice"
@@ -1698,6 +1769,8 @@ private-secret-name = "DefenseClaw must remain redacted"
         '(?s)wizardConnectorChoices = \[\]wizardChoice\{(.*?)\n\s*\}'
     ).Groups[1].Value
     $wizardChoiceValues = @([regex]::Matches($wizardChoiceSource, 'Value: "([^"]+)"') |
+        ForEach-Object { $_.Groups[1].Value })
+    $wizardChoiceLabels = @([regex]::Matches($wizardChoiceSource, 'Label: "([^"]+)"') |
         ForEach-Object { $_.Groups[1].Value })
     $wizardIndexSource = [regex]::Match(
         $wizardHarnessText,
@@ -1713,9 +1786,19 @@ private-secret-name = "DefenseClaw must remain redacted"
     ).Groups[1].Value
     $wizardValidateValues = @([regex]::Matches($wizardValidateSource, "'([^']+)'") |
         ForEach-Object { $_.Groups[1].Value })
+    $wizardLabelSource = [regex]::Match(
+        $wizardHarnessText,
+        '(?s)\$connectorLabels = @\((.*?)\r?\n\)'
+    ).Groups[1].Value
+    $wizardDriverLabels = @([regex]::Matches($wizardLabelSource, "'([^']+)'") |
+        ForEach-Object { $_.Groups[1].Value })
     Assert-True (($wizardChoiceValues -join ',') -ceq ($wizardIndexValues -join ',') -and
         ($wizardChoiceValues -join ',') -ceq ($wizardValidateValues -join ',')) `
         'wizard Go choices, driver indices, and accepted connector values have exact ordered parity'
+    Assert-True (($wizardChoiceLabels -join ',') -ceq ($wizardDriverLabels -join ',') -and
+        $wizardChoiceLabels[9] -ceq 'Legacy Cascade' -and
+        $wizardHarnessText -match 'Get-BoundedComboItemText \$connectorControl \$index') `
+        'wizard driver verifies every rendered label and identifies the Windsurf connector as Legacy Cascade without index drift'
     $wizardInstall = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WizardInstall\b.*?(?=\r?\nfunction )'
@@ -1864,7 +1947,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $standardUserCIText -match '-Operation contract -Connector \$Connector' -and
         $standardUserCIText -match '\$arguments \+= @\(''-Connector'', \$Connector\)' -and
         $standardUserCIText -match 'live-connector-e2e\\run-windows\.ps1' -and
-        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'opencode'\)" -and
+        $standardUserCIText -match "ValidateSet\('codex', 'claudecode', 'amp', 'copilot', 'cursor', 'hermes', 'windsurf', 'antigravity', 'geminicli', 'opencode'\)" -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_allow.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\pre_tool_block.json') -and
         $standardUserCIText.Contains('live-connector-e2e\golden\$Connector\session_start.json') -and
@@ -2358,12 +2441,20 @@ private-secret-name = "DefenseClaw must remain redacted"
         $isolatedHomeBinding -match '\$env:COPILOT_HOME = Join-Path \$env:USERPROFILE ''\.copilot''' -and
         $isolatedHomeBinding -match '\$env:DEFENSECLAW_CURSOR_CONFIG_HOME = Join-Path \$env:USERPROFILE ''\.cursor''' -and
         $isolatedHomeBinding -match '\$env:HERMES_HOME = Join-Path \$env:USERPROFILE ''AppData\\Local\\hermes''' -and
-        $isolatedHomeBinding -match '\$env:OPENCODE_CONFIG_DIR = Join-Path \$env:USERPROFILE ''\.config\\opencode''') `
+        $isolatedHomeBinding -match '\$env:OPENCODE_CONFIG_DIR = Join-Path \$env:USERPROFILE ''\.config\\opencode''' -and
+        $isolatedHomeBinding -match '\$env:GEMINI_CLI_HOME = \$env:USERPROFILE' -and
+        $isolatedHomeBinding -match '\$env:DEFENSECLAW_GEMINI_CONFIG_HOME = Join-Path \$env:GEMINI_CLI_HOME ''\.gemini''' -and
+        $isolatedHomeBinding -match 'Remove-Item Env:GEMINI_CONFIG_DIR') `
         'native harness preserves packaged connector homes and otherwise binds disposable defaults'
     $packagedHomeGuard = [regex]::Match($harnessText, '(?s)function Assert-PackagedConnectorHomes\b.*?\n\}').Value
     Assert-True ($packagedHomeGuard -match 'Assert-WindowsNativePathsDisjoint' -and
         $packagedHomeGuard -match '\$officialCursorHome' -and
         $packagedHomeGuard -match 'documented USERPROFILE\\\.cursor path' -and
+        $packagedHomeGuard -match '\$geminiCLIHome' -and
+        $packagedHomeGuard -match 'missing authenticated GEMINI_CLI_HOME' -and
+        $packagedHomeGuard -match '\$privateGeminiHome' -and
+        $packagedHomeGuard -match 'authenticated DefenseClaw Gemini config binding' -and
+        $packagedHomeGuard -match 'unsupported GEMINI_CONFIG_DIR' -and
         $packagedHomeGuard -match 'Test-PathWithin' -and
         $packagedHomeGuard -match 'Assert-DisposableNoReparseAncestors' -and
         $packagedHomeGuard -match '-RequireExists' -and
@@ -2371,6 +2462,90 @@ private-secret-name = "DefenseClaw must remain redacted"
         $packagedHomeGuard -match 'packaged Amp home must be a strict child' -and
         $packagedHomeGuard -match '\$env:HERMES_HOME = \$homes\[5\]') `
         'packaged connector homes are authentic, contained, existing, and non-reparse'
+    $geminiHomeResolver = [regex]::Match(
+        $harnessText,
+        '(?s)function Resolve-EffectiveConnectorHome\b.*?(?=\r?\nfunction )'
+    ).Value
+    $geminiCommandBuilder = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-GeminiCLIExpectedWindowsHookCommand\b.*?(?=\r?\nfunction )'
+    ).Value
+    $registeredNativeHook = [regex]::Match(
+        $harnessText,
+        '(?s)function Invoke-RegisteredNativeHook\b.*?(?=\r?\nfunction )'
+    ).Value
+    $geminiHookValidation = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-GeminiCLISynchronousWindowsHookConfig\b.*?(?=\r?\nfunction )'
+    ).Value
+    $geminiFixtureValidation = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-GeminiCLIForeignHookFixture\b.*?(?=\r?\nfunction )'
+    ).Value
+    $geminiFixtureInitialization = [regex]::Match(
+        $harnessText,
+        '(?s)function Initialize-GeminiCLIForeignHookFixture\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($geminiHomeResolver -match "ConnectorName -eq 'geminicli'" -and
+        $geminiHomeResolver -match "GetEnvironmentVariable\('GEMINI_CLI_HOME'\)" -and
+        $geminiHomeResolver -match '\[Environment\]::GetFolderPath' -and
+        $geminiHomeResolver -match '\$geminiCLIHome\.Length -eq 0' -and
+        $geminiHomeResolver -match 'Join-Path \$normalizedGeminiCLIHome ''\.gemini''' -and
+        $geminiHomeResolver -match 'DEFENSECLAW_GEMINI_CONFIG_HOME' -and
+        $geminiHomeResolver -match 'does not match GEMINI_CLI_HOME\\\.gemini' -and
+        $geminiHomeResolver -notmatch 'GetEnvironmentVariable\(''GEMINI_CONFIG_DIR''\)') `
+        'Gemini CLI contract derives .gemini from the validated official home root and checks the private binding'
+    foreach ($geminiEvent in @(
+        'SessionStart', 'SessionEnd', 'BeforeAgent', 'AfterAgent',
+        'BeforeModel', 'AfterModel', 'BeforeToolSelection', 'BeforeTool',
+        'AfterTool', 'PreCompress', 'Notification'
+    )) {
+        Assert-True ($geminiHookValidation.Contains("'$geminiEvent'") -or
+            $harnessText.Contains("'$geminiEvent'")) `
+            "Gemini CLI deterministic registration includes $geminiEvent"
+    }
+    Assert-True ($geminiCommandBuilder -match '\[Environment\]::SystemDirectory' -and
+        $geminiCommandBuilder -match 'WindowsPowerShell\\v1\.0\\powershell\.exe' -and
+        $geminiCommandBuilder -match 'Microsoft\.PowerShell\.Management\\Start-Process' -and
+        $geminiCommandBuilder -match "-ArgumentList @\('hook',\s*'--connector',\s*'geminicli'\)" -and
+        $geminiCommandBuilder -match '-NoNewWindow -Wait -PassThru' -and
+        $geminiCommandBuilder -match 'exit `?\$hookProcess\.ExitCode' -and
+        $geminiCommandBuilder -match 'Encoding\]::Unicode' -and
+        $geminiCommandBuilder -match '-EncodedCommand' -and
+        $geminiCommandBuilder -notmatch '\$LASTEXITCODE|\.sh\b|\bbash\b|\bwsl\b' -and
+        $registeredNativeHook -match 'registeredHandlers\[0\]\.command -cne \$expectedCommand' -and
+        $registeredNativeHook -match 'Invoke-NativeProcess -FilePath \$systemPowerShell' -and
+        $registeredNativeHook -match '''-EncodedCommand'', \$encodedCommand') `
+        'Gemini CLI uses the awaited encoded system-PowerShell native executable launcher without a shell fallback'
+    Assert-True ($geminiHookValidation -match '\$ownedHandlerCount -ne 11' -and
+        $geminiHookValidation -match 'exact 11-event Gemini CLI hook set' -and
+        $geminiHookValidation -match '\[int\]\$handler\.timeout -ne 30000' -and
+        $geminiHookValidation -match '\$managedGroup\.Handlers\.Count -ne 1' -and
+        $geminiHookValidation -match 'compatibility-shell handler') `
+        'Gemini CLI validates exactly 11 single awaited native handlers and rejects compatibility shells'
+    Assert-True ($geminiFixtureInitialization -match "operatorSetting = 'keep'" -and
+        $geminiFixtureInitialization -match "C:\\Operator\\audit-hook\.exe --gemini" -and
+        $geminiFixtureInitialization -match 'legacyManagedCommand' -and
+        $geminiFixtureValidation -match "ValidateSet\('seeded', 'configured', 'teardown'\)" -and
+        $geminiFixtureValidation -match 'hooks,matcher,operatorField,sequential' -and
+        $geminiFixtureValidation -match 'hooks,operatorSetting' -and
+        $geminiFixtureValidation -match 'foreign-only settings document' -and
+        $harnessText -match '(?s)function Invoke-ContractRun\b.*?Initialize-GeminiCLIForeignHookFixture') `
+        'Gemini CLI setup migrates an owned handler in a mixed group while preserving the exact foreign handler through teardown'
+    Assert-True ($nativeHarnessText -match '\$geminiCLIHome = .*?''gemini-cli-home''' -and
+        $nativeHarnessText -match '\$geminiConfigHome = Join-Path \$geminiCLIHome ''\.gemini''' -and
+        $contractFunction -match '\$env:GEMINI_CLI_HOME = \$geminiCLIHome' -and
+        $contractFunction -match 'hostile-obsolete-gemini-config' -and
+        $contractFunction -match 'hostile-private-gemini-config' -and
+        $contractFunction -match '\$contractInstallState\.gemini_cli_home' -and
+        $contractFunction -match '\$contractInstallState\.gemini_config_dir' -and
+        $contractFunction -match 'GEMINI_CLI_HOME root custody' -and
+        $contractFunction -match 'GEMINI_CLI_HOME\\\.gemini custody' -and
+        $contractFunction -match 'Remove-Item Env:GEMINI_CONFIG_DIR' -and
+        $contractFunction -match 'geminicli = \$geminiSettings' -and
+        $harnessText -match 'Layer -eq ''live'' -and \$Connector -eq ''geminicli''' -and
+        $harnessText -match 'deterministic packaged contract coverage only') `
+        'packaged Gemini CLI coverage proves exact custody while remaining Preview without Windows live evidence'
     Assert-True ($harnessText -match 'timeout-handling' -and $harnessText -match 'telemetry pass') 'contract records timeout and telemetry evidence'
     foreach ($rule in @(
         'CMD-WIN-REMOVE-ITEM-RF', 'CMD-WIN-RMDIR-SQ', 'CMD-PIPE-CURL', 'CMD-WIN-REG-PERSIST',
@@ -2393,13 +2568,22 @@ private-secret-name = "DefenseClaw must remain redacted"
         $dangerousPayloadContract -match '\$path = Join-Path \$Root "\$probeID\.json"' -and
         $harnessText -match 'New-DangerousCommandPayload \$case\.Name \$command \$payloadRoot \$Mode') `
         'observe/action dangerous-command fixtures use distinct exact correlation and file identities'
+    $connectorToolNameContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-ConnectorToolName\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($dangerousPayloadContract -match '''geminicli'' \{ ''BeforeTool'' \}' -and
+        $connectorToolNameContract -match '''geminicli'' \{ ''RunShellCommand'' \}' -and
+        $harnessText -match 'Invoke-DangerousCommandCorpus observe' -and
+        $harnessText -match 'Invoke-DangerousCommandCorpus action') `
+        'Gemini CLI runs the complete dangerous-command corpus in observe and action through BeforeTool'
     $dangerousHookContract = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-DangerousHook\b.*?(?=\nfunction Invoke-DangerousCommandCorpus\b)'
     ).Value
     Assert-True ($dangerousHookContract -match "\`$telemetryMode = if \(\`$Mode -eq 'action'\)" -and
         $dangerousHookContract -match "\`$effectiveObserve = \`$Mode -eq 'observe'" -and
-        $dangerousHookContract -match 'Invoke-Tool \(Resolve-ContractHookTool\)' -and
+        $dangerousHookContract -match 'Invoke-RegisteredNativeHook' -and
         $dangerousHookContract -match "\`$decision\.raw_action -ne 'block'" -and
         $dangerousHookContract -match 'Test-BlockVerdict' -and
         $dangerousHookContract -match '\$decision\.rule_ids') `
@@ -2904,7 +3088,30 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Invoke-AuthenticatedAntigravityHeldStateFixture\b.*?(?=\nif \(\$HeldStateFixture\))'
     ).Value
-    Assert-True ($heldStateFixtureContract -match "\^D:\\\\dc-antigravity-held-state-fixture-" -and
+    $fixtureRootContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Resolve-AuthenticatedAntigravityFixtureRoot\b.*?(?=\r?\nfunction )'
+    ).Value
+    $protectTestDirectoryContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Protect-TestDirectory\b.*?(?=\r?\nfunction )'
+    ).Value
+    $protectedArtifactRootContract = [regex]::Match(
+        $harnessText,
+        '(?s)function New-ProtectedPackageArtifactRoot\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($heldStateFixtureContract -match
+            "Resolve-AuthenticatedAntigravityFixtureRoot 'held-state'" -and
+        $fixtureRootContract -match '\[IO\.Path\]::GetFileName\(\$fixtureRoot\)' -and
+        $fixtureRootContract -match "'\^dc-antigravity-'" -and
+        $fixtureRootContract -match '\$parent\.Exists' -and
+        $fixtureRootContract -match 'FileAttributes\]::ReparsePoint' -and
+        $fixtureRootContract -match 'Assert-DisposableNoReparseAncestors' -and
+        $protectTestDirectoryContract -match 'test directory path has no existing ancestor' -and
+        $protectTestDirectoryContract -match 'test directory path is not a regular directory' -and
+        $protectedArtifactRootContract.Contains(
+            "if ([IO.Path]::GetPathRoot(`$root) -cne 'D:\')"
+        ) -and
         $heldStateFixtureContract -match 'New-AuthenticatedAntigravityHeldStateDocument' -and
         $heldStateFixtureContract -match 'Assert-AuthenticatedAntigravityCleanupManifest' -and
         $heldStateFixtureContract -match 'Assert-AuthenticatedAntigravityRecoveryCompanion' -and
@@ -2923,7 +3130,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         $heldStateFixtureContract -match 'Remove-DisposableTreeSafely' -and
         $heldStateFixtureContract -match "'interactive', 'cancelled'" -and
         $heldStateFixtureContract -match 'dynamic fixture: PASS') `
-        'D-rooted dynamic fixture executes held-state, cleanup, stale identity, DACL/reparse, and cancel rejection contracts without product mutation'
+        'task-temp dynamic fixture retains GUID containment, ancestor/reparse gates, the production D: contract, and held-state security coverage'
     $heldWorkflowJob = [regex]::Match(
         $liveWorkflowText,
         '(?ms)^  windows-antigravity-held-state:.*?(?=^  # -+\r?$\n  # Report)'
@@ -2967,7 +3174,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         '(?s)wizardConnectorChoices = \[\]wizardChoice\{.*?\n\s*\}'
     ).Value
     Assert-True ($wizardConnectorChoices -match 'Google Antigravity.*?antigravity' -and
-        $setupMainSourceText -match 'CONNECTOR=amp\|antigravity\|codex\|claudecode\|copilot\|cursor\|hermes\|omnigent\|opencode\|windsurf\|none' -and
+        $setupMainSourceText -match 'CONNECTOR=amp\|antigravity\|codex\|claudecode\|copilot\|cursor\|geminicli\|hermes\|omnigent\|opencode\|windsurf\|none' -and
         $setupMainSourceText -notmatch 'Antigravity is not_certified and cannot be selected by public Setup' -and
         $setupMainTestsText -match 'TestParseArgsAllowsPublicAntigravitySetupSelection' -and
         $setupMainTestsText -match 'TestParseArgsAllowsRecordedAntigravityMaintenanceWithoutOverride' -and
@@ -3396,16 +3603,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         $nativeHarnessText -match 'Join-Path \$contractHome ''\.cursor''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''hermes-home''' -and
         $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''opencode-home''' -and
+        $nativeHarnessText -match 'Join-Path \$contractProfileRoot ''gemini-cli-home''' -and
         $nativeHarnessText -match '\$openCodePluginDir = Join-Path \$openCodeHome ''plugins''' -and
         $nativeHarnessText -match '\$officialWindsurfConfig = Join-Path \$realProfile ''\.codeium\\windsurf\\hooks\.json''' -and
-        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome, \$openCodeHome\s*\)' -and
+        $nativeHarnessText -match '(?s)Assert-WindowsNativePathsDisjoint @\(\s*\$contractHome, \$codexHome, \$claudeHome, \$copilotHome, \$hermesHome,\s*\$openCodeHome, \$geminiCLIHome\s*\)' -and
         $contractInstall -ge 0) `
-        'connector contract uses official Amp, Cursor, and Windsurf profile custody with disjoint real-override homes'
+        'connector contract uses official Amp, Cursor, Gemini, and Windsurf profile custody with disjoint real-override homes'
     foreach ($homeAssignment in @(
         '$env:CODEX_HOME = $codexHome',
         '$env:CLAUDE_CONFIG_DIR = $claudeHome',
         '$env:COPILOT_HOME = $copilotHome',
         '$env:DEFENSECLAW_CURSOR_CONFIG_HOME = $cursorHome',
+        '$env:GEMINI_CLI_HOME = $geminiCLIHome',
         '$env:HERMES_HOME = $hermesHome',
         '$env:OPENCODE_CONFIG_DIR = $openCodeHome'
     )) {

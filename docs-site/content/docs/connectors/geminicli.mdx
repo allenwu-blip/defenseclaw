@@ -1,6 +1,6 @@
 ---
 title: Gemini CLI
-description: Gemini CLI connector for the continuing enterprise, Google Cloud, and paid API-key product wires settings.json lifecycle hooks plus native OTLP.
+description: Gemini CLI connector wiring settings.json lifecycle hooks and native OTLP on macOS, Linux, and native Windows preview.
 keywords:
   - DefenseClaw Gemini CLI connector
   - Gemini CLI hooks
@@ -13,21 +13,15 @@ The Gemini CLI connector wires DefenseClaw into
 agent's native OTLP exporter at the gateway so traces, metrics, and logs land
 in one place.
 
-<Callout type="warning" title="Continuing paid and enterprise product only">
-Google ended Gemini CLI service for consumer/free/Google AI Pro/Ultra users on
-June 18, 2026 and directs that audience to Antigravity CLI. This connector is
-only for the officially continuing Gemini Code Assist Standard/Enterprise,
-Google Cloud, and paid Gemini API or Gemini Enterprise Agent Platform API-key
-paths. It does not restore consumer Gemini CLI access. See
-[Google's transition announcement](https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/)
-and the [Antigravity migration guide](https://antigravity.google/docs/cli/gcli-migration).
-</Callout>
-
-<Callout type="warning" title="Native Windows is excluded">
-DefenseClaw does not include Gemini CLI in its native Windows connector roster,
-Setup wizard, lifecycle custody, Doctor checks, or Windows validation jobs.
-Existing Gemini CLI support is limited to supported non-Windows hosts. Do not
-use WSL, Git Bash, Docker, or another compatibility layer as a workaround.
+<Callout type="warning" title="Native Windows preview">
+Gemini CLI itself supports native Windows. DefenseClaw's native integration is
+currently **preview**: Setup binds the official Gemini home, registers the native
+system-PowerShell launcher for all 11 lifecycle events, and restores only
+DefenseClaw-owned handlers during teardown. Synchronous events are awaited;
+Gemini runs `PreCompress` asynchronously and delivers `SessionEnd` on a
+best-effort basis. WSL, Git Bash, and a POSIX hook script are not used. Packaged
+and authenticated official-client live evidence is still pending, so this is
+not a Windows certification claim.
 </Callout>
 
 ## Setup
@@ -37,13 +31,57 @@ defenseclaw setup geminicli
 ```
 
 `setup geminicli` is shorthand for `setup guardrail --connector geminicli`: it
-adds or reconfigures the continuing paid/enterprise Gemini CLI product, wires
-all 11 documented lifecycle events against `~/.gemini/settings.json`, and
+adds or reconfigures Gemini CLI, wires
+all 11 documented lifecycle events in the bound user `.gemini/settings.json`, and
 points Gemini's native OTLP exporter at the gateway. **There is no
 proxy-enforcement path** for Gemini CLI — blocking happens hook-side on
-`BeforeAgent`, `BeforeModel`, `BeforeTool`, `AfterTool`, and `AfterAgent`.
+`BeforeAgent`, `BeforeModel`, `BeforeTool`, `AfterTool`, `AfterModel`, and
+`AfterAgent`.
 Gemini CLI has no native ask surface, so confirm verdicts use an immediate
 alert/context fallback with `raw_action` preserved for audit.
+
+### Home, settings, and inventory scope
+
+`GEMINI_CLI_HOME` is Gemini's official **home-root** override, not its config
+directory. User settings therefore live at
+`<GEMINI_CLI_HOME>/.gemini/settings.json`; without the override the default is
+`~/.gemini/settings.json`. On native Windows, Setup accepts a non-empty ambient
+`GEMINI_CLI_HOME` only when it is absolute, normalized, control-free, has no
+surrounding whitespace, and has no unsafe reparse-point ancestry. A non-empty
+value that fails those checks makes Setup fail closed; only an absent or exactly
+empty value falls back to the signed-in Profile Known Folder, producing
+`%USERPROFILE%\.gemini`. The unsupported `GEMINI_CONFIG_DIR` variable is
+ignored.
+
+The native install state retains both the accepted home root and its derived
+`.gemini` config directory. Packaged launchers and the gateway discard ambient
+Gemini home/config bindings, then rehydrate authenticated `GEMINI_CLI_HOME` and
+the private `DEFENSECLAW_GEMINI_CONFIG_HOME` binding; repair and upgrade
+preserve both values.
+
+MCP inventory reads the trusted project's `<workspace>/.gemini/settings.json`
+before the user settings file. Skills and agents use the selected workspace's
+`.gemini/skills` and `.gemini/agents` roots. Extensions are discovered read-only
+from the user-global `.gemini/extensions` below the bound home root (normally
+`~/.gemini/extensions`); Gemini CLI has no workspace extension installation
+root.
+
+Gemini accepts JSONC-style comments in `settings.json`. DefenseClaw accepts
+those comments when reading, but a managed hooks or telemetry write serializes
+the document as formatted canonical JSON, so comments and the original
+formatting are not preserved. Trailing commas remain invalid.
+
+<Callout type="warning" title="Effective settings are launch-scoped">
+Setup and verification check the authenticated user settings, the current or
+explicitly pinned trusted workspace, applicable system settings/overrides, and
+the effective process environment and `.env` inputs. An arbitrary future or
+unpinned trusted workspace (or a different launch environment) can still
+disable hooks or redirect telemetry. Until DefenseClaw enforces these settings
+at every launch, action-mode blocking and native OTLP remain preview and
+conditional on those effective settings. DefenseClaw does not install a managed
+Gemini wrapper, so it cannot pin the recorded home and effective settings for a
+later process launched from a different environment or workspace.
+</Callout>
 
 #### What `setup geminicli` actually does
 
@@ -74,7 +112,7 @@ The alias defaults Gemini CLI to observe mode and can join an existing hook-conn
 defenseclaw setup geminicli
 ```
 
-Confirms once, wires the hooks against `~/.gemini/settings.json`, points OTLP at the gateway, and restarts the gateway. Findings flow to mandatory SQLite event history and the TUI; configured v8 destinations receive only the buckets/signals their routes select. No traffic is intercepted and no requests are blocked. Pass `--yes` to skip the confirmation in CI.
+Confirms once, wires the hooks in the bound user `.gemini/settings.json`, points OTLP at the gateway, and restarts the gateway. Findings flow to mandatory SQLite event history and the TUI; configured v8 destinations receive only the buckets/signals their routes select. No traffic is intercepted and no requests are blocked. Pass `--yes` to skip the confirmation in CI.
 
 </Tab>
 
@@ -142,12 +180,12 @@ Not sure what to pick? Run `defenseclaw setup guardrail` (no flags) — the [int
 ## Files DefenseClaw will modify
 
 <Files>
-  <Folder name="~/.gemini" defaultOpen>
+  <Folder name="&lt;Gemini home root&gt;/.gemini (defaults to ~/.gemini)" defaultOpen>
     <File name="settings.json (hooks + telemetry blocks)" />
   </Folder>
   <Folder name="~/.defenseclaw" defaultOpen>
     <Folder name="hooks">
-      <File name="geminicli-hook.sh (POSIX runtime)" />
+      <File name="geminicli-hook.sh (macOS/Linux runtime only)" />
       <File name=".otlp-geminicli.token (connector-scoped OTLP credential)" />
     </Folder>
   </Folder>
@@ -169,7 +207,7 @@ Gemini CLI has no native human-approval surface. Confirm verdicts fall back to a
   caption="Hooks cover the lifecycle; native OTLP delivers logs, metrics, and traces out-of-band."
 >
   <Node id="gemini" kind="agent">Gemini CLI</Node>
-  <Node id="hooks" kind="connector">{`11 lifecycle hooks\n5 declared block surfaces`}</Node>
+  <Node id="hooks" kind="connector">{`11 lifecycle hooks\n6 declared block surfaces`}</Node>
   <Node id="otlp" kind="connector">Native OTLP exporter</Node>
   <Node id="gateway" kind="gateway">defenseclaw-gateway</Node>
   <Edge from="gemini" to="hooks" />

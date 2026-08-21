@@ -689,7 +689,7 @@ func TestDeferredCleanupAcceptsCompleteWindsurfConnectorSet(t *testing.T) {
 	}
 }
 
-func TestDeferredCleanupConnectorCustodyAcceptsAntigravityAndRejectsGemini(t *testing.T) {
+func TestDeferredCleanupConnectorCustodyAcceptsAntigravityAndGemini(t *testing.T) {
 	fixture := newDeferredCleanupFixture(t)
 	paths := hookruntime.Paths{
 		Root:     fixture.record.RuntimeRoot,
@@ -717,8 +717,8 @@ func TestDeferredCleanupConnectorCustodyAcceptsAntigravityAndRejectsGemini(t *te
 		fixture.record.MaintenancePath,
 		fixture.record.RunValueName,
 		fixture.record.RunCommand,
-	); err == nil || !strings.Contains(err.Error(), "invalid connector") {
-		t.Fatalf("Gemini entered native-Windows deferred-cleanup custody: %v", err)
+	); err != nil {
+		t.Fatalf("Gemini native-Windows deferred-cleanup custody rejected: %v", err)
 	}
 }
 

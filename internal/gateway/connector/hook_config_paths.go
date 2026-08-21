@@ -181,11 +181,15 @@ func OwnedHooksPresent(conn Connector, opts SetupOpts) (bool, error) {
 		}
 		return windsurfOwnedHooksPresentForOS(windsurf, opts, runtime.GOOS)
 	}
-	if inspector, ok := conn.(ownedHookContractInspector); ok {
-		return inspector.ownedHookContractPresent(opts)
-	}
+	// OpenCode is a whole-file managed plugin. Its generic hook-only marker
+	// inspector proves only the embedded version header; the custody receipt is
+	// the authority for the exact path and post-setup digest, so evaluate it
+	// before the hookOnlyConnector interface case below.
 	if conn != nil && conn.Name() == "opencode" {
 		return openCodeManagedPluginPresent(conn, opts)
+	}
+	if inspector, ok := conn.(ownedHookContractInspector); ok {
+		return inspector.ownedHookContractPresent(opts)
 	}
 	return ownedHooksPresentInConfig(conn, opts)
 }

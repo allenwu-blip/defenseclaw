@@ -157,6 +157,22 @@ _COSIGN_BOOTSTRAP_ALLOWED_HOSTS = frozenset(
 _POSIX_RESOLVER_ASSET = "defenseclaw-upgrade.sh"
 _MAX_RESOLVER_BYTES = 4 * 1024 * 1024
 _MAX_SYSTEM_BASH_BYTES = 32 * 1024 * 1024
+_NATIVE_WINDOWS_INSTALLER_CONNECTORS = frozenset(
+    {
+        "none",
+        "amp",
+        "antigravity",
+        "claudecode",
+        "codex",
+        "copilot",
+        "cursor",
+        "geminicli",
+        "hermes",
+        "omnigent",
+        "opencode",
+        "windsurf",
+    }
+)
 _RELEASE_CHANNEL_REF_URL = f"https://api.github.com/repos/{GITHUB_REPO}/git/ref/heads/release-channel"
 _RELEASE_CHANNEL_RAW_BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}"
 _RELEASE_CHANNEL_REF_MAX_BYTES = 64 * 1024
@@ -2837,18 +2853,7 @@ def _native_windows_install_state(
         or state.get("install_scope") != "user"
         or not isinstance(state.get("version"), str)
         or _CANONICAL_VERSION_RE.fullmatch(state["version"]) is None
-        or state.get("connector")
-        not in {
-            "none",
-            "amp",
-            "antigravity",
-            "codex",
-            "claudecode",
-            "copilot",
-            "cursor",
-            "windsurf",
-            "opencode",
-        }
+        or state.get("connector") not in _NATIVE_WINDOWS_INSTALLER_CONNECTORS
         or state.get("mode") not in {"observe", "action"}
     ):
         ux.err("Native installer state is not a supported native Windows install.", indent="  ")
@@ -3876,17 +3881,7 @@ def _handoff_windows_setup_upgrade(
     """Launch setup from its trusted cache, then return so this runtime can exit."""
     _windows_installer_policy(manifest)
     connector = state.get("connector")
-    if connector not in {
-        "amp",
-        "antigravity",
-        "codex",
-        "claudecode",
-        "copilot",
-        "cursor",
-        "windsurf",
-        "opencode",
-        "none",
-    }:
+    if connector not in _NATIVE_WINDOWS_INSTALLER_CONNECTORS:
         connector = "none"
     mode = state.get("mode")
     if mode not in {"observe", "action"}:

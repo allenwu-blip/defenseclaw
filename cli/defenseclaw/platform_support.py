@@ -92,10 +92,9 @@ WINDOWS_CONNECTOR_SUPPORT: dict[str, ConnectorPlatformSupport] = {
         "enforcement are not covered; packaged and official-client validation metadata is not recorded.",
     ),
     "geminicli": ConnectorPlatformSupport(
-        UNSUPPORTED,
-        "Gemini CLI native Windows support is excluded from this release because "
-        "the intended product and audience path was discontinued; existing "
-        "non-Windows support is unchanged.",
+        PREVIEW,
+        "Gemini CLI native Windows hooks are available in preview; packaged and "
+        "official-client validation metadata is not recorded and live evidence remains false.",
     ),
     "copilot": ConnectorPlatformSupport(
         SUPPORTED,

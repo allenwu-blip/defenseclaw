@@ -925,6 +925,46 @@ def windsurf_hook_config_path() -> str:
     return expected
 
 
+def gemini_config_home() -> str:
+    """Return Gemini CLI's DefenseClaw-bound user configuration root.
+
+    Native DefenseClaw launchers rehydrate the authenticated derived ``.gemini``
+    directory through a private binding. Source installs without that binding
+    follow Gemini CLI's official ``GEMINI_CLI_HOME`` contract: the variable is
+    a parent home root, so Gemini creates/loads ``.gemini`` underneath it.
+    """
+
+    configured = os.environ.get("DEFENSECLAW_GEMINI_CONFIG_HOME")
+    if configured is not None:
+        if (
+            not configured
+            or configured.strip() != configured
+            or "\x00" in configured
+            or "\r" in configured
+            or "\n" in configured
+            or not os.path.isabs(configured)
+            or os.path.normpath(configured) != configured
+        ):
+            raise ValueError(
+                "DEFENSECLAW_GEMINI_CONFIG_HOME is not an absolute normalized path"
+            )
+        return configured
+
+    vendor_home = os.environ.get("GEMINI_CLI_HOME")
+    if vendor_home:
+        if (
+            vendor_home.strip() != vendor_home
+            or "\x00" in vendor_home
+            or "\r" in vendor_home
+            or "\n" in vendor_home
+            or not os.path.isabs(vendor_home)
+            or os.path.normpath(vendor_home) != vendor_home
+        ):
+            raise ValueError("GEMINI_CLI_HOME is not an absolute normalized path")
+        return os.path.join(vendor_home, ".gemini")
+    return os.path.join(os.path.abspath(str(Path.home())), ".gemini")
+
+
 def amp_config_home() -> str:
     """Return Amp's documented system configuration directory."""
 
@@ -1261,7 +1301,7 @@ def connector_home(
     if name == "zeptoclaw":
         return os.environ.get("ZEPTOCLAW_HOME") or os.path.join(home, ".zeptoclaw")
     if name == "geminicli":
-        return os.path.join(home, ".gemini")
+        return gemini_config_home()
     if name == "copilot":
         return copilot_home()
     if name == "openhands":
@@ -1347,7 +1387,7 @@ def connector_config_files(
         ]
     elif name == "geminicli":
         paths = [
-            os.path.join(home, ".gemini", "settings.json"),
+            os.path.join(gemini_config_home(), "settings.json"),
             _workspace_path(workspace_dir, ".gemini", "settings.json"),
         ]
     elif name == "copilot":
@@ -1727,6 +1767,13 @@ def agent_dirs(
                 os.path.join(home, ".codex", "agents"),
             ]
         )
+    if name == "geminicli":
+        return _dedup(
+            [
+                os.path.join(gemini_config_home(), "agents"),
+                _workspace_path(workspace_dir, ".gemini", "agents"),
+            ]
+        )
     return []
 
 
@@ -1758,6 +1805,13 @@ def rule_dirs(
                 ]
             )
         return _dedup(paths)
+    if name == "geminicli":
+        return _dedup(
+            [
+                os.path.join(gemini_config_home(), "skills"),
+                _workspace_path(workspace_dir, ".agents", "skills"),
+            ]
+        )
     if name != "codex":
         return []
     paths = [
@@ -1815,7 +1869,7 @@ def mcp_servers(
     if name == "windsurf":
         return _windsurf_mcp_servers()
     if name == "geminicli":
-        return _gemini_mcp_servers()
+        return _gemini_mcp_servers(workspace_dir)
     if name == "copilot":
         return _copilot_mcp_servers(workspace_dir)
     if name == "openhands":
@@ -2664,7 +2718,7 @@ def _antigravity_skill_dirs(workspace_dir: str | None = None) -> list[str]:
 def _gemini_skill_dirs(workspace_dir: str | None = None) -> list[str]:
     return _dedup(
         [
-            os.path.join(str(Path.home()), ".gemini", "skills"),
+            os.path.join(gemini_config_home(), "skills"),
             _workspace_path(workspace_dir, ".gemini", "skills"),
             _workspace_path(workspace_dir, ".agents", "skills"),
         ]
@@ -3020,13 +3074,9 @@ def _plugin_component_dirs(plugin_dirs: list[str], component: str) -> list[str]:
 
 
 def _gemini_plugin_dirs(workspace_dir: str | None = None) -> list[str]:
-    home = str(Path.home())
-    return _dedup(
-        [
-            os.path.join(home, ".gemini", "extensions"),
-            _workspace_path(workspace_dir, ".gemini", "extensions"),
-        ]
-    )
+    # Gemini CLI extensions are installed into the user configuration root.
+    # The CLI does not document a project-local .gemini/extensions layer.
+    return [os.path.join(gemini_config_home(), "extensions")]
 
 
 def _openclaw_plugin_dirs(openclaw_home: str | None) -> list[str]:
@@ -3278,11 +3328,23 @@ def _windsurf_mcp_servers() -> list[MCPServerEntry]:
     return _dedup_mcp_entries(entries)
 
 
-def _gemini_mcp_servers() -> list[MCPServerEntry]:
-    return _read_mcp_settings_block(
-        os.path.join(str(Path.home()), ".gemini", "settings.json"),
-        keys=("mcpServers",),
+def _gemini_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+    entries: list[MCPServerEntry] = []
+    # Gemini's project settings override user settings. Only consult the
+    # project layer when DefenseClaw has an explicitly pinned workspace; never
+    # infer it from the gateway process's current working directory.
+    project_settings = _workspace_path(workspace_dir, ".gemini", "settings.json")
+    if project_settings:
+        entries.extend(
+            _read_mcp_settings_block(project_settings, keys=("mcpServers",))
+        )
+    entries.extend(
+        _read_mcp_settings_block(
+            os.path.join(gemini_config_home(), "settings.json"),
+            keys=("mcpServers",),
+        )
     )
+    return _dedup_mcp_entries(entries)
 
 
 def _copilot_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
@@ -4066,7 +4128,12 @@ def set_mcp_server(
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
     if name_n == "geminicli":
-        path = os.path.join(str(Path.home()), ".gemini", "settings.json")
+        workspace = _workspace_dir(workspace_dir)
+        path = (
+            os.path.join(workspace, ".gemini", "settings.json")
+            if workspace
+            else os.path.join(gemini_config_home(), "settings.json")
+        )
         _atomic_json_merge(path, ("mcpServers", name), entry)
         return
     if name_n == "copilot":
@@ -4172,7 +4239,12 @@ def unset_mcp_server(
         _atomic_json_delete(path, ("mcpServers", name))
         return
     if name_n == "geminicli":
-        path = os.path.join(str(Path.home()), ".gemini", "settings.json")
+        workspace = _workspace_dir(workspace_dir)
+        path = (
+            os.path.join(workspace, ".gemini", "settings.json")
+            if workspace
+            else os.path.join(gemini_config_home(), "settings.json")
+        )
         _atomic_json_delete(path, ("mcpServers", name))
         return
     if name_n == "copilot":

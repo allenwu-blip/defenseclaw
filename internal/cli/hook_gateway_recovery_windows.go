@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/defenseclaw/defenseclaw/internal/hookruntime"
+	"github.com/defenseclaw/defenseclaw/internal/nativeinstallstate"
 	"github.com/defenseclaw/defenseclaw/internal/processutil"
 )
 
@@ -24,6 +25,7 @@ var (
 	nativePreparedHookRuntimeRevalidator = hookruntime.RevalidatePreparedGenerationForExecutable
 	nativeGatewayStartLock               = hookruntime.WithGatewayStartLock
 	nativeGatewayStartRunner             = runTrustedNativeGatewayStart
+	nativeGatewayInstallStateReader      = nativeinstallstate.LoadForExecutable
 )
 
 func trustedNativeGatewayRecovery() func(context.Context, error) error {
@@ -94,7 +96,10 @@ func runTrustedNativeGatewayStart(ctx context.Context, state hookruntime.State) 
 	}
 	defer lockedGateway.Close()
 
-	cmd := newTrustedNativeGatewayStartCommand(ctx, state)
+	cmd, err := newTrustedNativeGatewayStartCommand(ctx, state)
+	if err != nil {
+		return fmt.Errorf("prepare installer-owned gateway start: %w", err)
+	}
 	output, err := cmd.CombinedOutput()
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return fmt.Errorf("gateway cold start exceeded the hook deadline: %w", ctxErr)
@@ -112,14 +117,18 @@ func runTrustedNativeGatewayStart(ctx context.Context, state hookruntime.State) 
 	return nil
 }
 
-func newTrustedNativeGatewayStartCommand(ctx context.Context, state hookruntime.State) *exec.Cmd {
+func newTrustedNativeGatewayStartCommand(ctx context.Context, state hookruntime.State) (*exec.Cmd, error) {
 	cmd := processutil.CommandContext(ctx, state.GatewayPath, "start")
 	cmd.Dir = filepath.Clean(state.DataRoot)
-	cmd.Env = trustedNativeGatewayStartEnvironment(os.Environ(), state.DataRoot)
-	return cmd
+	environment, err := trustedNativeGatewayStartEnvironment(os.Environ(), state)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = environment
+	return cmd, nil
 }
 
-func trustedNativeGatewayStartEnvironment(environ []string, dataRoot string) []string {
+func trustedNativeGatewayStartEnvironment(environ []string, runtimeState hookruntime.State) ([]string, error) {
 	clean := make([]string, 0, len(environ)+3)
 	for _, entry := range environ {
 		name, _, ok := strings.Cut(entry, "=")
@@ -133,10 +142,27 @@ func trustedNativeGatewayStartEnvironment(environ []string, dataRoot string) []s
 		}
 		clean = append(clean, entry)
 	}
+	installState, recognized, err := nativeGatewayInstallStateReader(runtimeState.GatewayPath)
+	if err != nil {
+		return nil, fmt.Errorf("load native install state for gateway recovery: %w", err)
+	}
+	if recognized {
+		if !sameHookRecoveryPath(installState.DataRoot, runtimeState.DataRoot) {
+			return nil, errors.New("native install state data root does not match protected hook runtime")
+		}
+		clean = installState.Environment(clean)
+	} else {
+		clean = append(clean, "DEFENSECLAW_HOME="+filepath.Clean(runtimeState.DataRoot))
+	}
 	return append(
 		clean,
-		"DEFENSECLAW_HOME="+filepath.Clean(dataRoot),
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
-	)
+	), nil
+}
+
+func sameHookRecoveryPath(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return strings.EqualFold(left, right)
 }

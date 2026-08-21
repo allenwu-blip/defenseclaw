@@ -103,9 +103,9 @@ from defenseclaw.file_permissions import (
     open_regular_file_no_follow,
     read_regular_file_no_follow,
     reject_reparse_path,
-    windows_acl_write_error,
     windows_acl_custody_confidentiality_error,
     windows_acl_custody_write_error,
+    windows_acl_write_error,
 )
 from defenseclaw.inventory import agent_discovery
 from defenseclaw.logger import CanonicalObservabilityUnavailableError
@@ -205,6 +205,7 @@ _TOKEN_ROTATION_CHILD_ENV_ALLOWLIST = (
     "DEFENSECLAW_CURSOR_CONFIG_HOME",
     "WINDSURF_USER_HOME",
     "WINDSURF_HOOK_CONFIG_PATH",
+    "DEFENSECLAW_GEMINI_CONFIG_HOME",
     "OPENCODE_CONFIG_DIR",
     "OMNIGENT_CONFIG",
     "OMNIGENT_CONFIG_HOME",
@@ -4185,8 +4186,8 @@ _CONNECTOR_META: dict[str, dict[str, str]] = {
     "geminicli": {
         "label": "Gemini CLI",
         "description": (
-            "enterprise/Google Cloud/paid API-key settings.json hooks + "
-            "native OTLP + extensions"
+            "settings.json hooks + native OTLP + project/user MCP; "
+            "workspace skills/agents + read-only user extensions"
         ),
         "tool_mode": "both",
         "subprocess_policy": "none",
@@ -4306,10 +4307,15 @@ _CONNECTOR_CHANGE_SURFACES: dict[str, tuple[str, ...]] = {
         "Devin Local/default-agent, cloud, ACP, and managed/ProgramData layers remain unsupported",
     ),
     "geminicli": (
-        "~/.gemini/settings.json hooks (continuing enterprise/Google Cloud/paid API-key product only)",
-        "~/.gemini/settings.json native OTLP telemetry and MCP entries",
-        "<workspace>/.gemini/skills, extensions, and agents install surfaces",
-        "~/.defenseclaw/hooks/geminicli-hook.sh (supported non-Windows hosts only)",
+        (
+            "<GEMINI_CLI_HOME>/.gemini/settings.json lifecycle hooks and native OTLP "
+            "telemetry (absent/exact-empty override defaults to ~/.gemini; invalid "
+            "non-empty override is rejected)"
+        ),
+        "Project and user .gemini/settings.json MCP entries",
+        "<workspace>/.gemini/skills and <workspace>/.gemini/agents install surfaces",
+        "~/.gemini/extensions user-global discovery only (not modified by Setup)",
+        "native executable hook command on Windows; ~/.defenseclaw/hooks/geminicli-hook.sh elsewhere",
     ),
     "copilot": (
         "~/.copilot/hooks/defenseclaw.json hooks by default",
@@ -10257,24 +10263,14 @@ def _make_observability_setup_command(connector: str) -> click.Command:
         else (f"\n\nPlatform status on {platform_support.host_os()}: {platform.status} — {platform.reason}")
     )
     product_note = (
-        "\n\nGemini CLI scope: continuing enterprise, Google Cloud, and paid "
-        "API-key access only. Consumer/free/Google AI Pro/Ultra service ended "
-        "on June 18, 2026; this setup does not restore that access."
-        if connector == "geminicli"
-        else (
-            "\n\nCursor scope: DefenseClaw owns only the user hook. Enterprise, Team, "
-            "and Project hooks have higher precedence. DefenseClaw cannot safely detect "
-            "an actual higher-priority conflict, so none is inferred. Action uses the "
-            "documented event-native deny response; native human approval is unsupported."
-            if connector == "cursor"
-            else ""
-        )
+        "\n\nCursor scope: DefenseClaw owns only the user hook. Enterprise, Team, "
+        "and Project hooks have higher precedence. DefenseClaw cannot safely detect "
+        "an actual higher-priority conflict, so none is inferred. Action uses the "
+        "documented event-native deny response; native human approval is unsupported."
+        if connector == "cursor"
+        else ""
     )
-    short_help = (
-        "Configure continuing paid/enterprise Gemini CLI hooks."
-        if connector == "geminicli"
-        else f"Configure DefenseClaw for {label}."
-    )
+    short_help = f"Configure DefenseClaw for {label}."
     if platform.status != platform_support.SUPPORTED:
         short_help = f"{label}: {platform.status} on {platform_support.host_os()}."
 

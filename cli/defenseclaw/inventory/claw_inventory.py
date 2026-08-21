@@ -1807,10 +1807,10 @@ def _agents_for_connector(connector: str, cfg: Config) -> list[dict[str, Any]]:
         )
     if name == "geminicli":
         return _agents_from_md_dirs(
-            [
-                os.path.join(os.getcwd(), ".gemini", "agents"),
-                os.path.join(home, ".gemini", "agents"),
-            ]
+            connector_paths.agent_dirs(
+                name,
+                workspace_dir=_connector_workspace_dir(cfg),
+            )
         )
     if name == "copilot":
         return _agents_from_copilot_dirs(connector_paths.copilot_agent_dirs(_connector_workspace_dir(cfg)))

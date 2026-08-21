@@ -344,6 +344,104 @@ func (c *ClaudeCodeConnector) HookCapabilities(opts SetupOpts) HookCapability {
 	}
 }
 
+// Capabilities implements ConnectorCapabilityProvider. The inventory paths
+// are derived from ComponentTargets so connector metadata and the runtime
+// component scanner stay in lockstep. Only the user/local MCP registry and
+// explicit skill roots are advertised writable; Claude instructions, agents,
+// and general plugin caches remain discovery-only.
+func (c *ClaudeCodeConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
+	targets := c.ComponentTargets(opts.WorkspaceDir)
+	profile := c.HookProfile(opts)
+	userDir := claudeCodeConfigDir()
+
+	skillWritePaths := uniqueNonEmptyStrings([]string{
+		workspacePath(opts, ".claude", "skills"),
+		filepath.Join(userDir, "skills"),
+	})
+	telemetryEndpoint := ""
+	if profile.NativeOTLP != nil {
+		telemetryEndpoint = profile.NativeOTLP.Endpoint
+	}
+
+	return ConnectorCapabilities{
+		LLMTrafficMode: LLMTrafficModeForConnector(c.Name()),
+		Hooks:          c.HookCapabilities(opts),
+		MCP: SurfaceCapability{
+			Supported:       true,
+			Scope:           "workspace,user",
+			ConfigPaths:     uniqueNonEmptyStrings(targets["mcp"]),
+			ReadPaths:       uniqueNonEmptyStrings(targets["mcp"]),
+			WritePaths:      []string{claudeCodeMCPStatePath()},
+			SupportsBackup:  true,
+			SupportsRestore: true,
+			Notes: []string{
+				"Claude Code MCP inventory reads the user/local state file and the explicit workspace .mcp.json; DefenseClaw writes only the user/local registry with protected ownership metadata.",
+			},
+		},
+		Skills: SurfaceCapability{
+			Supported:      true,
+			Scope:          "workspace,user",
+			ReadPaths:      uniqueNonEmptyStrings(targets["skill"]),
+			WritePaths:     skillWritePaths,
+			InstallTargets: []string{"skill"},
+			RequiresOptIn:  true,
+			Notes: []string{
+				"Claude Code skills and legacy commands are inventoried in client precedence order; installs require explicit operator opt-in.",
+			},
+		},
+		Rules: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     uniqueNonEmptyStrings(targets["config"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Claude settings, CLAUDE.md instruction files, and rules directories are policy-bearing discovery surfaces; DefenseClaw does not overwrite general Claude instructions or rules.",
+			},
+		},
+		Plugins: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user,cache",
+			ReadPaths:     uniqueNonEmptyStrings(targets["plugin"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"General Claude plugin and plugin-contributed skill roots are inventory-only. The separate opt-in CodeGuard capability uses Claude's official marketplace and plugin commands.",
+			},
+		},
+		Agents: SurfaceCapability{
+			Supported:     true,
+			Scope:         "workspace,user",
+			ReadPaths:     uniqueNonEmptyStrings(targets["agent"]),
+			DiscoveryOnly: true,
+			Notes: []string{
+				"Claude custom-agent definitions are inventoried without modifying or installing them.",
+			},
+		},
+		CodeGuard: CodeGuardCapability{
+			Supported:      true,
+			InstallTargets: []string{"plugin"},
+			OptInOnly:      true,
+			AutoInstall:    false,
+			Idempotent:     true,
+			ConflictSafe:   true,
+			Notes: []string{
+				"Explicit CodeGuard setup installs codeguard-security through Claude's official marketplace and plugin commands; connector teardown does not uninstall that vendor-managed plugin.",
+			},
+		},
+		Telemetry: TelemetryCapability{
+			NativeOTLP:       profile.NativeOTLP != nil,
+			NativeSignals:    []string{"logs", "metrics"},
+			HookSignals:      []string{"logs", "metrics", "traces"},
+			ConfigPaths:      []string{claudeCodeSettingsPath()},
+			AuthMode:         "header-token",
+			EndpointTemplate: telemetryEndpoint,
+			SourceModes:      []string{"native", "hook"},
+			Notes: []string{
+				"Claude Code exports native logs and metrics to the loopback gateway with a connector-scoped Authorization header; native traces and all documented content-bearing telemetry gates remain disabled.",
+			},
+		},
+	}
+}
+
 // HookProfile implements HookProfileProvider. The returned
 // NativeOTLPSpec is the declarative form of buildClaudeCodeOtelEnv:
 // an env-block targeting the gateway's loopback OTLP-HTTP receiver. Claude

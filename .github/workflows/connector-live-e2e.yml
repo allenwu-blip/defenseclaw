@@ -106,7 +106,7 @@ on:
         type: string
         default: ""
       antigravity_phase:
-        description: "Antigravity lane phase: automated preview or protected interactive prepare/resume/cleanup"
+        description: "Antigravity lane phase: automated run or protected interactive prepare/resume/cleanup"
         type: choice
         default: automated
         options:
@@ -413,34 +413,12 @@ jobs:
       DC_DRIVER_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || 'action' }}
       DC_E2E_AGENT_VERSION_REQUEST: ${{ github.event_name == 'workflow_dispatch' && inputs.version || 'latest' }}
       AMP_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || 'latest' }}
-      # Provider keys are read directly by the agent CLIs (e.g. codex, claude)
-      # from the process environment. They are also written into
-      # ~/.defenseclaw/.env below so the gateway can reach them when needed.
-      # Empty secrets simply skip writing that key (see the seed step).
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-      # GitHub Copilot CLI authenticates with an entitled token through its
-      # documented highest-precedence environment variable.
-      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
-      # Generic fallback key for the guardrail/judge if a connector needs it.
-      LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-      # --- Alternative auth backends -----------------------------------------
-      # Azure OpenAI (Codex + OpenHands when DC_USE_AZURE=1). The key is a
-      # secret; the endpoint/deployment/version are non-secret config Variables.
-      AZURE_OPENAI_API_KEY: ${{ secrets.AZURE_OPENAI_API_KEY }}
+      # Provider secrets are intentionally step-scoped below. Keep only
+      # non-secret backend selection/configuration at job scope so unrelated
+      # connector cells and setup/package steps never inherit credentials.
       AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
       AZURE_OPENAI_DEPLOYMENT: ${{ vars.AZURE_OPENAI_DEPLOYMENT }}
       AZURE_OPENAI_API_VERSION: ${{ vars.AZURE_OPENAI_API_VERSION }}
-      # Amazon Bedrock (Claude Code + OpenHands when DC_USE_BEDROCK=1). Either a
-      # Bedrock bearer token OR a standard AWS key pair satisfies the chain.
-      AWS_BEARER_TOKEN_BEDROCK: ${{ secrets.AWS_BEARER_TOKEN_BEDROCK }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       # Optional Bedrock model-id overrides (non-secret config Variables).
       CLAUDE_BEDROCK_MODEL: ${{ vars.CLAUDE_BEDROCK_MODEL }}
@@ -506,14 +484,25 @@ jobs:
             echo "${{ github.workspace }}/.venv/Scripts" >> "$GITHUB_PATH"
           fi
 
-      # Initialize DefenseClaw and stage provider keys into ~/.defenseclaw/.env.
-      # The driver re-runs `defenseclaw init` idempotently; doing it here lets
-      # us append keys before the gateway first starts. Only non-empty secrets
-      # are written, so a missing optional key never leaves a blank line.
+      - name: Initialize DefenseClaw without provider credentials
+        if: steps.select.outputs.run == 'true'
+        run: defenseclaw init
+
+      # The driver re-runs `defenseclaw init` idempotently. Seed only the
+      # current connector's non-empty direct-provider keys before connector
+      # setup restarts the gateway; Azure/Bedrock credentials remain process-only.
       - name: Seed DefenseClaw env
         if: steps.select.outputs.run == 'true'
+        env:
+          MATRIX_CONNECTOR: ${{ matrix.connector }}
+          OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'opencode' || matrix.connector == 'openhands') && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
+          AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
+          LLM_API_KEY: ${{ matrix.connector == 'openhands' && secrets.LLM_API_KEY || '' }}
         run: |
-          defenseclaw init
           env_file="${HOME}/.defenseclaw/.env"
           mkdir -p "${HOME}/.defenseclaw"
           touch "${env_file}"
@@ -523,13 +512,35 @@ jobs:
             grep -q "^${k}=" "${env_file}" 2>/dev/null && return 0
             printf '%s=%s\n' "${k}" "${v}" >> "${env_file}"
           }
-          write_key OPENAI_API_KEY    "${OPENAI_API_KEY:-}"
-          write_key ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}"
-          write_key AMP_API_KEY       "${AMP_API_KEY:-}"
-          write_key GOOGLE_API_KEY    "${GOOGLE_API_KEY:-}"
-          write_key GEMINI_API_KEY    "${GEMINI_API_KEY:-}"
-          write_key CURSOR_API_KEY    "${CURSOR_API_KEY:-}"
-          write_key LLM_API_KEY       "${LLM_API_KEY:-}"
+          case "${MATRIX_CONNECTOR}" in
+            codex|opencode)
+              write_key OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+              ;;
+            claudecode)
+              write_key ANTHROPIC_API_KEY "${ANTHROPIC_API_KEY:-}"
+              ;;
+            amp)
+              write_key AMP_API_KEY "${AMP_API_KEY:-}"
+              ;;
+            geminicli)
+              write_key GOOGLE_API_KEY "${GOOGLE_API_KEY:-}"
+              write_key GEMINI_API_KEY "${GEMINI_API_KEY:-}"
+              ;;
+            cursor)
+              write_key CURSOR_API_KEY "${CURSOR_API_KEY:-}"
+              ;;
+            openhands)
+              write_key OPENAI_API_KEY "${OPENAI_API_KEY:-}"
+              write_key LLM_API_KEY "${LLM_API_KEY:-}"
+              ;;
+            copilot|hermes|windsurf|antigravity)
+              :
+              ;;
+            *)
+              echo "unexpected live connector for env seeding: ${MATRIX_CONNECTOR}" >&2
+              exit 1
+              ;;
+          esac
 
       # For Cursor, confirm headless `agent -p` actually fires
       # ~/.cursor/hooks.json before spending a full live run on it. If hooks
@@ -538,11 +549,27 @@ jobs:
       - name: Validate Cursor headless hooks
         id: cursor_validate
         if: ${{ steps.select.outputs.run == 'true' && matrix.connector == 'cursor' }}
+        env:
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
         run: bash scripts/live-connector-e2e/cursor-validation.sh
         continue-on-error: true
 
       - name: Live driver
         if: ${{ steps.select.outputs.run == 'true' && !(matrix.connector == 'cursor' && steps.cursor_validate.outputs.cursor_hooks_fire == '0') }}
+        env:
+          OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'opencode' || matrix.connector == 'openhands') && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
+          AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          GEMINI_API_KEY: ${{ matrix.connector == 'geminicli' && secrets.GOOGLE_API_KEY || '' }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
+          COPILOT_GITHUB_TOKEN: ${{ matrix.connector == 'copilot' && secrets.COPILOT_GITHUB_TOKEN || '' }}
+          LLM_API_KEY: ${{ matrix.connector == 'openhands' && secrets.LLM_API_KEY || '' }}
+          AZURE_OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'openhands') && secrets.AZURE_OPENAI_API_KEY || '' }}
+          AWS_BEARER_TOKEN_BEDROCK: ${{ (matrix.connector == 'claudecode' || matrix.connector == 'openhands') && secrets.AWS_BEARER_TOKEN_BEDROCK || '' }}
+          AWS_ACCESS_KEY_ID: ${{ (matrix.connector == 'claudecode' || matrix.connector == 'openhands') && secrets.AWS_ACCESS_KEY_ID || '' }}
+          AWS_SECRET_ACCESS_KEY: ${{ (matrix.connector == 'claudecode' || matrix.connector == 'openhands') && secrets.AWS_SECRET_ACCESS_KEY || '' }}
+          AWS_SESSION_TOKEN: ${{ (matrix.connector == 'claudecode' || matrix.connector == 'openhands') && secrets.AWS_SESSION_TOKEN || '' }}
         run: bash scripts/live-connector-e2e/run.sh --layer live --connector "${{ matrix.connector }}"
 
       - name: Upload live results
@@ -714,11 +741,10 @@ jobs:
         if: steps.select.outputs.run == 'true'
         shell: pwsh
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}
-          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
-          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          OPENAI_API_KEY: ${{ (matrix.connector == 'codex' || matrix.connector == 'opencode') && secrets.OPENAI_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ matrix.connector == 'claudecode' && secrets.ANTHROPIC_API_KEY || '' }}
+          AMP_API_KEY: ${{ matrix.connector == 'amp' && secrets.AMP_API_KEY || '' }}
+          CURSOR_API_KEY: ${{ matrix.connector == 'cursor' && secrets.CURSOR_API_KEY || '' }}
         run: |
           ./scripts/live-connector-e2e/run-windows.ps1 `
             -Layer live `
@@ -787,10 +813,11 @@ jobs:
           -ExpectedWorkflowRepository '${{ github.repository }}'
           -StateRoot $env:DC_WINDOWS_STATE
 
-  # Protected delta-only lane for Copilot's existing native Windows Setup
-  # bootstrap. The public CLI/TUI status remains not_certified/live=false.
-  # HITL is deliberately excluded and unclaimed; this job proves only exact
-  # package/client custody, allow/deny, health, persistence, and restoration.
+  # Protected delta-only lane for Copilot's supported native Windows Setup
+  # bootstrap. The public CLI/TUI classification remains supported; live=false
+  # until qualifying evidence is recorded. HITL is deliberately excluded and
+  # unclaimed; this job proves only exact package/client custody, allow/deny,
+  # health, persistence, and restoration.
   windows-copilot-live:
     name: Windows x64 live / copilot (protected delta)
     if: >-
@@ -998,11 +1025,11 @@ jobs:
             -ResultsPath $env:DC_E2E_RESULTS `
             -ArtifactPath $env:DC_E2E_ARTIFACTS
 
-  # Preview-only: this protected lane exercises the existing installer-shaped
-  # maintenance primitive after a public connector=none install. It does not
-  # prove Setup's internal Antigravity bootstrap or ordinary public Setup
-  # support. Any future certification still requires promotion, an exact
-  # package rebuild, and a fresh public Setup retest.
+  # This protected lane collects authenticated evidence for the supported
+  # Antigravity integration through the installer-shaped maintenance primitive
+  # after a public connector=none install. Its claim remains narrow: it does not
+  # exercise Setup's ordinary public Antigravity bootstrap, so that path still
+  # requires exact-package evidence and a fresh public Setup retest.
   windows-antigravity-live:
     name: Windows x64 live / antigravity (authenticated)
     if: >-
@@ -1175,11 +1202,11 @@ jobs:
             -ExpectedWorkflowRepository '${{ github.repository }}' `
             -StateRoot $env:DC_WINDOWS_STATE
 
-  # Protected preview-only lifecycle for authentic interactive Antigravity
-  # evidence. Prepare and resume are separate workflow dispatches. The native
-  # TUI itself is launched locally between them because Actions does not
-  # provide an interactive terminal. Durable authenticated state lives only on
-  # the dedicated runner's fixed task-specific D: root.
+  # Protected lifecycle for authentic interactive evidence from the supported
+  # Antigravity integration. Prepare and resume are separate workflow dispatches.
+  # The native TUI itself is launched locally between them because Actions does
+  # not provide an interactive terminal. Durable authenticated state lives only
+  # on the dedicated runner's fixed task-specific D: root.
   windows-antigravity-held-state:
     name: Windows x64 live / antigravity (protected held state)
     if: >-

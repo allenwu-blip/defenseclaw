@@ -34,10 +34,9 @@ def test_windows_release_metadata_is_exact() -> None:
         "omnigent",
         "antigravity",
     }
-    assert WINDOWS_PREVIEW_CONNECTORS == set()
+    assert WINDOWS_PREVIEW_CONNECTORS == {"geminicli"}
     assert WINDOWS_NOT_CERTIFIED_CONNECTORS == set()
     assert WINDOWS_UNSUPPORTED_CONNECTORS == {
-        "geminicli",
         "openhands",
         "openclaw",
         "zeptoclaw",
@@ -92,6 +91,24 @@ def test_windows_guide_has_unambiguous_claims_and_powershell_examples() -> None:
         assert label in text
 
 
+def test_hermes_native_windows_research_matches_supported_taxonomy() -> None:
+    text = (ROOT / "docs" / "research" / "HERMES-NATIVE-WINDOWS.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "DefenseClaw status: **supported**" in text
+    assert "Hermes is already classified as supported" in text
+    assert "authentic-client evidence and certification metadata" in text
+    for stale_claim in (
+        "preview / not certified",
+        "Hermes preview",
+        "Windows `preview` mirrors",
+        "preview/not-certified",
+        "Do not promote Hermes beyond preview",
+    ):
+        assert stale_claim not in text
+
+
 def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> None:
     windows_docs = ROOT / "docs-site/content/docs/get-started/windows"
     capabilities = (windows_docs / "capabilities-commands.mdx").read_text(
@@ -117,7 +134,7 @@ def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> Non
     assert "Native Windows supports Amp plus Codex, Claude Code, Cursor" in cli_reference
     assert "remain previews or not-certified choices" not in cli_reference
     assert "Preview user-hook alias for Cursor" not in cli_reference
-    assert "excluded from the native Windows release" in cli_reference
+    assert "Gemini CLI is available in preview" in cli_reference
     assert (
         "Native Windows x64 release certification currently covers Claude Code"
         not in live_workflow
@@ -132,6 +149,67 @@ def test_windows_docs_keep_supported_taxonomy_and_optional_git_boundary() -> Non
         assert "it is optional; without it Claude uses its native PowerShell tool" in text
         assert "Claude Code's Git for Windows requirement" not in text
         assert "Claude Code retains its Git for Windows requirement" not in text
+
+
+def test_gemini_preview_docs_preserve_scope_and_effective_settings_limits() -> None:
+    from defenseclaw.commands.cmd_setup import (
+        _CONNECTOR_CHANGE_SURFACES,
+        _CONNECTOR_META,
+    )
+
+    connector_page = (
+        ROOT / "docs-site/content/docs/connectors/geminicli.mdx"
+    ).read_text(encoding="utf-8")
+    acceptance = (
+        ROOT / "docs/research/NATIVE-WINDOWS-CONNECTOR-ACCEPTANCE.md"
+    ).read_text(encoding="utf-8")
+    surfaces = "\n".join(_CONNECTOR_CHANGE_SURFACES["geminicli"])
+    metadata = _CONNECTOR_META["geminicli"]["description"]
+
+    assert "project/user MCP" in metadata
+    assert "workspace skills/agents" in metadata
+    assert "read-only user extensions" in metadata
+    assert "Project and user .gemini/settings.json MCP entries" in surfaces
+    assert "absent/exact-empty override defaults to ~/.gemini" in surfaces
+    assert "invalid non-empty override is rejected" in surfaces
+    assert "<workspace>/.gemini/skills" in surfaces
+    assert "<workspace>/.gemini/agents" in surfaces
+    assert "~/.gemini/extensions user-global discovery only" in surfaces
+    assert "<workspace>/.gemini/extensions" not in surfaces
+
+    normalized_page = " ".join(connector_page.split())
+    for event in (
+        "`BeforeAgent`",
+        "`BeforeModel`",
+        "`BeforeTool`",
+        "`AfterTool`",
+        "`AfterModel`",
+        "`AfterAgent`",
+    ):
+        assert event in normalized_page
+    assert "`PreCompress` asynchronously" in normalized_page
+    assert "`SessionEnd` on a best-effort basis" in normalized_page
+    assert "official **home-root** override" in normalized_page
+    assert "`<GEMINI_CLI_HOME>/.gemini/settings.json`" in normalized_page
+    assert "non-empty value that fails those checks makes Setup fail closed" in normalized_page
+    assert "only an absent or exactly empty value falls back" in normalized_page
+    assert "unsupported `GEMINI_CONFIG_DIR` variable is ignored" in normalized_page
+    assert "JSONC-style comments" in normalized_page
+    assert "formatted canonical JSON" in normalized_page
+    assert "comments and the original formatting are not preserved" in normalized_page
+    assert "arbitrary future or unpinned trusted workspace" in normalized_page
+    assert "action-mode blocking and native OTLP remain preview" in normalized_page
+    assert "does not install a managed Gemini wrapper" in normalized_page
+
+    gemini_rows = "\n".join(
+        line for line in acceptance.splitlines() if line.startswith("| Gemini CLI")
+    )
+    assert "`PreCompress` is asynchronous" in gemini_rows
+    assert "`SessionEnd` is best-effort" in gemini_rows
+    assert "arbitrary future/unpinned workspace" in gemini_rows
+    assert "launch-time home and effective-settings drift remain outside enforcement" in gemini_rows
+    assert "installs no managed Gemini wrapper" in gemini_rows
+    assert "awaited system-PowerShell" not in gemini_rows
 
 
 def test_claude_windows_docs_use_official_config_override() -> None:
@@ -435,7 +513,8 @@ def test_hermes_latest_source_recheck_matches_the_pinned_contract() -> None:
 
     assert "Last verified: **2026-08-04**" in research
     assert "Hermes Agent v0.20.0, tag `v2026.8.3`" in research
-    assert "preview / not certified" in research
+    assert "DefenseClaw status: **supported**" in research
+    assert "authentic-client evidence and certification metadata" in research
     assert "latest rechecked tag [`v2026.8.3`]" in acceptance
 
 
@@ -477,12 +556,13 @@ def test_omnigent_required_ci_claims_remain_degraded_and_non_live() -> None:
         "codex",
         "copilot",
         "cursor",
+        "geminicli",
         "hermes",
         "omnigent",
         "opencode",
         "windsurf",
     }
-    assert required_connectors.isdisjoint({"geminicli", "openhands", "openclaw", "zeptoclaw"})
+    assert required_connectors.isdisjoint({"openhands", "openclaw", "zeptoclaw"})
     omnigent_job = jobs["omnigent-native-degraded"]
     assert omnigent_job["name"] == "Windows x64 OmniGent native degraded"
     assert "if" not in omnigent_job

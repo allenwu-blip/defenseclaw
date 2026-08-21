@@ -200,6 +200,21 @@ func TestParseArgsNormalizesCursorAgentAliases(t *testing.T) {
 	}
 }
 
+func TestGeminiAliasesResolveToNativeLifecycleConnector(t *testing.T) {
+	if !isNativeLifecycleConnector("geminicli") || !validConnector("geminicli") {
+		t.Fatal("Gemini CLI is missing from the native lifecycle roster")
+	}
+	for _, alias := range []string{"gemini", "geminicli", "gemini-cli"} {
+		opts, err := parseArgs([]string{"/quiet", "CONNECTOR=" + alias})
+		if err != nil {
+			t.Fatalf("parseArgs(%q): %v", alias, err)
+		}
+		if opts.Connector != "geminicli" || !opts.ConnectorSet {
+			t.Fatalf("parseArgs(%q) connector = %q, set=%t", alias, opts.Connector, opts.ConnectorSet)
+		}
+	}
+}
+
 func TestParseArgsVerifyAction(t *testing.T) {
 	opts, err := parseArgs([]string{"/verify"})
 	if err != nil {
@@ -242,7 +257,7 @@ func TestParseArgsDeferredCleanupQuietRestartContract(t *testing.T) {
 }
 
 func TestParseArgsQuietPropertyMatrix(t *testing.T) {
-	for _, connector := range []string{"none", "amp", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connector := range []string{"none", "amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "omnigent", "opencode", "windsurf"} {
 		for _, mode := range []string{"observe", "action"} {
 			for _, start := range []string{"0", "1"} {
 				t.Run(connector+"/"+mode+"/start-"+start, func(t *testing.T) {
@@ -317,7 +332,7 @@ func TestNoRestartStillRestartsPreviouslyRunningOwnedServices(t *testing.T) {
 }
 
 func TestConfiguredConnectorRequiresPersistentGateway(t *testing.T) {
-	for _, connectorName := range []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "hermes", "omnigent", "opencode", "windsurf"} {
+	for _, connectorName := range []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "hermes", "omnigent", "opencode", "windsurf"} {
 		wanted := requestedServices(options{Connector: connectorName}, serviceState{})
 		if !wanted.Gateway {
 			t.Fatalf("connector %s did not require gateway startup", connectorName)
@@ -883,6 +898,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 		filepath.Join("connector_backups", "copilot", "config.json"),
 		filepath.Join("connector_backups", "cursor", "hooks.json.json"),
 		filepath.Join("connector_backups", "windsurf", "config.json"),
+		filepath.Join("connector_backups", "geminicli", "config.json"),
 		filepath.Join("connector_backups", "opencode", "config.json"),
 		filepath.Join("connector_backups", "omnigent", "config.json"),
 		filepath.Join("connector_backups", "hermes", "config.yaml.json"),
@@ -901,7 +917,7 @@ func TestConnectorsForNativeUninstallUsesStructuredBackupMarkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"codex", "claudecode", "amp", "copilot", "cursor", "windsurf", "antigravity", "opencode", "omnigent", "hermes"}
+	want := []string{"codex", "claudecode", "amp", "copilot", "cursor", "windsurf", "antigravity", "geminicli", "opencode", "omnigent", "hermes"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}
@@ -943,6 +959,8 @@ guardrail:
     copilot:
       mode: observe
     cursor:
+    geminicli:
+      mode: observe
     opencode:
       mode: observe
 gateway:
@@ -958,7 +976,7 @@ observability:
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "opencode"}
+	want := []string{"amp", "antigravity", "claudecode", "codex", "copilot", "cursor", "geminicli", "opencode"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("connectors = %v, want %v", got, want)
 	}

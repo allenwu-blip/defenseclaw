@@ -1737,7 +1737,7 @@ def _connector_readiness(cfg: Config, connector: str) -> StepResult:
             "defenseclaw setup windsurf",
         )
     if connector == "geminicli":
-        path = os.path.expanduser("~/.gemini/settings.json")
+        path = connector_config_files("geminicli")[0]
         if os.path.isfile(path):
             return StepResult("Connector", "pass", "Gemini CLI settings found")
         return StepResult("Connector", "warn", "Gemini CLI settings not found yet", "defenseclaw setup geminicli")
