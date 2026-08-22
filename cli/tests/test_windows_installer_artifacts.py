@@ -738,47 +738,64 @@ def test_hook_launcher_size_signing_and_inventory_order_is_fail_closed() -> None
     assert "hook_launcher_sha256 = Get-FileHashHex $hookLauncher" in build
 
 
-@pytest.mark.skipif(os.name != "nt", reason="requires Windows PowerShell file semantics")
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows PowerShell 7 file semantics")
 def test_hook_launcher_size_gate_rejects_oversized_artifact(tmp_path: Path) -> None:
-    powershell = shutil.which("powershell")
-    if powershell is None:
-        pytest.skip("Windows PowerShell is required for the launcher size-gate fixture")
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell 7 is required for the launcher size-gate fixture")
     launcher = tmp_path / "defenseclaw-hook-launcher.exe"
-    launcher.write_bytes(b"\0" * (8 * 1024 * 1024))
+    launcher.write_bytes(b"\0" * 8)
     harness = tmp_path / "hook-launcher-size.ps1"
     harness.write_text(
         "$ErrorActionPreference = 'Stop'\n"
         "$HookLauncherName = 'defenseclaw-hook-launcher.exe'\n"
-        "$HookLauncherMaxUnsignedBytes = 8MB\n"
+        "$HookLauncherMaxUnsignedBytes = 8\n"
         f"{_builder_function('Assert-HookLauncherArtifact')}\n"
-        "Assert-HookLauncherArtifact $env:DC_TEST_HOOK_LAUNCHER\n",
+        "Assert-HookLauncherArtifact $env:DC_TEST_HOOK_LAUNCHER\n"
+        "$stream = [IO.File]::Open(\n"
+        "    $env:DC_TEST_HOOK_LAUNCHER,\n"
+        "    [IO.FileMode]::Append,\n"
+        "    [IO.FileAccess]::Write,\n"
+        "    [IO.FileShare]::None\n"
+        ")\n"
+        "try {\n"
+        "    $stream.WriteByte(0)\n"
+        "} finally {\n"
+        "    $stream.Dispose()\n"
+        "}\n"
+        '$expected = "HookRuntime launcher must be a regular canonical '
+        "$HookLauncherName no larger than $HookLauncherMaxUnsignedBytes bytes "
+        'before signing: $env:DC_TEST_HOOK_LAUNCHER"\n'
+        "$rejected = $false\n"
+        "try {\n"
+        "    Assert-HookLauncherArtifact $env:DC_TEST_HOOK_LAUNCHER\n"
+        "} catch {\n"
+        "    if (-not [string]::Equals(\n"
+        "        [string]$_.Exception.Message, $expected, [StringComparison]::Ordinal\n"
+        "    )) {\n"
+        "        throw\n"
+        "    }\n"
+        "    $rejected = $true\n"
+        "}\n"
+        "if (-not $rejected) {\n"
+        "    throw 'HookRuntime launcher size gate accepted an oversized artifact'\n"
+        "}\n",
         encoding="utf-8",
     )
     env = os.environ.copy()
     env["DC_TEST_HOOK_LAUNCHER"] = str(launcher)
-    accepted = subprocess.run(
-        [powershell, "-NoProfile", "-NonInteractive", "-File", str(harness)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-        check=False,
-    )
-    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
-
-    with launcher.open("ab") as stream:
-        stream.write(b"\0")
-    rejected = subprocess.run(
-        [powershell, "-NoProfile", "-NonInteractive", "-File", str(harness)],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=30,
-        check=False,
-    )
-    assert rejected.returncode != 0
-    assert "no larger than 8388608 bytes before" in rejected.stderr
-    assert "signing" in rejected.stderr
+    output = tmp_path / "hook-launcher-size.log"
+    with output.open("wb") as output_stream:
+        result = subprocess.run(
+            [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(harness)],
+            stdout=output_stream,
+            stderr=subprocess.STDOUT,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+    assert result.returncode == 0, output.read_bytes().decode("utf-8", errors="replace")
+    assert launcher.stat().st_size == 9
 
 
 def test_native_windows_workflow_builds_distinct_hook_launcher() -> None:
