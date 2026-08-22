@@ -396,6 +396,24 @@ try {
     . $harness -NoRun
     . $workflowRunPathHelper
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
+    $missingOptionalCleanupFields = '{"status":"pending-reboot"}' |
+        ConvertFrom-Json -ErrorAction Stop
+    foreach ($propertyName in @(
+        'cleanup_boot_identifier', 'data_root', 'gateway_path', 'gateway_sha256'
+    )) {
+        Assert-True (
+            (Get-OptionalJsonStringValue `
+                -InputObject $missingOptionalCleanupFields `
+                -PropertyName $propertyName) -ceq ''
+        ) "missing optional deferred-cleanup field is treated as its exact empty Go value: $propertyName"
+    }
+    $presentOptionalCleanupField = '{"cleanup_boot_identifier":"foreign-boot"}' |
+        ConvertFrom-Json -ErrorAction Stop
+    Assert-True (
+        (Get-OptionalJsonStringValue `
+            -InputObject $presentOptionalCleanupField `
+            -PropertyName 'cleanup_boot_identifier') -ceq 'foreign-boot'
+    ) 'present deferred-cleanup fields are not erased by optional-property access'
     Invoke-PackageLiveCleanupRegressionFixture
 
     $validClaudeInstaller = @'
@@ -454,6 +472,46 @@ $null = $Target
         -not (@($claudeRetryWarnings) -join "`n").Contains($claudeRetrySecret)) `
         'Claude installer transient retry warnings redact configured secrets'
 
+    foreach ($wrappedTransient in @(
+        [pscustomobject]@{
+            Name = 'authentication-wrapped EOF'
+            Inner = [IO.IOException]::new(
+                'Received an unexpected EOF or 0 bytes from the transport stream.'
+            )
+        },
+        [pscustomobject]@{
+            Name = 'authentication-wrapped connection reset'
+            Inner = [Net.Sockets.SocketException]::new(
+                [int][Net.Sockets.SocketError]::ConnectionReset
+            )
+        }
+    )) {
+        $wrappedState = [pscustomobject]@{ Attempts = 0; Delays = @() }
+        $wrappedResult = Get-OfficialClaudeInstallerScriptBlock `
+            -MaxAttempts 3 -PerAttemptTimeoutSeconds 1 `
+            -OverallTimeoutSeconds 5 -RequestInvoker {
+                param([Uri]$Uri, [int]$TimeoutSeconds)
+                $wrappedState.Attempts++
+                if ($wrappedState.Attempts -lt 3) {
+                    throw [Net.Http.HttpRequestException]::new(
+                        'The SSL connection could not be established, see inner exception.',
+                        [Security.Authentication.AuthenticationException]::new(
+                            'Authentication failed, see inner exception.',
+                            $wrappedTransient.Inner
+                        )
+                    )
+                }
+                return $validClaudeInstaller
+            } -DelayInvoker {
+                param([int]$DelaySeconds)
+                $wrappedState.Delays += $DelaySeconds
+            } -WarningAction SilentlyContinue
+        Assert-True ($wrappedResult -is [scriptblock] -and
+            $wrappedState.Attempts -eq 3 -and
+            ($wrappedState.Delays -join ',') -ceq '2,4') `
+            "Claude installer retries $($wrappedTransient.Name) only through its concrete transient inner cause"
+    }
+
     $claudeExhaustionState = [pscustomobject]@{ Attempts = 0; Delays = @() }
     $claudeExhaustionRejected = $false
     $env:ANTHROPIC_API_KEY = $claudeRetrySecret
@@ -504,11 +562,41 @@ $null = $Target
             )
         },
         [pscustomobject]@{
-            Name = 'certificate validation'
+            Name = 'ambiguous authentication'
             Exception = [Net.Http.HttpRequestException]::new(
                 'The SSL connection could not be established',
                 [Security.Authentication.AuthenticationException]::new(
                     'Authentication failed'
+                )
+            )
+        },
+        [pscustomobject]@{
+            Name = 'untrusted certificate root'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'The SSL connection could not be established',
+                [Security.Authentication.AuthenticationException]::new(
+                    'The remote certificate is invalid because of errors in the certificate chain: UntrustedRoot'
+                )
+            )
+        },
+        [pscustomobject]@{
+            Name = 'certificate hostname mismatch'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'The SSL connection could not be established',
+                [Security.Authentication.AuthenticationException]::new(
+                    'RemoteCertificateNameMismatch'
+                )
+            )
+        },
+        [pscustomobject]@{
+            Name = 'certificate evidence overrides transient-looking inner failure'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'The SSL connection could not be established',
+                [Security.Authentication.AuthenticationException]::new(
+                    'The remote certificate is invalid: UntrustedRoot',
+                    [IO.IOException]::new(
+                        'Received an unexpected EOF or 0 bytes from the transport stream.'
+                    )
                 )
             )
         }
@@ -1845,6 +1933,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Invoke-PackageLiveEvidenceCleanup\b.*?(?=\r?\nfunction )'
     ).Value
+    $optionalJsonStringValue = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-OptionalJsonStringValue\b.*?(?=\r?\nfunction )'
+    ).Value
     $packageDeferredCleanup = [regex]::Match(
         $harnessText,
         '(?s)function Assert-PackageDeferredCleanupPending\b.*?(?=\r?\nfunction )'
@@ -1874,6 +1966,12 @@ private-secret-name = "DefenseClaw must remain redacted"
         )).Count -eq 2 -and
         $packageLiveCleanup -match
             '(?s)elseif \(\(Test-Path -LiteralPath \$paths\.InstallRoot\).*?\$paths\.DataRoot\)\) \{\s*throw ''package live cleanup found product state without exact installed provenance''\s*\} elseif \(Test-Path -LiteralPath \$paths\.CacheRoot\) \{\s*\$null = Assert-PackageDeferredCleanupPending' -and
+        $optionalJsonStringValue -match
+            '\$InputObject\.PSObject\.Properties\[\$PropertyName\]' -and
+        $packageDeferredCleanup -match
+            '(?s)Get-OptionalJsonStringValue.*?cleanup_boot_identifier.*?Get-OptionalJsonStringValue.*?data_root.*?Get-OptionalJsonStringValue.*?gateway_path.*?Get-OptionalJsonStringValue.*?gateway_sha256' -and
+        $packageDeferredCleanup -notmatch
+            '\$(?:record\.cleanup_boot_identifier|hookState\.(?:data_root|gateway_path|gateway_sha256))' -and
         $packageDeferredCleanup -match "\[string\]\`$record\.status -cne 'pending-reboot'" -and
         $packageDeferredCleanup -match
             'Get-FileHash -LiteralPath \$ExactSetupExecutable' -and
@@ -2805,7 +2903,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         $claudeInstallerFetchContract -match
             'Test-ClaudeInstallerTransientTransportFailure' -and
         $harnessText -match
-            'failure -is \[Security\.Authentication\.AuthenticationException\]' -and
+            'Get-ClaudeInstallerFailureFingerprint' -and
+        $harnessText -match
+            'RemoteCertificate\(\?:NameMismatch\|ChainErrors\|NotAvailable\)' -and
+        $harnessText -notmatch
+            'failure -is \[Security\.Authentication\.AuthenticationException\].*?return \$false' -and
         $claudeInstallerFetchContract -match 'Protect-LogText' -and
         $claudeInstallerBodyContract -match
             'byteCount -gt 65536' -and

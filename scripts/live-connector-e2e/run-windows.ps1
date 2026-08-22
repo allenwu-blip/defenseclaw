@@ -7724,6 +7724,17 @@ function Set-ProtectedCopilotCleanupPhase([string]$Phase) {
     Write-ProtectedCopilotCleanupManifest $manifest
 }
 
+function Get-OptionalJsonStringValue(
+    [object]$InputObject,
+    [string]$PropertyName
+) {
+    $property = $InputObject.PSObject.Properties[$PropertyName]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return ''
+    }
+    return [string]$property.Value
+}
+
 function Assert-PackageDeferredCleanupPending(
     [pscustomobject]$Paths,
     [string]$ExactSetupExecutable
@@ -7782,12 +7793,20 @@ function Assert-PackageDeferredCleanupPending(
     } catch {
         throw "protected package deferred cleanup metadata is invalid JSON: $($_.Exception.Message)"
     }
+    $cleanupBootIdentifier = Get-OptionalJsonStringValue `
+        -InputObject $record -PropertyName 'cleanup_boot_identifier'
+    $hookDataRoot = Get-OptionalJsonStringValue `
+        -InputObject $hookState -PropertyName 'data_root'
+    $hookGatewayPath = Get-OptionalJsonStringValue `
+        -InputObject $hookState -PropertyName 'gateway_path'
+    $hookGatewaySHA256 = Get-OptionalJsonStringValue `
+        -InputObject $hookState -PropertyName 'gateway_sha256'
     if ([int]$record.schema_version -ne 1 -or
         [string]$record.status -cne 'pending-reboot' -or
         [string]$record.transaction_id -cnotmatch '^[0-9a-f]{32}$' -or
         [string]$record.uninstall_boot_identifier -cnotmatch
             '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or
-        -not [string]::IsNullOrWhiteSpace([string]$record.cleanup_boot_identifier) -or
+        -not [string]::IsNullOrWhiteSpace($cleanupBootIdentifier) -or
         [string]$record.run_value_name -cne 'DefenseClawDeferredUninstallCleanup') {
         throw 'protected package deferred cleanup record is not exact pending-reboot authority'
     }
@@ -7817,9 +7836,9 @@ function Assert-PackageDeferredCleanupPending(
         [string]$hookState.status -cne 'disabled' -or
         [string]$hookState.transaction_id -cne [string]$record.transaction_id -or
         [string]$hookState.launcher_sha256 -cne $launcherHash -or
-        -not [string]::IsNullOrWhiteSpace([string]$hookState.data_root) -or
-        -not [string]::IsNullOrWhiteSpace([string]$hookState.gateway_path) -or
-        -not [string]::IsNullOrWhiteSpace([string]$hookState.gateway_sha256)) {
+        -not [string]::IsNullOrWhiteSpace($hookDataRoot) -or
+        -not [string]::IsNullOrWhiteSpace($hookGatewayPath) -or
+        -not [string]::IsNullOrWhiteSpace($hookGatewaySHA256)) {
         throw 'protected package deferred cleanup package/HookRuntime authority is invalid'
     }
     if ([int]$journal.schema_version -ne 2 -or
@@ -8148,6 +8167,34 @@ function Invoke-ProtectedCopilotCleanup([switch]$PreserveRunInputs) {
     Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
 }
 
+function Get-ClaudeInstallerFailureFingerprint(
+    [AllowNull()][Exception]$Exception
+) {
+    if ($null -eq $Exception) { return 'none' }
+
+    $parts = [Collections.Generic.List[string]]::new()
+    $current = $Exception
+    while ($null -ne $current -and $parts.Count -lt 12) {
+        $hresult = [BitConverter]::ToUInt32(
+            [BitConverter]::GetBytes([int]$current.HResult), 0
+        ).ToString('X8')
+        $part = "$($current.GetType().FullName):hresult=0x$hresult"
+        $requestErrorProperty = $current.GetType().GetProperty('HttpRequestError')
+        if ($null -ne $requestErrorProperty) {
+            $requestError = [string]$requestErrorProperty.GetValue($current)
+            if (-not [string]::IsNullOrWhiteSpace($requestError)) {
+                $part += ":request=$requestError"
+            }
+        }
+        if ($current -is [Net.Sockets.SocketException]) {
+            $part += ":socket=$([string]$current.SocketErrorCode)"
+        }
+        $parts.Add($part)
+        $current = $current.InnerException
+    }
+    return $parts -join ' -> '
+}
+
 function Test-ClaudeInstallerTransientTransportFailure(
     [AllowNull()][Exception]$Exception
 ) {
@@ -8163,8 +8210,8 @@ function Test-ClaudeInstallerTransientTransportFailure(
     # HTTP responses, redirect-policy failures, and certificate/trust errors are
     # terminal. Retrying them would hide a service or integrity-policy failure.
     foreach ($failure in $chain) {
-        if ($failure -is [Security.Authentication.AuthenticationException] -or
-            $failure -is [Security.Cryptography.CryptographicException]) {
+        if ($failure -is [Security.Cryptography.CryptographicException] -or
+            $failure -is [IO.InvalidDataException]) {
             return $false
         }
         if ($failure.GetType().FullName -ceq
@@ -8184,8 +8231,23 @@ function Test-ClaudeInstallerTransientTransportFailure(
     }
     $messages = @($chain | ForEach-Object Message) -join "`n"
     if ($messages -match
-        '(?i)\b(certificate|certification path|certificate chain|revocation|trust relationship|unknown ca|untrusted root|name mismatch|hostname mismatch)\b|CERT_[A-Z_]+|CRYPT_E_') {
+        '(?i)\b(certificate|certification path|certificate chain|revocation|trust relationship|unknown ca|untrusted root|name mismatch|hostname mismatch|not ?time ?valid)\b|CERT_[A-Z_]+|CRYPT_E_|RemoteCertificate(?:NameMismatch|ChainErrors|NotAvailable)') {
         return $false
+    }
+    foreach ($failure in $chain) {
+        $hresult = [BitConverter]::ToUInt32(
+            [BitConverter]::GetBytes([int]$failure.HResult), 0
+        )
+        if ($hresult -in @(
+                [Convert]::ToUInt32('80090322', 16), # SEC_E_WRONG_PRINCIPAL
+                [Convert]::ToUInt32('80090325', 16), # SEC_E_UNTRUSTED_ROOT
+                [Convert]::ToUInt32('80090327', 16), # SEC_E_CERT_UNKNOWN
+                [Convert]::ToUInt32('80090328', 16)  # SEC_E_CERT_EXPIRED
+            ) -or
+            ($hresult -ge [Convert]::ToUInt32('800B0101', 16) -and
+             $hresult -le [Convert]::ToUInt32('800B0114', 16))) {
+            return $false
+        }
     }
 
     foreach ($failure in $chain) {
@@ -8200,9 +8262,8 @@ function Test-ClaudeInstallerTransientTransportFailure(
             $failure -is [Threading.Tasks.TaskCanceledException]) {
             return $true
         }
-        if ($failure -is [IO.InvalidDataException]) { return $false }
         if ($failure -is [IO.IOException] -and $failure.Message -match
-            '(?i)unexpected eof|response ended prematurely|transport stream|connection.*(?:closed|reset|aborted)|forcibly closed|reset by peer') {
+            '(?i)unexpected eof|0 bytes from the transport stream|response ended prematurely|transport stream|connection.*(?:closed|reset|aborted)|forcibly closed|reset by peer') {
             return $true
         }
         if ($failure -is [Net.Http.HttpRequestException]) {
@@ -8211,7 +8272,7 @@ function Test-ClaudeInstallerTransientTransportFailure(
                 $requestError = [string]$requestErrorProperty.GetValue($failure)
                 if ($requestError -in @(
                     'ConnectionError', 'NameResolutionError',
-                    'ProxyTunnelError'
+                    'ProxyTunnelError', 'ResponseEnded'
                 )) {
                     return $true
                 }
@@ -8287,10 +8348,12 @@ function Get-OfficialClaudeInstallerScriptBlock {
         } catch {
             $lastFailure = $_.Exception
             $safeMessage = Protect-LogText $lastFailure.Message
+            $fingerprint = Get-ClaudeInstallerFailureFingerprint $lastFailure
             if ($attempt -ge $MaxAttempts -or
                 -not (Test-ClaudeInstallerTransientTransportFailure $lastFailure)) {
                 throw [InvalidOperationException]::new(
-                    "official Claude installer fetch failed on attempt $attempt/$MaxAttempts`: $safeMessage"
+                    "official Claude installer fetch failed on attempt $attempt/$MaxAttempts " +
+                    "[$fingerprint]: $safeMessage"
                 )
             }
             $delaySeconds = [int][Math]::Pow(2, $attempt)
@@ -8298,7 +8361,7 @@ function Get-OfficialClaudeInstallerScriptBlock {
             if ($remainingAfterAttempt.TotalSeconds -le $delaySeconds) { break }
             Write-Warning (
                 "official Claude installer transport attempt $attempt/$MaxAttempts failed transiently; " +
-                "retrying in ${delaySeconds}s: $safeMessage"
+                "retrying in ${delaySeconds}s [$fingerprint]: $safeMessage"
             )
             $null = & $DelayInvoker $delaySeconds
         }
