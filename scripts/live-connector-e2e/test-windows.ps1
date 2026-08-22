@@ -10,6 +10,7 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $harness = Join-Path $PSScriptRoot 'run-windows.ps1'
 $workflowRunPathHelper = Join-Path $PSScriptRoot 'workflow-run-path.ps1'
 $openCodeAssertion = Join-Path $PSScriptRoot 'assert-opencode-plugin.mjs'
+$auditProjector = Join-Path $PSScriptRoot 'project-audit-events.py'
 $nativeHarness = Join-Path $root 'scripts\windows-native-ci.ps1'
 $wizardHarness = Join-Path $root 'scripts\test-windows-setup-wizard.ps1'
 $standardUserCI = Join-Path $root 'scripts\invoke-windows-setup-standard-user-ci.ps1'
@@ -1836,9 +1837,356 @@ private-secret-name = "DefenseClaw must remain redacted"
     } finally {
         $liveWriter.Dispose()
     }
-    $pythonCode = 'import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute("create table audit_events(request_id text)");c.execute("insert into audit_events(request_id) values (?)",(sys.argv[2],));c.commit();c.close()'
-    & python.exe -c $pythonCode $database $requestId
+    $pythonCode = @'
+import hashlib
+import json
+import sqlite3
+import sys
+
+database, source = sys.argv[1:]
+connection = sqlite3.connect(database)
+connection.execute("PRAGMA journal_mode=WAL")
+connection.execute(
+    """CREATE TABLE audit_events (
+           id TEXT, bucket TEXT, event_name TEXT, source TEXT, signal TEXT,
+           connector TEXT, request_id TEXT, session_id TEXT, turn_id TEXT,
+           record_schema_version INTEGER, payload_json TEXT,
+           projected_record_json TEXT, projection_hash TEXT
+       )"""
+)
+with open(source, encoding="utf-8") as stream:
+    for raw in stream:
+        if not raw.strip():
+            continue
+        event = json.loads(raw)
+        correlation = event.get("correlation") or {}
+        connection.execute(
+            """INSERT INTO audit_events
+                   (id, bucket, event_name, source, signal, connector,
+                    request_id, session_id, turn_id, record_schema_version,
+                    payload_json, projected_record_json, projection_hash)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+            (
+                event["record_id"],
+                event["bucket"],
+                event["event_name"],
+                event["source"],
+                event["signal"],
+                event.get("connector"),
+                correlation.get("request_id"),
+                correlation.get("session_id"),
+                correlation.get("turn_id"),
+                json.dumps(event.get("body") or {}, separators=(",", ":")),
+                raw.strip(),
+                "sha256:" + hashlib.sha256(raw.strip().encode("utf-8")).hexdigest(),
+            ),
+        )
+connection.commit()
+connection.close()
+'@
+    & python.exe -c $pythonCode $database $jsonl
     if ($LASTEXITCODE -ne 0) { throw 'failed to create disposable audit fixture' }
+    $savedAuditDb = $script:AuditDb
+    $savedStateRoot = $StateRoot
+    $projectionStateRoot = Join-Path $temp 'canonical-event-projection-state'
+    Protect-TestDirectory $projectionStateRoot
+    $walWriter = $null
+    try {
+        $StateRoot = $projectionStateRoot
+        $script:AuditDb = $database
+        $canonicalLines = @(Get-EventLines $script:AuditDb)
+        Assert-True ($canonicalLines.Count -eq 5) `
+            'Windows live evidence reads every canonical SQLite projection in rowid order'
+        Assert-True ($canonicalLines[0] -ceq $fixtureEvents[0] -and
+            $canonicalLines[4] -ceq $fixtureEvents[4]) `
+            'canonical SQLite projection preserves exact stored JSON records and order'
+        $projectionFiles = @(Get-ChildItem -LiteralPath (
+            Join-Path $projectionStateRoot '.canonical-event-projection'
+        ) -Filter '*.jsonl' -File -ErrorAction SilentlyContinue)
+        Assert-True ($projectionFiles.Count -eq 0) `
+            'private canonical projection snapshots are deleted immediately after each read'
+
+        $delayedSessionId = 'windows-contract-delayed-session'
+        $delayedRequestId = [guid]::NewGuid().ToString()
+        $delayedToolInvocationId = 'windows-contract-delayed-tool'
+        $delayedDecision = $fixtureEvents[1] | ConvertFrom-Json -ErrorAction Stop
+        $delayedDecision.record_id = 'windows-contract-delayed-hook-decision'
+        $delayedDecision.correlation.request_id = $delayedRequestId
+        $delayedDecision.correlation.session_id = $delayedSessionId
+        $delayedDecision.correlation.tool_invocation_id = $delayedToolInvocationId
+        $delayedDecision.body.'defenseclaw.guardrail.effective_action' = 'allow'
+        $delayedDecision.body.'defenseclaw.guardrail.raw_action' = 'allow'
+        $delayedDecision.body.'defenseclaw.guardrail.mode' = 'enforce'
+        $delayedDecision.body.'defenseclaw.guardrail.would_block' = $false
+        $delayedDecision.body.'defenseclaw.guardrail.enforced' = $false
+        $delayedDecision.body.'defenseclaw.guardrail.rule_ids' = @()
+        $delayedRaw = $delayedDecision | ConvertTo-Json -Depth 8 -Compress
+        $uncommittedReady = Join-Path $projectionStateRoot 'uncommitted.ready'
+        $commitReady = Join-Path $projectionStateRoot 'commit.ready'
+        $committedReady = Join-Path $projectionStateRoot 'committed.ready'
+        $walPython = @'
+import hashlib
+import json
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+database, raw, uncommitted_ready, commit_ready, committed_ready = sys.argv[1:]
+event = json.loads(raw)
+correlation = event["correlation"]
+connection = sqlite3.connect(database, timeout=5)
+connection.execute("BEGIN IMMEDIATE")
+connection.execute(
+    """INSERT INTO audit_events
+           (id, bucket, event_name, source, signal, connector,
+            request_id, session_id, turn_id, record_schema_version,
+            payload_json, projected_record_json, projection_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+    (
+        event["record_id"], event["bucket"], event["event_name"],
+        event["source"], event["signal"], event["connector"],
+        correlation["request_id"], correlation["session_id"],
+        correlation.get("turn_id"),
+        json.dumps(event.get("body") or {}, separators=(",", ":")),
+        raw,
+        "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+    ),
+)
+Path(uncommitted_ready).write_text("ready", encoding="utf-8")
+deadline = time.monotonic() + 10
+while not Path(commit_ready).is_file():
+    if time.monotonic() >= deadline:
+        raise TimeoutError("commit authorization was not published")
+    time.sleep(0.05)
+connection.commit()
+connection.close()
+Path(committed_ready).write_text("committed", encoding="utf-8")
+'@
+        $pythonApplication = (Get-Command 'python.exe' -CommandType Application `
+            -ErrorAction Stop | Select-Object -First 1).Source
+        $walWriter = Start-Job -ArgumentList @(
+            $pythonApplication, $walPython, $database, $delayedRaw,
+            $uncommittedReady, $commitReady, $committedReady
+        ) -ScriptBlock {
+            param($Python, $Code, $Database, $Raw, $Uncommitted, $Commit, $Committed)
+            & $Python -c $Code $Database $Raw $Uncommitted $Commit $Committed
+            if ($LASTEXITCODE -ne 0) { throw "SQLite WAL fixture exited $LASTEXITCODE" }
+        }
+        $uncommittedDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $uncommittedReady -PathType Leaf)) {
+            if ($walWriter.State -eq 'Failed') {
+                Receive-Job $walWriter -ErrorAction Stop | Out-Null
+            }
+            if ([DateTime]::UtcNow -ge $uncommittedDeadline) {
+                throw 'SQLite WAL fixture did not publish its uncommitted row'
+            }
+            Start-Sleep -Milliseconds 50
+        }
+        Assert-True (@(Get-EventLines $script:AuditDb).Count -eq 5) `
+            'canonical live-WAL reader does not expose an uncommitted event'
+        Assert-True ($null -eq (Get-LatestHookDecision `
+            $script:AuditDb codex 5 $delayedSessionId $hookEvent `
+            $delayedToolInvocationId)) `
+            'readiness cannot accept an uncommitted hook decision'
+        $forgedGatewayJsonl = Join-Path $projectionStateRoot 'gateway.jsonl'
+        [IO.File]::WriteAllText(
+            $forgedGatewayJsonl,
+            $delayedRaw + [Environment]::NewLine
+        )
+        $forgedDecision = Wait-HookDecisionAfter `
+            -Since 5 -Deadline ([DateTime]::UtcNow.AddMilliseconds(500)) `
+            -SessionID $delayedSessionId -HookEvent $hookEvent
+        Assert-True ($null -eq $forgedDecision) `
+            'a forged retired gateway.jsonl cannot satisfy canonical SQLite readiness'
+
+        [IO.File]::WriteAllText($commitReady, 'commit')
+        $delayedObserved = Wait-HookDecisionAfter `
+            -Since 5 -Deadline ([DateTime]::UtcNow.AddSeconds(10)) `
+            -SessionID $delayedSessionId -HookEvent $hookEvent
+        Assert-True ($null -ne $delayedObserved -and
+            [string]$delayedObserved.request_id -ceq $delayedRequestId -and
+            [string]$delayedObserved.tool_invocation_id -ceq $delayedToolInvocationId -and
+            [string]$delayedObserved.action -ceq 'allow' -and
+            [string]$delayedObserved.raw_action -ceq 'allow' -and
+            -not [bool]$delayedObserved.would_block -and
+            -not [bool]$delayedObserved.enforced) `
+            'session-bound readiness observes the exact canonical decision after WAL commit'
+        Wait-Job -Job $walWriter -Timeout 10 | Out-Null
+        Assert-True ($walWriter.State -eq 'Completed' -and
+            (Test-Path -LiteralPath $committedReady -PathType Leaf)) `
+            'SQLite WAL writer committed and closed within the bounded fixture'
+        Receive-Job $walWriter -ErrorAction Stop | Out-Null
+
+        $validatorSnapshot = New-CanonicalAuditProjectionSnapshot
+        try {
+            & python.exe (Join-Path $root 'scripts\assert-observability-v8-jsonl.py') `
+                $validatorSnapshot --min-records 6 --require-event-name hook_decision
+            Assert-True ($LASTEXITCODE -eq 0) `
+                'canonical SQLite projection passes the observability-v8 validator'
+            & python.exe (Join-Path $PSScriptRoot 'assert-windows-evidence.py') `
+                --jsonl $validatorSnapshot --audit-db $database --connector codex
+            Assert-True ($LASTEXITCODE -eq 0) `
+                'canonical SQLite projection passes indexed audit correlation validation'
+        } finally {
+            Remove-Item -LiteralPath $validatorSnapshot -Force -ErrorAction SilentlyContinue
+        }
+
+        $wrongSchemaRecord = $fixtureEvents[0] | ConvertFrom-Json -ErrorAction Stop
+        $wrongSchemaRecord.schema_version = 2
+        $wrongBooleanRecord = $fixtureEvents[1] | ConvertFrom-Json -ErrorAction Stop
+        $wrongBooleanRecord.body.'defenseclaw.guardrail.would_block' = 'false'
+        $projectionFailureCases = @(
+            [pscustomobject]@{
+                Name = 'blank'; RecordID = 'windows-contract-verdict'
+                Value = ''; Original = $fixtureEvents[0]
+            },
+            [pscustomobject]@{
+                Name = 'malformed'; RecordID = 'windows-contract-verdict'
+                Value = '{'; Original = $fixtureEvents[0]
+            },
+            [pscustomobject]@{
+                Name = 'wrong-schema'; RecordID = 'windows-contract-verdict'
+                Value = ($wrongSchemaRecord | ConvertTo-Json -Depth 8 -Compress)
+                Original = $fixtureEvents[0]
+            },
+            [pscustomobject]@{
+                Name = 'non-boolean-hook-verdict'
+                RecordID = 'windows-contract-hook-decision'
+                Value = ($wrongBooleanRecord | ConvertTo-Json -Depth 8 -Compress)
+                Original = $fixtureEvents[1]
+            }
+        )
+        $updateProjection = @'
+import hashlib
+import json
+import sqlite3
+import sys
+
+database, record_id, value = sys.argv[1:]
+try:
+    event = json.loads(value)
+    body = event.get("body") or {}
+except json.JSONDecodeError:
+    body = {}
+connection = sqlite3.connect(database)
+connection.execute(
+    """UPDATE audit_events
+          SET payload_json = ?, projected_record_json = ?, projection_hash = ?
+        WHERE id = ?""",
+    (
+        json.dumps(body, separators=(",", ":")),
+        value,
+        "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest(),
+        record_id,
+    ),
+)
+connection.commit()
+connection.close()
+'@
+        foreach ($failureCase in $projectionFailureCases) {
+            & $pythonApplication -c $updateProjection $database `
+                $failureCase.RecordID $failureCase.Value
+            if ($LASTEXITCODE -ne 0) {
+                throw "failed to install $($failureCase.Name) projection fixture"
+            }
+            $projectionRejected = $false
+            try {
+                $null = @(Get-EventLines $script:AuditDb)
+            } catch {
+                $projectionRejected = $true
+            } finally {
+                & $pythonApplication -c $updateProjection $database `
+                    $failureCase.RecordID $failureCase.Original
+                if ($LASTEXITCODE -ne 0) {
+                    throw "failed to restore $($failureCase.Name) projection fixture"
+                }
+            }
+            Assert-True $projectionRejected `
+                "canonical SQLite reader rejects a $($failureCase.Name) projection without cursor collapse"
+        }
+
+        $mismatchProjection = @'
+import sqlite3
+import sys
+
+database, connector, record_id = sys.argv[1:]
+connection = sqlite3.connect(database)
+connection.execute(
+    "UPDATE audit_events SET connector = ? WHERE id = ?",
+    (connector, record_id),
+)
+connection.commit()
+connection.close()
+'@
+        & $pythonApplication -c $mismatchProjection $database cursor `
+            'windows-contract-verdict'
+        if ($LASTEXITCODE -ne 0) { throw 'failed to install indexed projection mismatch' }
+        $mismatchRejected = $false
+        try {
+            $null = @(Get-EventLines $script:AuditDb)
+        } catch {
+            $mismatchRejected = $true
+        } finally {
+            & $pythonApplication -c $mismatchProjection $database codex `
+                'windows-contract-verdict'
+            if ($LASTEXITCODE -ne 0) { throw 'failed to restore indexed projection mismatch' }
+        }
+        Assert-True $mismatchRejected `
+            'canonical SQLite reader rejects disagreement between indexed and projected identity'
+
+        $updateIndexedField = @'
+import sqlite3
+import sys
+
+database, field, value, record_id = sys.argv[1:]
+if field not in {"payload_json", "projection_hash"}:
+    raise ValueError("unsupported fixture field")
+connection = sqlite3.connect(database)
+connection.execute(
+    f"UPDATE audit_events SET {field} = ? WHERE id = ?",
+    (value, record_id),
+)
+connection.commit()
+connection.close()
+'@
+        foreach ($corruption in @(
+            [pscustomobject]@{
+                Name = 'payload/body mismatch'; Field = 'payload_json'; Value = '{}'
+            },
+            [pscustomobject]@{
+                Name = 'projection hash mismatch'; Field = 'projection_hash'
+                Value = 'sha256:' + (('0' * 64) -join '')
+            }
+        )) {
+            & $pythonApplication -c $updateIndexedField $database $corruption.Field `
+                $corruption.Value 'windows-contract-verdict'
+            if ($LASTEXITCODE -ne 0) {
+                throw "failed to install $($corruption.Name) fixture"
+            }
+            $corruptionRejected = $false
+            try {
+                $null = @(Get-EventLines $script:AuditDb)
+            } catch {
+                $corruptionRejected = $true
+            } finally {
+                & $pythonApplication -c $updateProjection $database `
+                    'windows-contract-verdict' $fixtureEvents[0]
+                if ($LASTEXITCODE -ne 0) {
+                    throw "failed to restore $($corruption.Name) fixture"
+                }
+            }
+            Assert-True $corruptionRejected `
+                "canonical SQLite reader rejects a $($corruption.Name)"
+        }
+    } finally {
+        if ($null -ne $walWriter) {
+            Stop-Job $walWriter -ErrorAction SilentlyContinue
+            Remove-Job $walWriter -Force -ErrorAction SilentlyContinue
+        }
+        $script:AuditDb = $savedAuditDb
+        $StateRoot = $savedStateRoot
+    }
     & python.exe (Join-Path $root 'scripts\assert-observability-v8-jsonl.py') $jsonl `
         --min-records 5 --require-event-name hook_decision
     Assert-True ($LASTEXITCODE -eq 0) 'mock canonical observability-v8 schema'
@@ -2022,6 +2370,7 @@ private-secret-name = "DefenseClaw must remain redacted"
     $liveWorkflowText = [IO.File]::ReadAllText($liveWorkflow)
     $ciWorkflowText = [IO.File]::ReadAllText($ciWorkflow)
     $harnessText = [IO.File]::ReadAllText($harness)
+    $auditProjectorText = [IO.File]::ReadAllText($auditProjector)
     $openCodeAssertionText = [IO.File]::ReadAllText($openCodeAssertion)
     $nativeHarnessText = [IO.File]::ReadAllText($nativeHarness)
     $wizardHarnessText = [IO.File]::ReadAllText($wizardHarness)
@@ -4294,7 +4643,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         'gateway restart readiness exercises each connector-specific native pre-tool path'
     $nativeProcessContract = [regex]::Match(
         $harnessText,
-        '(?s)function Invoke-NativeProcess\b.*?(?=\r?\nfunction Get-EventLines)'
+        '(?s)function Invoke-NativeProcess\b.*?(?=\r?\nfunction Read-EventJsonLines)'
     ).Value
     $setupContract = [regex]::Match(
         $harnessText,
@@ -4342,8 +4691,30 @@ private-secret-name = "DefenseClaw must remain redacted"
     Assert-True ($latestHookDecision -match 'Get-JsonPropertyValue \$correlation ''session_id''' -and
         $latestHookDecision -match 'Get-JsonPropertyValue \$body ''defenseclaw\.hook\.event''' -and
         $latestHookDecision -match 'Get-JsonPropertyValue \$correlation ''tool_invocation_id''' -and
-        $hookDecisionWait -match '\$SessionID \$HookEvent') `
+        $hookDecisionWait -match '\$script:AuditDb \$Connector \$Since \$SessionID \$HookEvent') `
         'gateway hook readiness accepts only the current probe session and event decision'
+    $canonicalEventReader = [regex]::Match(
+        $harnessText,
+        '(?s)function New-CanonicalAuditProjectionSnapshot\b.*?(?=\r?\nfunction Get-EventLines)'
+    ).Value
+    $eventLineRouter = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-EventLines\b.*?(?=\r?\nfunction )'
+    ).Value
+    Assert-True ($canonicalEventReader -match 'project-audit-events\.py' -and
+        $canonicalEventReader -match '\.canonical-event-projection' -and
+        $canonicalEventReader -match '\[guid\]::NewGuid' -and
+        $eventLineRouter -match 'New-CanonicalAuditProjectionSnapshot' -and
+        $eventLineRouter -match 'Remove-Item -LiteralPath \$snapshot' -and
+        $harnessText -notmatch '\$script:GatewayJsonl') `
+        'Windows live readiness exclusively reads a private transient canonical SQLite projection'
+    Assert-True ($auditProjectorText -match 'mode=ro' -and
+        $auditProjectorText -match 'PRAGMA query_only=ON' -and
+        $auditProjectorText -match 'ORDER BY rowid' -and
+        $auditProjectorText -match 'record_schema_version != 1' -and
+        $auditProjectorText -match 'os\.replace\(temporary, output\)' -and
+        $auditProjectorText -match 'output must differ from the audit database') `
+        'canonical SQLite projection is read-only, ordered, schema-bound, and atomically published'
     Assert-True ($openCodeAssertionText.Contains('const probeID = basename(scratchPath, ".mjs");') -and
         [regex]::Matches(
             $openCodeAssertionText,

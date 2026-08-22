@@ -58,6 +58,7 @@ $script:WindowsLiveHarnessPath = [IO.Path]::GetFullPath($PSCommandPath)
 . (Join-Path $PSScriptRoot '..\windows-disposable-user-safety.ps1')
 $script:PackageLiveSetupExecutable = ''
 $script:PackageLiveOriginalPath = ''
+$script:AuditDb = ''
 $script:CopilotConfiguredMode = ''
 $script:ProtectedCopilotPackageInstalled = $false
 $script:ProtectedCopilotPackageMaintained = $false
@@ -4255,7 +4256,7 @@ function Invoke-NativeProcess {
     }
 }
 
-function Get-EventLines([string]$Path) {
+function Read-EventJsonLines([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
     $deadline = [DateTime]::UtcNow.AddSeconds(2)
     do {
@@ -4277,6 +4278,55 @@ function Get-EventLines([string]$Path) {
             elseif ($null -ne $stream) { $stream.Dispose() }
         }
     } while ([DateTime]::UtcNow -lt $deadline)
+}
+
+function New-CanonicalAuditProjectionSnapshot {
+    if ([string]::IsNullOrWhiteSpace($script:AuditDb)) {
+        throw 'canonical SQLite audit database path is unavailable'
+    }
+    if (-not (Test-Path -LiteralPath $StateRoot -PathType Container)) {
+        throw "canonical audit projection StateRoot is missing: $StateRoot"
+    }
+    $projectionRoot = Join-Path ([IO.Path]::GetFullPath($StateRoot)) `
+        '.canonical-event-projection'
+    Protect-TestDirectory $projectionRoot
+    $snapshot = Join-Path $projectionRoot `
+        (([guid]::NewGuid().ToString('N')) + '.jsonl')
+    $projector = Join-Path $WorkspaceRoot `
+        'scripts\live-connector-e2e\project-audit-events.py'
+    try {
+        Invoke-Tool 'python.exe' @(
+            $projector,
+            '--audit-db', $script:AuditDb,
+            '--out', $snapshot
+        ) @(0) -Timeout 15 | Out-Null
+        if (-not (Test-Path -LiteralPath $snapshot -PathType Leaf)) {
+            throw 'canonical SQLite audit projection did not create its private snapshot'
+        }
+        return $snapshot
+    } catch {
+        Remove-Item -LiteralPath $snapshot -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Get-EventLines([string]$Path) {
+    $isCanonicalAudit = -not [string]::IsNullOrWhiteSpace($script:AuditDb) -and
+        [string]::Equals(
+            [IO.Path]::GetFullPath($Path),
+            [IO.Path]::GetFullPath($script:AuditDb),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    if (-not $isCanonicalAudit) {
+        return @(Read-EventJsonLines $Path)
+    }
+
+    $snapshot = New-CanonicalAuditProjectionSnapshot
+    try {
+        return @(Read-EventJsonLines $snapshot)
+    } finally {
+        Remove-Item -LiteralPath $snapshot -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-JsonPropertyValue([AllowNull()][object]$Object, [string]$Name) {
@@ -4527,7 +4577,7 @@ function Wait-HookDecisionAfter(
 ) {
     do {
         $decision = Get-LatestHookDecision `
-            $script:GatewayJsonl $Connector $Since $SessionID $HookEvent
+            $script:AuditDb $Connector $Since $SessionID $HookEvent
         if ($null -ne $decision) { return $decision }
         if ([DateTime]::UtcNow -ge $Deadline) { return $null }
         Start-Sleep -Milliseconds 50
@@ -4847,7 +4897,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
                 [Text.UTF8Encoding]::new($false)
             )
             try {
-                $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+                $beforeTool = @(Get-EventLines $script:AuditDb).Count
                 $result = Invoke-NativeProcess -FilePath $hookExecutable `
                     -ArgumentList @('hook', '--connector', 'antigravity', '--event', 'PreToolUse') `
                     -InputPath $toolPath -TimeoutSeconds 15 -AllowedExitCodes @(0) `
@@ -4889,7 +4939,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
                 [Text.UTF8Encoding]::new($false)
             )
             try {
-                $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+                $beforeTool = @(Get-EventLines $script:AuditDb).Count
                 $result = Invoke-NativeProcess -FilePath $hookExecutable `
                     -ArgumentList @('hook', '--connector', 'hermes', '--event', 'pre_tool_call') `
                     -InputPath $toolPath -TimeoutSeconds 15 -AllowedExitCodes @(0) `
@@ -4914,7 +4964,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
 
     if ($Connector -eq 'opencode') {
         for ($attempt = 1; [DateTime]::UtcNow -lt $deadline; $attempt++) {
-            $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+            $beforeTool = @(Get-EventLines $script:AuditDb).Count
             try {
                 $probe = Invoke-OpenCodePluginProbe allow `
                     'Write-Output dc-gateway-readiness' "readiness-$attempt"
@@ -4965,7 +5015,7 @@ function Wait-GatewayHookReady([int]$Timeout = 90) {
         try {
             $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
             $probeTimeout = [Math]::Min(15, $remaining)
-            $beforeTool = @(Get-EventLines $script:GatewayJsonl).Count
+            $beforeTool = @(Get-EventLines $script:AuditDb).Count
             $toolInputPath = if ($Connector -eq 'copilot') {
                 ConvertTo-CopilotOfficialToolPayload $toolPath "readiness-$attempt"
             } else {
@@ -6134,7 +6184,7 @@ function Invoke-Hook(
     [bool]$RequireGatewayBlock = $false,
     [string]$IdentitySuffix = ''
 ) {
-    $before = @(Get-EventLines $script:GatewayJsonl).Count
+    $before = @(Get-EventLines $script:AuditDb).Count
     $effectivePayload = $Payload
     if ($Connector -eq 'amp' -and -not [string]::IsNullOrWhiteSpace($IdentitySuffix)) {
         $effectivePayload = New-AmpHookPayloadOccurrence `
@@ -6188,7 +6238,7 @@ function Invoke-Hook(
     }
     $requireBlockEvidence = $Expected -eq 'block' -or $RequireGatewayBlock
     $evidence = Wait-GatewayEvidenceAfter `
-        -Path $script:GatewayJsonl -Name $Connector -Since $before `
+        -Path $script:AuditDb -Name $Connector -Since $before `
         -RequireBlock $requireBlockEvidence -SessionID $sessionID -HookEvent $hookEvent `
         -ToolInvocationID $toolInvocationID
     if (-not $evidence.ConnectorEvent) { throw "$EventName did not reach the gateway" }
@@ -6203,7 +6253,7 @@ function Invoke-Hook(
             throw "$EventName has no observe-mode would-block verdict"
         }
         $decision = Get-LatestHookDecision `
-            -Path $script:GatewayJsonl -Name $Connector -Since $before `
+            -Path $script:AuditDb -Name $Connector -Since $before `
             -SessionID $sessionID -HookEvent $hookEvent `
             -ToolInvocationID $toolInvocationID
         if ($null -eq $decision -or [string]$decision.raw_action -ne 'block' -or
@@ -6237,7 +6287,7 @@ function Invoke-AmpFiveEventProviderContract([string]$GoldenRoot) {
         [pscustomobject]@{ Event = 'tool.result'; Fixture = 'tool_result.json' },
         [pscustomobject]@{ Event = 'agent.end'; Fixture = 'agent_end.json' }
     )
-    $since = @(Get-EventLines $script:GatewayJsonl).Count
+    $since = @(Get-EventLines $script:AuditDb).Count
     for ($index = 0; $index -lt $specs.Count; $index++) {
         $spec = $specs[$index]
         $payload = [IO.File]::ReadAllText((Join-Path $GoldenRoot $spec.Fixture)) |
@@ -6265,7 +6315,7 @@ function Invoke-AmpFiveEventProviderContract([string]$GoldenRoot) {
         )
         Invoke-Hook $spec.Event $payloadPath allow
     }
-    Assert-AmpFiveEventProviderProvenance $script:GatewayJsonl $since
+    Assert-AmpFiveEventProviderProvenance $script:AuditDb $since
 }
 
 function New-DangerousCommandPayload(
@@ -6338,7 +6388,7 @@ function Invoke-DangerousHook(
     [ValidateSet('observe', 'action')][string]$Mode,
     [string]$Sentinel
 ) {
-    $before = @(Get-EventLines $script:GatewayJsonl).Count
+    $before = @(Get-EventLines $script:AuditDb).Count
     $eventName = Get-RegisteredHookEvent "PreTool-$Name" $Payload
     $result = if ($Connector -eq 'opencode') {
         try {
@@ -6362,10 +6412,10 @@ function Invoke-DangerousHook(
     $decision = $null
     for ($attempt = 0; $attempt -lt 30 -and $null -eq $decision; $attempt++) {
         Start-Sleep -Milliseconds 100
-        $decision = Get-LatestHookDecision $script:GatewayJsonl $Connector $before
+        $decision = Get-LatestHookDecision $script:AuditDb $Connector $before
     }
     if ($null -eq $decision) { throw "$Name did not emit a connector hook_decision" }
-    if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw "$Name has no underlying gateway block verdict" }
+    if (-not (Test-BlockVerdict $script:AuditDb $before)) { throw "$Name has no underlying gateway block verdict" }
     if ([string]$decision.raw_action -ne 'block') { throw "$Name raw_action=$($decision.raw_action), expected block" }
     $telemetryMode = if ($Mode -eq 'action') {
         'enforce'
@@ -9099,7 +9149,7 @@ function Assert-AmpAuthenticatedToolResultGate([string]$SentinelRoot) {
         'If the tool output is withheld or unavailable, reply with exactly RESULT_WITHHELD.'
         'Never repeat, reconstruct, or guess the file contents.'
     ) -join ' '
-    $since = @(Get-EventLines $script:GatewayJsonl).Count
+    $since = @(Get-EventLines $script:AuditDb).Count
     try {
         $agentResult = Invoke-Agent result-gate $prompt
     } finally {
@@ -9124,7 +9174,7 @@ function Assert-AmpAuthenticatedToolResultGate([string]$SentinelRoot) {
         'agent.end'
     )
     $actualHooks = @(Get-HookDecisionEventSequence `
-        $script:GatewayJsonl amp $since)
+        $script:AuditDb amp $since)
     if ($actualHooks.Count -ne $expectedHooks.Count) {
         throw "Amp result-gate turn emitted $($actualHooks.Count) hook decisions, expected exactly five"
     }
@@ -9135,9 +9185,9 @@ function Assert-AmpAuthenticatedToolResultGate([string]$SentinelRoot) {
     }
 
     $toolCall = Get-LatestHookDecision `
-        $script:GatewayJsonl amp $since '' 'tool.call'
+        $script:AuditDb amp $since '' 'tool.call'
     $toolResult = Get-LatestHookDecision `
-        $script:GatewayJsonl amp $since '' 'tool.result'
+        $script:AuditDb amp $since '' 'tool.result'
     if ($null -eq $toolCall -or $toolCall.action -cne 'allow' -or
         $toolCall.raw_action -cne 'allow' -or $toolCall.would_block -or
         $toolCall.enforced) {
@@ -9150,31 +9200,43 @@ function Assert-AmpAuthenticatedToolResultGate([string]$SentinelRoot) {
         throw 'Amp result-gate output tool.result was not canonically blocked by SEC-AWS-KEY'
     }
     Assert-AmpFiveEventProviderProvenance `
-        $script:GatewayJsonl $since -AllowReportedModel
+        $script:AuditDb $since -AllowReportedModel
     Write-Result 'amp:tool-result-gate' pass `
         'tool.call allowed, tool.result blocked, synthetic output withheld before model delivery'
 }
 
 function Assert-Evidence([int]$Since = 0) {
-    Invoke-Tool 'python.exe' @(
-        (Join-Path $WorkspaceRoot 'scripts\assert-observability-v8-jsonl.py'),
-        $script:GatewayJsonl,
-        '--min-records', '1',
-        '--require-event-name', 'hook_decision'
-    ) | Out-Null
-    Invoke-Tool 'python.exe' @((Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-windows-evidence.py'), '--jsonl', $script:GatewayJsonl, '--audit-db', $script:AuditDb, '--connector', $Connector, '--since', "$Since") | Out-Null
+    $projectionSnapshot = New-CanonicalAuditProjectionSnapshot
+    try {
+        Invoke-Tool 'python.exe' @(
+            (Join-Path $WorkspaceRoot 'scripts\assert-observability-v8-jsonl.py'),
+            $projectionSnapshot,
+            '--min-records', '1',
+            '--require-event-name', 'hook_decision'
+        ) | Out-Null
+        Invoke-Tool 'python.exe' @(
+            (Join-Path $WorkspaceRoot 'scripts\live-connector-e2e\assert-windows-evidence.py'),
+            '--jsonl', $projectionSnapshot,
+            '--audit-db', $script:AuditDb,
+            '--connector', $Connector,
+            '--since', "$Since"
+        ) | Out-Null
+    } finally {
+        Remove-Item -LiteralPath $projectionSnapshot -Force -ErrorAction SilentlyContinue
+    }
     if ($Connector -in @('codex', 'claudecode')) {
-        if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $Since)) {
+        if (-not (Test-OtlpEvent $script:AuditDb $Connector $Since)) {
             throw 'no connector-tagged native telemetry event reached the gateway'
         }
-    } elseif (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $Since)) {
+    } elseif (-not (Test-ConnectorEvent $script:AuditDb $Connector $Since)) {
         throw "no connector-tagged $Connector hook/policy telemetry reached the gateway"
     }
-    if (-not (Test-GatewayConnectorTelemetry $script:GatewayJsonl $Connector $Since)) {
+    if (-not (Test-GatewayConnectorTelemetry $script:AuditDb $Connector $Since)) {
         throw 'no gateway-generated connector telemetry record was persisted'
     }
-    Write-Result schema pass 'canonical observability-v8 JSONL schema valid'
-    Write-Result audit-correlation pass 'canonical correlation.request_id matched SQLite audit evidence'
+    Write-Result schema pass 'canonical SQLite event-history projection schema valid'
+    Write-Result audit-correlation pass `
+        'canonical projection correlation.request_id matched indexed SQLite audit evidence'
     if ($Connector -in @('codex', 'claudecode')) {
         Write-Result telemetry pass 'connector-tagged OTLP event recorded'
     } else {
@@ -9305,10 +9367,10 @@ function Invoke-LiveRun {
             Write-Result codex:auto-trust pass 'hooks/list verified every setup-created handler enabled and trusted without manual approval'
         }
     }
-    $start = @(Get-EventLines $script:GatewayJsonl).Count
+    $start = @(Get-EventLines $script:AuditDb).Count
     Invoke-Agent lifecycle 'Reply with only the word ready. Do not use tools.' | Out-Null
     Start-Sleep -Seconds 1
-    if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $start)) { throw 'lifecycle hooks did not fire' }
+    if (-not (Test-ConnectorEvent $script:AuditDb $Connector $start)) { throw 'lifecycle hooks did not fire' }
     Write-Result lifecycle:fires pass
     if ($Connector -eq 'copilot' -and $ProtectedCopilotRunner) {
         Write-Result 'copilot:authenticated-session' pass `
@@ -9322,11 +9384,11 @@ function Invoke-LiveRun {
         $allowCommand = Get-AmpWindowsPowerShellToolCommand $allowCommand
     }
     $allowPrompt = "Run exactly this command and nothing else: $allowCommand"
-    $allowBefore = @(Get-EventLines $script:GatewayJsonl).Count
+    $allowBefore = @(Get-EventLines $script:AuditDb).Count
     $allowResult = Invoke-Agent allow $allowPrompt
     Assert-ClaudeNativePowerShellExecution $allowResult allow -RequireProcess
     if (-not (Test-Path -LiteralPath $allow)) { throw 'benign tool action did not create its sentinel' }
-    if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $allowBefore)) { throw 'benign tool hook did not reach the gateway' }
+    if (-not (Test-ConnectorEvent $script:AuditDb $Connector $allowBefore)) { throw 'benign tool hook did not reach the gateway' }
     Write-Result tool-allow:fires pass
     Write-Result tool-allow:observe pass 'sentinel created'
     if ($Connector -eq 'amp') {
@@ -9355,7 +9417,7 @@ function Invoke-LiveRun {
         )
     }
     $blockPrompt = "Run exactly this command and nothing else: $blockCommand"
-    $before = @(Get-EventLines $script:GatewayJsonl).Count
+    $before = @(Get-EventLines $script:AuditDb).Count
     $blockResult = Invoke-Agent block $blockPrompt @(0, 1, 2)
     Assert-ClaudeNativePowerShellExecution $blockResult block
     Start-Sleep -Seconds 1
@@ -9364,15 +9426,15 @@ function Invoke-LiveRun {
         -not (Test-Path -LiteralPath (Join-Path $blockTarget 'keep.txt') -PathType Leaf)) {
         throw 'blocked Amp action modified its disposable destructive target'
     }
-    if (-not (Test-ConnectorEvent $script:GatewayJsonl $Connector $before)) { throw 'blocked tool hook did not reach the gateway' }
-    if (-not (Test-BlockVerdict $script:GatewayJsonl $before)) { throw 'blocked action has no block verdict' }
+    if (-not (Test-ConnectorEvent $script:AuditDb $Connector $before)) { throw 'blocked tool hook did not reach the gateway' }
+    if (-not (Test-BlockVerdict $script:AuditDb $before)) { throw 'blocked action has no block verdict' }
     Write-Result tool-block:enforced pass 'sentinel absent and block verdict present'
-    if (-not (Test-GatewayConnectorTelemetry $script:GatewayJsonl $Connector $start)) {
+    if (-not (Test-GatewayConnectorTelemetry $script:AuditDb $Connector $start)) {
         throw 'no gateway-generated connector telemetry record was persisted'
     }
     Write-Result connector-telemetry pass 'gateway-generated connector telemetry recorded'
     if ($Connector -in @('codex', 'claudecode')) {
-        if (-not (Test-OtlpEvent $script:GatewayJsonl $Connector $start)) { throw 'no connector-tagged OTLP telemetry reached the gateway' }
+        if (-not (Test-OtlpEvent $script:AuditDb $Connector $start)) { throw 'no connector-tagged OTLP telemetry reached the gateway' }
         Write-Result otlp pass
     } else {
         Write-Result hook-telemetry pass 'connector-tagged hook/policy telemetry recorded; native OTLP not claimed'
@@ -9419,7 +9481,7 @@ function Invoke-AuthenticatedAntigravityInteractivePrepare {
             'task-specific gateway stop/start preserved exact hook and action posture'
     }
     Set-AuthenticatedAntigravityHeldStateActiveHook $heldState $activeHook
-    $evidenceStart = @(Get-EventLines $script:GatewayJsonl).Count
+    $evidenceStart = @(Get-EventLines $script:AuditDb).Count
     Set-AuthenticatedAntigravityHeldStatePhase $heldState held $evidenceStart
     $instructions = [ordered]@{
         schema_version = if ($script:AntigravityPackageAuthority -ceq 'local-protected') { 2 } else { 1 }
@@ -9585,7 +9647,7 @@ function Get-AuthenticatedAntigravityInteractiveRecords(
     [long]$Since
 ) {
     $records = [Collections.Generic.List[object]]::new()
-    $lines = @(Get-EventLines $script:GatewayJsonl)
+    $lines = @(Get-EventLines $script:AuditDb)
     if ($Since -ge $lines.Count) { return @() }
     for ($index = [int]$Since; $index -lt $lines.Count; $index++) {
         try {
@@ -9935,7 +9997,6 @@ function Stage-Diagnostics {
     [IO.Directory]::CreateDirectory($script:ArtifactPath) | Out-Null
     foreach ($path in @(
         $script:ResultsPath,
-        $script:GatewayJsonl,
         (Join-Path $env:DEFENSECLAW_HOME 'gateway.log'),
         (Join-Path $env:DEFENSECLAW_HOME 'watchdog.log'),
         (Get-ProtectedCopilotCleanupManifestPath),
@@ -10945,7 +11006,6 @@ if (-not $NoRun) {
         -not $AuthenticatedAntigravityRunner -and -not $ProtectedCopilotRunner) {
         Protect-TestDirectory $env:USERPROFILE
     }
-    $script:GatewayJsonl = Join-Path $env:DEFENSECLAW_HOME 'gateway.jsonl'
     $script:AuditDb = Join-Path $env:DEFENSECLAW_HOME 'audit.db'
     if ($Operation -eq 'capture') { Stage-Diagnostics; return }
     if ($Operation -eq 'cleanup') {
