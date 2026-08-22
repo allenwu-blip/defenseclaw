@@ -101,6 +101,7 @@ func stubClaudeCodeDarwinIdentity(t *testing.T, quarantine string) {
 	t.Helper()
 	previousCommand := runClaudeCodeDarwinIdentityCommand
 	previousQuarantine := readClaudeCodeDarwinQuarantine
+	previousVersionProbe := probeClaudeCodeDarwinAgentVersion
 	runClaudeCodeDarwinIdentityCommand = func(path string, args ...string) (string, error) {
 		switch path {
 		case "/usr/bin/codesign":
@@ -126,9 +127,13 @@ func stubClaudeCodeDarwinIdentity(t *testing.T, quarantine string) {
 		}
 		return "", unix.ENOATTR
 	}
+	probeClaudeCodeDarwinAgentVersion = func(string, string, string) (string, error) {
+		return "2.1.239 (Claude Code)", nil
+	}
 	t.Cleanup(func() {
 		runClaudeCodeDarwinIdentityCommand = previousCommand
 		readClaudeCodeDarwinQuarantine = previousQuarantine
+		probeClaudeCodeDarwinAgentVersion = previousVersionProbe
 	})
 }
 
@@ -182,6 +187,41 @@ func TestValidateClaudeCodeDarwinAgentProvenance(t *testing.T) {
 		DataDir: dir, AgentExecutable: path, AgentVersion: version,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateClaudeCodeNativeImageRejectsSpoofedTextWithoutAppleAnchor(t *testing.T) {
+	path := writeClaudeCodeDarwinFixture(t)
+	stubClaudeCodeDarwinIdentity(t, "")
+	previous := runClaudeCodeDarwinIdentityCommand
+	runClaudeCodeDarwinIdentityCommand = func(tool string, args ...string) (string, error) {
+		if tool == "/usr/bin/codesign" && len(args) > 0 && args[0] == "--verify" {
+			if !containsDarwinRequirementArg(args, "-R") || !containsDarwinRequirementArg(args, claudeCodeDarwinRequirement) {
+				t.Fatalf("codesign verification lacks pinned requirement: %#v", args)
+			}
+			return "Identifier=com.anthropic.claude-code\nTeamIdentifier=Q6L2SF6YDW", errors.New("untrusted self-signed anchor")
+		}
+		return previous(tool, args...)
+	}
+	if err := validateClaudeCodeDarwinNativeImage(path); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("spoofed Claude signature error = %v", err)
+	}
+}
+
+func TestValidateClaudeCodeDarwinAgentProvenanceRejectsManifestVersionMismatch(t *testing.T) {
+	path := writeClaudeCodeDarwinFixture(t)
+	stubClaudeCodeDarwinIdentity(t, "")
+	probeClaudeCodeDarwinAgentVersion = func(string, string, string) (string, error) {
+		return "2.1.238 (Claude Code)", nil
+	}
+	dir := filepath.Dir(path)
+	version := "2.1.239 (Claude Code)"
+	writeClaudeCodeDarwinReceipt(t, dir, path, version, "")
+	err := validateClaudeCodeAgentProvenance(SetupOpts{
+		DataDir: dir, AgentExecutable: path, AgentVersion: version,
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match protected version") {
+		t.Fatalf("version mismatch error = %v, want refusal", err)
 	}
 }
 

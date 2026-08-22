@@ -52,8 +52,8 @@ claude_sha256_file() {
   fi
 }
 
-agent_install() {
-  local requested="${CLAUDE_VERSION:-${DC_E2E_AGENT_VERSION_REQUEST:-latest}}"
+_claude_install_release() {
+  local requested="$1"
   local version platform manifest_file manifest_record expected_checksum expected_size
   local download_dir download_path versions_root target staged launcher actual_checksum
 
@@ -151,10 +151,28 @@ PY
   fi
   mv "${staged}" "${target}" || return 1
   ln -s "${target}" "${launcher}" || return 1
+
+  # This is the sole stdout value consumed by agent_install. All release
+  # resolution, download, parsing, hashing, and publication above runs inside
+  # dc_without_provider_credentials, including every child process.
+  printf '%s' "${version}"
+}
+
+agent_install() {
+  local requested="${CLAUDE_VERSION:-${DC_E2E_AGENT_VERSION_REQUEST:-latest}}"
+  local version
+
+  version="$(dc_without_provider_credentials _claude_install_release "${requested}")" || return 1
   export PATH="${HOME}/.local/bin:${PATH}"
   export DISABLE_AUTOUPDATER=1
   DC_E2E_AGENT_VERSION="${version}"
   export DC_E2E_AGENT_VERSION
+
+  # Credential-free installer consumers (including enterprise hardening CI)
+  # reuse the checksum-verified native release path but stop before auth setup.
+  if [ "${DC_E2E_CLIENT_PROVISION_ONLY:-0}" = "1" ]; then
+    return 0
+  fi
 
   if [ "${DC_USE_BEDROCK:-0}" = "1" ]; then
     if [ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
@@ -183,4 +201,6 @@ agent_run() {
     --allowedTools "Bash"
 }
 
-dc_driver_main claudecode
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  dc_driver_main claudecode
+fi

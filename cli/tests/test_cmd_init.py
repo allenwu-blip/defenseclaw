@@ -109,7 +109,7 @@ def test_darwin_init_extra_uses_receipt_bound_version_without_discovery(
     ]
     with (
         patch.dict(os.environ, {"DEFENSECLAW_HOME": data_dir}),
-        patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+        patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
     ):
         cfg = cfg_mod.default_config()
         cfg_mod.prepare_fresh_v8_config(cfg)

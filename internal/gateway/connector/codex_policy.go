@@ -48,6 +48,11 @@ type codexEffectivePolicy struct {
 	Source                string
 }
 
+type validatedCodexPolicyImage struct {
+	path   string
+	digest string
+}
+
 // codexPolicyInspector is replaceable only by package tests. Production uses
 // the selected Codex binary and its stable app-server RPC.
 var codexPolicyInspector = inspectCodexEffectivePolicy
@@ -59,6 +64,8 @@ var codexAppServerCommand = func(ctx context.Context, executable string) *exec.C
 }
 
 var codexNativeExecutableValidator = validateCodexNativeExecutablePlatform
+
+var codexNativeExecutableVersionValidator = validateCodexNativeExecutableVersionPlatform
 
 // enforceCodexUserHookPolicy prevents Setup from reporting success when Codex
 // will ignore the hook source DefenseClaw is about to write. Native Windows
@@ -81,13 +88,15 @@ func enforceCodexUserHookPolicy(ctx context.Context, opts SetupOpts) error {
 
 func inspectCodexEffectivePolicy(ctx context.Context, opts SetupOpts) (codexEffectivePolicy, error) {
 	executable := strings.TrimSpace(opts.AgentExecutable)
+	expectedDigest := ""
 	if executable != "" {
 		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 			validated, err := validateCodexPolicyExecutable(opts)
 			if err != nil {
 				return codexEffectivePolicy{}, err
 			}
-			executable = validated
+			executable = validated.path
+			expectedDigest = validated.digest
 		} else {
 			// Preserve the established Linux discovery contract. Linux does not
 			// create the native Windows/macOS protected selection receipt, but the
@@ -97,7 +106,7 @@ func inspectCodexEffectivePolicy(ctx context.Context, opts SetupOpts) (codexEffe
 			}
 			executable = filepath.Clean(executable)
 		}
-		policy, err := inspectCodexPolicyWithAppServer(ctx, executable, codexHomeDir())
+		policy, err := inspectCodexPolicyWithAppServer(ctx, executable, codexHomeDir(), expectedDigest)
 		if err != nil {
 			return codexEffectivePolicy{}, fmt.Errorf("%s configRequirements/read: %w", executable, err)
 		}
@@ -134,28 +143,28 @@ func inspectCodexEffectivePolicy(ctx context.Context, opts SetupOpts) (codexEffe
 	return inspectCodexSystemRequirements()
 }
 
-func validateCodexPolicyExecutable(opts SetupOpts) (string, error) {
+func validateCodexPolicyExecutable(opts SetupOpts) (validatedCodexPolicyImage, error) {
 	executable := strings.TrimSpace(opts.AgentExecutable)
 	if strings.ContainsAny(executable, "\x00\r\n") || !filepath.IsAbs(executable) {
-		return "", fmt.Errorf("selected Codex executable is not absolute: %q", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable is not absolute: %q", executable)
 	}
 	executable = filepath.Clean(executable)
 	name := strings.ToLower(filepath.Base(executable))
 	extension := strings.ToLower(filepath.Ext(name))
 	product := strings.TrimSuffix(name, extension)
 	if product != "codex" {
-		return "", fmt.Errorf("selected Codex executable has unexpected product name: %s", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable has unexpected product name: %s", executable)
 	}
 	if runtime.GOOS == "windows" {
 		if extension != ".exe" {
-			return "", fmt.Errorf(
+			return validatedCodexPolicyImage{}, fmt.Errorf(
 				"selected Codex policy executable is not a native Windows .exe image: %s",
 				executable,
 			)
 		}
 	}
 	if runtime.GOOS == "darwin" && extension != "" {
-		return "", fmt.Errorf(
+		return validatedCodexPolicyImage{}, fmt.Errorf(
 			"selected Codex policy executable is not a native macOS image: %s",
 			executable,
 		)
@@ -166,7 +175,7 @@ func validateCodexPolicyExecutable(opts SetupOpts) (string, error) {
 	expectedDigest := ""
 	if entry, exists := loadProtectedCodexContractEntry(opts.DataDir); exists {
 		if !validCodexAgentExecutableEvidence(entry) {
-			return "", errors.New("Codex hook contract has invalid setup-selected executable evidence")
+			return validatedCodexPolicyImage{}, errors.New("Codex hook contract has invalid setup-selected executable evidence")
 		}
 		expectedPath = entry.AgentExecutable
 		expectedVersion = entry.RawAgentVersion
@@ -176,39 +185,42 @@ func validateCodexPolicyExecutable(opts SetupOpts) (string, error) {
 		expectedVersion = selection.RawVersion
 		expectedDigest = selection.SHA256
 	} else {
-		return "", errors.New("Codex policy inspection requires protected setup-selected executable evidence")
+		return validatedCodexPolicyImage{}, errors.New("Codex policy inspection requires protected setup-selected executable evidence")
 	}
 	if !sameCodexExecutablePath(executable, expectedPath) {
-		return "", fmt.Errorf("selected Codex executable does not match protected evidence: %s", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable does not match protected evidence: %s", executable)
 	}
 	if strings.TrimSpace(opts.AgentVersion) != strings.TrimSpace(expectedVersion) {
-		return "", errors.New("selected Codex executable evidence is bound to a different agent version")
+		return validatedCodexPolicyImage{}, errors.New("selected Codex executable evidence is bound to a different agent version")
 	}
 
 	info, err := os.Lstat(executable)
 	if err != nil {
-		return "", fmt.Errorf("inspect selected Codex executable: %w", err)
+		return validatedCodexPolicyImage{}, fmt.Errorf("inspect selected Codex executable: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("selected Codex executable is not a regular non-link file: %s", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable is not a regular non-link file: %s", executable)
 	}
 	if err := hookAPIValidateDirectory(filepath.Dir(executable)); err != nil {
-		return "", fmt.Errorf("validate selected Codex executable ancestry: %w", err)
+		return validatedCodexPolicyImage{}, fmt.Errorf("validate selected Codex executable ancestry: %w", err)
 	}
 	if err := hookAPIValidateOwner(executable, info); err != nil {
-		return "", fmt.Errorf("validate selected Codex executable ACL: %w", err)
+		return validatedCodexPolicyImage{}, fmt.Errorf("validate selected Codex executable ACL: %w", err)
 	}
 	if err := codexNativeExecutableValidator(executable); err != nil {
-		return "", err
+		return validatedCodexPolicyImage{}, err
 	}
 	stablePath, digest, ok := setupSelectedAgentExecutableEvidence(executable)
 	if !ok || !sameCodexExecutablePath(stablePath, executable) {
-		return "", fmt.Errorf("selected Codex executable changed during validation: %s", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable changed during validation: %s", executable)
 	}
 	if digest != expectedDigest {
-		return "", fmt.Errorf("selected Codex executable digest does not match protected evidence: %s", executable)
+		return validatedCodexPolicyImage{}, fmt.Errorf("selected Codex executable digest does not match protected evidence: %s", executable)
 	}
-	return executable, nil
+	if err := codexNativeExecutableVersionValidator(executable, expectedVersion, expectedDigest); err != nil {
+		return validatedCodexPolicyImage{}, err
+	}
+	return validatedCodexPolicyImage{path: executable, digest: expectedDigest}, nil
 }
 
 func sameCodexExecutablePath(left, right string) bool {
@@ -267,7 +279,7 @@ type codexRPCEvent struct {
 	Err      error
 }
 
-func inspectCodexPolicyWithAppServer(parent context.Context, executable, codexHome string) (policy codexEffectivePolicy, retErr error) {
+func inspectCodexPolicyWithAppServer(parent context.Context, executable, codexHome string, expectedDigest ...string) (policy codexEffectivePolicy, retErr error) {
 	ctx, cancel := context.WithTimeout(parent, codexPolicyInspectionTimeout)
 	defer cancel()
 
@@ -287,7 +299,11 @@ func inspectCodexPolicyWithAppServer(parent context.Context, executable, codexHo
 	}
 	stderr := &boundedDiagnosticBuffer{limit: 64 << 10}
 	cmd.Stderr = stderr
-	cleanup, err := startCodexAppServerTree(cmd)
+	digest := ""
+	if len(expectedDigest) > 0 {
+		digest = expectedDigest[0]
+	}
+	cleanup, err := startCodexAppServerTree(cmd, digest)
 	if err != nil {
 		return policy, fmt.Errorf("start app-server: %w", err)
 	}

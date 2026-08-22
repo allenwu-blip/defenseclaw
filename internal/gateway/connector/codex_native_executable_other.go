@@ -8,3 +8,7 @@ package connector
 func validateCodexNativeExecutablePlatform(string) error {
 	return nil
 }
+
+func validateCodexNativeExecutableVersionPlatform(string, string, string) error {
+	return nil
+}

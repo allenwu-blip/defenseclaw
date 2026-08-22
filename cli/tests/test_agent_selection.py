@@ -19,13 +19,13 @@ from defenseclaw.commands import cmd_setup
 
 def test_openhands_protected_selection_roster_is_darwin_only(monkeypatch) -> None:
     connectors = ("codex", "claudecode", "openhands", "amp")
-    monkeypatch.setattr(agent_selection.sys, "platform", "linux")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "linux")
     assert agent_selection.setup_agent_selection_connectors(connectors) == (
         "codex",
         "claudecode",
         "amp",
     )
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     assert agent_selection.setup_agent_selection_connectors(connectors) == (
         "codex",
         "claudecode",
@@ -55,7 +55,7 @@ def test_darwin_setup_records_all_protected_native_connectors(
     )
     captured: list[tuple[str, ...]] = []
     monkeypatch.setattr(cmd_setup.platform_support, "host_os", lambda: "darwin")
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
 
     def record(_data_dir, connectors):
         captured.append(tuple(connectors))
@@ -86,7 +86,7 @@ def test_darwin_openhands_selection_binds_stable_executable_and_full_chain(
     executable = trusted / "openhands"
     executable.write_bytes(b"\xcf\xfa\xed\xfe" + b"OpenHands standalone fixture")
     executable.chmod(0o700)
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
     monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(versions),))
     monkeypatch.setattr(
@@ -152,7 +152,7 @@ def test_darwin_openhands_selection_rejects_identity_change_during_hash(
     executable = trusted / "openhands"
     executable.write_text("#!/bin/sh\n", encoding="utf-8")
     executable.chmod(0o700)
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection, "_setup_agent_candidates", lambda *_args: (str(executable),))
     monkeypatch.setattr(agent_selection, "is_setup_trusted_binary", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
@@ -223,7 +223,7 @@ def test_darwin_openhands_standalone_selection_uses_exact_target_not_path_symlin
     path_link.parent.mkdir(parents=True)
     path_link.symlink_to(executable)
 
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
     monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(versions),))
     monkeypatch.setattr(
@@ -274,7 +274,7 @@ def test_darwin_openhands_target_requires_canonical_or_operator_approved_macho(
     uv_script.write_text("#!/bin/sh\n", encoding="utf-8")
     uv_script.chmod(0o700)
 
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
     monkeypatch.setattr(agent_selection, "_builtin_setup_trusted_prefixes", lambda: (str(versions),))
     monkeypatch.setattr(
@@ -326,7 +326,7 @@ def test_darwin_protected_selection_passes_connector_to_trust_gate_without_versi
     executable.write_bytes(b"native fixture")
     executable.chmod(0o700)
     calls: list[str] = []
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection, "_setup_agent_candidates", lambda *_args: (str(executable),))
 
     def trusted(_path: str, _data_dir: str, *, connector: str = "") -> bool:
@@ -431,7 +431,7 @@ def test_macos_claudecode_trust_requires_canonical_versions_target_and_safe_chai
     decoy = decoy_root / "2.1.220"
     decoy.write_bytes(b"native decoy")
     decoy.chmod(0o700)
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
     monkeypatch.setattr(
         agent_selection,
@@ -502,7 +502,7 @@ def test_macos_protected_candidates_include_exact_off_path_native_images(
     standalone.parent.mkdir(parents=True)
     standalone.write_bytes(b"standalone native")
 
-    monkeypatch.setattr(agent_selection.sys, "platform", "darwin")
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
     monkeypatch.setattr(agent_selection.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
     monkeypatch.setattr(
@@ -1306,6 +1306,78 @@ def test_builtin_setup_roots_include_validated_configured_manager_root(
     roots = agent_selection._builtin_setup_trusted_prefixes()
 
     assert os.path.normcase(str(configured)) in {os.path.normcase(root) for root in roots}
+
+
+def test_darwin_setup_roots_admit_only_exact_home_npm_global_layout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    poisoned_prefix = tmp_path / "operator-controlled-prefix"
+    monkeypatch.setenv("npm_config_prefix", str(poisoned_prefix))
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", str(poisoned_prefix))
+
+    roots = set(agent_selection._darwin_setup_trusted_prefixes(home))
+    exact = home / ".npm-global" / "lib" / "node_modules"
+
+    assert os.fspath(exact) in roots
+    assert os.fspath(home / ".npm-global-lookalike" / "lib" / "node_modules") not in roots
+    assert os.fspath(home / ".npm-global" / "lib" / "node_modules-lookalike") not in roots
+    assert os.fspath(poisoned_prefix / "lib" / "node_modules") not in roots
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Darwin POSIX executable custody")
+def test_darwin_codex_selector_rejects_npm_root_lookalikes_and_env_prefix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    exact_root = home / ".npm-global" / "lib" / "node_modules"
+    lookalike_root = home / ".npm-global-lookalike" / "lib" / "node_modules"
+    poisoned_root = tmp_path / "operator-controlled-prefix" / "lib" / "node_modules"
+
+    def native(root: Path) -> Path:
+        candidate = (
+            root
+            / "@openai"
+            / "codex"
+            / "node_modules"
+            / "@openai"
+            / "codex-darwin-arm64"
+            / "vendor"
+            / "aarch64-apple-darwin"
+            / "bin"
+            / "codex"
+        )
+        candidate.parent.mkdir(parents=True)
+        candidate.write_bytes(b"signed fixture")
+        candidate.chmod(0o700)
+        return candidate
+
+    exact = native(exact_root)
+    lookalike = native(lookalike_root)
+    poisoned = native(poisoned_root)
+    monkeypatch.setenv("npm_config_prefix", str(poisoned_root.parents[1]))
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", str(poisoned_root.parents[1]))
+    monkeypatch.setattr(agent_selection, "_HOST_PLATFORM", "darwin")
+    monkeypatch.setattr(agent_selection.Path, "home", lambda: home)
+    monkeypatch.setattr(agent_selection.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(agent_selection.agent_discovery, "_builtin_trusted_bin_prefixes", lambda: ())
+    monkeypatch.setattr(
+        agent_selection.agent_discovery,
+        "_ai_discovery_trust_config",
+        lambda _data_dir: (True, ()),
+    )
+    monkeypatch.setattr(agent_selection.agent_discovery, "_expand_bin_prefixes", lambda roots: tuple(roots))
+    monkeypatch.setattr(agent_selection, "_macos_codex_binary_is_trusted", lambda _path: True)
+
+    assert agent_selection.is_setup_trusted_binary(str(exact), str(tmp_path / "state"), connector="codex")
+    assert not agent_selection.is_setup_trusted_binary(
+        str(lookalike), str(tmp_path / "state"), connector="codex"
+    )
+    assert not agent_selection.is_setup_trusted_binary(
+        str(poisoned), str(tmp_path / "state"), connector="codex"
+    )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows token-bound Known Folder contract")

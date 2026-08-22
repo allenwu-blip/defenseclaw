@@ -294,6 +294,68 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: steps.select.outputs.run == 'true' && matrix.connector == 'codex' && runner.os == 'macOS'
+        with:
+          node-version: "24"
+
+      # Native macOS Codex setup is executable-specific. Give the deterministic
+      # lifecycle matrix an authentic, pinned OpenAI image so production can
+      # enforce its normal Developer ID, architecture, quarantine, custody,
+      # receipt, and digest checks. Reuse the credential-free provision-only
+      # driver and install into its supported user npm layout: both the Go
+      # lifecycle fixture and the later Python contract smoke must select the
+      # same exact image without trusting an arbitrary runner-temp prefix.
+      - name: Install authenticated Codex lifecycle fixture
+        if: steps.select.outputs.run == 'true' && matrix.connector == 'codex' && runner.os == 'macOS'
+        env:
+          CODEX_VERSION: "0.146.0"
+          DC_E2E_CLIENT_PROVISION_ONLY: "1"
+        run: |
+          set -euo pipefail
+          # The built-in macOS setup authority recognizes ~/.npm-global. Keep
+          # the exact path literal here so the contract smoke exercises the
+          # production discovery allow-list rather than a CI-only override.
+          export npm_config_prefix="${HOME}/.npm-global"
+          # shellcheck source=scripts/live-connector-e2e/drivers/codex.sh
+          . scripts/live-connector-e2e/drivers/codex.sh
+          agent_install
+
+          codex_executable=""
+          for candidate in \
+            "${HOME}/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex" \
+            "${HOME}/.npm-global/lib/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex"; do
+            if [ -f "${candidate}" ] && [ ! -L "${candidate}" ]; then
+              codex_executable="${candidate}"
+              break
+            fi
+          done
+          if [ -z "${codex_executable}" ]; then
+            echo "Pinned Codex package did not contain the expected native macOS arm64 image" >&2
+            exit 1
+          fi
+
+          echo "DEFENSECLAW_E2E_CODEX_NATIVE_EXECUTABLE=${codex_executable}" >> "${GITHUB_ENV}"
+          echo "DEFENSECLAW_E2E_CODEX_RAW_VERSION=codex-cli ${CODEX_VERSION}" >> "${GITHUB_ENV}"
+          echo "${HOME}/.npm-global/bin" >> "${GITHUB_PATH}"
+
+      # Claude's protected macOS selection discovers only an exact native
+      # release image. Reuse the checksum-verified live driver in its
+      # credential-free provision-only mode so the contract cell exercises the
+      # reviewed official image without configuring or exposing provider auth.
+      - name: Install authenticated Claude Code lifecycle fixture
+        if: steps.select.outputs.run == 'true' && matrix.connector == 'claudecode' && runner.os == 'macOS'
+        env:
+          CLAUDE_VERSION: "2.1.219"
+          DC_E2E_CLIENT_PROVISION_ONLY: "1"
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/live-connector-e2e/drivers/claudecode.sh
+          . scripts/live-connector-e2e/drivers/claudecode.sh
+          agent_install
+          test -f "${HOME}/.local/share/claude/versions/${CLAUDE_VERSION}"
+          test ! -L "${HOME}/.local/share/claude/versions/${CLAUDE_VERSION}"
+
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         if: steps.select.outputs.run == 'true'
 

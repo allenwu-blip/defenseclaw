@@ -115,6 +115,12 @@ agent_install() {
   DC_E2E_AGENT_VERSION="${version}"
   export DC_E2E_AGENT_VERSION
 
+  # Credential-free installer consumers (including enterprise hardening CI)
+  # reuse this exact reviewed package path but stop before provider setup.
+  if [ "${DC_E2E_CLIENT_PROVISION_ONLY:-0}" = "1" ]; then
+    return 0
+  fi
+
   if [ "${DC_USE_AZURE:-0}" = "1" ]; then
     if [ -z "${AZURE_OPENAI_ENDPOINT:-}" ] || [ -z "${AZURE_OPENAI_DEPLOYMENT:-}" ] || [ -z "${AZURE_OPENAI_API_KEY:-}" ]; then
       dc_err "DC_USE_AZURE=1 needs AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_DEPLOYMENT + AZURE_OPENAI_API_KEY"
@@ -138,4 +144,6 @@ agent_run() {
     "${prompt}"
 }
 
-dc_driver_main codex
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  dc_driver_main codex
+fi

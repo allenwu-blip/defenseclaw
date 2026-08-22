@@ -48,6 +48,7 @@ from defenseclaw.inventory.plugin_identity import is_link_or_reparse
 SELECTION_FILENAME = "agent_selection.json"
 SELECTION_SCHEMA_VERSION = 1
 SELECTION_LIFETIME = timedelta(minutes=15)
+_HOST_PLATFORM = sys.platform
 _CODEX_WINDOWS_PLATFORM_VARIANTS = (
     ("codex-win32-x64", "x86_64-pc-windows-msvc"),
     ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
@@ -106,7 +107,7 @@ def setup_agent_selection_connectors(connectors: Iterable[str]) -> tuple[str, ..
             name
             for raw in connectors
             if (name := agent_discovery._normalize_connector(str(raw))) in _SUPPORTED_CONNECTORS
-            and (name != "openhands" or sys.platform == "darwin")
+            and (name != "openhands" or _HOST_PLATFORM == "darwin")
         )
     )
 
@@ -173,7 +174,7 @@ def _select_agent_executable(data_dir: str, connector: str) -> SetupAgentSelecti
         rejection = "no installed executable was found in a built-in or operator-approved trusted prefix"
     for candidate in _setup_agent_candidates(connector, spec, data_dir):
         protected_windows_opencode = connector == "opencode" and os.name == "nt"
-        protected_darwin = sys.platform == "darwin" and connector in {
+        protected_darwin = _HOST_PLATFORM == "darwin" and connector in {
             "codex",
             "claudecode",
             "openhands",
@@ -277,19 +278,19 @@ def is_setup_trusted_binary(candidate: str, data_dir: str, *, connector: str = "
         return any(agent_discovery._windows_acl_chain_is_safe(resolved, root) for root in matching_roots)
     if not os.path.isfile(resolved) or not os.access(resolved, os.X_OK):
         return False
-    if sys.platform == "darwin" and connector == "claudecode":
+    if _HOST_PLATFORM == "darwin" and connector == "claudecode":
         if not _is_canonical_macos_claudecode_target(resolved):
             return False
         return any(_posix_setup_chain_is_safe(resolved, root) for root in matching_roots) and (
             _validate_macos_claudecode_binary(resolved) is None
         )
-    if sys.platform == "darwin" and connector == "codex":
+    if _HOST_PLATFORM == "darwin" and connector == "codex":
         if os.path.basename(resolved) != "codex":
             return False
         return any(_posix_setup_chain_is_safe(resolved, root) for root in matching_roots) and (
             _macos_codex_binary_is_trusted(resolved)
         )
-    if sys.platform == "darwin" and connector == "openhands":
+    if _HOST_PLATFORM == "darwin" and connector == "openhands":
         configured_roots = agent_discovery._expand_bin_prefixes(configured)
         operator_approved = any(
             agent_discovery._path_is_within(resolved, root) for root in configured_roots
@@ -617,15 +618,15 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
         discovered = [candidate for candidate in discovered if os.path.basename(candidate).casefold() == "amp.exe"]
     candidates: list[str] = []
     paired_codex_root = ""
-    if connector == "openhands" and sys.platform == "darwin":
+    if connector == "openhands" and _HOST_PLATFORM == "darwin":
         # The live installer publishes a PATH symlink, but the protected
         # receipt must bind the versioned self-contained Mach-O itself.
         candidates.extend(_macos_openhands_standalone_candidates())
-    if connector == "codex" and sys.platform == "darwin":
+    if connector == "codex" and _HOST_PLATFORM == "darwin":
         for root in roots:
             candidates.extend(_codex_macos_npm_native_candidates(root))
         candidates.extend(_macos_codex_standalone_candidates())
-    if connector == "claudecode" and sys.platform == "darwin":
+    if connector == "claudecode" and _HOST_PLATFORM == "darwin":
         # The official installer publishes ~/.local/bin/claude as a symlink.
         # Select its canonical signed versions image, and also enumerate that
         # exact directory so setup remains repairable without an inherited PATH.
@@ -668,9 +669,9 @@ def _setup_agent_candidates(connector: str, spec, data_dir: str) -> tuple[str, .
                         break
     candidates.extend(discovered)
     names = {
-        "codex": (("codex",) if sys.platform == "darwin" else ("codex.exe", "codex.cmd", "codex.bat", "codex.com")),
+        "codex": (("codex",) if _HOST_PLATFORM == "darwin" else ("codex.exe", "codex.cmd", "codex.bat", "codex.com")),
         "claudecode": (
-            ("claude",) if sys.platform == "darwin" else ("claude.exe", "claude.cmd", "claude.bat", "claude.com")
+            ("claude",) if _HOST_PLATFORM == "darwin" else ("claude.exe", "claude.cmd", "claude.bat", "claude.com")
         ),
         "hermes": ("hermes.exe",),
         "omnigent": ("omnigent.exe", "omni.exe"),
@@ -956,15 +957,8 @@ def _builtin_setup_trusted_prefixes() -> tuple[str, ...]:
 
     if os.name != "nt":
         roots = list(agent_discovery._builtin_trusted_bin_prefixes())
-        if sys.platform == "darwin":
-            home = Path.home()
-            roots.extend(
-                (
-                    os.fspath(home / ".local" / "share" / "claude" / "versions"),
-                    os.fspath(home / ".local" / "share" / "openhands" / "versions"),
-                    os.fspath(home / ".codex" / "packages" / "standalone"),
-                )
-            )
+        if _HOST_PLATFORM == "darwin":
+            roots.extend(_darwin_setup_trusted_prefixes(Path.home()))
         return tuple(roots)
 
     local = _windows_known_folder("F1B32785-6FBA-4FCF-9D55-7B8E7F157091")
@@ -1012,6 +1006,22 @@ def _builtin_setup_trusted_prefixes() -> tuple[str, ...]:
     # package-manager environment variables here.
     roots.extend(agent_discovery._windows_configured_package_manager_bin_prefixes())
     return tuple(dict.fromkeys(os.path.abspath(root) for root in roots if root))
+
+
+def _darwin_setup_trusted_prefixes(home: Path) -> tuple[str, ...]:
+    """Return exact built-in Darwin setup roots without consulting npm env."""
+
+    return (
+        # Setup-only authority for the exact official npm native image.
+        # Passive inventory still excludes user-writable npm roots; this path
+        # is admitted only by an explicit setup action and must pass the pinned
+        # macOS signature, canonical-layout, ACL/custody, version, and digest
+        # gates.
+        os.fspath(home / ".npm-global" / "lib" / "node_modules"),
+        os.fspath(home / ".local" / "share" / "claude" / "versions"),
+        os.fspath(home / ".local" / "share" / "openhands" / "versions"),
+        os.fspath(home / ".codex" / "packages" / "standalone"),
+    )
 
 
 def _windows_opencode_winget_package_prefixes(local_app_data: str) -> tuple[str, ...]:

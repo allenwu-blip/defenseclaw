@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	claudeCodeDarwinIdentifier = "com.anthropic.claude-code"
-	claudeCodeDarwinTeamID     = "Q6L2SF6YDW"
+	claudeCodeDarwinIdentifier  = "com.anthropic.claude-code"
+	claudeCodeDarwinTeamID      = "Q6L2SF6YDW"
+	claudeCodeDarwinRequirement = `=identifier "com.anthropic.claude-code" and anchor apple generic and certificate leaf[subject.OU] = "Q6L2SF6YDW" and certificate leaf[subject.CN] = "Developer ID Application: Anthropic PBC (Q6L2SF6YDW)"`
 )
 
 var runClaudeCodeDarwinIdentityCommand = func(path string, args ...string) (string, error) {
@@ -52,6 +53,7 @@ var (
 	validateClaudeCodeDarwinDirectory = hookAPIValidateDirectory
 	validateClaudeCodeDarwinOwner     = hookAPIValidateOwner
 	validateClaudeCodeDarwinFileACL   = hookAPIValidateDirectoryACL
+	probeClaudeCodeDarwinAgentVersion = runProtectedDarwinAgentVersionProbe
 )
 
 func validateClaudeCodeAgentProvenance(opts SetupOpts) error {
@@ -67,72 +69,8 @@ func validateClaudeCodeAgentProvenance(opts SetupOpts) error {
 		// executable selection, and CodeGuard installation requires one.
 		return nil
 	}
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, "\x00\r\n") {
-		return errors.New("selected Claude Code executable path is not canonical and absolute")
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("inspect selected Claude Code executable: %w", err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
-		return errors.New("selected Claude Code executable is not a protected regular file")
-	}
-	if err := validateClaudeCodeDarwinDirectory(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("validate selected Claude Code executable ancestry: %w", err)
-	}
-	if err := validateClaudeCodeDarwinOwner(path, info); err != nil {
-		return fmt.Errorf("validate selected Claude Code executable owner: %w", err)
-	}
-	if err := validateClaudeCodeDarwinFileACL(path); err != nil {
-		return fmt.Errorf("validate selected Claude Code executable ACL: %w", err)
-	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil || resolved != path {
-		return errors.New("selected Claude Code executable resolves through a symlink")
-	}
-
-	file, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open selected Claude Code executable: %w", err)
-	}
-	var magic [4]byte
-	_, readErr := file.Read(magic[:])
-	closeErr := file.Close()
-	if readErr != nil || closeErr != nil || !isClaudeCodeMachOMagic(magic) {
-		return errors.New("selected Claude Code executable is not a Mach-O image")
-	}
-
-	if _, err := runClaudeCodeDarwinIdentityCommand(
-		"/usr/bin/codesign", "--verify", "--strict", "--verbose=2", path,
-	); err != nil {
-		return fmt.Errorf("Claude Code Mach-O code signature verification failed: %w", err)
-	}
-	detail, err := runClaudeCodeDarwinIdentityCommand(
-		"/usr/bin/codesign", "-d", "--verbose=4", path,
-	)
-	if err != nil {
-		return fmt.Errorf("inspect Claude Code Mach-O signature identity: %w", err)
-	}
-	if !claudeCodeDarwinSignatureHasPinnedIdentity(detail) {
-		return errors.New("Claude Code Mach-O signature identity is not Anthropic's pinned Developer ID")
-	}
-
-	nativeArchitecture := runtime.GOARCH
-	if nativeArchitecture == "amd64" {
-		nativeArchitecture = "x86_64"
-	}
-	architectures, err := runClaudeCodeDarwinIdentityCommand("/usr/bin/lipo", "-archs", path)
-	if err != nil || !containsClaudeCodeArchitecture(architectures, nativeArchitecture) {
-		return fmt.Errorf("Claude Code Mach-O does not contain the native %s architecture", nativeArchitecture)
-	}
-	quarantine, err := readClaudeCodeDarwinQuarantine(path)
-	if err == nil {
-		return fmt.Errorf(
-			"Claude Code Mach-O is still quarantined; launch/approve the official client before setup: %q",
-			quarantine,
-		)
-	} else if !errors.Is(err, unix.ENOATTR) {
-		return fmt.Errorf("inspect Claude Code quarantine state: %w", err)
+	if err := validateClaudeCodeDarwinNativeImage(path); err != nil {
+		return err
 	}
 
 	expectedPath := ""
@@ -174,6 +112,88 @@ func validateClaudeCodeAgentProvenance(opts SetupOpts) error {
 	}
 	if !strings.EqualFold(digest, expectedDigest) {
 		return fmt.Errorf("selected Claude Code executable digest does not match protected evidence: %s", path)
+	}
+	probedVersion, err := probeClaudeCodeDarwinAgentVersion("claudecode", path, expectedDigest)
+	if err != nil {
+		return fmt.Errorf("probe selected Claude Code executable version: %w", err)
+	}
+	if err := validateProtectedDarwinAgentVersion("claudecode", expectedVersion, probedVersion); err != nil {
+		return err
+	}
+	postProbePath, postProbeDigest, ok := setupSelectedAgentExecutableEvidence(path)
+	if !ok || postProbePath != path || !strings.EqualFold(postProbeDigest, expectedDigest) {
+		return errors.New("selected Claude Code executable changed during its version probe")
+	}
+	return nil
+}
+
+func validateClaudeCodeDarwinNativeImage(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || strings.ContainsAny(path, "\x00\r\n") {
+		return errors.New("selected Claude Code executable path is not canonical and absolute")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect selected Claude Code executable: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
+		return errors.New("selected Claude Code executable is not a protected regular file")
+	}
+	if err := validateClaudeCodeDarwinDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("validate selected Claude Code executable ancestry: %w", err)
+	}
+	if err := validateClaudeCodeDarwinOwner(path, info); err != nil {
+		return fmt.Errorf("validate selected Claude Code executable owner: %w", err)
+	}
+	if err := validateClaudeCodeDarwinFileACL(path); err != nil {
+		return fmt.Errorf("validate selected Claude Code executable ACL: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil || resolved != path {
+		return errors.New("selected Claude Code executable resolves through a symlink")
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open selected Claude Code executable: %w", err)
+	}
+	var magic [4]byte
+	_, readErr := file.Read(magic[:])
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || !isClaudeCodeMachOMagic(magic) {
+		return errors.New("selected Claude Code executable is not a Mach-O image")
+	}
+
+	if _, err := runClaudeCodeDarwinIdentityCommand(
+		"/usr/bin/codesign", "--verify", "--strict", "--verbose=2", "-R", claudeCodeDarwinRequirement, path,
+	); err != nil {
+		return fmt.Errorf("Claude Code Mach-O code signature verification failed: %w", err)
+	}
+	detail, err := runClaudeCodeDarwinIdentityCommand(
+		"/usr/bin/codesign", "-d", "--verbose=4", path,
+	)
+	if err != nil {
+		return fmt.Errorf("inspect Claude Code Mach-O signature identity: %w", err)
+	}
+	if !claudeCodeDarwinSignatureHasPinnedIdentity(detail) {
+		return errors.New("Claude Code Mach-O signature identity is not Anthropic's pinned Developer ID")
+	}
+
+	nativeArchitecture := runtime.GOARCH
+	if nativeArchitecture == "amd64" {
+		nativeArchitecture = "x86_64"
+	}
+	architectures, err := runClaudeCodeDarwinIdentityCommand("/usr/bin/lipo", "-archs", path)
+	if err != nil || !containsClaudeCodeArchitecture(architectures, nativeArchitecture) {
+		return fmt.Errorf("Claude Code Mach-O does not contain the native %s architecture", nativeArchitecture)
+	}
+	quarantine, err := readClaudeCodeDarwinQuarantine(path)
+	if err == nil {
+		return fmt.Errorf(
+			"Claude Code Mach-O is still quarantined; launch/approve the official client before setup: %q",
+			quarantine,
+		)
+	} else if !errors.Is(err, unix.ENOATTR) {
+		return fmt.Errorf("inspect Claude Code quarantine state: %w", err)
 	}
 	return nil
 }

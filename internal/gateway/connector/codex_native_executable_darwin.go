@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	codexMacOSTeamID     = "2DC432GLL2"
-	codexMacOSIdentifier = "codex"
+	codexMacOSTeamID      = "2DC432GLL2"
+	codexMacOSIdentifier  = "codex"
+	codexMacOSRequirement = `=identifier "codex" and anchor apple generic and certificate leaf[subject.OU] = "2DC432GLL2" and certificate leaf[subject.CN] = "Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)"`
 )
 
 var runCodexDarwinIdentityCommand = func(path string, args ...string) (string, error) {
@@ -47,6 +48,8 @@ var readCodexDarwinQuarantine = func(path string) (string, error) {
 }
 
 var validateCodexDarwinFileACL = hookAPIValidateDirectoryACL
+
+var probeCodexDarwinAgentVersion = runProtectedDarwinAgentVersionProbe
 
 func validateCodexNativeExecutablePlatform(path string) error {
 	info, err := os.Lstat(path)
@@ -90,7 +93,7 @@ func validateCodexNativeExecutablePlatform(path string) error {
 		)
 	}
 	if output, err := runCodexDarwinIdentityCommand(
-		"/usr/bin/codesign", "--verify", "--strict", "--verbose=2", path,
+		"/usr/bin/codesign", "--verify", "--strict", "--verbose=2", "-R", codexMacOSRequirement, path,
 	); err != nil {
 		return fmt.Errorf("verify selected Codex macOS signature: %w: %s", err, strings.TrimSpace(output))
 	}
@@ -108,6 +111,21 @@ func validateCodexNativeExecutablePlatform(path string) error {
 	}
 	if !errors.Is(err, unix.ENOATTR) {
 		return fmt.Errorf("inspect selected Codex macOS quarantine attribute: %w", err)
+	}
+	return nil
+}
+
+func validateCodexNativeExecutableVersionPlatform(path, expectedVersion, expectedDigest string) error {
+	probedVersion, err := probeCodexDarwinAgentVersion("codex", path, expectedDigest)
+	if err != nil {
+		return fmt.Errorf("probe selected Codex macOS executable version: %w", err)
+	}
+	if err := validateProtectedDarwinAgentVersion("codex", expectedVersion, probedVersion); err != nil {
+		return err
+	}
+	stablePath, digest, ok := setupSelectedAgentExecutableEvidence(path)
+	if !ok || stablePath != path || !strings.EqualFold(digest, expectedDigest) {
+		return errors.New("selected Codex macOS executable changed during its version probe")
 	}
 	return nil
 }

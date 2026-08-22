@@ -67,7 +67,7 @@ def test_darwin_quickstart_and_tui_first_run_select_before_version_and_secrets(
         patch("defenseclaw.platform_support.host_os", return_value="darwin"),
         patch("defenseclaw.bootstrap.platform_support.host_os", return_value="darwin"),
         patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
-        patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+        patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
         patch(
             "defenseclaw.agent_selection.record_setup_agent_selections",
             side_effect=select,

@@ -360,7 +360,7 @@ def test_darwin_protected_alias_uses_receipt_version_without_generic_discovery(
     try:
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
-            patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+            patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
                 side_effect=select,
@@ -541,7 +541,7 @@ def test_darwin_core_fallback_selects_before_version_and_never_discovers(
     try:
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
-            patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+            patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
                 side_effect=select,
@@ -630,7 +630,7 @@ def test_darwin_bare_batch_selects_before_receipt_version_and_never_discovers(
     try:
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
-            patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+            patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
                 side_effect=select,
@@ -2984,7 +2984,7 @@ class TestPerConnectorWriteSurface(_BaseSetup):
         forbidden = AssertionError("protected macOS version validation must not execute PATH discovery")
         with (
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="darwin"),
-            patch("defenseclaw.agent_selection.sys.platform", "darwin"),
+            patch("defenseclaw.agent_selection._HOST_PLATFORM", "darwin"),
             patch(
                 "defenseclaw.agent_selection.record_setup_agent_selections",
                 side_effect=select,

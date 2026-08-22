@@ -217,8 +217,13 @@ func TestDecodeCodexRPCFiltersFloodAndKeepsTerminalOrdered(t *testing.T) {
 
 func TestValidateCodexPolicyExecutableRejectsReplacement(t *testing.T) {
 	originalValidator := codexNativeExecutableValidator
+	originalVersionValidator := codexNativeExecutableVersionValidator
 	codexNativeExecutableValidator = func(string) error { return nil }
-	t.Cleanup(func() { codexNativeExecutableValidator = originalValidator })
+	codexNativeExecutableVersionValidator = func(string, string, string) error { return nil }
+	t.Cleanup(func() {
+		codexNativeExecutableValidator = originalValidator
+		codexNativeExecutableVersionValidator = originalVersionValidator
+	})
 	dir := testenv.PrivateTempDir(t)
 	executableName := "codex.exe"
 	if runtime.GOOS == "darwin" {

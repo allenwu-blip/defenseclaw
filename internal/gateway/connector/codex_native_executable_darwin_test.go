@@ -46,6 +46,7 @@ func stubCodexDarwinIdentity(
 	previousCommand := runCodexDarwinIdentityCommand
 	previousQuarantine := readCodexDarwinQuarantine
 	previousFileACLValidator := validateCodexDarwinFileACL
+	previousVersionProbe := probeCodexDarwinAgentVersion
 	runCodexDarwinIdentityCommand = func(path string, args ...string) (string, error) {
 		switch path {
 		case "/usr/bin/codesign":
@@ -67,10 +68,14 @@ func stubCodexDarwinIdentity(
 		return quarantine, quarantineErr
 	}
 	validateCodexDarwinFileACL = func(string) error { return nil }
+	probeCodexDarwinAgentVersion = func(string, string, string) (string, error) {
+		return "codex-cli 0.146.0", nil
+	}
 	t.Cleanup(func() {
 		runCodexDarwinIdentityCommand = previousCommand
 		readCodexDarwinQuarantine = previousQuarantine
 		validateCodexDarwinFileACL = previousFileACLValidator
+		probeCodexDarwinAgentVersion = previousVersionProbe
 	})
 }
 
@@ -79,6 +84,49 @@ func TestValidateCodexNativeExecutablePlatform(t *testing.T) {
 	stubCodexDarwinIdentity(t, validCodexDarwinSignatureDetail(), "", unix.ENOATTR)
 	if err := validateCodexNativeExecutablePlatform(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestValidateCodexNativeExecutableRejectsSpoofedTextWithoutAppleAnchor(t *testing.T) {
+	path := writeCodexDarwinFixture(t, 0o500)
+	stubCodexDarwinIdentity(t, validCodexDarwinSignatureDetail(), "", unix.ENOATTR)
+	previous := runCodexDarwinIdentityCommand
+	runCodexDarwinIdentityCommand = func(tool string, args ...string) (string, error) {
+		if tool == "/usr/bin/codesign" && len(args) > 0 && args[0] == "--verify" {
+			if !containsDarwinRequirementArg(args, "-R") || !containsDarwinRequirementArg(args, codexMacOSRequirement) {
+				t.Fatalf("codesign verification lacks pinned requirement: %#v", args)
+			}
+			return "Identifier=codex\nTeamIdentifier=2DC432GLL2", errors.New("untrusted self-signed anchor")
+		}
+		return previous(tool, args...)
+	}
+	if err := validateCodexNativeExecutablePlatform(path); err == nil || !strings.Contains(err.Error(), "signature") {
+		t.Fatalf("spoofed Codex signature error = %v", err)
+	}
+}
+
+func containsDarwinRequirementArg(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func TestValidateCodexNativeExecutableVersionRejectsManifestMismatch(t *testing.T) {
+	path := writeCodexDarwinFixture(t, 0o500)
+	stubCodexDarwinIdentity(t, validCodexDarwinSignatureDetail(), "", unix.ENOATTR)
+	_, digest, ok := setupSelectedAgentExecutableEvidence(path)
+	if !ok {
+		t.Fatal("cannot hash Codex fixture")
+	}
+	probeCodexDarwinAgentVersion = func(string, string, string) (string, error) {
+		return "codex-cli 0.145.0", nil
+	}
+	err := validateCodexNativeExecutableVersionPlatform(path, "codex-cli 0.146.0", digest)
+	if err == nil || !strings.Contains(err.Error(), "does not match protected version") {
+		t.Fatalf("version mismatch error = %v, want refusal", err)
 	}
 }
 

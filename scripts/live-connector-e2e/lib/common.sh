@@ -67,22 +67,26 @@ dc_die() { dc_err "$*"; exit 1; }
 # installers and pre-Setup metadata probes without inheriting live provider
 # credentials. The driver retains its shell variables and publishes only the
 # active provider after installation, immediately before protected setup.
-dc_without_provider_credentials() {
-  env \
-    -u OPENAI_API_KEY \
-    -u ANTHROPIC_API_KEY \
-    -u AMP_API_KEY \
-    -u GOOGLE_API_KEY \
-    -u CURSOR_API_KEY \
-    -u COPILOT_GITHUB_TOKEN \
-    -u LLM_API_KEY \
-    -u AZURE_OPENAI_API_KEY \
-    -u AWS_BEARER_TOKEN_BEDROCK \
-    -u AWS_ACCESS_KEY_ID \
-    -u AWS_SECRET_ACCESS_KEY \
-    -u AWS_SESSION_TOKEN \
-    "$@"
-}
+dc_without_provider_credentials() (
+  # A subshell keeps the caller's authenticated environment intact while also
+  # allowing a bounded installer function (not only an external command) to
+  # run with the same credential-free boundary. Every child it starts inherits
+  # the scrubbed environment.
+  unset \
+    OPENAI_API_KEY \
+    ANTHROPIC_API_KEY \
+    AMP_API_KEY \
+    GOOGLE_API_KEY \
+    CURSOR_API_KEY \
+    COPILOT_GITHUB_TOKEN \
+    LLM_API_KEY \
+    AZURE_OPENAI_API_KEY \
+    AWS_BEARER_TOKEN_BEDROCK \
+    AWS_ACCESS_KEY_ID \
+    AWS_SECRET_ACCESS_KEY \
+    AWS_SESSION_TOKEN
+  "$@"
+)
 
 # ---------------------------------------------------------------------------
 # OS detection

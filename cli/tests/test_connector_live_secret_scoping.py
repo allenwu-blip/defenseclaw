@@ -3,6 +3,8 @@
 
 """Least-privilege contracts for live connector provider credentials."""
 
+import os
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -106,9 +108,9 @@ def test_unix_live_secrets_are_connector_scoped_and_not_job_wide() -> None:
 
 def test_live_installers_do_not_receive_or_persist_provider_credentials_early() -> None:
     common = (ROOT / "scripts/live-connector-e2e/lib/common.sh").read_text(encoding="utf-8")
-    helper = common.split("dc_without_provider_credentials() {", 1)[1].split("\n}", 1)[0]
+    helper = common.split("dc_without_provider_credentials() (", 1)[1].split("\n)", 1)[0]
     for secret in PROVIDER_SECRETS:
-        assert f"-u {secret}" in helper
+        assert secret in helper
     assert 'raw="$(dc_without_provider_credentials "$@"' in common
 
     drivers = ROOT / "scripts" / "live-connector-e2e" / "drivers"
@@ -134,10 +136,74 @@ def test_live_installers_do_not_receive_or_persist_provider_credentials_early() 
     assert "dc_write_env_key AZURE_OPENAI_API_KEY" not in openhands
 
     claude = (drivers / "claudecode.sh").read_text(encoding="utf-8")
+    assert 'dc_without_provider_credentials _claude_install_release "${requested}"' in claude
+    assert claude.index("dc_without_provider_credentials _claude_install_release") < claude.index(
+        'DC_E2E_AGENT_VERSION="${version}"'
+    )
     assert claude.index('DC_E2E_AGENT_VERSION="${version}"') < claude.index(
         "dc_write_env_key ANTHROPIC_API_KEY"
     )
     assert "dc_write_env_key AWS_" not in claude
+
+
+def test_contract_macos_fixtures_are_pinned_discoverable_and_credential_free() -> None:
+    contract = _jobs()["contract-matrix"]
+    codex = _step(contract, "Install authenticated Codex lifecycle fixture")
+    assert codex["env"] == {
+        "CODEX_VERSION": "0.146.0",
+        "DC_E2E_CLIENT_PROVISION_ONLY": "1",
+    }
+    assert _provider_references(codex) == set()
+    assert ". scripts/live-connector-e2e/drivers/codex.sh" in codex["run"]
+    assert 'export npm_config_prefix="${HOME}/.npm-global"' in codex["run"]
+    assert "${HOME}/.npm-global/lib/node_modules/@openai/codex" in codex["run"]
+    assert "${RUNNER_TEMP}" not in codex["run"]
+    selection = (ROOT / "cli/defenseclaw/agent_selection.py").read_text(encoding="utf-8")
+    assert 'home / ".npm-global" / "lib" / "node_modules"' in selection
+
+    fixture = _step(contract, "Install authenticated Claude Code lifecycle fixture")
+
+    assert fixture["if"] == (
+        "steps.select.outputs.run == 'true' && "
+        "matrix.connector == 'claudecode' && runner.os == 'macOS'"
+    )
+    assert fixture["env"] == {
+        "CLAUDE_VERSION": "2.1.219",
+        "DC_E2E_CLIENT_PROVISION_ONLY": "1",
+    }
+    assert _provider_references(fixture) == set()
+    assert ". scripts/live-connector-e2e/drivers/claudecode.sh" in fixture["run"]
+    assert "agent_install" in fixture["run"]
+
+
+def test_claude_provision_only_scrubs_every_installer_child(tmp_path: Path) -> None:
+    driver = (ROOT / "scripts/live-connector-e2e/drivers/claudecode.sh").as_posix()
+    child_environment = (tmp_path / "child.env").as_posix()
+    script = f"""
+set -euo pipefail
+. '{driver}'
+_claude_install_release() {{
+  env > '{child_environment}'
+  printf '2.1.219'
+}}
+export DC_E2E_CLIENT_PROVISION_ONLY=1
+agent_install
+for name in {' '.join(PROVIDER_SECRETS)}; do
+  test "${{!name}}" = sentinel
+done
+"""
+    environment = os.environ.copy()
+    environment.update({name: "sentinel" for name in PROVIDER_SECRETS})
+    subprocess.run(["bash", "-c", script], check=True, env=environment)
+
+    child = (tmp_path / "child.env").read_text(encoding="utf-8")
+    for name in PROVIDER_SECRETS:
+        assert f"{name}=" not in child
+
+    # Sourcing a provision-only driver must not dispatch its authenticated
+    # live harness. The source guard is part of the reusable installer API.
+    claude = (ROOT / "scripts/live-connector-e2e/drivers/claudecode.sh").read_text(encoding="utf-8")
+    assert 'if [ "${BASH_SOURCE[0]}" = "$0" ]; then' in claude
 
 
 def test_windows_live_provider_secrets_are_harness_and_connector_scoped() -> None:
