@@ -196,6 +196,7 @@ func TestEnterpriseHooksInstallPassesExplicitAgentExecutable(t *testing.T) {
 		return enterprisehooks.InstallResult{Connector: opts.ConnectorName, UserHome: opts.UserHome}, nil
 	}
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	cmd.SetOut(&bytes.Buffer{})
 	if err := runEnterpriseHooksInstall(cmd, nil); err != nil {
 		t.Fatalf("runEnterpriseHooksInstall: %v", err)
