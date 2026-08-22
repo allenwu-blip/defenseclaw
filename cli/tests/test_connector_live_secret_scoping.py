@@ -4,9 +4,11 @@
 """Least-privilege contracts for live connector provider credentials."""
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +28,24 @@ PROVIDER_SECRETS = (
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
 )
+
+
+def _bash_executable() -> str:
+    """Select Git Bash on Windows instead of the WSL app alias."""
+
+    if os.name != "nt":
+        return shutil.which("bash") or "bash"
+
+    candidates: list[Path] = []
+    if git := shutil.which("git"):
+        candidates.append(Path(git).resolve().parent.parent / "bin" / "bash.exe")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)", "LocalAppData"):
+        if root := os.environ.get(variable):
+            candidates.append(Path(root) / "Git" / "bin" / "bash.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    pytest.skip("Git Bash is required for the POSIX connector secret-scoping contract on Windows")
 
 
 def _jobs() -> dict:
@@ -181,9 +201,10 @@ def test_claude_provision_only_scrubs_every_installer_child(tmp_path: Path) -> N
     child_environment = (tmp_path / "child.env").as_posix()
     script = f"""
 set -euo pipefail
-. '{driver}'
+. "$1"
+secret_scope_child_environment="$2"
 _claude_install_release() {{
-  env > '{child_environment}'
+  env > "$secret_scope_child_environment"
   printf '2.1.219'
 }}
 export DC_E2E_CLIENT_PROVISION_ONLY=1
@@ -194,7 +215,11 @@ done
 """
     environment = os.environ.copy()
     environment.update({name: "sentinel" for name in PROVIDER_SECRETS})
-    subprocess.run(["bash", "-c", script], check=True, env=environment)
+    subprocess.run(
+        [_bash_executable(), "-c", script, "secret-scope-test", driver, child_environment],
+        check=True,
+        env=environment,
+    )
 
     child = (tmp_path / "child.env").read_text(encoding="utf-8")
     for name in PROVIDER_SECRETS:
