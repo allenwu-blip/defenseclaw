@@ -2971,8 +2971,9 @@ connection.close()
         $standardUserCIText,
         '(?s)if \(\$Mode -eq ''contract''\) \{\s*\$harnessFiles \+= @\(.*?\)\s*\}'
     ).Value
-    Assert-True ($contractHarnessFiles -match '''prepare-windows-contract-v8\.py''') `
-        'disposable standard-user contracts carry the canonical v8 configuration helper'
+    Assert-True ($contractHarnessFiles -match '''prepare-windows-contract-v8\.py''' -and
+        $contractHarnessFiles -match '''live-connector-e2e\\project-audit-events\.py''') `
+        'disposable standard-user contracts carry the canonical v8 configuration and audit projection helpers'
     Assert-True ($standardUserCIText -match 'New-LocalUser' -and
         $standardUserCIText -match 'Remove-DisposableProfileAndAccount' -and
         $standardUserCIText -match 'DefenseClaw disposable Setup CI account' -and
