@@ -28,6 +28,7 @@ SMOKE_PATH = ROOT / ".github" / "workflows" / "release-candidate-smoke.yml"
 WINDOWS_NATIVE_PATH = ROOT / ".github" / "workflows" / "windows-native.yml"
 FRESH_INSTALL = (ROOT / "scripts" / "test-fresh-install-release-windows.ps1").read_text(encoding="utf-8")
 DISPOSABLE_LAUNCHER = (ROOT / "scripts" / "invoke-windows-setup-standard-user-ci.ps1").read_text(encoding="utf-8")
+WINDOWS_COSIGN_INSTALLER = (ROOT / "scripts" / "install-pinned-windows-cosign.ps1").read_text(encoding="utf-8")
 DISPOSABLE_FILE_GUARD = (ROOT / "scripts" / "windows-disposable-file-guard.cs").read_text(encoding="utf-8")
 STANDARD_USER_PROCESS_LAUNCHER = (ROOT / "scripts" / "windows-disposable-standard-user-launcher.cs").read_text(
     encoding="utf-8"
@@ -424,6 +425,63 @@ def test_windows_setup_bytes_are_bound_into_the_single_sealed_candidate() -> Non
     assert "--windows-dir candidate-input/windows" in str(assemble)
 
 
+def test_windows_jobs_stage_digest_pinned_cosign_without_executable_cleanup() -> None:
+    helper = "./scripts/install-pinned-windows-cosign.ps1"
+    expected_action = "sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da"
+    native_jobs = _workflow(WINDOWS_NATIVE_PATH)["jobs"]
+    smoke_jobs = _workflow(SMOKE_PATH)["jobs"]
+
+    for job in (
+        native_jobs["public-bootstrap-acceptance"],
+        native_jobs["release-validator-replay"],
+        smoke_jobs["windows-fresh-install"],
+    ):
+        stage_steps = [
+            step
+            for step in job["steps"]
+            if step.get("name") == "Stage pinned Windows Cosign verifier"
+        ]
+        assert len(stage_steps) == 1
+        assert stage_steps[0]["run"] == helper
+        assert expected_action not in str(job)
+
+    for job_name in ("posix-fresh-install", "posix-upgrade", "macos-intel-refusal"):
+        installers = [
+            step
+            for step in smoke_jobs[job_name]["steps"]
+            if step.get("uses", "").startswith("sigstore/cosign-installer@")
+        ]
+        assert len(installers) == 1
+        assert installers[0]["uses"] == expected_action
+        assert installers[0]["with"] == {"cosign-release": "v2.6.2"}
+
+    assert (
+        "https://github.com/sigstore/cosign/releases/download/"
+        "v2.6.2/cosign-windows-amd64.exe"
+    ) in WINDOWS_COSIGN_INSTALLER
+    assert "DD6C61E510DA627BCAED4CD9DB844EC11CACD09826D814D89F7F68D40FEB07BE" in (
+        WINDOWS_COSIGN_INSTALLER
+    )
+    assert "$maximumBytes = 268435456" in WINDOWS_COSIGN_INSTALLER
+    for required in (
+        "'--proto', '=https'",
+        "'--proto-redir', '=https'",
+        "'--tlsv1.2'",
+        "'--max-filesize', [string]$maximumBytes",
+        "'--retry', '3'",
+        "'--retry-max-time', '300'",
+    ):
+        assert required in WINDOWS_COSIGN_INSTALLER
+    assert "--retry-all-errors" not in WINDOWS_COSIGN_INSTALLER
+    assert "Remove-Item" not in WINDOWS_COSIGN_INSTALLER
+    assert "[IO.File]::Delete" not in WINDOWS_COSIGN_INSTALLER
+    assert "[IO.File]::Move" not in WINDOWS_COSIGN_INSTALLER
+    assert not re.search(r"(?m)^\s*&\s+\$cosign(?:\s|$)", WINDOWS_COSIGN_INSTALLER)
+    assert WINDOWS_COSIGN_INSTALLER.index("Get-FileHash -LiteralPath $cosign") < (
+        WINDOWS_COSIGN_INSTALLER.index("[IO.File]::AppendAllLines")
+    )
+
+
 def test_windows_release_is_fresh_install_only_and_uses_public_install_ps1() -> None:
     smoke_workflow = _workflow(SMOKE_PATH)
     windows_jobs = {
@@ -447,6 +505,9 @@ def test_windows_release_is_fresh_install_only_and_uses_public_install_ps1() -> 
     assert "-UninstallContract deferred" in rendered
     assert "-SuccessPathOnly" not in rendered
     assert "defenseclaw-release-bootstrap-diagnostics" in rendered
+    cosign = _step(job, "Stage pinned Windows Cosign verifier")
+    assert cosign["run"] == "./scripts/install-pinned-windows-cosign.ps1"
+    assert "sigstore/cosign-installer@" not in rendered
     diagnostics = _step(job, "Upload Windows bootstrap diagnostics on failure")
     assert diagnostics["if"] == "${{ failure() || cancelled() }}"
     assert diagnostics["with"]["path"] == ("${{ runner.temp }}/defenseclaw-release-bootstrap-diagnostics/**")

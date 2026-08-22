@@ -74,6 +74,7 @@ def _selects_full_connector_matrix(path: str) -> bool:
         "scripts/build-windows-installer.ps1",
         "scripts/initialize-windows-native-ci-paths.ps1",
         "scripts/install.ps1",
+        "scripts/install-pinned-windows-cosign.ps1",
         "scripts/invoke-windows-setup-standard-user-ci.ps1",
         "scripts/test-fresh-install-release-windows.ps1",
         "scripts/test-upgrade-release-windows.ps1",

@@ -309,10 +309,10 @@ def test_release_jobs_pin_the_bundle_verifier_binary() -> None:
         if step.get("uses", "").startswith("sigstore/cosign-installer@")
     ]
 
-    assert len(installers) == 9
+    assert len(installers) == 8
     assert all(step["uses"] == COSIGN_INSTALLER_ACTION for step in installers)
     versions = [step.get("with", {}).get("cosign-release") for step in installers]
-    assert versions.count("v2.6.2") == 7
+    assert versions.count("v2.6.2") == 6
     assert versions.count("v2.6.3") == 2
     channel = _workflow()["jobs"]["advance-stable-channel"]
     channel_installer = next(
@@ -379,6 +379,7 @@ def test_release_sensitive_policy_covers_channel_and_windows_publication_authori
     assert {
         ".github/workflows/windows-native.yml",
         "scripts/defenseclaw-rescue.ps1",
+        "scripts/install-pinned-windows-cosign.ps1",
         "scripts/invoke-windows-setup-standard-user-ci.ps1",
         "scripts/publish-release-channel.sh",
         "scripts/release_channel.py",
@@ -1183,7 +1184,13 @@ def test_windows_pr_ci_executes_public_bootstrap_against_authenticated_fixture()
         bootstrap["env"]["BOOTSTRAP_LEGACY_INSTALLER_SHA256"]
         == hashlib.sha256((ROOT / "scripts/install.ps1").read_bytes()).hexdigest()
     )
-    assert "sigstore/cosign-installer@" in rendered
+    assert "sigstore/cosign-installer@" not in rendered
+    cosign = next(
+        step
+        for step in bootstrap["steps"]
+        if step.get("name") == "Stage pinned Windows Cosign verifier"
+    )
+    assert cosign["run"] == "./scripts/install-pinned-windows-cosign.ps1"
     assert "gh release view" in rendered
     assert "release not found" in rendered
     assert "Could not resolve bootstrap fixture release" in rendered

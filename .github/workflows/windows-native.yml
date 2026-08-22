@@ -649,9 +649,8 @@ jobs:
           persist-credentials: false
       - name: Initialize isolated paths
         run: ./scripts/initialize-windows-native-ci-paths.ps1 -Leaf bootstrap -DiagnosticsLeaf windows-native-diagnostics-bootstrap -ArtifactLeaf windows-bootstrap-fixture
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
-        with:
-          cosign-release: "v2.6.2"
+      - name: Stage pinned Windows Cosign verifier
+        run: ./scripts/install-pinned-windows-cosign.ps1
       - name: Select permanent release or sealed candidate fixture
         id: fixture
         env:
@@ -1097,9 +1096,8 @@ jobs:
         with:
           version: "0.11.28"
           python-version: "3.13"
-      - uses: sigstore/cosign-installer@dc72c7d5c4d10cd6bcb8cf6e3fd625a9e5e537da # v3.7.0
-        with:
-          cosign-release: "v2.6.2"
+      - name: Stage pinned Windows Cosign verifier
+        run: ./scripts/install-pinned-windows-cosign.ps1
       - name: Download exact sealed release candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
