@@ -79,6 +79,185 @@ function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw "assertion failed: $Message" }
 }
 
+function Invoke-PackageLiveCleanupRegressionFixture {
+    $paths = [pscustomobject]@{
+        StatePath = 'C:\fixture\install\installer\install-state.json'
+        InstallRoot = 'C:\fixture\install'
+        DataRoot = 'C:\fixture\data'
+        CacheRoot = 'C:\fixture\cache'
+        CommandDir = 'C:\fixture\install\bin'
+    }
+    $fixture = [pscustomobject]@{
+        Paths = $paths
+        Setup = 'C:\fixture\package\DefenseClawSetup-x64.exe'
+        Exists = [Collections.Generic.Dictionary[string, bool]]::new(
+            [StringComparer]::OrdinalIgnoreCase
+        )
+        AuthorityCalls = 0
+        IdentityCalls = 0
+        UninstallCalls = 0
+        DeferredCalls = 0
+        ResultRows = [Collections.Generic.List[object]]::new()
+        RejectDeferred = $false
+    }
+    $fixture.Exists[$paths.StatePath] = $true
+    $fixture.Exists[$paths.InstallRoot] = $true
+
+    $mockedFunctions = @(
+        'Initialize-PackageLiveEvidenceAuthority',
+        'Get-PackageLiveEvidencePaths',
+        'Assert-PackageLiveInstalledIdentity',
+        'Invoke-NativeProcess',
+        'Assert-PackageDeferredCleanupPending',
+        'Write-Result'
+    )
+    $savedFunctions = @{}
+    foreach ($name in $mockedFunctions) {
+        $savedFunctions[$name] = (
+            Get-Command $name -CommandType Function -ErrorAction Stop
+        ).ScriptBlock
+    }
+    $existingTestPath = Get-Command Test-Path -CommandType Function `
+        -ErrorAction SilentlyContinue
+    $savedTestPath = if ($null -eq $existingTestPath) {
+        $null
+    } else {
+        $existingTestPath.ScriptBlock
+    }
+    $savedSetup = $script:PackageLiveSetupExecutable
+    $savedOriginalPath = $script:PackageLiveOriginalPath
+    $script:PackageLiveCleanupFixture = $fixture
+    try {
+        Set-Item Function:script:Initialize-PackageLiveEvidenceAuthority {
+            $script:PackageLiveCleanupFixture.AuthorityCalls++
+            $script:PackageLiveSetupExecutable =
+                $script:PackageLiveCleanupFixture.Setup
+        }
+        Set-Item Function:script:Get-PackageLiveEvidencePaths {
+            return $script:PackageLiveCleanupFixture.Paths
+        }
+        Set-Item Function:script:Assert-PackageLiveInstalledIdentity {
+            param([pscustomobject]$Paths)
+            if ($Paths -ne $script:PackageLiveCleanupFixture.Paths) {
+                throw 'fixture received the wrong installed paths'
+            }
+            $script:PackageLiveCleanupFixture.IdentityCalls++
+        }
+        Set-Item Function:script:Invoke-NativeProcess {
+            param(
+                [string]$FilePath,
+                [string[]]$ArgumentList,
+                [int[]]$AllowedExitCodes,
+                [int]$TimeoutSeconds
+            )
+            $state = $script:PackageLiveCleanupFixture
+            if ($FilePath -cne $state.Setup -or
+                ($ArgumentList -join ' ') -cne
+                    '/uninstall /quiet /norestart DELETEUSERDATA=1' -or
+                ($AllowedExitCodes -join ',') -cne '0,3010' -or
+                $TimeoutSeconds -ne 900) {
+                throw 'fixture observed a broadened or malformed Setup uninstall contract'
+            }
+            $state.UninstallCalls++
+            $state.Exists.Remove($state.Paths.StatePath) | Out-Null
+            $state.Exists.Remove($state.Paths.InstallRoot) | Out-Null
+            $state.Exists.Remove($state.Paths.DataRoot) | Out-Null
+            $state.Exists[$state.Paths.CacheRoot] = $true
+            return [pscustomobject]@{ ExitCode = 3010 }
+        }
+        Set-Item Function:script:Assert-PackageDeferredCleanupPending {
+            param([pscustomobject]$Paths, [string]$ExactSetupExecutable)
+            $state = $script:PackageLiveCleanupFixture
+            if ($Paths -ne $state.Paths -or $ExactSetupExecutable -cne $state.Setup) {
+                throw 'fixture received the wrong deferred cleanup authority'
+            }
+            $state.DeferredCalls++
+            if ($state.RejectDeferred) {
+                throw 'protected package deferred cleanup retained an unexpected same-boot path'
+            }
+            return [pscustomobject]@{ status = 'pending-reboot' }
+        }
+        Set-Item Function:script:Write-Result {
+            param([string]$EventName, [string]$Status, [string]$Detail)
+            $script:PackageLiveCleanupFixture.ResultRows.Add(
+                [pscustomobject]@{
+                    Event = $EventName
+                    Status = $Status
+                    Detail = $Detail
+                }
+            )
+        }
+        Set-Item Function:script:Test-Path {
+            param([string]$LiteralPath, [object]$PathType)
+            $exists = $script:PackageLiveCleanupFixture.Exists
+            return $exists.ContainsKey($LiteralPath) -and $exists[$LiteralPath]
+        }
+
+        Invoke-PackageLiveEvidenceCleanup
+        Invoke-PackageLiveEvidenceCleanup
+        Assert-True ($fixture.AuthorityCalls -eq 2 -and
+            $fixture.IdentityCalls -eq 1 -and
+            $fixture.UninstallCalls -eq 1 -and
+            $fixture.DeferredCalls -eq 2) `
+            '3010 cleanup authenticates the installed package once and exact deferred residue again on safety-net re-entry'
+        Assert-True ($fixture.ResultRows.Count -eq 1 -and
+            $fixture.ResultRows[0].Event -ceq 'package:cleanup' -and
+            $fixture.ResultRows[0].Status -ceq 'pass' -and
+            $fixture.ResultRows[0].Detail -match '3010.*pending reboot') `
+            '3010 cleanup reports successful uninstall with truthful pending-reboot status'
+
+        $deferredCalls = $fixture.DeferredCalls
+        $fixture.Exists[$paths.InstallRoot] = $true
+        $foreignRejected = $false
+        try { Invoke-PackageLiveEvidenceCleanup } catch {
+            $foreignRejected = $_.Exception.Message -match
+                'product state without exact installed provenance'
+        }
+        Assert-True ($foreignRejected -and
+            $fixture.DeferredCalls -eq $deferredCalls) `
+            'cleanup rejects partial install state before treating cache residue as deferred authority'
+
+        $fixture.Exists.Remove($paths.InstallRoot) | Out-Null
+        $fixture.RejectDeferred = $true
+        $extraResidueRejected = $false
+        try { Invoke-PackageLiveEvidenceCleanup } catch {
+            $extraResidueRejected = $_.Exception.Message -match
+                'unexpected same-boot path'
+        }
+        Assert-True $extraResidueRejected `
+            'cleanup propagates exact deferred-residue validation failures'
+
+        $primaryFailure = [InvalidOperationException]::new('primary live failure')
+        $cleanupFailure = [InvalidOperationException]::new('secondary cleanup failure')
+        $secondaryReport = @(& {
+            Complete-PackageLiveFinalization $primaryFailure $cleanupFailure
+        } 3>&1) -join "`n"
+        Assert-True ($secondaryReport -match
+            'finalization also failed after the primary harness failure.*secondary cleanup failure') `
+            'a secondary cleanup failure is reported without replacing the primary live failure'
+        $standaloneCleanupSurfaced = $false
+        try { Complete-PackageLiveFinalization $null $cleanupFailure } catch {
+            $standaloneCleanupSurfaced = $_.Exception.Message -match
+                'secondary cleanup failure'
+        }
+        Assert-True $standaloneCleanupSurfaced `
+            'cleanup failure remains fatal when no primary live failure exists'
+    } finally {
+        foreach ($name in $mockedFunctions) {
+            Set-Item "Function:script:$name" $savedFunctions[$name]
+        }
+        if ($null -eq $savedTestPath) {
+            Remove-Item Function:\Test-Path -ErrorAction SilentlyContinue
+        } else {
+            Set-Item Function:script:Test-Path $savedTestPath
+        }
+        $script:PackageLiveSetupExecutable = $savedSetup
+        $script:PackageLiveOriginalPath = $savedOriginalPath
+        Remove-Variable -Name PackageLiveCleanupFixture -Scope Script `
+            -ErrorAction SilentlyContinue
+    }
+}
+
 function New-SyntheticProcessIdentity(
     [int]$ProcessId,
     [string]$Created,
@@ -217,6 +396,157 @@ try {
     . $harness -NoRun
     . $workflowRunPathHelper
     . $nativeHarness -WorkspaceRoot $root -StateRoot (Join-Path $temp 'synthetic-native') -NoRun
+    Invoke-PackageLiveCleanupRegressionFixture
+
+    $validClaudeInstaller = @'
+param([string]$Target = "latest")
+$null = $Target
+'@
+    $claudeImmediateState = [pscustomobject]@{ Attempts = 0; Delays = 0 }
+    $claudeImmediate = Get-OfficialClaudeInstallerScriptBlock `
+        -MaxAttempts 3 -PerAttemptTimeoutSeconds 1 `
+        -OverallTimeoutSeconds 5 -RequestInvoker {
+            param([Uri]$Uri, [int]$TimeoutSeconds)
+            $claudeImmediateState.Attempts++
+            return $validClaudeInstaller
+        } -DelayInvoker {
+            param([int]$DelaySeconds)
+            $claudeImmediateState.Delays++
+        }
+    Assert-True ($claudeImmediate -is [scriptblock] -and
+        $claudeImmediateState.Attempts -eq 1 -and
+        $claudeImmediateState.Delays -eq 0) `
+        'Claude installer fetch returns immediately after one valid response'
+
+    $claudeRetryState = [pscustomobject]@{ Attempts = 0; Delays = @() }
+    $claudeRetrySecret = 'dc-claude-retry-secret-value'
+    $originalAnthropicKey = $env:ANTHROPIC_API_KEY
+    $env:ANTHROPIC_API_KEY = $claudeRetrySecret
+    $claudeRetryWarnings = @()
+    try {
+        $claudeInstaller = Get-OfficialClaudeInstallerScriptBlock `
+            -MaxAttempts 3 -PerAttemptTimeoutSeconds 1 `
+            -OverallTimeoutSeconds 5 -RequestInvoker {
+                param([Uri]$Uri, [int]$TimeoutSeconds)
+                $claudeRetryState.Attempts++
+                if ($claudeRetryState.Attempts -lt 3) {
+                    $transientSocket = [Net.Sockets.SocketException]::new(
+                        [int][Net.Sockets.SocketError]::ConnectionReset
+                    )
+                    throw [Net.Http.HttpRequestException]::new(
+                        "The SSL connection could not be established: $claudeRetrySecret",
+                        $transientSocket
+                    )
+                }
+                return $validClaudeInstaller
+            } -DelayInvoker {
+                param([int]$DelaySeconds)
+                $claudeRetryState.Delays += $DelaySeconds
+            } -WarningVariable +claudeRetryWarnings
+    } finally {
+        $env:ANTHROPIC_API_KEY = $originalAnthropicKey
+    }
+    Assert-True ($claudeInstaller -is [scriptblock] -and
+        $claudeRetryState.Attempts -eq 3 -and
+        ($claudeRetryState.Delays -join ',') -ceq '2,4') `
+        'Claude installer fetch retries only the bounded transient transport attempts'
+    Assert-True ((@($claudeRetryWarnings) -join "`n").Contains('***REDACTED***') -and
+        -not (@($claudeRetryWarnings) -join "`n").Contains($claudeRetrySecret)) `
+        'Claude installer transient retry warnings redact configured secrets'
+
+    $claudeExhaustionState = [pscustomobject]@{ Attempts = 0; Delays = @() }
+    $claudeExhaustionRejected = $false
+    $env:ANTHROPIC_API_KEY = $claudeRetrySecret
+    try {
+        Get-OfficialClaudeInstallerScriptBlock -MaxAttempts 3 `
+            -PerAttemptTimeoutSeconds 1 -OverallTimeoutSeconds 5 `
+            -RequestInvoker {
+                param([Uri]$Uri, [int]$TimeoutSeconds)
+                $claudeExhaustionState.Attempts++
+                $transientSocket = [Net.Sockets.SocketException]::new(
+                    [int][Net.Sockets.SocketError]::ConnectionReset
+                )
+                throw [Net.Http.HttpRequestException]::new(
+                    "The SSL connection could not be established: $claudeRetrySecret",
+                    $transientSocket
+                )
+            } -DelayInvoker {
+                param([int]$DelaySeconds)
+                $claudeExhaustionState.Delays += $DelaySeconds
+            } -WarningAction SilentlyContinue | Out-Null
+    } catch {
+        $serializedFailure = $_.Exception.ToString()
+        $claudeExhaustionRejected = (
+            $_.Exception.Message -match 'failed on attempt 3/3' -and
+            $null -eq $_.Exception.InnerException -and
+            $serializedFailure.Contains('***REDACTED***') -and
+            -not $serializedFailure.Contains($claudeRetrySecret)
+        )
+    } finally {
+        $env:ANTHROPIC_API_KEY = $originalAnthropicKey
+    }
+    Assert-True ($claudeExhaustionRejected -and
+        $claudeExhaustionState.Attempts -eq 3 -and
+        ($claudeExhaustionState.Delays -join ',') -ceq '2,4') `
+        'Claude installer fetch stops after three bounded transient attempts without retaining secret-bearing exceptions'
+
+    foreach ($terminalClaudeFailure in @(
+        [pscustomobject]@{
+            Name = 'HTTP status'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'service unavailable', $null, [Net.HttpStatusCode]::ServiceUnavailable
+            )
+        },
+        [pscustomobject]@{
+            Name = 'ambiguous secure connection'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'The SSL connection could not be established'
+            )
+        },
+        [pscustomobject]@{
+            Name = 'certificate validation'
+            Exception = [Net.Http.HttpRequestException]::new(
+                'The SSL connection could not be established',
+                [Security.Authentication.AuthenticationException]::new(
+                    'Authentication failed'
+                )
+            )
+        }
+    )) {
+        $terminalState = [pscustomobject]@{ Attempts = 0 }
+        $terminalRejected = $false
+        try {
+            Get-OfficialClaudeInstallerScriptBlock -MaxAttempts 3 `
+                -PerAttemptTimeoutSeconds 1 -OverallTimeoutSeconds 5 `
+                -RequestInvoker {
+                    param([Uri]$Uri, [int]$TimeoutSeconds)
+                    $terminalState.Attempts++
+                    throw $terminalClaudeFailure.Exception
+                } -DelayInvoker { param([int]$DelaySeconds) } | Out-Null
+        } catch {
+            $terminalRejected = $_.Exception.Message -match
+                'failed on attempt 1/3'
+        }
+        Assert-True ($terminalRejected -and $terminalState.Attempts -eq 1) `
+            "Claude installer fetch does not retry $($terminalClaudeFailure.Name) failures"
+    }
+
+    $invalidClaudeState = [pscustomobject]@{ Attempts = 0 }
+    $invalidClaudeRejected = $false
+    try {
+        Get-OfficialClaudeInstallerScriptBlock -MaxAttempts 3 `
+            -PerAttemptTimeoutSeconds 1 -OverallTimeoutSeconds 5 `
+            -RequestInvoker {
+                param([Uri]$Uri, [int]$TimeoutSeconds)
+                $invalidClaudeState.Attempts++
+                return 'param('
+            } -DelayInvoker { param([int]$DelaySeconds) } | Out-Null
+    } catch {
+        $invalidClaudeRejected = $_.Exception.Message -match
+            'failed on attempt 1/3'
+    }
+    Assert-True ($invalidClaudeRejected -and $invalidClaudeState.Attempts -eq 1) `
+        'Claude installer fetch rejects invalid content once without an integrity retry'
 
     # GitHub-hosted Windows disables UAC and starts Actions with an elevated
     # default token whose default owner can be BUILTIN\Administrators. The
@@ -1515,6 +1845,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Invoke-PackageLiveEvidenceCleanup\b.*?(?=\r?\nfunction )'
     ).Value
+    $packageDeferredCleanup = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-PackageDeferredCleanupPending\b.*?(?=\r?\nfunction )'
+    ).Value
     $antigravitySourceAuthority = [regex]::Match(
         $harnessText,
         '(?s)function Assert-AuthenticatedAntigravitySourceCheckout\b.*?(?=\r?\nfunction )'
@@ -1531,6 +1865,23 @@ private-secret-name = "DefenseClaw must remain redacted"
         $packageLiveCleanup -match
             '(?s)^function Invoke-PackageLiveEvidenceCleanup.*?Initialize-PackageLiveEvidenceAuthority') `
         'live Git authority checks select one PATH application before package, Antigravity, Copilot, and cleanup validation'
+    Assert-True (
+        $packageLiveCleanup -match
+            '(?s)\$uninstall = Invoke-NativeProcess.*?''/uninstall''.*?-AllowedExitCodes @\(0, 3010\).*?if \(\$uninstall\.ExitCode -eq 3010\)' -and
+        ([regex]::Matches(
+            $packageLiveCleanup,
+            'Assert-PackageDeferredCleanupPending'
+        )).Count -eq 2 -and
+        $packageLiveCleanup -match
+            '(?s)elseif \(\(Test-Path -LiteralPath \$paths\.InstallRoot\).*?\$paths\.DataRoot\)\) \{\s*throw ''package live cleanup found product state without exact installed provenance''\s*\} elseif \(Test-Path -LiteralPath \$paths\.CacheRoot\) \{\s*\$null = Assert-PackageDeferredCleanupPending' -and
+        $packageDeferredCleanup -match "\[string\]\`$record\.status -cne 'pending-reboot'" -and
+        $packageDeferredCleanup -match
+            'Get-FileHash -LiteralPath \$ExactSetupExecutable' -and
+        $packageDeferredCleanup -match
+            'deferred cleanup retained an unexpected same-boot path' -and
+        $packageDeferredCleanup -match
+            'Run value differs from authenticated authority'
+    ) 'package live cleanup accepts exact 0/3010 uninstall success, authenticates deferred residue on re-entry, and rejects partial or foreign state'
     $nativeProcessFunction = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-WindowsNativeProcess\b.*?(?=\r?\nfunction )'
@@ -2423,10 +2774,44 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function Install-Agent\b.*?(?=\r?\nfunction )'
     ).Value
+    $claudeInstallerFetchContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-OfficialClaudeInstallerScriptBlock\b.*?(?=\r?\nfunction )'
+    ).Value
+    $claudeInstallerBodyContract = [regex]::Match(
+        $harnessText,
+        '(?s)function ConvertTo-OfficialClaudeInstallerScriptBlock\b.*?(?=\r?\nfunction )'
+    ).Value
     $invokeAgentContract = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-Agent\b.*?(?=\r?\nfunction )'
     ).Value
+    Assert-True ($installAgentContract -match
+            '\$installer = Get-OfficialClaudeInstallerScriptBlock' -and
+        $installAgentContract -notmatch
+            "Invoke-RestMethod -Uri 'https://claude\.ai/install\.ps1'" -and
+        $claudeInstallerFetchContract -match
+            '\[ValidateRange\(1, 3\)\]\[int\]\$MaxAttempts = 3' -and
+        $claudeInstallerFetchContract -match
+            '\[ValidateRange\(1, 30\)\]\[int\]\$PerAttemptTimeoutSeconds = 30' -and
+        $claudeInstallerFetchContract -match
+            '\[ValidateRange\(1, 90\)\]\[int\]\$OverallTimeoutSeconds = 75' -and
+        $claudeInstallerFetchContract -match
+            '\$deadline = \[DateTimeOffset\]::UtcNow\.AddSeconds' -and
+        $claudeInstallerFetchContract -match
+            '(?s)Invoke-RestMethod -Method Get.*?-MaximumRedirection 3.*?-TimeoutSec \$TimeoutSeconds' -and
+        $claudeInstallerFetchContract -notmatch
+            'SkipCertificateCheck|MaximumRetryCount' -and
+        $claudeInstallerFetchContract -match
+            'Test-ClaudeInstallerTransientTransportFailure' -and
+        $harnessText -match
+            'failure -is \[Security\.Authentication\.AuthenticationException\]' -and
+        $claudeInstallerFetchContract -match 'Protect-LogText' -and
+        $claudeInstallerBodyContract -match
+            'byteCount -gt 65536' -and
+        $claudeInstallerBodyContract -match
+            '\[scriptblock\]::Create\(\$text\)') `
+        'Claude installer fetch is TLS-validating, deadline/attempt bounded, transient-only, redacted, and validates bounded PowerShell before execution'
     Assert-True ($installAgentContract -match '@ampcode/cli@' -and
         $installAgentContract -match 'AMP_VERSION' -and
         $installAgentContract -match "'amp\.cmd'" -and

@@ -1011,6 +1011,7 @@ function Initialize-PackageLiveEvidencePackage {
 function Invoke-PackageLiveEvidenceCleanup([switch]$RemoveRunInputs) {
     Initialize-PackageLiveEvidenceAuthority
     $paths = Get-PackageLiveEvidencePaths
+    $deferredCleanupPending = $false
     if (Test-Path -LiteralPath $paths.StatePath -PathType Leaf) {
         Assert-PackageLiveInstalledIdentity $paths
         $gateway = Join-Path $paths.CommandDir 'defenseclaw-gateway.exe'
@@ -1018,15 +1019,36 @@ function Invoke-PackageLiveEvidenceCleanup([switch]$RemoveRunInputs) {
             Invoke-NativeProcess -FilePath $gateway -ArgumentList @('stop') `
                 -AllowedExitCodes @(0, 1) -TimeoutSeconds 60 | Out-Null
         }
-        Invoke-NativeProcess -FilePath $script:PackageLiveSetupExecutable -ArgumentList @(
+        $uninstall = Invoke-NativeProcess `
+            -FilePath $script:PackageLiveSetupExecutable -ArgumentList @(
             '/uninstall', '/quiet', '/norestart', 'DELETEUSERDATA=1'
-        ) -TimeoutSeconds 900 | Out-Null
+        ) -AllowedExitCodes @(0, 3010) -TimeoutSeconds 900
+        if ($uninstall.ExitCode -eq 3010) {
+            foreach ($path in @($paths.InstallRoot, $paths.DataRoot)) {
+                if (Test-Path -LiteralPath $path) {
+                    throw "package live reboot-gated cleanup left non-deferred state: $path"
+                }
+            }
+            $null = Assert-PackageDeferredCleanupPending `
+                $paths $script:PackageLiveSetupExecutable
+            $deferredCleanupPending = $true
+            Write-Result 'package:cleanup' pass `
+                'uninstall succeeded with restart required (3010); exact deferred cleanup is pending reboot'
+        }
     } elseif ((Test-Path -LiteralPath $paths.InstallRoot) -or
-        (Test-Path -LiteralPath $paths.DataRoot) -or
-        (Test-Path -LiteralPath $paths.CacheRoot)) {
+        (Test-Path -LiteralPath $paths.DataRoot)) {
         throw 'package live cleanup found product state without exact installed provenance'
+    } elseif (Test-Path -LiteralPath $paths.CacheRoot) {
+        $null = Assert-PackageDeferredCleanupPending `
+            $paths $script:PackageLiveSetupExecutable
+        $deferredCleanupPending = $true
     }
-    foreach ($path in @($paths.InstallRoot, $paths.DataRoot, $paths.CacheRoot)) {
+    $pathsThatMustBeAbsent = if ($deferredCleanupPending) {
+        @($paths.InstallRoot, $paths.DataRoot)
+    } else {
+        @($paths.InstallRoot, $paths.DataRoot, $paths.CacheRoot)
+    }
+    foreach ($path in $pathsThatMustBeAbsent) {
         if (Test-Path -LiteralPath $path) {
             throw "package live cleanup left managed product state: $path"
         }
@@ -1039,6 +1061,18 @@ function Invoke-PackageLiveEvidenceCleanup([switch]$RemoveRunInputs) {
         Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
         Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
     }
+}
+
+function Complete-PackageLiveFinalization(
+    [AllowNull()][Exception]$PrimaryFailure,
+    [AllowNull()][Exception]$FinalizationFailure
+) {
+    if ($null -eq $FinalizationFailure) { return }
+    if ($null -eq $PrimaryFailure) { throw $FinalizationFailure }
+    Write-Warning (
+        'package live finalization also failed after the primary harness failure: ' +
+        (Protect-LogText $FinalizationFailure.Message)
+    )
 }
 
 function Initialize-AuthenticatedAntigravityRunIdentity {
@@ -7690,9 +7724,9 @@ function Set-ProtectedCopilotCleanupPhase([string]$Phase) {
     Write-ProtectedCopilotCleanupManifest $manifest
 }
 
-function Assert-ProtectedCopilotDeferredCleanupPending(
+function Assert-PackageDeferredCleanupPending(
     [pscustomobject]$Paths,
-    [switch]$ProbeOfficialCleanup
+    [string]$ExactSetupExecutable
 ) {
     $productRoot = Split-Path -Parent (Split-Path -Parent $Paths.MaintenancePath)
     $runtimeRoot = Join-Path $productRoot 'HookRuntime'
@@ -7707,7 +7741,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if (-not $item.PSIsContainer -or
             ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'protected Copilot deferred cleanup root is absent or reparsed'
+            throw 'protected package deferred cleanup root is absent or reparsed'
         }
     }
     foreach ($path in @(
@@ -7717,7 +7751,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if ($item.PSIsContainer -or
             ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'protected Copilot deferred cleanup authority is absent or reparsed'
+            throw 'protected package deferred cleanup authority is absent or reparsed'
         }
     }
     $productNames = @(Get-ChildItem -LiteralPath $productRoot -Force |
@@ -7738,7 +7772,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         @($installerNames | Where-Object {
             $_ -notin @('setup-transaction.json', 'setup.log', 'uninstall-cleanup.json')
         }).Count -ne 0) {
-        throw 'protected Copilot deferred cleanup retained an unexpected same-boot path'
+        throw 'protected package deferred cleanup retained an unexpected same-boot path'
     }
     try {
         $record = [IO.File]::ReadAllText($recordPath) | ConvertFrom-Json -ErrorAction Stop
@@ -7746,7 +7780,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         $hookState = [IO.File]::ReadAllText($runtimeStatePath) |
             ConvertFrom-Json -ErrorAction Stop
     } catch {
-        throw "protected Copilot deferred cleanup metadata is invalid JSON: $($_.Exception.Message)"
+        throw "protected package deferred cleanup metadata is invalid JSON: $($_.Exception.Message)"
     }
     if ([int]$record.schema_version -ne 1 -or
         [string]$record.status -cne 'pending-reboot' -or
@@ -7755,7 +7789,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
             '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' -or
         -not [string]::IsNullOrWhiteSpace([string]$record.cleanup_boot_identifier) -or
         [string]$record.run_value_name -cne 'DefenseClawDeferredUninstallCleanup') {
-        throw 'protected Copilot deferred cleanup record is not exact pending-reboot authority'
+        throw 'protected package deferred cleanup record is not exact pending-reboot authority'
     }
     foreach ($binding in @(
         @([string]$record.runtime_root, $runtimeRoot),
@@ -7767,13 +7801,13 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         @([string]$record.record_path, $recordPath)
     )) {
         Assert-ExactPath $binding[0] $binding[1] `
-            'protected Copilot deferred cleanup binding'
+            'protected package deferred cleanup binding'
     }
     $maintenanceHash = (Get-FileHash -LiteralPath $Paths.MaintenancePath `
         -Algorithm SHA256).Hash.ToLowerInvariant()
     $launcherHash = (Get-FileHash -LiteralPath $launcherPath `
         -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($maintenanceHash -cne (Get-FileHash -LiteralPath $script:PackagedSetupExecutable `
+    if ($maintenanceHash -cne (Get-FileHash -LiteralPath $ExactSetupExecutable `
             -Algorithm SHA256).Hash.ToLowerInvariant() -or
         [string]$record.maintenance_sha256 -cne $maintenanceHash -or
         [string]$record.launcher_sha256 -cne $launcherHash -or
@@ -7786,23 +7820,23 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
         -not [string]::IsNullOrWhiteSpace([string]$hookState.data_root) -or
         -not [string]::IsNullOrWhiteSpace([string]$hookState.gateway_path) -or
         -not [string]::IsNullOrWhiteSpace([string]$hookState.gateway_sha256)) {
-        throw 'protected Copilot deferred cleanup package/HookRuntime authority is invalid'
+        throw 'protected package deferred cleanup package/HookRuntime authority is invalid'
     }
     if ([int]$journal.schema_version -ne 2 -or
         [string]$journal.phase -cne 'converged' -or
         [string]$journal.transaction.action -cne 'uninstall' -or
         [string]$journal.transaction.id -cne [string]$record.transaction_id) {
-        throw 'protected Copilot deferred cleanup journal is not the converged uninstall transaction'
+        throw 'protected package deferred cleanup journal is not the converged uninstall transaction'
     }
     $expectedRunCommand = '"' + $Paths.MaintenancePath +
         '" /cleanup /quiet CLEANUPTRANSACTION=' + [string]$record.transaction_id
     if ([string]$record.run_command -cne $expectedRunCommand) {
-        throw 'protected Copilot deferred cleanup Run command is not exact'
+        throw 'protected package deferred cleanup Run command is not exact'
     }
     $runKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey(
         'Software\Microsoft\Windows\CurrentVersion\Run', $false)
     if ($null -eq $runKey) {
-        throw 'protected Copilot deferred cleanup Run key is absent'
+        throw 'protected package deferred cleanup Run key is absent'
     }
     try {
         $runValue = $runKey.GetValue(
@@ -7816,22 +7850,7 @@ function Assert-ProtectedCopilotDeferredCleanupPending(
     }
     if ($runKind -ne [Microsoft.Win32.RegistryValueKind]::String -or
         [string]$runValue -cne $expectedRunCommand) {
-        throw 'protected Copilot deferred cleanup Run value differs from authenticated authority'
-    }
-    if ($ProbeOfficialCleanup) {
-        $result = Invoke-ProtectedCopilotSetup @(
-            '/cleanup', '/quiet',
-            "CLEANUPTRANSACTION=$([string]$record.transaction_id)"
-        ) @(3010) 'same-boot-cleanup-gate'
-        if ($result.ExitCode -ne 3010) {
-            throw 'protected Copilot same-boot cleanup did not preserve the genuine reboot gate'
-        }
-        $recordAfter = [IO.File]::ReadAllText($recordPath) |
-            ConvertFrom-Json -ErrorAction Stop
-        if ([string]$recordAfter.status -cne 'pending-reboot' -or
-            [string]$recordAfter.transaction_id -cne [string]$record.transaction_id) {
-            throw 'protected Copilot same-boot cleanup changed pending authority'
-        }
+        throw 'protected package deferred cleanup Run value differs from authenticated authority'
     }
     return $record
 }
@@ -7844,6 +7863,28 @@ function Invoke-ProtectedCopilotSetup(
     return Invoke-NativeProcess -FilePath $script:PackagedSetupExecutable `
         -ArgumentList $Arguments -TimeoutSeconds 900 -AllowedExitCodes $AllowedExitCodes `
         -LogPath (Join-Path $script:LogRoot "packaged-setup-copilot-$Label.log")
+}
+
+function Assert-ProtectedCopilotSameBootCleanupGate(
+    [pscustomobject]$Paths,
+    [pscustomobject]$Record
+) {
+    $result = Invoke-ProtectedCopilotSetup @(
+        '/cleanup', '/quiet',
+        "CLEANUPTRANSACTION=$([string]$Record.transaction_id)"
+    ) @(3010) 'same-boot-cleanup-gate'
+    if ($result.ExitCode -ne 3010) {
+        throw 'protected Copilot same-boot cleanup did not preserve the genuine reboot gate'
+    }
+    $recordPath = Join-Path (
+        Split-Path -Parent (Split-Path -Parent $Paths.MaintenancePath)
+    ) 'InstallerState\uninstall-cleanup.json'
+    $recordAfter = [IO.File]::ReadAllText($recordPath) |
+        ConvertFrom-Json -ErrorAction Stop
+    if ([string]$recordAfter.status -cne 'pending-reboot' -or
+        [string]$recordAfter.transaction_id -cne [string]$Record.transaction_id) {
+        throw 'protected Copilot same-boot cleanup changed pending authority'
+    }
 }
 
 function Read-ProtectedCopilotInstallState([pscustomobject]$Paths) {
@@ -8078,8 +8119,9 @@ function Invoke-ProtectedCopilotCleanup([switch]$PreserveRunInputs) {
                     throw "protected Copilot reboot-gated uninstall left non-deferred state: $path"
                 }
             }
-            $null = Assert-ProtectedCopilotDeferredCleanupPending $paths `
-                -ProbeOfficialCleanup
+            $pendingCleanup = Assert-PackageDeferredCleanupPending `
+                $paths $script:PackagedSetupExecutable
+            Assert-ProtectedCopilotSameBootCleanupGate $paths $pendingCleanup
             Assert-ProtectedCopilotOriginalHookRestored $paths -RecordResult
             Set-ProtectedCopilotCleanupPhase 'awaiting-reboot'
             $script:ProtectedCopilotPackageInstalled = $false
@@ -8104,6 +8146,171 @@ function Invoke-ProtectedCopilotCleanup([switch]$PreserveRunInputs) {
     $packageRoot = Split-Path -Parent $script:PackagedSetupExecutable
     Remove-DisposableTreeSafely -Path $StateRoot -AllowedRoot $StateRoot
     Remove-DisposableTreeSafely -Path $packageRoot -AllowedRoot $packageRoot
+}
+
+function Test-ClaudeInstallerTransientTransportFailure(
+    [AllowNull()][Exception]$Exception
+) {
+    if ($null -eq $Exception) { return $false }
+
+    $chain = [Collections.Generic.List[Exception]]::new()
+    $current = $Exception
+    while ($null -ne $current -and $chain.Count -lt 12) {
+        $chain.Add($current)
+        $current = $current.InnerException
+    }
+
+    # HTTP responses, redirect-policy failures, and certificate/trust errors are
+    # terminal. Retrying them would hide a service or integrity-policy failure.
+    foreach ($failure in $chain) {
+        if ($failure -is [Security.Authentication.AuthenticationException] -or
+            $failure -is [Security.Cryptography.CryptographicException]) {
+            return $false
+        }
+        if ($failure.GetType().FullName -ceq
+            'Microsoft.PowerShell.Commands.HttpResponseException') {
+            return $false
+        }
+        $responseProperty = $failure.GetType().GetProperty('Response')
+        if ($null -ne $responseProperty -and
+            $null -ne $responseProperty.GetValue($failure)) {
+            return $false
+        }
+        $statusProperty = $failure.GetType().GetProperty('StatusCode')
+        if ($null -ne $statusProperty -and
+            $null -ne $statusProperty.GetValue($failure)) {
+            return $false
+        }
+    }
+    $messages = @($chain | ForEach-Object Message) -join "`n"
+    if ($messages -match
+        '(?i)\b(certificate|certification path|certificate chain|revocation|trust relationship|unknown ca|untrusted root|name mismatch|hostname mismatch)\b|CERT_[A-Z_]+|CRYPT_E_') {
+        return $false
+    }
+
+    foreach ($failure in $chain) {
+        if ($failure -is [Net.Sockets.SocketException]) {
+            return [string]$failure.SocketErrorCode -in @(
+                'ConnectionAborted', 'ConnectionRefused', 'ConnectionReset',
+                'HostDown', 'HostNotFound', 'HostUnreachable', 'NetworkDown',
+                'NetworkUnreachable', 'NoData', 'TimedOut', 'TryAgain'
+            )
+        }
+        if ($failure -is [TimeoutException] -or
+            $failure -is [Threading.Tasks.TaskCanceledException]) {
+            return $true
+        }
+        if ($failure -is [IO.InvalidDataException]) { return $false }
+        if ($failure -is [IO.IOException] -and $failure.Message -match
+            '(?i)unexpected eof|response ended prematurely|transport stream|connection.*(?:closed|reset|aborted)|forcibly closed|reset by peer') {
+            return $true
+        }
+        if ($failure -is [Net.Http.HttpRequestException]) {
+            $requestErrorProperty = $failure.GetType().GetProperty('HttpRequestError')
+            if ($null -ne $requestErrorProperty) {
+                $requestError = [string]$requestErrorProperty.GetValue($failure)
+                if ($requestError -in @(
+                    'ConnectionError', 'NameResolutionError',
+                    'ProxyTunnelError'
+                )) {
+                    return $true
+                }
+            }
+            if ($failure.Message -match
+                '(?i)connection.*(?:closed|reset|aborted|refused)|name resolution|timed out|temporarily unavailable') {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function ConvertTo-OfficialClaudeInstallerScriptBlock(
+    [AllowNull()][object]$Content
+) {
+    $text = [string]$Content
+    $byteCount = [Text.Encoding]::UTF8.GetByteCount($text)
+    if ([string]::IsNullOrWhiteSpace($text) -or
+        $byteCount -gt 65536) {
+        throw [IO.InvalidDataException]::new(
+            'official Claude installer response is empty or exceeds 65536 UTF-8 bytes'
+        )
+    }
+    try {
+        return [scriptblock]::Create($text)
+    } catch {
+        throw [IO.InvalidDataException]::new(
+            'official Claude installer response is not valid PowerShell',
+            $_.Exception
+        )
+    }
+}
+
+function Get-OfficialClaudeInstallerScriptBlock {
+    [CmdletBinding()]
+    param(
+        [ValidateRange(1, 3)][int]$MaxAttempts = 3,
+        [ValidateRange(1, 30)][int]$PerAttemptTimeoutSeconds = 30,
+        [ValidateRange(1, 90)][int]$OverallTimeoutSeconds = 75,
+        [scriptblock]$RequestInvoker = {
+            param([Uri]$Uri, [int]$TimeoutSeconds)
+            Invoke-RestMethod -Method Get -Uri $Uri -UseBasicParsing `
+                -MaximumRedirection 3 -TimeoutSec $TimeoutSeconds `
+                -ErrorAction Stop
+        },
+        [scriptblock]$DelayInvoker = {
+            param([int]$DelaySeconds)
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    )
+
+    $uri = [Uri]'https://claude.ai/install.ps1'
+    if ($uri.Scheme -cne 'https' -or $uri.Host -cne 'claude.ai' -or
+        $uri.AbsolutePath -cne '/install.ps1') {
+        throw 'official Claude installer URL binding is invalid'
+    }
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($OverallTimeoutSeconds)
+    $lastFailure = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        $remaining = $deadline - [DateTimeOffset]::UtcNow
+        if ($remaining.TotalSeconds -le 0) { break }
+        $attemptTimeout = [Math]::Max(
+            1,
+            [Math]::Min(
+                $PerAttemptTimeoutSeconds,
+                [Math]::Floor($remaining.TotalSeconds)
+            )
+        )
+        try {
+            $content = & $RequestInvoker $uri ([int]$attemptTimeout)
+            return ConvertTo-OfficialClaudeInstallerScriptBlock $content
+        } catch {
+            $lastFailure = $_.Exception
+            $safeMessage = Protect-LogText $lastFailure.Message
+            if ($attempt -ge $MaxAttempts -or
+                -not (Test-ClaudeInstallerTransientTransportFailure $lastFailure)) {
+                throw [InvalidOperationException]::new(
+                    "official Claude installer fetch failed on attempt $attempt/$MaxAttempts`: $safeMessage"
+                )
+            }
+            $delaySeconds = [int][Math]::Pow(2, $attempt)
+            $remainingAfterAttempt = $deadline - [DateTimeOffset]::UtcNow
+            if ($remainingAfterAttempt.TotalSeconds -le $delaySeconds) { break }
+            Write-Warning (
+                "official Claude installer transport attempt $attempt/$MaxAttempts failed transiently; " +
+                "retrying in ${delaySeconds}s: $safeMessage"
+            )
+            $null = & $DelayInvoker $delaySeconds
+        }
+    }
+    $safeLastFailure = if ($null -eq $lastFailure) {
+        'overall download deadline expired before another attempt'
+    } else {
+        Protect-LogText $lastFailure.Message
+    }
+    throw [TimeoutException]::new(
+        "official Claude installer fetch exceeded the ${OverallTimeoutSeconds}s deadline: $safeLastFailure"
+    )
 }
 
 function Install-Agent {
@@ -8217,8 +8424,8 @@ function Install-Agent {
             $requestedClaudeVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
             throw "CLAUDE_VERSION must be latest or an exact numeric version, got: $requestedClaudeVersion"
         }
-        $installerText = Invoke-RestMethod -Uri 'https://claude.ai/install.ps1' -UseBasicParsing
-        & ([scriptblock]::Create([string]$installerText)) $requestedClaudeVersion
+        $installer = Get-OfficialClaudeInstallerScriptBlock
+        & $installer $requestedClaudeVersion
         $nativeClaude = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
         if (-not (Test-Path -LiteralPath $nativeClaude -PathType Leaf)) {
             throw "official native Claude installer did not create $nativeClaude"
@@ -10571,6 +10778,7 @@ if (-not $NoRun) {
         if ($null -ne $resumeFailure) { throw $resumeFailure }
         return
     }
+    $primaryFailure = $null
     try {
         if ($PackageLiveEvidence) {
             Initialize-PackageLiveEvidencePackage
@@ -10581,27 +10789,35 @@ if (-not $NoRun) {
         }
         if ($Layer -eq 'contract') { Invoke-ContractRun } else { Invoke-LiveRun }
     } catch {
+        $primaryFailure = $_.Exception
         Write-Result harness fail $_.Exception.Message
         throw
     } finally {
         $diagnosticsStaged = $false
         if ($PackageLiveEvidence) {
+            $packageFinalizationFailure = $null
             try {
-                try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
                 try {
-                    $gateway = Join-Path (Get-PackageLiveEvidencePaths).CommandDir `
-                        'defenseclaw-gateway.exe'
-                    if (Test-Path -LiteralPath $gateway -PathType Leaf) {
-                        Invoke-NativeProcess -FilePath $gateway -ArgumentList @('stop') `
-                            -AllowedExitCodes @(0, 1) -TimeoutSeconds 60 | Out-Null
+                    try { Invoke-Teardown } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+                    try {
+                        $gateway = Join-Path (Get-PackageLiveEvidencePaths).CommandDir `
+                            'defenseclaw-gateway.exe'
+                        if (Test-Path -LiteralPath $gateway -PathType Leaf) {
+                            Invoke-NativeProcess -FilePath $gateway -ArgumentList @('stop') `
+                                -AllowedExitCodes @(0, 1) -TimeoutSeconds 60 | Out-Null
+                        }
+                    } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
+                    Stage-Diagnostics
+                } finally {
+                    try { Stop-IsolatedProcessTree } finally {
+                        Invoke-PackageLiveEvidenceCleanup
                     }
-                } catch { Write-Warning (Protect-LogText $_.Exception.Message) }
-                Stage-Diagnostics
-            } finally {
-                try { Stop-IsolatedProcessTree } finally {
-                    Invoke-PackageLiveEvidenceCleanup
                 }
+            } catch {
+                $packageFinalizationFailure = $_.Exception
             }
+            Complete-PackageLiveFinalization `
+                $primaryFailure $packageFinalizationFailure
         } elseif ($ProtectedCopilotRunner) {
             try {
                 Stage-Diagnostics
