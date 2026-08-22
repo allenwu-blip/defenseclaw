@@ -56,8 +56,8 @@ $VCRuntimeRetailFiles = [ordered]@{
     'vcruntime140.dll' = '052AD6A20D375957E82AA6A3C441EA548D89BE0981516CA7EB306E063D5027F4'
 }
 $VCRuntimeClosureFiles = @('msvcp140.dll', 'msvcp140_1.dll')
-$VCRuntimeSignerSubject = 'CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US'
-$VCRuntimeSignerThumbprint = '6C6D5882B6227B929967D1E389201A7BB5EBBD35'
+$VCRuntimeSignerThumbprintSha256 = '7698e1de0131245a5ef86a3df9bc7c4de048b4684bdd0bc7891c3643d7f8b52e'
+$VCRuntimeTimestampSignerThumbprintSha256 = '8d2e0d6834085b1e2b12b7035ea5d70ac8c2bb120eb5d9eb149fd05e316cca39'
 # Force the runtime owner to review the pinned binary at least quarterly. A
 # release after this deadline must deliberately move the deadline (and normally
 # the version/hash) after checking Python's current security release line.
@@ -245,13 +245,20 @@ function Expand-PinnedVCRuntime([string]$SourceArchive, [string]$DestinationRoot
     foreach ($name in $VCRuntimeClosureFiles) {
         $path = Join-Path $DestinationRoot $name
         $item = Get-Item -LiteralPath $path -Force
-        $signature = Get-AuthenticodeSignature -LiteralPath $path
-        if ($item.VersionInfo.FileVersion -cne "$VCRuntimeVersion.0" -or
-            $signature.Status -ne 'Valid' -or
-            $signature.SignerCertificate.Subject -cne $VCRuntimeSignerSubject -or
-            $signature.SignerCertificate.Thumbprint -cne $VCRuntimeSignerThumbprint) {
+        if ($item.VersionInfo.FileVersion -cne "$VCRuntimeVersion.0") {
             throw "Pinned VC++ runtime identity or Authenticode validation failed: $name"
         }
+        Get-DefenseClawAuthenticodeEvidence `
+            -Path $path `
+            -InstalledPath "runtime/python/$name" `
+            -SbomFileName "./expanded/vc-runtime/$name" `
+            -Policy 'pinned-microsoft-vc-runtime' `
+            -ExpectedStatus 'Valid' `
+            -ExpectedPublisher 'Microsoft Windows Software Compatibility Publisher' `
+            -ExpectedSignatureType 'Authenticode' `
+            -TimestampRequired $true `
+            -ExpectedSignerThumbprintSha256 $VCRuntimeSignerThumbprintSha256 `
+            -ExpectedTimestampSignerThumbprintSha256 $VCRuntimeTimestampSignerThumbprintSha256 | Out-Null
     }
     foreach ($name in @($VCRuntimeRetailFiles.Keys)) {
         if ($name -notin $VCRuntimeClosureFiles) {
@@ -1190,7 +1197,10 @@ function Add-PayloadAuthenticodeEvidence(
         $arguments.Policy = 'pinned-microsoft-vc-runtime'
         $arguments.ExpectedStatus = 'Valid'
         $arguments.ExpectedPublisher = 'Microsoft Windows Software Compatibility Publisher'
+        $arguments.ExpectedSignatureType = 'Authenticode'
         $arguments.TimestampRequired = $true
+        $arguments.ExpectedSignerThumbprintSha256 = $VCRuntimeSignerThumbprintSha256
+        $arguments.ExpectedTimestampSignerThumbprintSha256 = $VCRuntimeTimestampSignerThumbprintSha256
     } elseif ($DigestOnlyUpstream) {
         $arguments.Policy = 'digest-only-upstream'
         $arguments.ExpectedStatus = 'NotSigned'

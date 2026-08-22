@@ -442,7 +442,9 @@ def test_builder_binds_authenticode_inventory_to_payload_provenance_and_sbom() -
     helper = AUTHENTICODE_PS1.read_text(encoding="utf-8")
     assert ". $WindowsAuthenticodeHelper" in build
     assert "Get-DefenseClawAuthenticodeEvidence" in build
-    assert build.index(". $WindowsAuthenticodeHelper") < build.index("Get-DefenseClawAuthenticodeEvidence")
+    assert build.index(". $WindowsAuthenticodeHelper") < build.index(
+        "Expand-PinnedVCRuntime $vcRuntimeSource"
+    )
     assert "schema_version = 2" in build
     assert "authenticode = $releaseAuthenticode" in build
     assert "'--authenticode-inventory', $authenticodeInventoryPath" in build
@@ -462,12 +464,18 @@ def test_builder_pins_a_project_supported_embedded_python_and_checks_metadata() 
 
 def test_builder_pins_and_app_locally_loads_exact_microsoft_vc_runtime() -> None:
     build = BUILD_PS1.read_text(encoding="utf-8")
+    helper = AUTHENTICODE_PS1.read_text(encoding="utf-8")
     assert "$VCRuntimeVersion = '14.42.34438'" in build
     assert "$VCRuntimeSourceLength = 3222320L" in build
     assert "$VCRuntimeSourceSha256 = '49D70DB282F1C74D456206501120134F021C2BC3AAABB41577FE18DEA35D1454'" in build
     assert "$VCRuntimeClosureFiles = @('msvcp140.dll', 'msvcp140_1.dll')" in build
+    assert "$VCRuntimeSignerThumbprintSha256 = '7698e1de0131245a5ef86a3df9bc7c4de048b4684bdd0bc7891c3643d7f8b52e'" in build
+    assert "$VCRuntimeTimestampSignerThumbprintSha256 = '8d2e0d6834085b1e2b12b7035ea5d70ac8c2bb120eb5d9eb149fd05e316cca39'" in build
     assert "Pinned VC++ runtime source retail x64 member set drifted" in build
     assert "Pinned VC++ runtime identity or Authenticode validation failed" in build
+    assert "-Policy 'pinned-microsoft-vc-runtime'" in build
+    assert "-ExpectedSignatureType 'Authenticode'" in build
+    assert "$platformSignatureType -notin @('Authenticode', 'Catalog')" in helper
     assert "Windows CPython dependency probe escaped app-local VC++ runtime" in build
     assert "vc_runtime_source_sha256 = $VCRuntimeSourceSha256.ToLowerInvariant()" in build
 
