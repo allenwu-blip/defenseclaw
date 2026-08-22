@@ -1711,16 +1711,23 @@ private-secret-name = "DefenseClaw must remain redacted"
     )) {
         Assert-True ($nativeWorkflowText -match [regex]::Escape($testName)) "native Windows Go DACL step reaches $testName"
     }
-    Assert-True ($nativeWorkflowText -match '''test'', ''-v'', ''-count=1'', ''-run'', \$daclTestPattern, ''\./internal/safefile'', ''\./internal/managed'', ''\./internal/gateway/connector''') 'Go DACL regressions execute in every owning package without cache reuse'
+    Assert-True ($nativeWorkflowText -match '''test'', ''-vet=off'', ''-v'', ''-count=1'', ''-run'', \$daclTestPattern, ''\./internal/safefile'', ''\./internal/managed'', ''\./internal/gateway/connector''') 'Go DACL regressions execute in every owning package without cache reuse'
     Assert-True ($nativeWorkflowText -match
-        '''test'', ''-list'', ''\^\(Test\|Fuzz\|Example\)'', ''\./internal/gateway''' -and
-        $nativeWorkflowText -match '\(\$index % 4\) -eq \$shard' -and
-        $nativeWorkflowText -match '''-run'', \$shardPattern, ''\./internal/gateway''' -and
-        $nativeWorkflowText -match '\$_ -ne ''github\.com/defenseclaw/defenseclaw/internal/gateway''' -and
+        '''test'', ''-vet=off'', ''-list'', ''\^\(Test\|Fuzz\|Example\)'', ''\./internal/gateway''' -and
+        $nativeWorkflowText -match '''-run'', \$gatewayShardPattern, ''\./internal/gateway''' -and
+        $nativeWorkflowText -match
+        '''test'', ''-vet=off'', ''-list'', ''\^\(Test\|Fuzz\|Example\)'', ''\./internal/gateway/connector''' -and
+        $nativeWorkflowText -match '''-run'', \$connectorShardPattern, ''\./internal/gateway/connector''' -and
+        [regex]::Matches($nativeWorkflowText, '\(\$index % 4\) -eq \$shard').Count -eq 2 -and
+        $nativeWorkflowText -match '\$_ -ne ''github\.com/defenseclaw/defenseclaw/internal/gateway'' -and\s+\$_ -ne ''github\.com/defenseclaw/defenseclaw/internal/gateway/connector''' -and
         $nativeWorkflowText -match '\$remainingArguments = @\(') `
-        'full native Go suite shards the gateway process and separately selects every remaining package'
+        'full native Go suite shards gateway and connector processes and separately selects every remaining package'
     Assert-True ($nativeWorkflowText -match '(?s)''-p=1''.*?''-skip''.*?\$windowsInapplicable') 'native Go suite serializes packages and excludes only declared Windows-inapplicable tests'
-    Assert-True ($nativeWorkflowText -match '''test'', ''-json'', ''-count=1''' -and
+    Assert-True ([regex]::Matches($nativeWorkflowText, '''test'', ''-vet=off''').Count -eq
+        [regex]::Matches($nativeWorkflowText, '''test''').Count -and
+        $nativeWorkflowText -match 'Invoke-WindowsNativeProcess \$go @\(''vet'', ''\./\.\.\.''\)') `
+        'native Go test processes disable duplicate implicit vet while retaining the explicit full vet gate'
+    Assert-True ($nativeWorkflowText -match '''test'', ''-vet=off'', ''-json'', ''-count=1''' -and
         $nativeWorkflowText -match '-GoTestFailureSummaryPath \$goFailureSummary' -and
         $nativeWorkflowText -match 'go-test-failure-summary\.log') `
         'full Go suite retains a bounded structured failure summary'

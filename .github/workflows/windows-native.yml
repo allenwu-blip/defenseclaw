@@ -89,17 +89,17 @@ jobs:
             'TestLoadOTLPPathTokenWindowsAllowsCreateChildOnSharedAncestor'
           )
           $daclTestPattern = '^(' + ($daclTests -join '|') + ')$'
-          Invoke-WindowsNativeProcess $go @('test', '-v', '-count=1', '-run', $daclTestPattern, './internal/safefile', './internal/managed', './internal/gateway/connector') -TimeoutSeconds 600 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-dacl-test.log') | Out-Null
+          Invoke-WindowsNativeProcess $go @('test', '-vet=off', '-v', '-count=1', '-run', $daclTestPattern, './internal/safefile', './internal/managed', './internal/gateway/connector') -TimeoutSeconds 600 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-dacl-test.log') | Out-Null
       - name: Stress native single-flight and executable lifecycle contracts
         run: |
           . ./scripts/windows-native-ci.ps1 -NoRun
           Initialize-WindowsNativeTestEnvironment $env:DC_STATE_ROOT | Out-Null
           $go = (Get-Command go.exe -ErrorAction Stop).Source
           Invoke-WindowsNativeProcess $go @(
-            'test', '-v', '-count=10', '-run', '^TestRunScan_SingleFlight$', './internal/inventory'
+            'test', '-vet=off', '-v', '-count=10', '-run', '^TestRunScan_SingleFlight$', './internal/inventory'
           ) -TimeoutSeconds 300 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-inventory-singleflight-stress.log') | Out-Null
           Invoke-WindowsNativeProcess $go @(
-            'test', '-v', '-count=2', '-run', '^TestNativeWindowsExecutableForeignCollisionAndRecovery$', './internal/cli'
+            'test', '-vet=off', '-v', '-count=2', '-run', '^TestNativeWindowsExecutableForeignCollisionAndRecovery$', './internal/cli'
           ) -TimeoutSeconds 600 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-native-executable-lifecycle-stress.log') | Out-Null
       - name: Full native Windows Go test, vet, and build
         run: |
@@ -113,13 +113,13 @@ jobs:
             'TestAtomicWriteFile_PreservesSymlinkedDotfile',
             'TestOpenHandsHookScript_BlockExitsTwo'
           ) -join '|') + ')$'
-          # The gateway package is large enough that Linux CI already shards
-          # its top-level tests. Partition the native Windows test list in the
-          # same process-isolation shape so one package binary cannot retain
-          # the full suite's resources or bury its terminal panic in a huge
-          # dump. Shards remain sequential on this four-core hosted runner.
+          # The gateway and connector packages are large enough that one native
+          # Windows test binary can retain the full suite's resources until it
+          # reaches Go's package timeout. Partition both top-level test lists in
+          # the same process-isolation shape as Linux CI. Shards remain
+          # sequential on this four-core hosted runner.
           $gatewayList = Invoke-WindowsNativeProcess $go @(
-            'test', '-list', '^(Test|Fuzz|Example)', './internal/gateway'
+            'test', '-vet=off', '-list', '^(Test|Fuzz|Example)', './internal/gateway'
           ) -TimeoutSeconds 600 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-gateway-list.log')
           $gatewayTests = @(
             [regex]::Split([string]$gatewayList.StdOut, '\r?\n') |
@@ -137,12 +137,37 @@ jobs:
                 if (($index % 4) -eq $shard) { [regex]::Escape($gatewayTests[$index]) }
               }
             )
-            $shardPattern = '^(' + ($shardTests -join '|') + ')$'
+            $gatewayShardPattern = '^(' + ($shardTests -join '|') + ')$'
             Invoke-WindowsNativeProcess $go @(
-              'test', '-json', '-count=1', '-timeout=20m', '-p=1',
-              '-skip', $windowsInapplicable, '-run', $shardPattern, './internal/gateway'
+              'test', '-vet=off', '-json', '-count=1', '-timeout=20m', '-p=1',
+              '-skip', $windowsInapplicable, '-run', $gatewayShardPattern, './internal/gateway'
             ) -TimeoutSeconds 1500 `
               -LogPath (Join-Path $env:DC_STATE_ROOT ("go-gateway-shard-{0}.log" -f $shard)) `
+              -GoTestFailureSummaryPath $goFailureSummary | Out-Null
+          }
+          $connectorList = Invoke-WindowsNativeProcess $go @(
+            'test', '-vet=off', '-list', '^(Test|Fuzz|Example)', './internal/gateway/connector'
+          ) -TimeoutSeconds 600 -LogPath (Join-Path $env:DC_STATE_ROOT 'go-connector-list.log')
+          $connectorTests = @(
+            [regex]::Split([string]$connectorList.StdOut, '\r?\n') |
+                Where-Object { $_ -match '^(Test|Fuzz|Example)\S*$' } |
+                Sort-Object -Unique
+          )
+          if ($connectorTests.Count -lt 4) {
+            throw "native connector sharding discovered only $($connectorTests.Count) top-level tests"
+          }
+          foreach ($shard in 0..3) {
+            $shardTests = @(
+              for ($index = 0; $index -lt $connectorTests.Count; $index++) {
+                if (($index % 4) -eq $shard) { [regex]::Escape($connectorTests[$index]) }
+              }
+            )
+            $connectorShardPattern = '^(' + ($shardTests -join '|') + ')$'
+            Invoke-WindowsNativeProcess $go @(
+              'test', '-vet=off', '-json', '-count=1', '-timeout=20m', '-p=1',
+              '-skip', $windowsInapplicable, '-run', $connectorShardPattern, './internal/gateway/connector'
+            ) -TimeoutSeconds 1500 `
+              -LogPath (Join-Path $env:DC_STATE_ROOT ("go-connector-shard-{0}.log" -f $shard)) `
               -GoTestFailureSummaryPath $goFailureSummary | Out-Null
           }
           $packageList = Invoke-WindowsNativeProcess $go @(
@@ -152,14 +177,15 @@ jobs:
             [regex]::Split([string]$packageList.StdOut, '\r?\n') |
               Where-Object {
                 $_ -match '^github\.com/defenseclaw/defenseclaw/' -and
-                $_ -ne 'github.com/defenseclaw/defenseclaw/internal/gateway'
+                $_ -ne 'github.com/defenseclaw/defenseclaw/internal/gateway' -and
+                $_ -ne 'github.com/defenseclaw/defenseclaw/internal/gateway/connector'
               }
           )
           if (-not $remainingPackages) {
             throw 'native Go package discovery selected no non-gateway packages'
           }
           $remainingArguments = @(
-            'test', '-json', '-count=1', '-timeout=20m', '-p=1',
+            'test', '-vet=off', '-json', '-count=1', '-timeout=20m', '-p=1',
             '-skip', $windowsInapplicable
           ) + $remainingPackages
           Invoke-WindowsNativeProcess $go $remainingArguments -TimeoutSeconds 2100 `
