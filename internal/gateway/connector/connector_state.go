@@ -969,7 +969,7 @@ func protectedSetupSelectionConnectorForOS(connectorName, goos string) bool {
 		return connectorName == "codex" || connectorName == "hermes" || connectorName == "omnigent" ||
 			connectorName == "opencode" || connectorName == "amp"
 	case "darwin":
-		return connectorName == "openhands"
+		return connectorName == "codex" || connectorName == "claudecode" || connectorName == "openhands"
 	default:
 		return false
 	}
@@ -1371,7 +1371,7 @@ func hookRuntimeArtifactPaths(opts SetupOpts, conn Connector) []string {
 
 func LoadCachedAgentVersion(dataDir, connectorName string) string {
 	normalizedName := normalizeConnectorName(connectorName)
-	if runtime.GOOS == "darwin" && normalizedName == "openhands" {
+	if runtime.GOOS == "darwin" && protectedSetupSelectionConnectorForOS(normalizedName, "darwin") {
 		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
 			if selection, supersedes := supersedingProtectedSetupSelection(dataDir, normalizedName, entry); supersedes {
 				return selection.RawVersion
@@ -1423,15 +1423,15 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 }
 
 // LoadCachedAgentExecutable is retained as a compatibility name for setup
-// callers. On Windows, native executable-inspecting connectors never grant
-// authority from agent_discovery.json: an existing install uses its protected,
-// version/contract-bound lock entry, while a fresh install may consume the
-// short-lived setup-selected receipt. The connector revalidates source,
-// product, path, ACL, and digest before launch. Other platforms retain their
-// established discovery-cache behavior.
+// callers. Protected native executable-inspecting connectors on Windows and
+// macOS never grant authority from agent_discovery.json: an existing install
+// uses its protected, version/contract-bound lock entry, while a fresh install
+// may consume the short-lived setup-selected receipt. The connector revalidates
+// source, product, path, custody, and digest before launch. Other platforms
+// retain their established discovery-cache behavior.
 func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 	normalizedName := normalizeConnectorName(connectorName)
-	if runtime.GOOS == "darwin" && normalizedName == "openhands" {
+	if runtime.GOOS == "darwin" && protectedSetupSelectionConnectorForOS(normalizedName, "darwin") {
 		if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
 			if selection, supersedes := supersedingProtectedSetupSelection(dataDir, normalizedName, entry); supersedes {
 				return selection.Executable

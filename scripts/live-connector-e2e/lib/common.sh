@@ -63,6 +63,27 @@ dc_section() { printf '\n[live-e2e] ===== %s =====\n' "$*" >&2; }
 # dc_die <message> — log and exit non-zero.
 dc_die() { dc_err "$*"; exit 1; }
 
+# dc_without_provider_credentials <command> [args...] — run third-party
+# installers and pre-Setup metadata probes without inheriting live provider
+# credentials. The driver retains its shell variables and publishes only the
+# active provider after installation, immediately before protected setup.
+dc_without_provider_credentials() {
+  env \
+    -u OPENAI_API_KEY \
+    -u ANTHROPIC_API_KEY \
+    -u AMP_API_KEY \
+    -u GOOGLE_API_KEY \
+    -u CURSOR_API_KEY \
+    -u COPILOT_GITHUB_TOKEN \
+    -u LLM_API_KEY \
+    -u AZURE_OPENAI_API_KEY \
+    -u AWS_BEARER_TOKEN_BEDROCK \
+    -u AWS_ACCESS_KEY_ID \
+    -u AWS_SECRET_ACCESS_KEY \
+    -u AWS_SESSION_TOKEN \
+    "$@"
+}
+
 # ---------------------------------------------------------------------------
 # OS detection
 # ---------------------------------------------------------------------------
@@ -150,7 +171,7 @@ PY
 dc_capture_version() {
   local connector="$1"; shift
   local raw
-  raw="$("$@" 2>&1 | head -n 3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')" || raw="unknown"
+  raw="$(dc_without_provider_credentials "$@" 2>&1 | head -n 3 | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g')" || raw="unknown"
   [ -n "${raw}" ] || raw="unknown"
   dc_log "resolved ${connector} version: ${raw}"
   printf '%s' "${raw}"
