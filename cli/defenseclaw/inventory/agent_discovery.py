@@ -1704,6 +1704,7 @@ def _version_for_binary(
     binary_path: str,
     version_args: tuple[str, ...],
     *,
+    agent_name: str = "",
     require_trusted_binary_paths: bool = True,
     data_dir: str | os.PathLike[str] | None = None,
 ) -> tuple[str, str]:
@@ -1715,9 +1716,20 @@ def _version_for_binary(
     if require_trusted_binary_paths and not _is_trusted_binary_path(binary_path, data_dir=data_dir):
         return "", UNTRUSTED_PREFIX_ERROR
     binary_name = _binary_command_name(binary_path)
+    logical_name = _normalize_connector(agent_name)
     env = None
     timeout = VERSION_TIMEOUT_SECONDS
-    if binary_name in {"claude", "hermes", "omnigent", "openhands"}:
+    if binary_name in {"claude", "hermes", "omnigent", "openhands"} or logical_name in {
+        "claudecode",
+        "hermes",
+        "omnigent",
+        "openhands",
+    }:
+        # Native macOS Claude releases are stored under a version-number
+        # filename (for example ~/.local/share/claude/versions/2.1.219), so
+        # basename-only classification silently fell back to the generic
+        # two-second budget. Preserve the intended bounded slow-start budget
+        # using the already-known connector identity.
         timeout = 8.0
     elif binary_name == "opencode":
         # The official WinGet binary is a packaged Bun executable. Windows
@@ -1799,6 +1811,7 @@ def _version_for_agent_binary(
     version, error = _version_for_binary(
         binary_path,
         version_args,
+        agent_name=name,
         require_trusted_binary_paths=(True if name == "devin" and _is_windows_host() else require_trusted_binary_paths),
         data_dir=data_dir,
     )

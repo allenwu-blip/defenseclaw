@@ -222,6 +222,30 @@ def test_omnigent_version_probe_uses_bounded_slow_start_timeout(monkeypatch) -> 
     assert invocation["text"] is False
 
 
+def test_claudecode_versioned_native_image_uses_connector_timeout(monkeypatch) -> None:
+    invocation: dict[str, object] = {}
+    binary = "/Users/tester/.local/share/claude/versions/2.1.219"
+
+    def run(command, **kwargs):
+        invocation["command"] = command
+        invocation.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout=b"2.1.219 (Claude Code)\n", stderr=b"")
+
+    monkeypatch.setattr(ad.subprocess, "run", run)
+
+    version, error = ad._version_for_agent_binary(
+        "claudecode",
+        binary,
+        ("--version",),
+        require_trusted_binary_paths=False,
+    )
+
+    assert (version, error) == ("2.1.219 (Claude Code)", "")
+    assert invocation["command"] == [binary, "--version"]
+    assert invocation["timeout"] == 8.0
+    assert invocation["shell"] is False
+
+
 @pytest.fixture
 def windows_host_no_path(monkeypatch) -> None:
     monkeypatch.setattr(ad.shutil, "which", lambda _name: None)
