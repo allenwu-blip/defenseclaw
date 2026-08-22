@@ -714,7 +714,9 @@ func codexEventCanControl(contractID, event string) bool {
 		// not yet been reconciled.
 		return true
 	case "SessionStart", "SubagentStop", "PreCompact", "PostCompact":
-		return contractID == "codex-hooks-v3" || contractID == "codex-hooks-v4"
+		return contractID == "codex-hooks-v3" ||
+			contractID == "codex-hooks-v3-generic" ||
+			contractID == "codex-hooks-v4"
 	default:
 		return false
 	}
@@ -879,7 +881,7 @@ func codexContractAllowsEvent(contractID, event string) bool {
 		case "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact", "Stop":
 			return true
 		}
-	case "codex-hooks-v3":
+	case "codex-hooks-v3", "codex-hooks-v3-generic":
 		switch event {
 		case "SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "SubagentStart", "SubagentStop", "PreCompact", "PostCompact", "Stop":
 			return true

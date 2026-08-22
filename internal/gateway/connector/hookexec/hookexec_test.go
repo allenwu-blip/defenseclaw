@@ -1835,6 +1835,19 @@ func TestCodexFailClosedUsesEventSpecificControlSchema(t *testing.T) {
 	}
 }
 
+func TestCodexV3GenericFailClosedUsesLifecycleControl(t *testing.T) {
+	result := run(t, "codex", &stubRT{err: context.DeadlineExceeded}, func(opts *Options) {
+		opts.Event = "SessionStart"
+		opts.HookContractID = "codex-hooks-v3-generic"
+		opts.FailMode = "closed"
+		opts.StrictAvailability = true
+	})
+	wantStdout := `{"continue":false,"stopReason":"DefenseClaw hook failed closed"}` + "\n"
+	if result.code != 0 || result.stdout != wantStdout {
+		t.Fatalf("code=%d stdout=%q want %q stderr=%q", result.code, result.stdout, wantStdout, result.stderr)
+	}
+}
+
 func TestCodexLegacyAndInvalidContractsDoNotBackfillLifecycleControls(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1912,6 +1925,11 @@ func TestCodexInvocationBindingMatrix(t *testing.T) {
 			"PostCompact", "Stop",
 		},
 		"codex-hooks-v3": {
+			"SessionStart", "UserPromptSubmit", "PreToolUse",
+			"PermissionRequest", "PostToolUse", "SubagentStart",
+			"SubagentStop", "PreCompact", "PostCompact", "Stop",
+		},
+		"codex-hooks-v3-generic": {
 			"SessionStart", "UserPromptSubmit", "PreToolUse",
 			"PermissionRequest", "PostToolUse", "SubagentStart",
 			"SubagentStop", "PreCompact", "PostCompact", "Stop",
@@ -2000,6 +2018,7 @@ func TestCodexRejectsImpossibleContractEventBeforeGateway(t *testing.T) {
 		{"codex-hooks-v1", "PreCompact"},
 		{"codex-hooks-v2", "SubagentStop"},
 		{"codex-hooks-v3", "SessionEnd"},
+		{"codex-hooks-v3-generic", "SessionEnd"},
 	}
 	for _, test := range tests {
 		t.Run(test.contractID+"/"+test.event, func(t *testing.T) {
