@@ -298,6 +298,65 @@ function Assert-SyntheticProcessTree(
     Assert-True ($nativeIds -ceq $expected) "$Message (native helper returned: $nativeIds)"
 }
 
+function Invoke-PackagedRotationDiagnosticRegressionFixture([string]$Root) {
+    [IO.Directory]::CreateDirectory($Root) | Out-Null
+    $rawCredential = 'raw-rotation-credential-must-not-persist'
+    $reason = Get-PackagedRotationFailureReason `
+        -StdOut $rawCredential `
+        -StdErr (@(
+            'Error: Gateway start failed during the token-rotation transaction.',
+            "untrusted child output credential=$rawCredential"
+        ) -join [Environment]::NewLine)
+    Assert-True ($reason -ceq 'gateway-start-failed') `
+        'rotation failure classifier did not recognize the exact outer CLI message'
+    $nearMatchReason = Get-PackagedRotationFailureReason `
+        -StdOut '' `
+        -StdErr "Error: Gateway start failed during the token-rotation transaction. $rawCredential"
+    Assert-True ($nearMatchReason -ceq 'unclassified-cli-exit') `
+        'rotation failure classifier accepted a non-exact or credential-bearing message'
+
+    $diagnosticPath = Join-Path $Root 'rotation-failure.json'
+    Write-PackagedRotationFailureDiagnostic `
+        -Path $diagnosticPath -ExitCode 1 -Reason $reason
+    $diagnosticText = [IO.File]::ReadAllText($diagnosticPath)
+    $diagnostic = $diagnosticText | ConvertFrom-Json -ErrorAction Stop
+    Assert-True (
+        (@($diagnostic.PSObject.Properties.Name) -join ',') -ceq 'schema,exit,reason' -and
+        [int]$diagnostic.schema -eq 1 -and
+        [int]$diagnostic.exit -eq 1 -and
+        [string]$diagnostic.reason -ceq 'gateway-start-failed' -and
+        [Text.Encoding]::UTF8.GetByteCount($diagnosticText) -le 4096 -and
+        -not $diagnosticText.Contains($rawCredential)
+    ) 'rotation failure diagnostic was not bounded, fixed-schema, or secret-free'
+
+    $priorityNames = @(
+        'rotation-failure.json',
+        'rotation-setup-codex.log',
+        'rotation-success.log',
+        'gateway.log',
+        'watchdog.log'
+    )
+    foreach ($name in $priorityNames | Where-Object { $_ -cne 'rotation-failure.json' }) {
+        Write-BoundedText -Path (Join-Path $Root $name) -Text 'safe diagnostic fixture'
+    }
+    Write-BoundedText -Path (Join-Path $Root 'rotation-failure-extra.json') `
+        -Text 'must-not-capture'
+    foreach ($index in 0..39) {
+        Write-BoundedText -Path (Join-Path $Root ("00-rotation-decoy-{0:D2}.log" -f $index)) `
+            -Text 'decoy'
+    }
+    $selected = @(Get-WindowsNativeCaptureFiles $Root)
+    Assert-True ($selected.Count -eq 30) `
+        'rotation diagnostic capture did not retain its existing 30-file cap'
+    foreach ($name in $priorityNames) {
+        Assert-True (@($selected | Where-Object { $_.Name -ceq $name }).Count -eq 1) `
+            "rotation diagnostic capture did not prioritize $name over more than 30 decoys"
+    }
+    Assert-True (@($selected | Where-Object {
+        $_.Name -ceq 'rotation-failure-extra.json'
+    }).Count -eq 0) 'rotation diagnostic capture accepted a near-match JSON file'
+}
+
 try {
     foreach ($scriptPath in @(
         $harness,
@@ -416,6 +475,8 @@ try {
             -PropertyName 'cleanup_boot_identifier') -ceq 'foreign-boot'
     ) 'present deferred-cleanup fields are not erased by optional-property access'
     Invoke-PackageLiveCleanupRegressionFixture
+    Invoke-PackagedRotationDiagnosticRegressionFixture `
+        (Join-Path $temp 'packaged-rotation-diagnostic')
 
     $validClaudeInstaller = @'
 param([string]$Target = "latest")
@@ -3099,14 +3160,37 @@ connection.close()
         $nativeHarnessText,
         '(?s)function Get-WindowsNativeCaptureFiles\b.*?(?=\r?\nfunction )'
     ).Value
+    $rotationReasonFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Get-PackagedRotationFailureReason\b.*?(?=\r?\nfunction )'
+    ).Value
+    $rotationDiagnosticFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Write-PackagedRotationFailureDiagnostic\b.*?(?=\r?\nfunction )'
+    ).Value
+    $packagedRotationFunction = [regex]::Match(
+        $nativeHarnessText,
+        '(?s)function Assert-PackagedClaudeTokenRotation\b.*?(?=\r?\nfunction )'
+    ).Value
     $captureFunction = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Invoke-Capture\b.*?(?=\r?\nfunction )'
     ).Value
     Assert-True ($captureSelectionFunction -match 'SortedDictionary\[string, IO\.FileInfo\]' -and
         $captureSelectionFunction -match '\$selectionLimit = 30' -and
+        $captureSelectionFunction -match "Name -ceq 'rotation-failure\.json'\) \{ -4 \}" -and
+        $captureSelectionFunction -match "Name -match '\^rotation-\.\*\\\.log\$'\) \{ -3 \}" -and
+        $captureSelectionFunction -match "Name -match '\^\(\?:gateway\|watchdog\)\.\*.*?\) \{ -2 \}" -and
+        $captureSelectionFunction -match "Name -ceq 'setup-seeded-health\.jsonl'\) \{ -1 \}" -and
         $captureSelectionFunction -notmatch '\$matches\b' -and
         $captureSelectionFunction -notmatch '\$visited\b' -and
+        $rotationReasonFunction -match 'switch -CaseSensitive' -and
+        $rotationReasonFunction -match "return 'unclassified-cli-exit'" -and
+        $rotationDiagnosticFunction -match '(?s)schema = 1.*?exit = \$ExitCode.*?reason = \$Reason' -and
+        $rotationDiagnosticFunction -match 'Write-BoundedText.*?-MaxBytes 4096' -and
+        $rotationDiagnosticFunction -notmatch '\$(?:StdOut|StdErr)' -and
+        $packagedRotationFunction -match '(?s)setup'', ''rotate-token'', ''--yes''.*?-AllowedExitCodes @\(0, 1\) -TimeoutSeconds 1200' -and
+        $packagedRotationFunction -match 'Join-Path \$Logs ''rotation-failure\.json''' -and
         $captureFunction -match 'DisposableFileGuard\]::OpenRootedReader\(\$root\)' -and
         $captureFunction -match 'ReadBoundedUtf8\(\$file\.FullName, 1048576\)' -and
         $captureFunction -notmatch 'ReadAllText\(\$file\.FullName\)' -and

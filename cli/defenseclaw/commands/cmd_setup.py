@@ -3462,6 +3462,10 @@ def _rotate_token_connector_state(
     return _json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+class _RotateTokenLifecycleError(click.ClickException):
+    """Secret-free retry sentinel for one bounded gateway lifecycle phase."""
+
+
 def _run_rotate_token_lifecycle(
     data_dir: str,
     action: str,
@@ -3490,6 +3494,7 @@ def _run_rotate_token_lifecycle(
     elif connector_state is not None:
         raise ValueError("token-rotation connector state is only valid for start")
     child_env = _rotate_token_child_environment(data_dir, config_file, token)
+    lifecycle_error: str | None = None
     try:
         result = subprocess.run(
             command,
@@ -3500,16 +3505,22 @@ def _run_rotate_token_lifecycle(
             env=child_env,
             timeout=_TOKEN_ROTATION_LIFECYCLE_TIMEOUT_SECONDS,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise click.ClickException(f"Gateway {action} timed out during the token-rotation transaction.") from exc
-    except OSError as exc:
-        raise click.ClickException(
-            f"Gateway {action} could not be executed during the token-rotation transaction."
-        ) from exc
-    if result.returncode != 0:
+    except subprocess.TimeoutExpired:
+        lifecycle_error = f"Gateway {action} timed out during the token-rotation transaction."
+    except OSError:
+        lifecycle_error = f"Gateway {action} could not be executed during the token-rotation transaction."
+    else:
+        returncode = result.returncode
+        # Do not retain captured child output in the retry sentinel's
+        # traceback. Lifecycle diagnostics are not a trusted redaction
+        # boundary, even when the child failed before producing a result.
+        del result
+        if returncode != 0:
+            lifecycle_error = f"Gateway {action} failed during the token-rotation transaction."
+    if lifecycle_error is not None:
         # The child output is deliberately not replayed: lifecycle diagnostics
         # are not a trusted secret-redaction boundary.
-        raise click.ClickException(f"Gateway {action} failed during the token-rotation transaction.")
+        raise _RotateTokenLifecycleError(lifecycle_error) from None
 
     try:
         ctx = click.get_current_context(silent=True)
@@ -3828,20 +3839,30 @@ def rotate_token_cmd(app: AppContext, connector: str | None, no_restart: bool, y
             abort=True,
         )
 
-    new_token = secrets.token_hex(32)
     audit_details = (
         f"action=rotate-token active_connectors={len(actives)} scoped_hook_tokens={len(scoped_actives)} restart=true"
     )
     target_summary = ", ".join(actives) if actives else "no active connectors"
     click.echo(f"  {ux.dim('Rotating gateway and scoped hook credentials for')} {target_summary}…")
-    _rotate_token_transaction(
-        app,
-        dotenv_path,
-        new_token,
-        audit_details,
-        scoped_connectors=tuple(scoped_actives),
-        require_complete_scoped_roster=True,
-    )
+    # The transaction lets this typed error escape only before mutation or
+    # after generation A's exact snapshots and required ready runtime have
+    # been restored. Unsafe rollback/recovery failures become fatal Click errors.
+    for attempt in range(2):
+        new_token = secrets.token_hex(32)
+        try:
+            _rotate_token_transaction(
+                app,
+                dotenv_path,
+                new_token,
+                audit_details,
+                scoped_connectors=tuple(scoped_actives),
+                require_complete_scoped_roster=True,
+            )
+        except _RotateTokenLifecycleError:
+            if attempt != 0:
+                raise
+            continue
+        break
 
     ux.ok(f"Rotated DEFENSECLAW_GATEWAY_TOKEN in {dotenv_path} (mode 0o600); gateway B is verified ready.")
     if scoped_actives:

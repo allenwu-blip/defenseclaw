@@ -634,6 +634,184 @@ with locked_file_update(lock_base):
             self.assertIn(b"KEEP=exact\r\n", body)
             self.assertIn(b"DEFENSECLAW_GATEWAY_TOKEN=" + b"b" * 64, body)
 
+    def test_safe_lifecycle_failure_retries_once_with_fresh_gateway_token(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as td:
+            app = _make_rotate_ctx(td, ["codex"])
+            dotenv = os.path.join(td, ".env")
+            old_token = "a" * 64
+            first_token = "b" * 64
+            second_token = "c" * 64
+            original = b"KEEP=exact\r\nDEFENSECLAW_GATEWAY_TOKEN=" + old_token.encode() + b"\r\n"
+            with open(dotenv, "wb") as fh:
+                fh.write(original)
+            events: list[tuple[str, bool, str]] = []
+
+            def lifecycle(
+                _data_dir: str,
+                action: str,
+                *,
+                token: str,
+                config_file: str,
+                connector_state: str | None = None,
+                cleanup: bool = False,
+            ) -> None:
+                del config_file, connector_state
+                events.append((action, cleanup, token))
+                if action == "start" and token == first_token:
+                    raise cmd_setup._RotateTokenLifecycleError(
+                        "Gateway start failed during the token-rotation transaction."
+                    )
+
+            with (
+                mock.patch.object(cmd_setup, "_is_pid_alive", return_value=True),
+                mock.patch.object(cmd_setup, "_run_rotate_token_lifecycle", side_effect=lifecycle),
+                mock.patch.object(
+                    cmd_setup.secrets,
+                    "token_hex",
+                    side_effect=[first_token, second_token],
+                ) as generate_token,
+            ):
+                result = CliRunner().invoke(cmd_setup.rotate_token_cmd, ["--yes"], obj=app)
+
+            with open(dotenv, "rb") as fh:
+                committed = fh.read()
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(generate_token.call_count, 2)
+        self.assertEqual(
+            events,
+            [
+                ("stop", False, old_token),
+                ("start", False, first_token),
+                ("stop", True, first_token),
+                ("start", False, old_token),
+                ("stop", False, old_token),
+                ("start", False, second_token),
+            ],
+        )
+        self.assertEqual(
+            committed,
+            b"KEEP=exact\r\nDEFENSECLAW_GATEWAY_TOKEN=" + second_token.encode() + b"\r\n",
+        )
+        self.assertNotIn(first_token, result.output)
+        self.assertNotIn(second_token, result.output)
+
+    def test_second_safe_lifecycle_failure_is_fatal(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as td:
+            app = _make_rotate_ctx(td, ["codex"])
+            dotenv = os.path.join(td, ".env")
+            old_token = "a" * 64
+            attempted_tokens = ("b" * 64, "c" * 64)
+            original = b"KEEP=exact\r\nDEFENSECLAW_GATEWAY_TOKEN=" + old_token.encode() + b"\r\n"
+            with open(dotenv, "wb") as fh:
+                fh.write(original)
+            events: list[tuple[str, bool, str]] = []
+
+            def lifecycle(
+                _data_dir: str,
+                action: str,
+                *,
+                token: str,
+                config_file: str,
+                connector_state: str | None = None,
+                cleanup: bool = False,
+            ) -> None:
+                del config_file, connector_state
+                events.append((action, cleanup, token))
+                if action == "start" and token in attempted_tokens:
+                    raise cmd_setup._RotateTokenLifecycleError(
+                        "Gateway start failed during the token-rotation transaction."
+                    )
+
+            with (
+                mock.patch.object(cmd_setup, "_is_pid_alive", return_value=True),
+                mock.patch.object(cmd_setup, "_run_rotate_token_lifecycle", side_effect=lifecycle),
+                mock.patch.object(
+                    cmd_setup.secrets,
+                    "token_hex",
+                    side_effect=attempted_tokens,
+                ) as generate_token,
+            ):
+                result = CliRunner().invoke(cmd_setup.rotate_token_cmd, ["--yes"], obj=app)
+
+            with open(dotenv, "rb") as fh:
+                restored = fh.read()
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertEqual(generate_token.call_count, 2)
+        self.assertEqual(
+            events,
+            [
+                ("stop", False, old_token),
+                ("start", False, attempted_tokens[0]),
+                ("stop", True, attempted_tokens[0]),
+                ("start", False, old_token),
+                ("stop", False, old_token),
+                ("start", False, attempted_tokens[1]),
+                ("stop", True, attempted_tokens[1]),
+                ("start", False, old_token),
+            ],
+        )
+        self.assertEqual(restored, original)
+        self.assertNotIn(attempted_tokens[0], result.output)
+        self.assertNotIn(attempted_tokens[1], result.output)
+
+    def test_unsafe_rollback_failure_is_not_retried(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as td:
+            app = _make_rotate_ctx(td, ["codex"])
+            dotenv = os.path.join(td, ".env")
+            old_token = "a" * 64
+            new_token = "b" * 64
+            with open(dotenv, "wb") as fh:
+                fh.write(b"DEFENSECLAW_GATEWAY_TOKEN=" + old_token.encode() + b"\r\n")
+            events: list[tuple[str, bool, str]] = []
+
+            def lifecycle(
+                _data_dir: str,
+                action: str,
+                *,
+                token: str,
+                config_file: str,
+                connector_state: str | None = None,
+                cleanup: bool = False,
+            ) -> None:
+                del config_file, connector_state
+                events.append((action, cleanup, token))
+                if action == "start" or cleanup:
+                    raise cmd_setup._RotateTokenLifecycleError(
+                        f"Gateway {action} failed during the token-rotation transaction."
+                    )
+
+            with (
+                mock.patch.object(cmd_setup, "_is_pid_alive", return_value=True),
+                mock.patch.object(cmd_setup, "_run_rotate_token_lifecycle", side_effect=lifecycle),
+                mock.patch.object(cmd_setup.secrets, "token_hex", return_value=new_token) as generate_token,
+            ):
+                result = CliRunner().invoke(cmd_setup.rotate_token_cmd, ["--yes"], obj=app)
+
+            with open(dotenv, "rb") as fh:
+                preserved = fh.read()
+
+        self.assertNotEqual(result.exit_code, 0)
+        generate_token.assert_called_once_with(32)
+        self.assertEqual(
+            events,
+            [
+                ("stop", False, old_token),
+                ("start", False, new_token),
+                ("stop", True, new_token),
+            ],
+        )
+        self.assertIn(b"DEFENSECLAW_GATEWAY_TOKEN=" + new_token.encode(), preserved)
+        self.assertIn("replacement gateway could not be safely stopped", result.output)
+        self.assertNotIn(new_token, result.output)
+
     def test_stop_timeout_after_pid_exit_restores_ready_a_without_committing_b(self) -> None:
         from tempfile import TemporaryDirectory
 
@@ -1373,7 +1551,7 @@ with locked_file_update(lock_base):
                 with open(path, "rb") as fh:
                     self.assertEqual(fh.read(), expected)
 
-    def test_failed_first_rotation_restores_absent_dotenv(self) -> None:
+    def test_unrelated_failure_restores_absent_dotenv_without_retry(self) -> None:
         from tempfile import TemporaryDirectory
 
         with TemporaryDirectory() as td:
@@ -1393,14 +1571,18 @@ with locked_file_update(lock_base):
                 if events == [("stop", False), ("start", False)]:
                     raise click.ClickException("fixture start failure")
 
-            with mock.patch.object(
-                cmd_setup,
-                "_run_rotate_token_lifecycle",
-                side_effect=lifecycle,
+            with (
+                mock.patch.object(
+                    cmd_setup,
+                    "_run_rotate_token_lifecycle",
+                    side_effect=lifecycle,
+                ),
+                mock.patch.object(cmd_setup.secrets, "token_hex", return_value="b" * 64) as generate_token,
             ):
                 result = CliRunner().invoke(cmd_setup.rotate_token_cmd, ["--yes"], obj=app)
 
             self.assertNotEqual(result.exit_code, 0)
+            generate_token.assert_called_once_with(32)
             self.assertEqual(events, [("stop", False), ("start", False), ("stop", True)])
             self.assertFalse(os.path.lexists(os.path.join(td, ".env")))
 
@@ -1416,7 +1598,7 @@ with locked_file_update(lock_base):
             mock.patch.object(cmd_setup, "_gateway_lifecycle_executable", return_value="gateway-fixture"),
             mock.patch.object(cmd_setup.subprocess, "run", side_effect=timeout) as run,
         ):
-            with self.assertRaises(click.ClickException) as raised:
+            with self.assertRaises(cmd_setup._RotateTokenLifecycleError) as raised:
                 cmd_setup._run_rotate_token_lifecycle(
                     "D:\\fixture-data",
                     "start",
@@ -1438,6 +1620,8 @@ with locked_file_update(lock_base):
         )
         self.assertNotIn(secret, " ".join(argv))
         self.assertNotIn(secret, str(raised.exception))
+        self.assertIsNone(raised.exception.__cause__)
+        self.assertIsNone(raised.exception.__context__)
         self.assertIs(run.call_args.kwargs["shell"], False)
         self.assertEqual(
             run.call_args.kwargs["timeout"],
@@ -1460,6 +1644,36 @@ with locked_file_update(lock_base):
             cleanup_run.call_args.args[0],
             ["gateway-fixture", "stop", "--rotation-transaction", "--rotation-cleanup"],
         )
+
+    def test_lifecycle_os_and_exit_failures_are_typed_and_secret_free(self) -> None:
+        secret = "child-output-secret-" + "x" * 32
+        failures = (
+            OSError(secret),
+            subprocess.CompletedProcess([], 7, stdout=secret, stderr=secret),
+        )
+
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__):
+                run_patch = (
+                    mock.patch.object(cmd_setup.subprocess, "run", side_effect=failure)
+                    if isinstance(failure, OSError)
+                    else mock.patch.object(cmd_setup.subprocess, "run", return_value=failure)
+                )
+                with (
+                    mock.patch.object(cmd_setup, "_gateway_lifecycle_executable", return_value="gateway-fixture"),
+                    run_patch,
+                    self.assertRaises(cmd_setup._RotateTokenLifecycleError) as raised,
+                ):
+                    cmd_setup._run_rotate_token_lifecycle(
+                        "D:\\fixture-data",
+                        "stop",
+                        token="explicit-a-value",
+                        config_file="D:\\fixture-data\\config.yaml",
+                    )
+
+                self.assertNotIn(secret, str(raised.exception))
+                self.assertIsNone(raised.exception.__cause__)
+                self.assertIsNone(raised.exception.__context__)
 
     def test_lifecycle_child_environment_is_bounded_and_uses_explicit_transaction_inputs(self) -> None:
         data_dir = "D:\\fixture-data"
@@ -1750,7 +1964,9 @@ with locked_file_update(lock_base):
             ) -> None:
                 events.append((action, cleanup, token))
                 if action == "start":
-                    raise click.ClickException("gateway B activation failed")
+                    raise cmd_setup._RotateTokenLifecycleError(
+                        "Gateway start failed during the token-rotation transaction."
+                    )
 
             with (
                 mock.patch.object(cmd_setup, "load_config", return_value=app.cfg),
@@ -1760,7 +1976,7 @@ with locked_file_update(lock_base):
                     "_run_rotate_token_lifecycle",
                     side_effect=lifecycle,
                 ),
-                self.assertRaises(click.ClickException),
+                self.assertRaises(cmd_setup._RotateTokenLifecycleError),
             ):
                 cmd_setup._rotate_token_transaction(
                     app,

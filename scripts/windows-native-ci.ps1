@@ -7338,6 +7338,104 @@ function Assert-CursorCompatibilitySkillHomes([string[]]$Homes) {
     }
 }
 
+function Get-PackagedRotationFailureReason(
+    [AllowNull()][string]$StdOut,
+    [AllowNull()][string]$StdErr
+) {
+    foreach ($text in @($StdOut, $StdErr)) {
+        foreach ($line in @([string]$text -split '\r?\n')) {
+            switch -CaseSensitive ($line) {
+                'Error: Gateway lifecycle executable was not found.' {
+                    return 'gateway-lifecycle-missing'
+                }
+                'Error: Gateway stop timed out during the token-rotation transaction.' {
+                    return 'gateway-stop-timeout'
+                }
+                'Error: Gateway stop could not be executed during the token-rotation transaction.' {
+                    return 'gateway-stop-unavailable'
+                }
+                'Error: Gateway stop failed during the token-rotation transaction.' {
+                    return 'gateway-stop-failed'
+                }
+                'Error: Gateway start timed out during the token-rotation transaction.' {
+                    return 'gateway-start-timeout'
+                }
+                'Error: Gateway start could not be executed during the token-rotation transaction.' {
+                    return 'gateway-start-unavailable'
+                }
+                'Error: Gateway start failed during the token-rotation transaction.' {
+                    return 'gateway-start-failed'
+                }
+                'Error: Token rotation stopped gateway A before the transaction could commit; gateway A did not return to verified readiness.' {
+                    return 'gateway-a-recovery-before-commit-failed'
+                }
+                'Error: Token rotation failed and the replacement gateway could not be safely stopped; token B was preserved on disk.' {
+                    return 'replacement-gateway-stop-failed'
+                }
+                'Error: Token rotation failed and the exact prior credential snapshots could not all be restored; the gateway remains stopped.' {
+                    return 'credential-rollback-failed'
+                }
+                'Error: Token rotation failed and the exact prior gateway configuration could not be restored; the gateway remains stopped.' {
+                    return 'config-rollback-failed'
+                }
+                'Error: Token rotation failed; the exact prior credential snapshots were restored, but gateway A did not return to verified readiness.' {
+                    return 'gateway-a-recovery-after-rollback-failed'
+                }
+                'Error: Gateway configuration changed while token rotation was taking its snapshot.' {
+                    return 'gateway-config-race'
+                }
+                'Error: Gateway configuration changed during token rotation.' {
+                    return 'gateway-config-race'
+                }
+                'Error: Connector hook credential scope changed before rotation; no credentials were modified.' {
+                    return 'connector-scope-race'
+                }
+                'Error: The authoritative scoped-hook connector roster changed before rotation; no credentials were modified.' {
+                    return 'connector-roster-race'
+                }
+                'Error: A running connector is missing its scoped hook credential; restart or repair setup before rotation.' {
+                    return 'scoped-credential-missing'
+                }
+            }
+        }
+    }
+    return 'unclassified-cli-exit'
+}
+
+function Write-PackagedRotationFailureDiagnostic(
+    [string]$Path,
+    [int]$ExitCode,
+    [ValidateSet(
+        'gateway-lifecycle-missing',
+        'gateway-stop-timeout',
+        'gateway-stop-unavailable',
+        'gateway-stop-failed',
+        'gateway-start-timeout',
+        'gateway-start-unavailable',
+        'gateway-start-failed',
+        'gateway-a-recovery-before-commit-failed',
+        'replacement-gateway-stop-failed',
+        'credential-rollback-failed',
+        'config-rollback-failed',
+        'gateway-a-recovery-after-rollback-failed',
+        'gateway-config-race',
+        'connector-scope-race',
+        'connector-roster-race',
+        'scoped-credential-missing',
+        'unclassified-cli-exit'
+    )][string]$Reason
+) {
+    if ($ExitCode -ne 1) {
+        throw 'packaged rotation failure diagnostics accept only CLI exit 1'
+    }
+    $payload = [ordered]@{
+        schema = 1
+        exit = $ExitCode
+        reason = $Reason
+    } | ConvertTo-Json -Compress
+    Write-BoundedText -Path $Path -Text $payload -MaxBytes 4096
+}
+
 function Assert-PackagedClaudeTokenRotation(
     [string]$Launcher,
     [string]$Python,
@@ -7405,9 +7503,18 @@ function Assert-PackagedClaudeTokenRotation(
     $tokenA = Get-WindowsNativeGatewayTokenFromDotenvState $tokenAState
     try {
         $rotateResult = Invoke-WindowsNativeProcess $Launcher @('setup', 'rotate-token', '--yes') `
-            -TimeoutSeconds 300 -LogPath $credentialLogPaths[3] -SuppressOutput
+            -AllowedExitCodes @(0, 1) -TimeoutSeconds 1200 `
+            -LogPath $credentialLogPaths[3] -SuppressOutput
     } catch {
         throw "packaged token rotation rotate-token failed: $($_.Exception.Message)"
+    }
+    if ($rotateResult.ExitCode -eq 1) {
+        $rotationFailureReason = Get-PackagedRotationFailureReason `
+            $rotateResult.StdOut $rotateResult.StdErr
+        Write-PackagedRotationFailureDiagnostic `
+            -Path (Join-Path $Logs 'rotation-failure.json') `
+            -ExitCode $rotateResult.ExitCode -Reason $rotationFailureReason
+        throw "packaged token rotation rotate-token failed: exit=1 reason=$rotationFailureReason"
     }
     $tokenBState = [IO.File]::ReadAllBytes($dotenvPath)
     if (Test-WindowsNativeByteArraysEqual $tokenAState $tokenBState) {
@@ -7950,18 +8057,22 @@ function Get-WindowsNativeCaptureFiles([string]$Root) {
             if ($child.PSIsContainer) {
                 $pending.Enqueue([IO.DirectoryInfo]$child)
             } elseif ($child -is [IO.FileInfo] -and @($child | Where-Object {
-                ($_.Name -match '^(?:gateway|watchdog|results|doctor).*\.(?:json|jsonl|txt|log)$' -or
+                ($_.Name -ceq 'rotation-failure.json' -or
+                    $_.Name -match '^(?:gateway|watchdog|results|doctor).*\.(?:json|jsonl|txt|log)$' -or
                     $_.Name -match '\.log$' -or
                     $_.Name -ceq 'setup-seeded-health.jsonl') -and
                     $_.Length -le 1048576
             }).Count -eq 1) {
                 $priority = @($child | ForEach-Object {
-                    if ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }
+                    if ($_.Name -ceq 'rotation-failure.json') { -4 }
+                    elseif ($_.Name -match '^rotation-.*\.log$') { -3 }
+                    elseif ($_.Name -match '^(?:gateway|watchdog).*\.(?:json|jsonl|txt|log)$') { -2 }
+                    elseif ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }
                     elseif ($_.Name -eq 'wizard-driver.log') { 0 }
                     elseif ($_.Name -in @('go-test-failure-summary.log', 'go-test.log')) { 1 }
                     else { 2 }
                 })[0]
-                $selectionKey = '{0}|{1}' -f $priority, $child.FullName
+                $selectionKey = '{0:D2}|{1}' -f ($priority + 4), $child.FullName
                 $selected[$selectionKey] = [IO.FileInfo]$child
                 if ($selected.Count -gt $selectionLimit) {
                     $lastKey = @($selected.Keys)[-1]

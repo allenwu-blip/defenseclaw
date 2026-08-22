@@ -846,7 +846,7 @@ def test_setup_transition_health_diagnostic_is_exactly_captured() -> None:
     self_test = _function("Invoke-SelfTest")
 
     assert "$_.Name -ceq 'setup-seeded-health.jsonl'" in capture
-    assert "if ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }" in capture
+    assert "elseif ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }" in capture
     assert "setup-seeded-health-extra.jsonl" in self_test
     assert "exact Setup transition health diagnostic capture contract failed" in self_test
 
@@ -992,6 +992,9 @@ def test_minimal_gateway_fixture_disables_external_v8_destinations() -> None:
 def test_packaged_rotation_probes_only_owned_gateway_without_secret_output() -> None:
     process = _function("Invoke-WindowsNativeProcess")
     rotation = _function("Assert-PackagedClaudeTokenRotation")
+    failure_reason = _function("Get-PackagedRotationFailureReason")
+    failure_diagnostic = _function("Write-PackagedRotationFailureDiagnostic")
+    capture = _function("Get-WindowsNativeCaptureFiles")
     authentication = _function("Assert-ClaudeNativeOtlpRotationAuthentication")
     authority = _function("Assert-ClaudeNativeOtlpProbeAuthority")
     listener = _function("Assert-OwnedGatewayApiListener")
@@ -1006,6 +1009,29 @@ def test_packaged_rotation_probes_only_owned_gateway_without_secret_output() -> 
     assert "[credential-bearing process output intentionally suppressed]" in process
     assert 'if ($SuppressOutput) { throw "$FilePath $reason" }' in process
     assert rotation.count("-SuppressOutput") == 5
+    assert "-AllowedExitCodes @(0, 1) -TimeoutSeconds 1200" in rotation
+    assert "Get-PackagedRotationFailureReason" in rotation
+    assert "Write-PackagedRotationFailureDiagnostic" in rotation
+    assert "Join-Path $Logs 'rotation-failure.json'" in rotation
+    assert "exit=1 reason=$rotationFailureReason" in rotation
+    assert "switch -CaseSensitive ($line)" in failure_reason
+    assert "Error: Gateway stop failed during the token-rotation transaction." in failure_reason
+    assert "Error: Gateway start failed during the token-rotation transaction." in failure_reason
+    assert "return 'unclassified-cli-exit'" in failure_reason
+    assert "schema = 1" in failure_diagnostic
+    assert "exit = $ExitCode" in failure_diagnostic
+    assert "reason = $Reason" in failure_diagnostic
+    assert "-MaxBytes 4096" in failure_diagnostic
+    assert "$StdOut" not in failure_diagnostic
+    assert "$StdErr" not in failure_diagnostic
+    assert "$_.Name -ceq 'rotation-failure.json'" in capture
+    assert "^rotation-.*\\.log$" in capture
+    assert "^(?:gateway|watchdog).*\\.(?:json|jsonl|txt|log)$" in capture
+    assert "if ($_.Name -ceq 'rotation-failure.json') { -4 }" in capture
+    assert "elseif ($_.Name -match '^rotation-.*\\.log$') { -3 }" in capture
+    assert "elseif ($_.Name -match '^(?:gateway|watchdog).*\\.(?:json|jsonl|txt|log)$') { -2 }" in capture
+    assert "elseif ($_.Name -ceq 'setup-seeded-health.jsonl') { -1 }" in capture
+    assert "'{0:D2}|{1}' -f ($priority + 4)" in capture
     for operation in (
         "setup-codex",
         "setup-claudecode",
