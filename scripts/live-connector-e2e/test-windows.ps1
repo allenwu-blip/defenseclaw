@@ -225,8 +225,13 @@ try {
     # used by that workflow whenever this host exposes the same token shape.
     if ([DefenseClaw.SetupStandardUserLauncher]::IsCurrentProcessElevated() -and
         -not [DefenseClaw.SetupStandardUserLauncher]::CurrentElevatedTokenHasLinkedLimitedToken()) {
-        $restrictedOwnerScript = Join-Path $temp 'restricted-owner-probe.ps1'
-        $restrictedOwnerOutput = Join-Path $temp 'restricted-owner-probe.json'
+        Set-CurrentUserAsDefaultOwner
+        $restrictedOwnerRoot = Join-Path $temp (
+            'restricted-owner-probe-' + [Guid]::NewGuid().ToString('N')
+        )
+        New-ProductPrivateTestDirectory $restrictedOwnerRoot
+        $restrictedOwnerScript = Join-Path $restrictedOwnerRoot 'probe.ps1'
+        $restrictedOwnerOutput = Join-Path $restrictedOwnerRoot 'result.json'
         $restrictedOwnerBody = @'
 param(
     [Parameter(Mandatory)][string]$OutputPath,
@@ -272,14 +277,13 @@ $payload = [ordered]@{
             $restrictedOwnerBody,
             [Text.UTF8Encoding]::new($false)
         )
-        Set-CurrentUserAsDefaultOwner
         $probePowerShell = Join-Path $PSHOME 'pwsh.exe'
         $restrictedLaunch = Invoke-WindowsSetupStandardUserProcess -FilePath $probePowerShell `
             -ArgumentList @(
                 '-NoLogo', '-NoProfile', '-NonInteractive', '-File',
                 $restrictedOwnerScript, '-OutputPath', $restrictedOwnerOutput,
                 '-LauncherSource', $setupStandardUserLauncher
-            ) -TimeoutSeconds 30 -WorkingDirectory $temp `
+            ) -TimeoutSeconds 30 -WorkingDirectory $restrictedOwnerRoot `
             -AllowRestrictedLuaFallback -SuppressOutput
         $restrictedOwner = [IO.File]::ReadAllText(
             $restrictedOwnerOutput,
@@ -2466,7 +2470,10 @@ private-secret-name = "DefenseClaw must remain redacted"
         $antigravityLiveJob -match "S-1-5-32-544" -and
         $antigravityLiveJob -match 'FullControl') `
         'workflow protects the exact package destination before artifact download'
-    $windowsLiveJob = [regex]::Match($liveWorkflowText, '(?s)  windows-live:.*?(?=\r?\n  # -+\r?\n  # Report)').Value
+    $windowsLiveJob = [regex]::Match(
+        $liveWorkflowText,
+        '(?ms)^  windows-live:.*?(?=^  [A-Za-z0-9_-]+:\r?$|\z)'
+    ).Value
     Assert-True ($windowsLiveJob -notmatch 'continue-on-error') 'Windows live jobs are not advisory'
     Assert-True ($windowsLiveJob -notmatch 'shell:\s*bash') 'Windows live jobs never select Bash'
     Assert-True ($windowsLiveJob -match "github.event_name == 'workflow_dispatch'") `
@@ -2489,7 +2496,18 @@ private-secret-name = "DefenseClaw must remain redacted"
             '-AllowRestrictedLuaFallback \| Out-Null'
         ).Count -eq 3 -and
         $windowsLiveJob -match "'-Operation', 'capture'" -and
-        $windowsLiveJob -match "'-Operation', 'cleanup'"
+        $windowsLiveJob -match "'-Operation', 'cleanup'" -and
+        $windowsLiveJob -notmatch
+            'DC_E2E_RESULTS:.*?github\.workspace|defenseclaw-live-e2e-logs' -and
+        $windowsLiveJob -match
+            'DC_E2E_RESULTS: D:\\DefenseClaw-Connector-Live-.*?\\results\.jsonl' -and
+        $windowsLiveJob -match 'GIT_OPTIONAL_LOCKS: "0"' -and
+        [regex]::Matches(
+            $windowsLiveJob,
+            "'-ArtifactPath', \(Join-Path \`$env:DC_WINDOWS_STATE 'artifacts'\)"
+        ).Count -eq 2 -and
+        $windowsLiveJob -match
+            'path: \$\{\{ env\.DC_WINDOWS_STATE \}\}/artifacts/\*\*'
     ) 'hosted Windows live run, capture, and cleanup normalize default ownership and use the validated standard-user launcher'
     Assert-True ($releaseWorkflowText -notmatch '(?m)^  windows-real-client-certification:' -and
         $releaseWorkflowText -notmatch 'secrets\.OPENAI_API_KEY' -and

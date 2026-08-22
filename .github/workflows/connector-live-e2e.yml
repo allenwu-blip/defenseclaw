@@ -604,7 +604,8 @@ jobs:
     env:
       DC_WINDOWS_STATE: D:\DefenseClaw-Connector-Live-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.connector }}
       DC_WINDOWS_PACKAGE_ROOT: D:\DefenseClaw-Connector-Package-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.connector }}
-      DC_E2E_RESULTS: ${{ github.workspace }}/connector-live-e2e-results.jsonl
+      DC_E2E_RESULTS: D:\DefenseClaw-Connector-Live-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.connector }}\results.jsonl
+      GIT_OPTIONAL_LOCKS: "0"
       CODEX_VERSION: ${{ inputs.version }}
       CLAUDE_VERSION: ${{ inputs.version }}
       AMP_VERSION: ${{ inputs.version }}
@@ -755,7 +756,7 @@ jobs:
             '-ExpectedWorkflowRepository', '${{ github.repository }}',
             '-StateRoot', $env:DC_WINDOWS_STATE,
             '-ResultsPath', $env:DC_E2E_RESULTS,
-            '-ArtifactPath', (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+            '-ArtifactPath', (Join-Path $env:DC_WINDOWS_STATE 'artifacts')
           ) -TimeoutSeconds 1800 -WorkingDirectory $env:GITHUB_WORKSPACE `
             -AllowRestrictedLuaFallback | Out-Null
       - name: Upload Windows live results
@@ -788,7 +789,7 @@ jobs:
             '-ExpectedPackageArtifactDigest', '${{ steps.package.outputs.artifact_digest }}',
             '-ExpectedWorkflowRepository', '${{ github.repository }}',
             '-StateRoot', $env:DC_WINDOWS_STATE,
-            '-ArtifactPath', (Join-Path $env:RUNNER_TEMP 'defenseclaw-live-e2e-logs')
+            '-ArtifactPath', (Join-Path $env:DC_WINDOWS_STATE 'artifacts')
           ) -TimeoutSeconds 600 -WorkingDirectory $env:GITHUB_WORKSPACE `
             -AllowRestrictedLuaFallback | Out-Null
       - name: Upload Windows diagnostics on failure
@@ -796,7 +797,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: connector-live-e2e-logs-live-${{ matrix.connector }}-windows-x64
-          path: ${{ runner.temp }}/defenseclaw-live-e2e-logs/**
+          path: ${{ env.DC_WINDOWS_STATE }}/artifacts/**
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: true
