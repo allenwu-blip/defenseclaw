@@ -13,6 +13,7 @@ param(
     [string]$ArtifactPath = '',
     [string]$AgentPath = '',
     [string]$ExpectedAgentVersion = '',
+    [string]$ExpectedAgentSHA256 = '',
     [ValidateRange(1, 1800)][int]$CommandTimeoutSeconds = 180,
     [ValidateSet('run', 'authorize', 'prepare', 'hold', 'resume', 'capture', 'cleanup')][string]$Operation = 'run',
     [switch]$AllowNativeDataRoot,
@@ -8376,6 +8377,176 @@ function Get-OfficialClaudeInstallerScriptBlock {
     )
 }
 
+function Get-OfficialClaudeClientPath {
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE) -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\'),
+            [IO.Path]::GetFullPath($profile).TrimEnd('\'),
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw 'official Claude client requires USERPROFILE to match the current-user Known Folder profile'
+    }
+    return [IO.Path]::GetFullPath((Join-Path $profile '.local\bin\claude.exe'))
+}
+
+function Assert-OfficialClaudeClientIdentity(
+    [string]$Path,
+    [string]$ExpectedVersion = '',
+    [string]$ExpectedSHA256 = ''
+) {
+    $canonical = Get-OfficialClaudeClientPath
+    $candidate = [IO.Path]::GetFullPath($Path)
+    if (-not [string]::Equals(
+            $candidate,
+            $canonical,
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        throw "official Claude client is not the canonical native launcher: $candidate"
+    }
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    $null = Assert-DisposableNoReparseAncestors -Path $canonical `
+        -AllowedRoot $profile -RequireExists
+    $item = Get-Item -LiteralPath $canonical -Force -ErrorAction Stop
+    if ($item -isnot [IO.FileInfo] -or
+        ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'official Claude client is not a non-reparse regular file'
+    }
+
+    $currentSID = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    if ($null -eq $currentSID) {
+        throw 'official Claude client validation requires a current-user SID'
+    }
+    $security = [IO.FileSystemAclExtensions]::GetAccessControl(
+        $item,
+        [Security.AccessControl.AccessControlSections]::Owner
+    )
+    $ownerSID = $security.GetOwner([Security.Principal.SecurityIdentifier])
+    if ($null -eq $ownerSID -or -not $ownerSID.Equals($currentSID)) {
+        throw 'official Claude client is not owned by the current Windows user'
+    }
+
+    $signature = Get-AuthenticodeSignature -LiteralPath $canonical
+    if ([string]$signature.Status -cne 'Valid' -or
+        [string]$signature.SignatureType -cne 'Authenticode' -or
+        $null -eq $signature.SignerCertificate) {
+        throw 'official Claude client does not have an exact valid Authenticode signature'
+    }
+    $signerName = $signature.SignerCertificate.GetNameInfo(
+        [Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+        $false
+    )
+    if ($signerName -cne 'Anthropic, PBC') {
+        throw "official Claude client signer is not Anthropic, PBC: $signerName"
+    }
+
+    $sha256 = (Get-FileHash -LiteralPath $canonical -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSHA256)) {
+        if ($ExpectedSHA256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $sha256 -cne $ExpectedSHA256) {
+            throw 'official Claude client SHA256 does not match the parent-installed client'
+        }
+    }
+
+    $version = Invoke-NativeProcess -FilePath $canonical -ArgumentList @('--version') `
+        -TimeoutSeconds 30
+    $versionOutput = ($version.StdOut + $version.StdErr).Trim()
+    $observedVersions = [regex]::Matches(
+        $versionOutput,
+        '(?<![0-9A-Za-z.+-])\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?![0-9A-Za-z.+-])'
+    )
+    if ($observedVersions.Count -ne 1) {
+        throw "Claude version output does not prove one native client version: $versionOutput"
+    }
+    $exactVersion = $observedVersions[0].Value
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedVersion)) {
+        if ($ExpectedVersion -cnotmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$' -or
+            $exactVersion -cne $ExpectedVersion) {
+            throw "Claude client version output '$versionOutput' does not prove exact pin $ExpectedVersion"
+        }
+    }
+
+    $agentBin = Split-Path -Parent $canonical
+    $env:Path = "$agentBin$([IO.Path]::PathSeparator)$env:Path"
+    $resolvedClaude = @(
+        Get-Command 'claude.exe' -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    )
+    if ($resolvedClaude.Count -ne 1 -or
+        -not [string]::Equals(
+            [IO.Path]::GetFullPath([string]$resolvedClaude[0].Source),
+            $canonical,
+            [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'official native Claude client is not the exact claude.exe resolved from PATH'
+    }
+    $postProbeSHA256 = (
+        Get-FileHash -LiteralPath $canonical -Algorithm SHA256
+    ).Hash.ToLowerInvariant()
+    if ($postProbeSHA256 -cne $sha256) {
+        throw 'official Claude client changed while its signature, version, and PATH identity were probed'
+    }
+
+    return [pscustomobject]@{
+        Path = $canonical
+        Version = $exactVersion
+        VersionOutput = $versionOutput
+        SHA256 = $postProbeSHA256
+        Signer = $signerName
+        SignerThumbprint = [string]$signature.SignerCertificate.Thumbprint
+        OwnerSID = $ownerSID.Value
+    }
+}
+
+function Install-OfficialClaudePackageLiveParentClient(
+    [string]$RequestedVersion,
+    [switch]$PackageLiveNonCertification
+) {
+    if (-not $PackageLiveNonCertification -or
+        $env:GITHUB_ACTIONS -cne 'true' -or
+        $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+        $env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
+        throw 'parent Claude preinstall is restricted to manual GitHub-hosted package-live noncertification evidence'
+    }
+    if ($RequestedVersion -cne 'latest' -and
+        $RequestedVersion -cnotmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+        throw "CLAUDE_VERSION must be latest or an exact numeric version, got: $RequestedVersion"
+    }
+    foreach ($credentialName in @(
+        'ANTHROPIC_API_KEY', 'AWS_BEARER_TOKEN_BEDROCK',
+        'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'
+    )) {
+        if (-not [string]::IsNullOrWhiteSpace(
+                [Environment]::GetEnvironmentVariable($credentialName)
+            )) {
+            throw "parent Claude preinstall refuses provider credential environment: $credentialName"
+        }
+    }
+
+    $canonical = Get-OfficialClaudeClientPath
+    $profile = Get-CurrentUserKnownFolderPath `
+        ([Guid]'5E6C858F-0E22-4760-9AFE-EA3317B67173')
+    $null = Assert-DisposableNoReparseAncestors -Path $canonical -AllowedRoot $profile
+    if (Test-Path -LiteralPath $canonical) {
+        throw "parent Claude preinstall refuses an ambient canonical client: $canonical"
+    }
+    $ambientClaude = @(Get-Command 'claude' -All -ErrorAction SilentlyContinue)
+    if ($ambientClaude.Count -ne 0) {
+        throw 'parent Claude preinstall refuses an ambient claude command from PATH'
+    }
+
+    $env:DISABLE_AUTOUPDATER = '1'
+    $installer = Get-OfficialClaudeInstallerScriptBlock
+    & $installer $RequestedVersion |
+        ForEach-Object { Write-Host (Protect-LogText ([string]$_)) }
+
+    $expectedVersion = if ($RequestedVersion -ceq 'latest') { '' } else { $RequestedVersion }
+    return Assert-OfficialClaudeClientIdentity -Path $canonical `
+        -ExpectedVersion $expectedVersion
+}
+
 function Install-Agent {
     if ($Connector -eq 'hermes') {
         throw (
@@ -8487,27 +8658,41 @@ function Install-Agent {
             $requestedClaudeVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
             throw "CLAUDE_VERSION must be latest or an exact numeric version, got: $requestedClaudeVersion"
         }
+        $env:DISABLE_AUTOUPDATER = '1'
+        if ($PackageLiveEvidence) {
+            if ([string]::IsNullOrWhiteSpace($AgentPath) -or
+                [string]::IsNullOrWhiteSpace($ExpectedAgentVersion) -or
+                [string]::IsNullOrWhiteSpace($ExpectedAgentSHA256)) {
+                throw 'package-live Claude requires the parent-installed path, exact version, and exact SHA256'
+            }
+            $identity = Assert-OfficialClaudeClientIdentity -Path $AgentPath `
+                -ExpectedVersion $ExpectedAgentVersion `
+                -ExpectedSHA256 $ExpectedAgentSHA256
+            $script:AgentPath = $identity.Path
+            $script:AgentVersion = $identity.VersionOutput
+            Write-Result install pass (
+                "preinstalled=parent exact=$($identity.Version) sha256=$($identity.SHA256) " +
+                "signer=$($identity.Signer) thumbprint=$($identity.SignerThumbprint)"
+            )
+            return
+        }
         $installer = Get-OfficialClaudeInstallerScriptBlock
         & $installer $requestedClaudeVersion
-        $nativeClaude = Join-Path $env:USERPROFILE '.local\bin\claude.exe'
-        if (-not (Test-Path -LiteralPath $nativeClaude -PathType Leaf)) {
-            throw "official native Claude installer did not create $nativeClaude"
+        $expectedVersion = if ($requestedClaudeVersion -ceq 'latest') {
+            ''
+        } else {
+            $requestedClaudeVersion
         }
-        $script:AgentPath = (Resolve-Path -LiteralPath $nativeClaude -ErrorAction Stop).Path
-        $agentBin = Split-Path -Parent $script:AgentPath
-        $env:Path = "$agentBin;$env:Path"
-        $resolvedClaude = @(
-            Get-Command 'claude.exe' -CommandType Application -ErrorAction SilentlyContinue |
-                Select-Object -First 1
+        $identity = Assert-OfficialClaudeClientIdentity `
+            -Path (Get-OfficialClaudeClientPath) `
+            -ExpectedVersion $expectedVersion
+        $script:AgentPath = $identity.Path
+        $script:AgentVersion = $identity.VersionOutput
+        Write-Result install pass (
+            "exact=$($identity.Version) sha256=$($identity.SHA256) " +
+            "signer=$($identity.Signer) thumbprint=$($identity.SignerThumbprint)"
         )
-        if ($resolvedClaude.Count -ne 1 -or
-            -not [string]::Equals(
-                [IO.Path]::GetFullPath([string]$resolvedClaude[0].Source),
-                [IO.Path]::GetFullPath($script:AgentPath),
-                [StringComparison]::OrdinalIgnoreCase
-            )) {
-            throw 'native Claude installation is not the exact claude.exe resolved from PATH'
-        }
+        return
     } else {
         $package = switch ($Connector) {
             'codex' { '@openai/codex@' + ($env:CODEX_VERSION ?? 'latest') }
@@ -8527,19 +8712,6 @@ function Install-Agent {
     $versionArgs = @('--version')
     $version = Invoke-NativeProcess -FilePath $script:AgentPath -ArgumentList $versionArgs -TimeoutSeconds 30 -LogPath (Join-Path $script:LogRoot 'agent-version.log')
     $script:AgentVersion = ($version.StdOut + $version.StdErr).Trim()
-    if ($Connector -eq 'claudecode') {
-        $observedVersions = [regex]::Matches(
-            $script:AgentVersion,
-            '(?<![0-9A-Za-z.+-])\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?(?![0-9A-Za-z.+-])'
-        )
-        if ($observedVersions.Count -ne 1) {
-            throw "Claude version output does not prove one native client version: $($script:AgentVersion)"
-        }
-        if ($requestedClaudeVersion -cne 'latest' -and
-            $observedVersions[0].Value -cne $requestedClaudeVersion) {
-            throw "Claude client version output '$($script:AgentVersion)' does not prove exact pin $requestedClaudeVersion"
-        }
-    }
     Write-Result install pass $script:AgentVersion
 }
 

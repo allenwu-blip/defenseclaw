@@ -729,6 +729,25 @@ jobs:
           Assert-ExactPackagedSetup `
             (Join-Path $env:DC_WINDOWS_PACKAGE_ROOT 'DefenseClawSetup-x64.exe') `
             $env:EXPECTED_SOURCE_COMMIT | Out-Null
+      - name: Preinstall official native Claude client without provider credentials
+        id: claude_client
+        if: ${{ steps.select.outputs.run == 'true' && matrix.connector == 'claudecode' }}
+        shell: pwsh
+        env:
+          REQUESTED_CLAUDE_VERSION: ${{ inputs.version }}
+        run: |
+          . ./scripts/windows-native-ci.ps1 -NoRun
+          . ./scripts/live-connector-e2e/run-windows.ps1 -NoRun
+          Set-CurrentUserAsDefaultOwner
+          $identity = Install-OfficialClaudePackageLiveParentClient `
+            -RequestedVersion $env:REQUESTED_CLAUDE_VERSION `
+            -PackageLiveNonCertification
+          "agent_path=$($identity.Path)" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "agent_version=$($identity.Version)" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "agent_sha256=$($identity.SHA256)" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
       - name: Native Windows live harness
         if: steps.select.outputs.run == 'true'
         shell: pwsh
@@ -754,6 +773,9 @@ jobs:
             '-ExpectedPackageArtifactID', '${{ steps.package.outputs.artifact_id }}',
             '-ExpectedPackageArtifactDigest', '${{ steps.package.outputs.artifact_digest }}',
             '-ExpectedWorkflowRepository', '${{ github.repository }}',
+            '-AgentPath', '${{ steps.claude_client.outputs.agent_path }}',
+            '-ExpectedAgentVersion', '${{ steps.claude_client.outputs.agent_version }}',
+            '-ExpectedAgentSHA256', '${{ steps.claude_client.outputs.agent_sha256 }}',
             '-StateRoot', $env:DC_WINDOWS_STATE,
             '-ResultsPath', $env:DC_E2E_RESULTS,
             '-ArtifactPath', (Join-Path $env:DC_WINDOWS_STATE 'artifacts')

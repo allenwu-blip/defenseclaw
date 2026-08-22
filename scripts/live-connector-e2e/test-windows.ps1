@@ -636,6 +636,118 @@ $null = $Target
     Assert-True ($invalidClaudeRejected -and $invalidClaudeState.Attempts -eq 1) `
         'Claude installer fetch rejects invalid content once without an integrity retry'
 
+    $noncanonicalClaudeRejected = $false
+    try {
+        Assert-OfficialClaudeClientIdentity `
+            -Path (Join-Path $temp 'foreign-claude.exe') `
+            -ExpectedVersion '2.1.238' `
+            -ExpectedSHA256 ('a' * 64) | Out-Null
+    } catch {
+        $noncanonicalClaudeRejected = $_.Exception.Message -match
+            'not the canonical native launcher'
+    }
+    Assert-True $noncanonicalClaudeRejected `
+        'executed Claude identity validation rejects a noncanonical parent handoff before client execution'
+
+    $originalClaudeIdentityFunction =
+        (Get-Command Assert-OfficialClaudeClientIdentity -CommandType Function).ScriptBlock
+    $originalClaudeInstallerFunction =
+        (Get-Command Get-OfficialClaudeInstallerScriptBlock -CommandType Function).ScriptBlock
+    $unsetClaudeFixtureVariables = [Collections.Generic.List[string]]::new()
+    foreach ($variableName in @('ResultsPath', 'ToolRoot', 'AgentVersion')) {
+        if ($null -eq (Get-Variable -Name $variableName -Scope Script `
+                    -ErrorAction SilentlyContinue)) {
+            Set-Variable -Name $variableName -Scope Script -Value ''
+            $unsetClaudeFixtureVariables.Add($variableName)
+        }
+    }
+    $savedClaudeFixture = [ordered]@{
+        Connector = $Connector
+        PackageLiveEvidence = $PackageLiveEvidence
+        ReleaseCertification = $ReleaseCertification
+        ProtectedCopilotRunner = $ProtectedCopilotRunner
+        AgentPath = $AgentPath
+        ExpectedAgentVersion = $ExpectedAgentVersion
+        ExpectedAgentSHA256 = $ExpectedAgentSHA256
+        ResultsPath = $script:ResultsPath
+        ToolRoot = $script:ToolRoot
+        AgentVersion = $script:AgentVersion
+        ClaudeVersion = $env:CLAUDE_VERSION
+        DisableAutoUpdater = $env:DISABLE_AUTOUPDATER
+    }
+    $script:ClaudePackageIdentityCalls = 0
+    $script:ClaudePackageNetworkCalls = 0
+    try {
+        Set-Item -LiteralPath Function:Assert-OfficialClaudeClientIdentity -Value {
+            param(
+                [string]$Path,
+                [string]$ExpectedVersion = '',
+                [string]$ExpectedSHA256 = ''
+            )
+            if ($Path -cne 'C:\Users\runneradmin\.local\bin\claude.exe' -or
+                $ExpectedVersion -cne '2.1.238' -or
+                $ExpectedSHA256 -cne ('a' * 64)) {
+                throw 'package-live Claude identity fixture received the wrong parent handoff'
+            }
+            $script:ClaudePackageIdentityCalls++
+            return [pscustomobject]@{
+                Path = $Path
+                Version = $ExpectedVersion
+                VersionOutput = '2.1.238 (Claude Code)'
+                SHA256 = $ExpectedSHA256
+                Signer = 'Anthropic, PBC'
+                SignerThumbprint = '0123456789ABCDEF0123456789ABCDEF01234567'
+                OwnerSID = 'S-1-5-21-1-2-3-1001'
+            }
+        }
+        Set-Item -LiteralPath Function:Get-OfficialClaudeInstallerScriptBlock -Value {
+            $script:ClaudePackageNetworkCalls++
+            throw 'restricted package-live Claude attempted a forbidden network bootstrap'
+        }
+        $script:Connector = 'claudecode'
+        $script:PackageLiveEvidence = $true
+        $script:ReleaseCertification = $false
+        $script:ProtectedCopilotRunner = $false
+        $script:AgentPath = 'C:\Users\runneradmin\.local\bin\claude.exe'
+        $script:ExpectedAgentVersion = '2.1.238'
+        $script:ExpectedAgentSHA256 = 'a' * 64
+        $script:ResultsPath = Join-Path $temp 'claude-package-live-results.jsonl'
+        $script:ToolRoot = Join-Path $temp 'claude-package-live-tools'
+        $script:AgentVersion = 'unversioned'
+        $env:CLAUDE_VERSION = 'latest'
+        Install-Agent
+        $claudePackageResult = Get-Content -LiteralPath $script:ResultsPath -Raw |
+            ConvertFrom-Json -ErrorAction Stop
+        Assert-True ($script:ClaudePackageIdentityCalls -eq 1 -and
+            $script:ClaudePackageNetworkCalls -eq 0 -and
+            [string]$script:AgentVersion -ceq '2.1.238 (Claude Code)' -and
+            [string]$claudePackageResult.event -ceq 'install' -and
+            [string]$claudePackageResult.status -ceq 'pass' -and
+            [string]$claudePackageResult.detail -match
+                'preinstalled=parent exact=2\.1\.238 sha256=a{64} signer=Anthropic, PBC') `
+            'executed package-live Claude install revalidates the exact parent identity and performs no child bootstrap'
+    } finally {
+        Set-Item -LiteralPath Function:Assert-OfficialClaudeClientIdentity `
+            -Value $originalClaudeIdentityFunction
+        Set-Item -LiteralPath Function:Get-OfficialClaudeInstallerScriptBlock `
+            -Value $originalClaudeInstallerFunction
+        $script:Connector = $savedClaudeFixture.Connector
+        $script:PackageLiveEvidence = $savedClaudeFixture.PackageLiveEvidence
+        $script:ReleaseCertification = $savedClaudeFixture.ReleaseCertification
+        $script:ProtectedCopilotRunner = $savedClaudeFixture.ProtectedCopilotRunner
+        $script:AgentPath = $savedClaudeFixture.AgentPath
+        $script:ExpectedAgentVersion = $savedClaudeFixture.ExpectedAgentVersion
+        $script:ExpectedAgentSHA256 = $savedClaudeFixture.ExpectedAgentSHA256
+        $script:ResultsPath = $savedClaudeFixture.ResultsPath
+        $script:ToolRoot = $savedClaudeFixture.ToolRoot
+        $script:AgentVersion = $savedClaudeFixture.AgentVersion
+        $env:CLAUDE_VERSION = $savedClaudeFixture.ClaudeVersion
+        $env:DISABLE_AUTOUPDATER = $savedClaudeFixture.DisableAutoUpdater
+        foreach ($variableName in $unsetClaudeFixtureVariables) {
+            Remove-Variable -Name $variableName -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+
     # GitHub-hosted Windows disables UAC and starts Actions with an elevated
     # default token whose default owner can be BUILTIN\Administrators. The
     # shared live lane deliberately uses the reviewed restricted-LUA fallback,
@@ -2880,6 +2992,18 @@ private-secret-name = "DefenseClaw must remain redacted"
         $harnessText,
         '(?s)function ConvertTo-OfficialClaudeInstallerScriptBlock\b.*?(?=\r?\nfunction )'
     ).Value
+    $claudeClientPathContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Get-OfficialClaudeClientPath\b.*?(?=\r?\nfunction )'
+    ).Value
+    $claudeClientIdentityContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Assert-OfficialClaudeClientIdentity\b.*?(?=\r?\nfunction )'
+    ).Value
+    $claudeParentPreinstallContract = [regex]::Match(
+        $harnessText,
+        '(?s)function Install-OfficialClaudePackageLiveParentClient\b.*?(?=\r?\nfunction )'
+    ).Value
     $invokeAgentContract = [regex]::Match(
         $harnessText,
         '(?s)function Invoke-Agent\b.*?(?=\r?\nfunction )'
@@ -2914,6 +3038,57 @@ private-secret-name = "DefenseClaw must remain redacted"
         $claudeInstallerBodyContract -match
             '\[scriptblock\]::Create\(\$text\)') `
         'Claude installer fetch is TLS-validating, deadline/attempt bounded, transient-only, redacted, and validates bounded PowerShell before execution'
+    Assert-True ($claudeClientPathContract -match
+            '5E6C858F-0E22-4760-9AFE-EA3317B67173' -and
+        $claudeClientPathContract -match "'\.local\\bin\\claude\.exe'" -and
+        $claudeClientPathContract -match
+            'USERPROFILE to match the current-user Known Folder profile' -and
+        $claudeClientIdentityContract -match
+            '(?s)Assert-DisposableNoReparseAncestors.*?-RequireExists' -and
+        $claudeClientIdentityContract -match
+            '(?s)\$item -isnot \[IO\.FileInfo\].*?ReparsePoint' -and
+        $claudeClientIdentityContract -match
+            '(?s)GetAccessControl.*?AccessControlSections\]::Owner' -and
+        $claudeClientIdentityContract -match
+            'WindowsIdentity\]::GetCurrent\(\)\.User' -and
+        $claudeClientIdentityContract -match 'Get-AuthenticodeSignature' -and
+        $claudeClientIdentityContract -match
+            "(?s)Status -cne 'Valid'.*?SignatureType -cne 'Authenticode'.*?X509NameType\]::SimpleName.*?Anthropic, PBC" -and
+        $claudeClientIdentityContract -match
+            'Get-FileHash.*?-Algorithm SHA256' -and
+        $claudeClientIdentityContract -match
+            '(?s)ExpectedSHA256.*?parent-installed client' -and
+        $claudeClientIdentityContract -match
+            "Invoke-NativeProcess.*?'--version'" -and
+        $claudeClientIdentityContract -match
+            "Get-Command 'claude\.exe' -CommandType Application" -and
+        $claudeClientIdentityContract -match
+            '(?s)postProbeSHA256.*?changed while its signature, version, and PATH identity were probed' -and
+        $claudeClientIdentityContract -match
+            'SHA256 = \$postProbeSHA256') `
+        'Claude native identity requires canonical non-reparse current-user custody, valid Anthropic signing, exact hash/version, and PATH resolution'
+    Assert-True ($claudeParentPreinstallContract -match
+            'PackageLiveNonCertification' -and
+        $claudeParentPreinstallContract -match
+            "(?s)GITHUB_ACTIONS -cne 'true'.*?RUNNER_ENVIRONMENT -cne 'github-hosted'.*?GITHUB_EVENT_NAME -cne 'workflow_dispatch'" -and
+        $claudeParentPreinstallContract -match
+            "(?s)'ANTHROPIC_API_KEY'.*?'AWS_BEARER_TOKEN_BEDROCK'.*?'AWS_ACCESS_KEY_ID'.*?'AWS_SECRET_ACCESS_KEY'.*?'AWS_SESSION_TOKEN'" -and
+        $claudeParentPreinstallContract -match
+            'refuses an ambient canonical client' -and
+        $claudeParentPreinstallContract -match
+            "Get-Command 'claude' -All" -and
+        $claudeParentPreinstallContract -match
+            "DISABLE_AUTOUPDATER = '1'" -and
+        $claudeParentPreinstallContract -match
+            'Get-OfficialClaudeInstallerScriptBlock' -and
+        $claudeParentPreinstallContract -match
+            'Assert-OfficialClaudeClientIdentity') `
+        'Claude parent preinstall is secret-free, fresh-client-only, and restricted to hosted manual noncertification evidence'
+    Assert-True ($harnessText -match
+            '\[string\]\$ExpectedAgentSHA256' -and
+        $installAgentContract -match
+            '(?s)\$PackageLiveEvidence.*?ExpectedAgentSHA256.*?Assert-OfficialClaudeClientIdentity.*?preinstalled=parent.*?return.*?\$installer = Get-OfficialClaudeInstallerScriptBlock') `
+        'package-live Claude requires parent path/version/hash identity and returns before any restricted-child network bootstrap'
     Assert-True ($installAgentContract -match '@ampcode/cli@' -and
         $installAgentContract -match 'AMP_VERSION' -and
         $installAgentContract -match "'amp\.cmd'" -and
@@ -2968,6 +3143,33 @@ private-secret-name = "DefenseClaw must remain redacted"
         $liveWorkflowText,
         '(?ms)^  windows-live:.*?(?=^  [A-Za-z0-9_-]+:\r?$|\z)'
     ).Value
+    $claudeParentPreinstallStep = [regex]::Match(
+        $windowsLiveJob,
+        '(?ms)^      - name: Preinstall official native Claude client without provider credentials.*?(?=^      - name: Native Windows live harness)'
+    ).Value
+    Assert-True (-not [string]::IsNullOrWhiteSpace($claudeParentPreinstallStep) -and
+        $claudeParentPreinstallStep -match
+            "steps\.select\.outputs\.run == 'true' && matrix\.connector == 'claudecode'" -and
+        $claudeParentPreinstallStep -notmatch 'secrets\.' -and
+        $claudeParentPreinstallStep -match 'Set-CurrentUserAsDefaultOwner' -and
+        $claudeParentPreinstallStep -match
+            'Install-OfficialClaudePackageLiveParentClient' -and
+        $claudeParentPreinstallStep -match '-PackageLiveNonCertification' -and
+        $claudeParentPreinstallStep -match
+            '(?s)agent_path=.*?agent_version=.*?agent_sha256=' -and
+        $windowsLiveJob.IndexOf($claudeParentPreinstallStep) -lt
+            $windowsLiveJob.IndexOf('- name: Native Windows live harness') -and
+        $windowsLiveJob -match
+            "'-AgentPath', '\$\{\{ steps\.claude_client\.outputs\.agent_path \}\}'" -and
+        $windowsLiveJob -match
+            "'-ExpectedAgentVersion', '\$\{\{ steps\.claude_client\.outputs\.agent_version \}\}'" -and
+        $windowsLiveJob -match
+            "'-ExpectedAgentSHA256', '\$\{\{ steps\.claude_client\.outputs\.agent_sha256 \}\}'" -and
+        [regex]::Matches(
+            $windowsLiveJob,
+            'secrets\.ANTHROPIC_API_KEY'
+        ).Count -eq 1) `
+        'Claude is installed in a selected-only secret-free parent step and its exact identity is handed to the sole credential-bearing restricted harness step'
     Assert-True ($windowsLiveJob -notmatch 'continue-on-error') 'Windows live jobs are not advisory'
     Assert-True ($windowsLiveJob -notmatch 'shell:\s*bash') 'Windows live jobs never select Bash'
     Assert-True ($windowsLiveJob -match "github.event_name == 'workflow_dispatch'") `
@@ -2976,11 +3178,11 @@ private-secret-name = "DefenseClaw must remain redacted"
         [regex]::Matches(
             $windowsLiveJob,
             '(?m)^\s+\. ./scripts/windows-native-ci\.ps1 -NoRun\s*$'
-        ).Count -eq 3 -and
+        ).Count -eq 4 -and
         [regex]::Matches(
             $windowsLiveJob,
             '(?m)^\s+Set-CurrentUserAsDefaultOwner\s*$'
-        ).Count -eq 3 -and
+        ).Count -eq 4 -and
         [regex]::Matches(
             $windowsLiveJob,
             'Invoke-WindowsSetupStandardUserProcess -FilePath \$pwsh'
@@ -3002,7 +3204,7 @@ private-secret-name = "DefenseClaw must remain redacted"
         ).Count -eq 2 -and
         $windowsLiveJob -match
             'path: \$\{\{ env\.DC_WINDOWS_STATE \}\}/artifacts/\*\*'
-    ) 'hosted Windows live run, capture, and cleanup normalize default ownership and use the validated standard-user launcher'
+    ) 'hosted Windows parent preinstall plus live run, capture, and cleanup normalize ownership while restricted operations use the validated standard-user launcher'
     Assert-True ($releaseWorkflowText -notmatch '(?m)^  windows-real-client-certification:' -and
         $releaseWorkflowText -notmatch 'secrets\.OPENAI_API_KEY' -and
         $releaseWorkflowText -notmatch 'secrets\.ANTHROPIC_API_KEY' -and
