@@ -3325,10 +3325,29 @@ private-secret-name = "DefenseClaw must remain redacted"
         $setupHealthSamplerContract -match 'application_protection = \$running' -and
         $setupHealthSamplerContract -match 'telemetry = \[ordered\]@\{' -and
         $setupHealthSamplerContract -match 'generation = 7' -and
+        $setupHealthSamplerContract -match 'A reset, timeout, or malformed request is isolated to its client' -and
+        $setupHealthSamplerContract -match '\$resetClient\.Client\.LingerState = \[Net\.Sockets\.LingerOption\]::new\(\$true, 0\)' -and
+        $setupHealthSamplerContract -match 'synthetic Setup health server did not isolate a reset client' -and
         $setupHealthSamplerContract -match '\$null -ne \$sample\.PSObject\.Properties\[''provenance_generation''\]' -and
         $setupHealthSamplerContract -match 'did not emit its bounded stage diagnostic' -and
         $setupHealthSamplerContract -match 'did not emit a correlated health sample') `
         'hosted-equivalent Setup health sampler fixture covers schema drift diagnostics and exact correlation'
+    $sampleSamplerStart = $setupHealthSamplerContract.IndexOf(
+        '$sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath',
+        [StringComparison]::Ordinal
+    )
+    $sampleDeadlineStart = $setupHealthSamplerContract.IndexOf(
+        '$sampleDeadline = [DateTime]::UtcNow.AddSeconds(15)',
+        [StringComparison]::Ordinal
+    )
+    Assert-True ($sampleSamplerStart -ge 0 -and
+        $sampleDeadlineStart -gt $sampleSamplerStart -and
+        ([regex]::Matches(
+            $setupHealthSamplerContract.Substring($sampleSamplerStart),
+            'Start-SetupAcceptanceHealthSampler'
+        )).Count -eq 1 -and
+        $setupHealthSamplerContract -notmatch 'foreach \(\$attempt in 1\.\.2\)') `
+        'hosted-equivalent Setup health sampler uses one persistent sampler with a fresh post-readiness deadline'
     Assert-True ($harnessText -match 'CLAUDE_CODE_USE_POWERSHELL_TOOL = ''1''' -and
         $harnessText -match 'https://claude\.ai/install\.ps1' -and
         $harnessText -match '\.local\\bin\\claude\.exe' -and

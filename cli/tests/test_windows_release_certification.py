@@ -813,10 +813,25 @@ def test_seeded_setup_upgrade_captures_bounded_external_health() -> None:
     assert "application_protection = $running" in contract
     assert "telemetry = [ordered]@{" in contract
     assert "generation = 7" in contract
+    assert "A reset, timeout, or malformed request is isolated to its client" in contract
+    assert (
+        "$resetClient.Client.LingerState = "
+        "[Net.Sockets.LingerOption]::new($true, 0)"
+    ) in contract
+    assert "synthetic Setup health server did not isolate a reset client" in contract
     assert "provenance_generation" in contract
     assert "$null -ne $sample.PSObject.Properties['provenance_generation']" in contract
     assert "Setup health sampler did not emit its bounded stage diagnostic" in contract
     assert "Setup health sampler did not emit a correlated health sample" in contract
+    sample_sampler_start = contract.index(
+        "$sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath"
+    )
+    sample_deadline_start = contract.index(
+        "$sampleDeadline = [DateTime]::UtcNow.AddSeconds(15)"
+    )
+    assert sample_sampler_start < sample_deadline_start
+    assert contract[sample_sampler_start:].count("Start-SetupAcceptanceHealthSampler") == 1
+    assert "foreach ($attempt in 1..2)" not in contract
     assert "Test-SetupAcceptanceHealthSamplerContract $root" in self_test
     assert "(Join-Path $PSHOME 'pwsh.exe')" in acceptance
     assert acceptance.index("Start-SetupAcceptanceHealthSampler") < acceptance.index(

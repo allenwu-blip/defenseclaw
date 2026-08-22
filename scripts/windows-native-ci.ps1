@@ -3132,6 +3132,7 @@ function Test-SetupAcceptanceHealthSamplerContract([string]$Root) {
     $dataRoot = Join-Path $fixtureRoot 'data'
     $installRoot = Join-Path $fixtureRoot 'installed'
     $readyPath = Join-Path $fixtureRoot 'health-server.ready'
+    $clientFailureObservedPath = Join-Path $fixtureRoot 'health-server-client-failure.ready'
     $diagnosticOutcomePath = Join-Path $fixtureRoot 'setup-health-diagnostic.jsonl'
     [IO.Directory]::CreateDirectory($dataRoot) | Out-Null
     [IO.Directory]::CreateDirectory($installRoot) | Out-Null
@@ -3140,7 +3141,7 @@ function Test-SetupAcceptanceHealthSamplerContract([string]$Root) {
     # HealthSnapshot shape. In particular, this fixture intentionally has no
     # top-level provenance object; runtime generation belongs to telemetry.
     $serverCode = @'
-param($ReadyPath)
+param($ReadyPath, $ClientFailureObservedPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8 = [Text.UTF8Encoding]::new($false)
@@ -3195,6 +3196,12 @@ try {
             $network.Write($headerBytes, 0, $headerBytes.Length)
             $network.Write($bodyBytes, 0, $bodyBytes.Length)
             $network.Flush()
+        } catch {
+            # A reset, timeout, or malformed request is isolated to its client;
+            # the exact synthetic server identity remains available for retry.
+            try {
+                [IO.File]::WriteAllText($ClientFailureObservedPath, 'observed', $utf8)
+            } catch { }
         } finally {
             $client.Dispose()
         }
@@ -3209,7 +3216,8 @@ try {
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     foreach ($argument in @(
-        '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', $serverCode, $readyPath
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-CommandWithArgs', $serverCode,
+        $readyPath, $clientFailureObservedPath
     )) { $startInfo.ArgumentList.Add($argument) }
     $server = [Diagnostics.Process]::new()
     $server.StartInfo = $startInfo
@@ -3227,6 +3235,31 @@ try {
         }
         $apiPort = [int][IO.File]::ReadAllText($readyPath)
         if ($apiPort -lt 1 -or $apiPort -gt 65535) { throw 'synthetic Setup health server returned an invalid port' }
+
+        # Prove that a client reset cannot terminate the fixture before the
+        # persistent sampler observes the same exact server PID and listener.
+        if (Test-Path -LiteralPath $clientFailureObservedPath) {
+            throw 'synthetic Setup health server client-failure marker existed before reset probe'
+        }
+        $resetClient = [Net.Sockets.TcpClient]::new()
+        try {
+            $resetClient.Client.LingerState = [Net.Sockets.LingerOption]::new($true, 0)
+            $resetClient.Connect([Net.IPAddress]::Loopback, $apiPort)
+            $resetNetwork = $resetClient.GetStream()
+            $resetNetwork.WriteByte([byte]0x47)
+            $resetNetwork.Flush()
+        } finally {
+            $resetClient.Dispose()
+        }
+        $resetDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        while (-not (Test-Path -LiteralPath $clientFailureObservedPath -PathType Leaf)) {
+            $server.Refresh()
+            if ($server.HasExited) { throw 'synthetic Setup health server exited after reset client' }
+            if ([DateTime]::UtcNow -ge $resetDeadline) {
+                throw 'synthetic Setup health server did not isolate a reset client'
+            }
+            Start-Sleep -Milliseconds 50
+        }
         $server.Refresh()
         $unixTicks = [long](
             $server.StartTime.ToUniversalTime().Ticks - [DateTime]::UnixEpoch.Ticks
@@ -3287,33 +3320,23 @@ try {
         )
         Move-Item -LiteralPath $pidTemporary -Destination (Join-Path $dataRoot 'gateway.pid')
 
-        $deadline = [DateTime]::UtcNow.AddSeconds(15)
         $sample = $null
         $lastDiagnostic = $null
-        foreach ($attempt in 1..2) {
-            $sampleOutcomePath = Join-Path $fixtureRoot "setup-health-sample-$attempt.jsonl"
-            $sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath $dataRoot $apiPort `
-                ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
-            $attemptDeadline = if ($attempt -eq 1) {
-                [DateTime]::UtcNow.AddSeconds(3)
-            } else {
-                $deadline
-            }
-            while ($null -eq $sample -and [DateTime]::UtcNow -lt $attemptDeadline) {
-                foreach ($line in @(Get-Content -LiteralPath $sampleOutcomePath -Encoding UTF8)) {
-                    if ($line -eq 'schema=1') { continue }
-                    try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
-                    if ($null -eq $candidate.PSObject.Properties['kind']) {
-                        $sample = $candidate
-                        break
-                    }
-                    if ([string]$candidate.kind -ceq 'sample_error') { $lastDiagnostic = $candidate }
+        $sampleOutcomePath = Join-Path $fixtureRoot 'setup-health-sample.jsonl'
+        $sampler = Start-SetupAcceptanceHealthSampler $pwsh $sampleOutcomePath $dataRoot $apiPort `
+            ([pscustomobject]@{ ProcessId = $PID; StartIdentity = '1' }) $pwsh $installRoot
+        $sampleDeadline = [DateTime]::UtcNow.AddSeconds(15)
+        while ($null -eq $sample -and [DateTime]::UtcNow -lt $sampleDeadline) {
+            foreach ($line in @(Get-Content -LiteralPath $sampleOutcomePath -Encoding UTF8)) {
+                if ($line -eq 'schema=1') { continue }
+                try { $candidate = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+                if ($null -eq $candidate.PSObject.Properties['kind']) {
+                    $sample = $candidate
+                    break
                 }
-                if ($null -eq $sample) { Start-Sleep -Milliseconds 50 }
+                if ([string]$candidate.kind -ceq 'sample_error') { $lastDiagnostic = $candidate }
             }
-            if ($null -ne $sample) { break }
-            Stop-SetupAcceptanceHealthSampler $sampler
-            $sampler = $null
+            if ($null -eq $sample) { Start-Sleep -Milliseconds 50 }
         }
         if ($null -eq $sample) {
             $stage = if ($null -eq $lastDiagnostic) { 'none' } else { [string]$lastDiagnostic.stage }
