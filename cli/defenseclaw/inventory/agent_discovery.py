@@ -1699,7 +1699,7 @@ def _version_for_binary(
     env = None
     timeout = VERSION_TIMEOUT_SECONDS
     if binary_name in {"claude", "hermes", "omnigent", "openhands"} or (
-        os.name == "nt" and binary_name in {"amp", "agent", "cursor-agent"}
+        os.name == "nt" and binary_name in {"amp", "agent", "copilot", "cursor-agent"}
     ):
         timeout = 8.0
     elif binary_name == "opencode":

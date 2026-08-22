@@ -1972,11 +1972,12 @@ def test_hermes_version_probe_gets_longer_timeout(monkeypatch, tmp_path):
     (
         r"C:\Tools\amp.CMD",
         r"C:\Tools\agent.CMD",
+        r"C:\Tools\copilot.EXE",
         r"C:\Tools\cursor-agent.EXE",
     ),
 )
 @pytest.mark.skipif(os.name != "nt", reason="Windows native launcher startup budget")
-def test_amp_and_cursor_agent_version_probes_get_only_the_named_slow_start_budget(
+def test_slow_windows_agent_version_probes_get_only_the_named_startup_budget(
     monkeypatch,
     binary_path,
 ):
