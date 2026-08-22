@@ -5779,7 +5779,19 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp
         Stop-SetupAcceptanceOtlpCollector $setupOtlpCollector
         $setupOtlpCollector = $null
         $gatewayAcceptancePort = Set-MinimalGatewayAcceptanceConfig $python
-        Invoke-Installed $startup @() -Timeout 90 -Log (Join-Path $logs 'setup-gateway-startup.log') | Out-Null
+        $startupResult = Invoke-Installed $startup @() -Allowed @(0, 1) -Timeout 90 `
+            -Log (Join-Path $logs 'setup-gateway-startup.log')
+        if ($startupResult.ExitCode -eq 1) {
+            try {
+                Write-SetupAcceptanceConvergenceDiagnostics $logs $dataRoot $setupOtlpCollector
+            } catch {
+                Write-Warning "bounded startup convergence diagnostics unavailable: $($_.Exception.GetType().Name)"
+            }
+            Write-BoundedText -Path (Join-Path $logs 'setup-gateway-startup-retry.txt') `
+                -Text "attempt=1`nexit_code=1`nretry=scheduled" -MaxBytes 4096
+            Invoke-Installed $startup @() -Timeout 90 `
+                -Log (Join-Path $logs 'setup-gateway-startup-retry.log') | Out-Null
+        }
         Invoke-Installed $gateway @('watchdog', 'start') -Timeout 90 -Log (Join-Path $logs 'setup-watchdog-start.log') | Out-Null
         Invoke-Installed $gateway @('status') -Timeout 30 | Out-Null
         Invoke-Installed $gateway @('watchdog', 'status') -Timeout 30 | Out-Null
