@@ -218,6 +218,22 @@ func (b *hermesBoundedCommandBuffer) Write(p []byte) (int, error) {
 	return b.Buffer.Write(p)
 }
 
+func firstHermesVersionLine(stdout, stderr string) (string, error) {
+	output := stdout
+	if strings.TrimSpace(output) == "" {
+		output = stderr
+	}
+	if strings.ContainsRune(output, '\x00') {
+		return "", errors.New("probe returned a NUL byte")
+	}
+	for _, line := range strings.FieldsFunc(output, func(r rune) bool { return r == '\r' || r == '\n' }) {
+		if version := strings.TrimSpace(line); version != "" {
+			return version, nil
+		}
+	}
+	return "", errors.New("probe returned an empty version")
+}
+
 func probeHermesAgentVersion(ctx context.Context, executable string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, hermesVersionProbeTimeout)
 	defer cancel()
@@ -232,12 +248,9 @@ func probeHermesAgentVersion(ctx context.Context, executable string) (string, er
 		}
 		return "", fmt.Errorf("probe exited unsuccessfully: %w", err)
 	}
-	raw := strings.TrimSpace(stdout.String())
-	if raw == "" {
-		raw = strings.TrimSpace(stderr.String())
-	}
-	if raw == "" || strings.ContainsAny(raw, "\x00\r\n") {
-		return "", errors.New("probe returned an empty or multiline version")
+	raw, parseErr := firstHermesVersionLine(stdout.String(), stderr.String())
+	if parseErr != nil {
+		return "", parseErr
 	}
 	return raw, nil
 }

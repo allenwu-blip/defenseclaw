@@ -1967,6 +1967,70 @@ def test_hermes_version_probe_gets_longer_timeout(monkeypatch, tmp_path):
     assert kwargs["timeout"] == 8.0
 
 
+@pytest.mark.parametrize(
+    "binary_path",
+    (
+        r"C:\Tools\amp.CMD",
+        r"C:\Tools\agent.CMD",
+        r"C:\Tools\cursor-agent.EXE",
+    ),
+)
+@pytest.mark.skipif(os.name != "nt", reason="Windows native launcher startup budget")
+def test_amp_and_cursor_agent_version_probes_get_only_the_named_slow_start_budget(
+    monkeypatch,
+    binary_path,
+):
+    calls = []
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda _path, **_kwargs: True)
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="client 1.2.3\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ad.subprocess, "run", fake_run)
+
+    version, error = ad._version_for_agent_binary(
+        "codex",
+        binary_path,
+        ("--version",),
+    )
+
+    assert error == ""
+    assert version == "client 1.2.3"
+    assert calls[0][1]["timeout"] == 8.0
+
+
+def test_unrelated_logical_and_binary_names_keep_generic_version_probe_budget(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ad, "_is_trusted_binary_path", lambda _path, **_kwargs: True)
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="codex-cli 1.2.3\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ad.subprocess, "run", fake_run)
+
+    version, error = ad._version_for_agent_binary(
+        "codex",
+        r"C:\Tools\codex.EXE",
+        ("--version",),
+    )
+
+    assert error == ""
+    assert version == "codex-cli 1.2.3"
+    assert calls[0][1]["timeout"] == ad.VERSION_TIMEOUT_SECONDS
+
+
 def test_version_probe_decodes_utf8_hermes_output_from_isolated_subprocess(
     monkeypatch,
     tmp_path,

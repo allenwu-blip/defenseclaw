@@ -3080,6 +3080,96 @@ class TestSkillListMultiConnectorDefault(SkillCommandTestBase):
         self.assertEqual(data[0]["name"], "claudecode-skill")
         self.assertNotIn("connector", data[0])
 
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_identical_skill_names_use_each_connector_latest_scan(self, mock_list):
+        roots = {
+            connector: os.path.join(self.tmp_dir, connector, "skills")
+            for connector in ("codex", "devin")
+        }
+        for root in roots.values():
+            os.makedirs(os.path.join(root, "codeguard"))
+        self.app.cfg.active_connectors = lambda: ["codex", "devin"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda connector=None: [roots[connector]]  # type: ignore[method-assign]
+        mock_list.return_value = {
+            "skills": [{
+                "name": "codeguard",
+                "description": "connector-local copy",
+                "eligible": True,
+                "source": "user",
+            }],
+        }
+
+        codex_target = os.path.join(roots["codex"], "codeguard")
+        devin_target = os.path.join(roots["devin"], "codeguard")
+        now = datetime.now(timezone.utc)
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner", codex_target,
+            now - timedelta(minutes=1), 400, 1, "LOW", "{}",
+        )
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner", devin_target,
+            now, 400, 7, "HIGH", "{}",
+        )
+
+        result = self.invoke(["list", "--json"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        groups = {group["connector"]: group["skills"] for group in json.loads(result.output)}
+        codex_scan = groups["codex"][0]["scan"]
+        devin_scan = groups["devin"][0]["scan"]
+        self.assertEqual(codex_scan["target"], codex_target)
+        self.assertEqual(codex_scan["total_findings"], 1)
+        self.assertEqual(devin_scan["target"], devin_target)
+        self.assertEqual(devin_scan["total_findings"], 7)
+
+    @patch(
+        "defenseclaw.commands.cmd_skill._list_openclaw_skills_full",
+        return_value={"skills": []},
+    )
+    def test_scan_history_phantom_does_not_leak_to_no_root_connector(self, _mock_list):
+        devin_root = os.path.join(self.tmp_dir, "devin", "skills")
+        os.makedirs(os.path.join(devin_root, "codeguard"))
+        self.app.cfg.active_connectors = lambda: ["devin", "omnigent"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda connector=None: (  # type: ignore[method-assign]
+            [devin_root] if connector == "devin" else []
+        )
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner",
+            os.path.join(devin_root, "codeguard"),
+            datetime.now(timezone.utc), 400, 3, "MEDIUM", "{}",
+        )
+
+        result = self.invoke(["list", "--json"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        groups = {group["connector"]: group["skills"] for group in json.loads(result.output)}
+        self.assertEqual(groups["devin"][0]["name"], "codeguard")
+        self.assertEqual(groups["devin"][0]["source"], "scan-history")
+        self.assertEqual(groups["omnigent"], [])
+
+    @unittest.skipUnless(os.name == "nt", "Windows path casing semantics")
+    @patch(
+        "defenseclaw.commands.cmd_skill._list_openclaw_skills_full",
+        return_value={"skills": []},
+    )
+    def test_removed_skill_scan_matches_connector_root_case_insensitively(self, _mock_list):
+        codex_root = os.path.join(self.tmp_dir, "Codex", "skills")
+        os.makedirs(codex_root)
+        self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
+        self.app.cfg.skill_dirs = lambda _connector=None: [codex_root]  # type: ignore[method-assign]
+        target = os.path.join(codex_root.swapcase(), "removed-skill")
+        self.app.store.insert_scan_result(
+            str(uuid.uuid4()), "skill-scanner", target,
+            datetime.now(timezone.utc), 400, 2, "MEDIUM", "{}",
+        )
+
+        result = self.invoke(["list", "--json", "--connector", "codex"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        data = json.loads(result.output)
+        self.assertEqual(data["skills"][0]["name"], "removed-skill")
+        self.assertEqual(data["skills"][0]["scan"]["target"], target)
+
 
 class TestSkillListOpencodeNative(SkillCommandTestBase):
     def test_opencode_lists_native_skill_not_openclaw_paths(self):

@@ -1698,7 +1698,9 @@ def _version_for_binary(
     binary_name = _binary_command_name(binary_path)
     env = None
     timeout = VERSION_TIMEOUT_SECONDS
-    if binary_name in {"claude", "hermes", "omnigent", "openhands"}:
+    if binary_name in {"claude", "hermes", "omnigent", "openhands"} or (
+        os.name == "nt" and binary_name in {"amp", "agent", "cursor-agent"}
+    ):
         timeout = 8.0
     elif binary_name == "opencode":
         # The official WinGet binary is a packaged Bun executable. Windows

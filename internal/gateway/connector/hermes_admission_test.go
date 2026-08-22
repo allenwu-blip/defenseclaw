@@ -30,6 +30,43 @@ import (
 
 const hermesAdmissionTestRawVersion = "Hermes Agent v0.20.0 (2026.8.3)"
 
+func TestFirstHermesVersionLineAcceptsCurrentMultilineBanner(t *testing.T) {
+	output := "\r\nHermes Agent v0.20.0 (2026.8.3)\r\n" +
+		"Install directory: C:\\Users\\tester\\AppData\\Local\\hermes\\hermes-agent\r\n" +
+		"Python: 3.11.15\r\nOpenAI SDK: 2.24.0\r\n"
+
+	got, err := firstHermesVersionLine(output, "")
+	if err != nil {
+		t.Fatalf("parse current Hermes banner: %v", err)
+	}
+	if got != hermesAdmissionTestRawVersion {
+		t.Fatalf("first Hermes version line = %q, want %q", got, hermesAdmissionTestRawVersion)
+	}
+}
+
+func TestFirstHermesVersionLineFallsBackToStderr(t *testing.T) {
+	got, err := firstHermesVersionLine(" \r\n\t\r\n", hermesAdmissionTestRawVersion+"\r\nPython: 3.11")
+	if err != nil {
+		t.Fatalf("parse Hermes stderr banner: %v", err)
+	}
+	if got != hermesAdmissionTestRawVersion {
+		t.Fatalf("first Hermes stderr version line = %q, want %q", got, hermesAdmissionTestRawVersion)
+	}
+}
+
+func TestFirstHermesVersionLineRejectsEmptyOrNULOutput(t *testing.T) {
+	for name, stdout := range map[string]string{
+		"empty": " \r\n\t\r\n",
+		"NUL":   hermesAdmissionTestRawVersion + "\r\nPython: 3.11\x00",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, err := firstHermesVersionLine(stdout, ""); err == nil {
+				t.Fatalf("unsafe Hermes output parsed as %q", got)
+			}
+		})
+	}
+}
+
 func prepareHermesSetupAdmissionFixture(t *testing.T, opts SetupOpts) SetupOpts {
 	t.Helper()
 	if runtime.GOOS != "windows" {

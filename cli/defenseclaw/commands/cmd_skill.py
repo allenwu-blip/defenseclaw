@@ -720,6 +720,40 @@ def _latest_skill_scan_for_connector(
     return matches[0][1]
 
 
+def _build_scan_map_for_connector(
+    app: AppContext, connector: str,
+) -> dict[str, dict[str, Any]]:
+    """Build a skill-name scan map limited to one connector's roots.
+
+    Multiple native connectors can install a skill with the same basename.
+    The audit database records the absolute target path rather than a connector
+    column, so resolve each name through the same path-scoping rules used by
+    ``skill info`` instead of reusing the global basename-only map.
+    """
+    if app.store is None:
+        return {}
+    try:
+        latest = app.store.latest_scans_by_scanner("skill-scanner")
+    except Exception:
+        return {}
+
+    matches: list[tuple[Any, str, dict[str, Any]]] = []
+    for ls in latest:
+        target = str(ls.get("target") or "")
+        if not target:
+            continue
+        payload = _scan_payload_from_latest(ls)
+        if not _scan_entry_matches_connector(app, payload, connector):
+            continue
+        matches.append((ls.get("timestamp"), os.path.basename(target), payload))
+
+    matches.sort(key=lambda item: item[0], reverse=True)
+    scan_map: dict[str, dict[str, Any]] = {}
+    for _, name, payload in matches:
+        scan_map.setdefault(name, payload)
+    return scan_map
+
+
 def _build_actions_map(store, connector: str = "") -> dict[str, Any]:
     """Build a map of skill-name -> effective ActionEntry from the DB.
 
@@ -814,14 +848,14 @@ def _scan_entry_matches_connector(
     target = str(scan_data.get("target") or "")
     if not target:
         return False
-    real_target = os.path.realpath(target)
+    real_target = os.path.normcase(os.path.realpath(target))
     try:
         roots = app.cfg.skill_dirs(_normalize_runtime_connector(connector))
     except Exception:  # noqa: BLE001 — fail closed for explicit connector scope.
         return False
     return any(
-        real_target == os.path.realpath(root)
-        or real_target.startswith(os.path.realpath(root) + os.sep)
+        real_target == os.path.normcase(os.path.realpath(root))
+        or real_target.startswith(os.path.normcase(os.path.realpath(root)) + os.sep)
         for root in roots
     )
 
@@ -1030,8 +1064,11 @@ def list_skills(app: AppContext, as_json: bool, connector_flag: str) -> None:
     from defenseclaw.commands import resolve_list_connectors
 
     connectors = resolve_list_connectors(app, connector_flag)
+    legacy_single_scope = (
+        len(connectors) == 1
+        and not (connector_flag and connector_flag.strip())
+    )
 
-    scan_map = _build_scan_map(app.store)
     # SK-4: resolve the effective actions per connector (connector-scoped row
     # overrides global) so each connector's table/card shows its own actions.
 
@@ -1039,6 +1076,7 @@ def list_skills(app: AppContext, as_json: bool, connector_flag: str) -> None:
         if len(connectors) > 1:
             groups = []
             for c in connectors:
+                scan_map = _build_scan_map_for_connector(app, c)
                 actions_map = _build_actions_map(app.store, c)
                 groups.append({
                     "connector": c,
@@ -1051,6 +1089,11 @@ def list_skills(app: AppContext, as_json: bool, connector_flag: str) -> None:
                 })
             click.echo(json.dumps(groups, indent=2, default=str))
         else:
+            scan_map = (
+                _build_scan_map(app.store)
+                if legacy_single_scope
+                else _build_scan_map_for_connector(app, connectors[0])
+            )
             actions_map = _build_actions_map(app.store, connectors[0])
             skills = _collect_skills_for_connector(app, connectors[0], scan_map, actions_map)
             items = _skill_list_json_items(
@@ -1069,6 +1112,11 @@ def list_skills(app: AppContext, as_json: bool, connector_flag: str) -> None:
 
     shown_any = False
     for connector in connectors:
+        scan_map = (
+            _build_scan_map(app.store)
+            if legacy_single_scope
+            else _build_scan_map_for_connector(app, connector)
+        )
         actions_map = _build_actions_map(app.store, connector)
         skills = _collect_skills_for_connector(app, connector, scan_map, actions_map)
         if not skills:

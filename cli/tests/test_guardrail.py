@@ -2666,6 +2666,103 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             )
         self.assertEqual(clock.now, 60.0)
 
+    @unittest.skipUnless(os.name == "nt", "Windows native setup readiness")
+    def test_complete_multi_connector_snapshot_uses_count_aware_validation_deadline(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        expected = [
+            "amp",
+            "antigravity",
+            "claudecode",
+            "codex",
+            "copilot",
+            "devin",
+            "omnigent",
+            "opencode",
+        ]
+        clock = SimpleNamespace(now=0.0)
+        visited = []
+
+        def monotonic():
+            return clock.now
+
+        def readiness(_cfg, name):
+            visited.append(name)
+            clock.now += 0.2
+            return SimpleNamespace(
+                connector=name,
+                invariant="ready",
+                detail="configured",
+                __bool__=lambda self: True,
+            )
+
+        def read_snapshot(path):
+            if path.endswith("hook_contract_lock.json"):
+                return {"version": 2, "connectors": {}}, 22
+            return {"version": 3, "name": expected[0], "names": expected, "inactive_names": []}, 11
+
+        def marker(path):
+            return 22 if path.endswith("hook_contract_lock.json") else 11
+
+        with (
+            patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+            patch("defenseclaw.commands.cmd_setup._connector_runtime_snapshot_ready", return_value=True),
+            patch("defenseclaw.commands.cmd_setup._regular_file_marker", side_effect=marker),
+            patch("defenseclaw.commands.cmd_setup.load_config", return_value=SimpleNamespace()),
+            patch("defenseclaw.commands.cmd_doctor.connector_setup_readiness", side_effect=readiness),
+            patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=monotonic),
+        ):
+            result = _wait_for_connector_runtime("unused", expected, None, None, timeout=1.0)
+
+        self.assertTrue(result)
+        self.assertEqual(visited, expected)
+        self.assertGreater(clock.now, 1.0)
+        self.assertLess(clock.now, 9.0)
+
+    @unittest.skipUnless(os.name == "nt", "Windows native setup readiness")
+    def test_multi_connector_validation_still_stops_at_absolute_cap(self):
+        from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
+
+        expected = [
+            "amp",
+            "antigravity",
+            "claudecode",
+            "codex",
+            "copilot",
+            "devin",
+            "omnigent",
+            "opencode",
+        ]
+        clock = SimpleNamespace(now=0.0)
+        visited = []
+
+        def monotonic():
+            return clock.now
+
+        def readiness(_cfg, name):
+            visited.append(name)
+            clock.now = 301.0
+            return SimpleNamespace(connector=name, invariant="ready", detail="configured")
+
+        def read_snapshot(path):
+            if path.endswith("hook_contract_lock.json"):
+                return {"version": 2, "connectors": {}}, 22
+            return {"version": 3, "name": expected[0], "names": expected, "inactive_names": []}, 11
+
+        with (
+            patch("defenseclaw.commands.cmd_setup._read_stable_regular_json", side_effect=read_snapshot),
+            patch("defenseclaw.commands.cmd_setup._connector_runtime_snapshot_ready", return_value=True),
+            patch("defenseclaw.commands.cmd_setup.load_config", return_value=SimpleNamespace()),
+            patch("defenseclaw.commands.cmd_doctor.connector_setup_readiness", side_effect=readiness),
+            patch("defenseclaw.commands.cmd_setup.time.monotonic", side_effect=monotonic),
+        ):
+            result = _wait_for_connector_runtime("unused", expected, None, None, timeout=60.0)
+
+        self.assertFalse(result)
+        self.assertEqual(result.invariant, "deadline")
+        self.assertEqual(visited, [expected[0]])
+        self.assertEqual(clock.now, 301.0)
+
     def test_new_generation_terminal_health_fails_but_running_health_never_satisfies(self):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 

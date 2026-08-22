@@ -1545,14 +1545,14 @@ def hold_directory(path: str, *, protect_name: bool = True) -> Iterator[None]:
 
 
 @contextmanager
-def hold_directory_chain(path: str) -> Iterator[None]:
-    """Prevent every absolute-path ancestor from being renamed or replaced."""
+def hold_directory_chain(path: str, *, protect_name: bool = True) -> Iterator[None]:
+    """Hold an absolute directory chain, optionally binding its final name."""
 
     prefixes = _windows_directory_prefixes(path)
     with ExitStack() as held:
         for prefix in prefixes[:-1]:
             held.enter_context(hold_directory(prefix, protect_name=False))
-        held.enter_context(hold_directory(prefixes[-1], protect_name=True))
+        held.enter_context(hold_directory(prefixes[-1], protect_name=protect_name))
         yield
 
 

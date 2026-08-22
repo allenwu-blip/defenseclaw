@@ -12754,7 +12754,17 @@ def _wait_for_connector_runtime(
                     previous_lock_marker=previous_lock_marker,
                 )
             if snapshot_ready:
-                deadline = min(no_progress_deadline, absolute_deadline)
+                # The Windows native setup launcher publishes the complete roster
+                # before this sequential passive-Doctor pass. Do not make that
+                # roster share the residual publication no-progress window; the
+                # existing count-aware absolute deadline is its transaction bound.
+                # Preserve the established non-Windows timing contract in this
+                # Windows-parity change.
+                deadline = (
+                    absolute_deadline
+                    if os.name == "nt"
+                    else min(no_progress_deadline, absolute_deadline)
+                )
                 health_ok, _, health_failure = gateway_ready(deadline)
                 if not health_ok:
                     last_failure = health_failure
