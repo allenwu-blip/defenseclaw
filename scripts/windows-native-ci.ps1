@@ -5802,8 +5802,32 @@ assert set(((document.get("guardrail") or {}).get("connectors") or {})) == {"amp
         $preserved = Join-Path $dataRoot 'installer-preservation.txt'
         Set-Content -LiteralPath $preserved -Value 'preserve' -Encoding ascii
 
-        Invoke-WindowsSetupStandardUserProcess $setup @('/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user') `
-            -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-repair.log') | Out-Null
+        $repair = Invoke-WindowsSetupStandardUserProcess $setup @(
+            '/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user'
+        ) -AllowedExitCodes @(0, 1603) -TimeoutSeconds 1200 `
+            -LogPath (Join-Path $logs 'setup-repair.log')
+        if ($repair.ExitCode -eq 1603) {
+            $repairOutput = @($repair.StdOut, $repair.StdErr | Where-Object { $_ }) -join `
+                [Environment]::NewLine
+            $committedConvergenceSignal = 'installation committed but convergence is pending'
+            $eventHistorySignal = 'event_history=sqlite_write_failed'
+            if (-not $repairOutput.Contains($committedConvergenceSignal, [StringComparison]::Ordinal) -or
+                -not $repairOutput.Contains($eventHistorySignal, [StringComparison]::Ordinal)) {
+                throw 'setup repair failed without the exact retryable committed SQLite convergence condition'
+            }
+            try {
+                Write-SetupAcceptanceConvergenceDiagnostics $logs $dataRoot $setupOtlpCollector
+            } catch {
+                Write-Warning "bounded repair convergence diagnostics unavailable: $($_.Exception.GetType().Name)"
+            }
+            Write-BoundedText -Path (Join-Path $logs 'setup-repair-event-history-retry.txt') `
+                -Text "attempt=1`nsignal=$eventHistorySignal" -MaxBytes 4096
+            # Setup owns committed-journal recovery: the next invocation
+            # authenticates and quiesces its runtime before resuming convergence.
+            Invoke-WindowsSetupStandardUserProcess $setup @(
+                '/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user'
+            ) -TimeoutSeconds 1200 -LogPath (Join-Path $logs 'setup-repair-retry.log') | Out-Null
+        }
         $configHashAfterRepair = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
         $repairedRosterResult = Invoke-Installed $python @('-I', '-c', $rosterProbe) -Timeout 120 `
             -Log (Join-Path $logs 'setup-connector-roster-after-repair.log')

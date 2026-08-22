@@ -3362,6 +3362,37 @@ connection.close()
         $setupAcceptanceFunction -match 'Remove-WizardAgentFixtures' -and
         $setupAcceptanceFunction -notmatch 'DEFENSECLAW_TRUSTED_BIN_PREFIXES') `
         'interactive Setup acceptance owns and cleans built-in-root fixtures without environment trust authority'
+    $repairRetryStart = $setupAcceptanceFunction.IndexOf(
+        '$repair = Invoke-WindowsSetupStandardUserProcess', [StringComparison]::Ordinal
+    )
+    $repairRetryEnd = if ($repairRetryStart -ge 0) {
+        $setupAcceptanceFunction.IndexOf(
+            '$configHashAfterRepair =', $repairRetryStart, [StringComparison]::Ordinal
+        )
+    } else { -1 }
+    $repairRetryBlock = if ($repairRetryStart -ge 0 -and $repairRetryEnd -gt $repairRetryStart) {
+        $setupAcceptanceFunction.Substring($repairRetryStart, $repairRetryEnd - $repairRetryStart)
+    } else { '' }
+    $repairRetryDiagnosticIndex = $repairRetryBlock.IndexOf(
+        'Write-SetupAcceptanceConvergenceDiagnostics', [StringComparison]::Ordinal
+    )
+    $repairRetrySecondIndex = $repairRetryBlock.IndexOf(
+        "'setup-repair-retry.log'", [StringComparison]::Ordinal
+    )
+    Assert-True ($repairRetryBlock -match '-AllowedExitCodes @\(0, 1603\)' -and
+        $repairRetryBlock -match '\$repair\.ExitCode -eq 1603' -and
+        $repairRetryBlock -match
+            '\$repairOutput\.Contains\(\$committedConvergenceSignal, \[StringComparison\]::Ordinal\)' -and
+        $repairRetryBlock -match
+            '\$repairOutput\.Contains\(\$eventHistorySignal, \[StringComparison\]::Ordinal\)' -and
+        $repairRetryBlock -match
+            '\$committedConvergenceSignal = ''installation committed but convergence is pending''' -and
+        $repairRetryBlock -match '\$eventHistorySignal = ''event_history=sqlite_write_failed''' -and
+        ([regex]::Matches($repairRetryBlock, 'Invoke-WindowsSetupStandardUserProcess')).Count -eq 2 -and
+        $repairRetryDiagnosticIndex -ge 0 -and $repairRetrySecondIndex -gt $repairRetryDiagnosticIndex -and
+        $repairRetryBlock -match 'setup-repair-event-history-retry\.txt' -and
+        $repairRetryBlock -notmatch 'Start-Sleep') `
+        'Setup acceptance retries only committed SQLite convergence through bounded journal recovery'
     Assert-True ($setupAcceptanceFunction -match "(?s)'setup', 'claude-code', '--yes', '--no-restart'.*?'setup', 'amp', '--yes', '--no-restart'.*?'setup', 'cursor', '--yes', '--no-restart'" -and
         $setupAcceptanceFunction -match 'foreach \(\$expectedConnector in @\(''codex'', ''claudecode'', ''amp'', ''cursor''\)\)' -and
         $setupAcceptanceFunction -match '(?s)connectors:\r?\n\s+amp: \{\}\r?\n\s+codex: \{\}\r?\n\s+claudecode: \{\}\r?\n\s+cursor: \{\}' -and
