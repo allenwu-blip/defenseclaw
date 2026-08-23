@@ -133,23 +133,24 @@ func connectorLifecycleMatrix(t *testing.T) []ConnectorFixture {
 		return fixtures
 	}
 
-	// Native Windows Hermes and Devin require protected executable evidence.
+	// Native Windows Hermes, Devin, OpenCode, and Amp require protected
+	// executable evidence.
 	// Manufacturing that evidence from this external package would either
 	// mutate a real profile or weaken admission. Their Windows lifecycles are
 	// exercised by package-connector and native-Windows tests where the private
-	// admission fixtures are available. Keep both in connectorMatrix for every
+	// admission fixtures are available. Keep them in connectorMatrix for every
 	// non-lifecycle matrix and on other operating systems.
-	filtered := make([]ConnectorFixture, 0, len(fixtures)-2)
+	filtered := make([]ConnectorFixture, 0, len(fixtures)-4)
 	protectedRows := 0
 	for _, fixture := range fixtures {
-		if fixture.Name == "hermes" || fixture.Name == "devin" {
+		if fixture.Name == "hermes" || fixture.Name == "devin" || fixture.Name == "opencode" || fixture.Name == "amp" {
 			protectedRows++
 			continue
 		}
 		filtered = append(filtered, fixture)
 	}
-	if protectedRows != 2 {
-		t.Fatalf("Windows lifecycle routing found %d protected Hermes/Devin fixtures, want exactly two", protectedRows)
+	if protectedRows != 4 {
+		t.Fatalf("Windows lifecycle routing found %d protected executable fixtures, want exactly four", protectedRows)
 	}
 	return filtered
 }
