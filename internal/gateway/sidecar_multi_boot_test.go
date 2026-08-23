@@ -682,6 +682,9 @@ func TestSetupConnectorsIsolated_OpenCodeFailureRestoresPluginAndLock(t *testing
 }
 
 func TestSetupConnectorsIsolated_OpenCodeExecutableDriftPreservesPriorState(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows OpenCode executable drift authority")
+	}
 	s := multiBootSidecar(t)
 	s.cfg.DataDir = testenv.PrivateTempDir(t)
 	configDir := testenv.PrivateTempDir(t)

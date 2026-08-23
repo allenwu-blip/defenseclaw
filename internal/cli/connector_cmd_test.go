@@ -935,6 +935,9 @@ func TestConnectorReconcileOpenCodeRollsBackLateContractLockFailure(t *testing.T
 }
 
 func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows OpenCode executable authority supersession")
+	}
 	dataDir := testenv.PrivateTempDir(t)
 	home := testenv.PrivateTempDir(t)
 	seedOpenCodeSelectionForTest(t, dataDir)
