@@ -7537,13 +7537,276 @@ def _verify_restored_setup_runtime(
     )
 
 
-def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapshot) -> None:
+def _stopped_snapshot_inactive_connectors(snapshot: _SetupConfigSnapshot) -> tuple[str, ...]:
+    """Return the exact bounded connector tombstones captured before setup."""
+
+    expected = snapshot.applied_runtime
+    if expected is None or expected.lifecycle != "stopped":
+        return ()
+    known = set(_CONNECTOR_NAMES_FALLBACK)
+    configured: set[str] = set()
+    if not hasattr(snapshot.config, "active_connectors"):
+        raise OSError("stopped connector desired roster is unavailable")
+    for raw_name in snapshot.config.active_connectors():
+        connector = normalize_connector(raw_name)
+        if connector != raw_name or connector not in known:
+            raise OSError(
+                f"stopped connector desired roster is unavailable [{_setup_runtime_ref(raw_name)}]"
+            )
+        configured.add(connector)
+        if len(configured) > len(known):
+            raise OSError("stopped connector desired roster exceeds the bounded limit")
+    active: set[str] = set()
+    inactive: set[str] = set()
+    for scope, subject, attribute, value in expected.invariants:
+        if scope != "connector" or attribute not in {"roster-active", "roster-inactive"}:
+            continue
+        if value != "present":
+            raise OSError("stopped connector roster evidence is malformed")
+        connector = normalize_connector(subject)
+        if connector != subject or connector not in known:
+            raise OSError(
+                f"stopped connector roster evidence is unavailable [{_setup_runtime_ref(subject)}]"
+            )
+        (active if attribute == "roster-active" else inactive).add(connector)
+        if len(active | inactive) > len(known):
+            raise OSError("stopped connector roster evidence exceeds the bounded limit")
+    if active & inactive:
+        raise OSError("stopped connector roster evidence is contradictory")
+    # Reconciliation can only reactivate configured connectors. Preserve
+    # tombstones for removed connectors by leaving them untouched.
+    return tuple(sorted(inactive & configured))
+
+
+def _restored_inactive_connector_bindings(
+    data_dir: str,
+    connectors: tuple[str, ...],
+) -> tuple[tuple[str, str, str], ...]:
+    """Read stable, protected maintenance paths from the reconciled lock."""
+
+    lock_path = os.path.join(data_dir, _HOOK_CONTRACT_LOCK_FILENAME)
+    existed, body, generation = _capture_protected_setup_file(
+        lock_path,
+        _HOOK_CONTRACT_LOCK_MAX_BYTES,
+        "hook contract lock",
+    )
+    if not existed or generation is None:
+        existed_after, _body_after, _generation_after = _capture_protected_setup_file(
+            lock_path,
+            _HOOK_CONTRACT_LOCK_MAX_BYTES,
+            "hook contract lock",
+        )
+        if existed_after:
+            raise OSError("snapshot-inactive connector maintenance authority changed")
+        if all(connector in _PROXY_BACKED_CONNECTORS for connector in connectors):
+            return tuple((connector, "", "") for connector in connectors)
+        raise OSError("snapshot-inactive connector maintenance authority is missing")
+    _document, entries = _decode_setup_hook_contract_lock(body)
+    config_home_connectors = {
+        "amp",
+        "antigravity",
+        "claudecode",
+        "codex",
+        "copilot",
+        "cursor",
+        "devin",
+        "hermes",
+        "omnigent",
+        "opencode",
+    }
+    bindings: list[tuple[str, str, str]] = []
+    for connector in connectors:
+        entry = entries.get(connector)
+        if entry is None and connector in _PROXY_BACKED_CONNECTORS:
+            bindings.append((connector, "", ""))
+            continue
+        posture = entry.get("registration_posture") if isinstance(entry, dict) else None
+        config_home = posture.get("config_home", "") if isinstance(posture, dict) else None
+        hook_executable = posture.get("hook_executable", "") if isinstance(posture, dict) else None
+        if not isinstance(config_home, str):
+            raise OSError(
+                f"snapshot-inactive connector {connector} has no exact config-home authority"
+            )
+        if config_home:
+            if (
+                connector not in config_home_connectors
+                or config_home.strip() != config_home
+                or any(character in config_home for character in "\x00\r\n")
+                or not os.path.isabs(config_home)
+                or os.path.normpath(config_home) != config_home
+            ):
+                raise OSError(
+                    f"snapshot-inactive connector {connector} has no exact config-home authority"
+                )
+        if not isinstance(hook_executable, str):
+            raise OSError(
+                f"snapshot-inactive connector {connector} has malformed hook authority"
+            )
+        if connector == "hermes" and config_home:
+            if (
+                not hook_executable
+                or hook_executable.strip() != hook_executable
+                or any(character in hook_executable for character in '\"\x00\r\n')
+                or not os.path.isabs(hook_executable)
+                or os.path.normpath(hook_executable) != hook_executable
+            ):
+                raise OSError(
+                    "snapshot-inactive connector hermes has no exact hook authority"
+                )
+        elif hook_executable:
+            raise OSError(
+                f"snapshot-inactive connector {connector} has unexpected hook authority"
+            )
+        bindings.append((connector, config_home, hook_executable))
+
+    existed_after, body_after, generation_after = _capture_protected_setup_file(
+        lock_path,
+        _HOOK_CONTRACT_LOCK_MAX_BYTES,
+        "hook contract lock",
+    )
+    if not existed_after or generation_after != generation or body_after != body:
+        raise OSError("snapshot-inactive connector maintenance authority changed")
+    return tuple(bindings)
+
+
+def _restored_reactivated_inactive_connectors(
+    data_dir: str,
+    candidates: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Intersect prior tombstones with the protected roster just reconciled."""
+
+    bounded = tuple(sorted(set(candidates)))
+    known = set(_CONNECTOR_NAMES_FALLBACK)
+    if (
+        bounded != candidates
+        or len(bounded) > len(known)
+        or any(normalize_connector(name) != name or name not in known for name in bounded)
+    ):
+        raise OSError("snapshot-inactive connector roster has invalid bounded authority")
+    state_path = os.path.join(data_dir, "active_connector.json")
+    existed, body, generation = _capture_protected_setup_file(
+        state_path,
+        _ACTIVE_CONNECTOR_STATE_MAX_BYTES,
+        "active connector state",
+    )
+    if not existed:
+        existed_after, _body_after, _generation_after = _capture_protected_setup_file(
+            state_path,
+            _ACTIVE_CONNECTOR_STATE_MAX_BYTES,
+            "active connector state",
+        )
+        if existed_after:
+            raise OSError("reconciled connector roster changed while inspected")
+        return ()
+    try:
+        state = _json.loads(body)
+    except (UnicodeDecodeError, ValueError):
+        raise OSError("reconciled connector roster is malformed") from None
+    runtime_sets = _connector_runtime_state_sets(state)
+    if runtime_sets is None:
+        raise OSError("reconciled connector roster has an unsupported schema")
+    active, _inactive = runtime_sets
+    if any(name not in known for name in active):
+        raise OSError("reconciled connector roster has unknown authority")
+    existed_after, body_after, generation_after = _capture_protected_setup_file(
+        state_path,
+        _ACTIVE_CONNECTOR_STATE_MAX_BYTES,
+        "active connector state",
+    )
+    if not existed_after or generation_after != generation or body_after != body:
+        raise OSError("reconciled connector roster changed while inspected")
+    return tuple(name for name in candidates if name in active)
+
+
+def _teardown_restored_inactive_connectors(data_dir: str, connectors: tuple[str, ...]) -> None:
+    """Restore snapshot-inactive connectors through the trusted native sentinel."""
+
+    if not connectors:
+        return
+    raw_data_dir = os.fspath(data_dir) if isinstance(data_dir, (str, os.PathLike)) else ""
+    if (
+        not raw_data_dir
+        or raw_data_dir.strip() != raw_data_dir
+        or any(character in raw_data_dir for character in "\x00\r\n")
+        or not os.path.isabs(raw_data_dir)
+        or os.path.normpath(raw_data_dir) != raw_data_dir
+    ):
+        raise OSError("snapshot-inactive connector teardown has no absolute data directory")
+    bounded = tuple(sorted(set(connectors)))
+    known = set(_CONNECTOR_NAMES_FALLBACK)
+    if (
+        bounded != connectors
+        or len(bounded) > len(known)
+        or any(normalize_connector(name) != name or name not in known for name in bounded)
+    ):
+        raise OSError("snapshot-inactive connector teardown has invalid bounded authority")
+
+    from defenseclaw.observability.local_stack import (
+        CommandRunner,
+        LocalStackError,
+        native_command_environment,
+    )
+
+    executable = _gateway_lifecycle_executable(native=True)
+    if not executable:
+        raise OSError("snapshot-inactive connector teardown has no trusted native gateway")
+    runner = CommandRunner()
+    normalized_config_file = os.path.abspath(os.fspath(config_path_for_data_dir(raw_data_dir)))
+    if os.path.normpath(normalized_config_file) != normalized_config_file:
+        raise OSError("snapshot-inactive connector teardown has no exact config authority")
+    environment = native_command_environment(
+        overrides={
+            _DEFENSECLAW_HOME_ENV: raw_data_dir,
+            _DEFENSECLAW_DATA_DIR_ENV: raw_data_dir,
+            CONFIG_PATH_ENV: normalized_config_file,
+        }
+    )
+    bindings = _restored_inactive_connector_bindings(raw_data_dir, bounded)
+    for connector, config_home, hook_executable in bindings:
+        for action in ("teardown", "verify"):
+            argv = [
+                executable,
+                "connector",
+                action,
+                "--connector",
+                connector,
+                "--data-dir",
+                raw_data_dir,
+            ]
+            if config_home:
+                argv.extend(("--config-home", config_home))
+            if hook_executable:
+                argv.extend(("--hook-executable", hook_executable))
+            try:
+                result = runner.run(
+                    argv,
+                    timeout=_DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS,
+                    env=environment,
+                )
+            except LocalStackError as exc:
+                raise OSError(
+                    f"snapshot-inactive connector {connector} {action} failed "
+                    f"[{_setup_runtime_ref(type(exc).__name__)}]"
+                ) from exc
+            if result.returncode != 0:
+                raise OSError(
+                    f"snapshot-inactive connector {connector} {action} failed "
+                    f"[exit-{result.returncode}]"
+                )
+
+
+def _restore_prior_setup_lifecycle(
+    app: AppContext,
+    snapshot: _SetupConfigSnapshot,
+) -> Exception | None:
     expected = snapshot.applied_runtime
     if expected is None:
-        return
+        return None
     if expected.lifecycle == "running":
         _restart_restored_connector_runtime(app)
-        return
+        return None
+
+    inactive_connectors = _stopped_snapshot_inactive_connectors(snapshot)
 
     from defenseclaw.commands.cmd_doctor import _trusted_gateway_listener
 
@@ -7562,6 +7825,7 @@ def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapsh
         restart_error = exc
 
     cleanup_error: OSError | None = None
+    reconciled_stopped = False
     try:
         trust = _trusted_gateway_listener(app.cfg, platform_name="win32")
     except Exception as exc:  # noqa: BLE001 - bounded below; preserve restart failure as cause.
@@ -7577,8 +7841,29 @@ def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapsh
             else:
                 if not stopped:
                     cleanup_error = OSError("reconciled gateway created by the failed setup did not stop")
-        elif restart_error is None or trust.code not in {"missing", "missing_process"}:
+                else:
+                    reconciled_stopped = True
+        elif restart_error is not None and trust.code in {"missing", "missing_process"}:
+            # The failed replacement exited before inspection. Native
+            # connector maintenance is process-independent, so any protected
+            # roster it published can still be restored below.
+            reconciled_stopped = True
+        else:
             cleanup_error = OSError(f"restored gateway cleanup is unavailable [{_setup_runtime_ref(trust.code)}]")
+
+    if reconciled_stopped and inactive_connectors:
+        try:
+            reactivated = _restored_reactivated_inactive_connectors(
+                app.cfg.data_dir,
+                inactive_connectors,
+            )
+            if reactivated:
+                _teardown_restored_inactive_connectors(app.cfg.data_dir, reactivated)
+        except Exception as exc:  # noqa: BLE001 - report bounded rollback cleanup failure.
+            cleanup_error = OSError(
+                "snapshot-inactive connector cleanup failed "
+                f"[{_setup_runtime_ref(type(exc).__name__)}]"
+            )
 
     if restart_error is not None:
         if cleanup_error is not None:
@@ -7586,9 +7871,13 @@ def _restore_prior_setup_lifecycle(app: AppContext, snapshot: _SetupConfigSnapsh
                 "restored gateway restart failed "
                 f"[{_setup_runtime_ref(type(restart_error).__name__)}]; cleanup incomplete: {cleanup_error}"
             ) from restart_error
-        raise restart_error
     if cleanup_error is not None:
         raise cleanup_error
+    # The failed readiness proof still makes the rollback incomplete, but the
+    # connector cleanup has reached a trusted stopped boundary. Return that
+    # failure so the caller can restore the exact prior hook lock before it is
+    # reported; raising here would strand the failed-generation lock.
+    return restart_error
 
 
 def _restore_setup_config_in_memory(app: AppContext, snapshot: _SetupConfigSnapshot):
@@ -7700,12 +7989,26 @@ def _rollback_failed_connector_application(
     if authority_safe:
         try:
             if exact_runtime:
-                _restore_prior_setup_lifecycle(app, snapshot)
+                lifecycle_error = _restore_prior_setup_lifecycle(app, snapshot)
+                pre_lock_runtime_failures = _verify_restored_setup_runtime(
+                    app.cfg,
+                    snapshot,
+                    failed_registration_locations or (),
+                )
+                if pre_lock_runtime_failures:
+                    # The failed-generation lock is still the only protected
+                    # authority for any residue that reconciliation did not
+                    # remove. Preserve it until the applied runtime is proven
+                    # exact; the final verifier reports the bounded mismatch.
+                    raise OSError("restored applied runtime is not exact before lock restoration")
                 # Reconciliation consumed the preserved failed-generation
-                # lock to remove that active registration and republished the
-                # prior connector generation. Restore the exact captured lock
-                # bytes only after that teardown boundary has succeeded.
+                # lock to remove that active registration, republished the
+                # prior connector generation, and now matches the captured
+                # runtime. Restore the exact prior lock bytes only after that
+                # proof has succeeded.
                 _restore_setup_hook_contract_lock_snapshot(app.cfg, snapshot)
+                if lifecycle_error is not None:
+                    raise lifecycle_error
             else:
                 _restart_restored_connector_runtime(app)
         except BaseException as exc:  # Report both non-secret transaction failures.

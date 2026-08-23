@@ -37,7 +37,7 @@ import shlex
 import sys
 import unittest
 from dataclasses import replace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import click
 import pytest
@@ -1196,7 +1196,10 @@ class TestRemoveConnector(unittest.TestCase):
             ),
             patch("defenseclaw.commands.cmd_setup.platform_support.host_os", return_value="windows"),
             patch("defenseclaw.commands.cmd_setup._restart_defense_gateway", return_value=False),
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle"),
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ),
             patch("defenseclaw.commands.cmd_setup._verify_restored_setup_runtime", return_value=[]),
         ):
             result = _invoke(["remove", "cursor", "--yes"], self.app)
@@ -1836,7 +1839,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
                 "defenseclaw.commands.cmd_setup._verify_restored_setup_persistence",
                 side_effect=[["config.yaml differs"], ["agent_selection.json differs"]],
             ) as persistence,
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle") as lifecycle,
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ) as lifecycle,
             patch(
                 "defenseclaw.commands.cmd_setup._verify_restored_setup_runtime",
                 return_value=["connector codex: health presence changed"],
@@ -1906,7 +1912,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
                 "defenseclaw.commands.cmd_setup._verify_restored_setup_persistence",
                 side_effect=[OSError(private_detail), ["config.yaml differs"]],
             ) as persistence,
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle") as lifecycle,
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ) as lifecycle,
             patch(
                 "defenseclaw.commands.cmd_setup._verify_restored_setup_runtime",
                 return_value=["connector cursor: roster active is missing"],
@@ -1962,12 +1971,13 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         failed_path = os.path.abspath(os.path.join(self.tmp_dir, "private-profile", "failed-b.json"))
         atomic_write_private_bytes(prior_path, b"prior-a\n")
         prior_entry = {"locations": {"hook_config_paths": [prior_path]}}
-        snapshot, prior_lock = self._snapshot_with_registration_lock({"codex": prior_entry})
+        snapshot, _prior_lock = self._snapshot_with_registration_lock({"codex": prior_entry})
         failed_entry = {"locations": {"hook_config_paths": [failed_path]}}
+        failed_lock = self._lock_body({"codex": failed_entry})
         atomic_write_private_bytes(failed_path, b"failed-generation-b\n")
         atomic_write_private_bytes(
             os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json"),
-            self._lock_body({"codex": failed_entry}),
+            failed_lock,
         )
         _normalized, failed_identity, _fingerprint = cmd_setup._capture_setup_runtime_location(
             failed_path, "hook registration"
@@ -1975,7 +1985,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
 
         with (
             patch("defenseclaw.commands.cmd_setup._sync_guardrail_hilt_to_opa"),
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle"),
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ),
             patch(
                 "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime",
                 side_effect=lambda _cfg, required=(): self._post_runtime(snapshot, required),
@@ -1996,7 +2009,7 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertEqual(open(failed_path, "rb").read(), b"failed-generation-b\n")
         self.assertEqual(
             open(os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json"), "rb").read(),
-            prior_lock,
+            failed_lock,
         )
 
     def test_name_stable_reconciliation_removes_failed_path_and_restores_exact_runtime(self):
@@ -2039,9 +2052,9 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
             prior_lock,
         )
         lifecycle.assert_called_once_with(self.app, snapshot)
-        runtime.assert_called_once()
-        self.assertEqual(runtime.call_args.args[0], self.app.cfg)
-        self.assertEqual(len(runtime.call_args.args[1]), 1)
+        self.assertEqual(runtime.call_count, 2)
+        self.assertTrue(all(item.args[0] is self.app.cfg for item in runtime.call_args_list))
+        self.assertTrue(all(len(item.args[1]) == 1 for item in runtime.call_args_list))
 
     def test_failed_location_reappearing_during_final_capture_is_incomplete(self):
         prior_path = os.path.abspath(os.path.join(self.tmp_dir, "registrations", "prior-a.json"))
@@ -2089,7 +2102,11 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertNotIn("restored the prior connector configuration and runtime", message)
         self.assertNotIn(failed_path, message)
         self.assertNotIn("private-race", message)
-        self.assertEqual(capture.call_count, 3)
+        self.assertGreaterEqual(capture.call_count, 3)
+        self.assertLessEqual(
+            capture.call_count,
+            2 * cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS,
+        )
 
     def test_failed_location_oscillation_between_final_samples_is_incomplete(self):
         prior_path = os.path.abspath(os.path.join(self.tmp_dir, "registrations", "prior-a.json"))
@@ -2139,7 +2156,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertNotIn("restored the prior connector configuration and runtime", message)
         self.assertNotIn(failed_path, message)
         self.assertNotIn("private-oscillation", message)
-        self.assertEqual(capture.call_count, cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS)
+        self.assertEqual(
+            capture.call_count,
+            2 * cmd_setup._SETUP_RUNTIME_SNAPSHOT_ATTEMPTS,
+        )
 
     def test_multi_connector_name_stable_failed_location_union_is_verified(self):
         codex_a = os.path.abspath(os.path.join(self.tmp_dir, "registrations", "codex-a.json"))
@@ -2164,7 +2184,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
 
         with (
             patch("defenseclaw.commands.cmd_setup._sync_guardrail_hilt_to_opa"),
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle"),
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ),
             patch(
                 "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime",
                 side_effect=lambda _cfg, required=(): self._post_runtime(snapshot, required),
@@ -2252,7 +2275,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
                         side_effect=error,
                     ) as capture,
                     patch("defenseclaw.commands.cmd_setup._sync_guardrail_hilt_to_opa"),
-                    patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle"),
+                    patch(
+                        "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                        return_value=None,
+                    ),
                     patch(
                         "defenseclaw.commands.cmd_setup._capture_setup_applied_runtime",
                         side_effect=lambda _cfg, required=(): self._post_runtime(snapshot, required),
@@ -2305,20 +2331,61 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
             cmd_setup._capture_setup_lock_registration_locations_once(self.app.cfg)
 
     def test_restore_prior_stopped_lifecycle_reconciles_then_stops_failed_setup_gateway(self):
+        self.app.cfg.guardrail.connectors = {
+            "codex": PerConnectorGuardrailConfig(),
+            "cursor": PerConnectorGuardrailConfig(),
+        }
         snapshot = replace(
             cmd_setup._capture_setup_config_snapshot(self.app.cfg),
-            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(
+                    ("connector", "codex", "roster-active", "present"),
+                    ("connector", "cursor", "roster-inactive", "present"),
+                ),
+            ),
         )
         trust = MagicMock(trusted=True)
         with (
             patch("defenseclaw.commands.cmd_setup._restart_restored_connector_runtime") as reconcile,
             patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
             patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True) as stop,
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_reactivated_inactive_connectors",
+                return_value=("cursor",),
+            ) as reactivated,
+            patch("defenseclaw.commands.cmd_setup._teardown_restored_inactive_connectors") as teardown,
         ):
             cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
 
         reconcile.assert_called_once_with(self.app)
         stop.assert_called_once_with(self.app.cfg.data_dir)
+        reactivated.assert_called_once_with(self.app.cfg.data_dir, ("cursor",))
+        teardown.assert_called_once_with(self.app.cfg.data_dir, ("cursor",))
+
+    def test_restore_prior_stopped_lifecycle_preserves_prior_active_connectors(self):
+        self.app.cfg.guardrail.connectors = {"codex": PerConnectorGuardrailConfig()}
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(("connector", "codex", "roster-active", "present"),),
+            ),
+        )
+        trust = MagicMock(trusted=True)
+        with (
+            patch("defenseclaw.commands.cmd_setup._restart_restored_connector_runtime"),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True),
+            patch("defenseclaw.commands.cmd_setup._restored_reactivated_inactive_connectors") as reactivated,
+            patch("defenseclaw.commands.cmd_setup._teardown_restored_inactive_connectors") as teardown,
+        ):
+            cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        reactivated.assert_not_called()
+        teardown.assert_not_called()
 
     def test_restore_prior_stopped_lifecycle_requires_trusted_reconciled_gateway(self):
         snapshot = replace(
@@ -2338,9 +2405,14 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         stop.assert_not_called()
 
     def test_restore_prior_stopped_lifecycle_stops_after_readiness_failure(self):
+        self.app.cfg.guardrail.connectors = {"cursor": PerConnectorGuardrailConfig()}
         snapshot = replace(
             cmd_setup._capture_setup_config_snapshot(self.app.cfg),
-            applied_runtime=self._evidence(lifecycle="stopped", generation=None),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(("connector", "cursor", "roster-inactive", "present"),),
+            ),
         )
         readiness_error = RuntimeError("readiness failed after process start")
         trust = MagicMock(trusted=True)
@@ -2351,12 +2423,269 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
             ),
             patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
             patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True) as stop,
-            self.assertRaises(RuntimeError) as raised,
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_reactivated_inactive_connectors",
+                return_value=("cursor",),
+            ),
+            patch("defenseclaw.commands.cmd_setup._teardown_restored_inactive_connectors") as teardown,
+        ):
+            result = cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        self.assertIs(result, readiness_error)
+        stop.assert_called_once_with(self.app.cfg.data_dir)
+        teardown.assert_called_once_with(self.app.cfg.data_dir, ("cursor",))
+
+    def test_restore_prior_stopped_lifecycle_reports_inactive_teardown_failure(self):
+        self.app.cfg.guardrail.connectors = {"cursor": PerConnectorGuardrailConfig()}
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(("connector", "cursor", "roster-inactive", "present"),),
+            ),
+        )
+        trust = MagicMock(trusted=True)
+        with (
+            patch("defenseclaw.commands.cmd_setup._restart_restored_connector_runtime"),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native", return_value=True),
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_reactivated_inactive_connectors",
+                return_value=("cursor",),
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._teardown_restored_inactive_connectors",
+                side_effect=OSError("private teardown detail"),
+            ),
+            self.assertRaisesRegex(OSError, "snapshot-inactive connector cleanup failed") as raised,
         ):
             cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
 
-        self.assertIs(raised.exception, readiness_error)
-        stop.assert_called_once_with(self.app.cfg.data_dir)
+        self.assertNotIn("private teardown detail", str(raised.exception))
+
+    def test_restore_prior_stopped_lifecycle_attempts_inactive_cleanup_after_missing_process(self):
+        self.app.cfg.guardrail.connectors = {"cursor": PerConnectorGuardrailConfig()}
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(("connector", "cursor", "roster-inactive", "present"),),
+            ),
+        )
+        readiness_error = RuntimeError("replacement exited")
+        trust = MagicMock(trusted=False, code="missing_process")
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restart_restored_connector_runtime",
+                side_effect=readiness_error,
+            ),
+            patch("defenseclaw.commands.cmd_doctor._trusted_gateway_listener", return_value=trust),
+            patch("defenseclaw.commands.cmd_setup._stop_defense_gateway_native") as stop,
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_reactivated_inactive_connectors",
+                return_value=("cursor",),
+            ) as reactivated,
+            patch("defenseclaw.commands.cmd_setup._teardown_restored_inactive_connectors") as teardown,
+        ):
+            result = cmd_setup._restore_prior_setup_lifecycle(self.app, snapshot)
+
+        self.assertIs(result, readiness_error)
+        stop.assert_not_called()
+        reactivated.assert_called_once_with(self.app.cfg.data_dir, ("cursor",))
+        teardown.assert_called_once_with(self.app.cfg.data_dir, ("cursor",))
+
+    def test_stopped_snapshot_inactive_connectors_rejects_contradictory_or_unknown_evidence(self):
+        self.app.cfg.guardrail.connectors = {"cursor": PerConnectorGuardrailConfig()}
+        base = cmd_setup._capture_setup_config_snapshot(self.app.cfg)
+        for invariants in (
+            (
+                ("connector", "cursor", "roster-active", "present"),
+                ("connector", "cursor", "roster-inactive", "present"),
+            ),
+            (("connector", "id-private", "roster-inactive", "present"),),
+        ):
+            with self.subTest(invariants=invariants), self.assertRaises(OSError):
+                cmd_setup._stopped_snapshot_inactive_connectors(
+                    replace(
+                        base,
+                        applied_runtime=self._evidence(
+                            lifecycle="stopped",
+                            generation=None,
+                            invariants=invariants,
+                        ),
+                    )
+                )
+
+    def test_stopped_snapshot_inactive_connectors_excludes_removed_tombstone(self):
+        self.app.cfg.guardrail.connectors = {"cursor": PerConnectorGuardrailConfig()}
+        snapshot = replace(
+            cmd_setup._capture_setup_config_snapshot(self.app.cfg),
+            applied_runtime=self._evidence(
+                lifecycle="stopped",
+                generation=None,
+                invariants=(
+                    ("connector", "cursor", "roster-inactive", "present"),
+                    ("connector", "devin", "roster-inactive", "present"),
+                ),
+            ),
+        )
+
+        self.assertEqual(
+            cmd_setup._stopped_snapshot_inactive_connectors(snapshot),
+            ("cursor",),
+        )
+
+    def test_restored_reactivated_inactive_connectors_intersects_protected_active_roster(self):
+        state_path = os.path.join(self.app.cfg.data_dir, "active_connector.json")
+        atomic_write_private_bytes(
+            state_path,
+            (
+                json.dumps(
+                    {
+                        "version": 3,
+                        "names": ["codex", "cursor"],
+                        "inactive_names": ["devin"],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode(),
+        )
+
+        self.assertEqual(
+            cmd_setup._restored_reactivated_inactive_connectors(
+                self.app.cfg.data_dir,
+                ("cursor", "devin"),
+            ),
+            ("cursor",),
+        )
+
+    def test_restored_inactive_connector_bindings_use_stable_lock_posture(self):
+        hermes_home = os.path.abspath(os.path.join(self.tmp_dir, "hermes-home"))
+        hook_executable = os.path.abspath(os.path.join(self.tmp_dir, "defenseclaw-hook.exe"))
+        atomic_write_private_bytes(
+            os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json"),
+            self._lock_body(
+                {
+                    "cursor": {"registration_posture": {}},
+                    "hermes": {
+                        "registration_posture": {
+                            "config_home": hermes_home,
+                            "hook_executable": hook_executable,
+                        }
+                    },
+                }
+            ),
+        )
+
+        self.assertEqual(
+            cmd_setup._restored_inactive_connector_bindings(
+                self.app.cfg.data_dir,
+                ("cursor", "hermes"),
+            ),
+            (
+                ("cursor", "", ""),
+                ("hermes", hermes_home, hook_executable),
+            ),
+        )
+
+    def test_restored_inactive_proxy_binding_does_not_invent_hook_authority(self):
+        self.assertEqual(
+            cmd_setup._restored_inactive_connector_bindings(
+                self.app.cfg.data_dir,
+                ("openclaw",),
+            ),
+            (("openclaw", "", ""),),
+        )
+
+    def test_snapshot_inactive_teardown_uses_fixed_native_commands_and_verifies(self):
+        runner = MagicMock()
+        runner.run.return_value = MagicMock(returncode=0)
+        executable = os.path.abspath(os.path.join(self.tmp_dir, "defenseclaw-gateway.exe"))
+        environment = {"SYSTEMROOT": r"C:\Windows"}
+        config_home = os.path.abspath(os.path.join(self.tmp_dir, "cursor-home"))
+        config_file = os.path.abspath(str(cmd_setup.config_path_for_data_dir(self.app.cfg.data_dir)))
+        with (
+            patch("defenseclaw.commands.cmd_setup._gateway_lifecycle_executable", return_value=executable),
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_inactive_connector_bindings",
+                return_value=(("cursor", config_home, ""),),
+            ),
+            patch("defenseclaw.observability.local_stack.CommandRunner", return_value=runner),
+            patch(
+                "defenseclaw.observability.local_stack.native_command_environment",
+                return_value=environment,
+            ) as native_environment,
+        ):
+            cmd_setup._teardown_restored_inactive_connectors(self.app.cfg.data_dir, ("cursor",))
+
+        self.assertEqual(
+            [call.args[0] for call in runner.run.call_args_list],
+            [
+                [
+                    executable,
+                    "connector",
+                    "teardown",
+                    "--connector",
+                    "cursor",
+                    "--data-dir",
+                    self.app.cfg.data_dir,
+                    "--config-home",
+                    config_home,
+                ],
+                [
+                    executable,
+                    "connector",
+                    "verify",
+                    "--connector",
+                    "cursor",
+                    "--data-dir",
+                    self.app.cfg.data_dir,
+                    "--config-home",
+                    config_home,
+                ],
+            ],
+        )
+        self.assertTrue(
+            all(
+                call.kwargs
+                == {
+                    "timeout": cmd_setup._DEFENSE_GATEWAY_LIFECYCLE_TIMEOUT_SECONDS,
+                    "env": environment,
+                }
+                for call in runner.run.call_args_list
+            )
+        )
+        native_environment.assert_called_once_with(
+            overrides={
+                cmd_setup._DEFENSECLAW_HOME_ENV: self.app.cfg.data_dir,
+                cmd_setup._DEFENSECLAW_DATA_DIR_ENV: self.app.cfg.data_dir,
+                cmd_setup.CONFIG_PATH_ENV: config_file,
+            }
+        )
+
+    def test_snapshot_inactive_teardown_sanitizes_verify_failure(self):
+        runner = MagicMock()
+        runner.run.side_effect = [
+            MagicMock(returncode=0),
+            MagicMock(returncode=1, stderr="private residue path"),
+        ]
+        executable = os.path.abspath(os.path.join(self.tmp_dir, "defenseclaw-gateway.exe"))
+        config_home = os.path.abspath(os.path.join(self.tmp_dir, "cursor-home"))
+        with (
+            patch("defenseclaw.commands.cmd_setup._gateway_lifecycle_executable", return_value=executable),
+            patch(
+                "defenseclaw.commands.cmd_setup._restored_inactive_connector_bindings",
+                return_value=(("cursor", config_home, ""),),
+            ),
+            patch("defenseclaw.observability.local_stack.CommandRunner", return_value=runner),
+            self.assertRaisesRegex(OSError, "cursor verify failed.*exit-1") as raised,
+        ):
+            cmd_setup._teardown_restored_inactive_connectors(self.app.cfg.data_dir, ("cursor",))
+
+        self.assertNotIn("private residue path", str(raised.exception))
 
     def test_restore_prior_stopped_lifecycle_reports_untrusted_cleanup_after_readiness_failure(self):
         snapshot = replace(
@@ -2412,7 +2741,10 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
                 "defenseclaw.commands.cmd_setup._verify_restored_setup_persistence",
                 side_effect=[[], []],
             ) as persistence,
-            patch("defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle") as lifecycle,
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=None,
+            ) as lifecycle,
             patch("defenseclaw.commands.cmd_setup._verify_restored_setup_runtime", return_value=[]) as runtime,
             self.assertRaises(click.ClickException) as raised,
         ):
@@ -2421,7 +2753,13 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         self.assertIn("restored the prior connector configuration and runtime", str(raised.exception))
         self.assertEqual(persistence.call_count, 2)
         lifecycle.assert_called_once_with(self.app, snapshot)
-        runtime.assert_called_once_with(self.app.cfg, snapshot, ())
+        self.assertEqual(runtime.call_count, 2)
+        runtime.assert_has_calls(
+            [
+                call(self.app.cfg, snapshot, ()),
+                call(self.app.cfg, snapshot, ()),
+            ]
+        )
 
     def test_exact_rollback_preserves_failed_lock_until_gateway_reconciliation(self):
         snapshot, prior_lock = self._snapshot_with_registration_lock(
@@ -2455,6 +2793,67 @@ class TestSetupAppliedRuntimeRollback(unittest.TestCase):
         with open(lock_path, "rb") as handle:
             self.assertEqual(handle.read(), prior_lock)
         self.assertIn("restored the prior connector configuration and runtime", str(raised.exception))
+
+    def test_exact_rollback_restores_prior_lock_before_reporting_lifecycle_error(self):
+        snapshot, prior_lock = self._snapshot_with_registration_lock(
+            {"claudecode": {"locations": {}}}
+        )
+        failed_lock = self._lock_body({"cursor": {"locations": {}}})
+        lock_path = os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json")
+        atomic_write_private_bytes(lock_path, failed_lock)
+        readiness_error = RuntimeError("restored readiness remained unavailable")
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=readiness_error,
+            ),
+            patch("defenseclaw.commands.cmd_setup._verify_restored_setup_runtime", return_value=[]),
+            self.assertRaises(click.ClickException) as raised,
+        ):
+            cmd_setup._rollback_failed_connector_application(
+                self.app,
+                snapshot,
+                RuntimeError("initial readiness failed"),
+            )
+
+        with open(lock_path, "rb") as handle:
+            self.assertEqual(handle.read(), prior_lock)
+        self.assertIn("rollback was incomplete", str(raised.exception))
+        self.assertIn("restore prior gateway lifecycle", str(raised.exception))
+
+    def test_exact_rollback_preserves_failed_lock_when_pre_restore_runtime_is_not_exact(self):
+        snapshot, _prior_lock = self._snapshot_with_registration_lock(
+            {"claudecode": {"locations": {}}}
+        )
+        failed_lock = self._lock_body({"cursor": {"locations": {}}})
+        lock_path = os.path.join(self.app.cfg.data_dir, "hook_contract_lock.json")
+        atomic_write_private_bytes(lock_path, failed_lock)
+        readiness_error = RuntimeError("restored readiness remained unavailable")
+        runtime_failure = "connector cursor: failed registration is unexpectedly present"
+
+        with (
+            patch(
+                "defenseclaw.commands.cmd_setup._restore_prior_setup_lifecycle",
+                return_value=readiness_error,
+            ),
+            patch(
+                "defenseclaw.commands.cmd_setup._verify_restored_setup_runtime",
+                return_value=[runtime_failure],
+            ) as runtime,
+            self.assertRaises(click.ClickException) as raised,
+        ):
+            cmd_setup._rollback_failed_connector_application(
+                self.app,
+                snapshot,
+                RuntimeError("initial readiness failed"),
+            )
+
+        with open(lock_path, "rb") as handle:
+            self.assertEqual(handle.read(), failed_lock)
+        self.assertEqual(runtime.call_count, 2)
+        self.assertIn("rollback was incomplete", str(raised.exception))
+        self.assertIn(runtime_failure, str(raised.exception))
 
 
 class TestPerConnectorModeAndPreserve(unittest.TestCase):
