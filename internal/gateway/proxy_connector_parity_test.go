@@ -270,19 +270,22 @@ func TestSwitchConnector_PerConnectorPersistsState(t *testing.T) {
 			start, _ := reg.Get("codex")
 			start.SetCredentials("tok", "mk")
 
+			setupOpts := connector.SetupOpts{
+				DataDir:      dir,
+				ProxyAddr:    "127.0.0.1:4000",
+				APIAddr:      "127.0.0.1:18970",
+				APIToken:     "tok",
+				WorkspaceDir: workspaceDir,
+			}
+			prepareProxyConnectorSwitchAuthorityFixture(t, target, &setupOpts)
+
 			p := &GuardrailProxy{
 				connector:    start,
 				registry:     reg,
 				gatewayToken: "tok",
 				masterKey:    "mk",
-				setupOpts: connector.SetupOpts{
-					DataDir:      dir,
-					ProxyAddr:    "127.0.0.1:4000",
-					APIAddr:      "127.0.0.1:18970",
-					APIToken:     "tok",
-					WorkspaceDir: workspaceDir,
-				},
-				health: NewSidecarHealth(),
+				setupOpts:    setupOpts,
+				health:       NewSidecarHealth(),
 			}
 
 			p.switchConnectorLocked(target)
@@ -301,7 +304,7 @@ func TestSwitchConnector_PerConnectorPersistsState(t *testing.T) {
 					target, p.connector.Name())
 			}
 
-			persisted := connector.LoadActiveConnector(dir)
+			persisted := connector.LoadActiveConnector(setupOpts.DataDir)
 			if target == "codex" {
 				// No-op: same-connector switch is documented to skip
 				// the persist step (TestSwitchConnectorLocked_SameConnectorIsNoop).
@@ -365,20 +368,23 @@ func TestApplyRuntime_PerConnectorSwitch(t *testing.T) {
 			start, _ := reg.Get("codex")
 			start.SetCredentials("tok", "mk")
 
+			setupOpts := connector.SetupOpts{
+				DataDir:      dir,
+				ProxyAddr:    "127.0.0.1:4000",
+				APIAddr:      "127.0.0.1:18970",
+				APIToken:     "tok",
+				WorkspaceDir: workspaceDir,
+			}
+			prepareProxyConnectorSwitchAuthorityFixture(t, target, &setupOpts)
+
 			p := &GuardrailProxy{
 				connector:    start,
 				registry:     reg,
 				gatewayToken: "tok",
 				masterKey:    "mk",
-				setupOpts: connector.SetupOpts{
-					DataDir:      dir,
-					ProxyAddr:    "127.0.0.1:4000",
-					APIAddr:      "127.0.0.1:18970",
-					APIToken:     "tok",
-					WorkspaceDir: workspaceDir,
-				},
-				health:    NewSidecarHealth(),
-				inspector: NewGuardrailInspector("local", nil, nil, ""),
+				setupOpts:    setupOpts,
+				health:       NewSidecarHealth(),
+				inspector:    NewGuardrailInspector("local", nil, nil, ""),
 			}
 
 			p.applyRuntime(map[string]any{"connector": target})

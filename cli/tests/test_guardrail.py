@@ -3086,6 +3086,10 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
         from defenseclaw.commands.cmd_setup import _wait_for_connector_runtime
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            executable_path = os.path.join(tmpdir, "opencode.exe")
+            executable_body = b"MZsynthetic-opencode"
+            with open(executable_path, "wb") as executable_file:
+                executable_file.write(executable_body)
             plugin_path = os.path.join(tmpdir, "defenseclaw.js")
             plugin_body = (
                 b"// defenseclaw-managed-plugin v7\n"
@@ -3107,6 +3111,9 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                         "compatibility_status": "known",
                         "hook_script_version": "v7",
                         "hook_fail_mode": "open",
+                        "agent_executable_source": "setup-selected",
+                        "agent_executable": executable_path,
+                        "agent_executable_sha256": hashlib.sha256(executable_body).hexdigest(),
                         "locations": {
                             "hook_config_paths": [plugin_path],
                             "hook_script_paths": [plugin_path],
@@ -3150,6 +3157,10 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
             with (
                 patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg),
                 patch(
+                    "defenseclaw.agent_selection._is_windows_opencode_setup_binary",
+                    side_effect=lambda path: path == executable_path,
+                ),
+                patch(
                     "defenseclaw.commands.cmd_doctor._opencode_load_heartbeat_status",
                     return_value=("pass", "loaded"),
                 ),
@@ -3157,15 +3168,33 @@ class TestRestartServicesRestartsAgentGateway(unittest.TestCase):
                 self.assertTrue(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
             os.remove(plugin_path)
-            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+            with (
+                patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg),
+                patch(
+                    "defenseclaw.agent_selection._is_windows_opencode_setup_binary",
+                    side_effect=lambda path: path == executable_path,
+                ),
+            ):
                 self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
             with open(plugin_path, "wb") as plugin_file:
                 plugin_file.write(plugin_body + b"// tampered\n")
-            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+            with (
+                patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg),
+                patch(
+                    "defenseclaw.agent_selection._is_windows_opencode_setup_binary",
+                    side_effect=lambda path: path == executable_path,
+                ),
+            ):
                 self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
             os.remove(lock_path)
-            with patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg):
+            with (
+                patch("defenseclaw.commands.cmd_setup.load_config", return_value=cfg),
+                patch(
+                    "defenseclaw.agent_selection._is_windows_opencode_setup_binary",
+                    side_effect=lambda path: path == executable_path,
+                ),
+            ):
                 self.assertFalse(_wait_for_connector_runtime(tmpdir, ["opencode"], None, None, timeout=1.0))
 
 
