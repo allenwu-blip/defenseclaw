@@ -2784,10 +2784,21 @@ connection.close()
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$false' -and
         $wizardHarnessText -match 'Set-AndAssertCheckState \$startControl \$true') `
         'wizard automation deterministically exercises every connector, mode, and start choice'
-    Assert-True ($wizardHarnessText -match "Send-WizardCommand \`$window 1 'Install'" -and
-        $wizardHarnessText -match "heading -ne 'DefenseClaw is installed'" -and
+    Assert-True ($wizardHarnessText -match 'Send-WizardCommand \$window 1 \$ExpectedAction' -and
+        $wizardHarnessText -match "'DefenseClaw is installed'" -and
+        $wizardHarnessText -match "'DefenseClaw was repaired'" -and
+        $wizardHarnessText -match 'IsWindowVisible\(\$entry\.Window\)' -and
         $wizardHarnessText -match "Send-WizardCommand \`$window 1 'Finish'") `
-        'wizard automation activates Install and verifies the completion page before Finish'
+        'wizard automation verifies fresh-install and existing-install repair surfaces before Finish'
+    $interactiveInstallDefaults = [regex]::Match(
+        $setupWizardSourceText,
+        '(?s)func applyInteractiveInstallDefaults\b.*?(?=\r?\nfunc )'
+    ).Value
+    Assert-True ($interactiveInstallDefaults -match
+            '!opts\.ConnectorSet && !opts\.ModeSet && !opts\.StartGatewaySet' -and
+        $interactiveInstallDefaults -match 'opts\.Action = "repair"' -and
+        $interactiveInstallDefaults -match '(?s)state == nil.*?return opts.*?opts\.Action = "repair"') `
+        'plain interactive reruns route valid existing installs to roster-preserving repair while fresh installs retain the selector'
     Assert-True ($nativeHarnessText -match "Invoke-WizardConfigureLaterAcceptance" -and
         $nativeHarnessText -match "(?s)Invoke-WizardConnectorAcceptance.*?'codex' 'observe'.*?Invoke-WizardConnectorAcceptance.*?'claudecode' 'action'.*?Invoke-WizardConnectorAcceptance.*?'amp' 'action'" -and
         $nativeHarnessText -match "foreach \(\`$wizardConnector in @\('copilot', 'cursor'\)\)") `
@@ -2867,9 +2878,10 @@ connection.close()
         $wizardAcceptance -match 'Assert-WizardConnectorState' -and
         $wizardAcceptance -match 'Assert-WizardHookRegistration' -and
         $wizardAcceptance -match 'Assert-WizardConnectorHealth' -and
+        $wizardAcceptance -match "(?s)Invoke-WizardInstall.*?'repair'" -and
         $wizardAcceptance -match 'setup repair changed the selected' -and
         $wizardAcceptance -notmatch 'DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT') `
-        'wizard connector acceptance validates canonical state, hooks, health, and repair without a contract override'
+        'wizard connector acceptance validates canonical state, hooks, health, and plain-launch repair without a contract override'
     $wizardHealth = [regex]::Match(
         $nativeHarnessText,
         '(?s)function Assert-WizardConnectorHealth\b.*?(?=\r?\nfunction )'

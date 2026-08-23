@@ -9179,6 +9179,12 @@ def _check_hook_contract_lock(
                 "managed plugin and hook contract lock",
             ),
         }
+        if (platform_name or os.name) == "nt":
+            strict_contracts["amp"] = (
+                "Amp",
+                "defenseclaw setup amp --yes",
+                "managed plugin and sealed hook contract lock",
+            )
         if connector in strict_contracts:
             owner, command, evidence = strict_contracts[connector]
             _emit(
@@ -9201,6 +9207,8 @@ def _check_hook_contract_lock(
             "devin": ("Devin", "defenseclaw setup devin --yes --restart"),
             "opencode": ("OpenCode", "defenseclaw setup opencode --yes"),
         }
+        if (platform_name or os.name) == "nt":
+            strict_contracts["amp"] = ("Amp", "defenseclaw setup amp --yes")
         if connector in strict_contracts:
             owner, command = strict_contracts[connector]
             _emit(
@@ -9268,13 +9276,37 @@ def _check_hook_contract_lock(
     # to select the hook contract.  Automatic discovery can legitimately find a
     # different installation (for example an npm .CMD wrapper ahead of the
     # desktop app on PATH); it must not override that protected setup evidence.
-    protected_setup_agent = connector in {"codex", "hermes", "omnigent", "amp"} and all(
+    protected_setup_connector = connector in {"codex", "hermes", "omnigent", "amp"} or (
+        connector == "opencode" and (platform_name or os.name) == "nt"
+    )
+    protected_setup_agent = protected_setup_connector and all(
         (
             str(entry.get("agent_executable") or "").strip(),
             str(entry.get("agent_executable_sha256") or "").strip(),
             str(entry.get("agent_executable_source") or "").strip() == "setup-selected",
         )
     )
+    # OpenCode and Amp are auto-loaded plugin connectors whose ordinary
+    # gateway restart has no independent native-client handshake. Their
+    # reviewed hook contract therefore depends on the durable executable seal
+    # added by setup. Other native connectors retain their existing Doctor
+    # compatibility behavior and validate their runtime through their own
+    # registration checks.
+    windows_protected_authority_required = (
+        connector in {"opencode", "amp"} and (platform_name or os.name) == "nt"
+    )
+    windows_protected_authority_missing = windows_protected_authority_required and (
+        status != "known" or not protected_setup_agent
+    )
+    windows_protected_authority_invalid = ""
+    if windows_protected_authority_missing:
+        detail += " exact_setup_executable_evidence=missing"
+    elif windows_protected_authority_required:
+        from defenseclaw.agent_selection import setup_agent_lock_executable_invariant
+
+        windows_protected_authority_invalid = setup_agent_lock_executable_invariant(data_dir, connector, entry)
+        if windows_protected_authority_invalid:
+            detail += f" exact_setup_executable_evidence=invalid:{windows_protected_authority_invalid}"
     current_version = "" if protected_setup_agent else _discovered_agent_version(data_dir, connector)
     if protected_setup_agent:
         detail += f" agent_executable={entry['agent_executable']}"
@@ -9302,7 +9334,9 @@ def _check_hook_contract_lock(
         if str(entry.get("hook_fail_mode") or "") != expected_cursor_fail_mode:
             _emit("fail", "Hook contract", detail + f" expected_hook_fail_mode={expected_cursor_fail_mode}", r=r)
             return
-    if native_runtime is not None and not native_runtime.healthy:
+    if windows_protected_authority_missing or windows_protected_authority_invalid:
+        _emit("fail", "Hook contract", detail, r=r)
+    elif native_runtime is not None and not native_runtime.healthy:
         _emit("fail", "Hook contract", detail, r=r)
     elif status == "unknown":
         _emit("fail", "Hook contract", detail, r=r)

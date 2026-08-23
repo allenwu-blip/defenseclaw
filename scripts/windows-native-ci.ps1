@@ -5088,7 +5088,8 @@ function Invoke-WizardInstall(
     [string]$ConnectorName,
     [string]$Mode,
     [bool]$StartGateway,
-    [string]$LogPath
+    [string]$LogPath,
+    [ValidateSet('install', 'repair')][string]$ExpectedAction = 'install'
 ) {
     $driver = Join-Path $PSScriptRoot 'test-windows-setup-wizard.ps1'
     $arguments = @{
@@ -5096,6 +5097,7 @@ function Invoke-WizardInstall(
         StateRoot = (Join-Path $Root "wizard-$ConnectorName-$Mode")
         Connector = $ConnectorName
         Mode = $Mode
+        ExpectedAction = $ExpectedAction
         StartGateway = $StartGateway
         ActivateInstall = $true
         TimeoutSeconds = 30
@@ -5215,8 +5217,8 @@ function Invoke-WizardConnectorAcceptance(
     $preserved = Join-Path $DataRoot "wizard-$ConnectorName-preservation.txt"
     Set-Content -LiteralPath $preserved -Value 'preserve' -Encoding ascii
     $stateFingerprint = $beforeState | ConvertTo-Json -Compress -Depth 8
-    Invoke-WindowsSetupStandardUserProcess $Setup @('/repair', '/quiet', '/norestart', 'INSTALLSCOPE=user') `
-        -TimeoutSeconds 1200 -LogPath (Join-Path $Logs "wizard-$ConnectorName-repair.log") | Out-Null
+    Invoke-WizardInstall $Setup $Root $ConnectorName $Mode $true `
+        (Join-Path $Logs "wizard-$ConnectorName-repair.json") 'repair'
 
     $afterState = Get-PackagedConnectorState $python `
         (Join-Path $Logs "wizard-$ConnectorName-after-state.log")

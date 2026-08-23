@@ -151,6 +151,91 @@ func seedCodexSelectionForTest(t *testing.T, dataDir string) {
 	}
 }
 
+func seedOpenCodeSelectionForTest(t *testing.T, dataDir string) {
+	seedOpenCodeSelectionForTestAt(t, dataDir, time.Now().UTC().Truncate(time.Second))
+}
+
+func seedOpenCodeSelectionForTestAt(t *testing.T, dataDir string, now time.Time) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return
+	}
+
+	root := testenv.PrivateTempDir(t)
+	executable := filepath.Join(root, "opencode.exe")
+	body := []byte("MZ OpenCode 1.18.19 CLI reconcile fixture")
+	if err := os.WriteFile(executable, body, 0o700); err != nil {
+		t.Fatalf("write OpenCode selection fixture: %v", err)
+	}
+	digest := sha256.Sum256(body)
+	receipt := map[string]any{
+		"schema_version": 1,
+		"updated_at":     now.Format(time.RFC3339),
+		"selections": map[string]any{
+			"opencode": map[string]any{
+				"connector":          "opencode",
+				"source":             "setup-selected",
+				"executable":         executable,
+				"raw_version":        "1.18.19",
+				"normalized_version": "1.18.19",
+				"sha256":             fmt.Sprintf("%x", digest[:]),
+				"selected_at":        now.Format(time.RFC3339),
+				"expires_at":         now.Add(15 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatalf("encode OpenCode selection fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "agent_selection.json"), encoded, 0o600); err != nil {
+		t.Fatalf("write OpenCode selection receipt: %v", err)
+	}
+	previous := connector.OpenCodeExecutablePathOverride
+	connector.OpenCodeExecutablePathOverride = executable
+	t.Cleanup(func() { connector.OpenCodeExecutablePathOverride = previous })
+}
+
+func seedAmpSelectionForTest(t *testing.T, dataDir string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+
+	executableRoot := testenv.PrivateTempDir(t)
+	executable := filepath.Join(executableRoot, "amp.exe")
+	body := []byte("MZ Amp CLI reconcile fixture")
+	if err := os.WriteFile(executable, body, 0o700); err != nil {
+		t.Fatalf("write Amp selection fixture: %v", err)
+	}
+	digest := sha256.Sum256(body)
+	now := time.Now().UTC().Truncate(time.Second)
+	receipt := map[string]any{
+		"schema_version": 1,
+		"updated_at":     now.Format(time.RFC3339),
+		"selections": map[string]any{
+			"amp": map[string]any{
+				"connector":          "amp",
+				"source":             "setup-selected",
+				"executable":         executable,
+				"raw_version":        "0.0.1785875347-gbc402f",
+				"normalized_version": "0.0.1785875347",
+				"sha256":             fmt.Sprintf("%x", digest[:]),
+				"selected_at":        now.Format(time.RFC3339),
+				"expires_at":         now.Add(15 * time.Minute).Format(time.RFC3339),
+			},
+		},
+	}
+	encoded, err := json.Marshal(receipt)
+	if err != nil {
+		t.Fatalf("encode Amp selection fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "agent_selection.json"), encoded, 0o600); err != nil {
+		t.Fatalf("write Amp selection receipt: %v", err)
+	}
+	return executable
+}
+
 type testHookContractLock struct {
 	Version                 int                                        `json:"version"`
 	SharedHookScriptDigests map[string]string                          `json:"shared_hook_script_digests"`
@@ -697,6 +782,7 @@ func TestConnectorReconcilePreservesClaudeCustodyAcrossPeerSetupAndRosterRefresh
 func TestConnectorReconcileOpenCodePublishesCompleteActivation(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	home := testenv.PrivateTempDir(t)
+	seedOpenCodeSelectionForTest(t, dataDir)
 	t.Setenv("OPENCODE_CONFIG_DIR", home)
 	defer withConnectorState(t, dataDir, "opencode")()
 	connectorFlagConfigHome = home
@@ -741,6 +827,7 @@ func TestConnectorReconcileOpenCodePublishesCompleteActivation(t *testing.T) {
 func TestConnectorReconcileOpenCodeRollsBackAllStateWhenActivationPublishFails(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	home := testenv.PrivateTempDir(t)
+	seedOpenCodeSelectionForTest(t, dataDir)
 	defer withConnectorState(t, dataDir, "opencode")()
 	connectorFlagConfigHome = home
 	cfg.Guardrail.Enabled = true
@@ -809,6 +896,7 @@ func TestConnectorReconcileOpenCodeRemovesAmbiguouslyPublishedNewToken(t *testin
 func TestConnectorReconcileOpenCodeRollsBackLateContractLockFailure(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	home := testenv.PrivateTempDir(t)
+	seedOpenCodeSelectionForTest(t, dataDir)
 	defer withConnectorState(t, dataDir, "opencode")()
 	connectorFlagConfigHome = home
 	cfg.Guardrail.Enabled = true
@@ -849,6 +937,7 @@ func TestConnectorReconcileOpenCodeRollsBackLateContractLockFailure(t *testing.T
 func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *testing.T) {
 	dataDir := testenv.PrivateTempDir(t)
 	home := testenv.PrivateTempDir(t)
+	seedOpenCodeSelectionForTest(t, dataDir)
 	t.Setenv("OPENCODE_CONFIG_DIR", home)
 	defer withConnectorState(t, dataDir, "opencode")()
 	connectorFlagConfigHome = home
@@ -868,6 +957,13 @@ func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *test
 		t.Fatal(err)
 	}
 	lockBefore := connector.LoadHookContractLockEntry(dataDir, "opencode")
+	if lockBefore.Connector != "opencode" {
+		t.Fatalf("initial OpenCode lock missing before superseding repair: %+v", lockBefore)
+	}
+	lockBytesBefore, err := os.ReadFile(filepath.Join(dataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	tokenBefore, err := connector.LoadHookAPIToken(dataDir, "opencode")
 	if err != nil || tokenBefore == "" {
 		t.Fatalf("initial scoped token = %q, %v", tokenBefore, err)
@@ -879,6 +975,16 @@ func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *test
 		return errors.New("injected refresh publication failure")
 	}
 	t.Cleanup(func() { connectorSaveOpenCodeActive = previousSave })
+	// Model a native repair: the fresh receipt supersedes the older sealed lock
+	// for ordinary reads, but rollback still owns the exact unfiltered bytes.
+	lockedAt, err := time.Parse(time.RFC3339, lockBefore.UpdatedAt)
+	if err != nil {
+		t.Fatalf("parse initial OpenCode lock timestamp: %v", err)
+	}
+	seedOpenCodeSelectionForTestAt(t, dataDir, lockedAt.Truncate(time.Second))
+	if filtered := connector.LoadHookContractLockEntry(dataDir, "opencode"); filtered.Connector != "" {
+		t.Fatalf("fresh OpenCode receipt did not supersede prior lock read: %+v", filtered)
+	}
 	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "opencode", "--json")
 	if !strings.Contains(stderr, "injected refresh publication failure") {
 		t.Fatalf("OpenCode refresh stderr = %q, want injected failure", stderr)
@@ -892,12 +998,9 @@ func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *test
 	if err != nil || !bytes.Equal(backupAfter, backupBefore) {
 		t.Fatalf("custody receipt was not restored byte-for-byte: equal=%v err=%v", bytes.Equal(backupAfter, backupBefore), err)
 	}
-	lockAfter := connector.LoadHookContractLockEntry(dataDir, "opencode")
-	// Re-publishing the previous entry refreshes only its evidence timestamp;
-	// every contract and location field must remain identical.
-	lockAfter.UpdatedAt = lockBefore.UpdatedAt
-	if !reflect.DeepEqual(lockAfter, lockBefore) {
-		t.Fatalf("contract lock was not semantically restored: before=%+v after=%+v", lockBefore, lockAfter)
+	lockBytesAfter, err := os.ReadFile(filepath.Join(dataDir, "hook_contract_lock.json"))
+	if err != nil || !bytes.Equal(lockBytesAfter, lockBytesBefore) {
+		t.Fatalf("contract lock was not restored byte-for-byte: equal=%v err=%v", bytes.Equal(lockBytesAfter, lockBytesBefore), err)
 	}
 	if got := connector.LoadActiveConnector(dataDir); got != "opencode" {
 		t.Fatalf("active connector after rollback = %q, want opencode", got)
@@ -913,6 +1016,75 @@ func TestConnectorReconcileOpenCodeRollbackPreservesExistingRegistration(t *test
 	})
 	if err != nil || !current {
 		t.Fatalf("existing OpenCode registration after rollback = %v, %v", current, err)
+	}
+}
+
+func TestConnectorReconcileAmpLateLockFailureRestoresExactRegistration(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("native Windows Amp executable authority")
+	}
+	dataDir := testenv.PrivateTempDir(t)
+	home := testenv.PrivateTempDir(t)
+	seedAmpSelectionForTest(t, dataDir)
+	pluginPath := filepath.Join(home, "plugins", "defenseclaw.ts")
+	previousPluginPath := connector.AMPPluginPathOverride
+	connector.AMPPluginPathOverride = pluginPath
+	t.Cleanup(func() { connector.AMPPluginPathOverride = previousPluginPath })
+	defer withConnectorState(t, dataDir, "amp")()
+	connectorFlagConfigHome = home
+	cfg.Guardrail.Enabled = true
+	cfg.Guardrail.HookFailMode = "open"
+
+	_, stderr, _ := runConnectorCmd(t, "reconcile", "--connector", "amp", "--json")
+	assertConnectorReconcileStderr(t, "amp", stderr)
+	backupPath := filepath.Join(dataDir, "connector_backups", "amp", "config.json")
+	lockPath := filepath.Join(dataDir, "hook_contract_lock.json")
+	pluginBefore, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backupBefore, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenBefore, err := connector.LoadHookAPIToken(dataDir, "amp")
+	if err != nil || tokenBefore == "" {
+		t.Fatalf("initial Amp token = %q, %v", tokenBefore, err)
+	}
+
+	cfg.Guardrail.HookFailMode = "closed"
+	previousSave := connectorSaveAmpLock
+	connectorSaveAmpLock = func(dataDir string, entry connector.HookContractLockEntry) error {
+		if err := previousSave(dataDir, entry); err != nil {
+			return err
+		}
+		return errors.New("injected late Amp contract-lock publication failure")
+	}
+	t.Cleanup(func() { connectorSaveAmpLock = previousSave })
+
+	_, stderr, _ = runConnectorCmd(t, "reconcile", "--connector", "amp", "--json")
+	if !strings.Contains(stderr, "injected late Amp contract-lock publication failure") {
+		t.Fatalf("Amp refresh stderr = %q, want injected publication failure", stderr)
+	}
+	for label, pathAndWant := range map[string]struct {
+		path string
+		want []byte
+	}{
+		"plugin":  {pluginPath, pluginBefore},
+		"receipt": {backupPath, backupBefore},
+		"lock":    {lockPath, lockBefore},
+	} {
+		got, readErr := os.ReadFile(pathAndWant.path)
+		if readErr != nil || !bytes.Equal(got, pathAndWant.want) {
+			t.Fatalf("Amp %s was not restored byte-for-byte: equal=%v err=%v", label, bytes.Equal(got, pathAndWant.want), readErr)
+		}
+	}
+	if tokenAfter, err := connector.LoadHookAPIToken(dataDir, "amp"); err != nil || tokenAfter != tokenBefore {
+		t.Fatalf("Amp scoped token after rollback = %q, %v; want existing token", tokenAfter, err)
 	}
 }
 

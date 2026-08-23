@@ -17,7 +17,7 @@ import (
 )
 
 func TestAMPSetupWritesManagedSystemPlugin(t *testing.T) {
-	root := t.TempDir()
+	root := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(root, ".config", "amp", "plugins", "defenseclaw.ts")
 	previous := AMPPluginPathOverride
 	AMPPluginPathOverride = pluginPath
@@ -30,6 +30,7 @@ func TestAMPSetupWritesManagedSystemPlugin(t *testing.T) {
 		APIToken:     "amp-scoped-token",
 		HookFailMode: "closed",
 	}
+	opts = prepareAmpSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -167,6 +168,7 @@ func TestAMPTeardownRestoresPreExistingDefenseClawPluginAsClean(t *testing.T) {
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "amp-scoped-token",
 	}
+	opts = prepareAmpSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -187,7 +189,7 @@ func TestAMPTeardownRestoresPreExistingDefenseClawPluginAsClean(t *testing.T) {
 }
 
 func TestAMPOwnedHookContractRejectsIncompletePlugin(t *testing.T) {
-	root := t.TempDir()
+	root := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(root, ".config", "amp", "plugins", "defenseclaw.ts")
 	previous := AMPPluginPathOverride
 	AMPPluginPathOverride = pluginPath
@@ -199,6 +201,7 @@ func TestAMPOwnedHookContractRejectsIncompletePlugin(t *testing.T) {
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "amp-scoped-token",
 	}
+	opts = prepareAmpSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -550,10 +553,11 @@ func TestAMPFailModeDefaultsClosed(t *testing.T) {
 	AMPPluginPathOverride = filepath.Join(root, "defenseclaw.ts")
 	t.Cleanup(func() { AMPPluginPathOverride = previous })
 	conn := NewAMPConnector()
-	if err := conn.Setup(context.Background(), SetupOpts{
+	opts := prepareAmpSetupOptsForTest(t, SetupOpts{
 		DataDir: filepath.Join(root, "data"),
 		APIAddr: "127.0.0.1:18970",
-	}); err != nil {
+	})
+	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(AMPPluginPathOverride)

@@ -167,6 +167,28 @@ def test_protected_executable_reports_identity_location_and_digest(monkeypatch, 
     assert agent_selection.setup_agent_lock_executable_invariant(str(tmp_path), "amp", stale_digest) == "digest"
 
 
+def test_opencode_protected_executable_requires_exact_sst_location(monkeypatch, tmp_path: Path) -> None:
+    executable = tmp_path / "opencode.exe"
+    executable.write_bytes(b"MZopencode")
+    digest = hashlib.sha256(executable.read_bytes()).hexdigest()
+    entry = {
+        "agent_executable_source": "setup-selected",
+        "agent_executable": str(executable),
+        "agent_executable_sha256": digest,
+    }
+    monkeypatch.setattr(agent_selection.os, "name", "nt")
+    monkeypatch.setattr(
+        agent_selection,
+        "is_setup_trusted_binary",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("OpenCode must use exact SST admission")),
+    )
+    monkeypatch.setattr(agent_selection, "_is_windows_opencode_setup_binary", lambda path: path == str(executable))
+
+    assert agent_selection.setup_agent_lock_executable_invariant(str(tmp_path), "opencode", entry) == ""
+    monkeypatch.setattr(agent_selection, "_is_windows_opencode_setup_binary", lambda _path: False)
+    assert agent_selection.setup_agent_lock_executable_invariant(str(tmp_path), "opencode", entry) == "location"
+
+
 def test_real_doctor_dispatch_exercises_exact_eleven(monkeypatch, tmp_path: Path) -> None:
     cfg = _config(tmp_path)
     assert set(cmd_doctor._SETUP_READINESS_PRIMARY_LABELS) == set(TEN_CONNECTORS)

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -85,6 +86,7 @@ var connectorExit = os.Exit
 var connectorHookRuntimePaths = hookruntime.CurrentUserPaths
 var connectorSaveOpenCodeActive = connector.SaveActiveConnectors
 var connectorSaveOpenCodeLock = connector.SaveFreshHookContractLockEntry
+var connectorSaveAmpLock = connector.SaveFreshHookContractLockEntry
 var connectorEnsureHookAPIToken = connector.EnsureHookAPIToken
 var connectorVerifyRootPersistentPreRun = rootPersistentPreRunE
 var connectorLaunchOpenHands = connector.LaunchOpenHandsWithNativeOTLP
@@ -592,8 +594,22 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	opts.HookAPITokenScoped = true
 
 	if name == "opencode" {
-		if err := reconcileOpenCodeRegistration(cmd.Context(), dataDir, conn, opts, previous, tokenCreated); err != nil {
+		var lockSnapshot *connector.HookContractLockSnapshot
+		if runtime.GOOS == "windows" {
+			lockSnapshot, err = connector.CaptureHookContractLockSnapshot(dataDir)
+			if err != nil {
+				if tokenCreated {
+					_ = connector.RemoveHookAPIToken(dataDir, "opencode")
+				}
+				return fmt.Errorf("connector reconcile opencode: capture contract-lock rollback point: %w", err)
+			}
+		}
+		if err := reconcileOpenCodeRegistration(cmd.Context(), dataDir, conn, opts, lockSnapshot, previous, tokenCreated); err != nil {
 			return fmt.Errorf("connector reconcile opencode: %w", err)
+		}
+	} else if name == "amp" && runtime.GOOS == "windows" {
+		if err := reconcileAmpRegistration(cmd.Context(), dataDir, conn, opts, tokenCreated); err != nil {
+			return fmt.Errorf("connector reconcile amp: %w", err)
 		}
 	} else {
 		if err := conn.Setup(cmd.Context(), opts); err != nil {
@@ -616,11 +632,75 @@ func runConnectorReconcile(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+func reconcileAmpRegistration(
+	ctx context.Context,
+	dataDir string,
+	conn connector.Connector,
+	opts connector.SetupOpts,
+	tokenCreated bool,
+) error {
+	lockSnapshot, err := connector.CaptureHookContractLockSnapshot(dataDir)
+	if err != nil {
+		if tokenCreated {
+			_ = connector.RemoveHookAPIToken(dataDir, "amp")
+		}
+		return fmt.Errorf("capture contract-lock rollback point: %w", err)
+	}
+	registrationSnapshot, err := connector.CapturePluginArtifactRegistrationSnapshot(opts, "amp")
+	if err != nil {
+		if tokenCreated {
+			_ = connector.RemoveHookAPIToken(dataDir, "amp")
+		}
+		return fmt.Errorf("capture plugin rollback point: %w", err)
+	}
+
+	setupStarted := false
+	lockPublishAttempted := false
+	rollback := func(cause error) error {
+		var rollbackErrs []error
+		if setupStarted {
+			if restoreErr := registrationSnapshot.Restore(); restoreErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore plugin transaction: %w", restoreErr))
+			} else if registrationSnapshot.InitiallyEmpty() {
+				if cleanErr := conn.VerifyClean(opts); cleanErr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("verify plugin rollback: %w", cleanErr))
+				}
+			}
+		}
+		if lockPublishAttempted {
+			if restoreErr := lockSnapshot.Restore(); restoreErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restore exact contract-lock snapshot: %w", restoreErr))
+			}
+		}
+		if tokenCreated {
+			if removeErr := connector.RemoveHookAPIToken(dataDir, "amp"); removeErr != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("remove scoped token: %w", removeErr))
+			}
+		}
+		if len(rollbackErrs) > 0 {
+			return errors.Join(cause, fmt.Errorf("Amp setup rollback failed: %w", errors.Join(rollbackErrs...)))
+		}
+		return cause
+	}
+
+	setupStarted = true
+	if err := conn.Setup(ctx, opts); err != nil {
+		return rollback(fmt.Errorf("setup plugin and custody receipt: %w", err))
+	}
+	entry := connector.NewHookContractLockEntry(opts, conn, version.Current().BinaryVersion)
+	lockPublishAttempted = true
+	if err := connectorSaveAmpLock(dataDir, entry); err != nil {
+		return rollback(fmt.Errorf("publish contract lock: %w", err))
+	}
+	return nil
+}
+
 func reconcileOpenCodeRegistration(
 	ctx context.Context,
 	dataDir string,
 	conn connector.Connector,
 	opts connector.SetupOpts,
+	lockSnapshot *connector.HookContractLockSnapshot,
 	previousLock connector.HookContractLockEntry,
 	tokenCreated bool,
 ) error {
@@ -654,7 +734,11 @@ func reconcileOpenCodeRegistration(
 			}
 		}
 		if lockPublishAttempted {
-			if err := connector.ClearHookContractLockEntry(dataDir, "opencode"); err != nil {
+			if lockSnapshot != nil {
+				if err := lockSnapshot.Restore(); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("restore exact contract-lock snapshot: %w", err))
+				}
+			} else if err := connector.ClearHookContractLockEntry(dataDir, "opencode"); err != nil {
 				rollbackErrs = append(rollbackErrs, fmt.Errorf("clear contract lock: %w", err))
 			} else if previousLock.Connector != "" {
 				if err := connector.SaveFreshHookContractLockEntry(dataDir, previousLock); err != nil {

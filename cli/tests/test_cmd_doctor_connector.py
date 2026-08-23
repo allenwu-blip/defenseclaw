@@ -1116,6 +1116,142 @@ class TestCheckHookContractLock(unittest.TestCase):
         self.assertIn("no hook_contract_lock.json", check["detail"])
         self.assertIn("setup opencode", check["detail"])
 
+    def test_active_windows_amp_without_lock_fails_with_setup_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            r = _DoctorResult()
+            _check_hook_contract_lock(
+                self._cfg(tmp),
+                "amp",
+                r,
+                platform_name="nt",
+            )
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("no hook_contract_lock.json", check["detail"])
+        self.assertIn("setup amp", check["detail"])
+
+    def test_active_windows_amp_without_lock_entry_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump({"connectors": {"codex": {"contract_id": "codex-hooks-v1"}}}, fh)
+            r = _DoctorResult()
+            _check_hook_contract_lock(self._cfg(tmp), "amp", r, platform_name="nt")
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("no amp lock entry", check["detail"])
+        self.assertIn("setup amp", check["detail"])
+
+    def test_windows_opencode_unversioned_lock_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "connectors": {
+                            "opencode": {
+                                "contract_id": "opencode-hooks-v1",
+                                "compatibility_status": "unversioned",
+                                "hook_script_version": "v7",
+                            }
+                        }
+                    },
+                    fh,
+                )
+            r = _DoctorResult()
+            _check_hook_contract_lock(self._cfg(tmp), "opencode", r, platform_name="nt")
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("exact_setup_executable_evidence=missing", check["detail"])
+
+    def test_windows_opencode_known_lock_without_executable_seal_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "connectors": {
+                            "opencode": {
+                                "contract_id": "opencode-hooks-v1",
+                                "compatibility_status": "known",
+                                "raw_agent_version": "1.18.19",
+                                "normalized_agent_version": "1.18.19",
+                                "hook_script_version": "v7",
+                            }
+                        }
+                    },
+                    fh,
+                )
+            r = _DoctorResult()
+            _check_hook_contract_lock(self._cfg(tmp), "opencode", r, platform_name="nt")
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("exact_setup_executable_evidence=missing", check["detail"])
+
+    def test_windows_opencode_known_lock_with_digest_drift_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "connectors": {
+                            "opencode": {
+                                "contract_id": "opencode-hooks-v1",
+                                "compatibility_status": "known",
+                                "raw_agent_version": "1.18.19",
+                                "normalized_agent_version": "1.18.19",
+                                "hook_script_version": "v7",
+                                "agent_executable_source": "setup-selected",
+                                "agent_executable": os.path.join(tmp, "opencode.exe"),
+                                "agent_executable_sha256": "a" * 64,
+                            }
+                        }
+                    },
+                    fh,
+                )
+            with patch(
+                "defenseclaw.agent_selection.setup_agent_lock_executable_invariant",
+                return_value="digest",
+            ):
+                r = _DoctorResult()
+                _check_hook_contract_lock(self._cfg(tmp), "opencode", r, platform_name="nt")
+
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("exact_setup_executable_evidence=invalid:digest", check["detail"])
+
+    def test_non_windows_opencode_seal_does_not_suppress_version_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "hook_contract_lock.json"), "w", encoding="utf-8") as fh:
+                json.dump(
+                    {
+                        "connectors": {
+                            "opencode": {
+                                "contract_id": "opencode-hooks-v1",
+                                "compatibility_status": "known",
+                                "raw_agent_version": "1.18.19",
+                                "normalized_agent_version": "1.18.19",
+                                "hook_script_version": "v7",
+                                "agent_executable_source": "setup-selected",
+                                "agent_executable": "/opt/opencode/bin/opencode",
+                                "agent_executable_sha256": "a" * 64,
+                            }
+                        }
+                    },
+                    fh,
+                )
+            with patch(
+                "defenseclaw.commands.cmd_doctor._discovered_agent_version",
+                return_value="2.0.0",
+            ) as discovered_version:
+                r = _DoctorResult()
+                _check_hook_contract_lock(self._cfg(tmp), "opencode", r, platform_name="linux")
+
+        discovered_version.assert_called_once_with(tmp, "opencode")
+        check = r.checks[-1]
+        self.assertEqual(check["status"], "fail")
+        self.assertIn("drift", check["detail"])
+
     def test_known_contract_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_path = os.path.join(tmp, "hooks", "inspect-tool.sh")

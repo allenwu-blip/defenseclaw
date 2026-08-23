@@ -74,6 +74,7 @@ func TestOpenCodeSetup_WritesBridgePlugin(t *testing.T) {
 		APIToken:     "tok-opencode-123",
 		HookFailMode: "closed",
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -215,6 +216,7 @@ func TestOpenCodeSetupRollsBackPluginAndReceiptWhenFinalPublicationFails(t *test
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "tok-opencode-rollback",
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	err := NewOpenCodeConnector().Setup(context.Background(), opts)
 	if err == nil || !strings.Contains(err.Error(), "injected final plugin publication failure") {
 		t.Fatalf("Setup error = %v, want injected publication failure", err)
@@ -265,6 +267,7 @@ func TestOpenCodePluginReloadsScopedTokenAndFailsCredentialErrorsClosed(t *testi
 	if err := atomicWriteFile(tokenPath, []byte(aToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	conn := NewOpenCodeConnector()
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
@@ -394,6 +397,7 @@ func TestOpenCodeOwnedHookContractRequiresExactRegularFileMarker(t *testing.T) {
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "tok-opencode-marker-test",
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -457,7 +461,8 @@ func TestOpenCodeSetup_FailModeDefaultsClosed(t *testing.T) {
 	t.Cleanup(func() { OpenCodePluginPathOverride = prev })
 
 	conn := NewOpenCodeConnector()
-	if err := conn.Setup(context.Background(), SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970"}); err != nil {
+	opts := prepareOpenCodeSetupOptsForTest(t, SetupOpts{DataDir: filepath.Join(dir, "dc"), APIAddr: "127.0.0.1:18970"})
+	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
 	raw, err := os.ReadFile(pluginPath)
@@ -660,6 +665,7 @@ func TestOpenCodeOwnedHooksPresentRejectsManagedPluginDrift(t *testing.T) {
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "tok-opencode-receipt",
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup: %v", err)
 	}
@@ -731,6 +737,7 @@ func TestOpenCode_OpenClaw_NoCollision(t *testing.T) {
 
 	opencode := NewOpenCodeConnector()
 	opts := SetupOpts{DataDir: dataDir, APIAddr: "127.0.0.1:18970", APIToken: "tok-isolation"}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	if err := opencode.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("opencode Setup: %v", err)
 	}

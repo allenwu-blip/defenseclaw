@@ -26,11 +26,9 @@ func TestVerifyEffectiveHookRegistrationAcceptsOpenCodeManagedV7Plugin(t *testin
 	t.Cleanup(func() { connector.OpenCodePluginPathOverride = previousPath })
 
 	conn := connector.NewOpenCodeConnector()
-	opts := connector.SetupOpts{
-		DataDir:      filepath.Join(root, "state"),
-		APIAddr:      "127.0.0.1:18970",
-		HookFailMode: "closed",
-	}
+	opts := prepareOpenCodeSetupAuthorityFixture(t, filepath.Join(root, "state"))
+	opts.APIAddr = "127.0.0.1:18970"
+	opts.HookFailMode = "closed"
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("OpenCode Setup: %v", err)
 	}

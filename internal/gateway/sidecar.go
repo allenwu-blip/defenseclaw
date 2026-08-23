@@ -3839,7 +3839,7 @@ type multiConnectorSetupRollbackPoint struct {
 	opts             connector.SetupOpts
 	previouslyActive bool
 	previousLock     connector.HookContractLockEntry
-	openCodeSnapshot *connector.OpenCodeRegistrationSnapshot
+	pluginSnapshot   *connector.PluginArtifactRegistrationSnapshot
 }
 
 type multiConnectorSetupTransaction struct {
@@ -3895,16 +3895,16 @@ func (s *Sidecar) prepareSingleConnectorSetupTransaction(
 	if err != nil {
 		return transaction, fmt.Errorf("capture connector %s pre-setup rollback authority: %w", requested.Name(), err)
 	}
-	// The requested OpenCode registration is itself protected rollback
+	// A requested auto-loaded plugin registration is itself protected rollback
 	// authority. Capture and validate it before removing a different active
 	// connector: an unsafe plugin/receipt path must leave that connector's
 	// registration, lock, and active roster completely untouched.
-	if strings.EqualFold(strings.TrimSpace(requested.Name()), "opencode") {
-		openCodeSnapshot, snapshotErr := connector.CaptureOpenCodeRegistrationSnapshot(opts)
+	if name := strings.ToLower(strings.TrimSpace(requested.Name())); name == "opencode" || (name == "amp" && runtime.GOOS == "windows") {
+		pluginSnapshot, snapshotErr := connector.CapturePluginArtifactRegistrationSnapshot(opts, name)
 		if snapshotErr != nil {
-			return transaction, fmt.Errorf("connector opencode rollback snapshot failed before setup: %w", snapshotErr)
+			return transaction, fmt.Errorf("connector %s rollback snapshot failed before setup: %w", name, snapshotErr)
 		}
-		transaction.applied[0].openCodeSnapshot = openCodeSnapshot
+		transaction.applied[0].pluginSnapshot = pluginSnapshot
 	}
 	if err := s.teardownPreviousConnectorTransaction(
 		ctx, registry, requested, apiToken, proxyAddr, apiAddr, masterKey, &transaction,
@@ -4027,10 +4027,19 @@ func (s *Sidecar) setupConnectorsIsolatedTransaction(ctx context.Context, conns 
 	transaction.applied = make([]multiConnectorSetupRollbackPoint, 0, len(registrations))
 	for _, registration := range registrations {
 		previousLock := transaction.hookLockState.RawEntry(registration.conn.Name())
-		var openCodeSnapshot *connector.OpenCodeRegistrationSnapshot
-		if strings.EqualFold(strings.TrimSpace(registration.conn.Name()), "opencode") {
+		var pluginSnapshot *connector.PluginArtifactRegistrationSnapshot
+		var pluginLockSnapshot *connector.HookContractLockSnapshot
+		name := strings.ToLower(strings.TrimSpace(registration.conn.Name()))
+		if name == "opencode" || (name == "amp" && runtime.GOOS == "windows") {
 			var err error
-			openCodeSnapshot, err = connector.CaptureOpenCodeRegistrationSnapshot(registration.opts)
+			if runtime.GOOS == "windows" {
+				pluginLockSnapshot, err = connector.CaptureHookContractLockSnapshot(registration.opts.DataDir)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "[guardrail] WARNING: connector %s lock rollback snapshot failed, skipping before setup (other connectors unaffected): %v\n", registration.conn.Name(), err)
+					continue
+				}
+			}
+			pluginSnapshot, err = connector.CapturePluginArtifactRegistrationSnapshot(registration.opts, name)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "[guardrail] WARNING: connector %s rollback snapshot failed, skipping before setup (other connectors unaffected): %v\n", registration.conn.Name(), err)
 				continue
@@ -4043,13 +4052,19 @@ func (s *Sidecar) setupConnectorsIsolatedTransaction(ctx context.Context, conns 
 			if cleanupErr := rollbackFailedConnectorSetup(registration.conn, registration.opts, ctx); cleanupErr != nil {
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("clean partial connector setup: %w", cleanupErr))
 			}
-			if openCodeSnapshot != nil {
-				if restoreErr := openCodeSnapshot.Restore(); restoreErr != nil {
-					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior OpenCode registration: %w", restoreErr))
+			if pluginSnapshot != nil {
+				if restoreErr := pluginSnapshot.Restore(); restoreErr != nil {
+					rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior %s plugin registration: %w", registration.conn.Name(), restoreErr))
 				}
 			}
-			if restoreErr := restoreFailedConnectorLock(registration.opts.DataDir, registration.conn.Name(), previousLock); restoreErr != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior %s hook contract lock: %w", registration.conn.Name(), restoreErr))
+			var restoreLockErr error
+			if pluginLockSnapshot != nil {
+				restoreLockErr = pluginLockSnapshot.Restore()
+			} else {
+				restoreLockErr = restoreFailedConnectorLock(registration.opts.DataDir, registration.conn.Name(), previousLock)
+			}
+			if restoreLockErr != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior %s hook contract lock: %w", registration.conn.Name(), restoreLockErr))
 			}
 			if len(rollbackErrors) > 0 {
 				if appliedErr := rollbackMultiConnectorPublication(ctx, transaction); appliedErr != nil {
@@ -4083,7 +4098,7 @@ func (s *Sidecar) setupConnectorsIsolatedTransaction(ctx context.Context, conns 
 			opts:             registration.opts,
 			previouslyActive: wasActive,
 			previousLock:     previousLock,
-			openCodeSnapshot: openCodeSnapshot,
+			pluginSnapshot:   pluginSnapshot,
 		})
 		fmt.Fprintf(os.Stderr, "[guardrail] connector ready: %s (%s)\n", registration.conn.Name(), registration.conn.Description())
 	}
@@ -4098,12 +4113,12 @@ func rollbackMultiConnectorPublication(ctx context.Context, transaction multiCon
 		if applied.conn != nil {
 			name = applied.conn.Name()
 		}
-		// Newly added connectors must be torn down. OpenCode is always restored
-		// from its byte-exact plugin/receipt snapshot. A previously-active
-		// non-OpenCode connector may have changed delivery posture during Setup,
+		// Newly added connectors must be torn down. Auto-loaded plugin connectors
+		// are always restored from their byte-exact plugin/receipt snapshots. A
+		// previously-active non-plugin connector may have changed delivery posture during Setup,
 		// so it must be re-applied from its prior lock rather than left paired
 		// with lock metadata that no longer describes the live registration.
-		if applied.conn != nil && applied.previouslyActive && applied.openCodeSnapshot == nil {
+		if applied.conn != nil && applied.previouslyActive && applied.pluginSnapshot == nil {
 			if err := reapplyPreviouslyActiveConnectorRegistration(ctx, applied); err != nil {
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior connector %s registration: %w", name, err))
 			}
@@ -4112,18 +4127,18 @@ func rollbackMultiConnectorPublication(ctx context.Context, transaction multiCon
 				rollbackErrors = append(rollbackErrors, fmt.Errorf("connector %s teardown: %w", name, err))
 			}
 		}
-		if applied.openCodeSnapshot != nil {
-			if err := applied.openCodeSnapshot.Restore(); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior OpenCode registration: %w", err))
+		if applied.pluginSnapshot != nil {
+			if err := applied.pluginSnapshot.Restore(); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore prior %s plugin registration: %w", name, err))
 			}
 		}
 		// Teardown returning nil is not sufficient proof that a newly applied
 		// connector left no residue. Verify the clean boundary after any exact
-		// OpenCode restoration; an OpenCode snapshot that was already populated
+		// plugin restoration; a snapshot that was already populated
 		// intentionally restores that prior registration and is therefore not a
 		// clean-state rollback point.
 		verifyClean := applied.conn != nil && !applied.previouslyActive
-		if applied.openCodeSnapshot != nil && !applied.openCodeSnapshot.InitiallyEmpty() {
+		if applied.pluginSnapshot != nil && !applied.pluginSnapshot.InitiallyEmpty() {
 			verifyClean = false
 		}
 		if verifyClean {
@@ -4142,9 +4157,9 @@ func rollbackMultiConnectorPublication(ctx context.Context, transaction multiCon
 		if removed.conn != nil {
 			name = removed.conn.Name()
 		}
-		if removed.openCodeSnapshot != nil {
-			if err := removed.openCodeSnapshot.Restore(); err != nil {
-				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore removed OpenCode registration: %w", err))
+		if removed.pluginSnapshot != nil {
+			if err := removed.pluginSnapshot.Restore(); err != nil {
+				rollbackErrors = append(rollbackErrors, fmt.Errorf("restore removed %s plugin registration: %w", name, err))
 			}
 			continue
 		}
@@ -4158,7 +4173,7 @@ func rollbackMultiConnectorPublication(ctx context.Context, transaction multiCon
 		}
 	}
 	for _, applied := range transaction.applied {
-		if applied.conn == nil || !applied.previouslyActive || applied.openCodeSnapshot != nil {
+		if applied.conn == nil || !applied.previouslyActive || applied.pluginSnapshot != nil {
 			continue
 		}
 		if err := verifyPreviouslyActiveConnectorRollback(applied); err != nil {
@@ -5095,10 +5110,11 @@ func (s *Sidecar) removedConnectorRollbackCandidates(
 			failed = append(failed, name)
 			continue
 		}
-		if strings.EqualFold(name, "opencode") {
-			point.openCodeSnapshot, err = connector.CaptureOpenCodeRegistrationSnapshot(priorOpts)
+		pluginName := strings.ToLower(strings.TrimSpace(name))
+		if pluginName == "opencode" || (pluginName == "amp" && runtime.GOOS == "windows") {
+			point.pluginSnapshot, err = connector.CapturePluginArtifactRegistrationSnapshot(priorOpts, pluginName)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[guardrail] removed OpenCode rollback snapshot failed — retaining for teardown retry: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[guardrail] removed %s plugin rollback snapshot failed — retaining for teardown retry: %v\n", name, err)
 				failed = append(failed, name)
 				continue
 			}

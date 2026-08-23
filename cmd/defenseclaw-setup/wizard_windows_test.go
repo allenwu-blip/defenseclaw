@@ -450,25 +450,37 @@ func TestOptionsFromWizardSelectionsMatrix(t *testing.T) {
 	}
 }
 
-func TestInteractiveInstallDefaultsPreserveExistingSelections(t *testing.T) {
+func TestPlainInteractiveRerunRoutesExistingInstallToRepair(t *testing.T) {
 	state := &installState{Connector: "claudecode", Mode: "action"}
-	opts := applyInteractiveInstallDefaults(options{Action: "install"}, state, true, true)
-	if opts.Connector != "claudecode" || opts.Mode != "action" || !opts.StartGateway {
-		t.Fatalf("existing interactive defaults were not preserved: %+v", opts)
+	opts := applyInteractiveInstallDefaults(options{
+		Action:    "install",
+		Connector: "none",
+		Mode:      "observe",
+	}, state, true, true)
+	if opts.Action != "repair" {
+		t.Fatalf("existing plain interactive launch action = %q, want repair", opts.Action)
 	}
 	if opts.ConnectorSet || opts.ModeSet || opts.StartGatewaySet {
-		t.Fatalf("defaults were incorrectly marked as explicit arguments: %+v", opts)
+		t.Fatalf("repair routing introduced connector-selection authority: %+v", opts)
+	}
+	if opts.Connector != "none" || opts.Mode != "observe" || opts.StartGateway {
+		t.Fatalf("repair routing copied lossy install-state defaults: %+v", opts)
 	}
 }
 
 func TestInteractiveInstallDefaultsRetireGeminiSelection(t *testing.T) {
 	state := &installState{Connector: "geminicli", Mode: "action"}
-	opts := applyInteractiveInstallDefaults(options{Action: "install"}, state, false, true)
+	opts := applyInteractiveInstallDefaults(options{
+		Action:          "install",
+		Connector:       "none",
+		Mode:            "observe",
+		StartGatewaySet: true,
+	}, state, false, true)
 	if opts.Connector != "none" || opts.Mode != "action" || opts.StartGateway {
 		t.Fatalf("retired Gemini defaults = %+v, want connector-free install", opts)
 	}
-	if opts.ConnectorSet || opts.ModeSet || opts.StartGatewaySet {
-		t.Fatalf("retired Gemini defaults were incorrectly marked explicit: %+v", opts)
+	if opts.ConnectorSet || opts.ModeSet || !opts.StartGatewaySet {
+		t.Fatalf("retired Gemini defaults changed explicit property markers: %+v", opts)
 	}
 }
 
@@ -490,7 +502,12 @@ func TestInteractiveInstallDefaultsRespectExplicitSelections(t *testing.T) {
 
 func TestInteractiveInstallDefaultsRestoreRequiredGateway(t *testing.T) {
 	state := &installState{Connector: "codex", Mode: "observe"}
-	opts := applyInteractiveInstallDefaults(options{Action: "install"}, state, false, true)
+	opts := applyInteractiveInstallDefaults(options{
+		Action:    "install",
+		Connector: "none",
+		Mode:      "observe",
+		ModeSet:   true,
+	}, state, false, true)
 	if !opts.StartGateway {
 		t.Fatalf("configured connector did not restore the required gateway: %+v", opts)
 	}
@@ -498,13 +515,46 @@ func TestInteractiveInstallDefaultsRestoreRequiredGateway(t *testing.T) {
 
 func TestInteractiveInstallDefaultsPreserveCLIOnlyOptOut(t *testing.T) {
 	state := &installState{Connector: "none", Mode: "observe"}
-	opts := applyInteractiveInstallDefaults(options{Action: "install"}, state, false, true)
+	opts := applyInteractiveInstallDefaults(options{
+		Action:    "install",
+		Connector: "none",
+		Mode:      "observe",
+		ModeSet:   true,
+	}, state, false, true)
 	if opts.StartGateway {
 		t.Fatalf("existing CLI-only autostart opt-out was lost: %+v", opts)
 	}
 	fresh := applyInteractiveInstallDefaults(options{Action: "install"}, nil, false, false)
 	if !fresh.StartGateway {
 		t.Fatalf("fresh interactive install did not retain the checked default: %+v", fresh)
+	}
+}
+
+func TestPlainInteractiveFreshInstallRetainsSelectorDefaults(t *testing.T) {
+	opts := applyInteractiveInstallDefaults(options{Action: "install"}, nil, false, false)
+	if opts.Action != "install" || !opts.StartGateway {
+		t.Fatalf("fresh interactive defaults = %+v, want install selector with gateway checked", opts)
+	}
+	if opts.ConnectorSet || opts.ModeSet || opts.StartGatewaySet {
+		t.Fatalf("fresh interactive defaults were incorrectly marked explicit: %+v", opts)
+	}
+}
+
+func TestWizardRepairCompletionDescribesPreservedSecurityState(t *testing.T) {
+	got := wizardRepairCompletionDescription()
+	normalized := strings.ToLower(got)
+	for _, want := range []string{
+		"connector roster",
+		"enforcement mode",
+		"audit history",
+		"run defenseclaw",
+	} {
+		if !strings.Contains(normalized, want) {
+			t.Fatalf("repair completion text %q does not contain %q", got, want)
+		}
+	}
+	if strings.Contains(normalized, "defenseclaw init") {
+		t.Fatalf("repair completion text asks the user to reconfigure: %q", got)
 	}
 }
 

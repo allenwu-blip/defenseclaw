@@ -14,10 +14,11 @@ import (
 	"testing"
 
 	"github.com/defenseclaw/defenseclaw/internal/safefile"
+	"github.com/defenseclaw/defenseclaw/internal/testenv"
 )
 
 func TestOpenCodeSetupRejectsReparsePluginDirectory(t *testing.T) {
-	root := t.TempDir()
+	root := testenv.PrivateTempDir(t)
 	operatorRoot := filepath.Join(root, "operator-owned")
 	if err := os.MkdirAll(operatorRoot, 0o700); err != nil {
 		t.Fatal(err)
@@ -30,11 +31,12 @@ func TestOpenCodeSetupRejectsReparsePluginDirectory(t *testing.T) {
 	OpenCodePluginPathOverride = pluginPath
 	t.Cleanup(func() { OpenCodePluginPathOverride = previous })
 
-	err := NewOpenCodeConnector().Setup(context.Background(), SetupOpts{
+	opts := prepareOpenCodeSetupOptsForTest(t, SetupOpts{
 		DataDir:  filepath.Join(root, "defenseclaw-data"),
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "synthetic OpenCode test token",
 	})
+	err := NewOpenCodeConnector().Setup(context.Background(), opts)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "reparse") {
 		t.Fatalf("Setup through directory redirect error = %v, want reparse rejection", err)
 	}
@@ -44,7 +46,7 @@ func TestOpenCodeSetupRejectsReparsePluginDirectory(t *testing.T) {
 }
 
 func TestOpenCodeSetupPublishesPrivatePluginOverRepairableReadACL(t *testing.T) {
-	root := t.TempDir()
+	root := testenv.PrivateTempDir(t)
 	pluginPath := filepath.Join(root, "OpenCode Config", "plugins", "defenseclaw.js")
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -71,6 +73,7 @@ func TestOpenCodeSetupPublishesPrivatePluginOverRepairableReadACL(t *testing.T) 
 		APIAddr:  "127.0.0.1:18970",
 		APIToken: "synthetic OpenCode test token",
 	}
+	opts = prepareOpenCodeSetupOptsForTest(t, opts)
 	if err := conn.Setup(context.Background(), opts); err != nil {
 		t.Fatalf("Setup over repairable read ACL: %v", err)
 	}

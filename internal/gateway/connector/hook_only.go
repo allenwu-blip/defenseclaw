@@ -52,6 +52,11 @@ var (
 	OpenHandsWorkspaceDirOverride string
 	AntigravityHooksPathOverride  string
 	OpenCodePluginPathOverride    string
+	// OpenCodeExecutablePathOverride is a process-local test seam for packages
+	// that exercise the real Windows connector from a private fixture tree.
+	// Production code never sets it and no environment/config input reaches it;
+	// the default remains the current token's Known Folder WinGet package path.
+	OpenCodeExecutablePathOverride string
 )
 
 var hermesConfigPathResolver = hermespath.ConfigPath
@@ -129,16 +134,20 @@ type openCodeFileSnapshot struct {
 	existed bool
 }
 
-// OpenCodeRegistrationSnapshot is an opaque, connector-local rollback point
-// for the plugin and its custody receipt. It intentionally exposes no token or
-// path contents outside this package.
-type OpenCodeRegistrationSnapshot struct {
+// PluginArtifactRegistrationSnapshot is an opaque, connector-local rollback
+// point for an auto-loaded managed plugin and its custody receipt. It
+// intentionally exposes no token or path contents outside this package.
+type PluginArtifactRegistrationSnapshot struct {
 	pluginPath     string
 	plugin         openCodeFileSnapshot
 	backupPath     string
 	backup         openCodeFileSnapshot
 	initiallyEmpty bool
 }
+
+// OpenCodeRegistrationSnapshot retains the established API name for callers
+// that only manage OpenCode. Amp uses the same byte-exact plugin transaction.
+type OpenCodeRegistrationSnapshot = PluginArtifactRegistrationSnapshot
 
 func snapshotOpenCodeRegistrationFile(path string) (openCodeFileSnapshot, error) {
 	info, err := os.Lstat(path)
@@ -196,24 +205,27 @@ func rollbackOpenCodePluginPublication(
 	return errors.Join(errs...)
 }
 
-// CaptureOpenCodeRegistrationSnapshot records the exact pre-reconcile plugin
-// and receipt bytes after validating the plugin destination custody.
-func CaptureOpenCodeRegistrationSnapshot(opts SetupOpts) (*OpenCodeRegistrationSnapshot, error) {
-	conn := NewOpenCodeConnector()
+func capturePluginArtifactRegistrationSnapshot(
+	opts SetupOpts,
+	conn *hookOnlyConnector,
+) (*PluginArtifactRegistrationSnapshot, error) {
+	if conn == nil || !conn.pluginArtifact {
+		return nil, errors.New("connector does not own a managed plugin artifact")
+	}
 	pluginPath := conn.configPath(opts)
 	if err := prepareOpenCodePluginArtifactDestination(pluginPath); err != nil {
-		return nil, fmt.Errorf("prepare OpenCode plugin destination: %w", err)
+		return nil, fmt.Errorf("prepare %s plugin destination: %w", conn.name, err)
 	}
 	backupPath := managedFileBackupPath(opts.DataDir, conn.name, "config")
 	plugin, err := snapshotOpenCodeRegistrationFile(pluginPath)
 	if err != nil {
-		return nil, fmt.Errorf("snapshot OpenCode plugin: %w", err)
+		return nil, fmt.Errorf("snapshot %s plugin: %w", conn.name, err)
 	}
 	backup, err := snapshotOpenCodeRegistrationFile(backupPath)
 	if err != nil {
-		return nil, fmt.Errorf("snapshot OpenCode custody receipt: %w", err)
+		return nil, fmt.Errorf("snapshot %s custody receipt: %w", conn.name, err)
 	}
-	return &OpenCodeRegistrationSnapshot{
+	return &PluginArtifactRegistrationSnapshot{
 		pluginPath:     pluginPath,
 		plugin:         plugin,
 		backupPath:     backupPath,
@@ -222,18 +234,40 @@ func CaptureOpenCodeRegistrationSnapshot(opts SetupOpts) (*OpenCodeRegistrationS
 	}, nil
 }
 
+// CapturePluginArtifactRegistrationSnapshot records the exact pre-reconcile
+// plugin and receipt bytes for a supported auto-loaded plugin connector.
+func CapturePluginArtifactRegistrationSnapshot(
+	opts SetupOpts,
+	connectorName string,
+) (*PluginArtifactRegistrationSnapshot, error) {
+	switch normalizeConnectorName(connectorName) {
+	case "opencode":
+		return capturePluginArtifactRegistrationSnapshot(opts, NewOpenCodeConnector())
+	case "amp":
+		return capturePluginArtifactRegistrationSnapshot(opts, NewAMPConnector().hookOnlyConnector)
+	default:
+		return nil, fmt.Errorf("connector %q does not own a supported managed plugin artifact", connectorName)
+	}
+}
+
+// CaptureOpenCodeRegistrationSnapshot records OpenCode's exact pre-reconcile
+// plugin and receipt bytes after validating destination custody.
+func CaptureOpenCodeRegistrationSnapshot(opts SetupOpts) (*OpenCodeRegistrationSnapshot, error) {
+	return CapturePluginArtifactRegistrationSnapshot(opts, "opencode")
+}
+
 // Restore atomically replaces or removes both connector-local files to match
 // the pre-reconcile snapshot.
-func (s *OpenCodeRegistrationSnapshot) Restore() error {
+func (s *PluginArtifactRegistrationSnapshot) Restore() error {
 	if s == nil {
-		return errors.New("OpenCode registration snapshot is nil")
+		return errors.New("plugin registration snapshot is nil")
 	}
 	return rollbackOpenCodePluginPublication(s.pluginPath, s.plugin, s.backupPath, s.backup)
 }
 
 // InitiallyEmpty reports whether rollback should leave no managed plugin
 // registration for VerifyClean to confirm.
-func (s *OpenCodeRegistrationSnapshot) InitiallyEmpty() bool {
+func (s *PluginArtifactRegistrationSnapshot) InitiallyEmpty() bool {
 	return s != nil && s.initiallyEmpty
 }
 
@@ -1332,6 +1366,11 @@ func (c *hookOnlyConnector) Capabilities(opts SetupOpts) ConnectorCapabilities {
 }
 
 func (c *hookOnlyConnector) Setup(ctx context.Context, opts SetupOpts) error {
+	if c.name == "opencode" {
+		if err := validateOpenCodeWindowsSetupAdmission(opts); err != nil {
+			return err
+		}
+	}
 	if c.name == "hermes" {
 		configPath := c.configPath(opts)
 		if err := validateHermesWindowsConfigPath(configPath); err != nil {

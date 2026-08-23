@@ -17,6 +17,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -641,13 +642,12 @@ func TestSetupConnectorsIsolated_OpenCodeFailureRestoresPluginAndLock(t *testing
 	if err := os.WriteFile(pluginPath, priorPlugin, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	priorLock := connector.HookContractLockEntry{
-		Connector:           "opencode",
-		ContractID:          "opencode-hooks-v1",
-		CompatibilityStatus: connector.HookCompatibilityKnown,
-		HookScriptVersion:   "v7",
-		RawAgentVersion:     "opencode 1.18.11",
-	}
+	priorOpts := prepareOpenCodeSetupAuthorityFixture(t, s.cfg.DataDir)
+	priorLock := connector.NewHookContractLockEntry(
+		priorOpts,
+		connector.NewOpenCodeConnector(),
+		"prior-test-build",
+	)
 	if err := connector.SaveHookContractLockEntry(s.cfg.DataDir, priorLock); err != nil {
 		t.Fatal(err)
 	}
@@ -681,6 +681,61 @@ func TestSetupConnectorsIsolated_OpenCodeFailureRestoresPluginAndLock(t *testing
 	}
 }
 
+func TestSetupConnectorsIsolated_OpenCodeExecutableDriftPreservesPriorState(t *testing.T) {
+	s := multiBootSidecar(t)
+	s.cfg.DataDir = testenv.PrivateTempDir(t)
+	configDir := testenv.PrivateTempDir(t)
+	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	opts := prepareOpenCodeSetupAuthorityFixture(t, s.cfg.DataDir)
+	opts.APIAddr = "127.0.0.1:18970"
+	opts.APIToken = "synthetic OpenCode token"
+	opts.HookFailMode = "open"
+	conn := connector.NewOpenCodeConnector()
+	if err := conn.Setup(context.Background(), opts); err != nil {
+		t.Fatalf("stage prior OpenCode registration: %v", err)
+	}
+	if err := connector.SaveFreshHookContractLockEntry(
+		s.cfg.DataDir,
+		connector.NewHookContractLockEntry(opts, conn, "prior-test-build"),
+	); err != nil {
+		t.Fatalf("seal prior OpenCode authority: %v", err)
+	}
+	if err := os.Remove(filepath.Join(s.cfg.DataDir, "agent_selection.json")); err != nil {
+		t.Fatal(err)
+	}
+	pluginPath := filepath.Join(configDir, "plugins", "defenseclaw.js")
+	pluginBefore, err := os.ReadFile(pluginPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockBefore, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(opts.AgentExecutable, []byte("MZ drifted OpenCode image"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.setupConnectorsIsolated(
+		context.Background(), []connector.Connector{conn}, "tok", "a", "b", "master",
+		guardrail.NewRulePackCache(),
+	)
+	if err != nil {
+		t.Fatalf("isolated drift handling: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("succeeded = %v, want drifted OpenCode skipped", got)
+	}
+	pluginAfter, err := os.ReadFile(pluginPath)
+	if err != nil || !bytes.Equal(pluginAfter, pluginBefore) {
+		t.Fatalf("OpenCode plugin changed across rejected drift: equal=%v err=%v", bytes.Equal(pluginAfter, pluginBefore), err)
+	}
+	lockAfter, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "hook_contract_lock.json"))
+	if err != nil || !bytes.Equal(lockAfter, lockBefore) {
+		t.Fatalf("OpenCode lock changed across rejected drift: equal=%v err=%v", bytes.Equal(lockAfter, lockBefore), err)
+	}
+}
+
 func TestSetupConnectorsIsolated_OpenCodeRestoreFailureAbortsSurvivors(t *testing.T) {
 	s := multiBootSidecar(t)
 	s.cfg.DataDir = testenv.PrivateTempDir(t)
@@ -699,7 +754,7 @@ func TestSetupConnectorsIsolated_OpenCodeRestoreFailureAbortsSurvivors(t *testin
 		guardrail.NewRulePackCache(),
 	)
 	if err == nil || !strings.Contains(err.Error(), "per-connector rollback incomplete") ||
-		!strings.Contains(err.Error(), "restore prior OpenCode registration") {
+		!strings.Contains(err.Error(), "restore prior opencode plugin registration") {
 		t.Fatalf("setupConnectorsIsolated error = %v, want fail-loud OpenCode restoration failure", err)
 	}
 	if len(got) != 0 {
@@ -980,6 +1035,7 @@ func TestMultiConnectorActivePublicationFailureRestoresExactOpenCodeTransaction(
 	s.health = NewSidecarHealth()
 	configDir := testenv.PrivateTempDir(t)
 	t.Setenv("OPENCODE_CONFIG_DIR", configDir)
+	prepareOpenCodeSetupAuthorityFixture(t, s.cfg.DataDir)
 	pluginPath := filepath.Join(configDir, "plugins", "defenseclaw.js")
 	receiptPath := filepath.Join(s.cfg.DataDir, "connector_backups", "opencode", "config.json")
 

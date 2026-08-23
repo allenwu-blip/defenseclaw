@@ -715,8 +715,9 @@ func SaveHookContractLockEntry(dataDir string, entry HookContractLockEntry) erro
 
 // SaveFreshHookContractLockEntry persists the same contract evidence as
 // SaveHookContractLockEntry but forces an atomic rewrite when the evidence is
-// otherwise unchanged. Gateway boot uses this narrow variant as its durable
-// readiness acknowledgement; ordinary callers retain idempotent no-op saves.
+// otherwise unchanged. Gateway boot and explicit connector reconciliation use
+// this narrow variant as their durable readiness acknowledgement; rollback
+// callers retain idempotent no-op saves.
 func SaveFreshHookContractLockEntry(dataDir string, entry HookContractLockEntry) error {
 	return saveHookContractLockEntry(dataDir, entry, true)
 }
@@ -841,6 +842,17 @@ func saveHookContractLockEntry(dataDir string, entry HookContractLockEntry, forc
 		if !entryChanged && !lockChanged && !forceRefresh {
 			return nil
 		}
+		// Serialize protected executable authority with the contract-lock write.
+		// An ordinary idempotent save is intentionally a no-op: rollback callers
+		// must not lose already-persisted authority merely because the upstream
+		// executable drifted after that authority was captured. Fresh or changed
+		// publications still revalidate the exact selected image and evidence.
+		if err := validateOpenCodeWindowsLockPublication(dataDir, entry); err != nil {
+			return err
+		}
+		if err := validateAmpWindowsLockPublication(dataDir, entry); err != nil {
+			return err
+		}
 		nowTime := time.Now().UTC()
 		now := nowTime.Format(time.RFC3339)
 		if forceRefresh {
@@ -951,7 +963,7 @@ func NewHookContractLockEntry(opts SetupOpts, conn Connector, defenseClawVersion
 		},
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
-	if protectedSetupSelectionConnectorForOS(entry.Connector, runtime.GOOS) && entry.Connector != "opencode" {
+	if protectedSetupSelectionConnectorForOS(entry.Connector, runtime.GOOS) {
 		executable, digest, ok := setupSelectedAgentExecutableEvidence(opts.AgentExecutable)
 		if ok {
 			entry.AgentExecutable = executable
@@ -1369,6 +1381,60 @@ func hookRuntimeArtifactPaths(opts SetupOpts, conn Connector) []string {
 	return uniqueNonEmptyStrings(paths)
 }
 
+type protectedSetupExecutableAuthority struct {
+	path              string
+	digest            string
+	rawVersion        string
+	normalizedVersion string
+	contractID        string
+}
+
+// loadProtectedSetupExecutableAuthority is the single receipt-vs-lock
+// arbitration boundary for native executable authority. A fresh explicit
+// receipt can supersede an older sealed lock; otherwise an existing valid lock
+// remains authoritative until another explicit setup publishes its successor.
+func loadProtectedSetupExecutableAuthority(dataDir, connectorName string) (protectedSetupExecutableAuthority, bool) {
+	connectorName = normalizeConnectorName(connectorName)
+	entry, exists := loadProtectedHookContractEntry(dataDir, connectorName)
+	if exists {
+		if entry.Connector == "" {
+			return protectedSetupExecutableAuthority{}, false
+		}
+		if selection, supersedes := supersedingProtectedSetupSelection(dataDir, connectorName, entry); supersedes {
+			return protectedAuthorityFromSelection(connectorName, selection), true
+		}
+		if !validSetupSelectedAgentExecutableEvidence(entry, connectorName) {
+			return protectedSetupExecutableAuthority{}, false
+		}
+		return protectedSetupExecutableAuthority{
+			path:              entry.AgentExecutable,
+			digest:            entry.AgentExecutableSHA256,
+			rawVersion:        entry.RawAgentVersion,
+			normalizedVersion: entry.NormalizedAgentVersion,
+			contractID:        entry.ContractID,
+		}, true
+	}
+	selection, ok := loadSetupAgentSelection(dataDir, connectorName)
+	if !ok {
+		return protectedSetupExecutableAuthority{}, false
+	}
+	return protectedAuthorityFromSelection(connectorName, selection), true
+}
+
+func protectedAuthorityFromSelection(
+	connectorName string,
+	selection agentSelectionEvidence,
+) protectedSetupExecutableAuthority {
+	resolution := ResolveHookContract(connectorName, selection.RawVersion)
+	return protectedSetupExecutableAuthority{
+		path:              selection.Executable,
+		digest:            selection.SHA256,
+		rawVersion:        selection.RawVersion,
+		normalizedVersion: selection.NormalizedVersion,
+		contractID:        resolution.Contract.ContractID,
+	}
+}
+
 func LoadCachedAgentVersion(dataDir, connectorName string) string {
 	normalizedName := normalizeConnectorName(connectorName)
 	if runtime.GOOS == "darwin" && normalizedName == "openhands" {
@@ -1402,17 +1468,15 @@ func LoadCachedAgentVersion(dataDir, connectorName string) string {
 		return ""
 	}
 	if normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp" {
-		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
-			return selection.RawVersion
-		}
 		if runtime.GOOS == "windows" {
-			if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
-				if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
-					return strings.TrimSpace(entry.RawAgentVersion)
-				}
+			authority, ok := loadProtectedSetupExecutableAuthority(dataDir, normalizedName)
+			if !ok {
 				return ""
 			}
-			return ""
+			return strings.TrimSpace(authority.rawVersion)
+		}
+		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
+			return selection.RawVersion
 		}
 	}
 	signal, ok := loadCachedAgentSignal(dataDir, connectorName)
@@ -1459,20 +1523,15 @@ func LoadCachedAgentExecutable(dataDir, connectorName string) string {
 		return ""
 	}
 	if normalizedName == "hermes" || normalizedName == "omnigent" || normalizedName == "opencode" || normalizedName == "amp" {
-		// A fresh explicit setup/repair selection supersedes the sealed lock.
-		// After the short receipt expires, reconciliation keeps using the
-		// executable identity persisted in the protected contract lock.
-		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
-			return selection.Executable
-		}
 		if runtime.GOOS == "windows" {
-			if entry, exists := loadProtectedHookContractEntry(dataDir, normalizedName); exists {
-				if validSetupSelectedAgentExecutableEvidence(entry, normalizedName) {
-					return strings.TrimSpace(entry.AgentExecutable)
-				}
+			authority, ok := loadProtectedSetupExecutableAuthority(dataDir, normalizedName)
+			if !ok {
 				return ""
 			}
-			return ""
+			return strings.TrimSpace(authority.path)
+		}
+		if selection, ok := loadSetupAgentSelection(dataDir, normalizedName); ok {
+			return selection.Executable
 		}
 	}
 	signal, ok := loadCachedAgentSignal(dataDir, connectorName)
@@ -1554,10 +1613,11 @@ func supersedingProtectedSetupSelection(
 	if selectedErr != nil {
 		return agentSelectionEvidence{}, false
 	}
-	if lockedErr != nil || selectedAt.After(lockedAt) {
+	lockedReceiptTick := lockedAt.Truncate(time.Second)
+	if lockedErr != nil || selectedAt.After(lockedReceiptTick) {
 		return selection, true
 	}
-	if selectedAt.Equal(lockedAt) && !protectedSelectionMatchesLock(selection, entry) {
+	if selectedAt.Equal(lockedReceiptTick) && !protectedSelectionMatchesLock(selection, entry) {
 		return selection, true
 	}
 	return agentSelectionEvidence{}, false

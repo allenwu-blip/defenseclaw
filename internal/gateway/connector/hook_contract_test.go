@@ -2254,6 +2254,57 @@ func TestNewerDifferentAmpReceiptSupersedesThenFreshSealRegainsAuthority(t *test
 	}
 }
 
+func TestDifferentAmpReceiptInSameSerializedSecondSupersedesLock(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("protected Amp setup selections are native-Windows authority")
+	}
+	dir := testenv.PrivateTempDir(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	oldExecutable := filepath.Join(dir, "old", "amp.exe")
+	if err := os.MkdirAll(filepath.Dir(oldExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(oldExecutable, []byte("same-tick old Amp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldEntry := NewHookContractLockEntry(
+		SetupOpts{DataDir: dir, AgentVersion: "0.0.1785875347-gbc402f", AgentExecutable: oldExecutable},
+		NewAMPConnector(),
+		"old-build",
+	)
+	// Locks retain nanoseconds while receipts are serialized at whole-second
+	// precision. Different evidence in that same serialized tick is an explicit
+	// repair and must not be misclassified as older passive evidence.
+	writeAmpContractLockForTest(t, dir, oldEntry, now.Add(750*time.Millisecond))
+
+	newExecutable := filepath.Join(dir, "current", "amp.exe")
+	if err := os.MkdirAll(filepath.Dir(newExecutable), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWriteFile(newExecutable, []byte("same-tick current Amp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	selection := writeAmpSetupSelectionForTest(
+		t,
+		dir,
+		newExecutable,
+		"0.0.1785875347-gbc402f",
+		"0.0.1785875347",
+		now,
+		now.Add(agentSelectionMaxLifetime),
+	)
+
+	if previous := LoadHookContractLockEntry(dir, "amp"); previous.Connector != "" {
+		t.Fatalf("same-tick explicit Amp selection did not supersede old lock: %+v", previous)
+	}
+	if got := LoadCachedAgentVersion(dir, "amp"); got != selection.RawVersion {
+		t.Fatalf("same-tick selected version = %q, want %q", got, selection.RawVersion)
+	}
+	if got := LoadCachedAgentExecutable(dir, "amp"); !sameCodexExecutablePath(got, newExecutable) {
+		t.Fatalf("same-tick selected executable = %q, want %q", got, newExecutable)
+	}
+}
+
 func TestAmpAuthorityNeverFallsBackToAnotherConnectorCacheOrReceipt(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("protected Amp setup selections are native-Windows authority")

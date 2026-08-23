@@ -723,6 +723,9 @@ func (w *setupWizard) finish() {
 		} else {
 			setText(w.description, "DefenseClaw application files were removed. Configuration, connector backups, and audit history were preserved under %USERPROFILE%\\.defenseclaw.")
 		}
+	case "repair":
+		setText(w.heading, "DefenseClaw was repaired")
+		setText(w.description, wizardRepairCompletionDescription())
 	default:
 		setText(w.heading, "DefenseClaw is installed")
 		setText(w.description, wizardCompletionDescription(w.opts.Connector))
@@ -733,31 +736,36 @@ func wizardCancellationCompleted(code int, err error) bool {
 	return code == userExitCode && errors.Is(err, errSetupCancelled)
 }
 
+const wizardInstalledUsage = " Run defenseclaw to open the TUI and review activity. DefenseClaw is a CLI/TUI product; setup did not install a separate GUI application."
+
+func wizardRepairCompletionDescription() string {
+	return "DefenseClaw files and owned connector registrations were repaired. Your configuration, connector roster, enforcement mode, and audit history were preserved." + wizardInstalledUsage
+}
+
 func wizardCompletionDescription(connector string) string {
-	const installed = " Run defenseclaw to open the TUI and review activity. DefenseClaw is a CLI/TUI product; setup did not install a separate GUI application."
 	switch connector {
 	case "codex":
-		return "Codex CLI is configured and the DefenseClaw hooks are trusted automatically." + installed
+		return "Codex CLI is configured and the DefenseClaw hooks are trusted automatically." + wizardInstalledUsage
 	case "claudecode":
-		return "Claude Code is configured and its native Windows hooks are ready." + installed
+		return "Claude Code is configured and its native Windows hooks are ready." + wizardInstalledUsage
 	case "amp":
-		return "Amp is configured with the DefenseClaw system policy plugin under %USERPROFILE%\\.config\\amp\\plugins. Use --plugin-ready-timeout 30 with amp -x." + installed
+		return "Amp is configured with the DefenseClaw system policy plugin under %USERPROFILE%\\.config\\amp\\plugins. Use --plugin-ready-timeout 30 with amp -x." + wizardInstalledUsage
 	case "copilot":
-		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + installed
+		return "GitHub Copilot CLI is configured and its native Windows hooks are ready." + wizardInstalledUsage
 	case "cursor":
-		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + installed
+		return "Cursor Agent is configured with the native Windows PowerShell hook adapter." + wizardInstalledUsage
 	case "hermes":
-		return "Hermes hooks are configured through the direct native launcher. Valid synchronous JSON can block pre-tool calls; hook failures remain open and no native ask surface exists." + installed
+		return "Hermes hooks are configured through the direct native launcher. Valid synchronous JSON can block pre-tool calls; hook failures remain open and no native ask surface exists." + wizardInstalledUsage
 	case "devin":
-		return "Devin CLI is configured with native lifecycle hooks. Exit code 2 blocks; other hook failures remain open, and Restricted Mode disables hooks." + installed
+		return "Devin CLI is configured with native lifecycle hooks. Exit code 2 blocks; other hook failures remain open, and Restricted Mode disables hooks." + wizardInstalledUsage
 	case "antigravity":
-		return "Google Antigravity is configured with its native Windows hooks." + installed
+		return "Google Antigravity is configured with its native Windows hooks." + wizardInstalledUsage
 	case "opencode":
-		return "OpenCode is configured with the native Windows bridge plugin. Restart OpenCode to load it." + installed
+		return "OpenCode is configured with the native Windows bridge plugin. Restart OpenCode to load it." + wizardInstalledUsage
 	case "omnigent":
-		return "OmniGent's native degraded policy integration is configured; terminal and sandbox parity are not included." + installed
+		return "OmniGent's native degraded policy integration is configured; terminal and sandbox parity are not included." + wizardInstalledUsage
 	default:
-		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + installed
+		return "Open a terminal and run defenseclaw init when you are ready to configure a connector." + wizardInstalledUsage
 	}
 }
 
@@ -997,6 +1005,14 @@ func applyInteractiveInstallDefaults(opts options, state *installState, autoStar
 		if !opts.StartGatewaySet {
 			opts.StartGateway = true
 		}
+		return opts
+	}
+	if !opts.ConnectorSet && !opts.ModeSet && !opts.StartGatewaySet {
+		// A normal double-click over a valid existing installation is maintenance,
+		// not a new connector selection. Route it through the existing repair UI;
+		// runInstallContext will bind the transaction to the authenticated install
+		// state and preserve the complete CLI-managed connector roster.
+		opts.Action = "repair"
 		return opts
 	}
 	if !opts.ConnectorSet && state.Connector == "geminicli" {

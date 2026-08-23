@@ -58,6 +58,7 @@ _PROTECTED_LOCK_EXECUTABLE_NAMES = {
     "codex": frozenset({"codex.exe"}),
     "hermes": frozenset({"hermes.exe"}),
     "omnigent": frozenset({"omnigent.exe", "omni.exe"}),
+    "opencode": frozenset({"opencode.exe"}),
     "amp": frozenset({"amp.exe"}),
 }
 _OPENCODE_WINGET_PACKAGE_DIRS = (
@@ -362,7 +363,12 @@ def setup_agent_lock_executable_invariant(data_dir: str, connector: str, entry: 
         return "executable"
     if not isinstance(expected_digest, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_digest):
         return "digest"
-    if not is_setup_trusted_binary(executable, data_dir):
+    trusted = (
+        _is_windows_opencode_setup_binary(executable)
+        if name == "opencode"
+        else is_setup_trusted_binary(executable, data_dir)
+    )
+    if not trusted:
         return "location"
     try:
         actual_digest = stable_executable_sha256(executable)
