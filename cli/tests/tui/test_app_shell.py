@@ -6084,6 +6084,11 @@ async def test_overview_prefers_persisted_hook_totals_over_gateway_request_count
         def __init__(self) -> None:
             self.stats_calls = 0
 
+        def audit_data_version(self) -> int:
+            # Production stores expose a stable source version. Keep this
+            # cache contract independent of wall-clock TTL and suite load.
+            return 1
+
         def list_connector_hook_event_summaries(self, limit: int = 500) -> list[Event]:
             return list(events[-limit:])
 
