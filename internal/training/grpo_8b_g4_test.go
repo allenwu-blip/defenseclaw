@@ -33,19 +33,19 @@ func TestGrpo_Qwen3_8B_G4_100Prompts(t *testing.T) {
 	t.Log("")
 
 	cfg := GrpoLocalConfig{
-		PolicyGGUF:      modelPath,
-		GroupSize:       4,
-		MaxGenLength:    64,
-		ClipEpsilon:     0.2,
-		KLCoef:          0.0,
-		Temperature:     0.8,
-		TopP:            0.9,
-		LearningRate:    1e-4,
-		LoRARank:        8,
-		LoRAAlpha:       8,
-		LoRATargets:     "q,k,v,o,gate,up,down",
-		MemoryMode:      "comfort",
-		RewardFuncs:     []RewardSpec{
+		PolicyGGUF:   modelPath,
+		GroupSize:    4,
+		MaxGenLength: 64,
+		ClipEpsilon:  0.2,
+		KLCoef:       0.0,
+		Temperature:  0.8,
+		TopP:         0.9,
+		LearningRate: 1e-4,
+		LoRARank:     8,
+		LoRAAlpha:    8,
+		LoRATargets:  "q,k,v,o,gate,up,down",
+		MemoryMode:   "comfort",
+		RewardFuncs: []RewardSpec{
 			{Type: "exec", Weight: 0.7, Params: map[string]string{"timeout": "5", "lang": "python"}},
 			{Type: "length", Weight: 0.3, Params: map[string]string{"min": "5", "max": "100"}},
 		},

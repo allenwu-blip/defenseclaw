@@ -21,22 +21,22 @@ const (
 
 // Device holds the registered state of an IoT device.
 type Device struct {
-	DeviceID       uint64       `json:"device_id"`
-	TenantID       uint16       `json:"tenant_id"`
-	FleetID        uint16       `json:"fleet_id"`
-	HWProfile      string       `json:"hw_profile"`
-	FWVersion      string       `json:"fw_version"`
-	PolicyVersion  uint16       `json:"policy_version"`
-	Capabilities   uint8        `json:"capabilities"`
-	Status         DeviceStatus `json:"status"`
-	LastHeartbeat  time.Time    `json:"last_heartbeat"`
-	LastAuditHMAC  []byte       `json:"last_audit_hmac"`
-	SiteID         string       `json:"site_id"`
-	RegisteredAt   time.Time    `json:"registered_at"`
-	Flags          uint8        `json:"flags"`
-	DeniedTotal    uint64       `json:"denied_total"`
-	AllowedTotal   uint64       `json:"allowed_total"`
-	FlashWrites    uint32       `json:"flash_writes"`
+	DeviceID      uint64       `json:"device_id"`
+	TenantID      uint16       `json:"tenant_id"`
+	FleetID       uint16       `json:"fleet_id"`
+	HWProfile     string       `json:"hw_profile"`
+	FWVersion     string       `json:"fw_version"`
+	PolicyVersion uint16       `json:"policy_version"`
+	Capabilities  uint8        `json:"capabilities"`
+	Status        DeviceStatus `json:"status"`
+	LastHeartbeat time.Time    `json:"last_heartbeat"`
+	LastAuditHMAC []byte       `json:"last_audit_hmac"`
+	SiteID        string       `json:"site_id"`
+	RegisteredAt  time.Time    `json:"registered_at"`
+	Flags         uint8        `json:"flags"`
+	DeniedTotal   uint64       `json:"denied_total"`
+	AllowedTotal  uint64       `json:"allowed_total"`
+	FlashWrites   uint32       `json:"flash_writes"`
 }
 
 // Heartbeat represents a parsed 32-byte device heartbeat.
@@ -81,9 +81,9 @@ type AlertHandler func(alert Alert)
 
 // FleetManager is the core fleet management service.
 type FleetManager struct {
-	mu            sync.RWMutex
-	devices       map[uint64]*Device
-	alertHandler  AlertHandler
+	mu                sync.RWMutex
+	devices           map[uint64]*Device
+	alertHandler      AlertHandler
 	heartbeatInterval time.Duration
 }
 

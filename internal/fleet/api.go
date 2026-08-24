@@ -83,27 +83,27 @@ func (a *API) getFleetHealth(w http.ResponseWriter, r *http.Request) {
 	health := a.manager.GetFleetHealth()
 	hits, misses, cacheSize := a.cache.Stats()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"fleet":      health,
-		"cache_hits": hits,
+		"fleet":        health,
+		"cache_hits":   hits,
 		"cache_misses": misses,
-		"cache_size": cacheSize,
+		"cache_size":   cacheSize,
 	})
 }
 
 func (a *API) simulatePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"verdicts_tested":    0,
-		"verdicts_changed":   0,
+		"verdicts_tested":     0,
+		"verdicts_changed":    0,
 		"fits_target_profile": true,
-		"status":             "simulation not yet connected to pipeline",
+		"status":              "simulation not yet connected to pipeline",
 	})
 }
 
 func (a *API) pushThreatIntel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		NewDenyHashes    []string `json:"new_deny_hashes"`
-		RevokeAllowHash  []string `json:"revoke_allow_hashes"`
-		Emergency        bool     `json:"emergency"`
+		NewDenyHashes   []string `json:"new_deny_hashes"`
+		RevokeAllowHash []string `json:"revoke_allow_hashes"`
+		Emergency       bool     `json:"emergency"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})

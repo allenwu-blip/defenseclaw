@@ -8,19 +8,19 @@ import (
 
 // Metrics holds fleet-level Prometheus metrics.
 type Metrics struct {
-	DevicesOnline       atomic.Int64
-	DevicesOffline      atomic.Int64
-	DevicesDegraded     atomic.Int64
-	DevicesLockdown     atomic.Int64
-	BlocksTotal         atomic.Int64
-	AllowsTotal         atomic.Int64
-	VerdictCacheHits    atomic.Int64
-	VerdictCacheMisses  atomic.Int64
-	VerdictCacheSize    atomic.Int64
-	AuditChainBreaks    atomic.Int64
-	PolicyRollbacks     atomic.Int64
-	SpeculativeBlocks   atomic.Int64
-	EmergencySeqGaps    atomic.Int64
+	DevicesOnline      atomic.Int64
+	DevicesOffline     atomic.Int64
+	DevicesDegraded    atomic.Int64
+	DevicesLockdown    atomic.Int64
+	BlocksTotal        atomic.Int64
+	AllowsTotal        atomic.Int64
+	VerdictCacheHits   atomic.Int64
+	VerdictCacheMisses atomic.Int64
+	VerdictCacheSize   atomic.Int64
+	AuditChainBreaks   atomic.Int64
+	PolicyRollbacks    atomic.Int64
+	SpeculativeBlocks  atomic.Int64
+	EmergencySeqGaps   atomic.Int64
 }
 
 // GlobalMetrics is the singleton metrics instance.
