@@ -52,7 +52,6 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/routing"
 	"github.com/defenseclaw/defenseclaw/internal/sandbox"
-	"github.com/defenseclaw/defenseclaw/internal/telemetry"
 	"github.com/defenseclaw/defenseclaw/internal/training"
 	"github.com/defenseclaw/defenseclaw/internal/version"
 	"github.com/defenseclaw/defenseclaw/internal/watcher"
@@ -604,20 +603,6 @@ func buildTranslateInput(cfg *config.Config) routing.TranslateInput {
 	return input
 }
 
-func (s *Sidecar) otelSnapshot() *telemetry.Provider {
-	if s == nil {
-		return nil
-	}
-	return nil // otel integration wired in Phase 2
-}
-
-func (s *Sidecar) swapOTel(next *telemetry.Provider) *telemetry.Provider {
-	if s == nil {
-		return nil
-	}
-	_ = next
-	return nil // otel integration wired in Phase 2
-}
 
 func (s *Sidecar) webhooksSnapshot() *WebhookDispatcher {
 	if s == nil {
