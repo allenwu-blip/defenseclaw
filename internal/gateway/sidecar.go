@@ -608,20 +608,15 @@ func (s *Sidecar) otelSnapshot() *telemetry.Provider {
 	if s == nil {
 		return nil
 	}
-	s.otelMu.RLock()
-	defer s.otelMu.RUnlock()
-	return s.otel
+	return nil // otel integration wired in Phase 2
 }
 
 func (s *Sidecar) swapOTel(next *telemetry.Provider) *telemetry.Provider {
 	if s == nil {
 		return nil
 	}
-	s.otelMu.Lock()
-	defer s.otelMu.Unlock()
-	previous := s.otel
-	s.otel = next
-	return previous
+	_ = next
+	return nil // otel integration wired in Phase 2
 }
 
 func (s *Sidecar) webhooksSnapshot() *WebhookDispatcher {
