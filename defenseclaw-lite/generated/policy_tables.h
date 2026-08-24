@@ -10,6 +10,11 @@
  * Policy version: 1
  */
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#endif
+
 #include "defenseclaw.h"
 
 /* === Severity Rules === */
@@ -82,5 +87,9 @@ static const uint16_t policy_canary_baseline_blocks_per_min = 5;
 static const uint16_t policy_rate_tool_calls_per_min = 60;
 static const uint16_t policy_rate_network_per_min = 30;
 static const uint16_t policy_rate_actuations_per_min = 10;
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 #endif /* DCLAW_POLICY_TABLES_H */

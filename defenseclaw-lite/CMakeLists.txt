@@ -96,20 +96,37 @@ target_include_directories(dclaw_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/generated
 )
 
+# Shared library (for Python ctypes integration, e.g. PicoClaw hook)
+add_library(dclaw_shared SHARED ${CORE_SOURCES})
+target_include_directories(dclaw_shared PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_BINARY_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/generated
+)
+set_target_properties(dclaw_shared PROPERTIES
+    OUTPUT_NAME "dclaw_core"
+    POSITION_INDEPENDENT_CODE ON
+)
+
 # Link mbedTLS for STANDARD/EDGE profiles
 if(DCLAW_MQTT_ENABLED)
     find_package(MbedTLS QUIET)
     if(MbedTLS_FOUND)
         target_link_libraries(dclaw_core PRIVATE MbedTLS::mbedtls MbedTLS::mbedcrypto)
+        target_link_libraries(dclaw_shared PRIVATE MbedTLS::mbedtls MbedTLS::mbedcrypto)
         target_compile_definitions(dclaw_core PRIVATE DCLAW_HAS_MBEDTLS=1)
+        target_compile_definitions(dclaw_shared PRIVATE DCLAW_HAS_MBEDTLS=1)
     else()
         find_library(MBEDTLS_LIB mbedtls)
         if(MBEDTLS_LIB)
             target_link_libraries(dclaw_core PRIVATE mbedtls mbedcrypto mbedx509)
+            target_link_libraries(dclaw_shared PRIVATE mbedtls mbedcrypto mbedx509)
             target_compile_definitions(dclaw_core PRIVATE DCLAW_HAS_MBEDTLS=1)
+            target_compile_definitions(dclaw_shared PRIVATE DCLAW_HAS_MBEDTLS=1)
         else()
             message(WARNING "mbedTLS not found — TLS/MQTT stubs will be used (dev mode)")
             target_compile_definitions(dclaw_core PRIVATE DCLAW_HAS_MBEDTLS=0)
+            target_compile_definitions(dclaw_shared PRIVATE DCLAW_HAS_MBEDTLS=0)
         endif()
     endif()
 endif()
