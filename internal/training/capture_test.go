@@ -13,7 +13,6 @@ import (
 
 // TestCapturer_WritesAsync verifies that entries are written asynchronously.
 func TestCapturer_WritesAsync(t *testing.T) {
-	// Create temp store
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_async.db")
 	store, err := NewStore(dbPath)
@@ -22,11 +21,8 @@ func TestCapturer_WritesAsync(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Create capturer
 	capturer := NewCapturer(store)
-	defer capturer.Stop()
 
-	// Capture 10 entries
 	for i := 0; i < 10; i++ {
 		entry := TraceEntry{
 			Timestamp:        time.Now().UTC().Format(time.RFC3339),
@@ -40,10 +36,9 @@ func TestCapturer_WritesAsync(t *testing.T) {
 		capturer.Capture(entry)
 	}
 
-	// Sleep to allow async writes
-	time.Sleep(100 * time.Millisecond)
+	// Stop waits for drain to complete — all writes finish before we query
+	capturer.Stop()
 
-	// Verify count
 	count, err := store.CountByCategory("test")
 	if err != nil {
 		t.Fatalf("CountByCategory failed: %v", err)
