@@ -4963,6 +4963,24 @@
         }
       ],
       "since": "0.12.0"
+    },
+    {
+      "name": "DEFENSECLAW_H",
+      "category": "test_fixture",
+      "purpose": "C header guard (#ifndef DEFENSECLAW_H) in architecture docs. Not an environment variable.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "docs/architecture/defenseclaw-lite-iot-proposal.md",
+          "description": "C header guard in documentation"
+        }
+      ],
+      "since": "0.12.0"
     }
   ]
 }

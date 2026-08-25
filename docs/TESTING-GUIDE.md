@@ -4,15 +4,16 @@
 
 ```bash
 # All installed by DefenseClaw:
-defenseclaw setup routing --enable    # Installs vllm-sr, starts Docker container
 defenseclaw setup training --enable   # Installs mlx-lm-lora + llama-server
 defenseclaw setup hermes --yes        # (or any connector to start the gateway)
+# Routing (requires feature/semantic-router branch):
+#   defenseclaw setup routing --enable
 ```
 
 Verify:
 ```bash
-defenseclaw setup routing --status    # Should show: enabled, port 8888
 defenseclaw setup training --status   # Should show: enabled, backend mlx-lm-lora
+# defenseclaw setup routing --status  # (when routing feature is merged)
 docker ps | grep semantic             # Should show: defenseclaw-semantic-router
 which llama-server                    # Should show: /opt/homebrew/bin/llama-server
 ```
@@ -198,7 +199,7 @@ curl -s http://127.0.0.1:8090/v1/chat/completions \
 
 | Issue | Check | Fix |
 |-------|-------|-----|
-| SR not classifying | `docker ps \| grep semantic` | `defenseclaw setup routing --enable` |
+| SR not classifying | `docker ps \| grep semantic` | Re-run routing setup (see semantic-router branch) |
 | No traces captured | `sqlite3 ~/.defenseclaw/training-store.db "SELECT COUNT(*) FROM training_traces;"` | Ensure gateway is running + processing requests |
 | Training fails (OOM) | Check model size vs available RAM | Use smaller model (1.5B) or reduce batch size |
 | Training fails (deps) | `python -c "import mlx_lm"` | Use isolated venv: `python -m venv /tmp/train-venv && source /tmp/train-venv/bin/activate && pip install mlx-lm` |
