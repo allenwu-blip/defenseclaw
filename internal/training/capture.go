@@ -18,6 +18,7 @@ type Capturer struct {
 	store   *Store
 	ch      chan TraceEntry
 	stopCh  chan struct{}
+	doneCh  chan struct{}
 	stopped bool
 	mu      sync.Mutex
 }
@@ -28,6 +29,7 @@ func NewCapturer(store *Store) *Capturer {
 		store:  store,
 		ch:     make(chan TraceEntry, captureBufferSize),
 		stopCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
 	}
 	go c.drain()
 	return c
@@ -62,15 +64,16 @@ func (c *Capturer) Stop() {
 	c.mu.Unlock()
 
 	close(c.stopCh)
+	<-c.doneCh
 }
 
 // drain runs in a goroutine and continuously writes entries from the channel
 // to the store until Stop() is called.
 func (c *Capturer) drain() {
+	defer close(c.doneCh)
 	for {
 		select {
 		case <-c.stopCh:
-			// Drain remaining entries before returning
 			for {
 				select {
 				case entry := <-c.ch:

@@ -357,4 +357,3 @@ func tokenDiversityReward(tokens []int, groupIdx int) float64 {
 
 	return score
 }
-

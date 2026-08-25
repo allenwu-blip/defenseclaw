@@ -21,8 +21,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
-import time
 
 import click
 
@@ -53,7 +51,10 @@ def training() -> None:
 @click.option("--kl-coef", type=float, help="GRPO: KL penalty coefficient (0=disabled).")
 @click.option("--lora-rank", type=int, help="LoRA rank (default 16).")
 @click.option("--reward-funcs", multiple=True, help="Reward functions (repeatable). E.g. 'exec:timeout=10'")
-@click.option("--memory-mode", type=click.Choice(["auto", "minimal", "standard", "comfort"]), default="auto", help="Memory mode for model placement.")
+@click.option(
+    "--memory-mode", type=click.Choice(["auto", "minimal", "standard", "comfort"]),
+    default="auto", help="Memory mode for model placement.",
+)
 @click.option("--max-steps", type=int, help="Maximum training steps (0=all prompts).")
 @click.option("--dry-run", is_flag=True, help="Show what would be done without running.")
 @pass_ctx
@@ -156,7 +157,7 @@ def training_run(
 
     # Dispatch to gateway binary (the Go binary handles the actual training)
     click.echo("  Starting training...")
-    click.echo(f"  (This may take hours for real models. Progress reported below.)")
+    click.echo("  (This may take hours for real models. Progress reported below.)")
     click.echo()
 
     # Build args for the gateway binary's internal training trigger
@@ -276,7 +277,10 @@ def training_list(app: AppContext, category: str | None) -> None:
             vid = version.get("id", "?")
             ratio = version.get("eval_ratio", 0)
             is_promoted = "★" if vid == promoted else " "
-            status = "promoted" if version.get("promoted") else ("rolled back" if version.get("rolled_back") else "registered")
+            status = (
+                "promoted" if version.get("promoted")
+                else ("rolled back" if version.get("rolled_back") else "registered")
+            )
             click.echo(f"    {is_promoted} {vid}  ratio={ratio:.3f}  [{status}]")
     click.echo()
 
@@ -392,7 +396,10 @@ def _find_gateway_binary() -> str | None:
     # Check common locations
     candidates = [
         shutil.which("defenseclaw-gateway"),
-        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "defenseclaw-gateway"),
+        os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            "defenseclaw-gateway",
+        ),
         os.path.join(os.getcwd(), "defenseclaw-gateway"),
         os.path.join(os.getcwd(), "bin", "defenseclaw-gateway"),
     ]

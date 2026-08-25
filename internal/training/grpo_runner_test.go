@@ -221,9 +221,9 @@ func TestLoadGRPODataset(t *testing.T) {
 
 func TestGroupAdvantages(t *testing.T) {
 	tests := []struct {
-		name     string
-		rewards  []float64
-		checkFn  func(t *testing.T, adv []float64)
+		name    string
+		rewards []float64
+		checkFn func(t *testing.T, adv []float64)
 	}{
 		{
 			name:    "empty rewards",

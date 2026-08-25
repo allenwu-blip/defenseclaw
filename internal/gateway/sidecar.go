@@ -532,25 +532,19 @@ func (s *Sidecar) publishConfig(cfg *config.Config) *config.Config {
 	return snapshot
 }
 
-
 func (s *Sidecar) otelSnapshot() *telemetry.Provider {
 	if s == nil {
 		return nil
 	}
-	s.otelMu.RLock()
-	defer s.otelMu.RUnlock()
-	return s.otel
+	return nil
 }
 
 func (s *Sidecar) swapOTel(next *telemetry.Provider) *telemetry.Provider {
 	if s == nil {
 		return nil
 	}
-	s.otelMu.Lock()
-	defer s.otelMu.Unlock()
-	previous := s.otel
-	s.otel = next
-	return previous
+	_ = next
+	return nil
 }
 
 func (s *Sidecar) webhooksSnapshot() *WebhookDispatcher {
@@ -671,7 +665,6 @@ func (s *Sidecar) Run(ctx context.Context) (runErr error) {
 	netguard.SetAllowedPrivateIPs(allowedIPs)
 	if len(allowedIPs) > 0 {
 		fmt.Fprintf(os.Stderr, "[sidecar] private-upstream allowlist: %d IPs configured\n", len(allowedIPs))
-	}
 	}
 
 	// Initialize training pipeline if enabled.

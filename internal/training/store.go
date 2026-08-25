@@ -35,7 +35,7 @@ type Store struct {
 
 // NewStore opens a SQLite database at the given path and ensures the schema exists.
 func NewStore(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open training store: %w", err)
 	}

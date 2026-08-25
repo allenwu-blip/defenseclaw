@@ -35,23 +35,23 @@ func TestGrpo_Qwen3_8B_100Prompts(t *testing.T) {
 	t.Log("")
 
 	cfg := GrpoLocalConfig{
-		PolicyGGUF:   modelPath,
-		GroupSize:     2,
-		MaxGenLength:  32,
-		ClipEpsilon:   0.2,
-		KLCoef:        0.0,
-		Temperature:   0.8,
-		TopP:          0.9,
-		LearningRate:  1e-4,
-		LoRARank:      8,
-		LoRAAlpha:     8,
-		LoRATargets:   "q,k,v,o,gate,up,down",
-		MemoryMode:    "comfort",
-		RewardFuncs:   nil, // diversity reward
-		MaxSteps:      100,
+		PolicyGGUF:      modelPath,
+		GroupSize:       2,
+		MaxGenLength:    32,
+		ClipEpsilon:     0.2,
+		KLCoef:          0.0,
+		Temperature:     0.8,
+		TopP:            0.9,
+		LearningRate:    1e-4,
+		LoRARank:        8,
+		LoRAAlpha:       8,
+		LoRATargets:     "q,k,v,o,gate,up,down",
+		MemoryMode:      "comfort",
+		RewardFuncs:     nil, // diversity reward
+		MaxSteps:        100,
 		CheckpointEvery: 10,
-		DatasetPath:   datasetPath,
-		OutputDir:     outputDir,
+		DatasetPath:     datasetPath,
+		OutputDir:       outputDir,
 	}
 
 	t.Log("  Starting GRPO training...")
