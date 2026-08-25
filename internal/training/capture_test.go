@@ -96,9 +96,8 @@ func TestCapturer_NonBlockingWhenFull(t *testing.T) {
 		t.Fatal("captures blocked - should be non-blocking")
 	}
 
-	// Stop capturer first to flush remaining writes before checking count
+	// Stop capturer — blocks until drain completes
 	capturer.Stop()
-	time.Sleep(100 * time.Millisecond)
 	count, err := store.CountByCategory("test")
 	if err != nil {
 		t.Fatalf("CountByCategory failed: %v", err)
