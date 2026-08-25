@@ -51,7 +51,6 @@ import (
 	"github.com/defenseclaw/defenseclaw/internal/policy"
 	"github.com/defenseclaw/defenseclaw/internal/redaction"
 	"github.com/defenseclaw/defenseclaw/internal/sandbox"
-	"github.com/defenseclaw/defenseclaw/internal/telemetry"
 	"github.com/defenseclaw/defenseclaw/internal/training"
 	"github.com/defenseclaw/defenseclaw/internal/version"
 	"github.com/defenseclaw/defenseclaw/internal/watcher"
@@ -530,21 +529,6 @@ func (s *Sidecar) publishConfig(cfg *config.Config) *config.Config {
 	s.cfgCurrent.Store(snapshot)
 	s.hookPolicyMu.Unlock()
 	return snapshot
-}
-
-func (s *Sidecar) otelSnapshot() *telemetry.Provider {
-	if s == nil {
-		return nil
-	}
-	return nil
-}
-
-func (s *Sidecar) swapOTel(next *telemetry.Provider) *telemetry.Provider {
-	if s == nil {
-		return nil
-	}
-	_ = next
-	return nil
 }
 
 func (s *Sidecar) webhooksSnapshot() *WebhookDispatcher {
