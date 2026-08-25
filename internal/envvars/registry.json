@@ -4768,58 +4768,201 @@
     },
     {
       "name": "DEFENSECLAW_TRAINING_CATEGORY",
-      "category": "training",
-      "purpose": "Training data category for GRPO pipeline (e.g. prompt_injection, code_safety)."
+      "category": "runtime_path",
+      "purpose": "Training data category for GRPO pipeline (e.g. prompt_injection, code_safety).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_BACKEND",
-      "category": "training",
-      "purpose": "Training backend engine (vllm, trl)."
+      "category": "runtime_path",
+      "purpose": "Training backend engine (vllm, trl).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_ALGORITHM",
-      "category": "training",
-      "purpose": "RL algorithm (grpo, ppo)."
+      "category": "runtime_path",
+      "purpose": "RL algorithm (grpo, ppo).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_POLICY_GGUF",
-      "category": "training",
-      "purpose": "Path to policy model GGUF file for training."
+      "category": "runtime_path",
+      "purpose": "Path to policy model GGUF file for training.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_MEMORY_MODE",
-      "category": "training",
-      "purpose": "Memory mode for GPU placement (auto, minimal, standard, comfort)."
+      "category": "runtime_path",
+      "purpose": "Memory mode for GPU placement (auto, minimal, standard, comfort).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_GROUP_SIZE",
-      "category": "training",
-      "purpose": "GRPO group size (number of samples per prompt)."
+      "category": "runtime_path",
+      "purpose": "GRPO group size (number of samples per prompt).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_MAX_GEN_LENGTH",
-      "category": "training",
-      "purpose": "Maximum generation length in tokens for training."
+      "category": "runtime_path",
+      "purpose": "Maximum generation length in tokens for training.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_KL_COEF",
-      "category": "training",
-      "purpose": "KL divergence coefficient for PPO/GRPO."
+      "category": "runtime_path",
+      "purpose": "KL divergence coefficient for PPO/GRPO.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_LORA_RANK",
-      "category": "training",
-      "purpose": "LoRA rank for adapter training."
+      "category": "runtime_path",
+      "purpose": "LoRA rank for adapter training.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_TRAINING_MAX_STEPS",
-      "category": "training",
-      "purpose": "Maximum training steps (0 = all prompts)."
+      "category": "runtime_path",
+      "purpose": "Maximum training steps (0 = all prompts).",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "cli/defenseclaw/commands/cmd_training.py",
+          "description": "GRPO training pipeline"
+        }
+      ],
+      "since": "0.12.0"
     },
     {
       "name": "DEFENSECLAW_H",
-      "category": "false_positive",
-      "purpose": "C header guard (#ifndef DEFENSECLAW_H) in architecture docs. Not an environment variable."
+      "category": "test_fixture",
+      "purpose": "C header guard (#ifndef DEFENSECLAW_H) in architecture docs. Not an environment variable.",
+      "default": "",
+      "accepted_values": [
+        "any"
+      ],
+      "security_impact": "low",
+      "surface_in_doctor": false,
+      "consumers": [
+        {
+          "location": "docs/architecture/defenseclaw-lite-iot-proposal.md",
+          "description": "C header guard in documentation (not an env var)"
+        }
+      ],
+      "since": "0.12.0"
     }
   ]
 }
