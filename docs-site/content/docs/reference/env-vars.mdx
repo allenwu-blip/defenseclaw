@@ -121,6 +121,7 @@ scope at each such row.
 | `DEFENSECLAW_TRAINING_MAX_STEPS` | low | `unset` | `any` | Maximum training steps (0 = all prompts). | — | `cli/defenseclaw/commands/cmd_training.py` — GRPO training pipeline |
 | `DEFENSECLAW_TRAINING_MEMORY_MODE` | low | `unset` | `any` | Memory mode for GPU placement (auto, minimal, standard, comfort). | — | `cli/defenseclaw/commands/cmd_training.py` — GRPO training pipeline |
 | `DEFENSECLAW_TRAINING_POLICY_GGUF` | low | `unset` | `any` | Path to policy model GGUF file for training. | — | `cli/defenseclaw/commands/cmd_training.py` — GRPO training pipeline |
+| `DEFENSECLAW_TRAINING_REWARD_FUNCS` | low | `unset` | `any` | Comma-separated reward function specifications for GRPO training. | — | `cli/defenseclaw/commands/cmd_training.py` — GRPO training pipeline |
 | `DEFENSECLAW_VENV` | — | `${DEFENSECLAW_HOME}/.venv` | `any-absolute-path` | Path to the DefenseClaw uv venv. | — | `scripts/install.sh` — Installer venv path<br/>`scripts/upgrade.sh` — Upgrader venv path |
 | `MIGRATION_DEFENSECLAW_HOME` | — | (set by upgrade.sh) | `any-absolute-path` | Passed by scripts/upgrade.sh to the migration step. | — | `scripts/upgrade.sh` — Upgrade-time migration runner |
 
