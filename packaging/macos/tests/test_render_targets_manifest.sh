@@ -387,7 +387,17 @@ t_all_connectors_absent_yields_zero_rows() {
   # will wire hooks the moment a supported connector CLI appears.
   discover_agent_version() { printf ''; }
 
-  local users="shawnxu:501:20:/Users/shawnxu"
+  # Use a mktemp'd home so the presence-fallback in
+  # render_targets_manifest can't find any CLI-authored artifact for the
+  # stub user — the assertion is "zero rows when nothing is installed",
+  # which is only provable against a home that provably has nothing in
+  # it. A hardcoded path like /Users/shawnxu can carry over dev-box
+  # dotfiles (e.g. ~/.claude/sessions from a real Claude Code session)
+  # and flip the presence signal to true, emitting a row and failing the
+  # test. Matches the mktemp pattern used in t_absent_connector_skipped_partial_box.
+  local test_home
+  test_home="$(mktemp -d "${TMPROOT}/home.absent.XXXXXX")"
+  local users="shawnxu:501:20:${test_home}"
   local out
   out="$(render_targets_manifest "${TEST_SUPPORT}" "codex,claudecode,cursor" "${users}")"
 
