@@ -470,6 +470,36 @@ _native_claudecode_version_from_dir() {
   fi
 }
 
+# _claude_desktop_embedded_version_from_home HOME -> echoes the highest
+# embedded Claude Code version or "".
+#
+# Claude Desktop bundles Claude Code per user under:
+#
+#   ~/Library/Application Support/Claude/claude-code/<X.Y.Z>/claude.app/
+#     Contents/MacOS/claude
+#
+# The desktop application version is not the Claude Code version, so the
+# version-labelled embedded bundle directory is the authoritative metadata
+# source. This is deliberately metadata-only: do not execute a desktop- or
+# user-bundled binary during installer discovery.
+_claude_desktop_embedded_version_from_home() {
+  local home="$1"
+  local root="${home}/Library/Application Support/Claude/claude-code"
+  [[ -d "${root}" ]] || return 0
+  local -r semver_re='^[0-9]+\.[0-9]+\.[0-9]+([._+-].*)?$'
+  local bin version_dir version best=""
+  for bin in "${root}"/*/claude.app/Contents/MacOS/claude; do
+    [[ -x "${bin}" ]] || continue
+    version_dir="$(dirname -- "$(dirname -- "$(dirname -- "$(dirname -- "${bin}")")")")"
+    version="$(basename -- "${version_dir}")"
+    [[ "${version}" =~ ${semver_re} ]] || continue
+    if [[ -z "${best}" ]] || _semver_gt "${version}" "${best}"; then
+      best="${version}"
+    fi
+  done
+  [[ -n "${best}" ]] && echo "${best}"
+}
+
 # _semver_gt A B -> exit 0 iff A > B under SemVer 2.0.0 precedence.
 #
 # Ordering is: MAJOR.MINOR.PATCH first (numeric), then prerelease tail.
@@ -895,6 +925,9 @@ discover_agent_version() {
       # meets MIN_CLAUDECODE_VERSION; if nothing clears the minimum,
       # the highest overall is still emitted so the Go hook gate
       # reports drift rather than the noisier "unversioned".
+      v="$(_claude_desktop_embedded_version_from_home "${home}")"
+      [[ -n "${v}" ]] && versions+=("${v}")
+
       for base in \
         "${home}/.local/share/claude" \
         /opt/claude \
@@ -1133,11 +1166,10 @@ enumerate_local_users() {
 # One `- ` block per (user × supported-and-installed connector).
 # Unsupported connectors (not in is_supported_connector) are skipped: they
 # have no per-user setup path in the CLI. Connectors the caller asked for
-# but which discover_agent_version could not locate on THIS user's home
-# ARE ALSO skipped — no CLI/app/extension present means there is nothing
-# to hook, and emitting the row would just churn the guardian with a
-# permanent "agent_version empty" failure per tick. Users who install the
-# connector later are picked up by the hook-enumerator's next re-render.
+# but which discover_agent_version could not resolve are omitted from the
+# active manifest so the guardian does not churn on an empty version. The
+# omission is logged and the enumerator best-effort pre-stages the connector
+# hook artifacts; a later render can emit the active row once discovery works.
 yaml_double_quoted_scalar() {
   local value="$1"
   case "${value}" in
@@ -1188,7 +1220,15 @@ render_targets_manifest() {
       is_supported_connector "${c}" || continue
       q_connector="$(yaml_double_quoted_scalar "${c}")" || continue
       ver="$(DC_INSTALLER_TARGET_USER="${name}" discover_agent_version "${c}" "${home}" 2>/dev/null || true)"
-      [[ -n "${ver}" ]] || continue
+      if [[ -z "${ver}" ]]; then
+        printf '[hook-enumerator] WARN: connector=%s user=%s home=%s omitted from targets.yaml: agent version discovery returned empty\n' \
+          "${c}" "${name}" "${home}" >&2
+        if _prestage_hook_artifacts_for_target "${support_dir}" "${c}" "${name}" "${uid}" "${gid}" "${home}"; then
+          printf '[hook-enumerator] pre-staged connector=%s user=%s hook artifacts after version discovery miss\n' \
+            "${c}" "${name}" >&2
+        fi
+        continue
+      fi
       q_ver="$(yaml_double_quoted_scalar "${ver}")" || q_ver='""'
       # data_dir is intentionally omitted from each target block: the
       # guardian's validateUserDataDir requires the data_dir to be inside
@@ -1208,6 +1248,46 @@ render_targets_manifest() {
 EOF
     done
   done <<< "${user_lines}"
+}
+
+# _prestage_hook_artifacts_for_target SUPPORT_DIR CONNECTOR USER UID GID HOME
+# -> creates connector hook artifacts without modifying native agent config.
+#
+# This is intentionally a best-effort fallback for the version-discovery miss
+# path. The enterprise CLI performs the security-sensitive validation,
+# target-user credential drop, scoped-token handling, and artifact writing.
+# A missing binary is treated as an unavailable optimization so manifest
+# rendering remains usable in test fixtures and partial installs.
+_prestage_hook_artifacts_for_target() {
+  local support_dir="$1"
+  local connector="$2"
+  local user_name="$3"
+  local uid="$4"
+  local gid="$5"
+  local home="$6"
+  local binary="${DC_INSTALLER_PRESTAGE_BIN:-${support_dir}/bin/defenseclaw-gateway}"
+  local config_path="${DC_INSTALLER_CONFIG_PATH:-${support_dir}/etc/config.yaml}"
+
+  if [[ ! -x "${binary}" ]]; then
+    printf '[hook-enumerator] WARN: connector=%s user=%s pre-stage unavailable: gateway binary missing or not executable (%s)\n' \
+      "${connector}" "${user_name}" "${binary}" >&2
+    return 1
+  fi
+
+  local output
+  if ! output="$(
+    DEFENSECLAW_CONFIG="${config_path}" "${binary}" enterprise hooks prestage \
+      --connector "${connector}" \
+      --user-home "${home}" \
+      --uid "${uid}" \
+      --gid "${gid}" \
+      --json
+  2>&1)"; then
+    printf '[hook-enumerator] WARN: connector=%s user=%s pre-stage failed: %s\n' \
+      "${connector}" "${user_name}" "${output}" >&2
+    return 1
+  fi
+  return 0
 }
 
 # ---- config rendering --------------------------------------------------

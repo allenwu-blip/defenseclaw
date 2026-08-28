@@ -40,20 +40,28 @@ import (
 )
 
 var (
-	enterpriseHookConnector     string
-	enterpriseHookUser          string
-	enterpriseHookUserHome      string
-	enterpriseHookUID           int
-	enterpriseHookGID           int
-	enterpriseHookDataDir       string
-	enterpriseHookAPIAddr       string
-	enterpriseHookProxyAddr     string
-	enterpriseHookAgentVersion  string
-	enterpriseHookManifest      string
-	enterpriseHookJSON          bool
-	enterpriseHookWatchInterval time.Duration
-	enterpriseHookWatchDebounce time.Duration
-	enterpriseHookWatchSettle   time.Duration
+	enterpriseHookConnector         string
+	enterpriseHookUser              string
+	enterpriseHookUserHome          string
+	enterpriseHookUID               int
+	enterpriseHookGID               int
+	enterpriseHookDataDir           string
+	enterpriseHookAPIAddr           string
+	enterpriseHookProxyAddr         string
+	enterpriseHookAgentVersion      string
+	enterpriseHookManifest          string
+	enterpriseHookJSON              bool
+	enterpriseHookWatchInterval     time.Duration
+	enterpriseHookWatchDebounce     time.Duration
+	enterpriseHookWatchSettle       time.Duration
+	enterpriseHookPrestageConnector string
+	enterpriseHookPrestageUser      string
+	enterpriseHookPrestageUserHome  string
+	enterpriseHookPrestageUID       int
+	enterpriseHookPrestageGID       int
+	enterpriseHookPrestageDataDir   string
+	enterpriseHookPrestageAPIAddr   string
+	enterpriseHookPrestageJSON      bool
 )
 
 const defaultEnterpriseHookManifest = "/etc/defenseclaw/hook-guardian/targets.yaml"
@@ -86,6 +94,17 @@ a systemd timer/MDM guardian. First-time installs require the agent's native
 hook config file to already exist, so broad process discovery cannot create a
 new app profile from scratch.`,
 	RunE: runEnterpriseHooksInstall,
+}
+
+var enterpriseHooksPrestageCmd = &cobra.Command{
+	Use:   "prestage",
+	Short: "Materialize hook artifacts without modifying agent configuration",
+	Long: `Materialize a connector's per-user DefenseClaw hook artifacts without
+editing the connector's native configuration. This is used by managed
+enterprise discovery when the connector is configured but its agent version
+has not yet been resolved. A later enterprise hooks reconcile activates the
+native hook configuration after a valid target is emitted.`,
+	RunE: runEnterpriseHooksPrestage,
 }
 
 var enterpriseHooksReconcileCmd = &cobra.Command{
@@ -133,6 +152,22 @@ func init() {
 		"Raw local agent version used for hook-contract validation")
 	enterpriseHooksInstallCmd.Flags().BoolVar(&enterpriseHookJSON, "json", false,
 		"Emit machine-readable JSON")
+	enterpriseHooksPrestageCmd.Flags().StringVar(&enterpriseHookPrestageConnector, "connector", "",
+		"Hook-native connector to pre-stage (for example codex or claudecode)")
+	enterpriseHooksPrestageCmd.Flags().StringVar(&enterpriseHookPrestageUser, "user", "",
+		"Target local user name (resolves home, uid, and gid)")
+	enterpriseHooksPrestageCmd.Flags().StringVar(&enterpriseHookPrestageUserHome, "user-home", "",
+		"Target user's home directory (required when --user is omitted)")
+	enterpriseHooksPrestageCmd.Flags().IntVar(&enterpriseHookPrestageUID, "uid", -1,
+		"Target user uid (defaults to --user lookup or user-home owner)")
+	enterpriseHooksPrestageCmd.Flags().IntVar(&enterpriseHookPrestageGID, "gid", -1,
+		"Target user gid (defaults to --user lookup or user-home owner)")
+	enterpriseHooksPrestageCmd.Flags().StringVar(&enterpriseHookPrestageDataDir, "data-dir", "",
+		"Per-user DefenseClaw data dir for hook artifacts (default: <user-home>/.defenseclaw)")
+	enterpriseHooksPrestageCmd.Flags().StringVar(&enterpriseHookPrestageAPIAddr, "api-addr", "",
+		"Local gateway API host:port used by hook scripts (default: 127.0.0.1:<gateway.api_port>)")
+	enterpriseHooksPrestageCmd.Flags().BoolVar(&enterpriseHookPrestageJSON, "json", false,
+		"Emit machine-readable JSON")
 
 	enterpriseHooksReconcileCmd.Flags().StringVar(&enterpriseHookManifest, "manifest", defaultEnterpriseHookManifest,
 		"YAML manifest of per-user hook targets")
@@ -157,6 +192,7 @@ func init() {
 		"Post-reconcile quiet window: fsnotify events observed within this window after a reconcile completes are ignored (the guardian's own writes into watched dirs would otherwise loop-trigger reconcile forever)")
 
 	enterpriseHooksCmd.AddCommand(enterpriseHooksInstallCmd)
+	enterpriseHooksCmd.AddCommand(enterpriseHooksPrestageCmd)
 	enterpriseHooksCmd.AddCommand(enterpriseHooksReconcileCmd)
 	enterpriseHooksCmd.AddCommand(enterpriseHooksWatchCmd)
 	enterpriseCmd.AddCommand(enterpriseHooksCmd)
@@ -224,6 +260,72 @@ func enterpriseHooksInstallError(cmd *cobra.Command, err error) error {
 		payload := map[string]any{"ok": false, "error": err.Error()}
 		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(payload)
 		return fmt.Errorf("enterprise hooks install failed")
+	}
+	return err
+}
+
+func runEnterpriseHooksPrestage(cmd *cobra.Command, _ []string) error {
+	if cfg == nil {
+		return enterpriseHooksPrestageError(cmd, fmt.Errorf("enterprise hooks prestage: config is not loaded"))
+	}
+	if err := validateEnterpriseHookManagedRuntime(); err != nil {
+		return enterpriseHooksPrestageError(cmd, err)
+	}
+	target, err := resolveEnterpriseHookTargetValues(
+		enterpriseHookPrestageUser,
+		enterpriseHookPrestageUserHome,
+		enterpriseHookPrestageUID,
+		enterpriseHookPrestageGID,
+		enterpriseHookPrestageDataDir,
+	)
+	if err != nil {
+		return enterpriseHooksPrestageError(cmd, err)
+	}
+	connectorName := strings.TrimSpace(enterpriseHookPrestageConnector)
+	if connectorName == "" {
+		return enterpriseHooksPrestageError(cmd, fmt.Errorf("enterprise hooks prestage: --connector is required"))
+	}
+	apiAddr := strings.TrimSpace(enterpriseHookPrestageAPIAddr)
+	if apiAddr == "" {
+		apiAddr = fmt.Sprintf("127.0.0.1:%d", cfg.Gateway.APIPort)
+	}
+	token, err := enterpriseHookScopedToken(cfg.DataDir, connectorName)
+	if err != nil {
+		return enterpriseHooksPrestageError(cmd, err)
+	}
+
+	opts := enterprisehooks.InstallOptions{
+		ConnectorName: connectorName,
+		UserHome:      target.home,
+		OwnerUID:      target.uid,
+		OwnerGID:      target.gid,
+		DataDir:       enterpriseHookPrestageDataDir,
+		APIAddr:       apiAddr,
+		APIToken:      token,
+		HookFailMode:  cfg.EffectiveHookFailModeForConnector(connectorName),
+		WorkspaceDir:  cfg.ConnectorWorkspaceDir(),
+		Registry:      newConnectorRegistryWithPlugins(),
+	}
+
+	ctx, cancel := context.WithCancel(cmd.Context())
+	defer cancel()
+	result, err := enterprisehooks.PreStage(ctx, opts)
+	if err != nil {
+		return enterpriseHooksPrestageError(cmd, err)
+	}
+	if enterpriseHookPrestageJSON {
+		payload := map[string]any{"ok": true, "pre_staged": true, "result": result}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(payload)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "  %s %s hook artifacts pre-staged for %s\n", Style("✓", "fg=green", "bold"), result.Connector, result.UserHome)
+	return nil
+}
+
+func enterpriseHooksPrestageError(cmd *cobra.Command, err error) error {
+	if enterpriseHookPrestageJSON {
+		payload := map[string]any{"ok": false, "pre_staged": false, "error": err.Error()}
+		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(payload)
+		return fmt.Errorf("enterprise hooks prestage failed")
 	}
 	return err
 }

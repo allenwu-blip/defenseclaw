@@ -543,6 +543,48 @@ func TestInstallBootstrapsMissingHookConfigFirstTime(t *testing.T) {
 	}
 }
 
+func TestPreStageWritesHookArtifactsWithoutNativeConfig(t *testing.T) {
+	skipIfRoot(t)
+	home := newTestHome(t)
+	result, err := PreStage(context.Background(), InstallOptions{
+		ConnectorName: "claudecode",
+		UserHome:      home,
+		OwnerUID:      os.Getuid(),
+		OwnerGID:      os.Getgid(),
+		APIAddr:       "127.0.0.1:18970",
+		APIToken:      "claude-scoped-token",
+		HookFailMode:  "open",
+		Registry:      connector.NewDefaultRegistry(),
+	})
+	if err != nil {
+		t.Fatalf("PreStage: %v", err)
+	}
+	if result.Connector != "claudecode" {
+		t.Fatalf("result.Connector = %q, want claudecode", result.Connector)
+	}
+
+	settingsPath := filepath.Join(home, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
+		t.Fatalf("pre-stage must not create native Claude settings %s (err=%v)", settingsPath, err)
+	}
+	hookPath := filepath.Join(home, ".defenseclaw", "hooks", "claude-code-hook.sh")
+	info, err := os.Stat(hookPath)
+	if err != nil {
+		t.Fatalf("pre-staged Claude hook missing: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("pre-staged hook mode = %o, want 700", info.Mode().Perm())
+	}
+	tokenPath := filepath.Join(home, ".defenseclaw", "hooks", ".hook-claudecode.token")
+	tokenInfo, err := os.Stat(tokenPath)
+	if err != nil {
+		t.Fatalf("pre-staged scoped token missing: %v", err)
+	}
+	if tokenInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("pre-staged token mode = %o, want 600", tokenInfo.Mode().Perm())
+	}
+}
+
 func TestInstallRepairsMissingHookConfigWhenPreviouslyProtected(t *testing.T) {
 	skipIfRoot(t)
 	home := newTestHome(t)

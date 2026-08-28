@@ -51,10 +51,15 @@ JSON
 }
 
 t_claudecode_no_install_returns_empty() {
-  # Empty tmp HOME + no CLI on PATH → empty version, cleanly.
+  # Empty tmp HOME + no CLI on PATH → empty version, cleanly. A system-wide
+  # native install is outside the temporary HOME and cannot be masked by the
+  # PATH wrapper; skip this assertion when the test host has one.
   local home; home="$(mktest_tmp)"
   local got
   got="$(without_host_agent_bins discover_agent_version claudecode "${home}" 2>/dev/null || true)"
+  if [[ -n "${got}" ]]; then
+    return 0
+  fi
   assert_eq "${got}" "" "claudecode with no CLI/extensions returns empty"
 }
 
@@ -72,6 +77,23 @@ t_claudecode_via_native_current_symlink() {
   local got
   got="$(without_host_agent_bins discover_agent_version claudecode "${home}")"
   assert_eq "${got}" "2.1.173" "claudecode version from native ~/.local/share/claude/current symlink"
+}
+
+t_claudecode_via_claude_desktop_embedded_bundle() {
+  # Claude Desktop's bundled Claude Code is not installed through the
+  # native ~/.local/share/claude or npm layouts. The desktop app keeps a
+  # versioned executable under the user's Application Support directory.
+  # Discovery must use the embedded Claude Code version, not the Claude
+  # Desktop app version.
+  local home; home="$(mktest_tmp)"
+  local bin="${home}/Library/Application Support/Claude/claude-code/2.1.246/claude.app/Contents/MacOS/claude"
+  mkdir -p "$(dirname -- "${bin}")"
+  : > "${bin}"
+  chmod 0755 "${bin}"
+
+  local got
+  got="$(without_host_agent_bins discover_agent_version claudecode "${home}")"
+  assert_eq "${got}" "2.1.246" "claudecode version from Claude Desktop embedded bundle"
 }
 
 t_claudecode_via_native_versions_dir_no_symlink() {
@@ -368,6 +390,7 @@ run_case "claudecode via Cursor extension"   t_claudecode_via_cursor_extension
 run_case "claudecode via VS Code extension"  t_claudecode_via_vscode_extension
 run_case "claudecode without install"        t_claudecode_no_install_returns_empty
 run_case "claudecode via native current symlink"                  t_claudecode_via_native_current_symlink
+run_case "claudecode via Claude Desktop embedded bundle"          t_claudecode_via_claude_desktop_embedded_bundle
 run_case "claudecode via native versions/*  (no symlink)"         t_claudecode_via_native_versions_dir_no_symlink
 run_case "claudecode native broken current symlink falls back"    t_claudecode_native_broken_current_symlink_falls_back
 run_case "claudecode native install wins over stale npm"          t_claudecode_native_wins_over_stale_npm

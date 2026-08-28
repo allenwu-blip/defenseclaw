@@ -13,6 +13,11 @@
 TEST_SUPPORT="/opt/cisco/secureclient/defenseclaw"
 TEST_RUNTIME="${TEST_SUPPORT}/runtime"
 
+# Keep ordinary manifest tests hermetic when the test host happens to have an
+# installed gateway binary. The pre-stage-specific case below supplies its
+# own fake binary explicitly.
+export DC_INSTALLER_PRESTAGE_BIN="${TMPROOT}/missing-defenseclaw-gateway"
+
 # Stub discover_agent_version so these tests are hermetic. Without a stub
 # the render policy "skip a target row when the connector is not
 # installed" would make row counts depend on whether the dev machine
@@ -126,6 +131,38 @@ t_absent_connector_skipped_partial_box() {
   local count
   count="$(printf '%s\n' "${out}" | grep -c "^  - user:" || true)"
   assert_eq "${count}" "1" "one target when only cursor is installed"
+}
+
+t_missing_version_prestages_hook_artifacts() {
+  # A supported connector with no discoverable version is still eligible
+  # for artifact-only pre-staging. The fake binary records the arguments;
+  # production uses the real enterprise hooks prestage subcommand.
+  local home; home="$(mktest_tmp)"
+  local fakebin="$(mktest_tmp)/defenseclaw-gateway"
+  local call_log="$(mktest_tmp)/prestage.calls"
+  local diag_log="$(mktest_tmp)/prestage.diagnostics"
+  cat > "${fakebin}" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "${call_log}"
+printf '{"ok":true,"pre_staged":true}\n'
+SH
+  chmod 0700 "${fakebin}"
+
+  discover_agent_version() { printf ''; }
+  local out
+  out="$(
+    DC_INSTALLER_PRESTAGE_BIN="${fakebin}" \
+      render_targets_manifest "${TEST_SUPPORT}" "claudecode" "alice:501:20:${home}" 2>"${diag_log}"
+  )"
+
+  local count
+  count="$(printf '%s\n' "${out}" | grep -c '^  - user:' || true)"
+  assert_eq "${count}" "0" "missing version remains absent from active target manifest"
+  assert_contains "$(cat "${call_log}")" "enterprise hooks prestage" "pre-stage command invoked"
+  assert_contains "$(cat "${call_log}")" "--connector claudecode" "pre-stage connector"
+  assert_contains "$(cat "${call_log}")" "--user-home ${home}" "pre-stage target home"
+  assert_contains "$(cat "${diag_log}")" "omitted from targets.yaml" "version discovery omission diagnostic"
+  assert_contains "$(cat "${diag_log}")" "pre-staged connector=claudecode" "pre-stage diagnostic"
 }
 
 t_all_connectors_absent_yields_zero_rows() {
@@ -257,6 +294,7 @@ run_case "unsupported connectors dropped"                       t_unsupported_co
 run_case "empty user list still emits valid manifest"           t_empty_users_still_emits_valid_manifest
 run_case "empty connector list still emits valid manifest"      t_empty_connectors_still_emits_valid_manifest
 run_case "absent connectors are skipped (partial-box render)"   t_absent_connector_skipped_partial_box
+run_case "missing version pre-stages hook artifacts"            t_missing_version_prestages_hook_artifacts
 run_case "all connectors absent yields zero rows"               t_all_connectors_absent_yields_zero_rows
 run_case "rendered targets.yaml parses (schema round-trip)"     t_rendered_yaml_parses
 run_case "rows pin enabled + int uid/gid"                       t_rows_pin_enabled_and_int_uid_gid
