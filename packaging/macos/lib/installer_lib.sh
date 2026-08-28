@@ -1064,40 +1064,66 @@ enumerate_local_users() {
 # observability / audit modes the target wires end-to-end. If the presence
 # signal is also absent, the row is still skipped as before.
 
-# connector_present_for_user CONNECTOR HOME -> exit 0 iff there is a cheap
-# per-user artifact on disk indicating the user has interacted with this
+# connector_present_for_user CONNECTOR HOME -> exit 0 iff there is a
+# per-user artifact on disk indicating the user has actually used this
 # connector's CLI, even when discover_agent_version could not resolve the
 # install path. Used as a fallback presence check in render_targets_manifest
 # so a CLI installed via a channel we don't probe still gets a manifest row.
 #
-# The signals are limited to files/directories the connector's CLI itself
-# creates on first launch — never anything an unrelated app could scatter.
-# Kept strict on purpose: false positives here churn the guardian with a
-# per-tick "agent_version empty" failure the operator has to reconcile.
+# CRITICAL: none of the signals below may match a directory or file that
+# prepare_userspace_for (this same library, above) creates as part of
+# installer bootstrap. Otherwise every DefenseClaw pkg install would
+# create the presence marker itself, the fallback would fire for every
+# eligible user × connector, and the guardian would churn on connectors
+# the user has never touched.
+#
+# Blocked signals (DefenseClaw-authored — must NOT be checked here):
+#   claudecode: ~/.claude, ~/.claude/settings.json
+#   codex:      ~/.codex, ~/.codex/config.toml
+#   cursor:     ~/.cursor, ~/.cursor/hooks.json
+#
+# Allowed signals below are artifacts the connector's CLI itself
+# creates on first launch — never anything prepare_userspace_for nor
+# an unrelated app could scatter.
 connector_present_for_user() {
   local connector="$1"
   local home="$2"
   [[ -n "${home}" ]] || return 1
   case "${connector}" in
     claudecode)
-      # Claude Code CLI writes ~/.claude/ (sessions, session-env, plugins,
-      # skills, telemetry) and ~/.claude.json (user settings). Claude
-      # Desktop stores under ~/Library/Application Support/Claude/ and
-      # does NOT populate ~/.claude, so this is a CLI-specific signal.
-      [[ -d "${home}/.claude" || -f "${home}/.claude.json" ]] && return 0
+      # ~/.claude.json is Claude Code CLI's project-trust file at the
+      # home root; DefenseClaw never touches it. The subdirs under
+      # ~/.claude below are CLI runtime state (sessions, per-project
+      # data, env snapshots per session) — the DART bundle from the
+      # customer that motivated this fix showed all three populated on
+      # a box where DefenseClaw's discover_agent_version came up empty.
+      # Claude Desktop uses ~/Library/Application Support/Claude/ and
+      # does NOT populate ~/.claude, so each of these is CLI-specific.
+      [[ -f "${home}/.claude.json" ]] && return 0
+      [[ -d "${home}/.claude/sessions" ]] && return 0
+      [[ -d "${home}/.claude/projects" ]] && return 0
+      [[ -d "${home}/.claude/session-env" ]] && return 0
       ;;
     codex)
-      # Codex CLI writes ~/.codex/config.toml and ~/.codex/log/. The
-      # ChatGPT.app-bundled codex 0.145+ still uses this dir.
-      [[ -d "${home}/.codex" ]] && return 0
+      # Codex CLI runtime artifacts. history.jsonl is written on every
+      # chat exchange; auth.json holds the OAuth cache after first
+      # login; log/ is created the first time codex boots. Any of them
+      # implies actual CLI use. DefenseClaw only writes config.toml.
+      [[ -d "${home}/.codex/log" ]] && return 0
+      [[ -f "${home}/.codex/history.jsonl" ]] && return 0
+      [[ -f "${home}/.codex/auth.json" ]] && return 0
       ;;
     cursor)
-      # Cursor's IDE creates ~/.cursor/ on first launch (extensions,
-      # hooks.json, argv.json). The version probe already covers Cursor
-      # via the extension package.json path, so this branch is a
-      # symmetry/robustness fallback for hosts whose extension dir is
-      # unreadable at enumeration time.
-      [[ -d "${home}/.cursor" ]] && return 0
+      # Cursor IDE runtime artifacts. extensions/ is populated the
+      # first time the IDE launches (even with zero third-party
+      # extensions, a manifest file is written); argv.json is the
+      # editor's saved-startup-args file. DefenseClaw only writes
+      # hooks.json. The version probe already covers Cursor via the
+      # extension package.json path — this branch is a symmetry /
+      # robustness fallback for hosts whose extension dir metadata is
+      # transiently unreadable at enumeration time.
+      [[ -d "${home}/.cursor/extensions" ]] && return 0
+      [[ -f "${home}/.cursor/argv.json" ]] && return 0
       ;;
   esac
   return 1
