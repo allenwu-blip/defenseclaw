@@ -107,29 +107,29 @@ var windowsMachineScopedCursorPackageJSON = `C:\Program Files\Cursor\resources\a
 // Per-connector candidates:
 //
 //   - `claudecode`:
-//       1. `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\package.json`
-//          — npm-global (the historical baseline).
-//       2. `%USERPROFILE%\.bun\install\global\node_modules\@anthropic-ai\claude-code\package.json`
-//          — Bun global install (`bun install -g @anthropic-ai/claude-code`).
-//       3. `%LOCALAPPDATA%\Yarn\Data\global\node_modules\@anthropic-ai\claude-code\package.json`
-//          — Yarn Classic global install (still common on legacy hosts).
+//     1. `%APPDATA%\npm\node_modules\@anthropic-ai\claude-code\package.json`
+//     — npm-global (the historical baseline).
+//     2. `%USERPROFILE%\.bun\install\global\node_modules\@anthropic-ai\claude-code\package.json`
+//     — Bun global install (`bun install -g @anthropic-ai/claude-code`).
+//     3. `%LOCALAPPDATA%\Yarn\Data\global\node_modules\@anthropic-ai\claude-code\package.json`
+//     — Yarn Classic global install (still common on legacy hosts).
 //
 //   - `codex`:
-//       1. `%APPDATA%\npm\node_modules\@openai\codex\package.json` — npm-global.
-//       2. `%USERPROFILE%\.bun\install\global\node_modules\@openai\codex\package.json`
-//          — Bun global.
-//       3. `%LOCALAPPDATA%\Yarn\Data\global\node_modules\@openai\codex\package.json`
-//          — Yarn Classic global.
+//     1. `%APPDATA%\npm\node_modules\@openai\codex\package.json` — npm-global.
+//     2. `%USERPROFILE%\.bun\install\global\node_modules\@openai\codex\package.json`
+//     — Bun global.
+//     3. `%LOCALAPPDATA%\Yarn\Data\global\node_modules\@openai\codex\package.json`
+//     — Yarn Classic global.
 //     MSIX-store install (`C:\Program Files\WindowsApps\OpenAI.Codex_…\`) still
 //     requires a glob-resolved lookup and stays out of scope here; a follow-up
 //     probe can add it once the glob-vs-reparse-chain interaction is worked out.
 //
 //   - `cursor`:
-//       1. `%LOCALAPPDATA%\Programs\cursor\resources\app\package.json`
-//          — Cursor Desktop per-user install.
-//       2. `windowsMachineScopedCursorPackageJSON` — Cursor MSI machine-scoped
-//          install. Path is a package variable so tests can override; the
-//          production default is `C:\Program Files\Cursor\resources\app\package.json`.
+//     1. `%LOCALAPPDATA%\Programs\cursor\resources\app\package.json`
+//     — Cursor Desktop per-user install.
+//     2. `windowsMachineScopedCursorPackageJSON` — Cursor MSI machine-scoped
+//     install. Path is a package variable so tests can override; the
+//     production default is `C:\Program Files\Cursor\resources\app\package.json`.
 //
 // All per-user candidates are fully-cleaned absolute paths anchored inside
 // `profileHome`; the one machine-scoped candidate is anchored at a fixed
