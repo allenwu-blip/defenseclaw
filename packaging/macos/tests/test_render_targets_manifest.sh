@@ -105,10 +105,12 @@ t_empty_connectors_still_emits_valid_manifest() {
 }
 
 t_absent_connector_skipped_partial_box() {
-  # Regression: a box with only cursor installed must NOT get target rows
-  # for codex or claudecode. Otherwise the guardian churns forever trying
-  # to install hooks for a CLI that doesn't exist on the host. See
-  # discover_agent_version + render_targets_manifest empty-version skip.
+  # Regression: a box with only cursor installed AND no user-scoped
+  # config surfaces for the other connectors must NOT get target rows
+  # for codex or claudecode. Otherwise the guardian churns forever
+  # trying to install hooks for a CLI that doesn't exist on the host.
+  # See discover_agent_version + render_targets_manifest empty-version
+  # skip and the connector_present_for_user fallback.
   discover_agent_version() {
     case "$1" in
       cursor) printf '3.14.27' ;;
@@ -116,16 +118,118 @@ t_absent_connector_skipped_partial_box() {
     esac
   }
 
-  local users="shawnxu:501:20:/Users/shawnxu"
+  # Use a mktemp'd HOME that provably has none of the presence signals
+  # (~/.claude, ~/.claude.json, ~/.codex, ~/.cursor). This isolates the
+  # test from any stray files on the developer's real filesystem.
+  local test_home
+  test_home="$(mktemp -d "${TMPROOT}/home.shawnxu.XXXXXX")"
+  local users="shawnxu:501:20:${test_home}"
   local out
   out="$(render_targets_manifest "${TEST_SUPPORT}" "codex,claudecode,cursor" "${users}")"
 
   assert_contains     "${out}" 'connector: "cursor"'     "cursor row emitted"
-  assert_not_contains "${out}" 'connector: "codex"'      "codex row skipped (not installed)"
-  assert_not_contains "${out}" 'connector: "claudecode"' "claudecode row skipped (not installed)"
+  assert_not_contains "${out}" 'connector: "codex"'      "codex row skipped (not installed, no presence signal)"
+  assert_not_contains "${out}" 'connector: "claudecode"' "claudecode row skipped (not installed, no presence signal)"
   local count
   count="$(printf '%s\n' "${out}" | grep -c "^  - user:" || true)"
   assert_eq "${count}" "1" "one target when only cursor is installed"
+}
+
+t_unversioned_but_present_emits_row_with_empty_version() {
+  # Regression for the customer bundle where Claude Code CLI was installed
+  # via a channel discover_agent_version does not probe (e.g. Bun, pnpm,
+  # Homebrew tap, custom PATH shim). Before this fix the row was silently
+  # dropped from targets.yaml, the guardian never wired hooks, and the
+  # sidecar spammed HIGH-severity hook_guardian:unverified every 60s with
+  # no diagnostic pointing at the discovery gap.
+  #
+  # Now: when the version probe returns empty AND the connector's
+  # user-scoped config surface exists on this user, emit the row with
+  # an empty agent_version and let the Go guardian's ResolveHookContract
+  # fall back to DefaultForUnversioned. In `action` mode the Go
+  # validateHookContract still fail-shuts per-target (surfacing the
+  # failure in protected_targets.json instead of a silent drop).
+  discover_agent_version() { printf ''; }
+
+  local test_home
+  test_home="$(mktemp -d "${TMPROOT}/home.jlunde.XXXXXX")"
+  # jlunde's DART bundle showed ~/.claude/ (11 subdirs, active CLI use)
+  # but discover_agent_version returned empty. Reproduce that shape.
+  mkdir -p "${test_home}/.claude/sessions"
+  local users="jlunde:501:20:${test_home}"
+  local out
+  out="$(render_targets_manifest "${TEST_SUPPORT}" "claudecode,codex" "${users}")"
+
+  assert_contains     "${out}" 'connector: "claudecode"' "claudecode row emitted via presence fallback"
+  assert_contains     "${out}" 'agent_version: ""'       "empty agent_version passed through so Go picks DefaultForUnversioned"
+  assert_not_contains "${out}" 'connector: "codex"'      "codex still skipped (no ~/.codex presence signal)"
+  local count
+  count="$(printf '%s\n' "${out}" | grep -c "^  - user:" || true)"
+  assert_eq "${count}" "1" "exactly one target row emitted via presence fallback"
+}
+
+t_presence_fallback_covers_codex_dir() {
+  # Codex CLI's user-scoped surface is ~/.codex/config.toml. Ensure the
+  # fallback recognises it even when discover_agent_version can't reach
+  # the install (e.g. ChatGPT.app not readable at enumerator run time).
+  discover_agent_version() { printf ''; }
+
+  local test_home
+  test_home="$(mktemp -d "${TMPROOT}/home.codexuser.XXXXXX")"
+  mkdir -p "${test_home}/.codex"
+  : > "${test_home}/.codex/config.toml"
+  local users="codexuser:501:20:${test_home}"
+  local out
+  out="$(render_targets_manifest "${TEST_SUPPORT}" "codex" "${users}")"
+
+  assert_contains "${out}" 'connector: "codex"'   "codex row emitted via ~/.codex presence signal"
+  assert_contains "${out}" 'agent_version: ""'    "empty agent_version passed through"
+}
+
+t_connector_present_for_user_signals() {
+  # Unit-level coverage for the helper itself so the presence rules
+  # can't drift silently when discover_agent_version is stubbed.
+  local test_home
+  test_home="$(mktemp -d "${TMPROOT}/home.present.XXXXXX")"
+
+  # No surfaces yet: every connector must return false.
+  connector_present_for_user claudecode "${test_home}"
+  assert_status "$?" "1" "claudecode absent on empty home"
+  connector_present_for_user codex "${test_home}"
+  assert_status "$?" "1" "codex absent on empty home"
+  connector_present_for_user cursor "${test_home}"
+  assert_status "$?" "1" "cursor absent on empty home"
+
+  # ~/.claude.json alone is enough for claudecode.
+  : > "${test_home}/.claude.json"
+  connector_present_for_user claudecode "${test_home}"
+  assert_status "$?" "0" "claudecode detected via ~/.claude.json"
+
+  # ~/.claude/ dir is also enough (either signal wins).
+  local other_home
+  other_home="$(mktemp -d "${TMPROOT}/home.present2.XXXXXX")"
+  mkdir -p "${other_home}/.claude"
+  connector_present_for_user claudecode "${other_home}"
+  assert_status "$?" "0" "claudecode detected via ~/.claude dir"
+
+  # ~/.codex/ dir → codex present.
+  mkdir -p "${other_home}/.codex"
+  connector_present_for_user codex "${other_home}"
+  assert_status "$?" "0" "codex detected via ~/.codex dir"
+
+  # ~/.cursor/ dir → cursor present.
+  mkdir -p "${other_home}/.cursor"
+  connector_present_for_user cursor "${other_home}"
+  assert_status "$?" "0" "cursor detected via ~/.cursor dir"
+
+  # Empty home arg is a hard "not present" — must not scan the invoking
+  # user's real dotfiles.
+  connector_present_for_user claudecode ""
+  assert_status "$?" "1" "empty home never returns present"
+
+  # Unknown connector never returns present.
+  connector_present_for_user made_up_connector "${other_home}"
+  assert_status "$?" "1" "unknown connector name never returns present"
 }
 
 t_all_connectors_absent_yields_zero_rows() {
@@ -258,6 +362,9 @@ run_case "empty user list still emits valid manifest"           t_empty_users_st
 run_case "empty connector list still emits valid manifest"      t_empty_connectors_still_emits_valid_manifest
 run_case "absent connectors are skipped (partial-box render)"   t_absent_connector_skipped_partial_box
 run_case "all connectors absent yields zero rows"               t_all_connectors_absent_yields_zero_rows
+run_case "unversioned but present emits row with empty version" t_unversioned_but_present_emits_row_with_empty_version
+run_case "presence fallback covers ~/.codex"                    t_presence_fallback_covers_codex_dir
+run_case "connector_present_for_user helper signals"            t_connector_present_for_user_signals
 run_case "rendered targets.yaml parses (schema round-trip)"     t_rendered_yaml_parses
 run_case "rows pin enabled + int uid/gid"                       t_rows_pin_enabled_and_int_uid_gid
 run_case "rows omit data_dir (per-user Install default is used)" t_rows_omit_data_dir
