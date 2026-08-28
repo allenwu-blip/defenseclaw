@@ -1042,12 +1042,67 @@ enumerate_local_users() {
 #
 # One `- ` block per (user × supported-and-installed connector).
 # Unsupported connectors (not in is_supported_connector) are skipped: they
-# have no per-user setup path in the CLI. Connectors the caller asked for
-# but which discover_agent_version could not locate on THIS user's home
-# ARE ALSO skipped — no CLI/app/extension present means there is nothing
-# to hook, and emitting the row would just churn the guardian with a
-# permanent "agent_version empty" failure per tick. Users who install the
-# connector later are picked up by the hook-enumerator's next re-render.
+# have no per-user setup path in the CLI.
+#
+# Connectors the caller asked for but which discover_agent_version could
+# not locate on THIS user's home used to be skipped unconditionally. That
+# rule made an unrecoverable "silent drop" whenever the CLI was installed
+# via a channel discover_agent_version does not probe (Bun, pnpm, custom
+# PATH shim, Homebrew tap, etc.) — the row never appeared in
+# targets.yaml, the guardian never installed hooks, and the operator got
+# no diagnostic pointing at the discovery gap.
+#
+# Now: when the version probe returns empty, fall back to a cheap per-user
+# PRESENCE signal (connector_present_for_user). If the connector's user
+# config surface exists on this user, emit the row with an empty
+# agent_version and let the Go guardian handle it — the sidecar's
+# ResolveHookContract has an Unversioned branch that returns the
+# connector's DefaultForUnversioned contract. In `action` mode the Go
+# guardian's validateHookContract still fail-shuts per-target (unless
+# DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT=1), which surfaces the failure in
+# protected_targets.json — infinitely better than a silent drop. In
+# observability / audit modes the target wires end-to-end. If the presence
+# signal is also absent, the row is still skipped as before.
+
+# connector_present_for_user CONNECTOR HOME -> exit 0 iff there is a cheap
+# per-user artifact on disk indicating the user has interacted with this
+# connector's CLI, even when discover_agent_version could not resolve the
+# install path. Used as a fallback presence check in render_targets_manifest
+# so a CLI installed via a channel we don't probe still gets a manifest row.
+#
+# The signals are limited to files/directories the connector's CLI itself
+# creates on first launch — never anything an unrelated app could scatter.
+# Kept strict on purpose: false positives here churn the guardian with a
+# per-tick "agent_version empty" failure the operator has to reconcile.
+connector_present_for_user() {
+  local connector="$1"
+  local home="$2"
+  [[ -n "${home}" ]] || return 1
+  case "${connector}" in
+    claudecode)
+      # Claude Code CLI writes ~/.claude/ (sessions, session-env, plugins,
+      # skills, telemetry) and ~/.claude.json (user settings). Claude
+      # Desktop stores under ~/Library/Application Support/Claude/ and
+      # does NOT populate ~/.claude, so this is a CLI-specific signal.
+      [[ -d "${home}/.claude" || -f "${home}/.claude.json" ]] && return 0
+      ;;
+    codex)
+      # Codex CLI writes ~/.codex/config.toml and ~/.codex/log/. The
+      # ChatGPT.app-bundled codex 0.145+ still uses this dir.
+      [[ -d "${home}/.codex" ]] && return 0
+      ;;
+    cursor)
+      # Cursor's IDE creates ~/.cursor/ on first launch (extensions,
+      # hooks.json, argv.json). The version probe already covers Cursor
+      # via the extension package.json path, so this branch is a
+      # symmetry/robustness fallback for hosts whose extension dir is
+      # unreadable at enumeration time.
+      [[ -d "${home}/.cursor" ]] && return 0
+      ;;
+  esac
+  return 1
+}
+
 yaml_double_quoted_scalar() {
   local value="$1"
   case "${value}" in
@@ -1098,7 +1153,15 @@ render_targets_manifest() {
       is_supported_connector "${c}" || continue
       q_connector="$(yaml_double_quoted_scalar "${c}")" || continue
       ver="$(DC_INSTALLER_TARGET_USER="${name}" discover_agent_version "${c}" "${home}" 2>/dev/null || true)"
-      [[ -n "${ver}" ]] || continue
+      if [[ -z "${ver}" ]]; then
+        # Version probe came up empty. Only emit a row when a cheap
+        # user-scoped presence signal proves the connector CLI has been
+        # used on this account — otherwise the guardian churns forever
+        # trying to install hooks for a CLI that doesn't exist here. See
+        # connector_present_for_user above and render_targets_manifest's
+        # header comment for the full rationale.
+        connector_present_for_user "${c}" "${home}" || continue
+      fi
       q_ver="$(yaml_double_quoted_scalar "${ver}")" || q_ver='""'
       # data_dir is intentionally omitted from each target block: the
       # guardian's validateUserDataDir requires the data_dir to be inside
