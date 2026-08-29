@@ -423,7 +423,7 @@ class TestMCPScan(MCPCommandTestBase):
         mock_scan_one,
     ):
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(
                 name="ctx7",
                 url=f"http://{connector}-ctx7",
@@ -464,7 +464,7 @@ class TestMCPScan(MCPCommandTestBase):
     def test_scan_all_connector_json_error_includes_connector(self, mock_scan):
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(
                 name="node_repl",
                 command="npx",
@@ -496,7 +496,7 @@ class TestMCPScan(MCPCommandTestBase):
     def test_invalid_package_runner_config_is_concise_and_nonzero(self):
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(name="broken", command="uvx", args=[], transport="stdio")
         ]
 
@@ -512,7 +512,7 @@ class TestMCPScan(MCPCommandTestBase):
     def test_scan_all_returns_nonzero_when_a_configured_server_errors(self):
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(name="broken", command="uvx", args=[], transport="stdio")
         ]
 
@@ -681,7 +681,7 @@ class TestMCPScan(MCPCommandTestBase):
         # M3: a name owned by no active connector errors clearly, naming the
         # connectors searched (not the legacy hardcoded "openclaw.json").
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: []  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
 
         result = self.invoke(["scan", "ghost"])
 
@@ -721,14 +721,58 @@ class TestMCPScan(MCPCommandTestBase):
 
     def test_empty_list_warning_names_selected_connector_source(self):
         self.app.cfg.active_connectors = lambda: ["opencode"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: []  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--connector", "opencode"])
 
         self.assertEqual(result.exit_code, 0, result.output)
         self.assertIn("connector='opencode'", result.output)
-        self.assertIn("OpenCode MCP config", result.output)
+        # The warning used to end in the hand-written label "OpenCode MCP
+        # config". It now names the resolved paths instead, so an operator
+        # who sees a zero can tell at a glance whether we looked anywhere
+        # near their servers. The property under test is unchanged: the
+        # selected connector's source, never OpenClaw's.
+        self.assertIn("opencode.json", result.output)
         self.assertNotIn("OpenClaw", result.output)
+        self.assertNotIn("openclaw.json", result.output)
+
+    def test_empty_list_warning_says_workspace_is_not_pinned(self):
+        # `doctor` already prints "not pinned (project/local scopes not
+        # selected)" via doctor_hooks. `mcp list` stayed silent about it, so
+        # an operator saw a bare zero with no way to tell that a whole scope
+        # class had been skipped. Same fact, same vocabulary, both commands.
+        self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+        self.app.cfg.connector_workspace_dir = lambda: ""  # type: ignore[method-assign]
+
+        result = self.invoke(["list", "--connector", "claudecode"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("workspace not pinned", result.output)
+
+    def test_pinned_workspace_does_not_claim_to_be_unpinned(self):
+        self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+        self.app.cfg.connector_workspace_dir = lambda: "/tmp/pinned"  # type: ignore[method-assign]
+
+        result = self.invoke(["list", "--connector", "claudecode"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("not pinned", result.output)
+
+    def test_zero_known_locations_is_an_error_not_a_clean_zero(self):
+        # The whole point of #788: "checked nowhere" must not render as
+        # "checked everywhere and found nothing". An unrecognised connector
+        # falls through to the OpenClaw reader inside mcp_servers(), so
+        # without this branch the command reports a tidy zero for a name it
+        # never had a config location for.
+        self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+
+        result = self.invoke(["list", "--connector", "not-a-connector"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("nothing was checked", result.output)
 
     @patch("defenseclaw.commands.cmd_mcp._unset_mcp_via_connector")
     def test_unset_connector_flag_targets_one(self, mock_unset):
@@ -873,7 +917,7 @@ class TestMCPScan(MCPCommandTestBase):
     @patch("defenseclaw.commands.cmd_mcp._unset_mcp_via_connector")
     def test_unset_missing_bare_is_idempotent_noop(self, mock_unset):
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: []  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
 
         result = self.invoke(["unset", "ctx7"])
 
@@ -887,7 +931,7 @@ class TestMCPScan(MCPCommandTestBase):
     @patch("defenseclaw.commands.cmd_mcp._unset_mcp_via_connector")
     def test_unset_missing_scoped_is_idempotent_noop(self, mock_unset):
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: []  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
 
         result = self.invoke(["unset", "ctx7", "--connector", "codex"])
 
@@ -1224,7 +1268,7 @@ class TestMCPScan(MCPCommandTestBase):
     def test_scan_json_error_output_is_parseable(self, mock_scan):
         self.app.cfg.active_connector = lambda: "codex"  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(
                 name="node_repl",
                 command="npx",
@@ -1501,7 +1545,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         ]
 
     def test_default_lists_every_active_connector(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
 
         result = self.invoke(["list"])
@@ -1511,7 +1555,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         self.assertIn("connector=codex", result.output)
 
     def test_default_json_groups_by_connector(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--json"])
@@ -1527,7 +1571,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
             self.assertEqual(g["mcp_servers"][0]["connector"], g["connector"])
 
     def test_connector_flag_still_narrows_to_one(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--connector", "codex"])
@@ -1537,7 +1581,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         self.assertNotIn("connector=claudecode", result.output)
 
     def test_single_connector_install_keeps_flat_json(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--json"])
@@ -1552,7 +1596,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
 
     def test_url_backed_server_without_transport_lists_as_http_not_stdio(self):
         self.app.cfg.active_connectors = lambda: ["antigravity"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: [  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: [  # type: ignore[method-assign]
             MCPServerEntry(
                 name="dc-tui-mcp-antigravity",
                 url="http://127.0.0.1:59994/mcp",
@@ -1570,7 +1614,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
 
     def test_empty_scoped_json_keeps_connector_metadata(self):
         self.app.cfg.active_connectors = lambda: ["claudecode", "codex"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None: []  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--json", "--connector", "claudecode"])
 
@@ -1579,7 +1623,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         self.assertEqual(payload, {"connector": "claudecode", "mcp_servers": []})
 
     def test_list_actions_are_connector_specific_json(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex", "hermes"]  # type: ignore[method-assign]
         pe = PolicyEngine(self.app.store)
         pe.block_for_connector("mcp", "ctx7", "codex", "manual")
@@ -1594,7 +1638,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         self.assertNotEqual(payload["hermes"]["verdict"], "blocked")
 
     def test_list_actions_use_unscoped_fallback_and_scoped_override_json(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex", "hermes"]  # type: ignore[method-assign]
         pe = PolicyEngine(self.app.store)
         pe.block("mcp", "ctx7", "global")
@@ -1610,7 +1654,7 @@ class TestMcpListMultiConnectorDefault(MCPCommandTestBase):
         self.assertEqual(payload["hermes"]["verdict"], "allowed")
 
     def test_list_scan_history_is_connector_specific_for_same_named_servers(self):
-        self.app.cfg.mcp_servers = lambda connector=None: self._one_server()  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = lambda connector=None, **_: self._one_server()  # type: ignore[method-assign]
         self.app.cfg.active_connectors = lambda: ["codex", "hermes"]  # type: ignore[method-assign]
         self.app.store.insert_scan_result(
             str(uuid.uuid4()), "mcp-scanner", "ctx7",

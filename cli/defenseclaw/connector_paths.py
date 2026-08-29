@@ -280,6 +280,62 @@ def _workspace_path(workspace_dir: str | None, *parts: str) -> str:
     return os.path.join(root, *parts)
 
 
+def _discovery_workspace_dir(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> str:
+    """Resolve the workspace for *read* surfaces.
+
+    ``_workspace_dir`` returns ``""`` when nothing is pinned, so every
+    ``_workspace_path`` built from it collapses to ``""`` and the
+    project-local config is skipped entirely. For an operator running
+    ``defenseclaw mcp list`` inside their project that is a silent miss:
+    the servers are configured, the connector loads them, and inventory
+    reports zero.
+
+    The fix cannot simply be "always fall back to the cwd", because the
+    cwd means different things to different callers:
+
+    * A human at a shell is standing in the project they mean.
+    * A daemon is standing wherever it was launched — possibly ``/``.
+      ``_opencode_config_paths`` already documents this exact hazard.
+    * A *writer* must never infer a target. ``defenseclaw mcp set``
+      writing into whichever directory the operator happens to be in,
+      least of all a repo they just cloned, is worse than any missed read.
+
+    So the fallback is opt-in and off by default: every existing caller
+    keeps byte-identical behaviour, and the CLI command layer — the one
+    caller that knows a human typed the command — turns it on.
+
+    ``inventory/agent_discovery.py`` already probes the relative
+    ``.claude/settings.json`` with no pinned workspace, so this makes MCP
+    discovery consistent with a surface that shipped years ago.
+    """
+
+    explicit = _workspace_dir(workspace_dir)
+    if explicit:
+        return explicit
+    if not infer_from_cwd:
+        return ""
+    try:
+        return os.path.abspath(os.getcwd())
+    except OSError:
+        # The cwd can be unlinked out from under a long-running process.
+        return ""
+
+
+def _discovery_path(
+    workspace_dir: str | None,
+    *parts: str,
+    infer_from_cwd: bool = False,
+) -> str:
+    root = _discovery_workspace_dir(workspace_dir, infer_from_cwd=infer_from_cwd)
+    if not root:
+        return ""
+    return os.path.join(root, *parts)
+
+
 def _omnigent_config_home() -> str:
     config_home = (os.environ.get("OMNIGENT_CONFIG_HOME") or "").strip()
     if config_home:
@@ -300,6 +356,35 @@ def claude_config_dir() -> str:
     """Return Claude Code's effective user configuration directory."""
 
     return _connector_env_home("CLAUDE_CONFIG_DIR", ".claude")
+
+
+def claude_user_config_paths() -> list[str]:
+    """Return Claude Code's user-scope ``.claude.json`` candidates.
+
+    This file is a *sibling* of ``~/.claude/``, not a member of it, and it
+    is where ``claude mcp add`` lands by default — both at the document
+    root (``mcpServers``) and per project
+    (``projects.<abs-path>.mcpServers``). ``~/.claude/settings.json``
+    holds a different MCP block, so reading only settings.json misses the
+    servers most operators actually have.
+
+    The rest of the codebase already knows this file:
+    ``inventory/ai_signatures.json`` and ``inventory/agent_discovery.py``
+    both list ``~/.claude.json``, and ``scanner/plugin_scanner/rules.py``
+    raises a finding when a plugin reads its credentials. MCP discovery
+    was the one place that did not.
+
+    Two candidates, not one: ``~/.claude.json`` always, plus
+    ``$CLAUDE_CONFIG_DIR/.claude.json`` when that variable is set. I could
+    not confirm from the outside whether Claude Code relocates this file
+    along with the directory, and probing a path that does not exist costs
+    one failed ``open`` — guessing wrong costs another silent zero.
+    """
+
+    paths = [os.path.join(os.path.abspath(str(Path.home())), ".claude.json")]
+    if (os.environ.get("CLAUDE_CONFIG_DIR") or "").strip():
+        paths.append(os.path.join(claude_config_dir(), ".claude.json"))
+    return _dedup(paths)
 
 
 def codex_home() -> str:
@@ -889,12 +974,21 @@ def mcp_servers(
     workspace_dir: str | None = None,
     openclaw_bin_resolver: Any = None,
     openclaw_cmd_prefix: list[str] | None = None,
+    infer_workspace_from_cwd: bool = False,
 ) -> list[MCPServerEntry]:
     """Return the MCP server registrations for *connector*.
 
+    Set *infer_workspace_from_cwd* when the caller knows its cwd is a
+    project — an interactive CLI command does, a daemon does not. It is
+    off by default so no existing caller changes behaviour; see
+    ``_discovery_workspace_dir`` for why this is the caller's decision.
+
     Reads each framework's canonical config:
 
-    * Claude Code: ``~/.claude/settings.json`` then explicit workspace ``.mcp.json``
+    * Claude Code: ``~/.claude/settings.json``, ``~/.claude.json`` (both the
+                    document-root ``mcpServers`` and this project's entry
+                    under ``projects``), workspace ``.mcp.json`` and
+                    workspace ``.claude/settings{,.local}.json``
     * Codex:       ``~/.codex/config.toml`` then explicit workspace ``.mcp.json``
     * ZeptoClaw:   ``~/.zeptoclaw/config.json`` then explicit workspace ``.mcp.json``
     * Antigravity: ``~/.gemini/config/mcp_config.json`` then explicit workspace
@@ -908,34 +1002,35 @@ def mcp_servers(
     prefix.
     """
     name = normalize(connector)
+    infer = infer_workspace_from_cwd
     if name == "claudecode":
-        return _claudecode_mcp_servers(workspace_dir)
+        return _claudecode_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "codex":
-        return _codex_mcp_servers(workspace_dir)
+        return _codex_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "amp":
         return _amp_mcp_servers(workspace_dir)
     if name == "zeptoclaw":
-        return _zeptoclaw_mcp_servers(workspace_dir)
+        return _zeptoclaw_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "hermes":
         return _hermes_mcp_servers()
     if name == "cursor":
-        return _cursor_mcp_servers(workspace_dir)
+        return _cursor_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "windsurf":
         return _windsurf_mcp_servers()
     if name == "geminicli":
         return _gemini_mcp_servers()
     if name == "copilot":
-        return _copilot_mcp_servers(workspace_dir)
+        return _copilot_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "openhands":
         return _openhands_mcp_servers()
     if name == "antigravity":
-        return _antigravity_mcp_servers(workspace_dir)
+        return _antigravity_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "opencode":
         # opencode manages MCP servers in its own opencode.json (full
         # read/write parity with codex/claudecode — mcp.md M2/M5), under
         # a top-level ``mcp`` map rather than the ``mcpServers`` shape the
         # other connectors use. Read its config, never OpenClaw's.
-        return _opencode_mcp_servers(workspace_dir)
+        return _opencode_mcp_servers(workspace_dir, infer_from_cwd=infer)
     if name == "omnigent":
         return []
     return _openclaw_mcp_servers(
@@ -943,6 +1038,111 @@ def mcp_servers(
         openclaw_bin_resolver=openclaw_bin_resolver,
         openclaw_cmd_prefix=openclaw_cmd_prefix,
     )
+
+
+def mcp_source_locations(
+    connector: str | None,
+    *,
+    openclaw_config: str | None = None,
+    workspace_dir: str | None = None,
+    infer_workspace_from_cwd: bool = False,
+) -> list[str]:
+    """Return the locations ``mcp_servers`` would consult, in read order.
+
+    This deliberately does *not* reuse ``connector_config_files``. That
+    function answers "where does this connector keep configuration",
+    which is a different question and, today, a different answer: for
+    claudecode it lists ``<ws>/.claude/settings.json`` but not
+    ``<ws>/.mcp.json``, and for copilot its three entries and the reader's
+    three entries do not overlap at all. It is also the input to
+    ``snapshot_fail_mode_transaction``, so widening it would widen a
+    rollback set. Printing it as "checked:" would replace a vague hint
+    with a precise falsehood.
+
+    Locations are mostly file paths. OpenClaw's preferred source is a
+    command, and omnigent has no MCP registry at all; both are rendered as
+    a parenthesised phrase so a caller can still print and count them. An
+    empty list therefore means one thing only — *we do not know where to
+    look for this connector* — which is the condition worth an error.
+
+    Paths are listed whether or not they exist: the operator wants to see
+    where the tool looked, and "checked here, nothing there" is the
+    finding.
+    """
+
+    name = normalize(connector)
+    infer = infer_workspace_from_cwd
+    home = str(Path.home())
+
+    def ws(*parts: str) -> str:
+        return _discovery_path(workspace_dir, *parts, infer_from_cwd=infer)
+
+    if name == "claudecode":
+        return _dedup(
+            [
+                os.path.join(claude_config_dir(), "settings.json"),
+                ws(".mcp.json"),
+                *claude_user_config_paths(),
+                ws(".claude", "settings.json"),
+                ws(".claude", "settings.local.json"),
+            ]
+        )
+    if name == "codex":
+        return _dedup([os.path.join(codex_home(), "config.toml"), ws(".mcp.json")])
+    if name == "amp":
+        return _dedup(_amp_settings_paths(workspace_dir))
+    if name == "zeptoclaw":
+        zepto_home = os.environ.get("ZEPTOCLAW_HOME") or os.path.join(home, ".zeptoclaw")
+        return _dedup([os.path.join(zepto_home, "config.json"), ws(".mcp.json")])
+    if name == "hermes":
+        return _dedup([hermes_config_path()])
+    if name == "cursor":
+        return _dedup(
+            [os.path.join(home, ".cursor", "mcp.json"), ws(".cursor", "mcp.json")]
+        )
+    if name == "windsurf":
+        return _dedup(list(_windsurf_mcp_paths(home)))
+    if name == "geminicli":
+        return _dedup([os.path.join(home, ".gemini", "settings.json")])
+    if name == "copilot":
+        return _dedup(
+            [
+                os.path.join(home, ".copilot", "mcp-config.json"),
+                ws(".github", "mcp.json"),
+                ws(".mcp.json"),
+            ]
+        )
+    if name == "openhands":
+        return _dedup([os.path.join(home, ".openhands", "mcp.json")])
+    if name == "antigravity":
+        return _dedup(
+            [
+                _antigravity_global_mcp_path(),
+                _antigravity_workspace_mcp_path(workspace_dir, infer_from_cwd=infer),
+            ]
+        )
+    if name == "opencode":
+        return _dedup(_opencode_config_paths(workspace_dir, infer_from_cwd=infer))
+    if name == "omnigent":
+        return ["(omnigent exposes no MCP registry)"]
+    if name == "openclaw":
+        return _dedup(
+            [
+                "(openclaw config get mcp.servers)",
+                _expand(openclaw_config or "~/.openclaw/openclaw.json"),
+            ]
+        )
+
+    # Deliberately NOT mirroring mcp_servers here. That function ends in an
+    # unconditional `return _openclaw_mcp_servers(...)`, so an unrecognised
+    # --connector reads OpenClaw's config and reports "no servers for
+    # <name>" — a silent read of the wrong file, which is the failure this
+    # whole change is about. Returning [] lets the caller say so.
+    #
+    # It also catches the realistic regression: a connector added to
+    # KNOWN_CONNECTORS and to mcp_servers but not here shows up as zero
+    # locations on its first run, rather than after months of clean reports.
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -1459,7 +1659,22 @@ def _openclaw_plugin_dirs(openclaw_home: str | None) -> list[str]:
 # --- MCP readers -----------------------------------------------------------
 
 
-def _claudecode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _claudecode_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
+    """Return Claude Code's MCP registrations across all five read surfaces.
+
+    Order is additive on purpose. ``_dedup_mcp_entries`` is first-wins, so
+    the two pre-existing sources stay in front and any name that resolved
+    before resolves to the same entry now; the sources added below can only
+    contribute names that were previously invisible. Making
+    ``~/.claude.json`` *win* over settings.json would match Claude Code's
+    own precedence more closely, but that is a behaviour change for
+    existing installs and belongs in its own commit.
+    """
+
     entries: list[MCPServerEntry] = []
     entries.extend(
         _read_mcp_settings_block(
@@ -1467,13 +1682,86 @@ def _claudecode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerE
             keys=("mcpServers",),
         )
     )
-    project_mcp = _workspace_path(workspace_dir, ".mcp.json")
+    project_mcp = _discovery_path(
+        workspace_dir, ".mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
+
+    # User-scope ~/.claude.json: document-root block, then the block scoped
+    # to this project. `claude mcp add` writes the first with `--scope user`
+    # and the second by default, and neither was ever read.
+    workspace = _discovery_workspace_dir(workspace_dir, infer_from_cwd=infer_from_cwd)
+    for path in claude_user_config_paths():
+        entries.extend(_read_mcp_settings_block(path, keys=("mcpServers",)))
+        if workspace:
+            entries.extend(_read_claude_project_mcp_servers(path, workspace))
+
+    # Workspace settings, which agent_discovery already probes but MCP
+    # discovery never did. `.local.` is the git-ignored personal override.
+    for name in ("settings.json", "settings.local.json"):
+        path = _discovery_path(
+            workspace_dir, ".claude", name, infer_from_cwd=infer_from_cwd,
+        )
+        if path:
+            entries.extend(_read_mcp_settings_block(path, keys=("mcpServers",)))
+
     return _dedup_mcp_entries(entries)
 
 
-def _codex_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _read_claude_project_mcp_servers(path: str, workspace: str) -> list[MCPServerEntry]:
+    """Read ``projects.<workspace>.mcpServers`` out of a ``.claude.json``.
+
+    Claude Code keys this map by absolute workspace path, so the lookup has
+    to normalise both sides: a config written from ``/home/u/proj`` must
+    still match when the operator is standing in ``/home/u/proj/`` or
+    reached it through a symlink. Falls back to the literal key so an
+    unresolvable path (deleted cwd, permission error) still matches.
+    """
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    projects = data.get("projects")
+    if not isinstance(projects, dict):
+        return []
+
+    target = _normalize_project_key(workspace)
+    for key, value in projects.items():
+        if not isinstance(value, dict):
+            continue
+        if _normalize_project_key(key) != target:
+            continue
+        servers = value.get("mcpServers")
+        if isinstance(servers, dict):
+            return _parse_mcp_servers_dict(servers)
+    return []
+
+
+def _normalize_project_key(path: str) -> str:
+    """Canonicalise a workspace path for comparison against a config key."""
+
+    expanded = os.path.expanduser(_expand(path))
+    try:
+        resolved = str(Path(expanded).resolve(strict=False))
+    except OSError:
+        resolved = os.path.abspath(expanded)
+    resolved = resolved.rstrip("\\/") or resolved
+    # Windows keys differ in case and separator; POSIX paths are exact.
+    if os.name == "nt":
+        return os.path.normcase(resolved)
+    return resolved
+
+
+def _codex_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     """Return the merged Codex MCP server list.
 
     Codex stores its global MCP server registry in
@@ -1491,7 +1779,9 @@ def _codex_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]
     """
     entries: list[MCPServerEntry] = []
     entries.extend(_read_codex_config_toml(os.path.join(codex_home(), "config.toml")))
-    project_mcp = _workspace_path(workspace_dir, ".mcp.json")
+    project_mcp = _discovery_path(
+        workspace_dir, ".mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
     return _dedup_mcp_entries(entries)
@@ -1585,11 +1875,17 @@ def _read_codex_config_toml(path: str) -> list[MCPServerEntry]:
     return out
 
 
-def _zeptoclaw_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _zeptoclaw_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     zepto_home = os.environ.get("ZEPTOCLAW_HOME") or os.path.join(str(Path.home()), ".zeptoclaw")
     entries: list[MCPServerEntry] = []
     entries.extend(_read_zepto_config(os.path.join(zepto_home, "config.json")))
-    project_mcp = _workspace_path(workspace_dir, ".mcp.json")
+    project_mcp = _discovery_path(
+        workspace_dir, ".mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
     return _dedup_mcp_entries(entries)
@@ -1619,11 +1915,17 @@ def _hermes_mcp_servers() -> list[MCPServerEntry]:
     )
 
 
-def _cursor_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _cursor_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     home = str(Path.home())
     entries: list[MCPServerEntry] = []
     entries.extend(_read_dotmcp_json(os.path.join(home, ".cursor", "mcp.json")))
-    project_mcp = _workspace_path(workspace_dir, ".cursor", "mcp.json")
+    project_mcp = _discovery_path(
+        workspace_dir, ".cursor", "mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
     return _dedup_mcp_entries(entries)
@@ -1644,14 +1946,22 @@ def _gemini_mcp_servers() -> list[MCPServerEntry]:
     )
 
 
-def _copilot_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _copilot_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     home = str(Path.home())
     entries: list[MCPServerEntry] = []
     entries.extend(_read_dotmcp_json(os.path.join(home, ".copilot", "mcp-config.json")))
-    github_mcp = _workspace_path(workspace_dir, ".github", "mcp.json")
+    github_mcp = _discovery_path(
+        workspace_dir, ".github", "mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if github_mcp:
         entries.extend(_read_dotmcp_json(github_mcp))
-    project_mcp = _workspace_path(workspace_dir, ".mcp.json")
+    project_mcp = _discovery_path(
+        workspace_dir, ".mcp.json", infer_from_cwd=infer_from_cwd,
+    )
     if project_mcp:
         entries.extend(_read_dotmcp_json(project_mcp))
     return _dedup_mcp_entries(entries)
@@ -1665,11 +1975,23 @@ def _antigravity_global_mcp_path() -> str:
     return os.path.join(str(Path.home()), ".gemini", "config", "mcp_config.json")
 
 
-def _antigravity_workspace_mcp_path(workspace_dir: str | None) -> str:
-    return _workspace_path(workspace_dir, ".agents", "mcp_config.json")
+def _antigravity_workspace_mcp_path(
+    workspace_dir: str | None,
+    *,
+    infer_from_cwd: bool = False,
+) -> str:
+    # Read surface only; the write path is _antigravity_mcp_write_path, which
+    # stays on _workspace_dir so `mcp set` never targets a cwd nobody pinned.
+    return _discovery_path(
+        workspace_dir, ".agents", "mcp_config.json", infer_from_cwd=infer_from_cwd,
+    )
 
 
-def _antigravity_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _antigravity_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     """Return Antigravity MCP registrations from native mcp_config.json files.
 
     The contract pins the global path to ``~/.gemini/config/mcp_config.json``.
@@ -1680,7 +2002,9 @@ def _antigravity_mcp_servers(workspace_dir: str | None = None) -> list[MCPServer
     """
     entries: list[MCPServerEntry] = []
     entries.extend(_read_antigravity_mcp_config(_antigravity_global_mcp_path()))
-    workspace_mcp = _antigravity_workspace_mcp_path(workspace_dir)
+    workspace_mcp = _antigravity_workspace_mcp_path(
+        workspace_dir, infer_from_cwd=infer_from_cwd,
+    )
     if workspace_mcp:
         entries.extend(_read_antigravity_mcp_config(workspace_mcp))
     return _dedup_mcp_entries(entries)
@@ -1690,27 +2014,39 @@ def _read_antigravity_mcp_config(path: str) -> list[MCPServerEntry]:
     return _read_mcp_settings_block(path, keys=("mcpServers",))
 
 
-def _opencode_config_paths(workspace_dir: str | None) -> list[str]:
+def _opencode_config_paths(
+    workspace_dir: str | None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[str]:
     """Return opencode's MCP config search paths, global-first.
 
     The global ``~/.config/opencode/opencode.json`` (and ``.jsonc``) is
     always consulted; the project ``<workspace>/opencode.json`` (and
-    ``.jsonc``) is added only when an explicit workspace is pinned, so
-    the daemon never infers a project file from its own cwd.
+    ``.jsonc``) is added when a workspace is pinned, so the daemon never
+    infers a project file from its own cwd.
+
+    ``infer_from_cwd`` is how a caller that *is* a human at a shell says
+    the cwd is meaningful. It defaults off precisely to keep the daemon
+    guarantee in the paragraph above intact.
     """
     home = str(Path.home())
     paths = [
         os.path.join(home, ".config", "opencode", "opencode.json"),
         os.path.join(home, ".config", "opencode", "opencode.jsonc"),
     ]
-    root = _workspace_dir(workspace_dir)
+    root = _discovery_workspace_dir(workspace_dir, infer_from_cwd=infer_from_cwd)
     if root:
         paths.append(os.path.join(root, "opencode.json"))
         paths.append(os.path.join(root, "opencode.jsonc"))
     return paths
 
 
-def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEntry]:
+def _opencode_mcp_servers(
+    workspace_dir: str | None = None,
+    *,
+    infer_from_cwd: bool = False,
+) -> list[MCPServerEntry]:
     """Return opencode's MCP server registrations.
 
     opencode stores MCP servers under a top-level ``mcp`` map in its
@@ -1720,7 +2056,7 @@ def _opencode_mcp_servers(workspace_dir: str | None = None) -> list[MCPServerEnt
     loads them at runtime.
     """
     entries: list[MCPServerEntry] = []
-    for path in _opencode_config_paths(workspace_dir):
+    for path in _opencode_config_paths(workspace_dir, infer_from_cwd=infer_from_cwd):
         entries.extend(_read_opencode_mcp(path))
     return _dedup_mcp_entries(entries)
 

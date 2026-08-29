@@ -182,6 +182,7 @@ def list_mcps(app: AppContext, as_json: bool, connector_flag: str) -> None:
         return
 
     shown_any = False
+    undiscoverable: list[str] = []
     for connector in connectors:
         servers = _collect_mcps_for_connector(app, connector)
         scan_map = _build_mcp_scan_map(
@@ -190,9 +191,21 @@ def list_mcps(app: AppContext, as_json: bool, connector_flag: str) -> None:
         )
         actions_map = _build_mcp_actions_map(app.store, connector)
         if not servers:
+            locations = _mcp_source_locations(app, connector)
+            if not locations:
+                # Nowhere to look is not the same as looked and found
+                # nothing. Reporting the first as a clean zero is how a
+                # scanner ends up quietly clean for months.
+                undiscoverable.append(connector)
+                ux.err(
+                    f"No MCP config location is known for "
+                    f"connector={connector!r}; nothing was checked. "
+                    f"This is a gap in DefenseClaw, not a clean result.",
+                )
+                continue
             ux.warn(
                 f"No MCP servers configured for connector={connector!r} "
-                f"(checked: {_mcp_source_hint(connector)}).",
+                f"(checked: {_mcp_source_hint(app, connector)}).",
             )
             continue
         _print_mcp_list_table(servers, scan_map, actions_map, connector)
@@ -201,6 +214,9 @@ def list_mcps(app: AppContext, as_json: bool, connector_flag: str) -> None:
     if shown_any:
         from defenseclaw.commands import hint
         hint("Scan all servers:  defenseclaw mcp scan --all")
+
+    if undiscoverable:
+        raise SystemExit(1)
 
 
 def _collect_mcps_for_connector(
@@ -211,28 +227,50 @@ def _collect_mcps_for_connector(
     The connector-aware ``cfg.mcp_servers(connector)`` reads the peer's
     own MCP config, so each configured connector resolves its own catalog when
     ``mcp list`` fans out.
+
+    ``infer_workspace_from_cwd`` is set because this path is only reached
+    from an interactive command, where the operator's cwd is the project
+    they mean. Daemon callers of ``cfg.mcp_servers`` leave it off.
     """
-    return app.cfg.mcp_servers(connector)
+    return app.cfg.mcp_servers(connector, infer_workspace_from_cwd=True)
 
 
-def _mcp_source_hint(connector: str) -> str:
-    """Human label for the connector-specific MCP source used by list/scan."""
-    name = connector_paths.normalize(connector)
-    hints = {
-        "openclaw": "OpenClaw MCP config",
-        "claudecode": "Claude Code settings and workspace MCP config",
-        "codex": "Codex config and workspace MCP config",
-        "zeptoclaw": "ZeptoClaw config and workspace MCP config",
-        "hermes": "Hermes config",
-        "cursor": "Cursor MCP config",
-        "windsurf": "Windsurf MCP config",
-        "geminicli": "Gemini CLI settings",
-        "copilot": "Copilot hook MCP config",
-        "openhands": "OpenHands MCP config",
-        "antigravity": "Antigravity MCP config",
-        "opencode": "OpenCode MCP config",
-    }
-    return hints.get(name, "connector-specific MCP config")
+def _mcp_source_locations(app: AppContext, connector: str) -> list[str]:
+    """Return the locations list/scan actually consult for *connector*."""
+    return app.cfg.mcp_source_locations(connector, infer_workspace_from_cwd=True)
+
+
+def _mcp_source_hint(app: AppContext, connector: str) -> str:
+    """Render the locations checked for *connector*, newest-caller-first.
+
+    This used to be a hand-written label per connector — "Claude Code
+    settings and workspace MCP config". The trouble with a label is that
+    it cannot be wrong in a way anyone notices: it stayed accurate-sounding
+    the whole time ``~/.claude.json`` went unread, because "Claude Code
+    settings" describes a file that was in fact being read, just not the
+    one holding the operator's servers.
+
+    Printing resolved paths makes the gap self-evident at the moment of
+    failure. An operator whose servers live in ``~/.claude.json``, reading
+    ``checked: ~/.claude/settings.json, ./.mcp.json``, does not need to
+    read our source or file an issue to know what went wrong.
+    """
+    locations = _mcp_source_locations(app, connector)
+    if not locations:
+        return "no known MCP config location"
+    home = os.path.abspath(os.path.expanduser("~"))
+    shown = [
+        ("~" + p[len(home):]) if p.startswith(home + os.sep) else p
+        for p in locations
+    ]
+    rendered = ", ".join(shown)
+    if not app.cfg.connector_workspace_dir():
+        # Same sentence `doctor` already prints via doctor_hooks.py, so an
+        # operator reads one story about workspace scope rather than two.
+        # Project scope is still searched from the cwd here; what is absent
+        # is a pinned workspace, which is what the wording says.
+        rendered += "; workspace not pinned (project scope inferred from cwd)"
+    return rendered
 
 
 def _mcp_list_json_items(
@@ -831,10 +869,16 @@ def _scan_all_mcp(
     if pack_cache is None:
         pack_cache = {}
 
-    servers = app.cfg.mcp_servers(connector)
+    servers = _collect_mcps_for_connector(app, connector)
     if not servers:
         if not as_json:
-            click.echo(f"No MCP servers configured for connector={connector!r}.")
+            # A scanner that scanned nothing must say where it looked. The
+            # bare version of this line was indistinguishable from a clean
+            # result, which is the worse of the two failures.
+            click.echo(
+                f"No MCP servers configured for connector={connector!r} "
+                f"(checked: {_mcp_source_hint(app, connector)}).",
+            )
         return []
 
     # F-0324: ``--all`` previously scanned every configured server with
