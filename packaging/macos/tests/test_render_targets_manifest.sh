@@ -165,6 +165,35 @@ SH
   assert_contains "$(cat "${diag_log}")" "pre-staged connector=claudecode" "pre-stage diagnostic"
 }
 
+t_unversioned_presence_retains_target_for_contract_gated_install() {
+  # A connector-specific runtime artifact is enough to retain an unversioned
+  # target. The Go installer then owns the safety decision: action mode rejects
+  # the unknown contract unless DEFENSECLAW_ALLOW_HOOK_CONTRACT_DRIFT=1, while
+  # audit/observability modes may proceed for exploratory validation.
+  local home; home="$(mktest_tmp)"
+  local fakebin="$(mktest_tmp)/defenseclaw-gateway"
+  local diag_log="$(mktest_tmp)/prestage.presence.diagnostics"
+  cat > "${fakebin}" <<'SH'
+#!/usr/bin/env bash
+printf '{"ok":true,"pre_staged":true}\n'
+SH
+  chmod 0700 "${fakebin}"
+
+  mkdir -p "${home}/.claude/sessions"
+  discover_agent_version() { printf ''; }
+  local out
+  out="$(
+    DC_INSTALLER_PRESTAGE_BIN="${fakebin}" \
+      render_targets_manifest "${TEST_SUPPORT}" "claudecode" "alice:501:20:${home}" 2>"${diag_log}"
+  )"
+
+  assert_contains "${out}" 'connector: "claudecode"' "presence signal retains Claude target"
+  assert_contains "${out}" 'agent_version: ""' "retained target is explicitly unversioned"
+  assert_contains "$(cat "${diag_log}")" "connector-specific presence signal detected" "presence classification diagnostic"
+  assert_contains "$(cat "${diag_log}")" "retaining unversioned target" "contract gate diagnostic"
+  assert_contains "$(cat "${diag_log}")" "pre-staged connector=claudecode" "presence case still pre-stages artifacts"
+}
+
 t_all_connectors_absent_yields_zero_rows() {
   # No connectors installed at all — every row skipped. The manifest is
   # still schema-valid (version + targets:) so the guardian can load it.
@@ -295,6 +324,7 @@ run_case "empty user list still emits valid manifest"           t_empty_users_st
 run_case "empty connector list still emits valid manifest"      t_empty_connectors_still_emits_valid_manifest
 run_case "absent connectors are skipped (partial-box render)"   t_absent_connector_skipped_partial_box
 run_case "missing version pre-stages hook artifacts"            t_missing_version_prestages_hook_artifacts
+run_case "presence retains unversioned target for contract gate" t_unversioned_presence_retains_target_for_contract_gated_install
 run_case "all connectors absent yields zero rows"               t_all_connectors_absent_yields_zero_rows
 run_case "rendered targets.yaml parses (schema round-trip)"     t_rendered_yaml_parses
 run_case "rows pin enabled + int uid/gid"                       t_rows_pin_enabled_and_int_uid_gid

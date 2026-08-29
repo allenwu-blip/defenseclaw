@@ -1166,10 +1166,41 @@ enumerate_local_users() {
 # One `- ` block per (user × supported-and-installed connector).
 # Unsupported connectors (not in is_supported_connector) are skipped: they
 # have no per-user setup path in the CLI. Connectors the caller asked for
-# but which discover_agent_version could not resolve are omitted from the
-# active manifest so the guardian does not churn on an empty version. The
-# omission is logged and the enumerator best-effort pre-stages the connector
-# hook artifacts; a later render can emit the active row once discovery works.
+# but which discover_agent_version could not resolve are normally omitted from
+# the active manifest so the guardian does not churn on an empty version. If
+# connector-specific runtime evidence exists, the row is retained with an
+# empty agent_version; the normal Go hook-contract gate still protects action
+# mode unless the explicit drift override is enabled. Every omitted row is
+# logged and the enumerator best-effort pre-stages the connector hook
+# artifacts.
+connector_present_for_user() {
+  local connector="$1"
+  local home="$2"
+  [[ -n "${home}" ]] || return 1
+
+  # These are connector-authored runtime surfaces, not the native config
+  # files DefenseClaw bootstraps. They provide useful diagnostics when a
+  # connector is clearly in use but its install channel is not recognized.
+  case "${connector}" in
+    claudecode)
+      [[ -f "${home}/.claude.json" ]] && return 0
+      [[ -d "${home}/.claude/sessions" ]] && return 0
+      [[ -d "${home}/.claude/projects" ]] && return 0
+      [[ -d "${home}/.claude/session-env" ]] && return 0
+      ;;
+    codex)
+      [[ -d "${home}/.codex/log" ]] && return 0
+      [[ -f "${home}/.codex/history.jsonl" ]] && return 0
+      [[ -f "${home}/.codex/auth.json" ]] && return 0
+      ;;
+    cursor)
+      [[ -d "${home}/.cursor/extensions" ]] && return 0
+      [[ -f "${home}/.cursor/argv.json" ]] && return 0
+      ;;
+  esac
+  return 1
+}
+
 yaml_double_quoted_scalar() {
   local value="$1"
   case "${value}" in
@@ -1185,6 +1216,7 @@ render_targets_manifest() {
   local connectors_csv="$2"
   local user_lines="$3"
   local runtime_dir="${support_dir}/runtime"
+  local presence_note
 
   local -a connectors=()
   local c
@@ -1221,13 +1253,23 @@ render_targets_manifest() {
       q_connector="$(yaml_double_quoted_scalar "${c}")" || continue
       ver="$(DC_INSTALLER_TARGET_USER="${name}" discover_agent_version "${c}" "${home}" 2>/dev/null || true)"
       if [[ -z "${ver}" ]]; then
-        printf '[hook-enumerator] WARN: connector=%s user=%s home=%s omitted from targets.yaml: agent version discovery returned empty\n' \
-          "${c}" "${name}" "${home}" >&2
+        presence_note="no connector-specific presence signal"
+        if connector_present_for_user "${c}" "${home}"; then
+          presence_note="connector-specific presence signal detected"
+        fi
+        printf '[hook-enumerator] WARN: connector=%s user=%s home=%s agent version discovery returned empty; %s\n' \
+          "${c}" "${name}" "${home}" "${presence_note}" >&2
         if _prestage_hook_artifacts_for_target "${support_dir}" "${c}" "${name}" "${uid}" "${gid}" "${home}"; then
           printf '[hook-enumerator] pre-staged connector=%s user=%s hook artifacts after version discovery miss\n' \
             "${c}" "${name}" >&2
         fi
-        continue
+        if [[ "${presence_note}" == "no connector-specific presence signal" ]]; then
+          printf '[hook-enumerator] WARN: connector=%s user=%s home=%s omitted from targets.yaml: no connector-specific presence signal\n' \
+            "${c}" "${name}" "${home}" >&2
+          continue
+        fi
+        printf '[hook-enumerator] retaining unversioned target connector=%s user=%s; action-mode contract gate remains in force\n' \
+          "${c}" "${name}" >&2
       fi
       q_ver="$(yaml_double_quoted_scalar "${ver}")" || q_ver='""'
       # data_dir is intentionally omitted from each target block: the
