@@ -1666,3 +1666,35 @@ class TestMCPSourceLocations:
         assert not undeclared, (
             f"{connector} read files it did not report checking: {undeclared}"
         )
+
+    def test_amp_skill_bundled_mcp_json_is_declared(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        skill_mcp = home / ".agents" / "skills" / "bundled-demo" / "mcp.json"
+        skill_mcp.parent.mkdir(parents=True)
+        skill_mcp.write_text(
+            json.dumps({"mcpServers": {"bundled": {"command": "npx", "args": ["demo"]}}}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.chdir(tmp_path)
+
+        declared = {
+            os.path.abspath(p)
+            for p in connector_paths.mcp_source_locations("amp")
+        }
+        assert os.path.abspath(str(skill_mcp)) in declared
+
+
+def test_bundled_mcp_names_are_claude_code_only():
+    assert connector_paths.is_bundled_mcp_server("computer-use")
+    assert connector_paths.is_bundled_mcp_server("Claude Browser")
+    assert connector_paths.is_bundled_mcp_server("claude.ai Slack")
+    assert connector_paths.is_bundled_mcp_server("claude_ai_Gmail")
+    assert connector_paths.is_bundled_mcp_server(
+        "computer-use", connector="claudecode",
+    )
+    assert not connector_paths.is_bundled_mcp_server(
+        "computer-use", connector="cursor",
+    )
+    assert not connector_paths.is_bundled_mcp_server("github")
+    assert not connector_paths.is_bundled_mcp_server("")

@@ -192,6 +192,48 @@ class MCPServerEntry:
     disabled_tools: list[str] = field(default_factory=list)
 
 
+# Names Claude Code reserves for servers hardcoded into the app bundle.
+# Claude Code itself skips a user config that reuses one of these names
+# (docs: reserved names include workspace, claude-in-chrome, computer-use,
+# Claude Preview, Claude Browser). Scanning them produces false positives
+# — filesystem/browser tools look like exfil — and blocking them would
+# disable vendor-managed features the operator did not install.
+_CLAUDECODE_BUNDLED_MCP_NAMES = frozenset(
+    {
+        "workspace",
+        "claude-in-chrome",
+        "computer-use",
+        "claude preview",
+        "claude browser",
+    }
+)
+
+
+def is_bundled_mcp_server(
+    entry: MCPServerEntry | str,
+    *,
+    connector: str | None = None,
+) -> bool:
+    """True for Claude Code's vendor-managed MCP servers.
+
+    Built-in servers live in the Claude Code binary, not in
+    ``~/.claude.json``. They are identified by reserved name (and by the
+    ``claude.ai `` / ``claude_ai_`` prefixes Claude Code uses for its own
+    connectors). The check is scoped to the claudecode connector so a
+    same-named server on Cursor or Codex is still scanned.
+    """
+
+    name = entry.name if isinstance(entry, MCPServerEntry) else entry
+    normalized = str(name or "").strip().casefold()
+    if not normalized:
+        return False
+    if connector not in (None, "") and normalize(connector) != "claudecode":
+        return False
+    if normalized in _CLAUDECODE_BUNDLED_MCP_NAMES:
+        return True
+    return normalized.startswith("claude.ai ") or normalized.startswith("claude_ai_")
+
+
 def infer_mcp_transport(
     transport: Any = "",
     *,
@@ -1090,7 +1132,16 @@ def mcp_source_locations(
     if name == "codex":
         return _dedup([os.path.join(codex_home(), "config.toml"), ws(".mcp.json")])
     if name == "amp":
-        return _dedup(_amp_settings_paths(workspace_dir))
+        return _dedup(
+            [
+                *_amp_settings_paths(workspace_dir),
+                *(
+                    path
+                    for root in _amp_skill_dirs(workspace_dir)
+                    for path in _amp_skill_mcp_paths(root)
+                ),
+            ]
+        )
     if name == "zeptoclaw":
         zepto_home = os.environ.get("ZEPTOCLAW_HOME") or os.path.join(home, ".zeptoclaw")
         return _dedup([os.path.join(zepto_home, "config.json"), ws(".mcp.json")])
