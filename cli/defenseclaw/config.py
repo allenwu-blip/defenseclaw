@@ -2532,6 +2532,7 @@ class Config:
         connector: str | None = None,
         *,
         infer_workspace_from_cwd: bool = False,
+        diagnostic_sink: list[connector_paths.MCPSourceDiagnostic] | None = None,
     ) -> list[MCPServerEntry]:
         """Return MCP server registrations for a connector.
 
@@ -2556,6 +2557,7 @@ class Config:
             openclaw_bin_resolver=openclaw_bin,
             openclaw_cmd_prefix=openclaw_cmd_prefix(),
             infer_workspace_from_cwd=infer_workspace_from_cwd,
+            diagnostic_sink=diagnostic_sink,
         )
 
     def mcp_source_locations(

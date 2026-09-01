@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import click
 from click.testing import CliRunner
+from defenseclaw import connector_paths
 from defenseclaw.commands.cmd_mcp import (
     _build_mcp_scan_map,
     _parse_args,
@@ -774,30 +775,105 @@ class TestMCPScan(MCPCommandTestBase):
         # without this branch the command reports a tidy zero for a name it
         # never had a config location for.
         self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+        fallback = MagicMock(return_value=[
+            MCPServerEntry(name="openclaw-fallback", command="fallback-server"),
+        ])
+        self.app.cfg.mcp_servers = fallback  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--connector", "not-a-connector"])
 
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("nothing was checked", result.output)
+        self.assertNotIn("openclaw-fallback", result.output)
+        fallback.assert_not_called()
 
     def test_zero_known_locations_json_list_exits_nonzero(self):
         self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+        fallback = MagicMock(return_value=[
+            MCPServerEntry(name="openclaw-fallback", command="fallback-server"),
+        ])
+        self.app.cfg.mcp_servers = fallback  # type: ignore[method-assign]
 
         result = self.invoke(["list", "--json", "--connector", "not-a-connector"])
 
         self.assertNotEqual(result.exit_code, 0)
-        json.loads(result.output)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["mcp_servers"], [])
+        fallback.assert_not_called()
 
     def test_zero_known_locations_scan_all_exits_nonzero(self):
         self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
-        self.app.cfg.mcp_servers = lambda connector=None, **_: []  # type: ignore[method-assign]
+        fallback = MagicMock(return_value=[
+            MCPServerEntry(name="openclaw-fallback", command="fallback-server"),
+        ])
+        self.app.cfg.mcp_servers = fallback  # type: ignore[method-assign]
 
         result = self.invoke(["scan", "--all", "--connector", "not-a-connector"])
 
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("nothing was checked", result.output)
+        self.assertNotIn("openclaw-fallback", result.output)
+        fallback.assert_not_called()
+
+    def _discovery_with_one_malformed_source(self, connector=None, **kwargs):
+        diagnostic_sink = kwargs["diagnostic_sink"]
+        diagnostic_sink.append(
+            connector_paths.MCPSourceDiagnostic(
+                source="/named/broken/.claude.json",
+                problem="malformed",
+            )
+        )
+        return [
+            MCPServerEntry(
+                name="healthy-server",
+                url="https://healthy.example.test/mcp",
+            )
+        ]
+
+    def test_list_names_source_error_without_suppressing_valid_server(self):
+        self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = self._discovery_with_one_malformed_source  # type: ignore[method-assign]
+
+        result = self.invoke(["list", "--connector", "claudecode"])
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("/named/broken/.claude.json", result.output)
+        self.assertIn("malformed", result.output)
+        self.assertIn("healthy-server", result.output)
+
+    def test_json_list_stays_valid_and_names_source_error_on_stderr(self):
+        self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = self._discovery_with_one_malformed_source  # type: ignore[method-assign]
+        runner = make_separate_stderr_runner()
+
+        result = runner.invoke(
+            mcp,
+            ["list", "--json", "--connector", "claudecode"],
+            obj=self.app,
+            catch_exceptions=False,
+        )
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["mcp_servers"][0]["name"], "healthy-server")
+        self.assertIn("/named/broken/.claude.json", result.stderr)
+
+    @patch("defenseclaw.commands.cmd_mcp._run_scan")
+    def test_scan_all_scans_valid_server_but_fails_for_source_error(self, mock_scan):
+        self.app.cfg.active_connectors = lambda: ["claudecode"]  # type: ignore[method-assign]
+        self.app.cfg.mcp_servers = self._discovery_with_one_malformed_source  # type: ignore[method-assign]
+        mock_scan.return_value = ScanResult(
+            scanner="mcp-scanner",
+            target="https://healthy.example.test/mcp",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        result = self.invoke(["scan", "--all", "--connector", "claudecode"])
+
+        self.assertEqual(result.exit_code, 1, result.output)
+        self.assertIn("/named/broken/.claude.json", result.output)
+        mock_scan.assert_called_once()
 
     def test_global_only_connector_does_not_claim_cwd_inference(self):
         self.app.cfg.active_connectors = lambda: ["hermes"]  # type: ignore[method-assign]

@@ -1513,6 +1513,71 @@ class TestClaudeUserConfigDiscovery:
             "claudecode", workspace_dir=str(project),
         ) == []
 
+    def test_malformed_optional_source_is_diagnosed_without_hiding_valid_server(
+        self, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".claude.json").write_text("{ not json")
+        monkeypatch.setenv("HOME", str(home))
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"healthy": {"command": "srv"}}})
+        )
+        diagnostics: list[connector_paths.MCPSourceDiagnostic] = []
+
+        entries = connector_paths.mcp_servers(
+            "claudecode",
+            workspace_dir=str(project),
+            diagnostic_sink=diagnostics,
+        )
+
+        assert [entry.name for entry in entries] == ["healthy"]
+        assert diagnostics == [
+            connector_paths.MCPSourceDiagnostic(
+                source=str(home / ".claude.json"),
+                problem="malformed",
+            )
+        ]
+
+    def test_unreadable_source_is_named_without_hiding_valid_server(
+        self, tmp_path, monkeypatch,
+    ):
+        home = tmp_path / "home"
+        broken = home / ".claude" / "settings.json"
+        broken.parent.mkdir(parents=True)
+        broken.write_text("{}")
+        monkeypatch.setenv("HOME", str(home))
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"healthy": {"command": "srv"}}})
+        )
+        real_open = builtins.open
+
+        def guarded_open(file, *args, **kwargs):
+            if os.path.abspath(os.fspath(file)) == os.path.abspath(str(broken)):
+                raise PermissionError("denied")
+            return real_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", guarded_open)
+        diagnostics: list[connector_paths.MCPSourceDiagnostic] = []
+
+        entries = connector_paths.mcp_servers(
+            "claudecode",
+            workspace_dir=str(project),
+            diagnostic_sink=diagnostics,
+        )
+
+        assert [entry.name for entry in entries] == ["healthy"]
+        assert diagnostics == [
+            connector_paths.MCPSourceDiagnostic(
+                source=str(broken),
+                problem="unreadable",
+            )
+        ]
+
 
 class TestWorkspaceInference:
     """The cwd fallback is opt-in, so daemons keep their guarantee."""
