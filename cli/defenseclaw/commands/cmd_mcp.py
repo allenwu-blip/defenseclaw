@@ -248,6 +248,10 @@ def _collect_mcps_for_connector(
 ) -> list[MCPServerEntry]:
     """Return the per-connector MCP server list.
 
+    A connector with no known MCP source must never fall through to the
+    registry reader's OpenClaw default.  Keep that invariant here because
+    named-target resolution and ownership checks also use this helper.
+
     The connector-aware ``cfg.mcp_servers(connector)`` reads the peer's
     own MCP config, so each configured connector resolves its own catalog when
     ``mcp list`` fans out.
@@ -256,6 +260,8 @@ def _collect_mcps_for_connector(
     from an interactive command, where the operator's cwd is the project
     they mean. Daemon callers of ``cfg.mcp_servers`` leave it off.
     """
+    if not _mcp_source_locations(app, connector):
+        return []
     return app.cfg.mcp_servers(
         connector,
         infer_workspace_from_cwd=True,

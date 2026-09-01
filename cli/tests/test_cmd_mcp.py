@@ -815,6 +815,47 @@ class TestMCPScan(MCPCommandTestBase):
         self.assertNotIn("openclaw-fallback", result.output)
         fallback.assert_not_called()
 
+    @patch("defenseclaw.commands.cmd_mcp._run_scan")
+    def test_zero_known_locations_named_scan_rejects_openclaw_fallback(
+        self,
+        mock_scan,
+    ):
+        self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
+        fallback = MagicMock(return_value=[
+            MCPServerEntry(name="openclaw-fallback", command="fallback-server"),
+        ])
+        self.app.cfg.mcp_servers = fallback  # type: ignore[method-assign]
+
+        result = self.invoke([
+            "scan",
+            "openclaw-fallback",
+            "--connector",
+            "not-a-connector",
+        ])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("not found", result.output)
+        fallback.assert_not_called()
+        mock_scan.assert_not_called()
+
+    @patch("defenseclaw.commands.cmd_mcp._run_scan")
+    def test_zero_known_locations_bare_scan_rejects_openclaw_fallback(
+        self,
+        mock_scan,
+    ):
+        self.app.cfg.active_connectors = lambda: ["not-a-connector"]  # type: ignore[method-assign]
+        fallback = MagicMock(return_value=[
+            MCPServerEntry(name="openclaw-fallback", command="fallback-server"),
+        ])
+        self.app.cfg.mcp_servers = fallback  # type: ignore[method-assign]
+
+        result = self.invoke(["scan", "openclaw-fallback"])
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("not found on any configured connector", result.output)
+        fallback.assert_not_called()
+        mock_scan.assert_not_called()
+
     def _discovery_with_one_malformed_source(self, connector=None, **kwargs):
         diagnostic_sink = kwargs["diagnostic_sink"]
         diagnostic_sink.append(
