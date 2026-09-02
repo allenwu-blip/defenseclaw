@@ -3613,65 +3613,6 @@ def _claudecode_mcp_servers(
     return _dedup_mcp_entries(entries)
 
 
-def _read_claude_project_mcp_servers(
-    path: str,
-    workspace: str,
-    *,
-    diagnostic_sink: list[MCPSourceDiagnostic] | None = None,
-) -> list[MCPServerEntry]:
-    """Read ``projects.<workspace>.mcpServers`` out of a ``.claude.json``.
-
-    Claude Code keys this map by absolute workspace path, so the lookup has
-    to normalise both sides: a config written from ``/home/u/proj`` must
-    still match when the operator is standing in ``/home/u/proj/`` or
-    reached it through a symlink. Falls back to the literal key so an
-    unresolvable path (deleted cwd, permission error) still matches.
-    """
-
-    try:
-        with open(path) as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        return []
-    except OSError:
-        _record_mcp_source_diagnostic(diagnostic_sink, path, "unreadable")
-        return []
-    except (UnicodeError, json.JSONDecodeError):
-        _record_mcp_source_diagnostic(diagnostic_sink, path, "malformed")
-        return []
-    if not isinstance(data, dict):
-        return []
-    projects = data.get("projects")
-    if not isinstance(projects, dict):
-        return []
-
-    target = _normalize_project_key(workspace)
-    for key, value in projects.items():
-        if not isinstance(value, dict):
-            continue
-        if _normalize_project_key(key) != target:
-            continue
-        servers = value.get("mcpServers")
-        if isinstance(servers, dict):
-            return _parse_mcp_servers_dict(servers)
-    return []
-
-
-def _normalize_project_key(path: str) -> str:
-    """Canonicalise a workspace path for comparison against a config key."""
-
-    expanded = os.path.expanduser(_expand(path))
-    try:
-        resolved = str(Path(expanded).resolve(strict=False))
-    except OSError:
-        resolved = os.path.abspath(expanded)
-    resolved = resolved.rstrip("\\/") or resolved
-    # Windows keys differ in case and separator; POSIX paths are exact.
-    if os.name == "nt":
-        return os.path.normcase(resolved)
-    return resolved
-
-
 def _read_claude_mcp_state(
     path: str,
     *,

@@ -1218,17 +1218,10 @@ def _scan_one_resolved(
     from defenseclaw.commands import _scan_ui, hint
 
     resolved, entry = _resolve_scan_target(app, target, connector)
-    if entry is not None and connector_paths.is_bundled_mcp_server(
-        entry, connector=connector,
+    if entry is not None and (
+        entry.bundled
+        or connector_paths.is_bundled_mcp_server(entry, connector=connector)
     ):
-        if not as_json:
-            click.echo(
-                f"BUNDLED: {entry.name} — skipping scan "
-                "(vendor-managed Claude Code server)",
-            )
-        return "bundled-skipped"
-
-    if entry is not None and entry.bundled:
         if as_json:
             click.echo(json.dumps({
                 "connector": connector,
